@@ -592,7 +592,8 @@ pub async fn call(
                     "browser_navigate" | "browser_snapshot" | "browser_click" | "browser_type"
                     | "browser_scroll" | "browser_back" | "browser_press"
                     | "browser_get_images" | "browser_vision" | "browser_console" => {
-                        browser_tool(home, bot, stored, &cfg, &env, name, args).await
+                        let result = browser_tool(home, bot, stored, &cfg, &env, name, args).await;
+                        scrub_filled(home, bot, stored, result).await
                     }
                     _ => Err(Error::new(4204, format!("unknown native tool: {name}"))),
                 }
@@ -2608,7 +2609,235 @@ async fn browser_tool(
     }
     Ok(result)
 }
+type FilledMap = HashMap<(PathBuf, String, String), Vec<String>>;
+/// Secrets typed into each section's browser. A page script can read a
+/// field back, so every later browser result has them blanked out.
+fn filled() -> &'static Mutex<FilledMap> {
+    static FILLED: OnceLock<Mutex<FilledMap>> = OnceLock::new();
+    FILLED.get_or_init(Default::default)
+}
+const BLANKED: &str = "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}";
+/// Blanks each secret, longest first, as typed and as it reads inside a
+/// JSON string (a page script that stringified it).
+fn blank(text: &str, secrets: &[String]) -> String {
+    let mut secrets = secrets.iter().filter(|s| !s.is_empty()).collect::<Vec<_>>();
+    secrets.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    secrets.into_iter().fold(text.to_owned(), |text, secret| {
+        let quoted = serde_json::to_string(secret).unwrap_or_default();
+        let escaped = &quoted[1..quoted.len() - 1];
+        text.replace(secret.as_str(), BLANKED)
+            .replace(escaped, BLANKED)
+    })
+}
+fn blank_value(value: &mut Value, secrets: &[String]) {
+    match value {
+        Value::String(text) => *text = blank(text, secrets),
+        Value::Array(items) => items.iter_mut().for_each(|v| blank_value(v, secrets)),
+        // A screenshot's base64 is not text a page wrote; blanking would break it.
+        Value::Object(map) if map.get("type") == Some(&json!("image")) => {}
+        Value::Object(map) => {
+            *map = std::mem::take(map)
+                .into_iter()
+                .map(|(key, mut v)| {
+                    blank_value(&mut v, secrets);
+                    (blank(&key, secrets), v)
+                })
+                .collect();
+        }
+        _ => {}
+    }
+}
+async fn scrub_filled(
+    home: &Path,
+    bot: &str,
+    stored: &str,
+    result: Result<Value>,
+) -> Result<Value> {
+    let secrets = filled()
+        .lock()
+        .await
+        .get(&(home.to_owned(), bot.to_owned(), stored.to_owned()))
+        .cloned()
+        .unwrap_or_default();
+    if secrets.is_empty() {
+        return result;
+    }
+    match result {
+        Ok(mut value) => {
+            blank_value(&mut value, &secrets);
+            Ok(value)
+        }
+        Err(mut error) => {
+            error.message = blank(&error.message, &secrets);
+            Err(error)
+        }
+    }
+}
+
+/// Types saved secrets into the section's open browser, `(ref, secret)` in
+/// order, once its page passes `allowed`. The secrets go to agent-browser on
+/// stdin, never its command line, and its output, which repeats them, is
+/// dropped. Returns the page's address.
+pub async fn browser_fill(
+    home: &Path,
+    bot: &str,
+    stored: &str,
+    allowed: impl Fn(&str) -> bool,
+    fills: &[(String, String)],
+) -> Result<String> {
+    if !enabled(home, bot, "browser")? {
+        return Err(Error::new(4302, "tool is disabled: browser"));
+    }
+    let key = (home.to_owned(), bot.to_owned(), stored.to_owned());
+    let state = browsers().lock().await.get(&key).cloned();
+    let open = || {
+        Error::new(
+            4204,
+            "No page is open in your browser here. Open the sign-in page with browser_navigate first.",
+        )
+    };
+    let state = state.ok_or_else(open)?;
+    let mut state = state.lock().await;
+    let browser = state.as_mut().ok_or_else(open)?;
+    if !browser.cdp.is_empty() {
+        return Err(Error::new(
+            4302,
+            "Saved passwords are typed only into a browser Hexbot runs, not a cloud browser.",
+        ));
+    }
+    let page = agent_browser(browser, "get", &["url".into()]).await?;
+    let url = page["data"]["url"].as_str().unwrap_or("").to_owned();
+    if !allowed(&url) {
+        return Err(Error::new(
+            4302,
+            format!(
+                "This page ({url}) isn't the site the password was saved for, so it was not filled. Open the site's own sign-in page."
+            ),
+        ));
+    }
+    for (reference, _) in fills {
+        if reference.is_empty() || reference.contains(char::is_whitespace) {
+            return Err(Error::new(
+                4202,
+                "ref must be an element reference from browser_snapshot",
+            ));
+        }
+    }
+    let commands = fills
+        .iter()
+        .map(|(reference, secret)| {
+            let reference = if reference.starts_with('@') {
+                reference.clone()
+            } else {
+                format!("@{reference}")
+            };
+            json!(["fill", reference, secret])
+        })
+        .collect::<Vec<_>>();
+    let result = run(
+        agent_command(browser, "batch", &["--bail".into()]),
+        json!(commands).to_string().as_bytes(),
+        120,
+    )
+    .await?;
+    let steps: Value =
+        serde_json::from_str(result["output"].as_str().unwrap_or("")).unwrap_or(Value::Null);
+    let failed = steps
+        .as_array()
+        .map(|steps| steps.len() < fills.len() || steps.iter().any(|s| s["success"] != true))
+        .unwrap_or(true);
+    {
+        let mut filled = filled().lock().await;
+        let secrets = filled.entry(key).or_default();
+        for (_, secret) in fills {
+            if !secrets.contains(secret) {
+                secrets.push(secret.clone());
+            }
+        }
+    }
+    if failed || result["success"] != true {
+        // The step's error names the field, never what was typed.
+        let reason = steps
+            .as_array()
+            .and_then(|steps| steps.iter().find(|s| s["success"] != true))
+            .and_then(|s| s["error"].as_str())
+            .map(|e| blank(e, &fills.iter().map(|(_, s)| s.clone()).collect::<Vec<_>>()))
+            .unwrap_or_else(|| "the browser did not answer".into());
+        return Err(failure(format!(
+            "Could not fill the field: {reason}. Take a new browser_snapshot and use its refs."
+        )));
+    }
+    Ok(url)
+}
+
+/// Types saved secrets on the bots' computer, `(point, secret)` in order.
+pub async fn computer_fill(
+    home: &Path,
+    bot: &str,
+    fills: &[(Option<Value>, String)],
+) -> Result<()> {
+    if !enabled(home, bot, "computer_use")? {
+        return Err(Error::new(4302, "tool is disabled: computer_use"));
+    }
+    let mut points = vec![];
+    for (point, secret) in fills {
+        let point = match point {
+            Some(point) => Some(
+                point
+                    .as_array()
+                    .filter(|v| v.len() == 2)
+                    .and_then(|v| Some((v[0].as_i64()?, v[1].as_i64()?)))
+                    .ok_or_else(|| Error::new(4200, "coordinate must be [x, y]"))?,
+            ),
+            None => None,
+        };
+        points.push((point, secret.clone()));
+    }
+    let cfg = common::merged_config(home, bot)?;
+    let env = connectors::credentials(home, bot)?;
+    crate::computers::fill(home, bot, &cfg, &env, &points).await
+}
+
+#[cfg(test)]
+mod blank_tests {
+    use super::*;
+
+    #[test]
+    fn filled_secrets_are_blanked_however_they_are_written() {
+        let secrets = [
+            "pass\"word".to_owned(),
+            "a\\b".to_owned(),
+            "abc".to_owned(),
+            "abcdef".to_owned(),
+        ];
+        let mut value = json!({
+            "data": {"result": ["pass\"word", "a\\b", "abcdef"]},
+            "pass\"word": true,
+            "content": [{"type": "image", "data": "iVBORw0K"}],
+            "page": format!("{{\"p\":{}}}", serde_json::to_string("pass\"word").unwrap()),
+        });
+        blank_value(&mut value, &secrets);
+        let text = value.to_string();
+        assert!(
+            !text.contains("word") && !text.contains("a\\\\b") && !text.contains("abc"),
+            "{text}"
+        );
+        assert_eq!(
+            value["data"]["result"][2], BLANKED,
+            "the longest secret goes first"
+        );
+        let images = json!({"content": [{"type": "image", "data": "iVBORabc"}]});
+        let mut shot = images.clone();
+        blank_value(&mut shot, &secrets);
+        assert_eq!(shot, images, "a screenshot stays intact");
+    }
+}
+
 async fn close_browsers(home: &Path, stored: &str) {
+    filled()
+        .lock()
+        .await
+        .retain(|(h, _, s), _| !(h == home && s == stored));
     let removed = {
         let mut map = browsers().lock().await;
         let keys = map

@@ -24,6 +24,7 @@ pub mod native_external_tools;
 pub mod native_product_tools;
 pub mod native_tools;
 pub mod osutil;
+pub mod passwords;
 pub mod pi;
 pub mod plugins;
 pub mod provider_acp;

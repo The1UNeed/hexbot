@@ -24,6 +24,7 @@ import {
   ModelSummary,
   SettingsScreen,
   type ApprovalChoice,
+  type SignInAnswer,
   type AttachmentView,
   type BotStatus,
   type BotSummary,
@@ -594,7 +595,8 @@ function MobileApp() {
               'Plugins',
               'extension-puzzle-outline',
               'Connectors, MCP servers, skills'
-            )
+            ),
+            area('passwords', 'Passwords', 'key-outline', 'Sign-ins your bots use')
           ]
         },
         {
@@ -841,7 +843,12 @@ function MobileApp() {
     [act, chatKey, route?.kind, route?.kind === 'section' ? route.bot.display_name : null]
   )
   const approve = useCallback(
-    (id: string, choice: ApprovalChoice) => act(() => mobileRef.current.approval(id, choice)),
+    (id: string, choice: ApprovalChoice, signIn?: SignInAnswer) => {
+      // The sign-in card waits for this to keep its form when it fails.
+      const work = mobileRef.current.approval(id, choice, signIn)
+      act(() => work)
+      return work
+    },
     [act]
   )
   const openVisual = useCallback((id: string) => setVisual(visuals.get(id) ?? null), [visuals])

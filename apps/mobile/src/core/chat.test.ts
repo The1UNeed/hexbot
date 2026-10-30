@@ -65,6 +65,24 @@ describe('chat event projection', () => {
     expect(s.approvals[0].sessionId).toBe('s1')
     expect(reduceChat(s, event('message.complete')).approvals).toEqual([])
   })
+  it("keeps a sign-in card's fields and drops a malformed form", () => {
+    const form = {
+      kind: 'sign_in',
+      site: 'app.schoology.com',
+      title: 'Schoology',
+      username: 'alex'
+    }
+    let s = reduceChat(
+      emptyChat(),
+      event('approval.request', { request_id: 'r1', command: 'Sign in to Schoology', form })
+    )
+    expect(s.approvals[0].form).toEqual(form)
+    s = reduceChat(
+      emptyChat(),
+      event('approval.request', { request_id: 'r2', form: { kind: 'other', site: 1 } })
+    )
+    expect(s.approvals[0].form).toBeUndefined()
+  })
   it('moves a question card forward on a re-send with newer answers, never back', () => {
     const questions = [
       { qid: 'q1', question: 'Colour?' },
@@ -235,7 +253,10 @@ describe('heartbeat messages', () => {
     ])
     expect(heartbeatMessage(once, 'heartbeat-1', 'BA 286 is two hours late.')).toBe(once)
     // Already in the history it loaded, under the same row id.
-    const loaded = { ...emptyChat(), messages: historyMessages([{ role: 'assistant', text: 'Hi', row_id: 'heartbeat-2' }]) }
+    const loaded = {
+      ...emptyChat(),
+      messages: historyMessages([{ role: 'assistant', text: 'Hi', row_id: 'heartbeat-2' }])
+    }
     expect(heartbeatMessage(loaded, 'heartbeat-2', 'Hi')).toBe(loaded)
   })
 })

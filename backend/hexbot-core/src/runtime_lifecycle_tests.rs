@@ -10,6 +10,9 @@ mod stop_tests;
 mod admission_tests;
 
 #[cfg(unix)]
+#[path = "runtime_passwords_tests.rs"]
+mod passwords_tests;
+#[cfg(unix)]
 #[path = "runtime_pi_file_tests.rs"]
 mod pi_file_tests;
 #[path = "runtime_recall_tests.rs"]

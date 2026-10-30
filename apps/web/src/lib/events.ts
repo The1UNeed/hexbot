@@ -31,6 +31,7 @@ import { useComputer } from '../stores/computer'
 import { useConnectors } from '../stores/connectors'
 import { useHeartbeat } from '../stores/heartbeat'
 import { useMe } from '../stores/me'
+import { refreshPasswordsIfLoaded } from '../stores/passwords'
 import { refreshPluginsIfLoaded } from '../stores/plugins'
 import { useRooms } from '../stores/rooms'
 import { keepHistory, useSections } from '../stores/sections'
@@ -74,6 +75,7 @@ const defaultDeps: Required<EventRouterDeps> = {
     void useBots.getState().refresh()
     // A bot added or deleted elsewhere changes the bots each plugin can go to.
     refreshPluginsIfLoaded()
+    refreshPasswordsIfLoaded()
   },
   refreshConnectors: () => {
     void useConnectors.getState().refreshAll()
@@ -236,6 +238,11 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
 
     case 'hexbot.connectors.changed':
       effects.refreshConnectors()
+
+      return
+
+    case 'hexbot.passwords.changed':
+      refreshPasswordsIfLoaded()
 
       return
     case 'hexbot.bots.incident': {

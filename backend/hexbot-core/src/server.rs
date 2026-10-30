@@ -486,6 +486,12 @@ impl App {
                     result
                 } else if let Some(result) = rooms::call(&self.home, owner, method, p) {
                     result
+                } else if let Some(result) = crate::passwords::call(&self.home, owner, method, p) {
+                    if result.is_ok() && crate::passwords::CHANGES.contains(&method) {
+                        self.events
+                            .emit(owner, None, "hexbot.passwords.changed", json!({}));
+                    }
+                    result
                 } else if let Some(result) = crate::computers::call(&self.home, method, p).await {
                     result
                 } else if let Some(result) = connectors::call(&self.home, owner, method, p).await {

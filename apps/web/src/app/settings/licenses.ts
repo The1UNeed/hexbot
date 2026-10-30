@@ -241,6 +241,12 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
       },
       {
         license: 'MIT',
+        name: 'keepass-rs',
+        packages: ['keepass'],
+        repository: 'https://github.com/sseemayer/keepass-rs'
+      },
+      {
+        license: 'MIT',
         name: 'jsonwebtoken',
         packages: ['jsonwebtoken'],
         repository: 'https://github.com/Keats/jsonwebtoken'
