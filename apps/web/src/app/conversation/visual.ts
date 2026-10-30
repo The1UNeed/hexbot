@@ -105,6 +105,43 @@ export function readVisualTheme(root: HTMLElement = document.documentElement): V
   return { appearance, variables }
 }
 
+/**
+ * The theme for a page drawn on `color` (a bubble) instead of the app
+ * background. The surface and border tokens are steps of text over the app
+ * background, so they are stepped again over `color`; otherwise a table
+ * striped with `--surface` shows dark slabs in a bubble.
+ */
+export function themeOnSurface(theme: VisualTheme, color: string): VisualTheme {
+  const text = rgb(theme.variables['--foreground'])
+  const base = rgb(color)
+  const variables = { ...theme.variables, '--background': color }
+
+  if (text && base) {
+    const step = (amount: number) =>
+      `#${base
+        .map((value, i) =>
+          Math.round(value + ((text[i] ?? value) - value) * amount)
+            .toString(16)
+            .padStart(2, '0')
+        )
+        .join('')}`
+
+    Object.assign(variables, {
+      '--border': step(0.12),
+      '--surface': step(0.04),
+      '--surface-2': step(0.1)
+    })
+  }
+
+  return { ...theme, variables }
+}
+
+function rgb(hex: string | undefined): null | number[] {
+  const digits = /^#([0-9a-f]{6})$/i.exec(hex ?? '')?.[1]
+
+  return digits ? [0, 2, 4].map(i => parseInt(digits.slice(i, i + 2), 16)) : null
+}
+
 /** Page defaults, before the page's own CSS: theme background, text and font, no body margin. */
 const BASE_CSS =
   'html{background:var(--background);color:var(--foreground);font:14px/1.5 var(--font-sans);-webkit-font-smoothing:antialiased}body{margin:0}'

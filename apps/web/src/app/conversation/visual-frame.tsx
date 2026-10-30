@@ -18,6 +18,7 @@ import { useVisuals, visualsActions } from '../../stores/visuals'
 import {
   hostContext,
   readVisualTheme,
+  themeOnSurface,
   type Visual,
   VISUAL_FRAME_SRC,
   VISUAL_MAX_HEIGHT,
@@ -53,7 +54,7 @@ function useVisualTheme(surface: string): VisualTheme {
     const theme = readVisualTheme()
     const value = getComputedStyle(document.documentElement).getPropertyValue(surface).trim()
 
-    return value ? { ...theme, variables: { ...theme.variables, '--background': value } } : theme
+    return value && surface !== '--hex-background' ? themeOnSurface(theme, value) : theme
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [choice, dark, surface])
 }

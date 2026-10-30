@@ -306,9 +306,7 @@ const markdownComponents: Components = {
   // Tints of the text colour, not surface greys, so a table sits on any bubble:
   // a bot's wash or your own inverted one.
   td: props => <td className="border border-current/15 p-2" {...props} />,
-  th: props => (
-    <th className="border border-current/15 bg-current/6 p-2 text-left" {...props} />
-  )
+  th: props => <th className="border border-current/15 bg-current/6 p-2 text-left" {...props} />
 }
 
 // A lone $ is too often money, so math needs $$ (or the \( \) and \[ \] mathDelimiters converts).

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ToolCall } from '../../lib/types'
 import { useVisuals, visualsActions } from '../../stores/visuals'
 
-import { readVisualTheme, visualDocument, visualsOf } from './visual'
+import { readVisualTheme, themeOnSurface, visualDocument, visualsOf } from './visual'
 import { VisualBubble, VisualPanel } from './visual-frame'
 
 const call = (partial: Partial<ToolCall>): ToolCall => ({
@@ -72,6 +72,45 @@ describe('readVisualTheme', () => {
     expect(readVisualTheme()).toMatchObject({
       appearance: 'dark',
       variables: { '--chart-1': '#8b85ff' }
+    })
+  })
+})
+
+describe('themeOnSurface', () => {
+  it('steps the surfaces and border over a bubble the way the app steps them over its background', () => {
+    const dark = {
+      appearance: 'dark' as const,
+      variables: {
+        '--background': '#0e0e0e',
+        '--border': '#2a2a2a',
+        '--foreground': '#f4f4f4',
+        '--surface': '#171717',
+        '--surface-2': '#262626'
+      }
+    }
+
+    // Over the app background the steps land on the app's own tokens, give or take one.
+    expect(themeOnSurface(dark, '#0e0e0e').variables).toMatchObject({
+      '--border': '#2a2a2a',
+      '--surface': '#171717',
+      '--surface-2': '#252525'
+    })
+    // Over the dark bubble every step is lighter than the bubble, none darker.
+    expect(themeOnSurface(dark, '#232326').variables).toEqual({
+      '--background': '#232326',
+      '--border': '#3c3c3f',
+      '--foreground': '#f4f4f4',
+      '--surface': '#2b2b2e',
+      '--surface-2': '#38383b'
+    })
+  })
+
+  it('only swaps the background when a colour is not plain hex', () => {
+    const variables = { '--foreground': 'rgb(0 0 0)', '--surface': '#f5f5f5' }
+
+    expect(themeOnSurface({ appearance: 'light', variables }, '#f0f0f2').variables).toEqual({
+      ...variables,
+      '--background': '#f0f0f2'
     })
   })
 })
