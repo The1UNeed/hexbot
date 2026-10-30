@@ -222,9 +222,15 @@ function LoginDetails({
   const [error, setError] = useState<null | string>(null)
   const [copied, setCopied] = useState<null | string>(null)
 
+  // One change at a time: each sends the whole list, read from the last answer.
+  const [sharing, setSharing] = useState(false)
+
   const choose = (next: null | string[]) => {
     setError(null)
-    void setBots(login.id, next).catch(cause => setError(errorText(cause)))
+    setSharing(true)
+    void setBots(login.id, next)
+      .catch(cause => setError(errorText(cause)))
+      .finally(() => setSharing(false))
   }
 
   const reveal = async () => {
@@ -315,7 +321,13 @@ function LoginDetails({
         ) : null}
       </dl>
       {bots.length ? (
-        <BotPicker bots={bots} chosen={login.bots} name={login.title} onChange={choose} />
+        <BotPicker
+          bots={bots}
+          chosen={login.bots}
+          disabled={sharing}
+          name={login.title}
+          onChange={choose}
+        />
       ) : null}
       {error ? (
         <p className="text-danger" role="alert">
@@ -363,11 +375,13 @@ function CopyButton({
 function BotPicker({
   bots,
   chosen,
+  disabled,
   name,
   onChange
 }: {
   bots: PasswordBot[]
   chosen: null | string[]
+  disabled: boolean
   name: string
   onChange: (bots: null | string[]) => void
 }) {
@@ -379,7 +393,8 @@ function BotPicker({
       <div className="mb-1.5 flex items-center gap-3">
         <span className="text-muted">Bots</span>
         <button
-          className="text-[length:var(--text-meta)] text-muted underline-offset-2 hover:text-foreground hover:underline"
+          className="text-[length:var(--text-meta)] text-muted underline-offset-2 hover:text-foreground hover:underline disabled:opacity-50"
+          disabled={disabled}
           onClick={() => onChange(every ? [] : null)}
           type="button"
         >
@@ -391,11 +406,12 @@ function BotPicker({
           <button
             aria-pressed={on(bot.name)}
             className={cn(
-              'h-[30px] rounded-full px-3 whitespace-nowrap transition-colors',
+              'h-[30px] rounded-full px-3 whitespace-nowrap transition-colors disabled:opacity-50',
               on(bot.name)
                 ? 'bg-accent text-accent-fg'
                 : 'bg-foreground/[0.07] text-foreground hover:bg-foreground/[0.11]'
             )}
+            disabled={disabled}
             key={bot.name}
             onClick={() =>
               onChange(

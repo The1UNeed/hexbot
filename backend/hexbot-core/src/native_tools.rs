@@ -2629,6 +2629,24 @@ fn blank(text: &str, secrets: &[String]) -> String {
             .replace(escaped, BLANKED)
     })
 }
+const PROTOCOL_KEYS: &[&str] = &[
+    "content",
+    "type",
+    "text",
+    "data",
+    "mimeType",
+    "success",
+    "error",
+    "result",
+    "screenshot_path",
+    "origin",
+    "refs",
+    "snapshot",
+    "url",
+    "title",
+    "name",
+    "role",
+];
 fn blank_value(value: &mut Value, secrets: &[String]) {
     match value {
         Value::String(text) => *text = blank(text, secrets),
@@ -2640,7 +2658,13 @@ fn blank_value(value: &mut Value, secrets: &[String]) {
                 .into_iter()
                 .map(|(key, mut v)| {
                     blank_value(&mut v, secrets);
-                    (blank(&key, secrets), v)
+                    // The tool's own keys stay, so its result keeps its shape.
+                    let key = if PROTOCOL_KEYS.contains(&key.as_str()) {
+                        key
+                    } else {
+                        blank(&key, secrets)
+                    };
+                    (key, v)
                 })
                 .collect();
         }
@@ -2677,13 +2701,15 @@ async fn scrub_filled(
 /// Types saved secrets into the section's open browser, `(ref, secret)` in
 /// order, once its page passes `allowed`. The secrets go to agent-browser on
 /// stdin, never its command line, and its output, which repeats them, is
-/// dropped. Returns the page's address.
+/// dropped. `hidden` (passwords and codes, not usernames the bot already
+/// knows) is blanked from later browser results. Returns the page's address.
 pub async fn browser_fill(
     home: &Path,
     bot: &str,
     stored: &str,
     allowed: impl Fn(&str) -> bool,
     fills: &[(String, String)],
+    hidden: &[String],
 ) -> Result<String> {
     if !enabled(home, bot, "browser")? {
         return Err(Error::new(4302, "tool is disabled: browser"));
@@ -2749,7 +2775,7 @@ pub async fn browser_fill(
     {
         let mut filled = filled().lock().await;
         let secrets = filled.entry(key).or_default();
-        for (_, secret) in fills {
+        for secret in hidden {
             if !secrets.contains(secret) {
                 secrets.push(secret.clone());
             }
@@ -2830,6 +2856,10 @@ mod blank_tests {
         let mut shot = images.clone();
         blank_value(&mut shot, &secrets);
         assert_eq!(shot, images, "a screenshot stays intact");
+        // A one-letter password leaves the result's own keys alone.
+        let mut short = json!({"success": true, "data": {"result": "t"}});
+        blank_value(&mut short, &["t".to_owned()]);
+        assert_eq!(short, json!({"success": true, "data": {"result": BLANKED}}));
     }
 }
 

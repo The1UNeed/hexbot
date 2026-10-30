@@ -71,7 +71,8 @@ describe('Settings, Passwords', () => {
       code: { code: '123456', valid_for: 20 },
       password: 'hunter2'
     })
-    vi.mocked(passwordsSetBots).mockResolvedValue({ login: { ...schoology, bots: ['owl'] } })
+    let answer: (value: { login: PasswordLogin }) => void = () => undefined
+    vi.mocked(passwordsSetBots).mockReturnValue(new Promise(resolve => (answer = resolve)))
     render(<PasswordsSettings />)
     fireEvent.click(await screen.findByRole('button', { name: /Schoology/ }))
     expect(screen.queryByText('hunter2')).toBeNull()
@@ -84,6 +85,9 @@ describe('Settings, Passwords', () => {
     const bots = screen.getByRole('group', { name: 'Bots that use Schoology' })
     fireEvent.click(within(bots).getByRole('button', { name: 'HexBot' }))
     await waitFor(() => expect(passwordsSetBots).toHaveBeenCalledWith('login-1', ['owl']))
+    // Until it saves, no second change can start from the old list.
+    expect(within(bots).getByRole('button', { name: 'Owl' })).toBeDisabled()
+    answer({ login: { ...schoology, bots: ['owl'] } })
     expect(await screen.findByText('Give to every bot')).toBeVisible()
     expect(screen.getByTestId('password-login-1')).toHaveTextContent('Owl')
   })

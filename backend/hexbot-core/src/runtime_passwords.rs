@@ -227,12 +227,20 @@ impl Runtime {
                         .zip(secrets)
                         .map(|(f, secret)| (f["ref"].as_str().unwrap_or("").to_owned(), secret))
                         .collect::<Vec<_>>();
+                    // The bot knows usernames from list; only these are hidden after.
+                    let hidden = fields
+                        .iter()
+                        .zip(&fills)
+                        .filter(|(f, _)| f["field"] != "username")
+                        .map(|(_, (_, secret))| secret.clone())
+                        .collect::<Vec<_>>();
                     crate::native_tools::browser_fill(
                         &self.home,
                         &s.bot,
                         &s.stored,
                         |page| crate::passwords::same_site(&saved, page),
                         &fills,
+                        &hidden,
                     )
                     .await?;
                 } else {
