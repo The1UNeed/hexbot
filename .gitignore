@@ -179,6 +179,8 @@ dist/
 
 # Native desktop runtime staging and daemon update bundles.
 apps/desktop/resources/hexbot-native*
+# The desktop build writes the app's third-party notices.
+apps/desktop/resources/THIRD_PARTY_NOTICES
 
 # Expo native projects are generated from apps/mobile/app.config.ts.
 apps/mobile/.expo/

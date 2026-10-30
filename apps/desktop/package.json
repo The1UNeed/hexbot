@@ -7,8 +7,8 @@
   "scripts": {
     "postinstall": "install-electron",
     "dev": "node ../../scripts/dev/desktop.mjs dev",
-    "build": "pnpm --filter @hexbot/web run build && node ../../scripts/desktop/stage-runtime.mjs && electron-vite build && node scripts/copy-web.mjs",
-    "build:client": "pnpm --filter @hexbot/web run build && HEXBOT_EDITION=client electron-vite build && node scripts/copy-web.mjs",
+    "build": "pnpm --filter @hexbot/web run build && node ../../scripts/desktop/stage-runtime.mjs && electron-vite build && node scripts/copy-web.mjs && node ../../scripts/desktop/third-party-notices.mjs app --out resources/THIRD_PARTY_NOTICES",
+    "build:client": "pnpm --filter @hexbot/web run build && HEXBOT_EDITION=client electron-vite build && node scripts/copy-web.mjs && node ../../scripts/desktop/third-party-notices.mjs app --out resources/THIRD_PARTY_NOTICES",
     "dist:mac": "node ../../scripts/desktop/dist.mjs --mac",
     "dist:linux": "node ../../scripts/desktop/dist.mjs --linux",
     "dist:mac:client": "node ../../scripts/desktop/dist.mjs --client --mac",

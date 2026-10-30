@@ -17,6 +17,7 @@ import {
   Text,
   useTheme
 } from './ui'
+import { Licenses } from './Licenses'
 import { ModelPill } from './screens/ModelMenu'
 import {
   type Bot,
@@ -52,6 +53,7 @@ export type Panel = {
     | 'job'
     | 'job-create'
     | 'jobs'
+    | 'licenses'
     | 'mcp'
     | 'memory'
     | 'network'
@@ -922,6 +924,9 @@ export function Management({
     case 'memory':
       save = () => rpc('hexbot.memory.bot.set', { bot: bot?.name, memory_md: values.memory_md })
       content = field('memory_md', 'Bot memory', true)
+      break
+    case 'licenses':
+      content = <Licenses />
       break
     case 'about':
       save = () => rpc('hexbot.memory.user.set', { text: values.text })
@@ -2172,6 +2177,7 @@ export function Management({
     bot: bot ? `Edit ${bot.display_name}` : 'Edit bot',
     memory: 'Memory',
     about: 'About you',
+    licenses: 'Licenses',
     tools: 'Tools',
     rooms: 'All rooms',
     'room-create': 'New room',

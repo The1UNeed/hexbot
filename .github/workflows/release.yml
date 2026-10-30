@@ -398,10 +398,16 @@ jobs:
             echo "APPLE_API_KEY_PATH=$key_path"
             echo "APPLE_API_ISSUER=$APPLE_API_ISSUER"
           } >> "$GITHUB_ENV"
+      - name: Write the installers' third-party notices
+        run: |
+          set -euo pipefail
+          node scripts/desktop/third-party-notices.mjs installer --out "$RUNNER_TEMP/hexbot-install-notices.txt"
+          node scripts/desktop/third-party-notices.mjs installer-app --out "$RUNNER_TEMP/installer-app-notices.txt"
       - name: Build the CLI installer
         run: |
           set -euo pipefail
-          cargo build --release --locked --manifest-path backend/hexbot-installer/Cargo.toml --target '${{ matrix.rust-target }}'
+          # build.rs embeds the notices; `hexbot-install --license` prints them.
+          HEXBOT_THIRD_PARTY_NOTICES="$RUNNER_TEMP/hexbot-install-notices.txt" cargo build --release --locked --manifest-path backend/hexbot-installer/Cargo.toml --target '${{ matrix.rust-target }}'
           mkdir -p installer-artifacts
           cp 'backend/hexbot-installer/target/${{ matrix.rust-target }}/release/hexbot-install' "installer-artifacts/hexbot-install-$VERSION-${{ matrix.target }}"
       - name: Sign and notarize the macOS CLI installer
@@ -426,8 +432,10 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: '1'
         run: |
           set -euo pipefail
-          # Override Tauri's version without editing the app's source files.
-          pnpm --filter ./apps/installer run tauri build --target '${{ matrix.rust-target }}' --bundles '${{ matrix.bundles }}' --config "{\"version\":\"$VERSION\"}"
+          # Override Tauri's version and add the third-party notices beside
+          # LICENSE and NOTICE without editing the app's source files.
+          config=$(node -e 'console.log(JSON.stringify({ version: process.env.VERSION, bundle: { resources: { [`${process.env.RUNNER_TEMP}/installer-app-notices.txt`]: "THIRD_PARTY_NOTICES" } } }))')
+          pnpm --filter ./apps/installer run tauri build --target '${{ matrix.rust-target }}' --bundles '${{ matrix.bundles }}' --config "$config"
           extension='${{ matrix.app-suffix }}'
           extension="${extension##*.}"
           shopt -s nullglob
