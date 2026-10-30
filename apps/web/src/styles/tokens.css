@@ -456,6 +456,11 @@ body {
 .hex-prose code {
   overflow-wrap: anywhere;
 }
+/* A long formula scrolls inside the bubble instead of widening it. */
+.hex-prose .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
 
 @media (prefers-reduced-motion: reduce) {
   *,

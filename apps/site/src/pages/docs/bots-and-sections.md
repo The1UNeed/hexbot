@@ -76,6 +76,10 @@ When a chat grows past what the model can hold, Hexbot summarises the older mess
 
 A summary keeps the thread of the work but not every detail. What lasts goes into the bot's memory and notes, and the bot can search the chat's history from before its latest summary when it needs an exact detail.
 
+## Formulas
+
+Bots write math in LaTeX. The desktop app and the browser typeset it, in chats and rooms. The phone app shows it as plain text that reads like the formula, such as `3/(2√x)` or `x⁻¹`. A lone `$` stays a dollar sign, so prices are never mistaken for math.
+
 ## Dream reports
 
 A [dream](/docs/dreaming/) posts nothing in the chat; its summary is in the bot's settings, Memory. Reports an earlier version posted stay in the chat. The bot does not see them as something it said, and later dreams skip them.
