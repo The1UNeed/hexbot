@@ -8,6 +8,7 @@
 import { useConnection } from '../stores/connection'
 
 import { rpcCall } from './rpc'
+import { toMillis } from './time'
 import type {
   ApprovalChoice,
   Bot,
@@ -1044,8 +1045,8 @@ export const clarifyAnswered = (clarify: ClarifyRequest) =>
  * live `tool.start` / `tool.complete` events are rendered.
  */
 /**
- * Hexbot history rows carry no timestamps, so restored messages get `createdAt: 0`
- * ("unknown") and the transcript draws no time separator for them.
+ * Restored messages get `createdAt: 0`, which marks them as history; the
+ * time their last row was stored is `sentAt`, for showing when it was sent.
  *
  * Hidden rows are dropped, with one exception: in a thread (`sender` given),
  * the sender bot's questions arrive as hidden user rows `@<sender>: <text>`
@@ -1064,6 +1065,12 @@ export function messagesFromHistory(
   const dreams = new Set<Message>()
   const rowCounts = new Map<string, number>()
   const reports = new Set(rows.filter(row => row.dream === true).map(row => String(row.row_id)))
+
+  // Rows carry `timestamp` in Unix seconds.
+  const sent = (row: HistoryRow) =>
+    typeof row.timestamp === 'number' && row.timestamp > 0
+      ? { sentAt: toMillis(row.timestamp) }
+      : {}
 
   for (const row of rows) {
     if (row.row_id != null) {
@@ -1146,7 +1153,7 @@ export function messagesFromHistory(
         durationS: null,
         name: String(row.name ?? 'tool'),
         result: row.text ?? null,
-        // History keeps no timestamps; 0 is "unknown", so no time is shown.
+        // History keeps no tool start times; 0 is "unknown", so no time is shown.
         startedAt: 0,
         status: row.is_error === true ? ('error' as const) : ('ok' as const),
         summary: typeof row.context === 'string' ? row.context : undefined,
@@ -1188,6 +1195,7 @@ export function messagesFromHistory(
           clarifies: clarify ? [clarify] : undefined,
           createdAt: 0,
           id: String(row.row_id ?? nextMessageId()),
+          ...sent(row),
           role: 'assistant',
           streaming: false,
           text: '',
@@ -1225,6 +1233,8 @@ export function messagesFromHistory(
 
       previous.text = text
       previous.textId = row.row_id == null ? undefined : String(row.row_id)
+      // The reply was sent when it ended, not when its first step began.
+      Object.assign(previous, sent(row))
       previous.fragmentIds = [
         ...(previous.fragmentIds ?? []),
         ...(previous.textId ? [previous.textId] : [])
@@ -1238,6 +1248,7 @@ export function messagesFromHistory(
       attachments: [],
       createdAt: 0,
       id: String(row.row_id ?? nextMessageId()),
+      ...sent(row),
       ...(typeof row.input_id === 'string' && { inputId: row.input_id }),
       ...(typeof row.turn_id === 'string' && { turnId: row.turn_id }),
       ...(role === 'assistant' &&

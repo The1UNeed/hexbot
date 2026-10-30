@@ -146,6 +146,23 @@ export function dayLabel(time: number, now = Date.now()): string {
   return `${day} ${clock}`
 }
 
+/** When a message was sent: `sentAt` once known, else when it started. 0 is unknown. */
+export const sentAt = (message: { createdAt: number; sentAt?: number }) =>
+  toMillis(message.sentAt || message.createdAt)
+
+/**
+ * A time separator before a message sent `at`: between days and after 20
+ * quiet minutes. `before` is undefined for the first message. An unknown time
+ * (0) never separates, so a reload never splits a turn.
+ */
+export function separates(before: number | undefined, at: number) {
+  return (
+    at > 0 &&
+    (before === undefined ||
+      (before > 0 && (dayKey(before) !== dayKey(at) || at - before > 20 * 60_000)))
+  )
+}
+
 export function DaySeparator({ time }: { time: number }) {
   return (
     <div className="pt-6 pb-2 text-center text-[length:var(--text-meta)] font-medium text-muted">
@@ -1166,20 +1183,9 @@ type TimelineItem =
   | { at: number; clarify: ClarifyRequest; kind: 'clarify' }
   | { at: number; index: number; kind: 'message'; message: TranscriptMessage }
 
-/**
- * A time separator before `message`: between days and after 20 quiet minutes.
- * Restored history carries no times (createdAt 0): no separator for it, and
- * none right after it, so a reload never splits a turn.
- */
-function separatedFrom(previous: TranscriptMessage | undefined, message: TranscriptMessage) {
-  return (
-    message.createdAt > 0 &&
-    (!previous ||
-      (previous.createdAt > 0 &&
-        (dayKey(previous.createdAt) !== dayKey(message.createdAt) ||
-          toMillis(message.createdAt) - toMillis(previous.createdAt) > 20 * 60_000)))
-  )
-}
+/** A time separator before `message`; see `separates`. */
+const separatedFrom = (previous: TranscriptMessage | undefined, message: TranscriptMessage) =>
+  separates(previous && sentAt(previous), sentAt(message))
 
 const bubbleShown = (message: TranscriptMessage) =>
   !message.error &&
@@ -1623,7 +1629,7 @@ function BotConversation() {
   const shown = messages.slice(-visible)
 
   // Messages, question cards and approval cards in the order they happened.
-  // Restored history carries no times and stays first, each question it
+  // Restored history (createdAt 0) stays first, each question it
   // asked right under the message that asked it.
   const timeline = useMemo(() => {
     // The store's message order is authoritative after hydration. Cards with
@@ -2014,7 +2020,7 @@ function BotConversation() {
 
               return (
                 <div key={message.id}>
-                  {separator ? <DaySeparator time={message.createdAt} /> : null}
+                  {separator ? <DaySeparator time={sentAt(message)} /> : null}
                   <MessageRow
                     bot={bot}
                     fresh={toMillis(message.createdAt) > openedAt}

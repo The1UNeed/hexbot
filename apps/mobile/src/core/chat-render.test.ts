@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
-import { cleanup, render } from '@testing-library/react'
+import { cleanup, render, screen } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { ChatScreen } from '../screens/ChatScreen'
 import type { ChatScreenProps } from '../screens/ChatScreen'
 import type { ChatItem } from '../screens/types'
+import { formatDayDivider } from '../ui/format'
 
 // FlatList's native windowing is irrelevant here; exercise every production row.
 vi.mock('react-native', async () => {
@@ -22,8 +23,11 @@ vi.mock('@expo/vector-icons', () => ({ Ionicons: () => null }))
 vi.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ bottom: 0 }) }))
 vi.mock('../ui', async () => {
   const { createElement } = await import('react')
-  const view = ({ children }: { children?: ReactNode }) => createElement('div', null, children)
+  const format = await import('../ui/format')
+  const view = ({ children, testID }: { children?: ReactNode; testID?: string }) =>
+    createElement('div', { 'data-testid': testID }, children)
   return {
+    ...format,
     Text: view, Screen: view, Glass: view, TopBar: () => null,
     BotFace: () => null, RoomFace: () => null, LoadingFace: () => null,
     Button: () => null, IconButton: () => null, Banner: () => null,
@@ -55,4 +59,27 @@ it('renders only the streaming row per delta, and refreshes historical rows when
   renderText.mockClear()
   view.rerender(createElement(ChatScreen, { ...props, face: { name: 'Renamed Owl' }, items: [...history, live] }))
   expect(renderText).toHaveBeenCalledTimes(61)
+})
+
+it('divides the chat between days and after quiet spells, not between quick messages', () => {
+  const start = new Date(2026, 9, 26, 10, 12).getTime()
+  const at = (minutes: number) => start + minutes * 60_000
+  const message = (id: string, role: 'bot' | 'user', minutes: number): ChatItem => ({
+    kind: 'message', id, role, text: id, createdAt: at(minutes)
+  })
+  const items = [
+    message('Spawn a Biology bot', 'user', 0),
+    message('Biology is ready.', 'bot', 2),
+    // A restored step with no words neither divides nor resets the quiet spell.
+    { kind: 'message', id: 'step', role: 'bot', text: '', createdAt: at(30) } as ChatItem,
+    message('One more thing', 'user', 12),
+    message('Your summative is due today.', 'bot', 180),
+    message('Still not started.', 'bot', 24 * 60),
+    { kind: 'message', id: 'live', role: 'bot', text: 'Writing', streaming: true } as ChatItem
+  ]
+  render(createElement(ChatScreen, {
+    title: 'Owl', face: { name: 'Owl' }, items, onSend: vi.fn(), onBack: vi.fn(), onApprove: vi.fn()
+  }))
+  expect([0, 180, 24 * 60].map(minutes => screen.getByText(formatDayDivider(at(minutes))))).toHaveLength(3)
+  for (const minutes of [2, 12, 30]) expect(screen.queryByText(formatDayDivider(at(minutes)))).toBeNull()
 })

@@ -562,7 +562,10 @@ function closeForCard(transcript: Transcript): Transcript {
   }
 
   return {
-    ...replaceMessage(transcript, current.id, message => settle({ ...message, streaming: false })),
+    // Its words are done when the card arrives, so it was sent then.
+    ...replaceMessage(transcript, current.id, message =>
+      settle({ ...message, sentAt: Date.now(), streaming: false })
+    ),
     streamingMessageId: null,
     turnPrefix: (transcript.turnPrefix ?? '') + [...(current.parts ?? []), current.text].join('')
   }
@@ -1115,6 +1118,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           activity: undefined,
           checking: undefined,
           error: payload.error ?? message.error,
+          sentAt: Date.now(),
           status: payload.status,
           streaming: false,
           toolCalls: message.toolCalls.map(call =>

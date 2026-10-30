@@ -19,6 +19,7 @@ import {
   type BotStatus,
   bubbleFill,
   Button,
+  dividesChat,
   type FaceMood,
   type FaceSource,
   formatDayDivider,
@@ -240,20 +241,35 @@ function ChatBody(props: ChatScreenProps) {
 
   // Inverted list: newest first, so the view starts at the bottom and stays there.
   const entries = useMemo<ListEntry[]>(() => {
-    const list = items
-      .map((entry, index) => {
-        const previous = items[index - 1]
-        return {
-          id: entry.id,
-          entry,
-          continued:
-            entry.kind === 'message' &&
-            previous?.kind === 'message' &&
-            previous.role === entry.role &&
-            previous.author?.name === entry.author?.name
-        }
+    const list: ListEntry[] = []
+    // The last message with something to show; a step with no words or files draws nothing.
+    let said: MessageItem | undefined
+    for (const [index, entry] of items.entries()) {
+      const previous = items[index - 1]
+      const shown =
+        entry.kind === 'message' && Boolean(entry.text || entry.attachments?.length || entry.error)
+      // Between days and after a quiet spell, a divider says when.
+      const at = shown ? (entry.createdAt ?? 0) : 0
+      const divided = dividesChat(said ? (said.createdAt ?? 0) : undefined, at)
+      if (divided)
+        list.push({
+          id: `day-${entry.id}`,
+          entry: { kind: 'day', id: `day-${entry.id}`, at },
+          continued: false
+        })
+      if (shown) said = entry
+      list.push({
+        id: entry.id,
+        entry,
+        continued:
+          !divided &&
+          entry.kind === 'message' &&
+          previous?.kind === 'message' &&
+          previous.role === entry.role &&
+          previous.author?.name === entry.author?.name
       })
-      .reverse()
+    }
+    list.reverse()
 
     return waiting ? [{ id: 'waiting', entry: waitingEntry, continued: false }, ...list] : list
   }, [items, !!waiting])

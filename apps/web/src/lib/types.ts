@@ -479,6 +479,12 @@ export interface Message {
    */
   parts?: string[]
   role: MessageRole
+  /**
+   * When it was sent, for showing the time: a bot's reply when it finished,
+   * from its last history row or its live completion. `createdAt` stays 0 on
+   * restored messages, which marks them as history.
+   */
+  sentAt?: number
   /** Set once `message.complete` arrives with a non-ok status. */
   status?: string
   streaming: boolean

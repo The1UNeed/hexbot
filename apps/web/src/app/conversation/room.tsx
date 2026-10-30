@@ -37,6 +37,7 @@ import {
   DaySeparator,
   LoadEarlierMessages,
   Markdown,
+  separates,
   transcriptClass,
   userBubbleClass
 } from './index'
@@ -467,8 +468,10 @@ export function RoomConversation() {
           {shown.map((event, index) => {
             const previous = shown[index - 1]
 
-            const separator =
-              !previous || toMillis(event.created_at) - toMillis(previous.created_at) > 20 * 60_000
+            const separator = separates(
+              previous && toMillis(previous.created_at),
+              toMillis(event.created_at)
+            )
 
             return (
               <div key={event.seq}>

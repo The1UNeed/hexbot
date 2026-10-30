@@ -162,7 +162,8 @@ the roster slides in as a drawer.
   hover. The same holds for history from before this change. Markdown body with code blocks (a fenced block
   is a block even without a language; its copy button shows on hover),
   tables, images. Time separators ("Today 9:13 PM") between days and after
-  20 quiet minutes.
+  20 quiet minutes, after a reload too; a bot's reply counts from when it
+  finished. Rooms and the mobile app separate the same way.
 - Live status: from the moment a turn starts until the whole turn is done,
   a line sits at its foot, under the messages the bot has finished: the
   bot's face, in the mood of its work, and "General is working" in muted

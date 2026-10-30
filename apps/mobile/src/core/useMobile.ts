@@ -679,7 +679,7 @@ export function useMobile() {
       error: null,
       messages:
         target.kind === 'section'
-          ? [...c.messages, { id: messageId, role: 'user', text, inputId }]
+          ? [...c.messages, { id: messageId, role: 'user', text, inputId, createdAt: Date.now() }]
           : c.messages
     }))
     try {
