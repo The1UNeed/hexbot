@@ -22,7 +22,7 @@ const items: Item[] = [
   })),
   ...notices.entries.map(entry => ({
     key: `${entry.packages[0]!.name}@${entry.packages[0]!.version}`,
-    title: entry.packages.map(item => `${item.name} ${item.version}`).join(', '),
+    title: entry.packages.map(item => [item.name, item.version].filter(Boolean).join(' ')).join(', '),
     subtitle: [...new Set(entry.packages.map(item => item.license || 'See text'))].join(', '),
     text: entry.text
   }))

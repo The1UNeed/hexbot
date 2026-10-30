@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { cargoPackages, installedPackages, noticeEntries, renderNotices, toolNotice } from './third-party-notices.mjs'
+import { cargoPackages, installedPackages, noticeEntries, reactNativeNotices, renderNotices, toolPackages } from './third-party-notices.mjs'
 
 const apache = readFile(new URL('../../LICENSE', import.meta.url), 'utf8')
 
@@ -95,12 +95,44 @@ test('crates come from every target, without build scripts, proc macros or Hexbo
   assert.equal(crates[0].source, `https://crates.io/crates/${crates[0].name}/1.0.0`)
 })
 
-test('the runtime tools have license files for their pinned versions', async () => {
-  const tools = JSON.parse(await readFile(new URL('../../backend/hexbot-core/assets/code-tools.json', import.meta.url), 'utf8'))
-  for (const tool of ['rg', 'fd']) {
-    const notice = await toolNotice(tool, tools[tool].version, 'MIT', 'source')
-    assert.match(notice.text, /Permission is hereby granted/)
+test('a program the runtime carries lists its own crate and builds with its release features', async t => {
+  const { root } = await fixture(t)
+  const calls = []
+  t.mock.method(globalThis, 'fetch', async url => { calls.push(url); return new Response('crate') })
+  const run = async (command, args) => {
+    calls.push([command, ...args])
+    if (command === 'tar') {
+      await mkdir(join(root, 'tool-1.0.0/vendor/clib'), { recursive: true })
+      await writeFile(join(root, 'tool-1.0.0/LICENSE-MIT'), 'tool license')
+      return { stdout: '' }
+    }
+    const manifest = join(root, 'tool-1.0.0/Cargo.toml')
+    return { stdout: JSON.stringify({
+      workspace_members: ['tool'],
+      packages: [{ id: 'tool', name: 'tool', version: '1.0.0', license: 'MIT', authors: [], source: null, manifest_path: manifest, targets: [{ kind: ['bin'] }] }],
+      resolve: { nodes: [{ id: 'tool', deps: [] }] }
+    }) }
   }
-  const kept = await readdir(new URL('./licenses', import.meta.url))
-  assert.deepEqual(kept.filter(name => name !== 'spdx').sort(), [`fd-${tools.fd.version}`, `rg-${tools.rg.version}`])
+  const crates = await toolPackages('tool', '1.0.0', root, { features: ['pcre2'], targets: ['x86_64-unknown-linux-gnu'], run })
+  assert.equal(calls[0], 'https://static.crates.io/crates/tool/tool-1.0.0.crate')
+  assert.deepEqual(calls.at(-1).slice(-2), ['--features', 'pcre2'])
+  assert.deepEqual(crates.map(item => [item.name, item.source]), [['tool', 'https://crates.io/crates/tool/1.0.0']])
+  const { entries } = await noticeEntries(crates)
+  assert.equal(entries[0].text, 'tool license')
+})
+
+test('a -sys crate also ships the license of the C library it builds', async t => {
+  const { root } = await fixture(t)
+  await mkdir(join(root, 'zstd-sys/zstd'), { recursive: true })
+  await writeFile(join(root, 'zstd-sys/LICENSE'), 'binding license')
+  await writeFile(join(root, 'zstd-sys/zstd/LICENSE'), 'library license')
+  const { entries } = await noticeEntries([{ name: 'zstd-sys', version: '1.0.0', license: 'MIT', authors: [], source: 's', directory: join(root, 'zstd-sys'), files: [], nested: true }])
+  assert.equal(entries[0].text, 'binding license\n\nlibrary license')
+})
+
+test('the installed React Native has notices for its native libraries', async () => {
+  const libraries = await reactNativeNotices()
+  assert.ok(libraries.length > 10)
+  for (const library of libraries) assert.match(library.text, /\S/, library.name)
+  assert.ok(libraries.some(library => library.name === 'folly'))
 })

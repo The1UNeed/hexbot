@@ -9,10 +9,13 @@
 //   node scripts/desktop/third-party-notices.mjs mobile [--check]
 //
 // The daemon runtime's notices are written by native-runtime.mjs, the web
-// bundle's by apps/web/vite.config.ts, and the Electron app's by its build. The mobile app's are committed, since
-// EAS builds it from the repository; `--check` fails when they are stale.
+// bundle's by apps/web/vite.config.ts, and the Electron app's by its build.
+// The mobile app's are committed, since EAS builds it from the repository;
+// `--check` fails when they are stale.
 import { execFile } from 'node:child_process'
-import { readdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
@@ -28,11 +31,18 @@ const LICENSE_FILE = /^(?:licen[cs]e|copying|notice|unlicense|copyright)(?:[-._]
 /** Standard texts kept in scripts/desktop/licenses/spdx, for packages that ship no license file. */
 const STANDARD = ['MIT', 'Apache-2.0', 'ISC', 'BSD-3-Clause', 'MPL-2.0']
 
-/** Registry crates a manifest's binaries link on any of `targets`; build scripts and proc macros never ship. */
-export async function cargoPackages(manifest, { targets = RUST_TARGETS, run = execute } = {}) {
+/**
+ * Registry crates a manifest's binaries link on any of `targets`; build
+ * scripts and proc macros never ship. `members` adds the manifest's own
+ * crates, for a third-party program.
+ */
+export async function cargoPackages(manifest, { targets = RUST_TARGETS, features = [], members = false, run = execute } = {}) {
   const found = new Map()
   for (const target of targets) {
-    const { stdout } = await run('cargo', ['metadata', '--locked', '--format-version', '1', '--filter-platform', target, '--manifest-path', manifest], { maxBuffer })
+    const { stdout } = await run('cargo', [
+      'metadata', '--locked', '--format-version', '1', '--filter-platform', target, '--manifest-path', manifest,
+      ...(features.length ? ['--features', features.join(',')] : [])
+    ], { maxBuffer })
     const metadata = JSON.parse(stdout)
     const nodes = new Map(metadata.resolve.nodes.map(node => [node.id, node]))
     const packages = new Map(metadata.packages.map(item => [item.id, item]))
@@ -48,15 +58,17 @@ export async function cargoPackages(manifest, { targets = RUST_TARGETS, run = ex
     }
     for (const id of linked) {
       const item = packages.get(id)
-      if (!item.source) continue // Hexbot's own crates
+      if (!item.source && !members) continue // Hexbot's own crates
       found.set(`${item.name}@${item.version}`, {
         name: item.name,
         version: item.version,
         license: item.license ?? '',
         authors: item.authors,
-        source: item.source.startsWith('registry+') ? `https://crates.io/crates/${item.name}/${item.version}` : item.repository ?? item.source,
+        source: !item.source || item.source.startsWith('registry+') ? `https://crates.io/crates/${item.name}/${item.version}` : item.repository ?? item.source,
         directory: dirname(item.manifest_path),
-        files: item.license_file ? [item.license_file] : []
+        files: item.license_file ? [item.license_file] : [],
+        // A -sys crate may build a C library whose license sits in that library's folder.
+        nested: item.name.endsWith('-sys')
       })
     }
   }
@@ -86,7 +98,13 @@ async function npmPackage(directory) {
  * of a script bundle, and differ between the machines that list them.
  */
 export async function pnpmPackages(app, { repository = root, run = execute } = {}) {
-  const { stdout } = await run('pnpm', ['--filter', `./${app}`, 'licenses', 'list', '--prod', '--json'], { cwd: repository, maxBuffer })
+  const args = ['--filter', `./${app}`, 'licenses', 'list', '--prod', '--json']
+  // Under a pnpm script, run pnpm's own script with Node: Windows cannot
+  // start its .cmd shim without a shell.
+  const pnpm = process.env.npm_execpath?.includes('pnpm')
+    ? run(process.execPath, [process.env.npm_execpath, ...args], { cwd: repository, maxBuffer })
+    : run('pnpm', args, { cwd: repository, maxBuffer, shell: process.platform === 'win32' })
+  const { stdout } = await pnpm
   const found = new Map()
   for (const entries of Object.values(JSON.parse(stdout)))
     for (const entry of entries)
@@ -117,6 +135,11 @@ export async function installedPackages(nodeModules) {
 
 async function shippedFiles(item, shared) {
   const names = (await readdir(item.directory)).filter(name => LICENSE_FILE.test(name))
+  if (item.nested)
+    for (const entry of await readdir(item.directory, { withFileTypes: true }))
+      if (entry.isDirectory())
+        for (const name of await readdir(join(item.directory, entry.name)))
+          if (LICENSE_FILE.test(name)) names.push(`${entry.name}/${name}`)
   const texts = []
   for (const name of [...new Set([...names, ...item.files])].sort()) {
     const path = join(item.directory, name)
@@ -202,7 +225,7 @@ export function renderNotices(title, { licenses, entries }) {
   const standards = licenses.map(license => [RULE, license.id, '-'.repeat(80), license.text].join('\n'))
   const body = entries.map(entry => [
     RULE,
-    ...entry.packages.map(item => `${item.name} ${item.version} (${item.license || 'see below'}) ${item.source}`),
+    ...entry.packages.map(item => `${[item.name, item.version].filter(Boolean).join(' ')} (${item.license || 'see below'}) ${item.source}`),
     '-'.repeat(80),
     entry.text
   ].join('\n'))
@@ -218,14 +241,36 @@ function wrap(text, width = 80) {
   return lines.join('\n')
 }
 
-/** A program the daemon runtime carries, with the license files kept for its pinned version. */
-export async function toolNotice(name, version, license, source) {
-  const directory = join(licenses, `${name}-${version}`)
-  const files = (await readdir(directory).catch(() => {
-    throw new Error(`No license files for ${name} ${version}; add them to ${relative(root, directory)}`)
-  })).sort()
-  const texts = await Promise.all(files.map(file => readFile(join(directory, file), 'utf8')))
-  return { name, version, license, source, text: texts.map(normalize).join('\n\n') }
+/**
+ * A Rust program the daemon runtime carries, with every crate its release
+ * build links, read from the crate it was published as. Unpacks into
+ * `directory`, which must outlive noticeEntries.
+ */
+export async function toolPackages(crate, version, directory, { features = [], targets = RUST_TARGETS, run = execute } = {}) {
+  const response = await fetch(`https://static.crates.io/crates/${crate}/${crate}-${version}.crate`, { signal: AbortSignal.timeout(120_000) })
+  if (!response.ok) throw new Error(`Cannot download the ${crate} ${version} crate: ${response.status}`)
+  const archive = join(directory, `${crate}-${version}.crate`)
+  await writeFile(archive, Buffer.from(await response.arrayBuffer()))
+  await run('tar', ['-xzf', archive, '-C', directory])
+  return cargoPackages(join(directory, `${crate}-${version}`, 'Cargo.toml'), { targets, features, members: true, run })
+}
+
+/** Every Rust binary links the standard library of the toolchain that built it. */
+async function rustStandardLibrary(repository = root) {
+  const channel = (await readFile(join(repository, 'rust-toolchain.toml'), 'utf8')).match(/channel\s*=\s*"([^"]+)"/)?.[1] ?? ''
+  const texts = await Promise.all(['LICENSE-APACHE', 'LICENSE-MIT'].map(file => readFile(join(licenses, 'rust', file), 'utf8')))
+  return { name: 'Rust standard library', version: channel, license: 'MIT OR Apache-2.0', source: `https://github.com/rust-lang/rust/tree/${channel}`, text: texts.join('\n\n') }
+}
+
+const toolTargets = tool => [...new Set(Object.values(tool.targets).map(([target]) => target))]
+
+/** C libraries the search tools' binaries link that their crates carry no licence for, kept per tool version. */
+async function searchToolLibraries(tools) {
+  const directory = join(licenses, 'search-tools')
+  const kept = JSON.parse(await readFile(join(directory, 'native.json'), 'utf8'))
+  if (kept.rg !== tools.rg.version || kept.fd !== tools.fd.version)
+    throw new Error(`${relative(root, directory)} is for rg ${kept.rg} and fd ${kept.fd}; check the C libraries rg ${tools.rg.version} and fd ${tools.fd.version} link and update it`)
+  return Promise.all(kept.libraries.map(async library => ({ ...library, text: await readFile(join(directory, library.file), 'utf8') })))
 }
 
 /**
@@ -234,16 +279,21 @@ export async function toolNotice(name, version, license, source) {
  */
 export async function runtimeNotices({ repository = root, nodeModules, targets = RUST_TARGETS, node }) {
   const tools = JSON.parse(await readFile(join(repository, 'backend/hexbot-core/assets/code-tools.json'), 'utf8'))
-  const extras = [
-    { name: 'Node.js', version: node.version, license: 'MIT', source: `https://github.com/nodejs/node/tree/v${node.version}`, text: node.license },
-    await toolNotice('rg', tools.rg.version, 'MIT OR Unlicense', `https://github.com/BurntSushi/ripgrep/tree/${tools.rg.version}`),
-    await toolNotice('fd', tools.fd.version, 'MIT OR Apache-2.0', `https://github.com/sharkdp/fd/tree/v${tools.fd.version}`)
-  ]
-  const packages = [
-    ...await cargoPackages(join(repository, 'backend/hexbot-core/Cargo.toml'), { targets }),
-    ...await installedPackages(nodeModules)
-  ]
-  return renderNotices('The Hexbot daemon runtime', await noticeEntries(packages, extras))
+  const crates = await mkdtemp(join(tmpdir(), 'hexbot-tool-crates-'))
+  try {
+    const packages = [
+      ...await cargoPackages(join(repository, 'backend/hexbot-core/Cargo.toml'), { targets }),
+      ...await installedPackages(nodeModules),
+      // The release binaries for their own targets (musl on Linux): ripgrep is
+      // built with PCRE2, fd with its default features.
+      ...await toolPackages('ripgrep', tools.rg.version, crates, { features: ['pcre2'], targets: toolTargets(tools.rg) }),
+      ...await toolPackages('fd-find', tools.fd.version, crates, { targets: toolTargets(tools.fd) })
+    ]
+    const nodeNotice = { name: 'Node.js', version: node.version, license: 'MIT', source: `https://github.com/nodejs/node/tree/v${node.version}`, text: node.license }
+    return renderNotices('The Hexbot daemon runtime', await noticeEntries(packages, [nodeNotice, await rustStandardLibrary(repository), ...await searchToolLibraries(tools)]))
+  } finally {
+    await rm(crates, { recursive: true, force: true })
+  }
 }
 
 /** The Electron app: its main process packages and the web app it shows. */
@@ -257,7 +307,8 @@ export async function webNotices({ repository = root } = {}) {
 }
 
 export async function installerNotices({ repository = root } = {}) {
-  return renderNotices('hexbot-install', await noticeEntries(await cargoPackages(join(repository, 'backend/hexbot-installer/Cargo.toml'))))
+  const crates = await cargoPackages(join(repository, 'backend/hexbot-installer/Cargo.toml'))
+  return renderNotices('hexbot-install', await noticeEntries(crates, [await rustStandardLibrary(repository)]))
 }
 
 export async function installerAppNotices({ repository = root } = {}) {
@@ -265,11 +316,26 @@ export async function installerAppNotices({ repository = root } = {}) {
     ...await cargoPackages(join(repository, 'apps/installer/src-tauri/Cargo.toml')),
     ...await pnpmPackages('apps/installer', { repository })
   ]
-  return renderNotices('Hexbot Installer', await noticeEntries(packages))
+  return renderNotices('Hexbot Installer', await noticeEntries(packages, [await rustStandardLibrary(repository)]))
+}
+
+/**
+ * React Native's own native libraries, linked into the iOS and Android apps
+ * through CocoaPods and Gradle, kept for the installed version.
+ */
+export async function reactNativeNotices({ repository = root } = {}) {
+  const resolve = createRequire(join(repository, 'apps/mobile/package.json')).resolve
+  const { version } = JSON.parse(await readFile(resolve('react-native/package.json'), 'utf8'))
+  const directory = join(licenses, `react-native-${version}`)
+  const libraries = JSON.parse(await readFile(join(directory, 'native.json'), 'utf8').catch(() => {
+    throw new Error(`No notices for React Native ${version}'s native libraries; add them to ${relative(root, directory)}`)
+  }))
+  return Promise.all(libraries.map(async library => ({ ...library, text: await readFile(join(directory, library.file), 'utf8') })))
 }
 
 export async function mobileNotices({ repository = root } = {}) {
-  return `${JSON.stringify(await noticeEntries(await pnpmPackages('apps/mobile', { repository })), null, 1)}\n`
+  const notices = await noticeEntries(await pnpmPackages('apps/mobile', { repository }), await reactNativeNotices({ repository }))
+  return `${JSON.stringify(notices, null, 1)}\n`
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
