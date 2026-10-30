@@ -1762,20 +1762,32 @@ export function Management({
                     title="Show password"
                     testID="action-show-password"
                     disabled={busy || mobile.connection !== 'connected'}
-                    onPress={() =>
+                    onPress={() => {
                       // Not through `run`: reloading the card would hide it again.
-                      void rpc<{ password: string; code: { code: string } | null }>(
-                        'hexbot.passwords.reveal',
-                        { id: login.id }
-                      )
-                        .then(shown =>
+                      // Only this card takes the answer, and a one-time code
+                      // goes when it expires.
+                      const current = epoch.current
+                      void rpc<{
+                        password: string
+                        code: { code: string; valid_for: number } | null
+                      }>('hexbot.passwords.reveal', { id: login.id })
+                        .then(shown => {
+                          if (current !== epoch.current) return
                           setExtra(previous => ({
                             ...previous,
                             revealed: { password: shown.password, code: shown.code?.code ?? null }
                           }))
-                        )
-                        .catch(e => setError(e instanceof Error ? e.message : String(e)))
-                    }
+                          if (shown.code)
+                            setTimeout(() => {
+                              if (current === epoch.current)
+                                setExtra(previous => ({ ...previous, revealed: undefined }))
+                            }, shown.code.valid_for * 1000)
+                        })
+                        .catch(e => {
+                          if (current === epoch.current)
+                            setError(e instanceof Error ? e.message : String(e))
+                        })
+                    }}
                   />
                 )}
                 {login.has_code

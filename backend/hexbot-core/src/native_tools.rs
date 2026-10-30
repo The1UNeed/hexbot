@@ -2760,6 +2760,16 @@ pub async fn browser_fill(
             json!(["fill", reference, secret])
         })
         .collect::<Vec<_>>();
+    // Registered first: a batch that fails part way may still have typed some.
+    {
+        let mut filled = filled().lock().await;
+        let secrets = filled.entry(key).or_default();
+        for secret in hidden {
+            if !secrets.contains(secret) {
+                secrets.push(secret.clone());
+            }
+        }
+    }
     let result = run(
         agent_command(browser, "batch", &["--bail".into()]),
         json!(commands).to_string().as_bytes(),
@@ -2772,15 +2782,6 @@ pub async fn browser_fill(
         .as_array()
         .map(|steps| steps.len() < fills.len() || steps.iter().any(|s| s["success"] != true))
         .unwrap_or(true);
-    {
-        let mut filled = filled().lock().await;
-        let secrets = filled.entry(key).or_default();
-        for secret in hidden {
-            if !secrets.contains(secret) {
-                secrets.push(secret.clone());
-            }
-        }
-    }
     if failed || result["success"] != true {
         // The step's error names the field, never what was typed.
         let reason = steps

@@ -219,6 +219,18 @@ function LoginDetails({
   const setBots = usePasswords(state => state.setBots)
   const remove = usePasswords(state => state.remove)
   const [secret, setSecret] = useState<null | { code: null | string; password: string }>(null)
+  const [codeFor, setCodeFor] = useState(0)
+
+  // A shown one-time code goes when it expires; Show reads a fresh one.
+  useEffect(() => {
+    if (!codeFor) {
+      return
+    }
+
+    const timer = window.setTimeout(() => setSecret(null), codeFor * 1000)
+
+    return () => window.clearTimeout(timer)
+  }, [codeFor, secret])
   const [error, setError] = useState<null | string>(null)
   const [copied, setCopied] = useState<null | string>(null)
 
@@ -239,6 +251,7 @@ function LoginDetails({
     try {
       const shown = await passwordsReveal(login.id)
       setSecret({ code: shown.code?.code ?? null, password: shown.password })
+      setCodeFor(shown.code?.valid_for ?? 0)
     } catch (cause) {
       setError(errorText(cause))
     }
