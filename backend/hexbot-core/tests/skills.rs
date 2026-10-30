@@ -413,7 +413,12 @@ async fn share_clashes_delete_reverts_and_supporting_files_survive() {
 fn new_bots_use_library_without_copies_or_frozen_global_disables() {
     let home = setup();
     let h = home.path();
-    let bundled = skills::resolve(h, None).unwrap().remove(0);
+    // A skill waiting for a program or key reads as off whatever its grants say.
+    let bundled = skills::resolve(h, None)
+        .unwrap()
+        .into_iter()
+        .find(|s| s.ready)
+        .unwrap();
     skills::set_enabled(h, None, &bundled.name, false).unwrap();
     catalog::call(
         h,

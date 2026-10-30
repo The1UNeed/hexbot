@@ -3,6 +3,10 @@ use hexbot_installer::{
 };
 use std::io::{self, IsTerminal, Write};
 
+// Hexbot's own license and notices, for a download that is only this binary.
+const LICENSE: &[u8] = include_bytes!("../../../LICENSE");
+const NOTICE: &[u8] = include_bytes!("../../../NOTICE");
+
 #[derive(Default)]
 struct Args {
     option: Option<InstallOption>,
@@ -43,13 +47,27 @@ fn parse_args() -> Result<Args> {
             "--remove-data" => args.remove_data = true,
             "--yes" => args.yes = true,
             "--json" => args.json = true,
+            "--license" => {
+                let mut stdout = io::stdout().lock();
+                let written = stdout
+                    .write_all(LICENSE)
+                    .and_then(|()| stdout.write_all(NOTICE))
+                    .and_then(|()| stdout.flush());
+                // A reader such as `head` may close the pipe early.
+                match written {
+                    Err(error) if error.kind() != io::ErrorKind::BrokenPipe => {
+                        return Err(error.into());
+                    }
+                    _ => std::process::exit(0),
+                }
+            }
             "--version" => {
                 println!("{}", hexbot_installer::version());
                 std::process::exit(0);
             }
             "--help" | "-h" => {
                 println!(
-                    "Hexbot installer\n\nhexbot-install [--headless|--client|--full] [--stable|--nightly]\nhexbot-install --repair\nhexbot-install --uninstall [--remove-data]\n\n--yes   Accept changes and uninstall without prompting\n--json  Write machine-readable progress\n\nHEXBOT_UPDATE_URL overrides the update server. HEXBOT_TRACK sets the default track."
+                    "Hexbot installer\n\nhexbot-install [--headless|--client|--full] [--stable|--nightly]\nhexbot-install --repair\nhexbot-install --uninstall [--remove-data]\n\n--yes      Accept changes and uninstall without prompting\n--json     Write machine-readable progress\n--license  Print Hexbot's LICENSE and NOTICE\n\nHEXBOT_UPDATE_URL overrides the update server. HEXBOT_TRACK sets the default track."
                 );
                 std::process::exit(0);
             }

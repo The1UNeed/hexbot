@@ -35,6 +35,7 @@ import { cn } from '../../lib/cn'
 import { connectStatusMessage } from '../../lib/connect-status'
 import { connectBaseUrl } from '../../lib/connect-url'
 import { pairWithDaemon, targetOrigin } from '../../lib/connection'
+import { primeSounds } from '../../lib/sounds'
 import type { DaemonInfo, ModelOption, PairingCode, Provider } from '../../lib/types'
 import { daemonBehind } from '../../lib/version-skew'
 import { useBots } from '../../stores/bots'
@@ -52,10 +53,15 @@ import { MemoryEditor } from '../bot-settings/memory'
 import { ChoiceRow, dividerClass, Group, Heading, Row } from '../bot-settings/shared'
 import { ConfirmUpdate, installTarget } from '../confirm-update'
 
+import { DiagnosticsSettings } from './diagnostics'
 import { OPEN_SOURCE } from './licenses'
+import { PasswordsSettings } from './passwords'
+import { PluginsSettings } from './plugins'
 
 export const SETTINGS_TABS = [
   'providers',
+  'plugins',
+  'passwords',
   'network',
   'connect',
   'memory',
@@ -63,7 +69,8 @@ export const SETTINGS_TABS = [
   'approvals',
   'appearance',
   'updates',
-  'about'
+  'about',
+  'diagnostics'
 ] as const
 
 export type SettingsTab = (typeof SETTINGS_TABS)[number]
@@ -104,8 +111,14 @@ function ErrorLine({ children }: { children: React.ReactNode }) {
 /** Complete settings body; the file route owns the surrounding window and navigation. */
 export function SettingsPanel({ tab }: { tab: string }): React.JSX.Element {
   return (
-    <section aria-label={`${tab} settings`} className={settingsPageClass}>
+    <section
+      aria-label={`${tab} settings`}
+      // Diagnostics holds tables and charts; it takes the column's full measure.
+      className={cn(settingsPageClass, tab === 'diagnostics' && 'max-w-[820px]')}
+    >
       {tab === 'providers' && <ProvidersSettings />}
+      {tab === 'plugins' && <PluginsSettings />}
+      {tab === 'passwords' && <PasswordsSettings />}
       {tab === 'network' && <NetworkSettings />}
       {tab === 'connect' && <ConnectSettings />}
       {tab === 'memory' && <MemorySettings />}
@@ -114,6 +127,7 @@ export function SettingsPanel({ tab }: { tab: string }): React.JSX.Element {
       {tab === 'appearance' && <AppearanceSettings />}
       {tab === 'updates' && <UpdatesSettings />}
       {tab === 'about' && <AboutSettings />}
+      {tab === 'diagnostics' && <DiagnosticsSettings />}
     </section>
   )
 }
@@ -509,6 +523,10 @@ export function UsageSettings() {
   )
 }
 
+type ProviderRowState = { busy: boolean; draft: string; open: boolean; result: null | string }
+
+const idleRow: ProviderRowState = { busy: false, draft: '', open: false, result: null }
+
 export function ProvidersSettings(): React.JSX.Element {
   const providers = useSettings(state => state.providers)
   const refresh = useSettings(state => state.refreshProviders)
@@ -525,33 +543,37 @@ export function ProvidersSettings(): React.JSX.Element {
     provider => !needle || `${provider.label} ${provider.id}`.toLowerCase().includes(needle)
   )
 
-  // The groups are fixed when the page opens: a row that gets its first key
-  // stays where it is, so its open editor and test result are not remounted.
-  const [connectedIds, setConnectedIds] = useState<null | Set<string>>(null)
-  useEffect(() => {
-    if (!connectedIds && providers.length) {
-      setConnectedIds(
-        new Set(providers.filter(item => item.configured === true).map(item => item.id))
-      )
-    }
-  }, [connectedIds, providers])
+  // A row moves to Connected as soon as it connects. Its open editor, typed key,
+  // pending request and last result live here, so they survive the move.
+  const [rows, setRows] = useState<Record<string, ProviderRowState>>({})
 
-  const isConnected = (provider: Provider) =>
-    connectedIds ? connectedIds.has(provider.id) : provider.configured === true
+  const rowState = (id: string) => rows[id] ?? idleRow
 
-  const connected = visible.filter(isConnected)
-  const rest = visible.filter(provider => !isConnected(provider))
+  const updateRow = (id: string, patch: Partial<ProviderRowState>) =>
+    setRows(current => ({ ...current, [id]: { ...(current[id] ?? idleRow), ...patch } }))
+
+  const connected = visible.filter(provider => provider.configured === true)
+  const rest = visible.filter(provider => provider.configured !== true)
 
   const row = (provider: Provider) =>
     isSubscription(provider) ? (
       <SubscriptionRow
         clearKey={clearKey}
         key={provider.id}
+        open={rowState(provider.id).open}
         provider={provider}
         refresh={refresh}
+        setOpen={open => updateRow(provider.id, { open })}
       />
     ) : (
-      <ProviderRow clearKey={clearKey} key={provider.id} provider={provider} setKey={setKey} />
+      <ProviderRow
+        clearKey={clearKey}
+        key={provider.id}
+        provider={provider}
+        setKey={setKey}
+        state={rowState(provider.id)}
+        update={patch => updateRow(provider.id, patch)}
+      />
     )
 
   return (
@@ -637,15 +659,17 @@ function ExpandableRow({
 
 function SubscriptionRow({
   clearKey,
+  open,
   provider,
-  refresh
+  refresh,
+  setOpen
 }: {
   clearKey: (provider: string) => Promise<void>
+  open: boolean
   provider: Provider
   refresh: () => Promise<void>
+  setOpen: (open: boolean) => void
 }) {
-  const [open, setOpen] = useState(false)
-
   return (
     <ExpandableRow
       control={
@@ -661,7 +685,7 @@ function SubscriptionRow({
         provider.configured ? 'Subscription' : 'Subscription, sign in through your browser'
       }
       expanded={open}
-      onToggle={() => setOpen(value => !value)}
+      onToggle={() => setOpen(!open)}
       title={provider.label}
     >
       {provider.configured ? (
@@ -750,16 +774,21 @@ function DefaultModels() {
 function ProviderRow({
   clearKey,
   provider,
-  setKey
+  setKey,
+  state,
+  update
 }: {
   clearKey: (provider: string) => Promise<void>
   provider: Provider
   setKey: (provider: string, key: string) => Promise<void>
+  state: ProviderRowState
+  update: (patch: Partial<ProviderRowState>) => void
 }) {
-  const [open, setOpen] = useState(false)
-  const [key, setDraft] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [result, setResult] = useState<string | null>(null)
+  const { busy, draft: key, open, result } = state
+  const setDraft = (value: string) => update({ draft: value })
+  const setBusy = (value: boolean) => update({ busy: value })
+  const setOpen = (value: boolean) => update({ open: value })
+  const setResult = (value: null | string) => update({ result: value })
 
   const save = async () => {
     setBusy(true)
@@ -800,7 +829,7 @@ function ProviderRow({
       <ExpandableRow
         description="Configured on the daemon"
         expanded={open}
-        onToggle={() => setOpen(value => !value)}
+        onToggle={() => setOpen(!open)}
         title={provider.label}
       >
         <ProviderPanel onConfigured={() => Promise.resolve()} provider={provider} />
@@ -821,7 +850,7 @@ function ProviderRow({
       }
       description={provider.configured ? 'API key saved' : 'Needs an API key'}
       expanded={open}
-      onToggle={() => setOpen(value => !value)}
+      onToggle={() => setOpen(!open)}
       title={provider.label}
     >
       <form
@@ -1183,9 +1212,9 @@ export function ApprovalsSettings(): React.JSX.Element {
       ) : null}
       {info?.approvals === 'sandbox' && info.sandbox === null ? (
         <Notice role="status">
-          No OS sandbox is available, so Manual and Auto ask before every shell command and code
-          run. Install bubblewrap on the computer running the daemon, then restart the daemon to
-          restore isolation.
+          {info.platform === 'windows'
+            ? 'The Windows sandbox is unavailable, so Auto and Manual refuse local commands, code runs, and file tools, including approved full access, and scheduled scripts do not run. Bypass has no sandbox or credential protection.'
+            : 'No OS sandbox is available, so Manual and Auto ask before every shell command and code run. Install bubblewrap on the computer running the daemon, then restart the daemon to restore isolation.'}
         </Notice>
       ) : null}
       <Group title="Mode">
@@ -1208,10 +1237,12 @@ export function ApprovalsSettings(): React.JSX.Element {
 export function AppearanceSettings(): React.JSX.Element {
   const theme = useUi(state => state.theme)
   const setTheme = useUi(state => state.setTheme)
+  const sounds = useUi(state => state.sounds)
+  const setSounds = useUi(state => state.setSounds)
 
   return (
     <>
-      <Heading description="How this window looks.">Appearance</Heading>
+      <Heading description="How this window looks and sounds.">Appearance</Heading>
       <Group>
         <Row
           control={
@@ -1241,6 +1272,23 @@ export function AppearanceSettings(): React.JSX.Element {
           }
           description="System follows the computer's setting."
           title="Theme"
+        />
+        <Row
+          control={
+            <Switch
+              aria-label="Sounds"
+              checked={sounds}
+              onCheckedChange={on => {
+                setSounds(on)
+
+                if (on) {
+                  primeSounds()
+                }
+              }}
+            />
+          }
+          description="A soft tone when a bot starts, finishes, or needs you."
+          title="Sounds"
         />
       </Group>
     </>
@@ -1529,7 +1577,7 @@ export function AboutSettings(): React.JSX.Element {
             />
           ) : null}
           <Row control={value(info?.hermes_version ?? '—')} title="Agent core" />
-          <Row control={value('AGPL-3.0')} title="License" />
+          <Row control={value('Apache-2.0')} title="License" />
         </Group>
         <div className="flex gap-2">
           <Button
@@ -1565,7 +1613,7 @@ function Licenses({ onBack }: { onBack: () => void }) {
       >
         About
       </Button>
-      <Heading description="Hexbot is AGPL-3.0 software built with these open source projects. Each project's license is in its repository.">
+      <Heading description="Hexbot is Apache-2.0 software built with these open source projects. Each project's license is in its repository.">
         Licenses
       </Heading>
       <div className="space-y-8">

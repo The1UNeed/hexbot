@@ -1,8 +1,6 @@
 import { JsonRpcGatewayError } from '@hermes/shared'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { memoryMarks } from '../app/conversation/steps'
-
 import { attachFile, botsCreate, botsUpdate, messagesFromHistory } from './api'
 import { rpcCall } from './rpc'
 
@@ -47,8 +45,25 @@ describe('history projection', () => {
 
     expect(message).toMatchObject({ parts: ['I will check.'], text: 'Done.' })
     expect(message?.toolCalls).toHaveLength(1)
-    // History keeps no timestamps: no start time rather than the time it was reopened.
+    // History keeps no tool start times: none rather than the time it was reopened.
     expect(message?.toolCalls[0]?.startedAt).toBe(0)
+  })
+
+  it('keeps when each message was sent, and still marks it as history', () => {
+    const messages = messagesFromHistory([
+      { role: 'user', text: 'Morning', timestamp: 1_793_340_000.5 },
+      { role: 'assistant', text: 'I will check.', timestamp: 1_793_340_010 },
+      { name: 'terminal', role: 'tool', text: 'ok', timestamp: 1_793_340_020 },
+      { role: 'assistant', text: 'Done.', timestamp: 1_793_340_030 },
+      { role: 'user', text: 'Unknown' }
+    ] as Parameters<typeof messagesFromHistory>[0])
+
+    expect(messages.map(message => [message.createdAt, message.sentAt])).toEqual([
+      [0, 1_793_340_000_500],
+      // A reply is sent when it ends, not when its first step began.
+      [0, 1_793_340_030_000],
+      [0, undefined]
+    ])
   })
 
   it('restores each call with the arguments the assistant row made it with', () => {
@@ -78,26 +93,6 @@ describe('history projection', () => {
     ] as Parameters<typeof messagesFromHistory>[0])
 
     expect(message?.toolCalls[0]?.args).toEqual({ html: '<p>1</p>', title: 'Costs' })
-  })
-
-  it('brings back the memory marks a reopened section showed live', () => {
-    const [message] = messagesFromHistory([
-      {
-        role: 'assistant',
-        text: '',
-        tool_calls: [
-          {
-            function: { arguments: '{"action":"add","content":"Likes tea."}', name: 'memory' },
-            id: 'call-2',
-            type: 'function'
-          }
-        ]
-      },
-      { name: 'memory', role: 'tool', text: '{"ok":true}', tool_call_id: 'call-2' },
-      { role: 'assistant', text: 'Noted.' }
-    ] as Parameters<typeof messagesFromHistory>[0])
-
-    expect(memoryMarks(message!)).toEqual([{ kind: 'memory', text: 'Likes tea.' }])
   })
 
   it('brings back each answered question under the message that asked it', () => {

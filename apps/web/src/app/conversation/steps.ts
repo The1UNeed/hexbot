@@ -12,6 +12,8 @@ const VERBS: Record<string, [live: string, done: string]> = {
   codemode: ['Running code', 'Ran code'],
   execute_code: ['Running code', 'Ran code'],
   hexbot_rename_section: ['Naming the chat', 'Named the chat'],
+  hexbot_passwords: ['Using a saved password', 'Used a saved password'],
+  hexbot_plugins: ['Checking plugins', 'Checked plugins'],
   hexbot_show_html: ['Drawing', 'Drew'],
   hexbot_soul: ['Updating soul', 'Updated soul'],
   image_generate: ['Generating an image', 'Generated an image'],
@@ -33,6 +35,39 @@ const VERBS: Record<string, [live: string, done: string]> = {
   web_extract: ['Reading', 'Read'],
   web_search: ['Searching the web', 'Searched the web'],
   write_file: ['Writing', 'Wrote']
+}
+
+/**
+ * The bots' computer, by `computer_use` action. The daemon sends the
+ * action as the call's summary.
+ */
+const COMPUTER: Record<string, [live: string, done: string]> = {
+  click: ['Clicking', 'Clicked'],
+  double_click: ['Clicking', 'Clicked'],
+  drag: ['Dragging', 'Dragged'],
+  key: ['Pressing keys', 'Pressed keys'],
+  launch: ['Opening an app', 'Opened an app'],
+  middle_click: ['Clicking', 'Clicked'],
+  move: ['Moving the pointer', 'Moved the pointer'],
+  open: ['Opening a page', 'Opened a page'],
+  right_click: ['Clicking', 'Clicked'],
+  screenshot: ['Looking at the screen', 'Looked at the screen'],
+  scroll: ['Scrolling', 'Scrolled'],
+  shell: ['Running a command', 'Ran a command'],
+  type: ['Typing', 'Typed'],
+  wait: ['Waiting', 'Waited'],
+  windows: ['Checking windows', 'Checked windows']
+}
+
+/** "Clicking on the computer", or the plain phrase when the action is unknown. */
+export function computerLabel(action: null | string | undefined, tense: 'done' | 'live'): string {
+  const verbs = COMPUTER[(action ?? '').trim()]
+
+  if (!verbs) {
+    return tense === 'live' ? 'Using the computer' : 'Used the computer'
+  }
+
+  return `${verbs[tense === 'live' ? 0 : 1]} on the computer`
 }
 
 /** Tools whose argument preview reads well after the verb, with its connector. */
@@ -60,108 +95,10 @@ const NO_PREVIEW: Record<string, [live: string, done: string]> = {
   write_file: ['Writing a file', 'Wrote a file']
 }
 
-/**
- * Housekeeping the bot does for itself. Shown while it happens, then dropped
- * from the transcript; the Computer tab in the panel still lists every call.
- */
-export const QUIET_TOOLS = new Set([
-  // The question card is the clarify tool's whole UI; a step row would repeat it.
-  'clarify',
-  // The new title in the roster and the header is the rename's whole result.
-  'hexbot_rename_section',
-  // The visual itself, drawn in the reply, is what the bot did.
-  'hexbot_show_html',
-  // Memory and soul writes get their own marks under the bubble (memoryMarks).
-  'hexbot_soul',
-  'memory',
-  // Asking another bot gets its own row with that bot's face (asks).
-  'message_bot',
-  'session_search',
-  'skill_view',
-  'skills_list',
-  'todo_list'
-])
-
-export interface MemoryMark {
-  kind: 'memory' | 'note' | 'soul'
-  text: string
-}
-
 const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
 
 const string = (value: unknown) => (typeof value === 'string' ? value : '')
-
-/**
- * Whether a call actually wrote. Restored history marks every tool row `ok`,
- * so the result is read too: the memory tool reports `success: false`, the
- * soul tool `error`, and both are JSON strings.
- */
-function succeeded(call: ToolCall): boolean {
-  if (call.status !== 'ok') {
-    return false
-  }
-
-  const raw = typeof call.result === 'string' ? call.result : null
-  let body: unknown = raw ? null : call.result
-
-  if (raw) {
-    try {
-      body = JSON.parse(raw)
-    } catch {
-      return true
-    }
-  }
-
-  const result = record(body)
-
-  return result.success !== false && !('error' in result)
-}
-
-/** What one finished call wrote, in reading order for the mark's detail. */
-function markFor(call: ToolCall): MemoryMark | null {
-  if (!succeeded(call)) {
-    return null
-  }
-
-  const args = record(call.args)
-
-  if (call.name === 'hexbot_soul') {
-    const text = string(args.text)
-
-    return args.action === 'write' && text ? { kind: 'soul', text } : null
-  }
-
-  if (call.name !== 'memory') {
-    return null
-  }
-
-  // A note goes to the day's notes file, not to memory; the mark says which.
-  if (args.action === 'note') {
-    const text = string(args.text)
-
-    return text ? { kind: 'note', text } : null
-  }
-
-  const operations = Array.isArray(args.operations) ? args.operations.map(record) : [args]
-
-  const lines = operations.flatMap(operation => {
-    const written = string(operation.content) || string(operation.new_text)
-    const removed = string(operation.old_text)
-
-    return written ? [written] : removed ? [`Removed: ${removed}`] : []
-  })
-
-  return lines.length ? { kind: 'memory', text: lines.join('\n') } : null
-}
-
-/** Every memory, note or soul write the turn made, in order. */
-export const memoryMarks = (message: Message): MemoryMark[] =>
-  message.toolCalls.flatMap(call => {
-    const mark = markFor(call)
-
-    return mark ? [mark] : []
-  })
 
 /** The tool a bot asks another bot with; its row carries the other bot's face. */
 export const ASKING_TOOL = 'message_bot'
@@ -276,6 +213,10 @@ export function toolLabel(
     return `${tense === 'live' ? 'Connecting to' : 'Used'} ${service}`
   }
 
+  if (call.name === 'computer_use') {
+    return computerLabel(call.summary, tense)
+  }
+
   const connector = PREVIEW[call.name]
   const detail = connector === undefined ? '' : preview(call)
   const verbs = (detail ? undefined : NO_PREVIEW[call.name]) ?? VERBS[call.name]
@@ -299,58 +240,6 @@ export function runningLabel(message: Message): string | undefined {
   return running ? toolLabel(running, 'live') : undefined
 }
 
-/**
- * Work shorter than this stays hidden: no panel while it runs, no line after
- * it. Most quick replies never think or call a tool for that long.
- */
-export const MIN_WORK_S = 2
-
-/** Whether the turn did anything worth showing: a reasoning trace or a visible step. */
-export const hasWork = (message: Message) =>
-  Boolean(message.thinking || visibleSteps(message.toolCalls).length)
-
-/**
- * Seconds from the turn start to the last reasoning or tool event. Restored
- * history has neither timestamp; its tool durations stand in when known.
- */
-export function workSeconds(message: Message): null | number {
-  if (message.createdAt > 0 && message.workUntil) {
-    return Math.max(0, (message.workUntil - message.createdAt) / 1000)
-  }
-
-  const timed = message.toolCalls.filter(call => call.durationS !== null)
-
-  return timed.length ? timed.reduce((total, call) => total + (call.durationS ?? 0), 0) : null
-}
-
-/**
- * True once the work has run for `MIN_WORK_S`. While streaming that is time
- * since the turn started; afterwards, the measured work. Unknown timing
- * (restored history) counts as long enough.
- */
-export function workShown(message: Message, now = Date.now()): boolean {
-  if (!hasWork(message)) {
-    return false
-  }
-
-  if (message.toolCalls.some(call => call.name === 'codemode')) {
-    return true
-  }
-
-  const seconds = message.streaming
-    ? message.createdAt > 0
-      ? (now - message.createdAt) / 1000
-      : 0
-    : workSeconds(message)
-
-  return seconds === null || seconds >= MIN_WORK_S
-}
-
-export const visibleSteps = (calls: ToolCall[]) => calls.filter(call => !QUIET_TOOLS.has(call.name))
-
-const formatSeconds = (seconds: number) =>
-  seconds >= 60 ? `${Math.round(seconds / 60)}m` : `${Math.max(1, Math.round(seconds))}s`
-
 /** What the bot is doing in plain words, per built-in tool; never the command or the query. */
 const ACTIVITY: Record<string, string> = {
   browser_click: 'is browsing the web',
@@ -362,6 +251,8 @@ const ACTIVITY: Record<string, string> = {
   codemode: 'is running code',
   execute_code: 'is running code',
   hexbot_rename_section: 'is naming the chat',
+  hexbot_passwords: 'is signing in',
+  hexbot_plugins: 'is looking at plugins',
   hexbot_show_html: 'is drawing',
   hexbot_soul: 'is updating its soul',
   image_generate: 'is making an image',
@@ -427,9 +318,9 @@ function connectorName(tool: string): null | string {
 }
 
 /**
- * The running step for the live status, in plain words: "Scout is searching
+ * The running step for the side panel, in plain words: "Scout is searching
  * the web", "Scout is running a command", or "Connecting to GitHub" for a
- * connector's tool (`mcp_<server>_<tool>`). The step itself stays behind a click.
+ * connector's tool (`mcp_<server>_<tool>`). The conversation never shows it.
  */
 export function activityLabel(call: ToolCall, name: string): string {
   const service = connectorName(call.name)
@@ -438,72 +329,50 @@ export function activityLabel(call: ToolCall, name: string): string {
     return `Connecting to ${service}`
   }
 
+  if (call.name === 'computer_use') {
+    return `${name} is ${computerLabel(call.summary, 'live').replace(/^\w/, c => c.toLowerCase())}`
+  }
+
   return `${name} ${ACTIVITY[call.name] ?? `is using ${humanize(call.name)}`}`
 }
 
-/**
- * One quiet line for a finished turn, with no steps or costs in it: "Thought
- * for 12s" or "Worked for 3s" (or "Worked on 2 steps" when restored history
- * has no timing). A step still waiting on an approval reads as live work.
- * Empty when only housekeeping ran.
- */
-export function workSummary(message: Message, name = 'The bot'): string {
-  const running = message.toolCalls.findLast(call => call.status === 'running')
+/** Tools that look for something; the face searches with them. */
+const SEARCHING = new Set(['search_files', 'session_search', 'web_search', 'x_search'])
 
-  if (running) {
-    return activityLabel(running, name)
-  }
-
-  const seconds = workSeconds(message)
-
-  if (message.thinking) {
-    return `Thought for ${formatSeconds(seconds ?? 0)}`
-  }
-
-  const steps = visibleSteps(message.toolCalls)
-
-  if (!steps.length) {
-    return ''
-  }
-
-  return seconds
-    ? `Worked for ${formatSeconds(seconds)}`
-    : `Worked on ${steps.length} step${steps.length === 1 ? '' : 's'}`
-}
-
-export interface LiveStatusLine {
-  /** The running step, when a tool is what the bot is doing right now. */
-  call?: ToolCall
-  label: string
-}
+/** The face a bot wears while it works: thinking, searching, writing, or working. */
+export type LiveMood = 'searching' | 'thinking' | 'working' | 'writing'
 
 /**
- * The live line at the foot of a running turn: the running step in plain
- * words while a tool runs, a wait notice on a slow provider, else what the
- * bot is doing ("Scout is thinking", "Scout is writing", "Scout is working").
+ * The face a bot wears over a message while it streams: thinking before
+ * anything happens, searching or working while a step runs, writing while
+ * its words stream. None once the message is done.
  */
-export function liveStatus(message: Message, name: string): LiveStatusLine {
+export function liveMood(message: Message): LiveMood | undefined {
+  if (!message.streaming) {
+    return undefined
+  }
+
   // An ask in progress has its own row with the other bot's face.
   const running = message.toolCalls.findLast(
     call => call.status === 'running' && call.name !== ASKING_TOOL
   )
 
-  // Auto mode is checking the step before it runs; say so over the step.
-  if (message.checking) {
-    return { call: running, label: message.checking }
+  if (running && !message.checking) {
+    return SEARCHING.has(running.name) ? 'searching' : 'working'
   }
 
-  if (running) {
-    return { call: running, label: activityLabel(running, name) }
-  }
-
-  if (message.activity) {
-    return { label: message.activity }
+  if (message.checking || message.activity) {
+    return 'working'
   }
 
   if (message.text) {
-    return { label: `${name} is writing` }
+    return 'writing'
   }
 
-  return { label: message.thinking ? `${name} is thinking` : `${name} is working` }
+  if (message.thinking) {
+    return 'thinking'
+  }
+
+  // Nothing has happened yet: the bot thinks until it does, whatever the model shows.
+  return message.toolCalls.length ? 'working' : 'thinking'
 }

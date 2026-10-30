@@ -21,10 +21,20 @@ its desktop app (see "Borrowed from T3 Code" at the end).
 Stable and Nightly can be installed side by side because their app ids
 differ. They share `~/.hexbot`, so a nightly can migrate state a stable build
 cannot read back. Back up the directory before opening a nightly.
-They also share one daemon runtime under `~/.hexbot/runtime`. Each app keeps
-the installed runtime when it was built from newer source than its own bundle
-(`builtAt` in the runtime manifest), so opening an older Stable or Nightly
-never moves the daemon back.
+They also share one daemon runtime under `~/.hexbot/runtime`, which keeps the
+highest source time (`builtAt`) recorded there by any build, on either track.
+A daemon service updates only to a strictly newer positive `builtAt`. An app
+restarting its own daemon may also move from one canonical release Nightly to a
+later one with the same `builtAt`, `X.Y.Z` and target, such as `.58` to `.59`.
+Equal `builtAt` does not show that both came from one commit. An earlier app keeps
+a later verified selection. Damaged or conflicting recorded identity stops app
+selection instead of counting as a new installation.
+
+`hexbot setup --activate` from a verified bundle, which the installer's Headless
+Update or repair runs, rewrites damaged metadata and keeps the highest valid
+`builtAt` it can still read. Explicit installer selection can choose an older
+bundle. The historical floor stays separate from that bundle's manifest;
+a packaged tie requires the selected bundle itself to be at the floor.
 
 ## Which files belong to which channel
 
@@ -111,6 +121,10 @@ menus, Dock, and app switcher use this name and the blue icon from the
 On macOS, `scripts/dev/electron-launcher.mjs` creates an ad-hoc signed copy
 of Electron under `apps/desktop/.electron-runtime/` with a bundle id unique
 to the checkout and edition. The installed Electron dependency stays unchanged.
+From Electron 42, macOS shows notifications only from a signed app, so Dev
+notifications need this copy: the downloaded `Electron.app` in
+`node_modules` does not pass `codesign --verify`, and the OS rejects its
+notifications. The first one may ask for permission for `Hexbot (dev)`.
 See `README.md`, "Develop", and
 `scripts/dev/run.mjs`. Or open the repository in the dev container.
 
@@ -206,7 +220,7 @@ its machine. The daemon says how, through `update_capability` in
   hand.
 
 The client polls `hexbot.update.status` every two seconds and treats the
-connection dropping and coming back on the requested version as success,
+connection dropping and coming back on a version no longer older than the client as success,
 the same proof T3 Code uses. A failure, including "nothing to install",
 stays on the page until dismissed.
 

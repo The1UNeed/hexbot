@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { prepareDevElectron } from './electron-launcher.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const require = createRequire(path.join(root, 'apps/desktop/package.json'))
@@ -153,7 +154,8 @@ try {
     // Agent hosts may themselves run in Electron's Node mode; the app must not inherit it.
     delete electronEnv.ELECTRON_RUN_AS_NODE
     electronApp = await electron.launch({
-      executablePath: require('electron'), args: [...(process.env.CI && process.platform === 'linux' ? ['--no-sandbox'] : []), desktopBuild], timeout: 30_000, env: electronEnv
+      // On macOS, the signed dev copy, so the OS accepts its notifications.
+      executablePath: await prepareDevElectron(root, edition), args: [...(process.env.CI && process.platform === 'linux' ? ['--no-sandbox'] : []), desktopBuild], timeout: 30_000, env: electronEnv
     })
     page = await electronApp.firstWindow()
     // Let main finish its initial load and register reopen/tray handlers before

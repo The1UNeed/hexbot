@@ -24,15 +24,24 @@ export interface BotSummary extends FaceSource {
   primary?: boolean
 }
 
-export interface RoomSummary {
+/**
+ * One row in the chat list: a bot's chat, a room, or the primary bot's
+ * Check-ins. `id` is the bot's name, the room's id or the section's id.
+ */
+export interface ConversationSummary {
+  kind: 'bot' | 'checkins' | 'room'
   id: string
   name: string
-  /** Bot members, in join order; the first four draw the room's face. */
-  members: FaceSource[]
+  /** The bot's face; a room draws `members` instead. */
+  face?: FaceSource
+  members?: FaceSource[]
   preview?: string | null
+  /** What the bot is doing now, shown instead of the preview while it works. */
+  activity?: string | null
   updatedAt?: number | null
   status?: BotStatus
-  archived?: boolean
+  /** The primary bot's chat, pinned on top. */
+  primary?: boolean
 }
 
 /** A daemon this app has paired with and can switch to. */
@@ -63,20 +72,6 @@ export interface DaemonOverview {
   detail?: string | null
 }
 
-export interface ToolActivity {
-  id: string
-  /** What the user reads: "Read inbox", "Ran npm test". */
-  label: string
-  /** The tool's own name, such as `write_file`, for its icon. */
-  name?: string
-  /** One line of result for the transcript. */
-  detail?: string | null
-  /** The full call, for the tool's own card. */
-  input?: string | null
-  output?: string | null
-  status: 'error' | 'ok' | 'running'
-}
-
 export type ApprovalChoice = 'deny' | 'once' | 'session'
 
 export interface ApprovalRequestView {
@@ -88,6 +83,14 @@ export interface ApprovalRequestView {
   choices: ApprovalChoice[]
   /** Set once answered; the card stays and shows the answer. */
   decision?: ApprovalChoice | null
+  /** A sign-in card: the user types a login the bot never sees. */
+  form?: import('../../../web/src/lib/types').SignInForm
+}
+
+/** What the user typed into a sign-in card. */
+export interface SignInAnswer {
+  username: string
+  password: string
 }
 
 export interface AttachmentView {
@@ -111,50 +114,8 @@ export type ChatItem =
       error?: string | null
       attachments?: AttachmentView[]
     }
-  | { kind: 'tools'; id: string; tools: ToolActivity[] }
   /** A bot's interactive visual, shown as its own card. */
   | { kind: 'visual'; id: string; title: string; index: number }
   | { kind: 'approval'; id: string; request: ApprovalRequestView }
   | { kind: 'notice'; id: string; text: string; tone?: 'danger' | 'neutral' }
   | { kind: 'day'; id: string; at: number }
-
-export interface ModelChoice {
-  id: string
-  label: string
-  provider: string
-  detail?: string | null
-}
-
-export interface ToolToggle {
-  id: string
-  label: string
-  description?: string | null
-  enabled: boolean
-  /** False when the tool is not set up on the daemon's computer. */
-  available?: boolean
-}
-
-export interface DeviceView {
-  id: string
-  name: string
-  platform: string
-  lastSeenAt?: number | null
-  current?: boolean
-}
-
-export interface JobView {
-  id: string
-  name: string
-  /** Plain-language schedule: "Every day at 8:00 AM". */
-  schedule: string
-  bot?: FaceSource | null
-  nextRunAt?: number | null
-  lastRunOk?: boolean | null
-  enabled: boolean
-}
-
-export interface PairingView {
-  code: string
-  link: string
-  expiresAt: number
-}

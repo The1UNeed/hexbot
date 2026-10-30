@@ -430,7 +430,7 @@ pub fn section(home: &Path, caller: &str, id: &str) -> Result<Value> {
     shape_section(home, section_row(home, caller, id)?)
 }
 /// Public deletion is only for peer threads and sections with their own
-/// purpose, such as Check-ins. Keep owner chats, including archived or
+/// purpose, such as an earlier Check-ins. Keep owner chats, including archived or
 /// unreadable legacy targets, until their bot is deleted.
 pub(crate) fn check_section_delete(home: &Path, caller: &str, id: &str) -> Result<()> {
     let row = section_row(home, caller, id)?;
@@ -1459,7 +1459,13 @@ fn status_reader(home: &Path) -> Result<StatusReader> {
     };
     Ok(StatusReader { conn, query })
 }
-fn shape_bot(home: &Path, caller: &str, status: &StatusReader, row: Value) -> Result<Value> {
+fn shape_bot(
+    home: &Path,
+    caller: &str,
+    status: &StatusReader,
+    row: Value,
+    skills: Vec<crate::skills::Skill>,
+) -> Result<Value> {
     let name = row["name"].as_str().unwrap_or("");
     let cfg = config(home, name)?;
     let sections = list_sections(home, caller, &json!({"bot":name,"include_archived":true}))?;
@@ -1482,7 +1488,19 @@ fn shape_bot(home: &Path, caller: &str, status: &StatusReader, row: Value) -> Re
         } else {
             Value::Null
         };
-        detail = json!({"text":i["text"],"section_id":i["section_id"],"room_id":i["room_id"],"session_id":i["session_id"],"since":i["created_at"],"action":action});
+        // A failure with no room or conversation of its own, such as a dream's
+        // or a scheduled job's, shows in the bot's chat; nothing else shows it.
+        let in_chat = i["room_id"].is_null()
+            && match i["section_id"].as_str() {
+                None => true,
+                Some(id) => !conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sections WHERE id=?1)
+                     OR EXISTS(SELECT 1 FROM room_sessions WHERE stored_session_id=?1)",
+                    [id],
+                    |r| r.get::<_, bool>(0),
+                )?,
+            };
+        detail = json!({"text":i["text"],"section_id":i["section_id"],"room_id":i["room_id"],"session_id":i["session_id"],"since":i["created_at"],"action":action,"in_chat":in_chat});
     } else {
         let wait = rows(
             &db::open(home)?,
@@ -1542,7 +1560,7 @@ fn shape_bot(home: &Path, caller: &str, status: &StatusReader, row: Value) -> Re
         "description": row["description"].as_str().unwrap_or(""),
         "primary": row["is_primary"].as_i64() == Some(1),
         "persona": read_text(home, &profile(home, name)?.join("SOUL.md"))?,
-        "skills": crate::skills::resolve(home, Some(name))?.into_iter().filter(|s| s.enabled).map(|s| s.name).collect::<Vec<_>>(),
+        "skills": skills.into_iter().filter(|s| s.enabled).map(|s| s.name).collect::<Vec<_>>(),
         "tools": tools,
         "available_tools": available.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
         "dream_enabled": row["dream_enabled"].as_i64().unwrap_or(1) != 0,
@@ -1569,7 +1587,13 @@ fn shape_bot(home: &Path, caller: &str, status: &StatusReader, row: Value) -> Re
 }
 pub fn bot(home: &Path, caller: &str, name: &str) -> Result<Value> {
     let row = bot_row(home, caller, name)?;
-    shape_bot(home, caller, &status_reader(home)?, row)
+    shape_bot(
+        home,
+        caller,
+        &status_reader(home)?,
+        row,
+        crate::skills::resolve(home, Some(name))?,
+    )
 }
 fn validate_patch(home: &Path, p: &Value) -> Result<()> {
     let object = p
@@ -1856,10 +1880,12 @@ fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
                 ));
             }
         }
+        // A skill that is off everywhere, or waiting to be set up, is not in
+        // the list a client sends back; keep this bot's own choice for it.
         cfg["skills"]["disabled"] = json!(
             installed
                 .into_iter()
-                .filter(|s| if s.disabled_globally {
+                .filter(|s| if s.disabled_globally || !s.ready {
                     !s.enabled_for_bot
                 } else {
                     !v.contains(&json!(s.name))
@@ -2103,6 +2129,7 @@ fn create(home: &Path, caller: &str, p: &Value, primary: bool) -> Result<Value> 
         }
     };
     crate::settings::mirror(home, &profile(home, name)?)?;
+    crate::plugins::scope_new_bot(home, name)?;
     Ok(json!({"bot":bot(home,caller,name)?,"section":section(home,caller,&sid)?}))
 }
 /// Create and update store every accepted column the same way.
@@ -2213,7 +2240,7 @@ fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<Op
                 required(&row, "bot")?,
                 caller,
             )?;
-            crate::dreaming::checkins::forget_section(&tx, id)?;
+            crate::dreaming::heartbeat::forget_section(&tx, id)?;
             tx.execute(
                 "UPDATE bots SET last_activity_at=? WHERE name=?",
                 params![now(), row["bot"].as_str()],
@@ -2448,6 +2475,11 @@ fn finish_bot_delete_locked(home: &Path, name: &str) -> Result<()> {
             ),
         ));
     }
+    // Keep the name reserved until every server grant is removed. A failed
+    // config cleanup must be retried before another bot can use this name.
+    crate::connectors::forget_bot(home, name)?;
+    crate::plugins::forget_bot(home, name)?;
+    crate::passwords::forget_bot(home, name)?;
     let targets = journal["targets"]
         .as_array()
         .ok_or_else(|| Error::new(5200, "Invalid bot deletion journal"))?;
@@ -2561,13 +2593,12 @@ fn delete_bot(home: &Path, caller: &str, name: &str) -> Result<Value> {
             ));
         }
         bot_owner(home, caller, name)?;
-        for section in rows(&tx, "SELECT id FROM sections WHERE bot=?", &[&name])? {
-            crate::dreaming::checkins::forget_section(&tx, required(&section, "id")?)?;
-        }
         tx.execute("DELETE FROM sections WHERE bot=?", [name])?;
         // Threads where this bot asked others stay with their recipients.
         tx.execute("UPDATE sections SET archived_at=? WHERE peer_bot=? AND owner_id=? AND archived_at IS NULL", params![now(), name, caller])?;
         tx.execute("DELETE FROM dreams WHERE bot=?", [name])?;
+        tx.execute("DELETE FROM heartbeats WHERE bot=?", [name])?;
+        tx.execute("DELETE FROM heartbeat_messages WHERE bot=?", [name])?;
         tx.execute("DELETE FROM memory_proposals WHERE bot=?", [name])?;
         tx.execute("UPDATE room_members SET left_at=? WHERE member_kind='bot' AND member_id=? AND left_at IS NULL", params![now(), name])?;
         tx.execute("UPDATE rooms SET main_bot=NULL WHERE main_bot=?", [name])?;
@@ -2620,14 +2651,20 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
         "hexbot.bots.list" => {
             user(home, caller)?;
             let status = status_reader(home)?;
-            let bots = rows(
+            let bot_rows = rows(
                 &status.conn,
                 "SELECT * FROM bots WHERE owner_id=? ORDER BY is_primary DESC,last_activity_at DESC,name ASC",
                 &[&caller],
-            )?
-            .into_iter()
-            .map(|r| shape_bot(home, caller, &status, r))
-            .collect::<Result<Vec<_>>>()?;
+            )?;
+            let skills = crate::skills::resolve_for_bots(
+                home,
+                bot_rows.iter().map(|r| r["name"].as_str().unwrap_or("")),
+            )?;
+            let bots = bot_rows
+                .into_iter()
+                .zip(skills)
+                .map(|(r, skills)| shape_bot(home, caller, &status, r, skills))
+                .collect::<Result<Vec<_>>>()?;
             Ok(json!({"bots":bots}))
         }
         "hexbot.bots.clear_status" => {
@@ -2744,14 +2781,8 @@ fn creation_config(mut config: Value) -> Value {
         object.remove("custom_providers");
         // Global skill revocations stay global; new bots inherit new grants live.
         object.remove("skills");
-    }
-    if let Some(servers) = config["mcp_servers"].as_object_mut() {
-        for server in servers.values_mut() {
-            if let Some(server) = server.as_object_mut() {
-                server.remove("env");
-                server.remove("headers");
-            }
-        }
+        // Connected servers are defined once and given to bots by name.
+        object.remove("mcp_servers");
     }
     config
 }
@@ -3163,7 +3194,7 @@ mod parity_tests {
         );
         let copy = creation_config(config);
         assert!(!copy.to_string().contains("SECRET"));
-        assert_eq!(copy["mcp_servers"]["local"]["command"], "tool");
+        assert!(copy["mcp_servers"].is_null());
         assert_eq!(
             public_model(&json!("standalone")),
             json!({"provider":null,"default":"standalone"})
@@ -4175,7 +4206,7 @@ mod parity_tests {
         );
     }
     #[test]
-    fn check_ins_are_not_the_chat_and_survive_the_upgrade() {
+    fn an_earlier_check_ins_is_not_the_chat_and_survives_the_upgrade() {
         let home = tempfile::tempdir().unwrap();
         db::migrate(home.path()).unwrap();
         db::open(home.path()).unwrap().execute_batch(
@@ -4183,7 +4214,7 @@ mod parity_tests {
              INSERT INTO bots(name,owner_id,is_primary) VALUES('hexbot','alice',1);
              INSERT INTO sections(id,bot,owner_id,title,updated_at) VALUES('chat','hexbot','alice','General',2),('older','hexbot','alice','Older',1);
              INSERT INTO sections(id,bot,owner_id,title,updated_at,purpose) VALUES('checkins','hexbot','alice','Check-ins',9,'checkins');
-             INSERT INTO checkin_messages(id,owner_id,bot,section_id,text,created_at) VALUES('m','alice','hexbot','checkins','Due tonight.',9);",
+             INSERT INTO heartbeat_messages(id,owner_id,bot,section_id,text,created_at) VALUES('m','alice','hexbot','checkins','Due tonight.',9);",
         ).unwrap();
         for (id, time) in [("chat", 2), ("older", 1), ("checkins", 9)] {
             said(
@@ -4203,24 +4234,30 @@ mod parity_tests {
             section(home.path(), "alice", "checkins").unwrap()["purpose"],
             "checkins"
         );
-        // Unlike the chat, it can be deleted, and what check-ins said goes with it.
+        // Unlike the chat, it can be deleted, and the bot's records of it go with the bot.
         check_section_delete(home.path(), "alice", "chat").unwrap_err();
         check_section_delete(home.path(), "alice", "checkins").unwrap();
-        let text = || -> String {
+        let kept = || -> i64 {
             db::open(home.path())
                 .unwrap()
-                .query_row("SELECT text FROM checkin_messages WHERE id='m'", [], |r| {
-                    r.get(0)
-                })
+                .query_row(
+                    "SELECT COUNT(*) FROM heartbeat_messages WHERE id='m' AND text='Due tonight.'",
+                    [],
+                    |r| r.get(0),
+                )
                 .unwrap()
         };
-        assert_eq!(text(), "Due tonight.");
+        assert_eq!(kept(), 1);
         db::open(home.path())
             .unwrap()
             .execute("UPDATE bots SET is_primary=0", [])
             .unwrap();
         delete_bot(home.path(), "alice", "hexbot").unwrap();
-        assert_eq!(text(), "");
+        let left: i64 = db::open(home.path())
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM heartbeat_messages", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 0);
     }
     #[test]
     fn unreadable_native_chats_stay_for_repair_but_are_never_canonical() {

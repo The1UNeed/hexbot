@@ -9,6 +9,7 @@ import { Button } from '../../components/ui/button'
 import { ConnectorIcon } from '../../components/ui/connector-icon'
 import { Dialog } from '../../components/ui/dialog'
 import { Switch } from '../../components/ui/switch'
+import { connectorsSetup } from '../../lib/api'
 import type { Bot, Connector, ConnectorTest } from '../../lib/types'
 import { useConnectors } from '../../stores/connectors'
 
@@ -16,14 +17,15 @@ import { errorText, Group, Row } from './shared'
 
 /**
  * The set-up sheet: fields from the catalog entry, saved once for the daemon
- * (or for this bot only), tested before the sheet closes.
+ * (or for this bot only), tested before the sheet closes. Without a bot, as
+ * in Settings, Plugins, it saves for the daemon and turns nothing on.
  */
 export function ConnectorSetupSheet({
   bot,
   connector,
   onClose
 }: {
-  bot: Bot
+  bot?: Bot
   connector: Connector
   onClose: () => void
 }) {
@@ -48,7 +50,7 @@ export function ConnectorSetupSheet({
   const changed = forProvider.some(field => values[field.key]?.trim())
   const alreadySet = forProvider.some(field => field.set)
   const providerChanged = Boolean(provider && provider !== connector.provider)
-  const others = connector.enabled_bots.filter(name => name !== bot.name)
+  const others = connector.enabled_bots.filter(name => name !== bot?.name)
 
   const submit = async () => {
     setBusy(true)
@@ -56,14 +58,15 @@ export function ConnectorSetupSheet({
     setResult(null)
 
     try {
-      const test = await setup({
-        bot: bot.name,
-        bot_only: botOnly,
-        enable_for_bot: enable,
+      const input = {
         id: connector.id,
         ...(provider ? { provider } : {}),
         values: connectorValues(connector, provider, values)
-      })
+      }
+
+      const test = bot
+        ? await setup({ ...input, bot: bot.name, bot_only: botOnly, enable_for_bot: enable })
+        : (await connectorsSetup(input)).test
 
       setResult(test)
 
@@ -80,7 +83,7 @@ export function ConnectorSetupSheet({
   return (
     <Dialog
       description={
-        botOnly
+        bot && botOnly
           ? `Stored for ${bot.display_name} only. Other bots keep the shared value.`
           : 'Stored once on this daemon. Every bot you turn it on for uses it.'
       }
@@ -110,28 +113,30 @@ export function ConnectorSetupSheet({
             values={values}
           />
         </div>
-        <Group>
-          <Row
-            control={
-              <Switch
-                aria-label={`Turn on for ${bot.display_name}`}
-                checked={enable}
-                onCheckedChange={setEnable}
-              />
-            }
-            description={others.length ? `Also on for ${others.join(', ')}.` : undefined}
-            title={`Turn on for ${bot.display_name}`}
-          />
-          {connector.scope === 'daemon' ? (
+        {bot ? (
+          <Group>
             <Row
               control={
-                <Switch aria-label="Bot only" checked={botOnly} onCheckedChange={setBotOnly} />
+                <Switch
+                  aria-label={`Turn on for ${bot.display_name}`}
+                  checked={enable}
+                  onCheckedChange={setEnable}
+                />
               }
-              description="For a second account. Other bots keep the shared one."
-              title={`Use a different value for ${bot.display_name} only`}
+              description={others.length ? `Also on for ${others.join(', ')}.` : undefined}
+              title={`Turn on for ${bot.display_name}`}
             />
-          ) : null}
-        </Group>
+            {connector.scope === 'daemon' ? (
+              <Row
+                control={
+                  <Switch aria-label="Bot only" checked={botOnly} onCheckedChange={setBotOnly} />
+                }
+                description="For a second account. Other bots keep the shared one."
+                title={`Use a different value for ${bot.display_name} only`}
+              />
+            ) : null}
+          </Group>
+        ) : null}
         {failed ? (
           <p className="text-[length:var(--text-secondary)] text-danger" role="alert">
             {result.message}

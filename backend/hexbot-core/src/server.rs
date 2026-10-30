@@ -15,7 +15,7 @@ use axum::{
     },
     http::{HeaderMap, HeaderValue, StatusCode},
     response::{Html, IntoResponse, Response},
-    routing::{get, post},
+    routing::{any, get, post},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::{Value, json};
@@ -95,6 +95,7 @@ impl App {
             );
         }
         let events = EventHub::new();
+        crate::computers::attach(&home, events.clone());
         let runtime = Runtime::new(home.clone(), events.clone(), pi)?;
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let runtime = runtime.clone();
@@ -172,6 +173,12 @@ impl App {
         Ok(app)
     }
     pub async fn call(self: &Arc<Self>, owner: &str, method: &str, p: &Value) -> Result<Value> {
+        let start = common::now() * 1000.;
+        let result = self.call_locked(owner, method, p).await;
+        crate::diagnostics::get().rpc(method, start, &result);
+        result
+    }
+    async fn call_locked(self: &Arc<Self>, owner: &str, method: &str, p: &Value) -> Result<Value> {
         // Reserve name reuse in request order before handing deletion to its
         // cancellation-safe task, including through a rebound listener.
         let bot_lifecycle = if matches!(
@@ -423,8 +430,24 @@ impl App {
                 // `hexbot.sections.create` returns the bot's one chat; an older
                 // daemon makes a new section every time.
                 "one_chat": true,
+                // `session.recall` takes back the owner's latest message in a chat.
+                "recall": true,
                 "home": self.home
             })),
+            "hexbot.diagnostics.get" => {
+                let (home, owner, p) = (self.home.clone(), owner.to_owned(), p.clone());
+                let load = self.runtime.diagnostic_load();
+                tokio::task::spawn_blocking(move || {
+                    crate::diagnostics::get().snapshot(&home, &owner, load, &p)
+                })
+                .await
+                .map_err(|error| Error::new(5200, error.to_string()))
+            }
+            "hexbot.diagnostics.trace" => Ok(crate::diagnostics::get().trace(
+                p["trace"]
+                    .as_u64()
+                    .ok_or_else(|| Error::new(4200, "missing parameter: trace"))?,
+            )),
             "hexbot.rooms.stop" => {
                 Ok(json!({"stopped":self.rooms.stop(owner,common::required(p,"id")?).await?}))
             }
@@ -463,7 +486,28 @@ impl App {
                     result
                 } else if let Some(result) = rooms::call(&self.home, owner, method, p) {
                     result
+                } else if let Some(result) = crate::passwords::call(&self.home, owner, method, p) {
+                    if result.is_ok() && crate::passwords::CHANGES.contains(&method) {
+                        self.events
+                            .emit(owner, None, "hexbot.passwords.changed", json!({}));
+                    }
+                    result
+                } else if let Some(result) = crate::computers::call(&self.home, method, p).await {
+                    result
                 } else if let Some(result) = connectors::call(&self.home, owner, method, p).await {
+                    result
+                } else if let Some(result) = crate::plugins::call(&self.home, owner, method, p) {
+                    // A changed or removed server's open connections close;
+                    // the next call reconnects with its new settings.
+                    if result.is_ok()
+                        && matches!(method, "hexbot.plugins.configure" | "hexbot.plugins.remove")
+                        && let Ok(server) = crate::plugins::server_of(
+                            p["kind"].as_str().unwrap_or(""),
+                            p["id"].as_str().unwrap_or(""),
+                        )
+                    {
+                        connectors::drop_sessions(&self.home, &server).await;
+                    }
                     result
                 } else if let Some(result) = providers::call(&self.home, owner, method, p).await {
                     result
@@ -491,14 +535,14 @@ impl App {
         {
             self.runtime.rollback_retirements(retirements).await?;
         }
-        // Open Check-ins tabs and the CLI's changes meet: settings and the next run move.
+        // Open Heartbeat tabs and the CLI's changes meet: the switch and the next run move.
         if method == "hexbot.settings.set"
             && p["patch"]
                 .as_object()
-                .is_some_and(|patch| patch.keys().any(|k| k.starts_with("checkin_")))
+                .is_some_and(|patch| patch.contains_key("heartbeat_enabled"))
         {
             self.events
-                .emit(owner, None, "hexbot.checkins.changed", json!({}));
+                .emit(owner, None, "hexbot.heartbeat.changed", json!({}));
         }
         // Each running turn lists the cards it still waits on, so a client
         // drops the ones it missed being settled. Opening a room restores them.
@@ -530,7 +574,9 @@ impl App {
             )?;
         }
         if method == "hexbot.bots.delete" {
-            crate::connectors::close_bot(&self.home, common::required(p, "name")?).await;
+            let name = common::required(p, "name")?;
+            crate::connectors::close_bot(&self.home, name).await;
+            crate::computers::forget_bot(&self.home, name).await;
         }
         if method == "hexbot.pairing.code" {
             let code = result["code"].as_str().unwrap_or("");
@@ -678,6 +724,44 @@ impl App {
                 | "model.save_key"
                 | "model.disconnect"
         ) {
+            self.events
+                .emit(owner, None, "hexbot.bots.changed", json!({}));
+            return;
+        }
+        // Installing, changing or removing a package touches servers and
+        // skills alike, so every open list refreshes.
+        if matches!(
+            method,
+            "hexbot.plugins.install" | "hexbot.plugins.configure" | "hexbot.plugins.remove"
+        ) || (method == "hexbot.plugins.set_bots" && p["kind"] == "package")
+        {
+            for event in [
+                "hexbot.connectors.changed",
+                "hexbot.skills.changed",
+                "hexbot.bots.changed",
+            ] {
+                self.events.emit(owner, None, event, json!({}));
+            }
+            return;
+        }
+        // Plugin assignment reuses each kind's event, so every open list refreshes.
+        if method == "hexbot.plugins.set_bots" {
+            let id = json!({"connector":p["id"]});
+            match p["kind"].as_str() {
+                Some("connector") => {
+                    self.events
+                        .emit(owner, None, "hexbot.connectors.changed", id);
+                }
+                Some("skill") => {
+                    self.events.emit(
+                        owner,
+                        None,
+                        "hexbot.skills.changed",
+                        json!({"name":p["id"]}),
+                    );
+                }
+                _ => {}
+            }
             self.events
                 .emit(owner, None, "hexbot.bots.changed", json!({}));
             return;
@@ -1310,7 +1394,7 @@ async fn origin_guard(
             .insert("access-control-allow-origin", origin);
         response
             .headers_mut()
-            .insert("vary", HeaderValue::from_static("Origin"));
+            .append("vary", HeaderValue::from_static("Origin"));
         response.headers_mut().insert(
             "access-control-allow-headers",
             HeaderValue::from_static("Content-Type, Authorization, DPoP"),
@@ -1675,6 +1759,7 @@ async fn connection(
     device_id: String,
     token: String,
 ) {
+    let _counted = crate::diagnostics::get().socket();
     let mut events = app.events.subscribe();
     let mut stop = app.stop.subscribe();
     if *stop.borrow() {
@@ -1858,7 +1943,7 @@ async fn handle_request(
         Err(error) => json!({"jsonrpc":"2.0","id":id,"error":error.rpc_value()}),
     })
 }
-/// A phone's push token, for check-in messages. Only the calling device's own
+/// A phone's push token, for heartbeat messages. Only the calling device's own
 /// row changes; a null token stops pushes to it.
 fn set_push(home: &std::path::Path, owner: &str, device: &str, p: &Value) -> Result<Value> {
     // Only a string sets it and only null clears it; anything else is a mistake.
@@ -1905,6 +1990,13 @@ fn set_push(home: &std::path::Path, owner: &str, device: &str, p: &Value) -> Res
     tx.commit()?;
     Ok(json!({"ok":true}))
 }
+/// A bot's computer screen, from the link `hexbot.computer.view` gave out.
+async fn computer_view(
+    axum::extract::Path((token, _rest)): axum::extract::Path<(String, String)>,
+    request: axum::extract::Request,
+) -> Response {
+    crate::computers::proxy(token, request).await
+}
 /// Frames on a daemon page may only load from the daemon. A bot's visual runs
 /// in a sandboxed frame (`/visual-frame.html`); this keeps its script from
 /// navigating that frame to another site with data in the URL.
@@ -1913,6 +2005,35 @@ async fn frame_policy(mut response: Response) -> Response {
         .headers_mut()
         .entry(axum::http::header::CONTENT_SECURITY_POLICY)
         .or_insert(HeaderValue::from_static("frame-src 'self'"));
+    response
+}
+/// Vite names every file under `/assets/` by its content hash, so a browser
+/// keeps it until a new bundle names another and reloads without asking.
+/// The build writes a `.gz` beside each one, which `ServeDir` picks by
+/// Accept-Encoding.
+async fn immutable_assets(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let hashed = request.uri().path().starts_with("/assets/");
+    let mut response = next.run(request).await;
+    if hashed
+        && matches!(
+            response.status(),
+            StatusCode::OK | StatusCode::PARTIAL_CONTENT | StatusCode::NOT_MODIFIED
+        )
+    {
+        let headers = response.headers_mut();
+        headers
+            .entry(axum::http::header::CACHE_CONTROL)
+            .or_insert(HeaderValue::from_static(
+                "public, max-age=31536000, immutable",
+            ));
+        headers.append(
+            axum::http::header::VARY,
+            HeaderValue::from_static("Accept-Encoding"),
+        );
+    }
     response
 }
 pub fn router(app: Arc<App>) -> Router {
@@ -1928,13 +2049,17 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/auth/password-login", post(login))
         .route("/api/auth/ws-ticket", post(ticket))
         .route("/hexbot/pair", post(pair))
-        .route("/hexbot/session", post(session));
+        .route("/hexbot/session", post(session))
+        .route("/hexbot/computer/{token}/{*rest}", any(computer_view));
     if let Some(dist) = app.web_dist.clone() {
         router = router.fallback_service(
-            tower_http::services::ServeDir::new(dist).fallback(get(spa).with_state(app.clone())),
+            tower_http::services::ServeDir::new(dist)
+                .precompressed_gzip()
+                .fallback(get(spa).with_state(app.clone())),
         );
     }
     router
+        .layer(axum::middleware::from_fn(immutable_assets))
         .layer(axum::middleware::map_response(frame_policy))
         .layer(DefaultBodyLimit::max(16 * 1024 * 1024))
         .layer(axum::middleware::from_fn_with_state(

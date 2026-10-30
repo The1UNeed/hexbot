@@ -355,13 +355,13 @@ test('each new turn restores primary and uses live fallback without changing pro
   await f.handlers.agent_before_settle({outcome:'error'},f.ctx);
   assert.equal(f.ctx.model.id,'replacement');
 });
-test('check-in messages join the next turn after the user message, once, without touching the prompt', async t => {
+test('heartbeat messages join the next turn after the user message, once, without touching the prompt', async t => {
   const f = fixture(t);
   const input = f.ctx.ui.input;
-  let waiting = ['Your PE feedback is due tonight at 11:59 PM.'];
+  let waiting = ['BA 286 on Friday now leaves two hours late.'];
   f.ctx.ui.input = async title => {
     const request = JSON.parse(title.slice('__HEXBOT_TOOL__'.length));
-    if (request.name !== 'hexbot_checkin_context') return input(title);
+    if (request.name !== 'hexbot_heartbeat_context') return input(title);
     f.requests.push(request);
     const text = waiting.length ? `Sent: ${waiting.join(' ')}` : null;
     waiting = [];
@@ -369,13 +369,13 @@ test('check-in messages join the next turn after the user message, once, without
   };
   // Nothing waiting: the turn never asks.
   assert.deepEqual(await f.handlers.before_agent_start({}, f.ctx), {systemPrompt:'Frozen prompt'});
-  assert.ok(!f.requests.some(r => r.name === 'hexbot_checkin_context'));
-  f.settings.pendingCheckins = true;
-  assert.deepEqual(await f.handlers.before_agent_start({}, f.ctx), {systemPrompt:'Frozen prompt', message:{customType:'hexbot_checkin', content:'Sent: Your PE feedback is due tonight at 11:59 PM.', display:false, details:{checkins:['m1']}}});
+  assert.ok(!f.requests.some(r => r.name === 'hexbot_heartbeat_context'));
+  f.settings.pendingHeartbeat = true;
+  assert.deepEqual(await f.handlers.before_agent_start({}, f.ctx), {systemPrompt:'Frozen prompt', message:{customType:'hexbot_heartbeat', content:'Sent: BA 286 on Friday now leaves two hours late.', display:false, details:{heartbeat:['m1']}}});
   // Taken once: the daemon has nothing more, so the turn is plain again.
   assert.deepEqual(await f.handlers.before_agent_start({}, f.ctx), {systemPrompt:'Frozen prompt'});
   // A broken bridge never stops the turn.
-  f.ctx.ui.input = async title => JSON.parse(title.slice('__HEXBOT_TOOL__'.length)).name === 'hexbot_checkin_context' ? (() => { throw new Error('bridge down'); })() : input(title);
+  f.ctx.ui.input = async title => JSON.parse(title.slice('__HEXBOT_TOOL__'.length)).name === 'hexbot_heartbeat_context' ? (() => { throw new Error('bridge down'); })() : input(title);
   assert.deepEqual(await f.handlers.before_agent_start({}, f.ctx), {systemPrompt:'Frozen prompt'});
 });
 test('the prompt is rebuilt at compaction only, and a failed request keeps the old one', async t => {
@@ -918,6 +918,8 @@ test('SSH public files stay readable, private keys and auth stores do not, and c
   assert.equal(credentialPath(join(f.home, 'profiles/owl/pi/mcp-auth.json'), f.home), true);
   for (const name of ['id_ed25519', 'work.pem', 'deploy.key']) assert.equal(credentialPath(join(homedir(), '.ssh', name), f.home), true);
   assert.equal(credentialPath(join(f.home, 'desktop-data/Local Storage/token'), f.home), true);
+  for (const name of ['passwords.kdbx', 'passwords.key', '.tmpA1b2C3']) assert.equal(credentialPath(join(f.home, 'users/alice/passwords', name), f.home), true);
+  assert.equal(credentialPath(join(f.home, 'users/alice/user.md'), f.home), false);
   assert.equal(credentialPath(join(f.home, '../connect.json'), f.home), false);
   assert.equal(credentialPath(join(homedir(), '.codex/auth.json'), f.home), true);
   assert.deepEqual(shellEnvironment({SSH_AUTH_SOCK:'/tmp/agent', AWS_PROFILE:'secret', AWS_SECRET_ACCESS_KEY:'secret', GOOGLE_APPLICATION_CREDENTIALS:'secret', GOOGLE_CLOUD_PROJECT:'secret', CLOUDSDK_CONFIG:'secret'}), {SSH_AUTH_SOCK:'/tmp/agent'});
@@ -988,6 +990,12 @@ test('connected servers register once in memory and never for legacy or restrict
     await f.handlers.before_agent_start({}, f.ctx);
     assert.equal(f.requests.some(r => r.name === 'hexbot_mcp_servers'), false);
   }
+});
+
+test('a heartbeat with connected servers reads files but cannot write them or run commands', async t => {
+  const f = fixture(t, 'smart', ['file', 'terminal'], {mcpServers:['demo'], heartbeat:'h1'});
+  await f.handlers.session_start({}, f.ctx);
+  assert.deepEqual(f.activeTools, [['read', 'grep', 'find', 'ls', 'codemode']]);
 });
 
 test('escaped server values survive Pi resolution without commands or substitutions', async () => {

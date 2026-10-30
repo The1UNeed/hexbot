@@ -29,13 +29,19 @@ mod attachments;
 mod delegation;
 #[path = "runtime_identity.rs"]
 mod identity;
+#[path = "runtime_passwords.rs"]
+mod password_tool;
+#[path = "runtime_plugins.rs"]
+mod plugin_tool;
 #[path = "runtime_primary.rs"]
 mod primary;
+#[path = "runtime_recall.rs"]
+mod recall;
 #[path = "runtime_review.rs"]
 mod review;
 #[path = "runtime_stop.rs"]
 mod stop;
-use crate::dreaming::checkins;
+use crate::dreaming::heartbeat;
 use identity::with_fields;
 
 #[cfg(unix)]
@@ -337,6 +343,9 @@ fn model_choice(options: &Value) -> Value {
         options["reasoning_effort"]
     ])
 }
+/// Bot processes that may run at once.
+const SECTION_CAPACITY: usize = 16;
+
 pub struct Runtime {
     pub(crate) admission: Arc<crate::admission::Admission>,
     home: PathBuf,
@@ -383,7 +392,7 @@ impl Runtime {
             sessions: Mutex::new(HashMap::new()),
             opening: Mutex::new(HashMap::new()),
             input_queues: Mutex::new(HashMap::new()),
-            capacity: Arc::new(tokio::sync::Semaphore::new(16)),
+            capacity: Arc::new(tokio::sync::Semaphore::new(SECTION_CAPACITY)),
             weak: weak.clone(),
             stopping: AtomicBool::new(false),
             children: Mutex::new(HashMap::new()),
@@ -1164,15 +1173,15 @@ impl Runtime {
             .iter()
             .filter_map(|t| t["name"].as_str().map(str::to_owned))
             .collect::<Vec<_>>();
-        // A check-in reads files but never writes them or runs commands.
-        let checkin = options["checkin"].is_string();
+        // A heartbeat reads files but never writes them or runs commands.
+        let heartbeat = options["heartbeat"].is_string();
         if unrestricted && selected.iter().any(|v| v == "file") {
             names.extend(["read", "grep", "find", "ls"].map(str::to_owned));
-            if !checkin {
+            if !heartbeat {
                 names.extend(["write", "edit"].map(str::to_owned));
             }
         }
-        if unrestricted && !checkin && selected.iter().any(|v| v == "terminal") {
+        if unrestricted && !heartbeat && selected.iter().any(|v| v == "terminal") {
             names.push("bash".into());
         }
         if let Some(allowed) = options["restricted"].as_array() {
@@ -1221,6 +1230,7 @@ impl Runtime {
             .optional()?
             .unwrap_or_else(|| format!("live-{}", common::id()));
         let (process, events) = PiProcess::spawn(pi).map_err(pi_error)?;
+        crate::diagnostics::get().label_process(process.pid(), format!("Pi · {bot}"));
         let (settled, _) = watch::channel(0);
         let s = Arc::new(Live {
             owner: owner.into(),
@@ -1369,6 +1379,9 @@ impl Runtime {
         let enabled = crate::connectors::toolsets(&self.home, bot)?;
         let mut tools = base_tools();
         tools.retain(|t| t["name"] != "message_bot" || enabled.iter().any(|v| v == "hexbot"));
+        if enabled.iter().any(|v| v == "hexbot") {
+            tools.push(plugin_tool::descriptor());
+        }
         let own = shows_visuals(&self.home, stored)?;
         if !own {
             tools.retain(|t| t["name"] != "hexbot_show_html");
@@ -1383,26 +1396,30 @@ impl Runtime {
             tools.push(crate::dreaming::tool_descriptor());
         }
         tools.extend(crate::native_tools::descriptors(&self.home, bot)?);
+        if password_tool::offered(&tools, own && restricted.is_none(), overrides) {
+            tools.push(password_tool::descriptor());
+        }
         let primary = crate::catalog::primary_bot(&self.home, owner)?.as_deref() == Some(bot);
         // The primary bot looks after the others from its own sections only.
         if own && restricted.is_none() && overrides.is_none() && primary {
             tools.extend(primary::descriptors());
-            tools.push(checkins::wakeups_descriptor());
         }
-        // A check-in run reads and speaks only through hexbot_notify. It runs
-        // on its own over connector content, so nothing it holds acts on the
-        // world (checkins.rs); connectors still ask before changing anything,
-        // and nobody can answer.
-        if overrides.is_some_and(|o| o["checkin"].is_string()) {
-            if primary {
-                tools.push(checkins::notify_descriptor());
-                tools.push(checkins::wakeups_descriptor());
-                tools.push(checkins::connector_read_descriptor());
-            }
+        // Every bot keeps its heartbeat checklist from its own chat.
+        if own && restricted.is_none() && overrides.is_none() {
+            tools.push(heartbeat::file_descriptor());
+        }
+        // A heartbeat reads and speaks only through hexbot_notify. It runs on
+        // its own over connector content and the web, so nothing it holds acts
+        // on the world (heartbeat.rs); connectors still ask before changing
+        // anything, and nobody can answer.
+        if overrides.is_some_and(|o| o["heartbeat"].is_string()) {
+            tools.push(heartbeat::notify_descriptor());
+            tools.push(heartbeat::file_descriptor());
+            tools.push(heartbeat::connector_read_descriptor());
             tools.retain(|t| {
                 t["name"]
                     .as_str()
-                    .is_some_and(|name| checkins::TOOLS.contains(&name))
+                    .is_some_and(|name| heartbeat::TOOLS.contains(&name))
             });
         }
         if let Some(allowed) = restricted {
@@ -1542,8 +1559,8 @@ impl Runtime {
             .and_then(|p| p.get("job"))
             .cloned()
             .unwrap_or(Value::Null);
-        opts["checkin"] = overrides
-            .and_then(|p| p.get("checkin"))
+        opts["heartbeat"] = overrides
+            .and_then(|p| p.get("heartbeat"))
             .cloned()
             .unwrap_or(Value::Null);
         Ok((prompt, opts))
@@ -1571,7 +1588,7 @@ impl Runtime {
         };
         let saved: Value =
             serde_json::from_str(&saved).map_err(|e| Error::new(5200, e.to_string()))?;
-        if ["restricted", "job", "parent_session", "checkin"]
+        if ["restricted", "job", "parent_session", "heartbeat"]
             .iter()
             .any(|key| !saved[key].is_null())
         {
@@ -1794,6 +1811,7 @@ impl Runtime {
         }
         common::bot_owner(&self.home, &s.owner, &s.bot)?;
         let compact = text.trim() == "/compact" || text.trim().starts_with("/compact ");
+        recall::refuse_typed(text)?;
         if !compact {
             if text.trim().is_empty() {
                 return Err(Error::new(4200, "missing parameter: text"));
@@ -2330,6 +2348,14 @@ impl Runtime {
             settled = json!({"choice":choice});
             if request["method"] == "confirm" {
                 json!({"confirmed":choice!="deny"})
+            } else if request["approval_payload"]["form"].is_object() && choice != "deny" {
+                // The sign-in card: what was typed goes to the waiting tool
+                // only, never to an event, a log or the conversation.
+                let typed = |key: &str| p[key].as_str().filter(|v| v.len() <= 4096);
+                let password = typed("password")
+                    .filter(|v| !v.is_empty())
+                    .ok_or_else(|| Error::new(4202, "Enter the password."))?;
+                json!({"value": json!({"username": typed("username").unwrap_or(""), "password": password}).to_string()})
             } else {
                 json!({"value":choice})
             }
@@ -2799,6 +2825,7 @@ impl Runtime {
                 | "session.history"
                 | "session.usage"
                 | "session.interrupt"
+                | "session.recall"
                 | "session.steer"
                 | "session.close"
                 | "session.status"
@@ -3027,6 +3054,7 @@ impl Runtime {
                 Ok(json!({"status":"interrupted"}))
             }
             "session.steer" => self.steer(&s, required(p, "text")?, input_id).await,
+            "session.recall" => self.recall(&s, p).await,
             "session.close" => Ok(json!({"closed":self.close_stored(caller,&s.stored).await?})),
             "session.save" => Ok(json!({"saved":true,"stored_session_id":s.stored})),
             "session.title" => {
@@ -3129,6 +3157,23 @@ impl Runtime {
             );
         }
     }
+    /// Open sections, running turns and free capacity, for Diagnostics.
+    pub fn diagnostic_load(&self) -> Value {
+        let sessions = self.sessions.lock().unwrap();
+        let running = sessions
+            .values()
+            .filter(|s| {
+                let state = s.state.lock().unwrap();
+                state.busy && !state.closed
+            })
+            .count();
+        json!({
+            "sessions": sessions.len(),
+            "running": running,
+            "capacity": SECTION_CAPACITY,
+            "capacity_free": self.capacity.available_permits(),
+        })
+    }
     pub fn busy_sections(&self, bot: &str) -> Vec<Value> {
         self.sessions
             .lock()
@@ -3161,9 +3206,12 @@ impl Runtime {
             })
             .collect()
     }
+    /// A bot is working only in a conversation the user can see: its chat or
+    /// a room. Heartbeats, jobs, dreams and delegates run out of sight and stay
+    /// quiet, unless one is waiting for the user.
     pub fn status_for_bot(&self, owner: &str, bot: &str) -> Option<Value> {
         let sessions = self.sessions.lock().unwrap();
-        let active = sessions
+        let mut active = sessions
             .values()
             .filter(|session| session.owner == owner && session.bot == bot)
             .filter_map(|session| {
@@ -3172,26 +3220,33 @@ impl Runtime {
                     .busy
                     .then(|| (session.clone(), !state.pending.is_empty()))
             })
-            .max_by_key(|(session, waiting)| (*waiting, session.stored.clone()));
+            .collect::<Vec<_>>();
         drop(sessions);
-        let (session, waiting) = active?;
-        let context = db::open(&self.home)
-            .ok()
-            .and_then(|conn| {
-                conn.query_row(
-                    "SELECT (SELECT id FROM sections WHERE id=?1),(SELECT room_id FROM room_sessions WHERE stored_session_id=?1),(SELECT MAX(started_at) FROM room_turns WHERE bot=?2 AND status='running')",
-                    params![session.stored, bot],
-                    |row| {
-                        Ok((
-                            row.get::<_, Option<String>>(0)?,
-                            row.get::<_, Option<String>>(1)?,
-                            row.get::<_, Option<f64>>(2)?,
-                        ))
-                    },
-                )
-                .ok()
-            })
-            .unwrap_or_default();
+        active.sort_by_key(|(session, waiting)| {
+            std::cmp::Reverse((*waiting, session.stored.clone()))
+        });
+        let conn = db::open(&self.home).ok();
+        let (session, waiting, context) = active.into_iter().find_map(|(session, waiting)| {
+            let context = conn
+                .as_ref()
+                .and_then(|conn| {
+                    conn.query_row(
+                        "SELECT (SELECT id FROM sections WHERE id=?1),(SELECT room_id FROM room_sessions WHERE stored_session_id=?1),(SELECT MAX(started_at) FROM room_turns WHERE bot=?2 AND status='running')",
+                        params![session.stored, bot],
+                        |row| {
+                            Ok((
+                                row.get::<_, Option<String>>(0)?,
+                                row.get::<_, Option<String>>(1)?,
+                                row.get::<_, Option<f64>>(2)?,
+                            ))
+                        },
+                    )
+                    .ok()
+                })
+                .unwrap_or_default();
+            let seen = context.0.is_some() || context.1.is_some();
+            (waiting || seen).then_some((session, waiting, context))
+        })?;
         Some(json!({
             "status": if waiting { "needs_you" } else { "working" },
             "status_detail": {
@@ -3468,8 +3523,8 @@ impl Runtime {
                 .collect::<serde_json::Map<_, _>>()
                 .into();
         }
-        // The extension asks for check-in messages only when some are waiting.
-        saved["pendingCheckins"] = json!(checkins::pending_context(&self.home, &s.stored)?);
+        // The extension asks for heartbeat messages only when some are waiting.
+        saved["pendingHeartbeat"] = json!(heartbeat::pending_context(&self.home, &s.stored)?);
         saved["canAsk"] = json!(db.query_row(
             "SELECT EXISTS(SELECT 1 FROM sections WHERE id=?) OR EXISTS(SELECT 1 FROM room_sessions WHERE stored_session_id=?)",
             params![s.stored,s.stored], |r| r.get::<_,bool>(0)
@@ -3483,9 +3538,15 @@ impl Runtime {
     }
     /// With `always`, asks even in Bypass.
     async fn ask_approval(&self, s: &Live, params: Value, always: bool) -> Result<bool> {
+        Ok(self.ask_native(s, params, always).await?.is_some())
+    }
+    /// Shows a daemon card and waits: None when the owner says no or the
+    /// card goes, otherwise the answer. A card with a `form` (the sign-in
+    /// card) answers with what was typed, as JSON, and is never stored.
+    async fn ask_native(&self, s: &Live, params: Value, always: bool) -> Result<Option<String>> {
         let settings = self.session_settings(s)?;
         if settings["approvalMode"] == "off" && !always {
-            return Ok(true);
+            return Ok(Some("once".into()));
         }
         if settings["canAsk"] == false {
             return Err(Error::new(
@@ -3499,13 +3560,18 @@ impl Runtime {
         if let Some(reason) = params["reason"].as_str() {
             payload["reason"] = json!(reason);
         }
+        if params["form"].is_object() {
+            payload["form"] = params["form"].clone();
+            // The card's own fields are the whole request; nothing else to show.
+            payload["args"] = json!({"tool": params["tool"]});
+        }
         payload["request_id"] = json!(id);
         payload["choices"] = json!(["once", "deny"]);
         {
             let _gate = s.event_gate.lock().unwrap();
             let mut state = s.state.lock().unwrap();
             if state.dialogs_cancelled() {
-                return Ok(false);
+                return Ok(None);
             }
             state.native_approvals.insert(id.clone(), sender);
             state.pending.insert(
@@ -3519,7 +3585,7 @@ impl Runtime {
         }
         let answer = receiver.await.unwrap_or_else(|_| "deny".into());
         s.state.lock().unwrap().pending.remove(&id);
-        Ok(answer != "deny")
+        Ok((answer != "deny").then_some(answer))
     }
     async fn one_shot(
         &self,
@@ -3610,6 +3676,8 @@ impl Runtime {
                     .filter(|(name, _)| crate::pi::provider_environment(name, provider.unwrap_or(""))),
             );
             let (process, mut events) = PiProcess::spawn(options).map_err(pi_error)?;
+            crate::diagnostics::get()
+                .label_process(process.pid(), format!("Pi · {bot} (one request)"));
             started = Some(AdmittedPi { process, admission: Some(admission.clone()) });
             let process = &started.as_ref().unwrap().process;
             let response = process
@@ -4141,11 +4209,13 @@ impl Runtime {
             crate::dreaming::require_supported_job_request(&self.home, &s.owner, bot, args)?;
         }
         // Check-in tools are filtered when frozen; refuse here too.
-        if s.stored.starts_with("checkin-")
+        // Heartbeats replaced check-ins. The line above stays as it was so the
+        // Windows security job's pinned build still takes this patch.
+        if s.stored.starts_with("heartbeat-")
             && s.tools.iter().any(|t| t["name"] == name)
-            && !checkins::TOOLS.contains(&name)
+            && !heartbeat::TOOLS.contains(&name)
         {
-            return Err(Error::new(4210, "This tool is disabled in check-ins."));
+            return Err(Error::new(4210, "This tool is disabled in a heartbeat."));
         }
         let bot_owner: String = db::open(&self.home)?.query_row(
             "SELECT owner_id FROM bots WHERE name=?",
@@ -4225,16 +4295,12 @@ impl Runtime {
             }
         }
         match name {
-            "hexbot_checkin_context" => {
-                Ok(checkins::take_context(&self.home, &s.owner, &s.stored)?
+            "hexbot_heartbeat_context" => {
+                Ok(heartbeat::take_context(&self.home, &s.owner, &s.stored)?
                     .unwrap_or_else(|| json!({"text":null,"ids":[]})))
             }
-            "hexbot_notify" | "hexbot_wakeups" => self.checkin_tool(s, name, args).await,
-            "hexbot_connector_read" => {
-                if !s.stored.starts_with("checkin-") || !s.tools.iter().any(|t| t["name"] == name) {
-                    return Err(Error::new(4210, "This tool is disabled for this section."));
-                }
-                checkins::connector_read(&self.home, &s.bot, args).await
+            "hexbot_notify" | "hexbot_heartbeat" | "hexbot_connector_read" => {
+                self.heartbeat_tool(s, &bot_owner, name, args).await
             }
             "hexbot_todo_context" => {
                 Ok(json!({"text":crate::native_product_tools::todo_context(&self.home,&s.stored)?}))
@@ -4534,6 +4600,8 @@ impl Runtime {
             "hexbot_bots" | "hexbot_rooms" | "hexbot_jobs" | "hexbot_settings" => {
                 self.primary_tool(s, name, args).await
             }
+            plugin_tool::NAME => self.plugins_tool(s, args).await,
+            password_tool::NAME => self.passwords_tool(s, args).await,
             "self_soul" | "hexbot_soul" => {
                 let path = self.home.join("profiles").join(&s.bot).join("SOUL.md");
                 if let Some(text) = args["text"].as_str() {
@@ -4659,6 +4727,7 @@ impl Runtime {
         if s.state.lock().unwrap().closed {
             return Ok(());
         }
+        crate::diagnostics::get().pi_event(&s.id, &s.bot, &s.stored, &event);
         let observed = {
             let mut state = s.state.lock().unwrap();
             let text = state.output.clone();
@@ -4802,14 +4871,14 @@ impl Runtime {
                             );
                         }
                     }
-                    // Check-in messages entered the section's context (checkins.rs).
-                    "custom" if message["customType"] == "hexbot_checkin" => {
-                        if let Err(error) = checkins::acknowledge(
+                    // Heartbeat messages entered the chat's context (heartbeat.rs).
+                    "custom" if message["customType"] == "hexbot_heartbeat" => {
+                        if let Err(error) = heartbeat::acknowledge(
                             &self.home,
                             &s.stored,
-                            &message["details"]["checkins"],
+                            &message["details"]["heartbeat"],
                         ) {
-                            eprintln!("Check-in context for {}: {}", s.stored, error.message);
+                            eprintln!("Heartbeat context for {}: {}", s.stored, error.message);
                         }
                     }
                     "toolResult" => {
@@ -4894,6 +4963,9 @@ impl Runtime {
                     };
                     (ending, latest)
                 };
+                if latest {
+                    crate::diagnostics::get().run_settled(&s.id);
+                }
                 if !latest {
                     if let Some(end) = ending {
                         self.emit(s, "message.complete", with_fields(json!({"text":end.text,"error":end.error,"status":if end.error.is_some(){"error"}else{"complete"},"usage":store::usage(&self.home,&s.stored).unwrap_or_else(|_| json!({}))}), &end.fields));
@@ -5228,6 +5300,7 @@ fn pump(
                     );
                 }
                 if !was_closed {
+                    crate::diagnostics::get().process_exit(&s.id, &s.bot, &error.message);
                     runtime.stop_dialogs(&s).await;
                     crate::native_tools::close_session(&runtime.home, &s.stored).await;
                 }
@@ -5678,9 +5751,8 @@ fn tool_context(name: &str, args: &Value) -> String {
         "delegate_task" => "goal",
         "message_bot" => "to",
         "hexbot_show_html" => "title",
-        "hexbot_bots" | "hexbot_rooms" | "hexbot_jobs" | "hexbot_settings" | "hexbot_wakeups" => {
-            "action"
-        }
+        "hexbot_bots" | "hexbot_rooms" | "hexbot_jobs" | "hexbot_settings" | "hexbot_heartbeat"
+        | "hexbot_plugins" | "hexbot_passwords" | "computer_use" => "action",
         "hexbot_notify" => "message",
         "hexbot_connector_read" => "path",
         name if name.starts_with("mcp__") => args
@@ -5786,6 +5858,91 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
         let hub = EventHub::new();
         let runtime = Runtime::new(home.path().into(), hub.clone(), script).unwrap();
         (home, runtime, hub)
+    }
+    #[tokio::test]
+    async fn diagnostics_follow_the_runtime_through_late_recovered_and_rejected_prompts() {
+        let (_home, runtime, _hub) = setup();
+        let feed = |section: &str, events: &[Value]| {
+            let s = runtime
+                .sessions
+                .lock()
+                .unwrap()
+                .get(section)
+                .unwrap()
+                .clone();
+            for event in events {
+                runtime.event(&s, event.clone()).unwrap();
+            }
+        };
+        let started = |intent: &str| json!({"type":"hexbot_input_preflight","intent":intent,"disposition":"started"});
+        let reply = |stop: &str| json!({"type":"message_end","message":{"role":"assistant","stopReason":stop,"errorMessage":"Overloaded"}});
+        let end = json!({"type":"agent_end","willRetry":false});
+        let start = json!({"type":"agent_start"});
+        let settled = json!({"type":"agent_settled"});
+        for section in ["diag-late", "diag-compacted", "diag-rejected"] {
+            runtime.open_session("alice", "owl", section).await.unwrap();
+        }
+
+        // The next prompt starts before the first one settles.
+        feed(
+            "diag-late",
+            &[
+                started("a"),
+                start.clone(),
+                reply("stop"),
+                end.clone(),
+                started("b"),
+                start.clone(),
+                settled.clone(),
+            ],
+        );
+        let (runs, open) = crate::diagnostics::get().section_runs("diag-late");
+        assert_eq!(runs.len(), 1);
+        assert!(open, "the late settlement must not end the newer run");
+        feed("diag-late", &[reply("error"), end.clone(), settled.clone()]);
+        let (runs, open) = crate::diagnostics::get().section_runs("diag-late");
+        assert_eq!((runs.len(), open), (2, false));
+        assert_eq!(runs[1]["error"], "Overloaded");
+
+        // Compaction recovery continues the same run and settles once.
+        feed(
+            "diag-compacted",
+            &[
+                started("c"),
+                start.clone(),
+                reply("error"),
+                end.clone(),
+                json!({"type":"compaction_end","willRetry":true}),
+                start.clone(),
+                reply("stop"),
+                end.clone(),
+                settled.clone(),
+            ],
+        );
+        let (runs, open) = crate::diagnostics::get().section_runs("diag-compacted");
+        assert_eq!((runs.len(), open), (1, false));
+        assert!(runs[0]["error"].is_null());
+        assert_eq!(runs[0]["model_calls"], 2);
+
+        // A prompt that passed preflight but was refused settles on its own.
+        feed(
+            "diag-rejected",
+            &[
+                started("d"),
+                start.clone(),
+                started("refused"),
+                settled.clone(),
+            ],
+        );
+        let (runs, open) = crate::diagnostics::get().section_runs("diag-rejected");
+        assert_eq!((runs.len(), open), (0, true));
+        feed(
+            "diag-rejected",
+            &[reply("stop"), end.clone(), settled.clone()],
+        );
+        let (runs, open) = crate::diagnostics::get().section_runs("diag-rejected");
+        assert_eq!((runs.len(), open), (1, false));
+        assert_eq!(runs[0]["model_calls"], 1);
     }
     #[tokio::test]
     async fn transcript_identity_fragment_seed_survives_sqlite_retry_without_billing_twice() {

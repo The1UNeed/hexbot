@@ -7,11 +7,26 @@ Transparency use solid controls. Lists and messages use solid backgrounds.
 
 ## Layout
 
-Three tabs: Bots, Rooms and Daemon. Bots is a feed of bot posts. A bot opens
-its one chat. Settings, bot settings, tool
-steps and visuals open as front cards (`src/ui/Layer.tsx`) that leave the
-screen below in view. The daemon name above Bots switches daemons. The model
-pill lists the providers with a key or sign-in, plus the bot's own, each from
+A messaging app with no tabs. One list holds every bot's chat and every room,
+newest first, with the primary bot pinned on top. A Check-ins conversation from
+before the heartbeat stays in it until you delete it.
+Each row shows the face, the name, the time and the last thing said, or what
+the bot is doing while it works. Search at the bottom filters the list. A row
+opens its conversation; a long press opens the bot's profile or the room's
+settings. Rooms open full screen like a bot's chat, and archiving the open
+room returns to the list. A bot waiting on you in a conversation with another
+bot gets a line at the top of the list that opens it.
+
+Your initials at the top left open Settings: the daemon, what bots are doing
+right now, About you, models, connectors, skills, usage, devices, pairing,
+Hex Connect and updates. + at the top right makes a new bot or room. The grid
+button next to Search opens Bots & jobs: every bot's profile, scheduled jobs,
+and all rooms, archived ones included. With more than one daemon saved, its
+name above the list switches daemons; otherwise Settings does.
+
+Profiles, settings areas, tool steps, visuals and the bots' computer open as
+front cards (`src/ui/Layer.tsx`) that leave the screen below in view. The
+model pill lists the providers with a key or sign-in, plus the bot's own, each from
 `hexbot.models.list {provider}` so the provider's current list is used, as in
 the web app. Thinking levels come from `reasoning_levels`; a model the daemon
 knows nothing about offers every level. The pill and the selected level show
@@ -48,9 +63,10 @@ when Connect supplies one, and exchanges the grant directly with that daemon.
 
 | Area | Mobile controls |
 | --- | --- |
-| Bots | Feed with role and description; create, edit, delete, soul, picture, model and thinking level, tools, approvals, workspace, notifications and dreaming |
-| Conversations | Streamed chat, stop, file/image/PDF attachments, Markdown, tool steps with their results, visuals, questions and approvals |
-| Rooms | Rooms in one tab: chat, stop, switch rooms, bot membership, main bot, budgets, approvals, archive, restore and delete |
+| Bots | Chat list and Bots & jobs; create, edit, delete, soul, picture, model and thinking level, tools, approvals, workspace, notifications and dreaming |
+| Conversations | heartbeat messages in each bot's chat; streamed chat, stop, file/image/PDF attachments, Markdown, tool steps with their results, visuals, questions and approvals |
+| Computer | The bots' shared computer on its own card from a chat's computer button: the live screen with each bot's face cursor, what is happening on it, Take control and Give back, Turn on, Restart, Turn off and Reset; its size in a bot's Tools |
+| Rooms | Rooms in the chat list: chat, stop, bot membership, main bot, budgets, approvals, archive, restore from All rooms, and delete |
 | Memory | Edit each bot's memory and your About you text; inspect dreaming and restore memory |
 | Models | Provider API keys and device sign-in, model selection, daemon defaults and fallback model |
 | Jobs | Create, edit, pause, resume, run and delete; schedule, prompt, script, workspace, model, reasoning, skills and run count |
@@ -110,10 +126,10 @@ pnpm exec eas build --platform android --profile preview
 Local native builds use
 `pnpm mobile:ios` and `pnpm mobile:android` and need no EAS account.
 
-Check-in notifications use push through the EAS project above
+Heartbeat notifications use push through the EAS project above
 (`extra.eas.projectId` in `app.config.ts`), with APNs and FCM credentials on
 it. On a daemon reached through Hex Connect, the daemon asks Connect to wake the phone; the push says only that
-the primary bot has a message, never what it is.
+one of your bots has a message, never what it is.
 
 ## TestFlight automation
 

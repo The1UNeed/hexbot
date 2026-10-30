@@ -11,6 +11,7 @@ use std::{
     io::Write,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
+    time::Instant,
 };
 
 fn home() -> Result<PathBuf> {
@@ -239,6 +240,9 @@ async fn run() -> Result<()> {
     if command != "serve" {
         return Err(Error::new(4200, format!("unknown command: {command}")));
     }
+    // Launch time counts from here (Settings, Advanced, Diagnostics).
+    let diagnostics = hexbot_core::diagnostics::get();
+    let phase = Instant::now();
     let mut host = None;
     let mut port = std::env::var("HEXBOT_PORT")
         .ok()
@@ -281,16 +285,21 @@ async fn run() -> Result<()> {
         &serde_json::to_vec(&serde_json::json!({"pid":std::process::id(),"executable":executable}))
             .unwrap(),
     )?;
+    diagnostics.launch_phase("Lock the home directory", phase);
+    let phase = Instant::now();
     db::migrate(&home)?;
     if let Some(lan) = lan {
         hexbot_core::settings::update(&home, "local", &serde_json::json!({"lan_enabled":lan}))?;
     }
+    diagnostics.launch_phase("Upgrade the database", phase);
+    let phase = Instant::now();
     let pi = common::pi_executable()?;
     let dist = std::env::var_os("HEXBOT_WEB_DIST")
         .map(PathBuf::from)
         .or_else(|| common::bundled_runtime().map(|root| root.join("web")))
         .or_else(|| Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/web/dist")))
         .filter(|p| p.join("index.html").is_file());
+    diagnostics.launch_phase("Find Pi and the web app", phase);
     let signal = shutdown_signal();
     tokio::pin!(signal);
     let mut previous: Option<std::sync::Arc<App>> = None;
@@ -308,6 +317,7 @@ async fn run() -> Result<()> {
             }),
             port,
         );
+        let phase = Instant::now();
         let listener = match tokio::net::TcpListener::bind(address).await {
             Ok(listener) => listener,
             Err(error) => {
@@ -321,10 +331,17 @@ async fn run() -> Result<()> {
         port = address.port();
         // Changing LAN access rebinds the listener; running bots keep going.
         let first = previous.is_none();
+        if first {
+            diagnostics.launch_phase("Open the port", phase);
+        }
+        let phase = Instant::now();
         let app = match previous.take() {
             Some(previous) => previous.rebind(address)?,
             None => App::new(home.clone(), address, pi.clone(), dist.clone())?,
         };
+        if first {
+            diagnostics.launch_phase("Start bots, rooms and memory", phase);
+        }
         common::atomic_write(
             &home.join("serve-state.json"),
             serde_json::json!({"host":address.ip().to_string(),"port":port})
@@ -332,12 +349,21 @@ async fn run() -> Result<()> {
                 .as_bytes(),
         )?;
         if first {
+            let phase = Instant::now();
             app.rooms.reconcile().await?;
+            diagnostics.launch_phase("Recover room turns", phase);
+            let phase = Instant::now();
             app.dreaming.start().await?;
+            diagnostics.launch_phase("Schedule dreaming", phase);
         }
+        let phase = Instant::now();
         if let Err(error) = services::start_daemon(&home, port).await {
             eprintln!("Connect: {error}");
         }
+        if first {
+            diagnostics.launch_phase("Start Hex Connect", phase);
+        }
+        let phase = Instant::now();
         let (stop, stopped) = tokio::sync::oneshot::channel();
         let router = server::router(app.clone());
         let mut serving = tokio::spawn(async move {
@@ -355,6 +381,11 @@ async fn run() -> Result<()> {
         }
         if let Err(error) = finish_native_transition(&home) {
             eprintln!("Runtime cleanup: {error}");
+        }
+        if first {
+            diagnostics.launch_phase("Clean up old runtimes", phase);
+            diagnostics.launched();
+            hexbot_core::diagnostics::start_sampler();
         }
         if first
             && prints_sign_in_link(std::io::stdout().is_terminal(), |name| {

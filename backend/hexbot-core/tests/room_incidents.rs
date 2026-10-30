@@ -191,6 +191,8 @@ async fn actual_pi_room_failure_survives_restart_and_deletion_keeps_connector_fa
         assert_eq!(bot["status_detail"]["room_id"], room);
         assert_eq!(bot["status_detail"]["section_id"], failure["section_id"]);
         assert_eq!(bot["status_detail"]["session_id"], failure["session_id"]);
+        // The room shows it, not the bot's chat.
+        assert_eq!(bot["status_detail"]["in_chat"], false);
     }
     assert_eq!(
         reopened

@@ -47,6 +47,40 @@ export interface ClarifyRequest {
   sessionId: string
 }
 
+/**
+ * The sign-in card's fields, on an approval a bot asks with
+ * `hexbot_passwords`. What the user types goes to the daemon with the answer
+ * and is saved in Passwords; the bot never sees it.
+ */
+export interface SignInForm {
+  kind: 'sign_in'
+  /** The host, such as app.schoology.com. */
+  site: string
+  title: string
+  /** True when it replaces the password of a login already saved. */
+  update?: boolean
+  url?: string
+  username?: string
+}
+
+/** A saved login in Settings, Passwords: never its password or code key. */
+export interface PasswordLogin {
+  /** The bots that may use it; null means every bot, including new ones. */
+  bots: null | string[]
+  has_code: boolean
+  has_password: boolean
+  id: string
+  notes: string
+  site: null | string
+  title: string
+  updated_at: null | number
+  url: string
+  username: string
+}
+
+/** Where the vault's key is kept; null before the first password. */
+export type PasswordKeyStore = 'file' | 'keychain' | 'locked' | 'secret_service' | null
+
 export interface ApprovalRequest {
   messageId?: string
   turnId?: string
@@ -55,6 +89,7 @@ export interface ApprovalRequest {
   decision?: ApprovalChoice
   /** The command or action, rendered in monospace. */
   command?: string
+  form?: SignInForm
   reason?: string
   receivedAt: number
   requestId: string
@@ -86,6 +121,11 @@ export type BotStatus = 'idle' | 'needs_you' | 'stopped' | 'working'
 
 export interface BotStatusDetail {
   action: null | { kind: 'fix_connector'; connector: string } | { kind: 'retry' }
+  /**
+   * A failure with no room or conversation of its own, such as a dream's:
+   * the bot's chat shows it. Older daemons leave it out.
+   */
+  in_chat?: boolean
   room_id: null | string
   section_id: null | string
   session_id: null | string
@@ -128,6 +168,43 @@ export interface Bot {
   updated_at: null | number
   /** Per-bot working directory; null means the deployment workspace. */
   workdir?: null | string
+}
+
+/** The bots' computer, one Cua sandbox per daemon (docs/api.md, "Computer"). */
+export type ComputerState =
+  'absent' | 'error' | 'resetting' | 'restarting' | 'running' | 'starting' | 'stopped' | 'stopping'
+
+export type ComputerSize = 'large' | 'medium' | 'small'
+/**
+ * How the computer's screen streams to this device. `auto` follows the
+ * connection, from 1080p at 60 fps down to 720p at 30 fps; the others hold.
+ */
+export type ComputerQuality = '1080p30' | '1080p60' | '720p30' | '720p60' | 'auto'
+
+/** Where a bot last acted, as fractions of the screen, and when. */
+export interface ComputerCursor {
+  action: string
+  /** Seconds since the epoch. */
+  at: number
+  bot: string
+  x: number
+  y: number
+}
+
+export interface ComputerStatus {
+  /** The action in progress, such as `click`, and the bot doing it. */
+  activity: null | string
+  actor: null | string
+  /** Whether the daemon's computer has Cua; events leave it out. */
+  available?: boolean
+  /** Who is using the computer: the bots, or the user who took over. */
+  control: 'bot' | 'user'
+  cursors: ComputerCursor[]
+  error: null | string
+  image?: string
+  size?: ComputerSize
+  sizes?: { cpu: number; memory_gb: number; name: ComputerSize }[]
+  state: ComputerState
 }
 
 /** Pi's thinking levels; Pi clamps each to what the model supports. */
@@ -232,11 +309,110 @@ export interface ConnectorTest {
   ok: boolean
 }
 
+/** One of an MCP server's environment values or headers; the value stays on the daemon. */
+export interface PluginValue {
+  /** Masked tail of the value, like "…4f2a". */
+  hint: null | string
+  key: string
+  set: boolean
+}
+
+export interface PluginServer {
+  args?: string[]
+  command?: string
+  env: PluginValue[]
+  headers: PluginValue[]
+  transport: 'http' | 'stdio'
+  url?: string
+}
+
+/** `hexbot.plugins.list`: each kind with the bots it is given to. */
+export interface PluginsList {
+  capabilities: {
+    bots: string[]
+    description: string
+    id: string
+    kind: 'capability'
+    name: string
+    ready: boolean
+    /** What setting it up takes, when it isn't. */
+    setup: null | string
+  }[]
+  /** Connectors and MCP servers; a server also carries `server`. */
+  connectors: (Connector & {
+    bots: string[]
+    kind: 'connector'
+    ready?: boolean
+    server?: PluginServer
+  })[]
+  /** Absent on daemons from before packages. */
+  packages?: {
+    bots: string[]
+    connector: Connector | null
+    description: string
+    id: string
+    /** The bot that asked for it, or null when you installed it. */
+    installed_by: null | string
+    kind: 'package'
+    name: string
+    ready: boolean
+    server: null | PluginServer
+    skills: { description: string; name: string }[]
+    state: ConnectorState
+    state_text: string
+  }[]
+  skills: (SkillInfo & {
+    bots: string[]
+    disabled_globally?: boolean
+    id: string
+    kind: 'skill'
+    source?: string
+  })[]
+}
+
+export type PluginKind = 'capability' | 'connector' | 'package' | 'skill'
+
+/** One row of Settings, Plugins, whatever its kind. */
+export interface Plugin {
+  bots: string[]
+  /** A connector's group, a skill's category, or `mcp`, `skills`, `tools`. */
+  category: string
+  /** The connector row behind a connector or a server, for set-up and tests. */
+  connector?: Connector | null
+  description: string
+  /** A skill switched off in Settings for every bot. */
+  disabled_globally?: boolean
+  icon: string
+  id: string
+  installed_by?: null | string
+  kind: PluginKind
+  name: string
+  /** It can be given to a bot now; one that isn't can still be taken away. */
+  ready: boolean
+  server?: null | PluginServer
+  skills?: { description: string; name: string }[]
+  source?: string
+  state: ConnectorState
+  state_text: string
+}
+
+/** Something a skill needs before bots can use it. */
+export type SkillRequirement =
+  | { kind: 'command'; name: string }
+  | { kind: 'env'; name: string }
+  | { kind: 'platform'; name: string[] }
+
 export interface SkillInfo {
   category: string
   description: string
+  /** On for this bot and ready: what the bot sees. */
   enabled: boolean
+  /** This bot's own switch, kept while the skill waits for setup. */
+  enabled_for_bot?: boolean
+  missing?: SkillRequirement[]
   name: string
+  /** Everything it needs is on the daemon's computer. Older daemons omit it. */
+  ready?: boolean
 }
 
 export type ConnectionStatus =
@@ -264,6 +440,8 @@ export interface DaemonInfo {
    * daemon makes a new section every time.
    */
   one_chat?: true
+  /** True once `session.recall` takes back your latest message in a chat; absent on older daemons. */
+  recall?: true
   /** Input, run and assistant fragment correlation metadata; absent on older daemons. */
   transcript_identity?: boolean
   /** How the daemon can update itself when asked; absent on older daemons. */
@@ -336,6 +514,12 @@ export interface Message {
    */
   parts?: string[]
   role: MessageRole
+  /**
+   * When it was sent, for showing the time: a bot's reply when it finished,
+   * from its last history row or its live completion. `createdAt` stays 0 on
+   * restored messages, which marks them as history.
+   */
+  sentAt?: number
   /** Set once `message.complete` arrives with a non-ok status. */
   status?: string
   streaming: boolean
@@ -416,8 +600,8 @@ export interface Section {
    */
   peer_bot?: null | string
   /**
-   * Set on a section with its own job, such as the primary bot's Check-ins
-   * (`checkins`). It is never the bot's chat. Older daemons leave it out.
+   * Set on a section with its own job, such as a Check-ins from before the
+   * heartbeat (`checkins`). It is never the bot's chat. Older daemons leave it out.
    */
   purpose?: null | string
   preview: string
@@ -453,45 +637,37 @@ export interface Settings {
   workspace_dir: string
   dream_enabled: boolean
   dream_time: string
-  /** Absent on daemons from before check-ins. */
-  checkin_enabled?: boolean
-  checkin_every_minutes?: number
-  /** `HH:MM-HH:MM` in the daemon's time zone; may run past midnight. */
-  checkin_hours?: string
+  /** Every bot's heartbeat. Absent on daemons from before the heartbeat. */
+  heartbeat_enabled?: boolean
 }
 
-export interface CheckinWakeup {
-  id: string
-  /** RFC 3339. */
-  at: string
-  /** The daemon's local time, already formatted. */
-  local: string
-  note: string
-}
-
-export interface CheckinRun {
+export interface HeartbeatRun {
   id: string
   bot: string
-  kind: 'heartbeat' | 'manual' | 'wakeup'
+  kind: 'manual' | 'scheduled'
   started_at: string
   finished_at: null | string
   status: 'complete' | 'failed' | 'running'
+  /** The run's own log, or why it failed. */
   summary: string
+  /** It posted in the bot's chat. */
   messaged: boolean
 }
 
-export interface CheckinStatus {
+/** A bot's heartbeat: its checklist, HEARTBEAT.md, and what came of it. */
+export interface HeartbeatStatus {
   enabled: boolean
   every_minutes: number
-  hours: string
-  /** The primary bot, which is the one that checks in. */
-  bot: null | string
-  /** Its Check-ins section, once it has messaged you. */
-  section_id: null | string
+  bot: string
+  text: string
+  cap: number
+  /** Nothing to check yet, so nothing runs. */
+  empty: boolean
   running: boolean
   next_run_at: null | string
-  wakeups: CheckinWakeup[]
-  recent: CheckinRun[]
+  recent: HeartbeatRun[]
+  /** The Check-ins conversation from before the heartbeat, while it is kept. */
+  earlier_checkins: null | string
 }
 
 /** The one person a daemon belongs to. */
@@ -503,6 +679,182 @@ export interface CurrentUser {
   id: string
   display_name: string
 }
+/** One span: an RPC, a run, or a model call or tool inside a run (`hexbot.diagnostics.get`). */
+export interface DiagnosticsSpan {
+  id: number
+  trace: number
+  parent: number | null
+  name: string
+  kind: 'model' | 'rpc' | 'run' | 'tool'
+  /** Unix milliseconds. */
+  start: number
+  duration_ms: number
+  error: string | null
+  attrs: Record<string, unknown>
+  /** Traces only: spans in the trace and how many failed. */
+  spans?: number
+  errors?: number
+}
+
+export interface DiagnosticsProcess {
+  pid: number
+  ppid: number
+  depth: number
+  name: string
+  label: string | null
+  /** Percent of one core. */
+  cpu: number
+  /** Resident memory in bytes. */
+  rss: number
+  /** `[unix ms, cpu, rss]`, oldest first. */
+  history: [number, number, number][] | null
+}
+
+export interface DiagnosticsStatement {
+  sql: string
+  count: number
+  total_ms: number
+  avg_ms: number
+  max_ms: number
+}
+
+export interface DiagnosticsCacheRow {
+  name: string
+  calls: number
+  input: number
+  cache_read: number
+  cache_write: number
+  output: number
+  cost: number
+  hit_rate: number | null
+}
+
+export interface DiagnosticsFailure {
+  at: number
+  kind: 'process' | 'rpc' | 'run'
+  source: string
+  message: string
+  trace: number | null
+}
+
+export interface DiagnosticsFailureGroup {
+  kind: DiagnosticsFailure['kind']
+  source: string
+  pattern: string
+  example: string
+  count: number
+  first: number
+  last: number
+}
+
+/** `hexbot.diagnostics.get`: what the daemon measured since it started. */
+export interface DiagnosticsSnapshot {
+  generated_at: number
+  daemon: {
+    pid: number
+    version: string
+    pi_version: string | null
+    started_at: number
+    uptime_s: number
+    supervisor: string | null
+    home: string
+  }
+  host: {
+    hostname: string | null
+    os: string
+    os_version: string | null
+    kernel: string | null
+    arch: string
+    cpu_model: string | null
+    cpu_cores: number | null
+    memory_total: number | null
+    memory_available?: number | null
+    load?: [number, number, number]
+    disk_total?: number
+    disk_available?: number
+  }
+  launch: {
+    total_ms: number | null
+    phases: { name: string; start_ms: number; duration_ms: number }[]
+  }
+  resources: {
+    interval_s: number
+    error: string | null
+    samples: {
+      t: number
+      cpu: number
+      rss: number
+      processes: number
+      daemon_cpu: number
+      daemon_rss: number
+    }[]
+    processes: DiagnosticsProcess[]
+  }
+  load: {
+    sessions: number
+    running: number
+    capacity: number
+    capacity_free: number
+    sockets: number
+    open_runs: number
+    rpc_per_minute: number
+    runs_last_hour: number
+  }
+  caches: {
+    prompt:
+      | {
+          window_h: number
+          calls: number
+          input: number
+          cache_read: number
+          cache_write: number
+          output: number
+          hit_rate: number | null
+          by_bot: DiagnosticsCacheRow[]
+          by_model: DiagnosticsCacheRow[]
+        }
+      | { error: string }
+    sqlite: {
+      opens: number
+      open_avg_ms: number
+      open_max_ms: number
+      cache_hits: number
+      cache_misses: number
+      cache_hit_rate: number | null
+      statements: number
+      statement_avg_ms: number
+      statement_total_ms: number
+      busiest: DiagnosticsStatement[]
+      slowest: DiagnosticsStatement[]
+      db_bytes: number | null
+      runtime_db_bytes: number | null
+      wal_bytes: number | null
+    }
+  }
+  spans: {
+    kept: number
+    capacity: number
+    names: {
+      name: string
+      kind: DiagnosticsSpan['kind']
+      count: number
+      errors: number
+      avg_ms: number
+      p95_ms: number | null
+      max_ms: number | null
+      total_ms: number
+      last_at: number
+    }[]
+    recent: DiagnosticsSpan[]
+    traces: DiagnosticsSpan[]
+  }
+  failures: {
+    total: number
+    recent: DiagnosticsFailure[]
+    common: DiagnosticsFailureGroup[]
+  }
+}
+
 export interface UsageSummary {
   input_tokens: number
   output_tokens: number

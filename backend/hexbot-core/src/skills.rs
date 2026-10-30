@@ -131,11 +131,79 @@ pub struct Skill {
     pub description: String,
     pub category: Option<String>,
     pub source: String,
+    /// The plugin package the skill came with, if any (`plugins.rs`).
+    pub plugin: Option<String>,
     pub path: PathBuf,
     pub enabled_for_bot: bool,
     pub disabled_globally: bool,
-    /// Compatibility with the existing web client.
+    /// Whether everything the skill declares it needs is on this computer.
+    pub ready: bool,
+    /// What is missing, in the order the skill declares it.
+    pub missing: Vec<Requirement>,
+    /// Switched on and ready: what bots see. Also read by the web client.
     pub enabled: bool,
+    #[serde(skip)]
+    needs: Vec<Requirement>,
+}
+
+/// Something a skill's frontmatter says it needs: `platforms`, and
+/// `prerequisites` `commands` and `env_vars`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "name", rename_all = "snake_case")]
+pub enum Requirement {
+    Platform(Vec<String>),
+    Command(String),
+    Env(String),
+}
+
+fn requirements(meta: &Value) -> Vec<Requirement> {
+    let list = |value: &Value| -> Vec<String> {
+        match value {
+            Value::String(s) => vec![s.clone()],
+            Value::Array(items) => items
+                .iter()
+                .filter_map(|v| v.as_str().or_else(|| v["name"].as_str()))
+                .map(str::to_owned)
+                .collect(),
+            _ => vec![],
+        }
+    };
+    let mut needs = vec![];
+    let platforms = list(&meta["platforms"]);
+    if !platforms.is_empty() {
+        needs.push(Requirement::Platform(platforms));
+    }
+    needs.extend(
+        list(&meta["prerequisites"]["commands"])
+            .into_iter()
+            .map(Requirement::Command),
+    );
+    needs.extend(
+        list(&meta["prerequisites"]["env_vars"])
+            .into_iter()
+            .map(Requirement::Env),
+    );
+    needs
+}
+
+/// The platform names skills use for this computer.
+fn this_platform() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => "macos",
+        "windows" => "windows",
+        _ => "linux",
+    }
+}
+
+fn met(need: &Requirement, env: &BTreeMap<String, String>) -> bool {
+    match need {
+        Requirement::Platform(names) => names.iter().any(|n| n == this_platform()),
+        Requirement::Command(name) => crate::native_tools::on_path(name).is_some(),
+        Requirement::Env(name) => {
+            env.get(name).is_some_and(|v| !v.is_empty())
+                || std::env::var(name).is_ok_and(|v| !v.is_empty())
+        }
+    }
 }
 
 fn bundled_root() -> PathBuf {
@@ -185,10 +253,14 @@ fn discover(
                 description: description.chars().take(1000).collect(),
                 category: (!category.is_empty()).then(|| category.into_owned()),
                 source: source.into(),
+                plugin: None,
                 path: main,
                 enabled_for_bot: true,
                 disabled_globally: false,
+                ready: true,
+                missing: vec![],
                 enabled: true,
+                needs: requirements(&meta),
             },
         );
         return Ok(());
@@ -225,32 +297,85 @@ pub fn resolve(home: &Path, bot: Option<&str>) -> Result<Vec<Skill>> {
     resolve_unlocked(home, bot)
 }
 
+/// A roster shares discovery only for this read; grants and private skills
+/// are still resolved separately for every bot.
+pub(crate) fn resolve_for_bots<'a>(
+    home: &Path,
+    bots: impl IntoIterator<Item = &'a str>,
+) -> Result<Vec<Vec<Skill>>> {
+    let mut bots = bots.into_iter().peekable();
+    if bots.peek().is_none() {
+        return Ok(vec![]);
+    }
+    let _guard = read_lock()?;
+    let shared = discover_shared(home, &bundled_root())?;
+    bots.map(|bot| resolve_discovered(home, Some(bot), shared.clone()))
+        .collect()
+}
+
 // Caller holds either side of LOCK through discovery and any body reads.
 pub(crate) fn resolve_unlocked(home: &Path, bot: Option<&str>) -> Result<Vec<Skill>> {
     resolve_with(home, bot, &bundled_root())
 }
 fn resolve_with(home: &Path, bot: Option<&str>, bundled: &Path) -> Result<Vec<Skill>> {
+    resolve_discovered(home, bot, discover_shared(home, bundled)?)
+}
+fn discover_shared(home: &Path, bundled: &Path) -> Result<BTreeMap<String, Skill>> {
     let mut found = BTreeMap::new();
     discover(bundled, bundled, "bundled", &mut found)?;
+    // A package's skills sit under its name, like a category of their own.
+    for plugin in crate::plugins::package_names(home)? {
+        let root = crate::plugins::packages_root(home)
+            .join(&plugin)
+            .join("skills");
+        safe_path(home, &root)?;
+        let mut packaged = BTreeMap::new();
+        discover(&root, &root, "plugin", &mut packaged)?;
+        for mut skill in packaged.into_values() {
+            skill.category = Some(plugin.clone());
+            skill.plugin = Some(plugin.clone());
+            found.insert(skill.name.clone(), skill);
+        }
+    }
     let library = home.join("skills");
     safe_path(home, &library)?;
     discover(&library, &library, "library", &mut found)?;
-    let config = if let Some(bot) = bot {
+    Ok(found)
+}
+fn resolve_discovered(
+    home: &Path,
+    bot: Option<&str>,
+    mut found: BTreeMap<String, Skill>,
+) -> Result<Vec<Skill>> {
+    let (config, env) = if let Some(bot) = bot {
         let profile = catalog::profile(home, bot)?;
         let root = profile.join("skills");
         safe_path(home, &root)?;
         discover(&root, &root, "bot", &mut found)?;
         safe_path(home, &profile.join("config.yaml"))?;
-        common::read_config(&profile)?
+        (
+            common::read_config(&profile)?,
+            crate::connectors::profile_credentials(home, &profile)?,
+        )
     } else {
-        json!({})
+        (
+            json!({}),
+            crate::connectors::profile_credentials(home, home)?,
+        )
     };
     safe_path(home, &home.join("config.yaml"))?;
     let global = common::read_config(home)?;
     for skill in found.values_mut() {
         skill.disabled_globally = is_disabled(&global, &skill.name);
         skill.enabled_for_bot = !is_disabled(&config, &skill.name);
-        skill.enabled = skill.enabled_for_bot && !skill.disabled_globally;
+        skill.missing = skill
+            .needs
+            .iter()
+            .filter(|need| !met(need, &env))
+            .cloned()
+            .collect();
+        skill.ready = skill.missing.is_empty();
+        skill.enabled = skill.enabled_for_bot && !skill.disabled_globally && skill.ready;
     }
     Ok(found.into_values().collect())
 }
@@ -380,6 +505,16 @@ fn save(home: &Path, bot: Option<&str>, p: &Value) -> Result<Skill> {
     let existing = resolve_unlocked(home, bot)?
         .into_iter()
         .find(|s| s.name == name);
+    // A library copy would replace the packaged skill, and the package would
+    // no longer give or remove it.
+    if bot.is_none()
+        && let Some(plugin) = existing.as_ref().and_then(|s| s.plugin.as_ref())
+    {
+        return Err(Error::new(
+            4208,
+            format!("The skill {name} comes with the plugin {plugin}. Use another name."),
+        ));
+    }
     let root = bot
         .map(|b| catalog::profile(home, b))
         .transpose()?
@@ -430,6 +565,13 @@ fn share(home: &Path, bot: &str, name: &str, replace: bool) -> Result<Skill> {
     let library = resolve_unlocked(home, None)?
         .into_iter()
         .find(|s| s.name == name);
+    // Like a save, a share can't take a packaged skill's name.
+    if let Some(plugin) = library.as_ref().and_then(|s| s.plugin.as_ref()) {
+        return Err(Error::new(
+            4208,
+            format!("The skill {name} comes with the plugin {plugin}. Use another name."),
+        ));
+    }
     if library.is_some() && !replace {
         return Err(Error::new(
             4208,
@@ -543,6 +685,14 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Result<Value>
                 return Err(Error::new(
                     4202,
                     "Bundled skills can be turned off, not deleted.",
+                ));
+            }
+            if let Some(plugin) = &skill.plugin {
+                return Err(Error::new(
+                    4202,
+                    format!(
+                        "This skill comes with the plugin {plugin}. Remove the plugin instead."
+                    ),
                 ));
             }
             let dir = skill.path.parent().unwrap();
@@ -766,6 +916,75 @@ mod tests {
         .unwrap();
         dir
     }
+    #[test]
+    fn roster_discovery_matches_individual_reads_and_refreshes_between_calls() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        let package = h.join("plugins/test-package");
+        put(&package.join("skills"), "work/packaged", "packaged");
+        put(&package.join("skills"), "work/overridden", "packaged");
+        fs::write(package.join("plugin.json"), "{}").unwrap();
+        put(&h.join("skills"), "work/overridden", "library");
+        put(
+            &h.join("profiles/owl/skills"),
+            "private/overridden",
+            "private",
+        );
+        put(
+            &h.join("profiles/owl/skills"),
+            "private/owl-only",
+            "owl only",
+        );
+        let needs_env = put(&h.join("skills"), "work/needs-env", "needs env");
+        fs::write(
+            needs_env.join("SKILL.md"),
+            "---\ndescription: Needs a profile credential.\nprerequisites:\n  env_vars: [HEXBOT_ROSTER_TEST_CREDENTIAL]\n---\nBody.\n",
+        )
+        .unwrap();
+        fs::write(
+            h.join("profiles/owl/.env"),
+            "HEXBOT_ROSTER_TEST_CREDENTIAL=fixture\n",
+        )
+        .unwrap();
+        set_enabled(h, Some("fox"), "packaged", false).unwrap();
+        set_enabled(h, None, "owl-only", false).unwrap();
+        let check = || {
+            let roster = resolve_for_bots(h, ["owl", "fox"]).unwrap();
+            for (bot, skills) in ["owl", "fox"].into_iter().zip(&roster) {
+                assert_eq!(
+                    serde_json::to_vec(skills).unwrap(),
+                    serde_json::to_vec(&resolve(h, Some(bot)).unwrap()).unwrap(),
+                    "{bot}"
+                );
+            }
+            roster
+        };
+        let roster = check();
+        let find =
+            |index: usize, name: &str| roster[index].iter().find(|s| s.name == name).unwrap();
+        assert_eq!(find(0, "overridden").source, "bot");
+        assert_eq!(find(1, "overridden").source, "library");
+        assert_eq!(find(0, "packaged").plugin.as_deref(), Some("test-package"));
+        assert!(find(0, "packaged").enabled);
+        assert!(!find(1, "packaged").enabled_for_bot);
+        assert!(find(0, "owl-only").disabled_globally);
+        assert!(!roster[1].iter().any(|s| s.name == "owl-only"));
+        assert!(find(0, "needs-env").ready);
+        assert!(!find(1, "needs-env").ready);
+        assert!(roster[0].iter().any(|s| s.source == "bundled"));
+        put(&h.join("skills"), "work/added-later", "new");
+        set_enabled(h, Some("fox"), "packaged", true).unwrap();
+        let refreshed = check();
+        assert!(refreshed[1].iter().any(|s| s.name == "added-later"));
+        assert!(
+            refreshed[1]
+                .iter()
+                .find(|s| s.name == "packaged")
+                .unwrap()
+                .enabled
+        );
+    }
+
     #[test]
     fn precedence_grants_and_private_visibility() {
         let home = tempfile::tempdir().unwrap();

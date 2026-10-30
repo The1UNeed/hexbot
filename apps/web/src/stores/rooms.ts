@@ -26,6 +26,11 @@ export interface RoomsState {
   create: (input: RoomCreateInput) => Promise<Room>
   /** Forget a room the daemon deleted. */
   drop: (id: string) => void
+  /**
+   * How each room's last turn ended (`complete`, `failed`, `stopped`). The
+   * turn ends before its `turn.failed` event arrives, so cues read this.
+   */
+  endedByRoom: Record<string, string>
   error: null | string
   eventsByRoom: Record<string, RoomEvent[]>
   /** First verified event; absent for a log made only from live events. */
@@ -210,8 +215,11 @@ function dropRoom(state: RoomsState, id: string): Partial<RoomsState> {
   delete byId[id]
   delete eventsByRoom[id]
   delete liveTurnsByRoom[id]
+  const endedByRoom = { ...state.endedByRoom }
+  delete endedByRoom[id]
 
   return {
+    endedByRoom,
     answers: authority.outcomes(),
     byId,
     eventsByRoom,
@@ -224,6 +232,7 @@ function dropRoom(state: RoomsState, id: string): Partial<RoomsState> {
 export const useRooms = create<RoomsState>((set, get) => ({
   byId: {},
   answers: {},
+  endedByRoom: {},
   error: null,
   eventsByRoom: {},
   logBaseline: {},
@@ -241,6 +250,7 @@ export const useRooms = create<RoomsState>((set, get) => ({
     set({
       byId: {},
       answers: {},
+      endedByRoom: {},
       order: [],
       eventsByRoom: {},
       logBaseline: {},
@@ -730,6 +740,11 @@ export const useRooms = create<RoomsState>((set, get) => ({
         }
 
         delete current[turn.bot]
+
+        return {
+          endedByRoom: { ...state.endedByRoom, [turn.room_id]: turn.status },
+          liveTurnsByRoom: { ...state.liveTurnsByRoom, [turn.room_id]: current }
+        }
       }
 
       return { liveTurnsByRoom: { ...state.liveTurnsByRoom, [turn.room_id]: current } }

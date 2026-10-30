@@ -8,25 +8,33 @@
 import { useConnection } from '../stores/connection'
 
 import { rpcCall } from './rpc'
+import { toMillis } from './time'
 import type {
   ApprovalChoice,
   Bot,
   BotCreateInput,
   BotUpdatePatch,
-  CheckinStatus,
   ClarifyQuestion,
   ClarifyRequest,
   ClarifyRequestPayload,
+  ComputerQuality,
+  ComputerSize,
+  ComputerStatus,
   Connector,
   ConnectorTest,
   ContextUsage,
   DaemonInfo,
   DaemonUpdateStatus,
   Device,
+  HeartbeatStatus,
   Message,
   ModelOption,
   NetworkInfo,
   PairingCode,
+  PasswordKeyStore,
+  PasswordLogin,
+  PluginKind,
+  PluginsList,
   Provider,
   ProviderLogin,
   Room,
@@ -37,7 +45,7 @@ import type {
   SkillInfo,
   Usage
 } from './types'
-import type { CurrentUser, UsageSummary } from './types'
+import type { CurrentUser, DiagnosticsSnapshot, DiagnosticsSpan, UsageSummary } from './types'
 
 /** Raw history row as projected by Hexbot `session.history`. */
 export interface HistoryRow {
@@ -252,6 +260,8 @@ export function connectorsSetForBot(
 
 export interface McpServerInput {
   args?: string[]
+  /** Also give the server to this bot. Saving keeps the bots it already had. */
+  bot?: string
   command?: string
   env?: Record<string, string>
   name: string
@@ -265,6 +275,112 @@ export function connectorsAddMcp(input: McpServerInput): Promise<{ connector: Co
 
 export function connectorsRemoveMcp(name: string): Promise<{ removed: boolean }> {
   return rpcCall<{ removed: boolean }>('hexbot.connectors.remove_mcp', { name })
+}
+
+// ---------------------------------------------------------------------------
+// Plugins: connectors, MCP servers, skills, built-in tools and packages
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Passwords
+// ---------------------------------------------------------------------------
+
+export interface PasswordsList {
+  bots: string[]
+  logins: PasswordLogin[]
+  store: PasswordKeyStore
+}
+
+/** A new login (no `id`) or a change; fields left out stay. An empty `code` removes it. */
+export interface PasswordInput {
+  bots?: null | string[]
+  code?: string
+  id?: string
+  notes?: string
+  password?: string
+  title?: string
+  url?: string
+  username?: string
+}
+
+export function passwordsList(): Promise<PasswordsList> {
+  return rpcCall<PasswordsList>('hexbot.passwords.list', {})
+}
+
+export function passwordsSave(input: PasswordInput): Promise<{ login: PasswordLogin }> {
+  return rpcCall<{ login: PasswordLogin }>('hexbot.passwords.save', { ...input })
+}
+
+export function passwordsSetBots(
+  id: string,
+  bots: null | string[]
+): Promise<{ login: PasswordLogin }> {
+  return rpcCall<{ login: PasswordLogin }>('hexbot.passwords.set_bots', { bots, id })
+}
+
+export function passwordsDelete(id: string): Promise<unknown> {
+  return rpcCall('hexbot.passwords.delete', { id })
+}
+
+/** The password and the one-time code for now, for the owner only. */
+export function passwordsReveal(
+  id: string
+): Promise<{ code: null | { code: string; valid_for: number }; password: string }> {
+  return rpcCall('hexbot.passwords.reveal', { id })
+}
+
+export function pluginsList(): Promise<PluginsList> {
+  return rpcCall<PluginsList>('hexbot.plugins.list', {})
+}
+
+export function pluginsSetBots(kind: PluginKind, id: string, bots: string[]): Promise<unknown> {
+  return rpcCall('hexbot.plugins.set_bots', { bots, id, kind })
+}
+
+export interface PluginInstallInput {
+  /** The bots it starts on for; every bot when left out. */
+  bots?: string[]
+  description?: string
+  mcp?: {
+    args?: string[]
+    command?: string
+    env?: Record<string, string>
+    headers?: Record<string, string>
+    url?: string
+  }
+  name: string
+  skills?: { content: string; name: string }[]
+}
+
+export function pluginsInstall(input: PluginInstallInput): Promise<unknown> {
+  return rpcCall('hexbot.plugins.install', { ...input })
+}
+
+/** Values set to null are removed; names left out keep their value. */
+export interface PluginConfigureInput {
+  args?: string[]
+  command?: string
+  env?: Record<string, null | string>
+  headers?: Record<string, null | string>
+  url?: string
+}
+
+export function pluginsConfigure(
+  kind: PluginKind,
+  id: string,
+  change: PluginConfigureInput
+): Promise<unknown> {
+  return rpcCall('hexbot.plugins.configure', { id, kind, ...change })
+}
+
+/** Removes a package, with its server and skills, for every bot. */
+export function pluginsRemove(id: string): Promise<{ removed: boolean }> {
+  return rpcCall<{ removed: boolean }>('hexbot.plugins.remove', { id, kind: 'package' })
+}
+
+/** A skill's switch for every bot, under each bot's own. */
+export function skillsSetGlobal(name: string, enabled: boolean): Promise<unknown> {
+  return rpcCall('hexbot.skills.set_global', { enabled, name })
 }
 
 export function skillsList(bot: string): Promise<{ skills: SkillInfo[] }> {
@@ -377,14 +493,31 @@ export const dreamingList = (bot: string, limit = 10) =>
 export const dreamingRestore = (id: string) =>
   rpcCall<{ bot: string; memory_md: string }>('hexbot.dreaming.restore', { id })
 
-export const checkinsStatus = () => rpcCall<CheckinStatus>('hexbot.checkins.status')
-export const checkinsRunNow = () => rpcCall<{ id: string }>('hexbot.checkins.run_now')
-/** Delete a section that is not a bot's chat, such as Check-ins (4202 for a chat). */
+export const computerStatus = () => rpcCall<ComputerStatus>('hexbot.computer.status')
+/** Start, stop, restart or reset; the step runs on and reports `hexbot.computer.changed`. */
+export const computerStep = (step: 'reset' | 'restart' | 'start' | 'stop') =>
+  rpcCall<ComputerStatus>(`hexbot.computer.${step}`)
+export const computerControl = (holder: 'bot' | 'user') =>
+  rpcCall<ComputerStatus>('hexbot.computer.control', { holder })
+/** A link, relative to the daemon, to the computer's screen; `control` takes over. */
+export const computerView = (control: boolean, quality: ComputerQuality = 'auto') =>
+  rpcCall<{ control: boolean; expires_at: number; path: string }>('hexbot.computer.view', {
+    control,
+    quality
+  })
+export const computerConfigure = (size: ComputerSize) =>
+  rpcCall<ComputerStatus>('hexbot.computer.configure', { size })
+
+export const heartbeatStatus = (bot: string) =>
+  rpcCall<HeartbeatStatus>('hexbot.heartbeat.status', { bot })
+/** Replaces the bot's HEARTBEAT.md. */
+export const heartbeatSet = (bot: string, text: string) =>
+  rpcCall<HeartbeatStatus>('hexbot.heartbeat.set', { bot, text })
+export const heartbeatRunNow = (bot: string) =>
+  rpcCall<{ id: string }>('hexbot.heartbeat.run_now', { bot })
+/** Delete a section that is not a bot's chat, such as an earlier Check-ins (4202 for a chat). */
 export const sectionsDelete = (id: string) =>
   rpcCall<{ deleted: boolean }>('hexbot.sections.delete', { id })
-
-export const checkinsCancelWakeup = (id: string) =>
-  rpcCall<{ cancelled: boolean }>('hexbot.checkins.cancel_wakeup', { id })
 
 export interface ConnectStatus {
   registered: boolean
@@ -416,6 +549,20 @@ export const usersMeSet = (displayName: string) =>
 export const usageSummary = () => rpcCall<UsageSummary>('hexbot.usage.summary')
 
 // ---------------------------------------------------------------------------
+// Diagnostics
+// ---------------------------------------------------------------------------
+
+/** Everything Settings, Diagnostics shows; `span_name` filters the span log. */
+export const diagnosticsGet = (spanName?: string) =>
+  rpcCall<DiagnosticsSnapshot>('hexbot.diagnostics.get', spanName ? { span_name: spanName } : {})
+
+/** Every span of one trace, the run first. */
+export const diagnosticsTrace = (trace: number) =>
+  rpcCall<{ spans: DiagnosticsSpan[]; trace: number }>('hexbot.diagnostics.trace', { trace })
+
+export const gatewayPing = () => rpcCall<{ pong: boolean }>('gateway.ping')
+
+// ---------------------------------------------------------------------------
 // Sections
 // ---------------------------------------------------------------------------
 
@@ -442,7 +589,7 @@ async function withPurpose(sections: Section[] = []): Promise<Section[]> {
     return sections
   }
 
-  const checkins = await checkinsStatus()
+  const checkins = await rpcCall<{ section_id?: null | string }>('hexbot.checkins.status')
     .then(status => status.section_id)
     .catch(() => null)
 
@@ -652,6 +799,22 @@ export function sessionInterrupt(sessionId: string): Promise<{ status: string }>
   return rpcCall<{ status: string }>('session.interrupt', { session_id: sessionId })
 }
 
+/**
+ * Take back your latest message in a bot's chat, named by its input id or
+ * history row id. A turn working on it stops first; the bot forgets it and
+ * everything after it. Answers with the message text.
+ */
+export function sessionRecall(
+  sessionId: string,
+  message: { inputId?: string; rowId?: string }
+): Promise<{ recalled: boolean; text: string }> {
+  return rpcCall<{ recalled: boolean; text: string }>('session.recall', {
+    session_id: sessionId,
+    ...(message.inputId && { input_id: message.inputId }),
+    ...(message.rowId && { row_id: message.rowId })
+  })
+}
+
 export function sessionUsage(sessionId: string): Promise<{ usage: Usage }> {
   return rpcCall<{ usage: Usage }>('session.usage', { session_id: sessionId })
 }
@@ -677,12 +840,14 @@ export function setSectionModel(
 export function approvalRespond(
   sessionId: string,
   requestId: string,
-  choice: ApprovalChoice
+  choice: ApprovalChoice,
+  signIn?: { password: string; username: string }
 ): Promise<{ resolved: boolean }> {
   return rpcCall<{ resolved: boolean }>('approval.respond', {
     choice,
     request_id: requestId,
-    session_id: sessionId
+    session_id: sessionId,
+    ...signIn
   })
 }
 
@@ -932,8 +1097,8 @@ export const clarifyAnswered = (clarify: ClarifyRequest) =>
  * live `tool.start` / `tool.complete` events are rendered.
  */
 /**
- * Hexbot history rows carry no timestamps, so restored messages get `createdAt: 0`
- * ("unknown") and the transcript draws no time separator for them.
+ * Restored messages get `createdAt: 0`, which marks them as history; the
+ * time their last row was stored is `sentAt`, for showing when it was sent.
  *
  * Hidden rows are dropped, with one exception: in a thread (`sender` given),
  * the sender bot's questions arrive as hidden user rows `@<sender>: <text>`
@@ -952,6 +1117,12 @@ export function messagesFromHistory(
   const dreams = new Set<Message>()
   const rowCounts = new Map<string, number>()
   const reports = new Set(rows.filter(row => row.dream === true).map(row => String(row.row_id)))
+
+  // Rows carry `timestamp` in Unix seconds.
+  const sent = (row: HistoryRow) =>
+    typeof row.timestamp === 'number' && row.timestamp > 0
+      ? { sentAt: toMillis(row.timestamp) }
+      : {}
 
   for (const row of rows) {
     if (row.row_id != null) {
@@ -1034,7 +1205,7 @@ export function messagesFromHistory(
         durationS: null,
         name: String(row.name ?? 'tool'),
         result: row.text ?? null,
-        // History keeps no timestamps; 0 is "unknown", so no time is shown.
+        // History keeps no tool start times; 0 is "unknown", so no time is shown.
         startedAt: 0,
         status: row.is_error === true ? ('error' as const) : ('ok' as const),
         summary: typeof row.context === 'string' ? row.context : undefined,
@@ -1076,6 +1247,7 @@ export function messagesFromHistory(
           clarifies: clarify ? [clarify] : undefined,
           createdAt: 0,
           id: String(row.row_id ?? nextMessageId()),
+          ...sent(row),
           role: 'assistant',
           streaming: false,
           text: '',
@@ -1113,6 +1285,8 @@ export function messagesFromHistory(
 
       previous.text = text
       previous.textId = row.row_id == null ? undefined : String(row.row_id)
+      // The reply was sent when it ended, not when its first step began.
+      Object.assign(previous, sent(row))
       previous.fragmentIds = [
         ...(previous.fragmentIds ?? []),
         ...(previous.textId ? [previous.textId] : [])
@@ -1126,6 +1300,7 @@ export function messagesFromHistory(
       attachments: [],
       createdAt: 0,
       id: String(row.row_id ?? nextMessageId()),
+      ...sent(row),
       ...(typeof row.input_id === 'string' && { inputId: row.input_id }),
       ...(typeof row.turn_id === 'string' && { turnId: row.turn_id }),
       ...(role === 'assistant' &&

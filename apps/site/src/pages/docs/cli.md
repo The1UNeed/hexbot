@@ -40,6 +40,12 @@ hexbot status --json
 
 Shows whether the daemon is running, its version and port, its LAN addresses when "Allow other devices" is on, its Tailscale address when `tailscale ip -4` answers, its Hex Connect hostname, whether the service is installed and running, and whether the sandbox is available. It works before the daemon has ever started.
 
+```sh
+hexbot diagnostics
+```
+
+Prints what the running daemon measured since it started, as JSON: how long it took to launch, its processes and their CPU and memory over the last hour, load, prompt and database cache hit rates, recent runs and requests with their timings, and the failures it saw. The app shows the same in Settings, Advanced, Diagnostics, where Copy report copies it.
+
 ## Run the daemon as a service
 
 ```sh
@@ -99,20 +105,18 @@ hexbot bots primary writer
 
 There is one primary bot, and it stays. `hexbot bots list` shows it first, with `"primary": true`.
 
-## Check-ins
+## Heartbeat
 
-The primary bot's check-ins can be managed without the app:
+Every bot's heartbeat can be managed without the app:
 
 ```sh
-hexbot checkins                    # settings, next check-in, wake-ups, recent runs
-hexbot checkins now                # check in now
-hexbot checkins off                # or on
-hexbot checkins every 30           # minutes, 15 to 1440
-hexbot checkins hours 07:30-23:00  # regular check-ins stay inside these hours
-hexbot checkins cancel ID          # cancel a wake-up
+hexbot heartbeat off                                # or on, for every bot
+hexbot heartbeat status owl                         # checklist, next run, recent runs
+hexbot heartbeat now owl                            # run one now
+hexbot heartbeat set owl "- Has Sam replied about the lease?"
 ```
 
-`hexbot checkins`, `now`, and `cancel` need the daemon running.
+The checklist is also a plain file, `profiles/BOT/HEARTBEAT.md` in the daemon's data directory. `status`, `now`, and `set` need the daemon running.
 
 ## Send a message and list rooms
 
@@ -126,6 +130,18 @@ hexbot rooms list
 The named bot uses its configured model, soul, skills, and memory. When a daemon is already running, the CLI sends the request to it. If none is running, one-shot chat can start the runtime for that request. Interactive approvals and clarification questions are answered in the terminal.
 
 The native CLI lists rooms; create rooms and manage their members in the app or browser.
+
+## List and assign plugins
+
+```sh
+hexbot plugins                                   # connectors, skills, capabilities and their bots
+hexbot plugins list --bot writer                 # the same, with writer's switches
+hexbot plugins assign connector mcp:files writer researcher
+hexbot plugins assign skill himalaya writer
+hexbot plugins assign capability computer_use    # take it from every bot
+```
+
+`assign` gives the plugin to exactly the bots you name and takes it from your other bots. A plugin that is not set up yet can be taken away but not given. Set up connectors in the app or browser first.
 
 ## List and revoke devices
 

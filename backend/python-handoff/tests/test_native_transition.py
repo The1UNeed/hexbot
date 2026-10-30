@@ -84,7 +84,9 @@ class NativeTransitionTests(unittest.TestCase):
         memory.write_text("remember this")
         executable = self.install()
         self.assertEqual((self.home / "runtime/native-executable").resolve(), executable)
-        self.assertEqual(json.loads((self.home / "runtime/native-current.json").read_text())["executable"], str(executable))
+        self.assertEqual(json.loads((self.home / "runtime/native-current.json").read_text()), {
+            "version": self.version, "executable": str(executable), "previous": None,
+        })
         env = {**os.environ, "HEXBOT_BACKEND": "rust"}
         result = subprocess.run([str(launcher), "serve", "--port", "9119"], env=env, check=True, text=True, capture_output=True)
         self.assertEqual(result.stdout, "serve\n--port\n9119\n")

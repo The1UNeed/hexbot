@@ -5,6 +5,7 @@
   "type": "module",
   "main": "out/main/index.js",
   "scripts": {
+    "postinstall": "install-electron",
     "dev": "node ../../scripts/dev/desktop.mjs dev",
     "build": "pnpm --filter @hexbot/web run build && node ../../scripts/desktop/stage-runtime.mjs && electron-vite build && node scripts/copy-web.mjs",
     "build:client": "pnpm --filter @hexbot/web run build && electron-vite build --mode client && node scripts/copy-web.mjs",
@@ -18,13 +19,15 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "electron-updater": "6.8.9"
+    "electron-updater": "6.8.9",
+    "semver": "7.7.4"
   },
   "devDependencies": {
     "@hermes/shared": "workspace:*",
     "@playwright/test": "1.62.1",
     "@types/node": "22.20.1",
-    "electron": "41.10.7",
+    "@types/semver": "7.8.0",
+    "electron": "42.11.16",
     "electron-builder": "26.16.1",
     "electron-vite": "5.0.0",
     "typescript": "6.0.3",
@@ -37,5 +40,5 @@
     "name": "Hexbot contributors",
     "email": "hello@hexbot.app"
   },
-  "license": "AGPL-3.0-only"
+  "license": "Apache-2.0"
 }

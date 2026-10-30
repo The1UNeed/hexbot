@@ -52,6 +52,11 @@ export const useMe = create<MeState>(set => ({
     }
   },
   async rename(displayName) {
-    set({ me: await usersMeSet(displayName) })
+    const current = connectionRead()
+    const me = await usersMeSet(displayName)
+
+    if (current()) {
+      set({ me })
+    }
   }
 }))

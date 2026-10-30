@@ -63,8 +63,9 @@ export async function prepareDevRuntime(home, hexbot, pi, overrides = {}) {
     `${quote(process.execPath)} ${quote(resolve(repositoryRoot, 'scripts/desktop/search-tools.mjs'))} ${quote(binDirectory)}\n` +
     `exec ${quote(pi)} "$@"\n`)
   await chmod(launcher, 0o755)
+  // Saved passwords keep their key in the checkout, not one login keychain item per worktree.
   return { HEXBOT_HOME: home, HEXBOT_EXECUTABLE: hexbot, HEXBOT_PI_EXECUTABLE: launcher,
-    PATH: [binDirectory, process.env.PATH ?? ''].join(delimiter) }
+    HEXBOT_PASSWORD_KEY_STORE: 'file', PATH: [binDirectory, process.env.PATH ?? ''].join(delimiter) }
 }
 
 // Vite binds "localhost", which is ::1 on most machines; the daemon binds

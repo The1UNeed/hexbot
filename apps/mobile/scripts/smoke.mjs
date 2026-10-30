@@ -87,10 +87,21 @@ const model = createServer(async (req, res) => {
             }
           : !toolAnswered && prompt.includes('Ask for approval')
             ? { name: 'write', args: { path: 'mobile-approval.txt', content: 'approved' } }
+            : !toolAnswered && prompt.includes('Sign in to the school site')
+              ? {
+                  name: 'hexbot_passwords',
+                  args: { action: 'ask', title: 'Northfield School', url: 'https://school.example/login' }
+                }
             : !toolAnswered && prompt.startsWith('Read the other app attachment')
               ? { name: 'read', args: { path: retainedUploadPath } }
-              : null
-    const answer = prompt.startsWith('Room: ')
+              : !toolAnswered && prompt.startsWith('# Heartbeat')
+                ? { name: 'hexbot_notify', args: { message: 'Flight BA 286 is two hours late.' } }
+                : null
+    // Long enough for the phone to show the heartbeat running.
+    if (tool?.name === 'hexbot_notify') await new Promise(resolve => setTimeout(resolve, 1500))
+    const answer = prompt.startsWith('# Heartbeat')
+    ? 'Told them BA 286 is late.'
+    : prompt.startsWith('Room: ')
       ? 'The mobile room is working. @user your team is ready.'
       : /native|Hello from/i.test(prompt)
         ? 'Your native message reached the daemon and Pi.'
@@ -105,6 +116,8 @@ const model = createServer(async (req, res) => {
                 ? 'The mobile attachment reached Pi.'
                 : prompt.includes('Ask for approval')
                   ? 'The mobile approval reached Pi.'
+                  : prompt.includes('Sign in to the school site')
+                    ? 'The school sign-in is saved.'
                   : 'Your daemon received this from mobile. The connection is working.'
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
     const frame = (delta, finish_reason = null) =>
@@ -175,6 +188,8 @@ try {
   const env = {
     ...process.env,
     HEXBOT_HOME: home,
+    // The vault key stays in the temporary home, not the login keychain.
+    HEXBOT_PASSWORD_KEY_STORE: 'file',
     HEXBOT_PI_EXECUTABLE: piPath,
     HEXBOT_WEB_DEV_URL: appUrl
   }
@@ -330,12 +345,16 @@ try {
     d => d.name === 'Hexbot on Android'
   )
   assert(device, 'The browser preview must pair through the native credential flow')
-  await page.getByTestId('daemon-pill').click()
+  // One saved daemon: the list names no daemon, and Settings switches daemons.
+  await expect(page.getByTestId('daemon-pill')).not.toBeVisible()
+  await page.getByTestId('home-settings').click()
+  await page.getByTestId('daemon-switch').click()
   await expect(page.getByTestId('daemon-switcher')).toBeVisible()
   await settle()
   await shot('daemon-switcher')
   await page.getByTestId('daemon-switcher-close').click()
   await expect(page.getByTestId('daemon-switcher')).not.toBeVisible()
+  await page.getByRole('button', { name: 'Back', exact: true }).click()
   // The bot row opens its one chat.
   await page.getByTestId('bot-row-owl').click()
   await expect(page.getByTestId('chat-empty')).toBeVisible()
@@ -515,13 +534,33 @@ try {
     timeout: 30000
   })
   assert.equal(await readFile(path.join(workspace, 'mobile-approval.txt'), 'utf8'), 'approved')
-  await shot('chat-tools')
-  await page.locator('[data-testid^="chat-tool-"]').last().click()
-  await expect(page.getByTestId('tool-sheet')).toBeVisible()
-  await settle()
-  await shot('tool-card')
-  await page.getByTestId('tool-sheet-close').click()
-  await expect(page.getByTestId('tool-sheet')).not.toBeVisible()
+  await expect(page.locator('[data-testid^="chat-tool"]')).toHaveCount(0)
+  await shot('chat-approved')
+  // With the browser, the bot asks for a sign-in on a card. What is typed
+  // there is saved in Passwords and never reaches the model.
+  await writeFile(
+    path.join(home, 'profiles/owl/config.yaml'),
+    `model:\n  provider: lmstudio\n  default: mobile-test\n  base_url: ${modelBase}\n  api_key: test-key\ntools:\n  enabled_toolsets: [file, browser]\nbrowser:\n  command: ${process.execPath}\napproval_mode: manual\n`
+  )
+  await page.getByTestId('chat-input').fill('Sign in to the school site')
+  await page.getByTestId('chat-send').click()
+  const signIn = page.locator('[data-testid^="sign-in-"][data-testid$="-password"]')
+  await expect(signIn).toBeVisible({ timeout: 30000 })
+  await expect(page.getByText('Sign in to Northfield School', { exact: true })).toBeVisible()
+  await page.locator('[data-testid^="sign-in-"][data-testid$="-username"]').fill('alex')
+  await signIn.fill('mobile-secret-42')
+  await page.screenshot({ path: path.join(artifacts, 'sign-in-card.png') })
+  await page.locator('[data-testid^="sign-in-"][data-testid$="-submit"]').click()
+  await expect(page.getByText('The school sign-in is saved.', { exact: true })).toBeVisible({
+    timeout: 30000
+  })
+  const saved = (await rpc('hexbot.passwords.list')).logins
+  assert.deepEqual(
+    saved.map(login => [login.title, login.site, login.username, login.bots]),
+    [['Northfield School', 'school.example', 'alex', null]]
+  )
+  assert.doesNotMatch(JSON.stringify(modelRequests), /mobile-secret-42/)
+  await shot('chat-signed-in')
   await page.getByTestId('chat-settings').click()
   await expect(page.getByTestId('field-persona')).toBeVisible()
   await settle()
@@ -553,54 +592,75 @@ try {
   await settle()
   await shot('profile-tools')
   await page.getByTestId('management-sheet-back').click()
+  // The heartbeat card shows a run it started end, and the bot's message lands in its chat.
+  await page.getByTestId('manage-heartbeat').click()
+  await expect(page.getByTestId('action-run-now')).toBeDisabled()
+  await page.getByTestId('field-text').fill('- Is flight BA 286 on Friday delayed?')
+  await page.getByTestId('management-sheet-action').click()
+  await expect
+    .poll(async () => (await rpc('hexbot.heartbeat.status', { bot: 'owl' })).empty)
+    .toBe(false)
+  await page.getByTestId('manage-heartbeat').click()
+  await page.getByTestId('action-run-now').click()
+  await expect(page.getByTestId('heartbeat-next')).toContainText('Running now')
+  await expect(page.getByText('Posted in your chat. Told them BA 286 is late.')).toBeVisible({
+    timeout: 30000
+  })
+  await expect(page.getByTestId('heartbeat-next')).not.toContainText('Running now')
+  await settle()
+  await shot('heartbeat')
+  await page.getByTestId('management-sheet-back').click()
   await page.getByTestId('management-sheet-close').click()
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
+  await expect(page.getByText('Flight BA 286 is two hours late.', { exact: true })).toBeVisible()
+  await shot('heartbeat-chat')
   await page.getByRole('button', { name: 'Back', exact: true }).click()
-  await page.getByTestId('home-tabs-rooms').click()
-  await expect(page.getByTestId('rooms-view')).toBeVisible()
-  await expect(page.getByTestId(`room-chip-${launch.id}`)).toBeVisible()
-  await page.getByTestId(`room-chip-${room.id}`).click()
-  await expect(page.getByRole('heading', { name: 'Our team', exact: true })).toBeVisible()
+  // Rooms sit in the same list as chats and open like one.
+  await expect(page.getByTestId(`room-row-${launch.id}`)).toBeVisible()
+  await page.getByTestId(`room-row-${room.id}`).click()
+  await expect(page.getByTestId('chat-title')).toContainText('Our team')
   await page.getByTestId('chat-input').fill('Check our team on mobile')
   await page.getByTestId('chat-send').click()
   await expect(
     page.getByText('The mobile room is working. @user your team is ready.', { exact: true })
   ).toBeVisible({ timeout: 30000 })
   await page.screenshot({ path: path.join(artifacts, 'room.png') })
-  await page.getByTestId('room-settings').click()
+  await page.getByTestId('chat-settings').click()
   await expect(page.getByTestId('main-bot-owl')).toBeVisible()
   await settle()
   await shot('room-settings')
-  // An archived room stays reachable after the lists reload, and restores from there.
-  // Archiving the open room moves Rooms to the other one.
+  // Archiving the open room returns to the list, which leaves it out.
   await page.getByTestId('action-archive-room').click()
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
-  await expect(page.getByTestId(`room-chip-${room.id}`)).not.toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Launch week', exact: true })).toBeVisible()
-  // Restoring another room from Archived keeps the open one.
-  await page.getByTestId('rooms-archived').click()
+  await expect(page.getByTestId('home-screen')).toBeVisible()
+  await expect(page.getByTestId(`room-row-${room.id}`)).not.toBeVisible()
+  await expect(page.getByTestId(`room-row-${launch.id}`)).toBeVisible()
+  // All rooms, under Bots & jobs, restores it.
+  await page.getByTestId('home-library').click()
+  await expect(page.getByTestId('library-rooms')).toContainText('1 archived')
+  await page.getByTestId('library-rooms').click()
   await page.getByTestId(`managed-room-${room.id}`).click()
   await page.getByTestId('action-restore-room').click()
   await expect
     .poll(async () => (await rpc('hexbot.rooms.get', { id: room.id })).room.archived_at)
     .toBe(null)
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
-  await expect(page.getByTestId('rooms-archived')).not.toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Launch week', exact: true })).toBeVisible()
-  await expect(page.getByTestId('chat-input')).toBeVisible()
+  await expect(page.getByTestId('library-rooms')).not.toContainText('archived')
+  await page.getByRole('button', { name: 'Back', exact: true }).click()
   // A room archived elsewhere while open stays, and restoring it there keeps it open.
-  await page.getByTestId(`room-chip-${room.id}`).click()
-  await expect(page.getByRole('heading', { name: 'Our team', exact: true })).toBeVisible()
+  await page.getByTestId(`room-row-${room.id}`).click()
+  await expect(page.getByTestId('chat-title')).toContainText('Our team')
   await rpc('hexbot.rooms.archive', { id: room.id })
   await expect(page.getByTestId('chat-archived')).toBeVisible()
-  await page.getByTestId('room-settings').click()
+  await page.getByTestId('chat-settings').click()
   await page.getByTestId('action-restore-room').click()
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
   await expect(page.getByTestId('chat-archived')).not.toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Our team', exact: true })).toBeVisible()
+  await expect(page.getByTestId('chat-title')).toContainText('Our team')
   await expect(page.getByTestId('chat-input')).toBeVisible()
-  await page.getByTestId('home-tabs-daemon').click()
-  await shot('daemon')
+  await page.getByRole('button', { name: 'Back', exact: true }).click()
+  await page.getByTestId('home-settings').click()
+  await shot('settings')
   await page.getByTestId('daemon-about').click()
   await page.getByTestId('field-text').fill('I prefer brief updates from my phone.')
   await page.getByTestId('management-sheet-action').click()
@@ -611,8 +671,8 @@ try {
   for (const area of [
     'settings',
     'providers',
-    'connectors',
-    'skills',
+    'plugins',
+    'passwords',
     'activity',
     'usage',
     'network',
@@ -635,16 +695,62 @@ try {
       await page.getByTestId('daemon-settings').click()
       await expect(page.getByTestId('management-loading')).not.toBeVisible()
     }
-    if (area === 'connectors') {
-      await page.getByTestId('manage-mcp').click()
-      await page.getByTestId('field-name').fill('Calendar MCP')
-      await page.getByTestId('mcp-http').click()
-      await page.getByTestId('field-url').fill('https://mcp.example.com')
+    if (area === 'passwords') {
+      // The saved sign-in opens, and its password shows only when asked.
+      await page.locator('[data-testid^="password-"]').first().click()
+      await expect(page.getByTestId('management-loading')).not.toBeVisible({ timeout: 30000 })
+      await expect(page.getByTestId('field-username')).toHaveValue('alex')
+      await page.getByTestId('action-show-password').click()
+      await expect(page.getByText('mobile-secret-42', { exact: true })).toBeVisible()
       await settle()
-      await shot('mcp')
+      await shot('password')
       await page.getByTestId('management-sheet-back').click()
     }
-    if (area === 'skills') {
+    if (area === 'plugins') {
+      // One plugin card chooses the bots that get it.
+      await page.getByTestId('plugin-skill:github').click()
+      await expect(page.getByTestId('management-loading')).not.toBeVisible({ timeout: 30000 })
+      await settle()
+      await shot('plugin')
+      await page.getByTestId('plugin-bot-owl').click()
+      await expect
+        .poll(async () =>
+          (await rpc('hexbot.plugins.list')).skills
+            .find(p => p.id === 'github')
+            .bots.includes('owl')
+        )
+        .toBe(false)
+      await page.getByTestId('management-sheet-back').click()
+      await page.getByTestId('manage-mcp').click()
+      await page.getByTestId('field-name').fill('calendar')
+      await page.getByTestId('mcp-http').click()
+      await page.getByTestId('field-url').fill('https://mcp.example.com')
+      await page.getByTestId('field-skill').fill('Check the calendar before you plan a meeting.')
+      await settle()
+      await shot('mcp')
+      await page.getByTestId('management-sheet-action').click()
+      // The server's card takes the token it needs.
+      await page.getByTestId('plugin-package:calendar').click()
+      await expect(page.getByTestId('management-loading')).not.toBeVisible({ timeout: 30000 })
+      await page.getByTestId('field-new_key').fill('Authorization')
+      await page.getByTestId('field-new_value').fill('Bearer mobile-token-1234')
+      await page.getByTestId('action-save-values').click()
+      await expect
+        .poll(async () =>
+          (await rpc('hexbot.plugins.list')).packages.find(p => p.id === 'calendar').server
+            .headers
+        )
+        .toEqual([{ key: 'Authorization', set: true, hint: '…1234' }])
+      await settle()
+      await shot('plugin-server')
+      await page.getByTestId('action-remove-authorization').click()
+      await expect
+        .poll(async () =>
+          (await rpc('hexbot.plugins.list')).packages.find(p => p.id === 'calendar').server
+            .headers
+        )
+        .toEqual([])
+      await page.getByTestId('management-sheet-back').click()
       await page.getByTestId('manage-skill-create').click()
       await page.getByTestId('field-name').fill('mobile-update')
       await page
@@ -664,7 +770,11 @@ try {
     await page.getByTestId('management-sheet-close').click()
     await expect(page.getByTestId('management-sheet')).not.toBeVisible()
   }
-  await page.getByTestId('daemon-jobs').click()
+  await page.getByRole('button', { name: 'Back', exact: true }).click()
+  await page.getByTestId('home-library').click()
+  await settle()
+  await shot('library')
+  await page.getByTestId('library-jobs').click()
   await page.getByTestId('manage-job-create').click()
   await page.getByTestId('field-name').fill('Mobile morning brief')
   await page.getByTestId('field-prompt').fill('Write my brief')
@@ -700,9 +810,13 @@ try {
   await page.getByTestId('management-sheet-backdrop').click({ position: { x: 196, y: 20 } })
   await page.screenshot({ path: path.join(artifacts, 'daemons.png') })
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
-  await page.getByTestId('home-tabs-bots').click()
-  await shot('bots-feed')
-  await page.getByTestId('bots-new').click()
+  await page.getByRole('button', { name: 'Back', exact: true }).click()
+  await shot('home')
+  await page.getByTestId('home-new').click()
+  await expect(page.getByTestId('home-new-menu')).toBeVisible()
+  await settle()
+  await shot('home-new')
+  await page.getByTestId('home-new-bot').click()
   await expect(page.getByTestId('field-name')).toBeVisible()
   await settle()
   await shot('bot-new')
@@ -720,12 +834,11 @@ try {
   // A reload keeps metadata, but the browser preview intentionally has no persistent secrets.
   // Reconnect the same client by disconnecting and selecting its saved target.
   await page.getByRole('button', { name: 'Back', exact: true }).click()
-  await page.getByTestId('home-tabs-daemon').click()
+  await page.getByTestId('home-settings').click()
   await page.getByTestId('daemon-disconnect').click()
   await expect(page.getByTestId('connection-screen')).toBeVisible()
   await shot('connection-saved')
   await page.locator('[data-testid^="connection-saved-"]').first().click()
-  await page.getByTestId('home-tabs-bots').click()
   await expect(page.getByTestId('bot-row-owl')).toBeVisible({ timeout: 30000 })
   await page.getByTestId('bot-row-owl').click()
   await expect(
@@ -752,15 +865,16 @@ try {
       'attachment-only send delivered to Pi, clears chips after acceptance, and leaves out a file staged by another app',
       'retained paired-app upload keeps its bytes and submits exactly once without the mobile file',
       'approval gates a real file write',
-      'bot feed, and one chat per bot opened from its row',
+      'chat list, and one chat per bot opened from its row',
       'model menu lists connected providers from their live lists and shows the level the model runs at',
       'tool card',
+      'heartbeat checklist, a run the card follows to its end, and its message in the chat',
       'soul editing',
       'isolated bot memory',
       'About you',
       'daemon management panels and unlimited room turn budget',
       'skill creation',
-      'room chat in the Rooms tab, archive and restore',
+      'rooms in the chat list, archive and restore from All rooms',
       'scheduled jobs, edits that keep the schedule, and pause',
       'daemon disconnect and reconnect',
       'history restoration'

@@ -2,8 +2,7 @@
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useMobile } from './useMobile'
-import appSource from '../../App.tsx?raw'
-import ts from 'typescript'
+import { pulseTarget } from './routes'
 import type { Bot, Room, SavedDaemon, Section } from './types'
 
 const state = vi.hoisted(() => ({
@@ -103,6 +102,38 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('mobile navigation while a bot lookup waits', () => {
+  it('keeps a chat opening until its history arrives', async () => {
+    const hook = await connected()
+    const held = pause('hexbot.sections.open')
+    let opening!: Promise<void>
+    await act(async () => {
+      opening = hook.result.current.openSection(bot)
+      await held.called
+    })
+    expect(hook.result.current.route).toMatchObject({ kind: 'section', section: { id: 'owl-chat' } })
+    expect(hook.result.current.opening).toBe(true)
+    state.request.mockImplementation(reply)
+    await act(async () => {
+      held.resolve(await reply('hexbot.sections.open', { id: 'owl-chat' }))
+      await opening
+    })
+    expect(hook.result.current.opening).toBe(false)
+  })
+  it('opens a chat the daemon named on this connection without waiting for it again', async () => {
+    const hook = await connected()
+    await act(async () => { await hook.result.current.openSection(bot) })
+    await act(async () => { await hook.result.current.openRoom(room) })
+    const held = pause('hexbot.sections.create')
+    await act(async () => { await hook.result.current.openSection(bot) })
+    expect(hook.result.current.route).toMatchObject({ kind: 'section', section: { id: 'owl-chat' } })
+    expect(state.request).toHaveBeenCalledWith('hexbot.sections.open', { id: 'owl-chat' })
+    // The daemon may still name another chat; the tap moves there.
+    await act(async () => {
+      held.resolve({ section: section('moved') })
+      await held.promise
+    })
+    await vi.waitFor(() => expect(hook.result.current.route).toMatchObject({ section: { id: 'moved' } }))
+  })
   it('keeps the later room when canonical resolution completes', async () => {
     const hook = await connected()
     const held = pause('hexbot.sections.create')
@@ -290,19 +321,12 @@ describe('mobile navigation while a bot lookup waits', () => {
   })
 })
 
-/** Execute the actual HomeScreen callback with the real hook, without loading native UI. */
+/** Open what Pulse opens for a bot, the way the app does, with the real hook. */
 const pulse = (mobile: ReturnType<typeof useMobile>, selected: Bot) => {
-  const app = appSource
-  const callback = app.split('onOpenPulse={')[1]!.split('\n        onBotLongPress=')[0]!.trim().slice(0, -1)
-  const js = ts.transpile(`const handler = ${callback}`, { target: ts.ScriptTarget.ES2022 })
-  let pending = Promise.resolve()
-  let roomId: string | null = null
-  const handler = new Function('mobile', 'botByName', 'act', 'setRoomId', 'changeTab', 'setBotPage', `${js}; return handler`)(
-    mobile, () => selected, (run: () => Promise<void>) => { pending = run() },
-    (id: string) => { roomId = id }, () => {}, () => {}
-  )
-  handler(selected.name)
-  return { done: () => pending, room: () => roomId }
+  const target = pulseTarget(selected, mobile.rooms, mobile.sections)
+  const pending =
+    'room' in target ? mobile.openRoom(target.room) : mobile.openSection(selected, target.section)
+  return { done: () => pending, room: () => ('room' in target ? target.room.id : null) }
 }
 const waiting = (id = 'thread') => ({ ...bot, status: 'needs_you', status_detail: { section_id: id, room_id: null } }) as Bot
 
@@ -628,4 +652,155 @@ it.each(['clarify.resolved', 'clarify.expire'])('a question settled by %s while 
   })
   expect(hook.result.current.route).toMatchObject({ section: { id: 'owl-chat' } })
   expect(hook.result.current.chat.questions).toEqual([])
+})
+
+it("keeps the bots' computer current from its events without reloading everything", async () => {
+  const hook = await connected()
+  const running = {
+    activity: null,
+    actor: null,
+    available: true,
+    control: 'bot',
+    cursors: [],
+    error: null,
+    state: 'running'
+  }
+  state.request.mockImplementation(async (method: string, params: Record<string, unknown> = {}) =>
+    method === 'hexbot.computer.status' ? running : reply(method, params)
+  )
+  await act(async () => {
+    await hook.result.current.computerCall()
+  })
+  state.request.mockClear()
+  await act(async () => {
+    state.event({
+      type: 'hexbot.computer.changed',
+      payload: {
+        actor: 'owl',
+        activity: 'click',
+        cursors: [{ action: 'click', at: 1, bot: 'owl', x: 0.5, y: 0.25 }]
+      }
+    })
+    await new Promise(resolve => setTimeout(resolve, 300))
+  })
+  expect(hook.result.current.computer).toMatchObject({
+    actor: 'owl',
+    available: true,
+    cursors: [{ bot: 'owl', x: 0.5, y: 0.25 }]
+  })
+  // A computer event comes with every bot action; it reloads nothing.
+  expect(state.request).not.toHaveBeenCalled()
+})
+
+describe('recall and closing an error in a bot chat', () => {
+  const daemonWith = (bots: Bot[]) =>
+    state.request.mockImplementation(async (method: string, params: Record<string, unknown> = {}) => {
+      if (method === 'hexbot.info') return { one_chat: true, transcript_identity: true, recall: true }
+      if (method === 'hexbot.bots.list') return { bots }
+      if (method === 'session.recall') return { recalled: true, text: 'Hello' }
+      return reply(method, params)
+    })
+  const chat = async (bots: Bot[] = [bot]) => {
+    daemonWith(bots)
+    const hook = await connected()
+    await act(async () => { await hook.result.current.openSection(bot) })
+    return hook
+  }
+
+  it('sends with an input id and recalls that message by it', async () => {
+    const hook = await chat()
+    await act(async () => { await hook.result.current.send('Hello') })
+    expect(state.request).toHaveBeenCalledWith('prompt.submit', expect.objectContaining({ session_id: 'live-owl-chat', text: 'Hello', input_id: 'message' }))
+    expect(hook.result.current.chat.messages).toMatchObject([{ id: 'message', role: 'user', inputId: 'message' }])
+    let text: string | null = null
+    await act(async () => { text = await hook.result.current.recall('message') })
+    expect(text).toBe('Hello')
+    expect(state.request).toHaveBeenCalledWith('session.recall', { session_id: 'live-owl-chat', input_id: 'message' })
+    expect(hook.result.current.chat.messages).toEqual([])
+    expect(hook.result.current.chat.busy).toBe(false)
+  })
+
+  it('names a message from the history by its row when it has no input id', async () => {
+    const hook = await chat()
+    state.request.mockImplementation(async (method: string, params: Record<string, unknown> = {}) => {
+      if (method === 'hexbot.sections.open') return { section: section('owl-chat'), messages: [{ role: 'user', row_id: 'pi-e1', text: 'Earlier' }] }
+      if (method === 'session.recall') return { recalled: true, text: 'Earlier' }
+      return reply(method, params)
+    })
+    await act(async () => { await hook.result.current.syncChat() })
+    await act(async () => { await hook.result.current.recall('pi-e1') })
+    expect(state.request).toHaveBeenCalledWith('session.recall', { session_id: 'live-owl-chat', row_id: 'pi-e1' })
+  })
+
+  it('closes the error, and the bot’s Stopped state when it is for this chat', async () => {
+    const stopped = { ...bot, status: 'stopped', status_detail: { section_id: 'owl-chat' } } as Bot
+    const hook = await chat([stopped])
+    act(() => state.event({ type: 'message.complete', session_id: 'live-owl-chat', payload: { error: 'The model request failed' } }))
+    expect(hook.result.current.chat.error).toBe('The model request failed')
+    await act(async () => { await hook.result.current.dismissError() })
+    expect(hook.result.current.chat.error).toBeNull()
+    expect(state.request).toHaveBeenCalledWith('hexbot.bots.clear_status', { name: 'owl' })
+  })
+
+  it('leaves the bot’s state alone when the error is not a Stopped state here', async () => {
+    const hook = await chat()
+    act(() => state.event({ type: 'message.complete', session_id: 'live-owl-chat', payload: { error: 'The turn was interrupted' } }))
+    await act(async () => { await hook.result.current.dismissError() })
+    expect(hook.result.current.chat.error).toBeNull()
+    expect(state.request.mock.calls.some(([m]) => m === 'hexbot.bots.clear_status')).toBe(false)
+  })
+})
+
+
+describe('mobile history critical path', () => {
+  it.each([true, false])('uses sections.open busy=%s without session.status or a read-receipt wait', async busy => {
+    const hook = await connected()
+    const read = deferred()
+    state.request.mockImplementation((method: string, params: Record<string, unknown> = {}) => {
+      if (method === 'hexbot.sections.open') return Promise.resolve({ section: section('owl-chat'), messages: [{ row_id: 'history', role: 'assistant', text: 'Loaded' }], busy })
+      if (method === 'hexbot.sections.mark_read') return read.promise
+      return reply(method, params)
+    })
+    await act(async () => { await hook.result.current.openSection(bot) })
+    expect(hook.result.current.chat.messages).toMatchObject([{ text: 'Loaded' }])
+    expect(hook.result.current.chat.busy).toBe(busy)
+    expect(hook.result.current.opening).toBe(false)
+    expect(hook.result.current.loading).toBe(false)
+    expect(state.request.mock.calls.some(([m]) => m === 'session.status')).toBe(false)
+    await act(async () => { read.reject(new Error('read receipt failed')); await Promise.resolve() })
+    expect(hook.result.current.error).toBeNull()
+  })
+
+  it('still reads session.status on older daemons and never publishes a stale snapshot', async () => {
+    const hook = await connected()
+    const status = pause('session.status')
+    let opening!: Promise<void>
+    await act(async () => { opening = hook.result.current.openSection(bot); await status.called })
+    await act(async () => { await hook.result.current.openRoom(room) })
+    await act(async () => { status.resolve({ status: 'working' }); await opening })
+    expect(hook.result.current.route?.kind).toBe('room')
+    expect(hook.result.current.chat.busy).toBe(false)
+    expect(state.request).not.toHaveBeenCalledWith('hexbot.sections.mark_read', { id: 'owl-chat' })
+  })
+
+  it('starts room metadata alongside its log and finishes opening before the read receipt', async () => {
+    const hook = await connected()
+    const log = pause('hexbot.rooms.log')
+    const read = deferred()
+    const request = state.request.getMockImplementation()!
+    state.request.mockImplementation((method: string, params: Record<string, unknown> = {}) =>
+      method === 'hexbot.rooms.mark_read' ? read.promise : request(method, params)
+    )
+    let opening!: Promise<void>
+    await act(async () => { opening = hook.result.current.openRoom(room); await log.called })
+    expect(state.request).toHaveBeenCalledWith('hexbot.rooms.get', { id: 'room' })
+    await act(async () => {
+      log.resolve({ events: [{ room_id: 'room', seq: 3, kind: 'message.user', actor_kind: 'human', actor_id: 'local', payload: { text: 'Room history' } }] })
+      await opening
+    })
+    expect(hook.result.current.chat.messages).toMatchObject([{ text: 'Room history' }])
+    expect(hook.result.current.loading).toBe(false)
+    await act(async () => { read.reject(new Error('receipt failed')); await Promise.resolve() })
+    expect(hook.result.current.error).toBeNull()
+  })
 })

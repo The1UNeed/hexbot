@@ -14,7 +14,7 @@ import {
 import { pair } from './transport'
 import { registerPush } from './push'
 import { parsePairing, normalizeOrigin } from './links'
-import { checkinMessage, emptyChat, historyMessages, reduceChat, replayChat } from './chat'
+import { emptyChat, heartbeatMessage, historyMessages, reduceChat, replayChat } from './chat'
 import { reduceRoom, restoreRoom, roomChat, roomMessage } from './room-chat'
 import { attachmentPrompt } from './chat-send'
 import { modelLists, providerModels } from './models'
@@ -25,11 +25,14 @@ import {
   listSections,
   ownerChat,
   rebind,
+  stoppedIn,
   type ChatRoute
 } from './routes'
 import type {
   Bot,
   ChatState,
+  ComputerQuality,
+  ComputerStatus,
   Section,
   Room,
   RoomEvent,
@@ -43,6 +46,10 @@ export type { ChatRoute }
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e))
 /** A room opens at its latest events and pages back this many at a time. */
 const ROOM_PAGE = 200
+/** A bot posted on its own: its heartbeat, or a check-in on a daemon from before it. */
+const postedOnItsOwn = (type: string) =>
+  type === 'hexbot.heartbeat.message' || type === 'hexbot.checkins.message'
+
 export function useMobile() {
   const [saved, setSaved] = useState<SavedDaemon[]>([])
   const [active, setActive] = useState<SavedDaemon | null>(null)
@@ -57,10 +64,18 @@ export function useMobile() {
   const infoRef = useRef<DaemonInfo | null>(null)
   const refreshSequence = useRef(0)
   const [settings, setSettings] = useState<Settings | null>(null)
+  /** The bots' shared computer, once something shows it; events keep it current. */
+  const [computer, setComputer] = useState<ComputerStatus | null>(null)
+  /** Counts connections, so what a daemon forgets on restart is asked for again. */
+  const [connects, setConnects] = useState(0)
+  /** Counts heartbeat changes, so an open heartbeat card reads its status again. */
+  const [heartbeats, setHeartbeats] = useState(0)
   const [user, setUser] = useState<CurrentUser | null>(null)
   const [route, setRoute] = useState<ChatRoute | null>(null)
   const [chat, setChat] = useState(emptyChat)
   const [loading, setLoading] = useState(false)
+  // The chat whose history the transcript shows; until then it is still opening.
+  const [readId, setReadId] = useState<null | string>(null)
   const [hasEarlier, setHasEarlier] = useState(false)
   const [loadingEarlier, setLoadingEarlier] = useState(false)
   const session = useRef<MobileSession | null>(null)
@@ -80,9 +95,18 @@ export function useMobile() {
   /** The live session whose running turn was half in the history when it loaded. */
   const straddling = useRef<string | null>(null)
   /** An older daemon's sections to pick a bot's chat from, while asked. */
-  const [choosing, setChoosing] = useState<{ bot: Bot; choices: Section[]; current: () => boolean } | null>(null)
+  const [choosing, setChoosing] = useState<{
+    bot: Bot
+    choices: Section[]
+    current: () => boolean
+  } | null>(null)
   /** Each bot's chat on an older daemon, so the user is asked once while the app runs. */
   const picked = useRef(new Map<string, string>())
+  /**
+   * Each bot's chat as the daemon last named it on this connection. A tap
+   * opens it at once and asks the daemon again, which may name another.
+   */
+  const named = useRef(new Map<string, Section>())
   const cancelNavigation = useCallback(() => {
     navigation.current++
     openSequence.current++
@@ -138,47 +162,55 @@ export function useMobile() {
     setRoute(null)
     setHasEarlier(false)
   }, [releaseStaged, cancelNavigation])
-  const refresh = useCallback(async (reconnecting = false) => {
-    const current = session.current
-    clearModels()
-    const sequence = ++refreshSequence.current
-    const before = routeRef.current
-    const [b, r, s, i, config, me] = await Promise.all([
-      rpc<{ bots: Bot[] }>('hexbot.bots.list'),
-      rpc<{ rooms: Room[] }>('hexbot.rooms.list', ROOMS_QUERY),
-      listSections(rpc, SECTIONS_QUERY).then(sections => ({ sections })),
-      rpc<DaemonInfo>('hexbot.info'),
-      rpc<Settings>('hexbot.settings.get'),
-      rpc<CurrentUser>('hexbot.users.me')
-    ])
-    if (!mounted.current || session.current !== current || sequence !== refreshSequence.current) return
-    const previousInfo = infoRef.current
-    if (previousInfo && (previousInfo.one_chat !== i.one_chat || previousInfo.install_id !== i.install_id)) {
-      cancelNavigation()
-      picked.current.clear()
-    }
-    infoRef.current = i
-    setBots(b.bots)
-    setRooms(r.rooms)
-    setSections(s.sections)
-    setInfo(i)
-    setSettings(config)
-    setUser(me)
-    // The open conversation follows renames and edits, and closes once it is gone.
-    // A route that changed while the lists loaded may be newer than them.
-    if (!before || routeRef.current !== before) return i
-    // Reconnect resolves owner chats before restoring history, even if the
-    // old row survived migration. It may also have disappeared from this list.
-    if (reconnecting && before.kind === 'section' && ownerChat(before.section)) return i
-    const next = rebind(before, { bots: b.bots, rooms: r.rooms, sections: s.sections })
-    if (!next) {
-      leave()
+  const refresh = useCallback(
+    async (reconnecting = false) => {
+      const current = session.current
+      clearModels()
+      const sequence = ++refreshSequence.current
+      const before = routeRef.current
+      const [b, r, s, i, config, me] = await Promise.all([
+        rpc<{ bots: Bot[] }>('hexbot.bots.list'),
+        rpc<{ rooms: Room[] }>('hexbot.rooms.list', ROOMS_QUERY),
+        listSections(rpc, SECTIONS_QUERY).then(sections => ({ sections })),
+        rpc<DaemonInfo>('hexbot.info'),
+        rpc<Settings>('hexbot.settings.get'),
+        rpc<CurrentUser>('hexbot.users.me')
+      ])
+      if (!mounted.current || session.current !== current || sequence !== refreshSequence.current)
+        return
+      const previousInfo = infoRef.current
+      if (
+        previousInfo &&
+        (previousInfo.one_chat !== i.one_chat || previousInfo.install_id !== i.install_id)
+      ) {
+        cancelNavigation()
+        picked.current.clear()
+        named.current.clear()
+      }
+      infoRef.current = i
+      setBots(b.bots)
+      setRooms(r.rooms)
+      setSections(s.sections)
+      setInfo(i)
+      setSettings(config)
+      setUser(me)
+      // The open conversation follows renames and edits, and closes once it is gone.
+      // A route that changed while the lists loaded may be newer than them.
+      if (!before || routeRef.current !== before) return i
+      // Reconnect resolves owner chats before restoring history, even if the
+      // old row survived migration. It may also have disappeared from this list.
+      if (reconnecting && before.kind === 'section' && ownerChat(before.section)) return i
+      const next = rebind(before, { bots: b.bots, rooms: r.rooms, sections: s.sections })
+      if (!next) {
+        leave()
+        return i
+      }
+      routeRef.current = next
+      setRoute(next)
       return i
-    }
-    routeRef.current = next
-    setRoute(next)
-    return i
-  }, [rpc, clearModels, leave, cancelNavigation])
+    },
+    [rpc, clearModels, leave, cancelNavigation]
+  )
   const syncRoom = useCallback(
     async (id: string) => {
       const sequence = ++openSequence.current
@@ -188,11 +220,14 @@ export function useMobile() {
         routeRef.current?.kind !== 'room' ||
         routeRef.current.room.id !== id
       try {
-        const latest = await rpc<{ events: RoomEvent[] }>('hexbot.rooms.log', {
-          id,
-          before_seq: Number.MAX_SAFE_INTEGER,
-          limit: ROOM_PAGE
-        })
+        const [latest, { room }] = await Promise.all([
+          rpc<{ events: RoomEvent[] }>('hexbot.rooms.log', {
+            id,
+            before_seq: Number.MAX_SAFE_INTEGER,
+            limit: ROOM_PAGE
+          }),
+          rpc<{ room: Room }>('hexbot.rooms.get', { id })
+        ])
         if (stale()) return
         const events = latest.events
         // Older daemons ignore before_seq and answer from the start; read the rest.
@@ -207,7 +242,6 @@ export function useMobile() {
             events.push(...page.events)
             if (page.events.length < 1000) break
           }
-        const { room } = await rpc<{ room: Room }>('hexbot.rooms.get', { id })
         if (stale()) return
         roomEvents.current = events
         setHasEarlier((events[0]?.seq ?? 1) > 1)
@@ -220,7 +254,8 @@ export function useMobile() {
         const updated = { kind: 'room' as const, room }
         routeRef.current = updated
         setRoute(updated)
-        if (events.length) await rpc('hexbot.rooms.mark_read', { id, seq: events.at(-1)!.seq })
+        if (events.length)
+          void rpc('hexbot.rooms.mark_read', { id, seq: events.at(-1)!.seq }).catch(() => {})
       } finally {
         if (sequence === openSequence.current) loadingEvents.current = null
       }
@@ -240,6 +275,7 @@ export function useMobile() {
         const result = await rpc<{
           section: Section
           messages: unknown[]
+          busy?: boolean
           pending_clarify?: Record<string, unknown>
         }>('hexbot.sections.open', { id: target.section.id })
         if (
@@ -251,13 +287,15 @@ export function useMobile() {
         const restoredLiveId = result.section.live_session_id
         if (!restoredLiveId) throw new Error('Open this conversation again before sending.')
         setHasEarlier(false)
-        const status = await rpc<{ status: string }>('session.status', {
-          session_id: restoredLiveId
-        })
+        const busy =
+          typeof result.busy === 'boolean'
+            ? result.busy
+            : (await rpc<{ status: string }>('session.status', { session_id: restoredLiveId }))
+                .status === 'working'
         if (sequence !== openSequence.current) return
         let snapshot: ChatState = {
           ...emptyChat(),
-          busy: status.status === 'working',
+          busy,
           messages: historyMessages(result.messages)
         }
         // The snapshot goes first: an answer or Stop that arrived while it loaded is newer.
@@ -276,20 +314,21 @@ export function useMobile() {
         if (replay.reread && attempt < 2) continue
         straddling.current = replay.state.busy ? restoredLiveId : null
         let restored = { ...replay.state, error: failure }
-        // Check-ins that arrived while it loaded carry no session; match the section.
+        // Heartbeat messages that arrived while it loaded carry no session; match the section.
         for (const event of loadingEvents.current ?? []) {
           const p = (event.payload ?? {}) as Record<string, unknown>
           if (
-            event.type === 'hexbot.checkins.message' &&
+            postedOnItsOwn(event.type) &&
             p.section_id === target.section.id &&
             typeof p.row_id === 'string' &&
             typeof p.text === 'string'
           )
-            restored = checkinMessage(restored, p.row_id, p.text)
+            restored = heartbeatMessage(restored, p.row_id, p.text)
         }
         loadingEvents.current = null
         liveId.current = restoredLiveId
         setChat(restored)
+        setReadId(target.section.id)
         // A daemon from before one chat names no purpose; keep the one the list marked.
         const section =
           'purpose' in result.section
@@ -298,7 +337,7 @@ export function useMobile() {
         const newRoute: ChatRoute = { ...target, section }
         routeRef.current = newRoute
         setRoute(newRoute)
-        await rpc('hexbot.sections.mark_read', { id: target.section.id })
+        void rpc('hexbot.sections.mark_read', { id: target.section.id }).catch(() => {})
         return
       } finally {
         if (sequence === openSequence.current) loadingEvents.current = null
@@ -313,6 +352,14 @@ export function useMobile() {
     (event: GatewayEvent) => {
       const target = routeRef.current
       const p = (event.payload ?? {}) as Record<string, unknown>
+      // Sent on every bot action there; it changes nothing else.
+      if (event.type === 'hexbot.computer.changed') {
+        setComputer(current =>
+          current ? { ...current, ...(p as Partial<ComputerStatus>) } : current
+        )
+        return
+      }
+      if (event.type === 'hexbot.heartbeat.changed') setHeartbeats(n => n + 1)
       if (event.type.endsWith('.changed')) {
         if (!refreshTimer.current)
           refreshTimer.current = setTimeout(() => {
@@ -353,14 +400,14 @@ export function useMobile() {
           )
         )
       } else {
-        if (event.type === 'hexbot.checkins.message') {
+        if (postedOnItsOwn(event.type)) {
           if (
             p.section_id === target.section.id &&
             typeof p.row_id === 'string' &&
             typeof p.text === 'string'
           ) {
             const [id, text] = [p.row_id, p.text]
-            setChat(c => checkinMessage(c, id, text))
+            setChat(c => heartbeatMessage(c, id, text))
             // Seen as it arrived, so it is read.
             void rpc('hexbot.sections.mark_read', { id: target.section.id }).catch(() => {})
           }
@@ -412,6 +459,7 @@ export function useMobile() {
       session.current?.stop()
       setError(null)
       setActive(daemon)
+      setComputer(null)
       setBots([])
       setRooms([])
       setSections([])
@@ -422,12 +470,14 @@ export function useMobile() {
       setUser(null)
       setChoosing(null)
       picked.current.clear()
+      named.current.clear()
       openSequence.current++
       loadingEvents.current = null
       routeRef.current = null
       liveId.current = null
       setRoute(null)
       setChat(emptyChat())
+      setReadId(null)
       const next = new MobileSession(
         daemon,
         token,
@@ -446,8 +496,10 @@ export function useMobile() {
         },
         async () => {
           if (session.current !== next || !mounted.current) return
+          setConnects(count => count + 1)
           // A reconnect can reach an upgraded daemon at the same address.
           cancelNavigation()
+          named.current.clear()
           const generation = navigation.current
           const before = routeRef.current
           ownerPending.current = before?.kind === 'section' && ownerChat(before.section)
@@ -458,6 +510,7 @@ export function useMobile() {
           setInfo(null)
           liveId.current = null
           setChat(emptyChat())
+          setReadId(null)
           setLoading(true)
           try {
             const refreshing = refreshRef.current(true)
@@ -555,9 +608,22 @@ export function useMobile() {
     setLoading(true)
     setError(null)
     try {
-      const oneChat = (infoRef.current ?? (await lookup<DaemonInfo>('hexbot.info'))).one_chat === true
-      const found = await botChat(lookup, bot.name, oneChat, picked.current, section)
+      const oneChat =
+        (infoRef.current ?? (await lookup<DaemonInfo>('hexbot.info'))).one_chat === true
+      const known = oneChat && !section ? named.current.get(bot.name) : undefined
+      const found = known
+        ? { section: known }
+        : await botChat(lookup, bot.name, oneChat, picked.current, section)
       if (stale()) return
+      if (oneChat && !section && 'section' in found) named.current.set(bot.name, found.section)
+      if (known)
+        void botChat(lookup, bot.name, oneChat, picked.current)
+          .then(checked => {
+            if (stale() || !('section' in checked) || checked.section.id === known.id) return
+            named.current.set(bot.name, checked.section)
+            void openSectionRef.current(bot)
+          })
+          .catch(() => undefined)
       if ('choices' in found) {
         setChoosing({ bot, choices: found.choices, current: () => !stale() })
         return
@@ -571,6 +637,7 @@ export function useMobile() {
       ownerPending.current = false
       liveId.current = null
       setChat(emptyChat())
+      setReadId(null)
       await syncChat()
     } catch (e) {
       if (!stale()) setError(errorText(e))
@@ -599,6 +666,7 @@ export function useMobile() {
     routeRef.current = { kind: 'room', room }
     setRoute(routeRef.current)
     setChat(emptyChat())
+    setReadId(null)
     try {
       await syncRoom(room.id)
     } catch (e) {
@@ -619,13 +687,15 @@ export function useMobile() {
     if (target.kind === 'section' && (target.section.peer_bot || !liveId.current))
       throw new Error('Open your chat before sending.')
     const messageId = Crypto.randomUUID()
+    // A daemon with transcript identity keys the message, so Recall can name it.
+    const inputId = infoRef.current?.transcript_identity ? messageId : undefined
     setChat(c => ({
       ...c,
       busy: true,
       error: null,
       messages:
         target.kind === 'section'
-          ? [...c.messages, { id: messageId, role: 'user', text }]
+          ? [...c.messages, { id: messageId, role: 'user', text, inputId, createdAt: Date.now() }]
           : c.messages
     }))
     try {
@@ -633,7 +703,12 @@ export function useMobile() {
       else {
         if (!liveId.current) throw new Error('Open this thread again before sending.')
         const sessionId = liveId.current
-        await rpc('prompt.submit', { session_id: sessionId, text, attachments })
+        await rpc('prompt.submit', {
+          session_id: sessionId,
+          text,
+          attachments,
+          ...(inputId && { input_id: inputId })
+        })
         unsent.current.delete(sessionId)
       }
     } catch (e) {
@@ -691,10 +766,51 @@ export function useMobile() {
     if (target?.kind === 'room') await rpc('hexbot.rooms.stop', { id: target.room.id })
     else if (liveId.current) await rpc('session.interrupt', { session_id: liveId.current })
   }
-  const approval = async (requestId: string, choice: string) => {
+  /**
+   * Takes back your latest message in a bot's chat: a turn on it stops, and
+   * the bot forgets it and everything after it. Answers with its text.
+   */
+  const recall = async (messageId: string): Promise<string | null> => {
+    const sessionId = liveId.current
+    const message = chat.messages.find(m => m.id === messageId)
+    if (routeRef.current?.kind !== 'section' || !sessionId || !message) return null
+    await rpc('session.recall', {
+      session_id: sessionId,
+      ...(message.inputId ? { input_id: message.inputId } : { row_id: message.id })
+    })
+    if (liveId.current === sessionId)
+      setChat(c => {
+        const index = c.messages.findIndex(m => m.id === messageId)
+        return index < 0
+          ? c
+          : { ...c, messages: c.messages.slice(0, index), busy: false, error: null }
+      })
+    return message.text
+  }
+  /** Closes the error under a chat, and the bot's Stopped state for it, which would bring it back. */
+  const dismissError = async () => {
+    const target = routeRef.current
+    setChat(c => ({ ...c, error: null }))
+    setError(null)
+    if (target?.kind !== 'section') return
+    const owner = botsRef.current.find(b => b.name === target.section.bot)
+    if (owner && stoppedIn(owner, target.section))
+      await rpc('hexbot.bots.clear_status', { name: owner.name })
+  }
+  /** `signIn` answers a sign-in card: what was typed goes to the daemon, never the chat. */
+  const approval = async (
+    requestId: string,
+    choice: string,
+    signIn?: { username: string; password: string }
+  ) => {
     const pending = chat.approvals.find(a => a.requestId === requestId)
     if (!pending) return
-    await rpc('approval.respond', { session_id: pending.sessionId, request_id: requestId, choice })
+    await rpc('approval.respond', {
+      session_id: pending.sessionId,
+      request_id: requestId,
+      choice,
+      ...signIn
+    })
     setChat(c => {
       if (!c.turns[pending.sessionId])
         return { ...c, approvals: c.approvals.filter(a => a.requestId !== requestId) }
@@ -750,6 +866,8 @@ export function useMobile() {
     route,
     chat,
     loading,
+    /** The open chat's history is still on its way. */
+    opening: route?.kind === 'section' && readId !== route.section.id,
     hasEarlier,
     loadingEarlier,
     loadEarlier,
@@ -767,9 +885,29 @@ export function useMobile() {
     openRoom,
     send,
     stop,
+    recall,
+    dismissError,
     approval,
     answer,
     liveSessionId: () => liveId.current,
+    computer,
+    connects,
+    heartbeats,
+    /** Read the computer's status, or run a `hexbot.computer.*` method and keep what it returns. */
+    computerCall: async (
+      method = 'hexbot.computer.status',
+      params: Record<string, unknown> = {}
+    ) => {
+      const result = await rpc<ComputerStatus>(method, params)
+      setComputer(current => ({ ...current, ...result }) as ComputerStatus)
+      return result
+    },
+    /** A link, relative to the daemon, to the computer's screen; `control` takes over. */
+    computerView: (control: boolean, quality: ComputerQuality = 'auto') =>
+      rpc<{ path: string; control: boolean; expires_at: number }>('hexbot.computer.view', {
+        control,
+        quality
+      }),
     /** A file reached the daemon and waits for that session's next message. */
     stage: (sessionId: string) => {
       unsent.current.add(sessionId)

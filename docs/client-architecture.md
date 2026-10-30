@@ -45,6 +45,12 @@ differs from the stored one, drop live ids and reopen sections lazily.
 A 401 on ws-ticket means the device was revoked: clear the target and show
 the connect screen.
 
+Without a saved target, a remembered chat or a direct app-page link returns
+to connection setup before mounting that page. Full offers the local daemon
+or another device; Client and browsers open the connect screen. Remembered
+chat selection stays intact for reconnection. Revoked devices always return
+to pairing, including Full.
+
 While the status is `reconnecting` (or `offline` on an app page)
 `src/app/connection-lost.tsx` locks the window: the page underneath is
 `inert` behind a full-window overlay with "Reconnect now" and "Connect to
@@ -152,7 +158,7 @@ if another report invalidates the snapshot before it arrives.
 Roster selections and Dream log entries resolve the daemon's canonical chat
 on activation. Older daemons use the same explicit chooser and persist a pick
 before opening it. Later navigation, unmount, or a daemon change cancels the
-lookup before any further writes or navigation. Mobile omits a bot card's quote
+lookup before any further writes or navigation. Mobile omits a chat row's preview
 when multiple preserved owner conversations make its source uncertain.
 
 ## Event mapping
@@ -163,16 +169,17 @@ when multiple preserved owner conversations make its source uncertain.
 | `message.delta` | append text |
 | `message.interim` | append commentary text if `already_streamed` is false |
 | `message.complete` | finalize, attach usage, call `hexbot.sections.touch` |
-| `reasoning.delta` | append to the message's reasoning trace, shown in the work panel |
+| `reasoning.delta` | append to the message's reasoning trace; the conversation never shows it |
 | `thinking.delta` | replace the daemon's status line (a wait notice); spinner copy is dropped |
 | `tool.start` / `tool.complete` | add or resolve a tool call in the current assistant message |
-| `approval.request` | push an approval card (session scoped) and notify |
+| `approval.request` | push an approval card (session scoped) and notify; one with a `form` is the sign-in card, answered with the username and password |
 | `approval.resolved` / `approval.expire` | show that card's answer / drop it while unanswered |
 | `clarify.request` / `clarify.resolved` / `clarify.expire` | push a question card / show its answers / freeze it |
 | `status.update` | header status line; `checking` replaces the live status with "Checking this step" until an empty `checking` line |
 | `session.info` | update section's model and provider chips |
 | `session.usage` | usage badge |
 | `error` | inline error row |
+| `hexbot.passwords.changed` | refresh Settings, Passwords while it is open |
 
 Sending: `prompt.submit {session_id, text}`; before it, attachments are
 staged with `image.attach_bytes` (images) or `file.attach {data_url,

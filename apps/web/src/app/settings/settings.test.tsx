@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, vi } from 'vitest'
 
 import {
@@ -50,9 +50,14 @@ vi.mock('../../lib/connection', async importOriginal => ({
 
 vi.mock('qrcode', () => ({ default: { toCanvas: vi.fn().mockResolvedValue(undefined) } }))
 
+const sounds = vi.hoisted(() => ({ prime: vi.fn(), set: vi.fn() }))
+
+vi.mock('../../lib/sounds', () => ({ primeSounds: sounds.prime }))
+
 vi.mock('../../stores/ui', () => ({
   useUi: (selector: (state: object) => unknown) =>
     selector({
+      setSounds: sounds.set,
       setTheme: (theme: string) => {
         if (theme === 'system') {
           document.documentElement.removeAttribute('data-theme')
@@ -60,6 +65,7 @@ vi.mock('../../stores/ui', () => ({
           document.documentElement.setAttribute('data-theme', theme)
         }
       },
+      sounds: false,
       theme: 'system'
     })
 }))
@@ -88,9 +94,22 @@ describe('settings', () => {
     vi.clearAllMocks()
   })
 
+  // The card under a group label, so a test can ask which group a row is in.
+  const group = (title: string) =>
+    screen.getByText(title, { selector: 'p' }).parentElement!.nextElementSibling as HTMLElement
+
   it('adds and tests a provider key', async () => {
-    // Saving marks the provider configured, as the daemon does; the row must
-    // stay put (and open) instead of jumping to the Connected group.
+    // Saving marks the provider configured, as the daemon does; the row moves
+    // to Connected and keeps its editor open, its pending test and its result.
+    // Removing the key moves it back and keeps a replacement already typed.
+    const clearProviderKey = vi.fn(async (id: string) => {
+      useSettings.setState(state => ({
+        providers: state.providers.map(item =>
+          item.id === id ? { ...item, configured: false } : item
+        )
+      }))
+    })
+
     const setProviderKey = vi.fn(async () => {
       useSettings.setState(state => ({
         providers: state.providers.map(item => ({ ...item, configured: true }))
@@ -99,22 +118,83 @@ describe('settings', () => {
 
     useSettings.setState({
       providers: [
-        { auth_type: 'key', configured: false, id: 'openai', label: 'OpenAI', models_source: 'api' }
+        {
+          auth_type: 'key',
+          configured: false,
+          id: 'openai',
+          label: 'OpenAI',
+          models_source: 'api'
+        },
+        { auth_type: 'key', configured: true, id: 'groq', label: 'Groq', models_source: 'api' }
       ],
+      clearProviderKey,
       refreshProviders: vi.fn().mockResolvedValue(undefined),
       setProviderKey
     })
-    vi.mocked(modelsList).mockResolvedValue({
-      all: [{ id: 'gpt', label: 'GPT', provider: 'openai' }],
-      curated: []
-    })
+    let models!: (value: Awaited<ReturnType<typeof modelsList>>) => void
+    vi.mocked(modelsList).mockReturnValue(new Promise(resolve => (models = resolve)))
     render(<ProvidersSettings />)
+    expect(within(group('More providers')).getByText('OpenAI')).toBeVisible()
     // The key field is behind the row's "Add key" so the list stays one line per provider.
     fireEvent.click(screen.getByRole('button', { name: 'Add key' }))
     fireEvent.change(screen.getByLabelText('OpenAI API key'), { target: { value: 'secret' } })
     fireEvent.click(screen.getByRole('button', { name: 'Test' }))
     await waitFor(() => expect(setProviderKey).toHaveBeenCalledWith('openai', 'secret'))
+    await waitFor(() => expect(within(group('Connected')).getByText('OpenAI')).toBeVisible())
+    expect(screen.getByRole('button', { name: /Test/ })).toBeDisabled()
+    act(() => models({ all: [{ id: 'gpt', label: 'GPT', provider: 'openai' }], curated: [] }))
     expect(await screen.findByText('1 models available.')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Test' })).toBeEnabled()
+    expect(screen.getByLabelText('OpenAI API key')).toBeVisible()
+    expect(screen.queryByText('More providers')).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('OpenAI API key'), { target: { value: 'next' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Remove OpenAI key' }))
+    await waitFor(() => expect(within(group('More providers')).getByText('OpenAI')).toBeVisible())
+    expect(screen.getByLabelText('OpenAI API key')).toHaveValue('next')
+  })
+
+  it('moves a subscription to Connected when it signs in, and back when it signs out', async () => {
+    const clearProviderKey = vi.fn(async () => {
+      useSettings.setState(state => ({
+        providers: state.providers.map(item => ({ ...item, configured: false }))
+      }))
+    })
+
+    useSettings.setState({
+      clearProviderKey,
+      providers: [
+        {
+          auth_type: 'oauth',
+          configured: false,
+          id: 'codex',
+          label: 'OpenAI Codex',
+          models_source: 'api'
+        },
+        {
+          auth_type: 'key',
+          configured: true,
+          id: 'openrouter',
+          label: 'OpenRouter',
+          models_source: 'api'
+        }
+      ],
+      refreshProviders: vi.fn().mockResolvedValue(undefined)
+    })
+    render(<ProvidersSettings />)
+    expect(within(group('More providers')).getByText('OpenAI Codex')).toBeVisible()
+    // Signing in finishes elsewhere (the browser flow); the store refreshes.
+    act(() => {
+      useSettings.setState(state => ({
+        providers: state.providers.map(item => ({ ...item, configured: true }))
+      }))
+    })
+    expect(within(group('Connected')).getByText('OpenAI Codex')).toBeVisible()
+    expect(screen.queryByText('More providers')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByText('OpenAI Codex'))
+    fireEvent.click(screen.getByRole('button', { name: 'Sign out of OpenAI Codex' }))
+    await waitFor(() =>
+      expect(within(group('All providers')).getByText('OpenAI Codex')).toBeVisible()
+    )
   })
 
   it('shows LAN off and explains the reconnect when enabled', async () => {
@@ -260,27 +340,30 @@ describe('settings', () => {
     ['member', 'off', true],
     ['admin', 'smart', true],
     [undefined, 'smart', true]
-  ] as const)('global approvals for role %s, mode %s offer Bypass: %s', (role, approval_mode, bypass) => {
-    useMe.setState({ me: { display_name: 'Alex', id: 'local', role } })
-    useSettings.setState({
-      refresh: vi.fn().mockResolvedValue(undefined),
-      settings: {
-        approval_mode,
-        billing_notice_ack: false,
-        dream_enabled: true,
-        dream_time: '03:00',
-        lan_enabled: false,
-        service_installed: false,
-        workspace_dir: ''
-      }
-    })
-    render(<ApprovalsSettings />)
-    expect(screen.queryByRole('radio', { name: /^Bypass/ }) !== null).toBe(bypass)
+  ] as const)(
+    'global approvals for role %s, mode %s offer Bypass: %s',
+    (role, approval_mode, bypass) => {
+      useMe.setState({ me: { display_name: 'Alex', id: 'local', role } })
+      useSettings.setState({
+        refresh: vi.fn().mockResolvedValue(undefined),
+        settings: {
+          approval_mode,
+          billing_notice_ack: false,
+          dream_enabled: true,
+          dream_time: '03:00',
+          lan_enabled: false,
+          service_installed: false,
+          workspace_dir: ''
+        }
+      })
+      render(<ApprovalsSettings />)
+      expect(screen.queryByRole('radio', { name: /^Bypass/ }) !== null).toBe(bypass)
 
-    if (approval_mode === 'off') {
-      expect(screen.getByRole('radio', { name: /^Bypass/ })).toBeChecked()
+      if (approval_mode === 'off') {
+        expect(screen.getByRole('radio', { name: /^Bypass/ })).toBeChecked()
+      }
     }
-  })
+  )
 
   it('warns when the daemon has no OS sandbox, and only then', async () => {
     useSettings.setState({ refresh: vi.fn().mockResolvedValue(undefined) })
@@ -314,10 +397,35 @@ describe('settings', () => {
     expect(await screen.findByRole('status')).toHaveTextContent(/older than the app/)
   })
 
+  it('shows the Windows notice when the daemon runs on Windows without a sandbox', async () => {
+    useSettings.setState({ refresh: vi.fn().mockResolvedValue(undefined) })
+    vi.mocked(daemonInfo).mockResolvedValueOnce({
+      approvals: 'sandbox',
+      platform: 'windows',
+      sandbox: null,
+      version: '0.1.5'
+    } as DaemonInfo)
+    render(<ApprovalsSettings />)
+    const notice = await screen.findByRole('status')
+    expect(notice).toHaveTextContent(
+      'The Windows sandbox is unavailable, so Auto and Manual refuse local commands, code runs, and file tools, including approved full access, and scheduled scripts do not run. Bypass has no sandbox or credential protection.'
+    )
+    expect(notice).not.toHaveTextContent(/bubblewrap/i)
+  })
+
   it('applies a selected theme to the document', () => {
     render(<AppearanceSettings />)
     fireEvent.click(screen.getByRole('radio', { name: 'dark' }))
     expect(document.documentElement).toHaveAttribute('data-theme', 'dark')
+  })
+
+  it('turns sounds on and plays one so you hear what you chose', () => {
+    render(<AppearanceSettings />)
+    const toggle = screen.getByRole('switch', { name: 'Sounds' })
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(toggle)
+    expect(sounds.set).toHaveBeenCalledWith(true)
+    expect(sounds.prime).toHaveBeenCalledOnce()
   })
 
   it('registers Connect and polls until approval', async () => {
@@ -357,7 +465,9 @@ describe('settings', () => {
   })
 
   it('shows an identity conflict even while the registered tunnel is running', async () => {
-    const conflict = 'Hex Connect has a different key for this daemon. Disconnect and connect again.'
+    const conflict =
+      'Hex Connect has a different key for this daemon. Disconnect and connect again.'
+
     vi.mocked(connectStatus).mockResolvedValue({
       registered: true,
       daemon_id: 'd1',
@@ -385,7 +495,9 @@ describe('settings', () => {
       last_error: 'Removed in Hex Connect'
     })
     render(<ConnectSettings />)
-    expect(await screen.findByText('Removed in Hex Connect. Sign in to register it again.')).toBeVisible()
+    expect(
+      await screen.findByText('Removed in Hex Connect. Sign in to register it again.')
+    ).toBeVisible()
     expect(screen.getByRole('button', { name: 'Sign in and register' })).toBeVisible()
   })
 
@@ -604,8 +716,14 @@ it('refreshes delayed identity and tunnel errors, clears recovery, and stops on 
   vi.useFakeTimers()
 
   const healthy = {
-    registered: true, daemon_id: 'd1', slug: 'home', tunnel_hostname: 'home.connect.hexbot.app',
-    tunnel_running: true, last_heartbeat_at: 1, last_error: null, identity_error: null
+    registered: true,
+    daemon_id: 'd1',
+    slug: 'home',
+    tunnel_hostname: 'home.connect.hexbot.app',
+    tunnel_running: true,
+    last_heartbeat_at: 1,
+    last_error: null,
+    identity_error: null
   }
 
   const conflict = 'Hex Connect has a different key for this daemon. Disconnect and connect again.'
@@ -615,18 +733,28 @@ it('refreshes delayed identity and tunnel errors, clears recovery, and stops on 
   try {
     await act(async () => {})
     expect(screen.queryByText(conflict)).toBeNull()
-    vi.mocked(connectStatus).mockResolvedValue({ ...healthy, last_error: 'cloudflared exited: exit status: 1', identity_error: conflict })
-    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    vi.mocked(connectStatus).mockResolvedValue({
+      ...healthy,
+      last_error: 'cloudflared exited: exit status: 1',
+      identity_error: conflict
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000)
+    })
     expect(screen.getByText(conflict)).toBeVisible()
     expect(screen.getByText('The tunnel is not connected.')).toBeVisible()
     expect(screen.queryByText('cloudflared exited: exit status: 1')).toBeNull()
     vi.mocked(connectStatus).mockResolvedValue(healthy)
-    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000)
+    })
     expect(screen.queryByText(conflict)).toBeNull()
     expect(screen.queryByText('The tunnel is not connected.')).toBeNull()
     view.unmount()
     const calls = vi.mocked(connectStatus).mock.calls.length
-    await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10000)
+    })
     expect(connectStatus).toHaveBeenCalledTimes(calls)
   } finally {
     view.unmount()

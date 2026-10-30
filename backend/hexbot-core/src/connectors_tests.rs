@@ -379,11 +379,26 @@ async fn stdio_mcp_initializes_discovers_executes_and_obeys_bot_disable() {
     let home = setup();
     let script = home.path().join("mcp.cjs");
     fs::write(&script,r#"const rl=require('node:readline').createInterface({input:process.stdin});let initialized=false;rl.on('line',line=>{let m=JSON.parse(line);if(m.method==='notifications/initialized'){initialized=true;return;}let result;if(m.method==='initialize') result={protocolVersion:'2025-03-26',capabilities:{tools:{}},serverInfo:{name:'fixture',version:'1'}};else if(m.method==='tools/list'){if(!initialized)process.exit(9);result={tools:[{name:'echo',description:'Echo',inputSchema:{type:'object',properties:{text:{type:'string'}}}}]};}else result={content:[{type:'text',text:m.params.arguments.text+' '+process.env.CONNECTOR_FIXTURE}]};process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\n');});"#).unwrap();
-    rpc(home.path(),"hexbot.connectors.add_mcp",json!({"name":"fixture","command":"node","args":[script],"env":{"CONNECTOR_FIXTURE":"okay"}})).await;
+    rpc(home.path(),"hexbot.connectors.add_mcp",json!({"name":"fixture","command":"node","args":[script],"env":{"CONNECTOR_FIXTURE":"okay"},"bots":["owl"]})).await;
+    // Only the bot it was given to sees it.
+    assert!(
+        connectors::mcp_servers(home.path(), "fox")
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .is_empty()
+    );
     let tested = connectors::probe(home.path(), "mcp:fixture", Some("owl"))
         .await
         .unwrap();
     assert_eq!(tested["tool_count"], 1);
+    // A bot it isn't given to yet can still test it before taking it.
+    assert_eq!(
+        connectors::probe(home.path(), "mcp:fixture", Some("fox"))
+            .await
+            .unwrap()["tool_count"],
+        1
+    );
     assert_eq!(
         connectors::get(home.path(), None, "mcp:fixture").unwrap()["mcp"]["tool_count"],
         1
@@ -495,7 +510,7 @@ async fn http_mcp_keeps_session_headers_and_decodes_sse() {
     rpc(
         home.path(),
         "hexbot.connectors.add_mcp",
-        json!({"name":"fixture","url":url}),
+        json!({"name":"fixture","url":url,"bots":["owl"]}),
     )
     .await;
     let mut cfg = common::read_config(home.path()).unwrap();
@@ -797,7 +812,7 @@ async fn failed_mcp_calls_evict_both_session_paths() {
     rpc(
         home.path(),
         "hexbot.connectors.add_mcp",
-        json!({"name":"fixture","url":url}),
+        json!({"name":"fixture","url":url,"bots":["owl"]}),
     )
     .await;
     let config = connectors::mcp_servers(home.path(), "owl").unwrap()["fixture"].clone();

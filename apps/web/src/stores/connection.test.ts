@@ -58,3 +58,12 @@ it('clears typed proof errors when the connection changes state', () => {
   useConnection.getState().setStatus('reconnecting')
   expect(useConnection.getState().proofError).toBeNull()
 })
+
+it('counts each connection that gets through, reconnects included', () => {
+  const before = useConnection.getState().connects
+  useConnection.getState().setStatus('connected')
+  useConnection.getState().setStatus('connected')
+  useConnection.getState().setStatus('reconnecting')
+  useConnection.getState().setStatus('connected')
+  expect(useConnection.getState().connects).toBe(before + 2)
+})

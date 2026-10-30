@@ -52,6 +52,17 @@ copy the bundle into `$HEXBOT_HOME/runtime/native`, select it, install managed
 Python 3.11 and voice tools, and write `~/.local/bin/hexbot`. The wrapper preserves
 the selected home and follows native updates. `--no-code-tools` skips Python and
 voice provisioning. `--json` emits one progress object per line, including errors.
+The internal `setup --select-runtime --manifest ABSOLUTE_FILE --json` mode, on
+macOS and Linux, selects the app's runtime without installing code tools, a CLI
+wrapper or a service. The app passes a manifest describing its signed bytes, and
+selection follows the chronology rules under the activation lock. It checks
+executable access and refuses damaged or conflicting recorded identity.
+`setup --activate` from a verified bundle can rewrite that metadata and keeps
+the highest valid `builtAt` it can still read. The record's historical floor may
+exceed the selected bundle's own manifest chronology after explicit activation
+of an older bundle. The installer uses this repair path for Headless; Full has
+no installer runtime-repair route.
+
 The shared tool pins and voice requirements live in `assets/`; the app uses the
 same files and receipts. An existing installation can run `hexbot setup` to repair
 its code tools and CLI wrapper without replacing the daemon bundle.
@@ -84,10 +95,11 @@ it also installs over SSH when nobody is signed in at the screen.
   Version 15 adds `bots.is_primary` with a unique index that allows one
   primary bot per owner. The primary bot's tools live in
   `src/runtime_primary.rs` and call the App's own methods.
-  Version 16 adds check-ins (`src/checkins.rs`): `checkins`,
-  `checkin_wakeups`, `checkin_messages`, `sections.purpose`, and
-  `devices.push_token`/`push_platform`. The scheduler tick runs them; pushes
-  go out through Hex Connect (`services::push`).
+  Version 16 adds `sections.purpose` and `devices.push_token`/`push_platform`.
+  The heartbeat (`src/heartbeat.rs`) keeps `heartbeats` and
+  `heartbeat_messages`; the scheduler tick runs each bot's, and pushes go out
+  through Hex Connect (`services::push`). Every migration drops the
+  check-in tables it replaced.
 - Memory stays in `profiles/<bot>/memories/MEMORY.md`, soul in `SOUL.md`, and
   About you in `users/<id>/user.md`. Deleting a section leaves bot memory alone.
   Only sections, rooms, and dreams write it; a scheduled job's memory tool
@@ -309,6 +321,7 @@ clear, close and deletion cleanup apply to retained uploads.
 | `rooms` | Concurrent responders, mentions, main-bot collection, limits, interruption |
 | `settings`, `dreaming` | Settings, budgets, incidents, dreaming, restoration, cron |
 | `providers`, `provider_acp`, `connectors` | Models, credentials, OAuth, ACP, connector setup/probes, MCP |
+| `plugins` | One list of connectors, skills and capabilities, and which bots have each |
 | `native_tools`, `native_external_tools`, `native_product_tools` | Code, browser, computer, media, web, HA, X, skills and history tools |
 | `services` | Connect registration, grants, tunnel lifecycle, native updates |
 | `osutil` | Home, hostname, file errors, process probes and owned-child signals; interrupted lock waits |
@@ -336,6 +349,10 @@ copy taking precedence over `<home>/skills`, then bundled `skills/` selected by
 `HEXBOT_BUNDLED_SKILLS`. New bots do not copy bundled skills. Bot authoring writes
 only private skills; editing an inherited skill creates a private override.
 People can move a private skill into the library using the share RPC.
+
+A skill's `ready` and `missing` come from its frontmatter `platforms` and
+`prerequisites` (`commands`, `env_vars`), checked at every resolve; `enabled`
+requires `ready`, so every path that reads it hides a skill waiting for setup.
 
 New library skills are on for every bot. The bot's `config.yaml` `skills.disabled`
 is the per-bot deny-list, and the root config's `skills.disabled` disables a

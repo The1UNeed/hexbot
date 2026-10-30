@@ -36,4 +36,4 @@ There is no Windows build. There is no stable release either, and until there is
 
 ## Get it
 
-[Download the nightly](/download/) for Mac or Linux. It's free and open source under AGPL-3.0. If something breaks, [open an issue on GitHub](https://github.com/The1UNeed/hexbot/issues).
+[Download the nightly](/download/) for Mac or Linux. It's free and open source under Apache-2.0. If something breaks, [open an issue on GitHub](https://github.com/The1UNeed/hexbot/issues).

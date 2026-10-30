@@ -33,7 +33,7 @@ import {
 import type { Bot, BotStatus, DaemonInfo, Message, Section } from '../lib/types'
 
 import { connectionRead, useConnection } from './connection'
-import { releaseCheckinMessages, useTranscripts } from './transcripts'
+import { releaseHeartbeatMessages, useTranscripts } from './transcripts'
 
 /** Interrupted hidden kickoffs must stay hidden in cached and fresh history. */
 function chatMessages(rows: HistoryRow[]) {
@@ -98,9 +98,10 @@ export interface SectionsState {
   restoreHistory: () => Promise<void>
   /**
    * A bot's one chat with you, made on first use. On an older daemon the
-   * user may be asked to pick it; null when they pick none.
+   * user may be asked to pick it; null when they pick none. A `check` of a
+   * chat already shown neither cancels nor yields to other lookups.
    */
-  chat: (bot: string, current?: () => boolean) => Promise<null | Section>
+  chat: (bot: string, current?: () => boolean, check?: boolean) => Promise<null | Section>
   /** The choice `chat` is waiting on, if any. */
   choosing: ChatChoice | null
   /** Live ids are process-scoped; a new daemon epoch invalidates them all. */
@@ -302,6 +303,11 @@ const proving = new WeakSet<object>()
 const picked = new Map<string, string>()
 let pickedDaemon: DaemonInfo | null = null
 let chatGeneration = 0
+/**
+ * Each bot's chat as the daemon last named it on this connection. A view
+ * shows it at once and asks the daemon again, which may name another.
+ */
+const named = new Map<string, string>()
 
 const differentDaemon = (daemon: DaemonInfo) =>
   pickedDaemon &&
@@ -587,6 +593,13 @@ export const useSections = create<SectionsState>((set, get) => ({
 
           authority.finish(id, ticket, 'gone')
           removals.set(id, (removals.get(id) ?? 0) + 1)
+
+          for (const [bot, chat] of named) {
+            if (chat === id) {
+              named.delete(bot)
+            }
+          }
+
           set(state => ({ cachedMessages: withoutKey(state.cachedMessages, id) }))
           await forgetHistory(scope, id)
         }
@@ -647,9 +660,9 @@ export const useSections = create<SectionsState>((set, get) => ({
           { busy, pending: pending_requests, readAt }
         )
 
-        // Check-ins that arrived while this loaded; the history may hold them already.
-        for (const row of releaseCheckinMessages(id)) {
-          useTranscripts.getState().checkinMessage(live, row)
+        // Heartbeat messages that arrived while this loaded; the history may hold them already.
+        for (const row of releaseHeartbeatMessages(id)) {
+          useTranscripts.getState().heartbeatMessage(live, row)
         }
 
         const transcript = useTranscripts.getState().bySession[live]
@@ -756,13 +769,16 @@ export const useSections = create<SectionsState>((set, get) => ({
     await get().refresh()
   },
 
-  async chat(bot, active = () => true) {
-    get().choosing?.pick(null)
-    const generation = ++chatGeneration
+  async chat(bot, active = () => true, check = false) {
+    if (!check) {
+      get().choosing?.pick(null)
+    }
+
+    const generation = check ? chatGeneration : ++chatGeneration
     const { target, epoch } = useConnection.getState()
 
     const current = () =>
-      generation === chatGeneration &&
+      (check || generation === chatGeneration) &&
       target === useConnection.getState().target &&
       epoch === useConnection.getState().epoch &&
       active()
@@ -797,7 +813,9 @@ export const useSections = create<SectionsState>((set, get) => ({
 
     const section = modern
       ? (await sectionsCreate(bot)).section
-      : await olderChat(bot, ask, current)
+      : check
+        ? null
+        : await olderChat(bot, ask, current)
 
     if (!section || !current()) {
       return null
@@ -805,6 +823,10 @@ export const useSections = create<SectionsState>((set, get) => ({
 
     if (authority.commit(section.id, ticket, 'present')) {
       set(state => mergeSection(state, section))
+    }
+
+    if (modern) {
+      named.set(bot, section.id)
     }
 
     return section
@@ -880,6 +902,7 @@ useConnection.subscribe((next, previous) => {
   if (changed || identityChanged || (!next.daemon && previous.daemon)) {
     useSections.getState().choosing?.pick(null)
     chatGeneration++
+    named.clear()
   }
 
   // With no target or process identity, a reconnect cannot prove this is the
@@ -906,6 +929,14 @@ useConnection.subscribe((next, previous) => {
 
 export function sectionsActions(): SectionsState {
   return useSections.getState()
+}
+
+/** The bot's chat as the daemon last named it on this connection, while still listed. */
+export function knownChat(bot: string): null | Section {
+  const id = named.get(bot)
+  const section = id ? useSections.getState().byId[id] : undefined
+
+  return section?.bot === bot && !section.archived_at ? section : null
 }
 
 export function selectSectionsForBot(bot: null | string) {
@@ -985,17 +1016,34 @@ export function botStatus(bot: Bot | undefined): BotStatus {
 }
 
 /**
- * A section's state: the daemon's status when its detail names this section,
+ * Whether the bot's status is about this section: the one its detail names,
+ * or the bot's chat (`chat`) for a failure nothing else shows (`in_chat`).
+ */
+export function statusIsHere(
+  bot: Bot | undefined,
+  sectionId: null | string,
+  chat = false
+): boolean {
+  const detail = bot?.status_detail
+
+  return Boolean(
+    detail && sectionId && (detail.section_id === sectionId || (chat && detail.in_chat))
+  )
+}
+
+/**
+ * A section's state: the daemon's status when it is about this section,
  * else what the live transcript says.
  */
 export function sectionStatusOf(
   bot: Bot | undefined,
   sectionId: null | string,
-  live: LiveSections = {}
+  live: LiveSections = {},
+  chat = false
 ): BotStatus {
   const status = botStatus(bot)
 
-  if (status !== 'idle' && sectionId && bot?.status_detail?.section_id === sectionId) {
+  if (status !== 'idle' && statusIsHere(bot, sectionId, chat)) {
     return status
   }
 

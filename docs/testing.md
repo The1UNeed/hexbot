@@ -213,6 +213,10 @@ route and composer checked before continuing.
   replies stay silent. It calls the actual native API and records its delivery
   events in `notifications.json`. Set `HEXBOT_SMOKE_NATIVE_NOTIFICATIONS=1` on
   a host with notification permissions to require the OS `show` events too.
+  On macOS it launches the ad-hoc signed `Hexbot (dev)` copy that
+  `pnpm dev --desktop` uses (`scripts/dev/electron-launcher.mjs`); macOS
+  rejects notifications from the Electron in `node_modules`, whose signature
+  does not verify.
   On headless Linux install `openbox dbus-x11 xvfb`, then run each edition with
   a window manager so native minimization works:
 
@@ -221,7 +225,20 @@ route and composer checked before continuing.
   dbus-run-session -- xvfb-run -a -s '-screen 0 1600x1200x24' sh -c 'openbox >/dev/null 2>&1 & node scripts/dev/native-ui-smoke.mjs --desktop --edition=client'
   ```
 - Web bundle: `pnpm --filter ./apps/web run typecheck && pnpm --filter ./apps/web run test --run && pnpm --filter ./apps/web run lint && pnpm --filter ./apps/web run build`.
+- POSIX runtime selection and readiness: `node scripts/dev/runtime-selection-smoke.mjs`.
+  Builds real `.58` and `.59` daemons with equal `builtAt` from a disposable source
+  copy. Damaged identity metadata leaves `.58` running. Permission damage to a
+  separately selected `.59` also refuses preparation without stopping `.58`;
+  matching trusted `.59` source repairs into staging and starts an authenticated
+  owned replacement. A `.60` request fails without stopping it. The test uses a
+  temporary target directory and daemon state and removes both when it finishes.
+  Needs the normal Rust and pnpm dependencies.
 - Desktop: `pnpm --filter ./apps/desktop run typecheck && pnpm --filter ./apps/desktop run test --run && pnpm --filter ./apps/desktop run build`.
+  `pnpm install` downloads the Electron binary once, through the desktop
+  `postinstall`. Electron 42 otherwise downloads it on first use, and
+  parallel test workers would extract it over each other. After an install
+  with `--ignore-scripts`, run `pnpm --filter ./apps/desktop exec install-electron`
+  before any test.
   After building the web bundle, `pnpm --filter ./apps/desktop run e2e:lifecycle`
   builds and launches both desktop editions in disposable homes. It checks
   native close/reopen, renderer retention, a real second launch, menu Quit
@@ -404,6 +421,18 @@ test uses a temporary home and checks the launcher, agent runtime, daemon HTTP
 listener, managed Python and voice executable. Desktop unit tests cover bad uv
 checksums, consecutive updates, failed activation, running-runtime retention and
 service migration. Rust tests cover update pruning and legacy listener refusal.
+
+### Bot faces
+
+`node apps/web/scripts/face-rest.mjs --check` checks that mobile uses the
+web's face geometry. `node apps/web/scripts/face-smoke.mjs` launches a
+temporary Vite entry and Chromium, then removes the entry and closes both.
+It checks all 264 PNG shape and colour roundtrips (current, older capsule, and flat
+eyes), every mood and emotion moving with no CSS animation, no writes from offscreen or
+held faces, reduced-motion rest poses and all acts, offscreen pause/resume,
+keyed reorder/unmount cleanup, and 24 working faces under 4× CPU throttling.
+`HEXBOT_FACE_ARTIFACTS` selects the screenshot directory. It uses the desktop
+workspace's Playwright installation and needs its Chromium browser.
 
 ### Connected tools through Pi
 

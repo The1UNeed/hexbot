@@ -1,9 +1,13 @@
+import 'katex/dist/katex.min.css'
+
 import { JsonRpcGatewayError } from '@hermes/shared'
 import { useNavigate, useParams, useRouter } from '@tanstack/react-router'
-import { ArrowDown, Copy, File, PanelRight, RotateCcw, X } from 'lucide-react'
+import { ArrowDown, Copy, File, PanelRight, Undo2, X } from 'lucide-react'
 import {
   type CSSProperties,
   isValidElement,
+  memo,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -11,8 +15,10 @@ import {
   useState,
   useSyncExternalStore
 } from 'react'
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { type Components, type Options } from 'react-markdown'
+import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
 
 import { Avatar, useFaceColor } from '../../components/ui/avatar'
 import { Button } from '../../components/ui/button'
@@ -22,15 +28,20 @@ import { StatusDot } from '../../components/ui/status-dot'
 import {
   approvalRespond,
   attachFile,
+  botsClearStatus,
   newInputId,
   promptSubmit,
   sectionsList,
-  sessionInterrupt
+  sessionInterrupt,
+  sessionRecall
 } from '../../lib/api'
 import { botFace } from '../../lib/avatar-builder'
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
+import { moodForStatus } from '../../lib/face'
+import { mathDelimiters } from '../../lib/math'
 import { NotConnectedError } from '../../lib/rpc'
+import { useTurnCues } from '../../lib/sounds'
 import { toMillis } from '../../lib/time'
 import type {
   ApprovalChoice,
@@ -40,14 +51,18 @@ import type {
   BotStatus,
   ClarifyRequest
 } from '../../lib/types'
+import { openedElsewhere, selectionsSettled } from '../../lib/use-chat-selection'
 import { botMissing, useBot, useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { connectorsActions } from '../../stores/connectors'
 import { draftsActions } from '../../stores/drafts'
+import { useConversationFeelings, useEmotion } from '../../stores/emotions'
 import {
+  knownChat,
   liveSectionsOf,
   sectionsActions,
   sectionStatusOf,
+  statusIsHere,
   useLiveSessionId,
   useSection,
   useSections
@@ -64,13 +79,13 @@ import { useUi } from '../../stores/ui'
 import { AskingRow } from './asking-row'
 import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
-import { ContextMeter } from './context-meter'
-import { MemoryMarks } from './memory-marks'
 import { RoomConversation } from './room'
+import { SignInCard } from './sign-in-card'
+import { liveMood } from './steps'
 import { visualsOf } from './visual'
 import { Visuals } from './visual-frame'
 import { WaitingBanner } from './waiting-banner'
-import { LiveStatus, WorkSummary } from './work-status'
+import { isWorking, LiveStatus } from './work-status'
 
 export function ConnectedToolsNotice({ sectionId }: { sectionId: string }) {
   const warnings = useTranscripts(state => state.warnings)
@@ -132,6 +147,23 @@ export function dayLabel(time: number, now = Date.now()): string {
   return `${day} ${clock}`
 }
 
+/** When a message was sent: `sentAt` once known, else when it started. 0 is unknown. */
+export const sentAt = (message: { createdAt: number; sentAt?: number }) =>
+  toMillis(message.sentAt || message.createdAt)
+
+/**
+ * A time separator before a message sent `at`: between days and after 20
+ * quiet minutes. `before` is undefined for the first message. An unknown time
+ * (0) never separates, so a reload never splits a turn.
+ */
+export function separates(before: number | undefined, at: number) {
+  return (
+    at > 0 &&
+    (before === undefined ||
+      (before > 0 && (dayKey(before) !== dayKey(at) || at - before > 20 * 60_000)))
+  )
+}
+
 export function DaySeparator({ time }: { time: number }) {
   return (
     <div className="pt-6 pb-2 text-center text-[length:var(--text-meta)] font-medium text-muted">
@@ -191,6 +223,18 @@ export function botBubbleStyle(color: null | string): CSSProperties {
 /** The transcript column: centred and capped so lines stay readable on wide windows. */
 export const transcriptClass = 'mx-auto max-w-[52rem] px-5 py-2'
 
+export function LoadEarlierMessages({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      className="hex-focus mx-auto mb-3 block rounded-full px-3 py-1 text-[length:var(--text-secondary)] text-muted transition-colors duration-[var(--hex-motion-fast)] hover:bg-surface-2 hover:text-foreground"
+      onClick={onClick}
+      type="button"
+    >
+      Load earlier messages
+    </button>
+  )
+}
+
 /** Inline code: a small chip in the sentence. Fenced blocks go through `Pre`. */
 function InlineCode({ children }: { children?: React.ReactNode }) {
   return (
@@ -243,34 +287,45 @@ function CodeBlock({ children, className }: { children?: React.ReactNode; classN
   )
 }
 
-export function Markdown({ text }: { text: string }) {
+const markdownComponents: Components = {
+  a: props => (
+    <a
+      className="underline decoration-foreground/30 underline-offset-2 hover:decoration-foreground"
+      rel="noreferrer"
+      target="_blank"
+      {...props}
+    />
+  ),
+  code: InlineCode,
+  pre: Pre,
+  table: props => (
+    <div className="overflow-x-auto">
+      <table className="my-3 w-full border-collapse" {...props} />
+    </div>
+  ),
+  td: props => <td className="border border-border p-2" {...props} />,
+  th: props => <th className="border border-border bg-surface-2 p-2 text-left" {...props} />
+}
+
+// A lone $ is too often money, so math needs $$ (or the \( \) and \[ \] mathDelimiters converts).
+const remarkPlugins: Options['remarkPlugins'] = [
+  remarkGfm,
+  [remarkMath, { singleDollarTextMath: false }]
+]
+
+const rehypePlugins: Options['rehypePlugins'] = [rehypeKatex]
+
+export const Markdown = memo(function Markdown({ text }: { text: string }) {
   return (
     <ReactMarkdown
-      components={{
-        a: props => (
-          <a
-            className="underline decoration-foreground/30 underline-offset-2 hover:decoration-foreground"
-            rel="noreferrer"
-            target="_blank"
-            {...props}
-          />
-        ),
-        code: InlineCode,
-        pre: Pre,
-        table: props => (
-          <div className="overflow-x-auto">
-            <table className="my-3 w-full border-collapse" {...props} />
-          </div>
-        ),
-        td: props => <td className="border border-border p-2" {...props} />,
-        th: props => <th className="border border-border bg-surface-2 p-2 text-left" {...props} />
-      }}
-      remarkPlugins={[remarkGfm]}
+      components={markdownComponents}
+      rehypePlugins={rehypePlugins}
+      remarkPlugins={remarkPlugins}
     >
-      {text}
+      {mathDelimiters(text)}
     </ReactMarkdown>
   )
-}
+})
 
 function Attachments({
   attachments,
@@ -308,21 +363,24 @@ function Attachments({
 
 /**
  * A Stopped card built from the bot's `status_detail` for a section opened
- * after the incident fired (the live event only reaches open transcripts).
- * Null once the transcript carries its own error row.
+ * after the incident fired (the live event only reaches open transcripts),
+ * or for the bot's chat (`chat`) when the failure has nowhere else to show,
+ * such as a dream's. Null once the transcript carries its own error row.
  */
 export function stoppedCardFor(
   bot: Bot | undefined,
   sectionId: null | string,
-  messages: TranscriptMessage[]
+  messages: TranscriptMessage[],
+  chat = false
 ): null | TranscriptMessage {
   const detail = bot?.status === 'stopped' ? bot.status_detail : null
 
-  if (!detail || !sectionId || detail.section_id !== sectionId) {
+  if (!detail || !sectionId || !statusIsHere(bot, sectionId, chat)) {
     return null
   }
 
-  if (messages.some(message => message.error)) {
+  // The chat's own error rows are about its turns, not a failure elsewhere.
+  if (detail.section_id === sectionId && messages.some(message => message.error)) {
     return null
   }
 
@@ -360,11 +418,13 @@ export function humanConnector(id: null | string | undefined): string {
 export function StoppedCard({
   message,
   name,
+  onDismiss,
   onFix,
   onRetry
 }: {
   message: TranscriptMessage
   name: string
+  onDismiss?: () => void
   onFix?: (connector: string) => void
   onRetry?: () => void
 }) {
@@ -381,14 +441,27 @@ export function StoppedCard({
       <div className="flex items-center gap-2">
         <span aria-hidden className="size-2 shrink-0 rounded-full bg-danger" />
         <span className="font-medium">{name} stopped</span>
-        {message.createdAt > 0 ? (
-          <time className="ml-auto text-[length:var(--text-meta)] text-muted">
-            {new Date(toMillis(message.createdAt)).toLocaleTimeString([], {
-              hour: 'numeric',
-              minute: '2-digit'
-            })}
-          </time>
-        ) : null}
+        <span className="ml-auto flex items-center gap-1">
+          {message.createdAt > 0 ? (
+            <time className="text-[length:var(--text-meta)] text-muted">
+              {new Date(toMillis(message.createdAt)).toLocaleTimeString([], {
+                hour: 'numeric',
+                minute: '2-digit'
+              })}
+            </time>
+          ) : null}
+          {onDismiss ? (
+            <button
+              aria-label="Dismiss"
+              className="hex-focus -my-1 -mr-1.5 grid size-6 place-items-center rounded-full text-muted transition-colors duration-[var(--hex-motion-fast)] hover:bg-foreground/[0.06] hover:text-foreground"
+              onClick={onDismiss}
+              title="Dismiss"
+              type="button"
+            >
+              <X size={14} />
+            </button>
+          ) : null}
+        </span>
       </div>
       <p className="text-[length:var(--text-secondary)]">{message.error}</p>
       <div className="flex gap-2">
@@ -407,21 +480,28 @@ export function StoppedCard({
   )
 }
 
-export function MessageRow({
+export const MessageRow = memo(function MessageRow({
   bot,
   message,
+  onDismiss,
   onFix,
   onImage,
+  onRecall,
   onRetry,
+  retryMessage,
   fresh = false,
   joined = false,
   showFace = false
 }: {
   bot?: Bot
   message: TranscriptMessage
+  onDismiss?: (message: TranscriptMessage) => void
   onFix?: (connector: string) => void
   onImage: (source: string) => void
-  onRetry?: () => void
+  /** Your latest message, while the bot is on it or after its turn stopped. */
+  onRecall?: (message: TranscriptMessage) => void
+  onRetry?: (input: TranscriptMessage) => void
+  retryMessage?: TranscriptMessage
   /** Arrived while this chat was open: each of its bubbles springs in as it appears. */
   fresh?: boolean
   /** Follows a bubble from the same side: it sits 4 px under it, one stack. */
@@ -432,14 +512,17 @@ export function MessageRow({
   const assistant = message.role === 'assistant'
   const settled = useRef<number>(undefined)
   const color = useFaceColor(bot, bot ? bot.display_name : null)
+  // A live face shows what the bot feels over what it is doing.
+  const emotion = useEmotion(assistant && message.streaming ? bot?.name : undefined)
 
   if (message.error) {
     return (
       <StoppedCard
         message={message}
         name={bot?.display_name ?? 'The bot'}
+        onDismiss={onDismiss ? () => onDismiss(message) : undefined}
         onFix={onFix}
-        onRetry={onRetry}
+        onRetry={onRetry && retryMessage ? () => onRetry(retryMessage) : undefined}
       />
     )
   }
@@ -463,16 +546,19 @@ export function MessageRow({
   // Bubbles drawn when the row first rendered stay still; later ones spring in.
   const still = settled.current ?? (settled.current = fresh ? 0 : bubbles.length)
 
-  const copy = {
-    icon: <Copy size={14} />,
-    label: 'Copy',
-    onClick: () => void navigator.clipboard.writeText(bubbles.join('\n\n'))
-  }
-
-  const actions =
-    assistant && onRetry
-      ? [copy, { icon: <RotateCcw size={14} />, label: 'Retry', onClick: onRetry }]
-      : [copy]
+  // A bot's bubbles stand alone, like a text; only yours can be copied.
+  const actions = assistant
+    ? []
+    : [
+        {
+          icon: <Copy size={14} />,
+          label: 'Copy',
+          onClick: () => void navigator.clipboard.writeText(bubbles.join('\n\n'))
+        },
+        ...(onRecall
+          ? [{ icon: <Undo2 size={14} />, label: 'Recall', onClick: () => onRecall(message) }]
+          : [])
+      ]
 
   const last = bubbles.length - 1
   const name = bot?.display_name ?? 'Bot'
@@ -508,7 +594,9 @@ export function MessageRow({
           <Attachments attachments={message.attachments} onImage={onImage} />
         ) : null}
       </div>
-      {index === last && !message.streaming ? <BubbleActions actions={actions} /> : null}
+      {index === last && actions.length > 0 && !message.streaming ? (
+        <BubbleActions actions={actions} />
+      ) : null}
     </div>
   ))
 
@@ -522,10 +610,10 @@ export function MessageRow({
     )
   }
 
-  // The column reads in order: the bot's messages, their marks, and at the
-  // foot the live status while the turn runs, then the line for what it did.
-  // The bots it asked get their own row under the turn, two faces turned
-  // toward each other.
+  // The column reads in order: the bot's messages, then at the foot the live
+  // status while the turn runs. Nothing stays for how it got there. The bots
+  // it asked get their own row under the turn, two faces turned toward each
+  // other.
   return (
     <>
       <article
@@ -540,9 +628,9 @@ export function MessageRow({
         showFace &&
         (bubbles.length > 0 || visuals.length > 0 || message.streaming) ? (
           <Avatar
-            className={cn('mt-1', message.streaming && 'hex-think')}
+            className="mt-1"
             {...botFace(bot)}
-            mood={message.streaming ? 'working' : undefined}
+            mood={emotion ?? liveMood(message)}
             name={name}
             size="sm"
           />
@@ -555,19 +643,13 @@ export function MessageRow({
           )}
         >
           {column}
-          {assistant ? <MemoryMarks message={message} /> : null}
-          {assistant ? (
-            <WorkSummary computer={!showFace} fresh={fresh} message={message} name={name} />
-          ) : null}
-          {assistant && message.streaming ? (
+          {assistant && isWorking(message) ? (
             <LiveStatus
-              computer={!showFace}
               face={
                 showFace ? undefined : (
                   <Avatar
-                    className="hex-think"
                     {...botFace(bot)}
-                    mood="working"
+                    mood={emotion ?? liveMood(message) ?? 'working'}
                     name={name}
                     size="sm"
                   />
@@ -582,19 +664,19 @@ export function MessageRow({
       {assistant ? <AskingRow message={message} sender={bot?.name ?? null} /> : null}
     </>
   )
-}
+})
 
 /**
- * "Checking this step" at the foot of a bot's chat while Auto mode still
- * reviews a step and no message streams: an approval card from an
- * overlapping review ended the message that showed it. The line opens into
- * that message's steps.
+ * The live status at the foot of a bot's chat while Auto mode still reviews
+ * a step and no message streams: an approval card from an overlapping review
+ * ended the message that showed it. A message with a step still running
+ * shows the line itself.
  */
 export function CheckingRow({ bot, transcript }: { bot?: Bot; transcript?: Transcript }) {
   const checking = transcript?.streamingMessageId ? undefined : transcript?.checking
   const message = checking && transcript?.messages.findLast(item => item.role === 'assistant')
 
-  if (!checking || !message) {
+  if (!checking || !message || isWorking(message)) {
     return null
   }
 
@@ -603,11 +685,8 @@ export function CheckingRow({ bot, transcript }: { bot?: Bot; transcript?: Trans
   return (
     <div className="flex pt-1">
       <LiveStatus
-        computer
-        face={
-          <Avatar className="hex-think" {...botFace(bot)} mood="working" name={name} size="sm" />
-        }
-        message={{ ...message, checking }}
+        face={<Avatar {...botFace(bot)} mood="working" name={name} size="sm" />}
+        message={message}
         name={name}
       />
     </div>
@@ -642,6 +721,14 @@ const APPROVAL_CHOICES: Record<ApprovalChoice, string> = {
 }
 
 export function ApprovalCard({ approval }: { approval: ApprovalRequest }) {
+  if (approval.form) {
+    return <SignInCard approval={approval} form={approval.form} />
+  }
+
+  return <ChoiceCard approval={approval} />
+}
+
+function ChoiceCard({ approval }: { approval: ApprovalRequest }) {
   const choose = async (choice: ApprovalChoice) => {
     await approvalRespond(approval.sessionId, approval.requestId, choice)
     transcriptActions().resolveApproval(approval.sessionId, approval.requestId, choice)
@@ -881,6 +968,7 @@ interface DraftAttachment {
 function Composer({
   accessory,
   bot,
+  draftVersion,
   notice,
   sectionId,
   sessionId,
@@ -889,6 +977,8 @@ function Composer({
 }: {
   accessory?: React.ReactNode
   bot?: Bot
+  /** Changes when the draft was written outside the composer, as by Recall. */
+  draftVersion?: number
   notice?: React.ReactNode
   sectionId: string | null
   sessionId: string | null
@@ -1011,6 +1101,13 @@ function Composer({
     }
   }, [text])
 
+  useEffect(() => {
+    if (draftVersion && sectionId) {
+      setText(draftsActions().byId[sectionId] ?? '')
+      document.getElementById('conversation-composer')?.focus()
+    }
+  }, [draftVersion, sectionId])
+
   return (
     <ComposerShell
       above={
@@ -1095,20 +1192,9 @@ type TimelineItem =
   | { at: number; clarify: ClarifyRequest; kind: 'clarify' }
   | { at: number; index: number; kind: 'message'; message: TranscriptMessage }
 
-/**
- * A time separator before `message`: between days and after 20 quiet minutes.
- * Restored history carries no times (createdAt 0): no separator for it, and
- * none right after it, so a reload never splits a turn.
- */
-function separatedFrom(previous: TranscriptMessage | undefined, message: TranscriptMessage) {
-  return (
-    message.createdAt > 0 &&
-    (!previous ||
-      (previous.createdAt > 0 &&
-        (dayKey(previous.createdAt) !== dayKey(message.createdAt) ||
-          toMillis(message.createdAt) - toMillis(previous.createdAt) > 20 * 60_000)))
-  )
-}
+/** A time separator before `message`; see `separates`. */
+const separatedFrom = (previous: TranscriptMessage | undefined, message: TranscriptMessage) =>
+  separates(previous && sentAt(previous), sentAt(message))
 
 const bubbleShown = (message: TranscriptMessage) =>
   !message.error &&
@@ -1232,9 +1318,37 @@ function BotConversation() {
     }
   }, [params.bot])
   const [lightbox, setLightbox] = useState<string | null>(null)
-  const [visible, setVisible] = useState(60)
+  const [historyWindow, setWindow] = useState({ section: params.section, count: 60 })
+  const visible = historyWindow.section === params.section ? historyWindow.count : 60
+
+  if (historyWindow.section !== params.section) {
+    setWindow({ section: params.section, count: 60 })
+  }
+
+  const earlierAnchor = useRef<{ height: number; top: number } | null>(null)
+
+  const loadEarlier = () => {
+    const node = viewport.current
+
+    if (node) {
+      earlierAnchor.current = { height: node.scrollHeight, top: node.scrollTop }
+    }
+
+    setWindow({ section: params.section, count: visible + 60 })
+  }
+
   const [atBottom, setAtBottom] = useState(true)
   const viewport = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const node = viewport.current
+    const anchor = earlierAnchor.current
+
+    if (node && anchor) {
+      node.scrollTop = anchor.top + node.scrollHeight - anchor.height
+    }
+
+    earlierAnchor.current = null
+  }, [visible, params.section])
   const togglePanel = useUi(state => state.toggleRightPanel)
   const panelOpen = useUi(state => state.rightPanelOpen)
   const [composerBox, composerHeight] = useHeight<HTMLDivElement>()
@@ -1268,12 +1382,20 @@ function BotConversation() {
   const clarifies = useMemo(() => transcript?.clarifies ?? [], [transcript?.clarifies])
   const streaming = Boolean(transcript?.streamingMessageId)
   const [openFailure, setOpenFailure] = useState<{ section: string; message: string } | null>(null)
-  const stoppedHere = stoppedCardFor(bot, params.section ?? null, messages)
+  // A Stopped card the owner closed stays closed while the bot's state catches up.
+  const [dismissedSince, setDismissedSince] = useState<number>()
+  // The message whose stopped turn's card was closed: still yours to recall.
+  const [closedOn, setClosedOn] = useState<string>()
+  // The bot's chat also shows failures with nowhere else to show, such as a dream's.
+  const chat = Boolean(section && !section.peer_bot && !section.purpose)
+  const stoppedCard = stoppedCardFor(bot, params.section ?? null, messages, chat)
+  const stoppedHere = stoppedCard?.createdAt === dismissedSince ? null : stoppedCard
 
   const status = sectionStatusOf(
     bot,
     params.section ?? null,
-    transcript && liveId ? liveSectionsOf({ [liveId]: transcript }) : {}
+    transcript && liveId ? liveSectionsOf({ [liveId]: transcript }) : {},
+    chat
   )
 
   // Waiting is the banner under the header; the composer notice is for errors only.
@@ -1317,6 +1439,15 @@ function BotConversation() {
       destination?.bot === botName &&
       destination?.section === sectionId
     ) {
+      // The chat the daemon named on this connection opens at once; the check
+      // below still runs and moves to another chat if the daemon names one.
+      const known = knownChat(botName)?.id === sectionId
+      const clicks = selectionsSettled()
+
+      if (known) {
+        setResolved({ entry, peer: false })
+      }
+
       void (async () => {
         // A bookmark can name an owner chat that survived a conservative upgrade,
         // or an explicit teammate thread. Missing metadata must be read before
@@ -1336,21 +1467,31 @@ function BotConversation() {
         }
 
         // A teammate thread or a section with its own purpose, such as the
-        // primary bot's Check-ins, opens as itself; anything else is the chat.
+        // Check-ins from before the heartbeat, opens as itself; anything else is the chat.
         const chat =
-          row?.peer_bot || row?.purpose ? row : await sectionsActions().chat(botName, current)
+          row?.peer_bot || row?.purpose
+            ? row
+            : await sectionsActions().chat(botName, current, known)
 
         if (!current()) {
           return
         }
 
+        // A known chat stays open when its check gets no answer; the next entry checks again.
         if (!chat) {
-          setOpenFailure({ section: sectionId, message: 'Choose a chat to continue.' })
+          if (!known) {
+            setOpenFailure({ section: sectionId, message: 'Choose a chat to continue.' })
+          }
 
           return
         }
 
         if (chat.id !== sectionId) {
+          // A click on another bot that finds its chat after this opened goes there instead.
+          if (known && ((await openedElsewhere(clicks)) || !current())) {
+            return
+          }
+
           void navigate({
             to: '/b/$bot/s/$section',
             params: { bot: chat.bot, section: chat.id },
@@ -1374,7 +1515,7 @@ function BotConversation() {
           return
         }
 
-        if (current()) {
+        if (current() && !known) {
           setOpenFailure({
             section: sectionId,
             message: error instanceof Error ? error.message : String(error)
@@ -1395,6 +1536,9 @@ function BotConversation() {
   // Each route entry (opening the chat, a reconnect, Retry) reads the history
   // again, even when the live session is still known: events may have been missed.
   const readFor = useRef<typeof entry | null>(null)
+  // The route entry whose history read has finished, kept even when the
+  // effect re-runs as the read names the live session.
+  const [readEntry, setReadEntry] = useState<typeof entry | null>(null)
 
   useEffect(() => {
     if (!ready || !params.section || (liveId && readFor.current === entry)) {
@@ -1413,6 +1557,12 @@ function BotConversation() {
     const sectionId = params.section
     void sectionsActions()
       .open(sectionId)
+      .then(() => {
+        // A slower read of a chat left since must not mark the one shown now.
+        if (readFor.current === entry) {
+          setReadEntry(entry)
+        }
+      })
       .catch(error => {
         if (current()) {
           setOpenFailure({
@@ -1451,6 +1601,23 @@ function BotConversation() {
 
     wasStreaming.current = streaming
   }, [bot?.display_name, messages, section?.id, streaming])
+  useConversationFeelings(
+    bot?.name,
+    section?.id,
+    messages,
+    ready,
+    Boolean(transcript?.turnActive) || streaming
+  )
+  const emotion = useEmotion(bot?.name)
+  useTurnCues(section?.id, {
+    failed: Boolean(messages.at(-1)?.error),
+    ready,
+    // The turn, not its bubble: a card closes the bubble while the turn runs on.
+    streaming: Boolean(transcript?.turnActive) || streaming,
+    waiting:
+      approvals.filter(card => !card.decision).length +
+      clarifies.filter(card => !card.expired && !Object.keys(card.answers).length).length
+  })
   const previousApprovalCount = useRef(approvals.length)
   useEffect(() => {
     if (
@@ -1460,7 +1627,7 @@ function BotConversation() {
       'Notification' in window &&
       Notification.permission === 'granted'
     ) {
-      new Notification('Approval needed', {
+      new Notification(approvals.at(-1)?.form ? 'Sign-in needed' : 'Approval needed', {
         body:
           approvals.at(-1)?.command ?? approvals.at(-1)?.reason ?? 'A bot is asking for permission.'
       })
@@ -1471,7 +1638,7 @@ function BotConversation() {
   const shown = messages.slice(-visible)
 
   // Messages, question cards and approval cards in the order they happened.
-  // Restored history carries no times and stays first, each question it
+  // Restored history (createdAt 0) stays first, each question it
   // asked right under the message that asked it.
   const timeline = useMemo(() => {
     // The store's message order is authoritative after hydration. Cards with
@@ -1528,16 +1695,127 @@ function BotConversation() {
     return items
   }, [approvals, clarifies, shown])
 
-  const canPrompt = () =>
-    ownerInput &&
-    router.history.location === location &&
-    target === useConnection.getState().target &&
-    epoch === useConnection.getState().epoch &&
-    capability === useConnection.getState().daemon?.one_chat &&
-    identified === (useConnection.getState().daemon?.transcript_identity === true) &&
-    installation === useConnection.getState().daemon?.install_id
+  const canPrompt = useCallback(
+    () =>
+      ownerInput &&
+      router.history.location === location &&
+      target === useConnection.getState().target &&
+      epoch === useConnection.getState().epoch &&
+      capability === useConnection.getState().daemon?.one_chat &&
+      identified === (useConnection.getState().daemon?.transcript_identity === true) &&
+      installation === useConnection.getState().daemon?.install_id,
+    [ownerInput, router, location, target, epoch, capability, identified, installation]
+  )
 
-  const retryFor = (card: TranscriptMessage): (() => void) | undefined => {
+  const recallable = useConnection(state => state.daemon?.recall === true)
+  const [draftVersion, setDraftVersion] = useState(0)
+
+  // Your latest message, while the bot is on it or after its turn stopped,
+  // with or without its closed card. One the daemon refused never reached the
+  // bot and goes from here alone.
+  const canRecall = (message: TranscriptMessage): boolean => {
+    const index = messages.findLastIndex(item => item.role === 'user')
+    const submitted = message.submission?.status ?? 'accepted'
+    const after = messages.slice(index + 1)
+
+    const stopped =
+      status === 'working' ||
+      streaming ||
+      Boolean(stoppedHere) ||
+      after.some(item => item.error) ||
+      !after.some(item => item.role === 'assistant') ||
+      message.id === closedOn
+
+    if (
+      !ownerInput ||
+      !recallable ||
+      section?.purpose ||
+      messages[index] !== message ||
+      !stopped ||
+      !['accepted', 'rejected'].includes(submitted)
+    ) {
+      return false
+    }
+
+    return true
+  }
+
+  const recall = useCallback(
+    (message: TranscriptMessage) => {
+      const submitted = message.submission?.status ?? 'accepted'
+      const sectionId = params.section
+
+      if (!canPrompt() || !liveId || !sectionId) {
+        return
+      }
+      void (async () => {
+        try {
+          if (submitted !== 'rejected') {
+            await sessionRecall(liveId, {
+              inputId: message.inputId,
+              rowId: message.submission ? undefined : message.id
+            })
+          }
+        } catch (error) {
+          transcriptActions().requestFailed(
+            liveId,
+            error instanceof Error ? error.message : String(error)
+          )
+
+          return
+        }
+
+        if (submitted === 'rejected') {
+          // It never reached the bot: a turn still running keeps its replies.
+          for (const id of [message.id, message.submission?.card]) {
+            if (id) {
+              transcriptActions().dismiss(liveId, id)
+            }
+          }
+        } else {
+          transcriptActions().recallFrom(liveId, message.id)
+        }
+
+        // It comes back to edit, ahead of anything typed since. A refused
+        // send may already have put it back.
+        const typed = (draftsActions().byId[sectionId] ?? '').trim()
+
+        draftsActions().set(
+          sectionId,
+          typed && typed !== message.text.trim() ? `${message.text}\n\n${typed}` : message.text
+        )
+
+        if (canPrompt()) {
+          setDraftVersion(version => version + 1)
+        }
+      })()
+    },
+    [canPrompt, liveId, params.section]
+  )
+
+  // Closing a card closes the bot's Stopped state for this chat too, or the
+  // card would come back from it.
+  const lastUserId = messages.findLast(item => item.role === 'user')?.id
+
+  const dismiss = useCallback(
+    (card: TranscriptMessage) => {
+      setClosedOn(lastUserId)
+
+      if (liveId) {
+        transcriptActions().dismiss(liveId, card.id)
+      }
+
+      const detail = bot?.status === 'stopped' ? bot.status_detail : null
+
+      if (bot && detail && statusIsHere(bot, params.section ?? null, chat)) {
+        setDismissedSince(detail.since)
+        void botsClearStatus(bot.name).catch(() => undefined)
+      }
+    },
+    [lastUserId, liveId, bot, params.section, chat]
+  )
+
+  const retryInput = (card: TranscriptMessage) => {
     // Retry requires durable input ownership. Legacy bubble order and error
     // timing cannot establish it, even after a history read or a later send.
     if (!ownerInput || !identified) {
@@ -1560,8 +1838,14 @@ function BotConversation() {
       return undefined
     }
 
-    return () => {
-      if (!canPrompt() || !liveId) {
+    return input
+  }
+
+  const retry = useCallback(
+    (input: TranscriptMessage) => {
+      const source = input.submission
+
+      if (!source || !canPrompt() || !liveId) {
         return
       }
 
@@ -1587,18 +1871,24 @@ function BotConversation() {
         pending: { ...pending, inputId },
         uploads: source.uploads ?? []
       })
-    }
-  }
+    },
+    [canPrompt, liveId]
+  )
 
-  const fixConnector = (connector: string) => {
-    if (bot) {
-      void navigate({
-        params: { bot: bot.name, tab: 'connectors' },
-        search: { connector },
-        to: '/b/$bot/settings/$tab'
-      })
-    }
-  }
+  const botName = bot?.name
+
+  const fixConnector = useCallback(
+    (connector: string) => {
+      if (botName) {
+        void navigate({
+          params: { bot: botName, tab: 'connectors' },
+          search: { connector },
+          to: '/b/$bot/settings/$tab'
+        })
+      }
+    },
+    [botName, navigate]
+  )
 
   const send = (prompt: string) => {
     if (canPrompt() && liveId && section) {
@@ -1625,6 +1915,12 @@ function BotConversation() {
   }
 
   const name = bot?.display_name ?? params.bot ?? 'Bot'
+
+  // Until its history arrives a chat with messages would look empty, so the
+  // bot's face whirls instead; it fades in late enough that a quick read never shows it.
+  const opening = ready
+    ? !messages.length && !clarifies.length && readEntry !== entry
+    : !(kept && transcript)
 
   return (
     <div
@@ -1671,11 +1967,15 @@ function BotConversation() {
               Retry
             </Button>
           </div>
-        ) : !ready && !(kept && transcript) ? (
-          <div className="grid h-full place-content-center text-muted" role="status">
-            Opening conversation
+        ) : opening ? (
+          <div
+            aria-label={`Opening ${name}'s chat`}
+            className="hex-fade grid h-full place-content-center [animation-delay:150ms]"
+            role="status"
+          >
+            <Avatar {...botFace(bot)} mood="loading" name={name} size="xl" />
           </div>
-        ) : messages.length === 0 && clarifies.length === 0 ? (
+        ) : messages.length === 0 && clarifies.length === 0 && !stoppedHere ? (
           <div className="hex-rise grid h-full place-content-center justify-items-center gap-6 p-8 text-center">
             <Avatar {...botFace(bot)} name={name} size="xl" />
             <div>
@@ -1701,15 +2001,7 @@ function BotConversation() {
           </div>
         ) : (
           <div className={cn(transcriptClass, 'hex-fade')} key={params.section}>
-            {messages.length > visible ? (
-              <button
-                className="hex-focus mx-auto mb-3 block rounded-full px-3 py-1 text-[length:var(--text-secondary)] text-muted transition-colors duration-[var(--hex-motion-fast)] hover:bg-surface-2 hover:text-foreground"
-                onClick={() => setVisible(value => value + 60)}
-                type="button"
-              >
-                Load earlier messages
-              </button>
-            ) : null}
+            {messages.length > visible ? <LoadEarlierMessages onClick={loadEarlier} /> : null}
             {timeline.map((item, position) => {
               if (item.kind === 'clarify') {
                 return (
@@ -1737,15 +2029,18 @@ function BotConversation() {
 
               return (
                 <div key={message.id}>
-                  {separator ? <DaySeparator time={message.createdAt} /> : null}
+                  {separator ? <DaySeparator time={sentAt(message)} /> : null}
                   <MessageRow
                     bot={bot}
                     fresh={toMillis(message.createdAt) > openedAt}
                     joined={joined}
                     message={message}
+                    onDismiss={message.error ? dismiss : undefined}
                     onFix={fixConnector}
                     onImage={setLightbox}
-                    onRetry={retryFor(message)}
+                    onRecall={canRecall(message) ? recall : undefined}
+                    onRetry={message.error ? retry : undefined}
+                    retryMessage={message.error ? retryInput(message) : undefined}
                   />
                 </div>
               )
@@ -1755,8 +2050,11 @@ function BotConversation() {
               <StoppedCard
                 message={stoppedHere}
                 name={bot?.display_name ?? 'Bot'}
+                onDismiss={() => dismiss(stoppedHere)}
                 onFix={fixConnector}
-                onRetry={retryFor(stoppedHere)}
+                onRetry={
+                  retryInput(stoppedHere) ? () => retry(retryInput(stoppedHere)!) : undefined
+                }
               />
             ) : null}
             <div className="h-2" />
@@ -1778,9 +2076,8 @@ function BotConversation() {
         >
           <span className="relative shrink-0">
             <Avatar
-              className={cn(status === 'working' && 'hex-think')}
               {...botFace(bot)}
-              mood={status === 'working' ? 'working' : undefined}
+              mood={emotion ?? moodForStatus(status)}
               name={name}
               size="sm"
             />
@@ -1794,7 +2091,6 @@ function BotConversation() {
         <ConnectedToolsNotice sectionId={params.section ?? ''} />
       </header>
       <div className="hex-no-drag absolute top-2.5 right-3 z-30 flex items-center gap-1.5">
-        <ContextMeter context={transcript?.context} />
         {panelOpen ? null : (
           <button
             aria-label="Toggle profile panel"
@@ -1825,6 +2121,7 @@ function BotConversation() {
           <div className="relative mx-auto max-w-[52rem] px-1">
             <Composer
               bot={bot}
+              draftVersion={draftVersion}
               key={params.section}
               notice={notice}
               sectionId={params.section ?? null}

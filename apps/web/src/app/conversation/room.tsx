@@ -1,6 +1,6 @@
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { Info } from 'lucide-react'
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { Avatar, useFaceColor } from '../../components/ui/avatar'
 import { RoomCluster } from '../../components/ui/room-cluster'
@@ -11,10 +11,12 @@ import { roomsSend, roomsStop } from '../../lib/api'
 import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 import { useRoomOrLeave } from '../../lib/room-or-leave'
+import { useTurnCues } from '../../lib/sounds'
 import { toMillis } from '../../lib/time'
 import type { Bot, RoomEvent, RoomMember, RoomTurn } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { connectorsActions } from '../../stores/connectors'
+import { useEmotion, useEmotions, useRoomFeelings } from '../../stores/emotions'
 import { useMe } from '../../stores/me'
 import { roomFailure, roomStatus, useRooms } from '../../stores/rooms'
 import { useTranscripts } from '../../stores/transcripts'
@@ -22,8 +24,7 @@ import { useTranscripts } from '../../stores/transcripts'
 import { AskingRow, AskRows } from './asking-row'
 import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
-import { MemoryMarks } from './memory-marks'
-import type { Ask } from './steps'
+import { type Ask, liveMood } from './steps'
 import { WaitingBanner } from './waiting-banner'
 import { WorkStatus } from './work-status'
 
@@ -34,7 +35,9 @@ import {
   CardRow,
   ConnectedToolsNotice,
   DaySeparator,
+  LoadEarlierMessages,
   Markdown,
+  separates,
   transcriptClass,
   userBubbleClass
 } from './index'
@@ -43,8 +46,18 @@ import {
 const NO_EVENTS: RoomEvent[] = []
 const NO_TURNS: Record<string, RoomTurn> = {}
 
-export function RoomEventRow({ event, fresh = false }: { event: RoomEvent; fresh?: boolean }) {
+export const RoomEventRow = memo(function RoomEventRow({
+  event,
+  fresh = false,
+  latest = false
+}: {
+  event: RoomEvent
+  fresh?: boolean
+  /** The bot's latest message in the room: its face shows what the bot feels. */
+  latest?: boolean
+}) {
   const bot = useBots(state => (event.actor_id ? state.byName[event.actor_id] : undefined))
+  const emotion = useEmotion(latest ? event.actor_id : undefined)
   const text = typeof event.payload.text === 'string' ? event.payload.text : ''
 
   // Member events name the bot or person who came or went; other events their actor.
@@ -146,7 +159,15 @@ export function RoomEventRow({ event, fresh = false }: { event: RoomEvent; fresh
         className={`flex gap-2 py-1 ${mine ? 'flex-row-reverse' : ''}`}
         data-testid="room-event"
       >
-        {mine ? null : <Avatar className="mt-1" {...botFace(bot)} name={name ?? 'Bot'} size="sm" />}
+        {mine ? null : (
+          <Avatar
+            className="mt-1"
+            {...botFace(bot)}
+            mood={emotion}
+            name={name ?? 'Bot'}
+            size="sm"
+          />
+        )}
         <div className="flex min-w-0 max-w-[80%] flex-col items-start">
           <div
             className={cn(
@@ -171,7 +192,7 @@ export function RoomEventRow({ event, fresh = false }: { event: RoomEvent; fresh
       {asked.length ? <AskRows asks={asked} sender={event.actor_id ?? null} /> : null}
     </>
   )
-}
+})
 
 /** A finished turn's asks from its `message.bot` payload: `[{to, section_id}]`. */
 function storedAsks(value: unknown): Ask[] {
@@ -253,12 +274,66 @@ export function RoomConversation() {
   const navigate = useNavigate()
   const room = useRoomOrLeave(roomId, 'open')
   const events = useRooms(state => state.eventsByRoom[roomId] ?? NO_EVENTS)
+  const loaded = useRooms(state => roomId in state.eventsByRoom)
   const turns = useRooms(state => state.liveTurnsByRoom[roomId] ?? NO_TURNS)
   const transcripts = useTranscripts(state => state.bySession)
   const bots = useBots(state => state.byName)
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
   const bottom = useRef<HTMLDivElement>(null)
+  const viewport = useRef<HTMLDivElement>(null)
+  const atBottom = useRef(true)
+  const earlierAnchor = useRef<{ height: number; top: number } | null>(null)
+  // Keep the first shown event while live events append, so reading older messages stays put.
+  const [historyWindow, setWindow] = useState({ room: roomId, first: events.at(-60)?.seq })
+  const first = historyWindow.room === roomId ? historyWindow.first : events.at(-60)?.seq
+
+  // A live event can arrive before hydration prepends the history. Always
+  // include at least the recent suffix once that earlier history arrives.
+  const start =
+    first === undefined
+      ? 0
+      : Math.min(
+          Math.max(
+            0,
+            events.findIndex(event => event.seq >= first)
+          ),
+          Math.max(0, events.length - 60)
+        )
+
+  if (historyWindow.room !== roomId || (first === undefined && events.length)) {
+    setWindow({ room: roomId, first: events.at(-60)?.seq ?? events[0]?.seq })
+  } else if (first !== undefined && events[start] && events[start].seq !== first) {
+    // Keep the window where hydration widened it, or the next event slides it.
+    setWindow({ room: roomId, first: events[start].seq })
+  }
+
+  const shown = events.slice(start)
+
+  const loadEarlier = () => {
+    const node = viewport.current
+
+    if (node) {
+      earlierAnchor.current = { height: node.scrollHeight, top: node.scrollTop }
+    }
+
+    setWindow({ room: roomId, first: events[Math.max(0, start - 60)]?.seq })
+  }
+
+  useLayoutEffect(() => {
+    const node = viewport.current
+    const anchor = earlierAnchor.current
+
+    if (node && anchor) {
+      node.scrollTop = anchor.top + node.scrollHeight - anchor.height
+    }
+
+    earlierAnchor.current = null
+  }, [first, roomId])
+  useLayoutEffect(() => {
+    atBottom.current = true
+    earlierAnchor.current = null
+  }, [roomId])
   // Messages that arrive after the room opened spring in; history is drawn still.
   const opened = useRef({ at: Date.now(), id: roomId })
 
@@ -278,7 +353,9 @@ export function RoomConversation() {
     }
   }, [events, present, roomId])
   useEffect(() => {
-    void bottom.current?.scrollIntoView({ block: 'end' })
+    if (atBottom.current) {
+      void bottom.current?.scrollIntoView({ block: 'end' })
+    }
   }, [events, transcripts])
 
   const members = useMemo(
@@ -297,6 +374,36 @@ export function RoomConversation() {
   const streaming = Object.keys(turns).length > 0
   const status = roomStatus(events, turns)
   const failure = roomFailure(events)
+
+  const waiting = Object.values(turns).reduce((count, turn) => {
+    const transcript = turn.live_session_id ? transcripts[turn.live_session_id] : undefined
+
+    return (
+      count +
+      (transcript?.approvals.filter(card => !card.decision).length ?? 0) +
+      (transcript?.clarifies.filter(
+        card => !card.expired && Object.keys(card.answers).length < card.questions.length
+      ).length ?? 0)
+    )
+  }, 0)
+
+  const ended = useRooms(state => state.endedByRoom[roomId])
+  useTurnCues(roomId, { failed: Boolean(failure) || ended === 'failed', streaming, waiting })
+  useRoomFeelings(roomId, events, turns, transcripts, loaded)
+  const feelings = useEmotions(state => state.feelings)
+
+  // Each bot's latest message, whose face shows what it feels.
+  const latestByBot = useMemo(() => {
+    const latest: Record<string, number> = {}
+
+    for (const event of events) {
+      if (event.kind === 'message.bot' && event.actor_id) {
+        latest[event.actor_id] = event.seq
+      }
+    }
+
+    return latest
+  }, [events])
 
   const send = async () => {
     if (!text.trim()) {
@@ -348,18 +455,32 @@ export function RoomConversation() {
           <WaitingBanner name={waitingBot(events, bots, room.members)} />
         </div>
       ) : null}
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div
+        className="min-h-0 flex-1 overflow-y-auto"
+        onScroll={event => {
+          const node = event.currentTarget
+          atBottom.current = node.scrollHeight - node.scrollTop - node.clientHeight < 80
+        }}
+        ref={viewport}
+      >
         <div className={transcriptClass}>
-          {events.map((event, index) => {
-            const previous = events[index - 1]
+          {start > 0 ? <LoadEarlierMessages onClick={loadEarlier} /> : null}
+          {shown.map((event, index) => {
+            const previous = shown[index - 1]
 
-            const separator =
-              !previous || toMillis(event.created_at) - toMillis(previous.created_at) > 20 * 60_000
+            const separator = separates(
+              previous && toMillis(previous.created_at),
+              toMillis(event.created_at)
+            )
 
             return (
               <div key={event.seq}>
                 {separator ? <DaySeparator time={event.created_at} /> : null}
-                <RoomEventRow event={event} fresh={toMillis(event.created_at) > openedAt} />
+                <RoomEventRow
+                  event={event}
+                  fresh={toMillis(event.created_at) > openedAt}
+                  latest={event.actor_id ? latestByBot[event.actor_id] === event.seq : false}
+                />
               </div>
             )
           })}
@@ -392,9 +513,11 @@ export function RoomConversation() {
                 <article className="flex gap-2 py-1" data-testid="room-event">
                   <span className="relative mt-1 shrink-0">
                     <Avatar
-                      className="hex-think"
                       {...botFace(bot)}
-                      mood="working"
+                      mood={
+                        feelings[turn.bot] ??
+                        (message ? (liveMood(message) ?? 'working') : 'thinking')
+                      }
                       name={name}
                       size="sm"
                     />
@@ -410,7 +533,6 @@ export function RoomConversation() {
                       </p>
                     ) : null}
                     {/* The bot's words arrive whole, as its room message when the turn ends. */}
-                    {message ? <MemoryMarks message={message} /> : null}
                     {/* The live status sits at the foot of the turn until it is done. */}
                     {message ? (
                       <WorkStatus checking={transcript?.checking} message={message} name={name} />

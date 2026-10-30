@@ -30,8 +30,10 @@ import type {
   ContextUsage,
   Message,
   SessionInfo,
+  SignInForm,
   StatusLine,
   ToolCall,
+  ToolCallStatus,
   Usage
 } from '../lib/types'
 
@@ -154,6 +156,7 @@ export interface ApprovalRequestPayload {
   turn_id?: string
   choices?: ApprovalChoice[]
   command?: string
+  form?: SignInForm
   reason?: string
   request_id?: string
   tool?: string
@@ -214,13 +217,17 @@ export interface TranscriptsState {
    * whole notice: a turn already running keeps its stream, cards and Stop.
    */
   requestFailed: (sessionId: string, message: string) => void
+  /** The owner closed a Stopped card. */
+  dismiss: (sessionId: string, messageId: string) => void
+  /** The owner recalled this message: it and everything after it go. */
+  recallFrom: (sessionId: string, messageId: string) => void
   /**
    * A Stopped card from a daemon incident. Unlike `errorEvent` it leaves the
    * streaming message alone: the incident fires mid-turn (a tool refused) and
    * the reply keeps streaming after it.
    */
-  /** A message the primary bot sent here from a check-in, once by its history row id. */
-  checkinMessage: (sessionId: string, message: CheckinRow) => void
+  /** A message the bot's heartbeat posted in this chat, once by its history row id. */
+  heartbeatMessage: (sessionId: string, message: HeartbeatRow) => void
   incidentEvent: (sessionId: string, message: string, detail: ErrorDetail) => void
   messageComplete: (sessionId: string, payload?: MessageCompletePayload) => void
   messageDelta: (sessionId: string, text: string) => void
@@ -259,24 +266,24 @@ const defaultEffects: TranscriptEffects = {
 
 let effects: TranscriptEffects = defaultEffects
 
-/** A check-in message for a section whose transcript is still loading. */
-export interface CheckinRow {
+/** A heartbeat message for a chat whose transcript is still loading. */
+export interface HeartbeatRow {
   createdAt: number
   id: string
   text: string
 }
-const heldCheckins = new Map<string, CheckinRow[]>()
+const heldHeartbeats = new Map<string, HeartbeatRow[]>()
 
-/** Keeps a check-in message until its section's history is in; a few per section. */
-export function holdCheckinMessage(sectionId: string, row: CheckinRow): void {
-  heldCheckins.set(sectionId, [...(heldCheckins.get(sectionId) ?? []), row].slice(-20))
+/** Keeps a heartbeat message until its chat's history is in; a few per chat. */
+export function holdHeartbeatMessage(sectionId: string, row: HeartbeatRow): void {
+  heldHeartbeats.set(sectionId, [...(heldHeartbeats.get(sectionId) ?? []), row].slice(-20))
 }
 
-/** The check-in messages held for a section, now that its transcript exists. */
-export function releaseCheckinMessages(sectionId: string): CheckinRow[] {
-  const rows = heldCheckins.get(sectionId) ?? []
+/** The heartbeat messages held for a chat, now that its transcript exists. */
+export function releaseHeartbeatMessages(sectionId: string): HeartbeatRow[] {
+  const rows = heldHeartbeats.get(sectionId) ?? []
 
-  heldCheckins.delete(sectionId)
+  heldHeartbeats.delete(sectionId)
 
   return rows
 }
@@ -528,6 +535,22 @@ function closePart(message: Message): Message {
 }
 
 /**
+ * When the turn ends no step still runs, including one on a message an
+ * approval card closed. A step left running would keep its message working.
+ */
+const stopSteps = <T extends Message>(messages: T[], status: ToolCallStatus): T[] =>
+  messages.map(message =>
+    message.toolCalls.some(call => call.status === 'running')
+      ? {
+          ...message,
+          toolCalls: message.toolCalls.map(call =>
+            call.status === 'running' ? { ...call, status } : call
+          )
+        }
+      : message
+  )
+
+/**
  * A card that blocks the turn (a question, an approval) ends the bubble in
  * progress so the bot's next words start a new one under the card. The
  * closed bubble's text is remembered for `messageComplete`.
@@ -541,7 +564,10 @@ function closeForCard(transcript: Transcript): Transcript {
   }
 
   return {
-    ...replaceMessage(transcript, current.id, message => settle({ ...message, streaming: false })),
+    // Its words are done when the card arrives, so it was sent then.
+    ...replaceMessage(transcript, current.id, message =>
+      settle({ ...message, sentAt: Date.now(), streaming: false })
+    ),
     streamingMessageId: null,
     turnPrefix: (transcript.turnPrefix ?? '') + [...(current.parts ?? []), current.text].join('')
   }
@@ -1079,6 +1105,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           // The turn ended right after the card: the closed bubble already holds it all.
           return {
             ...transcript,
+            messages: stopSteps(transcript.messages, 'ok'),
             turnActive: false,
             turnPrefix: undefined,
             usage: payload.usage ?? transcript.usage
@@ -1093,6 +1120,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           activity: undefined,
           checking: undefined,
           error: payload.error ?? message.error,
+          sentAt: Date.now(),
           status: payload.status,
           streaming: false,
           toolCalls: message.toolCalls.map(call =>
@@ -1114,6 +1142,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         return {
           ...next,
           checking: undefined,
+          messages: stopSteps(next.messages, 'ok'),
           turnPrefix: undefined,
           error: payload.error ?? null,
           status: null,
@@ -1136,6 +1165,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         turnId: payload.turn_id,
         choices: payload.choices ?? ['once', 'deny'],
         command: payload.command,
+        ...(payload.form?.kind === 'sign_in' && { form: payload.form }),
         reason: payload.reason,
         receivedAt: Date.now(),
         requestId,
@@ -1169,7 +1199,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       effects.notify({
         body: payload.command ?? payload.reason ?? 'A bot is asking for permission.',
         sectionId: transcript?.sectionId,
-        title: 'Approval needed'
+        title: payload.form ? 'Sign-in needed' : 'Approval needed'
       })
     },
 
@@ -1411,7 +1441,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
             )
           : -1
 
-        const messages = transcript.messages.map(item =>
+        const messages = stopSteps(transcript.messages, 'error').map(item =>
           item.id === transcript.streamingMessageId ? { ...item, streaming: false } : item
         )
 
@@ -1453,7 +1483,29 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       }))
     },
 
-    checkinMessage(sessionId, message) {
+    dismiss(sessionId, messageId) {
+      update(sessionId, transcript => {
+        const messages = transcript.messages.filter(message => message.id !== messageId)
+
+        return {
+          ...transcript,
+          error: messages.some(message => message.error) ? transcript.error : null,
+          messages
+        }
+      })
+    },
+
+    recallFrom(sessionId, messageId) {
+      update(sessionId, transcript => {
+        const index = transcript.messages.findIndex(message => message.id === messageId)
+
+        return index < 0
+          ? transcript
+          : { ...transcript, error: null, messages: transcript.messages.slice(0, index) }
+      })
+    },
+
+    heartbeatMessage(sessionId, message) {
       update(sessionId, transcript => {
         if (transcript.messages.some(item => item.id === message.id)) {
           return transcript

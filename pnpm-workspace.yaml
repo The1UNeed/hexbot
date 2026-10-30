@@ -5,9 +5,10 @@ packages:
 engineStrict: true
 
 # Packages allowed to run install scripts. Everything else is skipped.
+# Electron 42 has no install script; `postinstall` in apps/desktop downloads
+# its binary once, before tests and smokes start Electron in parallel.
 onlyBuiltDependencies:
   - '@tailwindcss/oxide'
-  - electron
   - electron-winstaller
   - esbuild
   - fsevents
@@ -18,8 +19,10 @@ ignoredBuiltDependencies:
   - unicode-animations
 
 # Build results are never restored from the store. The store keeps regular
-# files only, so a cached Electron `dist/` comes back with the macOS framework
-# symlinks flattened into copies, and codesign rejects the bundle.
+# files only, so a cached app bundle comes back with its macOS framework
+# symlinks flattened into copies, and codesign rejects it. Electron's `dist/`
+# was such a build result through Electron 41; it is now written by the
+# desktop postinstall into node_modules and never enters the store.
 sideEffectsCache: false
 
 overrides:

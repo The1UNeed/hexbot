@@ -1,11 +1,14 @@
 import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
 import {
+  Activity,
   Brain,
   Download,
   Gauge,
   Globe,
   Info,
   KeyRound,
+  LockKeyhole,
+  Puzzle,
   ShieldCheck,
   SunMoon,
   Wifi
@@ -35,8 +38,11 @@ const ITEMS: Record<SettingsTab, SettingsTabItem<SettingsTab>> = {
   appearance: { icon: SunMoon, id: 'appearance', label: 'Appearance' },
   approvals: { icon: ShieldCheck, id: 'approvals', label: 'Approvals' },
   connect: { icon: Globe, id: 'connect', label: 'Hex Connect' },
+  diagnostics: { icon: Activity, id: 'diagnostics', label: 'Diagnostics' },
   memory: { icon: Brain, id: 'memory', label: 'Memory' },
   network: { icon: Wifi, id: 'network', label: 'Network' },
+  passwords: { icon: LockKeyhole, id: 'passwords', label: 'Passwords' },
+  plugins: { icon: Puzzle, id: 'plugins', label: 'Plugins' },
   providers: { icon: KeyRound, id: 'providers', label: 'Providers' },
   updates: { icon: Download, id: 'updates', label: 'Updates' },
   usage: { icon: Gauge, id: 'usage', label: 'Usage' }
@@ -44,9 +50,11 @@ const ITEMS: Record<SettingsTab, SettingsTabItem<SettingsTab>> = {
 
 const GROUPS: { ids: SettingsTab[]; label: string }[] = [
   { ids: ['providers', 'usage'], label: 'Models' },
+  { ids: ['plugins', 'passwords'], label: 'Bots' },
   { ids: ['network', 'connect'], label: 'Devices' },
   { ids: ['memory', 'approvals', 'appearance'], label: 'You' },
-  { ids: ['updates', 'about'], label: 'App' }
+  { ids: ['updates', 'about'], label: 'App' },
+  { ids: ['diagnostics'], label: 'Advanced' }
 ]
 
 function SettingsDialog() {

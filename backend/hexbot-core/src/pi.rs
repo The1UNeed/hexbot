@@ -215,6 +215,7 @@ struct Inner {
     admission: Arc<Semaphore>,
     extension_admission: Arc<Semaphore>,
     max_record_bytes: usize,
+    pid: Option<u32>,
 }
 
 impl Drop for Inner {
@@ -330,6 +331,7 @@ impl PiProcess {
             .kill_on_drop(true)
             .spawn()
             .map_err(|_| PiError::Io("spawn"))?;
+        let pid = child.id();
         let stdin = child.stdin.take().ok_or(PiError::Io("stdin"))?;
         let stdout = child.stdout.take().ok_or(PiError::Io("stdout"))?;
         let (requests, request_rx) = mpsc::channel(options.request_capacity);
@@ -353,10 +355,16 @@ impl PiProcess {
                     admission,
                     extension_admission: Arc::new(Semaphore::new(1)),
                     max_record_bytes,
+                    pid,
                 }),
             },
             PiEvents { receiver, done },
         ))
+    }
+
+    /// The OS process id, while the process runs (Diagnostics labels it).
+    pub fn pid(&self) -> Option<u32> {
+        self.inner.pid
     }
 
     /// Commands must be objects with a string `type`, without a caller-supplied
@@ -968,6 +976,7 @@ mod commit_tests {
                     admission: Arc::new(Semaphore::new(1)),
                     extension_admission: Arc::new(Semaphore::new(1)),
                     max_record_bytes: 1024,
+                    pid: None,
                 }),
             },
             receiver,

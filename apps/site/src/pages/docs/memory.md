@@ -22,7 +22,7 @@ Beside its memory, a bot keeps notes: a short line here and there about what hap
 
 You can read, edit, and delete notes by day in the bot's settings under Memory. If the bot appends new lines while you edit, Hexbot saves your edit with those lines kept below it. Other changes leave your draft in the editor and show an error; copy it before reloading. You cannot save notes for a future day or a day older than 30 days. Deleting a day also checks that its notes have not changed since you loaded them. If they have, Hexbot refreshes the list, keeps your selected day and draft, shows an error, and shows what changed below the editor so you can review it before trying again. Saving that draft works like any other save: added lines are kept below your edit.
 
-Whenever a bot writes to its memory, its notes, or its soul during a conversation, a small "Memory updated", "Note added", or "Soul updated" mark appears under its reply. Open it to see what changed.
+When a bot writes to its memory, its notes, or its soul during a conversation, nothing appears in the conversation. To see what changed, open the bot's settings.
 
 Hexbot includes each bot's own memory in its starting prompt. Each bot also has searchable history over its chat, from before the chat's latest summary, and the rooms it belongs to.
 

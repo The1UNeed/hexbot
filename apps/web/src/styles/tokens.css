@@ -51,6 +51,7 @@
   --hex-bot-muted: #5c5c5c;
   --hex-glass-bg: rgb(255 255 255 / 0.58);
   --hex-glass-strong: rgb(250 250 252 / 0.8);
+  --hex-glass-field: rgb(250 250 252 / 0.92);
   --hex-glass-glow: rgb(255 255 255 / 0.7);
   --hex-glass-shadow:
     inset 1px 1px 0 -0.5px rgb(255 255 255 / 0.95), inset -1px -1px 0 -0.5px rgb(255 255 255 / 0.6),
@@ -74,8 +75,27 @@
   /* A sampled spring (damping 0.62) for glass that swells under a press. */
   --hex-motion-glass: 520ms;
   --hex-ease-glass: linear(
-    0, 0.113, 0.352, 0.608, 0.819, 0.965, 1.048, 1.08, 1.081, 1.065, 1.043, 1.023, 1.008, 0.999,
-    0.994, 0.993, 0.994, 0.996, 0.997, 0.999, 1
+    0,
+    0.113,
+    0.352,
+    0.608,
+    0.819,
+    0.965,
+    1.048,
+    1.08,
+    1.081,
+    1.065,
+    1.043,
+    1.023,
+    1.008,
+    0.999,
+    0.994,
+    0.993,
+    0.994,
+    0.996,
+    0.997,
+    0.999,
+    1
   );
 }
 
@@ -110,11 +130,12 @@
     --hex-bot-muted: #bebebe;
     --hex-glass-bg: rgb(28 28 31 / 0.6);
     --hex-glass-strong: rgb(24 24 27 / 0.82);
+    --hex-glass-field: rgb(24 24 27 / 0.9);
     --hex-glass-glow: rgb(255 255 255 / 0.2);
     --hex-glass-shadow:
-      inset 1px 1px 0 -0.5px rgb(255 255 255 / 0.3), inset -1px -1px 0 -0.5px rgb(255 255 255 / 0.12),
-      inset 0 0 6px rgb(255 255 255 / 0.04), 0 0 0 0.5px rgb(255 255 255 / 0.07),
-      0 4px 16px -4px rgb(0 0 0 / 0.5);
+      inset 1px 1px 0 -0.5px rgb(255 255 255 / 0.3),
+      inset -1px -1px 0 -0.5px rgb(255 255 255 / 0.12), inset 0 0 6px rgb(255 255 255 / 0.04),
+      0 0 0 0.5px rgb(255 255 255 / 0.07), 0 4px 16px -4px rgb(0 0 0 / 0.5);
     --hex-card-shadow: 0 0 0 0.5px rgb(255 255 255 / 0.07), 0 1px 3px rgb(0 0 0 / 0.5);
   }
 }
@@ -153,6 +174,7 @@
   --hex-bot-muted: #5c5c5c;
   --hex-glass-bg: rgb(255 255 255 / 0.58);
   --hex-glass-strong: rgb(250 250 252 / 0.8);
+  --hex-glass-field: rgb(250 250 252 / 0.92);
   --hex-glass-glow: rgb(255 255 255 / 0.7);
   --hex-glass-shadow:
     inset 1px 1px 0 -0.5px rgb(255 255 255 / 0.95), inset -1px -1px 0 -0.5px rgb(255 255 255 / 0.6),
@@ -193,6 +215,7 @@
   --hex-bot-muted: #bebebe;
   --hex-glass-bg: rgb(28 28 31 / 0.6);
   --hex-glass-strong: rgb(24 24 27 / 0.82);
+  --hex-glass-field: rgb(24 24 27 / 0.9);
   --hex-glass-glow: rgb(255 255 255 / 0.2);
   --hex-glass-shadow:
     inset 1px 1px 0 -0.5px rgb(255 255 255 / 0.3), inset -1px -1px 0 -0.5px rgb(255 255 255 / 0.12),
@@ -293,6 +316,13 @@ body {
     -webkit-backdrop-filter: blur(28px) saturate(180%);
     backdrop-filter: blur(28px) saturate(180%);
   }
+  /* The composer: dense and unsaturated, so a washed bubble scrolling under it
+     never tints the field the user types in. */
+  .hex-glass-field {
+    background: var(--hex-glass-field);
+    -webkit-backdrop-filter: blur(28px);
+    backdrop-filter: blur(28px);
+  }
   /* The light a touch puts into the glass: hidden until hover or press. */
   .hex-glass::after {
     content: '';
@@ -340,7 +370,8 @@ body {
      Windows (the app, Chrome, Edge); Safari and Firefox do not, so glass stays clear there. */
   @media (prefers-reduced-transparency: reduce) {
     .hex-glass,
-    .hex-glass-strong {
+    .hex-glass-strong,
+    .hex-glass-field {
       background: var(--hex-surface);
       -webkit-backdrop-filter: none;
       backdrop-filter: none;
@@ -425,6 +456,11 @@ body {
 .hex-prose code {
   overflow-wrap: anywhere;
 }
+/* A long formula scrolls inside the bubble instead of widening it. */
+.hex-prose .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
 
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -435,20 +471,7 @@ body {
   }
 }
 
-/* Bot faces: a hover wiggle, and a thinking bob while a reply is pending. */
-@keyframes hex-wiggle {
-  0%,
-  100% {
-    transform: rotate(0deg);
-  }
-  25% {
-    transform: rotate(-6deg) translateY(-1px);
-  }
-  75% {
-    transform: rotate(6deg) translateY(-1px);
-  }
-}
-
+/* Original face acts. Idle faces stay still. */
 @keyframes hex-bob {
   0%,
   100% {
@@ -456,6 +479,101 @@ body {
   }
   50% {
     transform: translateY(-5px) scale(0.96, 1.04);
+  }
+}
+
+/*
+ * A bot's cursor on the bots' computer (panel/computer.tsx): an arrow in its
+ * face colour with its face beside it. It glides to where the bot acts, then
+ * presses and rings on a click; the face taps while the bot types. A cursor
+ * fades once its bot has been idle a while.
+ */
+.hex-cursor {
+  position: absolute;
+  width: 0;
+  height: 0;
+  transition:
+    left 650ms var(--hex-ease-in-out),
+    top 650ms var(--hex-ease-in-out),
+    opacity var(--hex-motion-panel) var(--hex-ease-out);
+  animation: hex-cursor-in var(--hex-motion-enter) var(--hex-ease-spring);
+}
+.hex-cursor[data-stale='true'] {
+  opacity: 0;
+}
+.hex-cursor-body {
+  position: absolute;
+  transform: scale(var(--hex-cursor-scale, 1));
+  transform-origin: 0 0;
+}
+.hex-cursor-arrow {
+  position: absolute;
+  top: -4px;
+  left: -5px;
+  width: 30px;
+  height: 30px;
+  fill: var(--hex-cursor);
+  stroke: #ffffff;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 2px 3px rgb(0 0 0 / 0.28));
+  transform-origin: 5px 4px;
+}
+.hex-cursor-press {
+  animation: hex-cursor-press 360ms var(--hex-ease-out) 560ms both;
+}
+.hex-cursor-ring {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 44px;
+  height: 44px;
+  border: 2.5px solid var(--hex-cursor);
+  border-radius: 9999px;
+  animation: hex-cursor-ring 640ms var(--hex-ease-out) 600ms both;
+}
+.hex-cursor-face {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  filter: drop-shadow(0 0 1px #ffffff) drop-shadow(0 0 1px #ffffff)
+    drop-shadow(0 2px 4px rgb(0 0 0 / 0.25));
+}
+.hex-cursor-typing > * {
+  animation: hex-tap 280ms ease-in-out infinite;
+}
+
+@keyframes hex-cursor-in {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+}
+
+@keyframes hex-cursor-press {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(0.78);
+  }
+}
+
+@keyframes hex-cursor-ring {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.25);
+  }
+  12% {
+    opacity: 0.8;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1);
   }
 }
 
@@ -646,17 +764,6 @@ body {
   }
 }
 
-@keyframes hex-blink {
-  0%,
-  92%,
-  100% {
-    transform: scaleY(1);
-  }
-  96% {
-    transform: scaleY(0.1);
-  }
-}
-
 @keyframes hex-dot {
   0%,
   80%,
@@ -723,8 +830,8 @@ body {
 }
 
 /*
- * Content unfolding into the column (a work card, the line above a reply) and
- * folding away (the live status when the turn ends): the row's height
+ * Content unfolding into the column (a step's detail in the Computer tab) and
+ * folding away: the row's height
  * animates, so what sits below slides instead of jumping.
  */
 @keyframes hex-unfold {
@@ -801,33 +908,6 @@ body {
   }
 }
 
-/*
- * Eyes wander a little while idle, so a face never looks frozen. The eyes
- * are painted on a ball (the frame set up in avatar-builder.ts, 45 units
- * across), so a glance moves them over its surface: they slide toward the
- * rim, roll with it, and shrink as the surface turns away. Each pose holds
- * still between moves; nothing repaints while it holds.
- */
-@keyframes hex-gaze {
-  0%,
-  36%,
-  100% {
-    transform: translate(0, 0) rotate(0deg) scale(1);
-  }
-  40%,
-  54% {
-    transform: translate(15px, -18px) rotate(24deg) scale(0.82);
-  }
-  58%,
-  74% {
-    transform: translate(-6px, 2px) rotate(-9deg) scale(0.95);
-  }
-  78%,
-  96% {
-    transform: translate(3px, 2px) rotate(4deg) scale(0.98);
-  }
-}
-
 @keyframes hex-shimmer {
   from {
     background-position: 200% 0;
@@ -837,52 +917,18 @@ body {
   }
 }
 
-.hex-face:hover {
-  animation: hex-wiggle 500ms ease-in-out;
-}
-.hex-face .hex-eyes {
-  animation: hex-blink 4.5s ease-in-out infinite;
-  transform-box: fill-box;
-  transform-origin: center;
-}
-.hex-face .hex-gaze {
-  animation: hex-gaze 9s ease-in-out infinite;
-}
 /*
- * A face turned toward the bot beside it: eyes over the surface, body
- * tilted. A pose answering a state change, not a loop; units are the ball's.
+ * Faces move in face-motion.ts. Acts are CSS and own only their React
+ * subtree; an act off screen or under reduced motion stops outright.
  */
-.hex-look-right.hex-face .hex-gaze,
-.hex-look-left.hex-face .hex-gaze {
-  animation: none;
-  transition: transform var(--hex-motion-enter) var(--hex-ease-out);
+.hex-face[data-visible='false'] * {
+  animation: none !important;
 }
-.hex-look-right.hex-face .hex-gaze {
-  transform: translate(12px, -4px) rotate(14deg) scale(0.9);
-}
-.hex-look-left.hex-face .hex-gaze {
-  transform: translate(-12px, -4px) rotate(-14deg) scale(0.9);
-}
-.hex-lean-right,
-.hex-lean-left {
-  display: inline-flex;
-  transition: transform var(--hex-motion-enter) var(--hex-ease-out);
-}
-.hex-lean-right {
-  transform: rotate(10deg);
-}
-.hex-lean-left {
-  transform: rotate(-10deg);
-}
-/* Eye geometry morphs between moods instead of snapping. */
-.hex-face .hex-eyes rect {
-  transition:
-    x var(--hex-motion-panel) var(--hex-ease-out),
-    y var(--hex-motion-panel) var(--hex-ease-out),
-    width var(--hex-motion-panel) var(--hex-ease-out),
-    height var(--hex-motion-panel) var(--hex-ease-out),
-    rx var(--hex-motion-panel) var(--hex-ease-out),
-    ry var(--hex-motion-panel) var(--hex-ease-out);
+@media (prefers-reduced-motion: reduce) {
+  .hex-face * {
+    animation: none !important;
+    transition: none !important;
+  }
 }
 .hex-think {
   animation: hex-bob 1.4s ease-in-out infinite;
@@ -1054,9 +1100,6 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .hex-face:hover,
-  .hex-face .hex-eyes,
-  .hex-face .hex-gaze,
   .hex-think,
   .hex-tap,
   .hex-catch,

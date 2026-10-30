@@ -109,8 +109,47 @@ Windows releases. See [the remaining Windows requirements](docs/windows-security
 - Bypass removes prompts and sandboxing and is available only to the admin.
   Missing Linux bubblewrap does not add an approval to a Bypass code run.
   The primary bot still asks before it deletes a bot, room, or job, changes an
-  approval mode or a working folder, changes a setting, skill, or connector,
-  or cancels a check-in wake-up.
+  approval mode or a working folder, or changes a setting, skill, or connector.
+
+These protections constrain tool actions through the checked paths and grants.
+They do not protect an installation from a process already running without the
+sandbox as the same user, including Bypass, an approved external tool, or other
+host software. Such a process can change files, links, permissions or ACLs.
+Shell/code hard-link aliases remain uncontained. A preexisting alias in a
+writable workspace/output folder can name the same inode as a protected managed
+runtime file; writing through that alias can modify installed bytes even when
+the original path is read-only. This also covers implicit/shared temporary roots
+such as `/tmp` and per-user `TMPDIR`, and paths outside Hexbot home writable by
+approved `full_access` commands. The same limitation applies to aliases inserted
+later by an unconfined same-user process. Canonical path checks and read-only
+binds of the original path do not protect these aliases. Hexbot does not scan
+managed-file inodes or recursively walk workspaces to look for them. Ordinary uv
+cache hard links do not require reprovisioning or prevent command launch.
+
+Linux mode `0444` alone is insufficient: the owning user can
+[change its mode](https://man7.org/linux/man-pages/man2/chmod.2.html). ACLs and
+filesystem-specific permissions also need consideration. This foundation adds
+no per-command chmod/ACL mutations of installed files, read-only-install contract
+or kernel policy for inode protection.
+
+Pi write/edit and native file callbacks atomically replace the output directory
+entry instead of truncating its inode. Those writes preserve other hard-link
+names, including preexisting aliases and aliases inserted after the file gate.
+Restricted Pi write/edit use a private daemon bridge whose final operations are
+relative to nonfollowing directory handles. Edit reads return bytes and the
+parent's device/inode identity; commit opens the parent again and refuses a
+different identity. Pi's existing edit matching, BOM and line-ending handling
+stay in Pi. Existing files must pass the OS writability check, and replacements
+preserve ordinary permission bits without setuid/setgid bits. New files remain
+private (`0600` subject to umask); new directories use `0777` subject to umask.
+Each private request and encoded reply is limited to 1 MiB, about 767 KiB of file
+data after base64 and metadata. Oversized write/edit requests fail before parent
+creation or writing; oversized edit reads fail without truncation. Use a command
+for larger files, under its ordinary approval and sandbox policy. Missing bridge
+support refuses instead of falling back to pathname writes. The native file
+callback's existing 256 KiB UTF-8 read limit and write behavior are unchanged.
+These file operations do not close the shell/code hard-link class or establish whole-process or
+whole-filesystem containment. See the [Linux hard-link semantics](https://man7.org/linux/man-pages/man2/link.2.html).
 
 These protections constrain tool actions through the checked paths and grants.
 They do not protect an installation from a process already running without the
@@ -257,6 +296,25 @@ See [authentication](docs/auth.md) and [deployment](docs/deploy.md).
 Provider credentials are local files protected by directory and file permissions,
 not encrypted by an OS keychain. Same-user malware and unprotected backups can
 read them. The daemon and its configured providers must be trusted with these keys.
+
+Saved passwords are a KeePass (KDBX 4) vault per user, encrypted with a random
+256-bit key kept in the macOS Keychain or the Linux Secret Service, or, where
+neither is available (Windows, most headless Linux), in an owner-only key file
+beside the vault. A backup of the vault alone can't be opened; a backup that
+also holds the key file can. Same-user malware can ask the keychain for the key.
+Bots' shells and file tools can read neither file in Manual or Auto; Bypass has
+no sandbox, so a bot in Bypass can.
+
+A bot never receives a password in its conversation. The daemon types it into
+the page the bot names, and only when the browser's page is on the login's own
+site (the same host, or one inside the other, never https to http). On the
+bots' computer the daemon can't see the address, so it asks first unless the
+bot runs in Bypass. This keeps passwords out of prompts, history and provider
+traffic; it does not contain a bot that is trying to steal one. A filled
+field can be read back by a page script, so the daemon blanks the filled
+values out of every later browser result in that conversation, but an encoded
+read would get past that. The sign-in card's answer travels on the same
+connection as chat, so plain LAN HTTP exposes it the same way.
 
 Installers validate archive paths, reject links, enforce size limits, and verify
 download checksums. Install and native daemon manifests carry Ed25519 release

@@ -134,6 +134,18 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
         repository: 'https://github.com/remarkjs/remark-gfm'
       },
       {
+        license: 'MIT',
+        name: 'remark-math',
+        packages: ['remark-math', 'rehype-katex'],
+        repository: 'https://github.com/remarkjs/remark-math'
+      },
+      {
+        license: 'MIT',
+        name: 'KaTeX',
+        packages: ['katex'],
+        repository: 'https://github.com/KaTeX/KaTeX'
+      },
+      {
         license: 'ISC',
         name: 'Lucide',
         packages: ['lucide-react'],
@@ -226,6 +238,12 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
         name: 'jsonschema',
         packages: ['jsonschema'],
         repository: 'https://github.com/Stranger6667/jsonschema'
+      },
+      {
+        license: 'MIT',
+        name: 'keepass-rs',
+        packages: ['keepass'],
+        repository: 'https://github.com/sseemayer/keepass-rs'
       },
       {
         license: 'MIT',

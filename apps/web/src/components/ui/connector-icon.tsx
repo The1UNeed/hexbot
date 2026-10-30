@@ -1,4 +1,14 @@
-import { Film, Globe, Image, type LucideIcon, Search, Server } from 'lucide-react'
+import {
+  Film,
+  Globe,
+  Image,
+  type LucideIcon,
+  Package,
+  Search,
+  Server,
+  Sparkles,
+  Wrench
+} from 'lucide-react'
 
 import { cn } from '../../lib/cn'
 import { BRAND_ICONS } from '../../lib/connector-icons'
@@ -7,8 +17,11 @@ const GLYPHS: Record<string, LucideIcon> = {
   film: Film,
   globe: Globe,
   image: Image,
+  package: Package,
   search: Search,
-  server: Server
+  server: Server,
+  sparkles: Sparkles,
+  wrench: Wrench
 }
 
 /**

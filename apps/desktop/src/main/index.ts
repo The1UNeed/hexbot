@@ -16,7 +16,12 @@ import {
   type Tray
 } from 'electron'
 import { applicationMenuTemplate } from './application-menu'
-import { APP_ORIGIN, frameNavigationAllowed, installAppProtocol, registerAppScheme } from './app-protocol'
+import {
+  APP_ORIGIN,
+  frameNavigationAllowed,
+  installAppProtocol,
+  registerAppScheme
+} from './app-protocol'
 import { bootstrap, type BootstrapProgress } from './backend/bootstrap'
 import { DaemonManager } from './backend/manager'
 import { hexbotHome } from './backend/paths'
@@ -110,7 +115,9 @@ async function saveBounds(window: BrowserWindow): Promise<void> {
 }
 function createWindow(): Promise<BrowserWindow> {
   if (mainWindow && !mainWindow.isDestroyed()) return Promise.resolve(mainWindow)
-  return creatingWindow ??= buildWindow().finally(() => { creatingWindow = undefined })
+  return (creatingWindow ??= buildWindow().finally(() => {
+    creatingWindow = undefined
+  }))
 }
 async function buildWindow(): Promise<BrowserWindow> {
   const window = new BrowserWindow({
@@ -146,13 +153,21 @@ async function buildWindow(): Promise<BrowserWindow> {
       pendingLink = undefined
     }
   })
-  lifecycle.attach(window, () => !!tray && !tray.isDestroyed(), () => void explainBackground())
+  lifecycle.attach(
+    window,
+    () => !!tray && !tray.isDestroyed(),
+    () => void explainBackground()
+  )
   window.on('closed', () => {
     mainWindow = null
   })
-  // Frames may only load the visual frame page; see frameNavigationAllowed.
+  // Frames may only load the visual frame page or a computer screen; see frameNavigationAllowed.
   window.webContents.on('will-frame-navigate', event => {
-    if (!event.isMainFrame && !frameNavigationAllowed(event.url, window.webContents.getURL())) event.preventDefault()
+    if (
+      !event.isMainFrame &&
+      !frameNavigationAllowed(event.url, window.webContents.getURL(), event.frame?.url ?? '')
+    )
+      event.preventDefault()
   })
   window.on('resize', () => void saveBounds(window))
   window.on('move', () => void saveBounds(window))
@@ -266,8 +281,10 @@ function registerIpc(): void {
   handle('hexbot:daemon:status', () => daemon.status())
   handle('hexbot:daemon:start', async () => {
     requireRuntime('Running a daemon on this machine')
-    await bootstrap(sendProgress)
-    return daemon.start()
+    return daemon.start(
+      app.isPackaged ? () => bootstrap(sendProgress) : undefined,
+      'attach-or-start'
+    )
   })
   handle('hexbot:daemon:stop', () => daemon.stop())
   handle('hexbot:daemon:local-token', async () => {
@@ -319,9 +336,12 @@ function registerIpc(): void {
   })
   handle('hexbot:service:install', () => {
     requireRuntime('Starting the daemon at login')
-    return installService()
+    return daemon.installService(installService)
   })
-  handle('hexbot:service:uninstall', () => uninstallService())
+  handle('hexbot:service:uninstall', () => {
+    requireRuntime('Changing the local daemon service')
+    return daemon.uninstallService(uninstallService)
+  })
   handle('hexbot:service:status', () => serviceStatus())
 }
 
@@ -368,7 +388,10 @@ else {
       for (const window of BrowserWindow.getAllWindows())
         window.webContents.send('hexbot:updater:status', state)
     })
-    daemon.on('update-requested', (version: string) => void handleDaemonUpdateRequest(version))
+    daemon.on(
+      'update-requested',
+      (version: string) => void handleDaemonUpdateRequest(version, daemon)
+    )
     await createWindow()
     try {
       tray = createTray(daemon, () => void showWindow())

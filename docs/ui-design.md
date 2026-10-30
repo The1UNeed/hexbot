@@ -36,22 +36,51 @@ own visual identity. Read `CLAUDE.md` for the words.
 - Chart series, for bot visuals only: light #4F46E5, #0D9488, #D97706,
   #DB2777, #2F7CF6, #65A30D; dark #8B85FF, #2DD4BF, #FBBF24, #F472B6,
   #4C9AFF, #A3E635. The first is the accent; the rest step apart in hue.
-- Bot faces: every bot has a face, a shape and a colour with two white
-  capsule eyes painted on a ball (`lib/avatar-builder.ts`; Chalk gets ink
-  eyes). A face picked in an app is stored on the bot as its shape and
-  colour (`face` in `docs/api.md`), which the web and mobile apps draw live,
-  and as a picture for clients that only show pictures. A bot whose face was
-  saved before that keeps only the picture: the web app reads it back into a
-  live face, and mobile shows the picture. Other uploaded images replace the
-  face; otherwise it is derived from the bot's name. Faces wiggle on hover
-  and blink at rest, and a glance moves the eyes over the ball's surface:
-  toward the rim, rolled with it, smaller as it turns away. Every shape
-  places the ball so the eyes stay inside it. Click any face, or the Hexbot
-  mark, and it plays a random act for a few seconds: typing with its two
-  round hands, juggling, blowing a horn (`components/ui/hexbot-act.tsx`, 21
-  acts). The install screen gives each stage its own act. In a chat the
-  face never changes size or plays acts on its own: a working bot's face
-  only bobs (`hex-think`).
+- Bot faces: Hexbot's eight outlines with the icon's two capsule eyes, white except
+  ink on Chalk. `lib/face-geometry.ts` is the source, copied to
+  mobile by `apps/web/scripts/face-rest.mjs`. The [provenance note](face-provenance.md)
+  records where the outlines, eyes, and poses come from.
+  Faces picked in an app are stored as shape and colour, with a static PNG
+  for other clients. The web app reads saved capsule-eye and
+  flat-eye PNGs back into live faces; mobile shows legacy pictures as pictures. Other
+  uploads replace the face. Bots without a saved face derive one from their
+  names. Each mood moves the whole face and its eyes on springs
+  (`lib/face-motion.ts`): idle sways, glances and blinks; listening tilts
+  from side to side; searching peers one eye wide, then the other; working
+  bobs while its eyes narrow on a steady beat; happy hops and squints; sleeping droops and breathes.
+  Searching, working and happy faces now and then turn all the way round,
+  with a sweep in tints of their colour. Thinking folds the face into three
+  bobbing dots, writing into a pencil that scribbles, and loading
+  into a whirl round a dot; the face unfolds when the mood ends. A face
+  leaving sleeping opens wide and throws sparks. The
+  in-app mark sleeps on the connection-lost screen and loads while an update
+  installs. A live turn starts thinking, searches while a
+  search tool runs, writes while text streams, and works during other steps.
+  Roster and header
+  faces, including every face in a room's cluster, match their status dots;
+  a cluster without a dot, as in room settings, stays idle. Faces in asks
+  turn and look toward each other.
+  Faces also show emotions (`lib/emotions.ts`), read from what happens in
+  the open chat or room, never asked of the model: as a turn starts the
+  bot is shy at thanks, surprised at alarm or shouting, and otherwise
+  curious; a failed step confuses it, three frustrate it; a reply that
+  fails or apologises is sad, one that reports passing tests, a merge or a
+  deploy celebrates, a long or many-step one is proud, and one that ends in
+  a question is curious. A quiet open chat gets bored after 3 minutes and
+  drowsy after 8, and anything happening wakes it. Each emotion shows for
+  a second or a few over what the bot is doing, on its header, live and
+  roster faces and its latest room message; drowsy stays until something
+  happens. Moving between moods is one gesture: a blink and a dip, a jump
+  for surprise, a slump for sadness, a jolt awake, and a hop, a turn and
+  sparks to celebrate. Mobile shows the same emotions, still, on a bot
+  chat's header and waiting faces.
+  One frame loop moves every visible face and stops when none moves.
+  Reduced motion draws each mood's rest pose, morph included, and offscreen
+  or hidden-page faces stop. Mobile draws the same settled expressions.
+  Click a face or the in-app mark for one of the existing 21 acts. Acts hold
+  the face at rest and clean up with their React subtree.
+  The site's faces, logo, favicon, and package icons use the same capsule
+  eyes.
 - Shadows only on floating layers (menus, dialogs, the glass chrome) and the
   cards that sit on the canvas: a hairline plus one soft shadow.
 - Liquid glass (`hex-glass`, `hex-glass-strong` in `tokens.css`) is for
@@ -77,7 +106,7 @@ own visual identity. Read `CLAUDE.md` for the words.
   `ease-out` settles, `ease-in-out` is for things leaving, `ease-spring` is
   for small controls that snap into place (the switch knob). Only what
   arrives while the chat is open animates: history is drawn still. The one
-  continuous motion is a working bot's face. Respect prefers-reduced-motion.
+  continuous motion is bot faces. Respect prefers-reduced-motion.
 - Focus: the accent ring, 2 px outside the shape (`hex-focus`), on every
   rounded control, including the glass pills.
 
@@ -111,25 +140,10 @@ the roster slides in as a drawer.
 
 - Header: nothing but floating glass over the transcript, which scrolls
   under it. In the centre, a pill with the bot's face (status dot on it,
-  bobbing while it works) and its name; clicking it opens or closes the side
-  panel. Top right, the context meter and, while the panel is closed, the
-  panel toggle. A chat has no title, rename, archive or delete. The
-  model is chosen in Bot settings, Model, not in the chat.
-- Context meter: a glass pill with a 28 px
-  hairline bar and "Context 62%" in meta type, muted; a tick on the bar marks
-  where older messages get summarised. Hover or focus (the pill is in the tab
-  order) for the plain numbers ("41k of 200k tokens. Older messages are
-  summarised above 184k tokens.") in a solid tooltip, so the conversation
-  never shows through it. Within 15% of that point the pill turns warning and the tooltip
-  says summarising starts soon; while Hexbot summarises it reads "Summarising", and
-  right after, until the next reply is measured, a neutral "Context" with
-  "Recounting after the summary." Nothing is drawn until the daemon has
-  measured the section (`hexbot.sections.open`, `session.usage`), and nothing
-  in rooms. The bar never animates; it is redrawn when a turn ends, a
-  summary starts or ends, or the model changes. The conversation column is
-  a container: under 54rem the word "Context" goes, and the centred title
-  truncates before it can reach the pill. The context window is never called
-  memory.
+  expression matching the dot) and its name; clicking it opens or closes the side
+  panel. Top right, while the panel is closed, the panel toggle. A chat has
+  no title, rename, archive or delete. The model is chosen in Bot settings,
+  Model, not in the chat.
 - Transcript: a centred column capped at 52rem. Bot messages left-aligned in
   soft grey bubbles washed with the bot's face colour (14% light, 20% dark;
   plain grey for an uploaded photo), human messages right-aligned in inverse
@@ -142,42 +156,34 @@ the roster slides in as a drawer.
   left edge; bubbles and cards from the same side in a row stack 4 px apart,
   and a new speaker starts 12 px lower. Each message a bot finishes is its
   own bubble, so a turn that says "I'll run both" and then reports back is
-  two bubbles, live and after a reload. Copy and retry icons appear beside
-  the last bubble on hover. Markdown body with code blocks (a fenced block
+  two bubbles, live and after a reload. A bot's bubbles stand alone, with
+  nothing under or beside them: no thinking line, no memory or soul marks,
+  no copy or retry. A copy icon appears beside your own last bubble on
+  hover. The same holds for history from before this change. Markdown body with code blocks (a fenced block
   is a block even without a language; its copy button shows on hover),
   tables, images. Time separators ("Today 9:13 PM") between days and after
-  20 quiet minutes.
+  20 quiet minutes, after a reload too; a bot's reply counts from when it
+  finished. Rooms and the mobile app separate the same way.
 - Live status: from the moment a turn starts until the whole turn is done,
   a line sits at its foot, under the messages the bot has finished: the
-  bot's bobbing face and muted words, with no bubble behind them. It says
-  what the bot is doing in plain words ("General is thinking", "General is
-  writing", "General is working", "General is searching the web", "General
-  is running a command", "Connecting to GitHub" for a connector's tool, or
-  the provider's wait notice), never the command, the query or the time;
-  the side panel says the same. The face keeps bobbing while a tool runs.
-  No spinner, no ring, no shimmer. Each new label crossfades in. What the
-  bot is still writing stays hidden ("General is writing"); the message
-  appears whole when it is done and springs in. When the turn ends the line
-  is gone at once, the closing message springs in, and the summary line
-  fades in at the foot of the turn, where the status was.
+  bot's face, in the mood of its work, and "General is working" in muted
+  words, with no bubble behind it. It never names the step, the tool, the
+  thinking, or the provider's wait notice, and it does not open. It stays
+  while a step the user approved still runs. The face thinks, searches,
+  works or writes with the turn; no spinner, no ring, no shimmer. What the
+  bot is still writing stays hidden; the message appears whole when it is
+  done and springs in. When the turn ends the line is gone at once and
+  nothing takes its place.
 - "Waiting on you" is a purple glass pill pinned under the header pill
   while a bot has asked the human something (in a room it names the bot).
   Nothing is written into the transcript for it. A red banner names the bot
   when a room turn failed.
-- Work card: thinking traces and steps are hidden until asked for. Click
-  the live status and it opens under it, set off by a thin rule on the left
-  and no background, with the
-  reasoning trace as it streams and each step as a one-line row; a row
-  opens to its arguments and output in monospace only when clicked. The
-  card and a row's detail unfold into the column rather than popping. Once
-  opened the card stays open until the turn ends; "Open in Computer" shows
-  the same steps in the side panel. When the turn ends the work collapses
-  into one small muted line at the foot of the turn ("Thought for 12s",
-  "Worked for 3s") that opens into the same card. Work that finished in under two
-  seconds leaves no line.
-  Housekeeping tools (memory, tasks, history search, skills) never appear
-  once finished. The Computer tab in the panel still
-  lists every call.
+- Thinking and steps: a conversation shows what bots say, never how they
+  got there. Thinking, steps, and writes to memory, notes, or soul have no
+  line, card, or mark in a chat, a room, or a thread between bots, on the
+  app, the browser, or the phone. The side panel names only the step a bot
+  is running, under its name; its Computer tab shows the bots' computer
+  alone.
 - Approvals: an inline card with the command or action in monospace, the
   reason, and Approve and Deny buttons. Manual and unreviewed cards can also
   offer Allow for now. Reviewed Auto steps never offer it. Requests
@@ -204,6 +210,16 @@ the roster slides in as a drawer.
   A failed send or upload leaves any running answer, tools and Stop available,
   including with an older daemon. An unknown send outcome offers no Retry;
   the draft stays available while the user checks whether the message arrived.
+  Every Stopped card has a close button (×) in its header. Closing one built
+  from the bot's Stopped state for this chat clears that state
+  (`hexbot.bots.clear_status`), so it does not come back. The phone's error
+  banner under a chat closes the same way. A failure with no room or
+  conversation of its own, such as a dream's or a scheduled job's, shows in
+  the bot's chat, so a red dot always has a message you can read and close.
+- Recall: your latest message in a bot's chat, while the bot works on it or
+  after its turn stopped, shows Recall beside Copy on hover; the phone offers
+  it on a long press. The message and everything after it leave the chat, and
+  its text goes back to the composer ahead of anything typed since.
 
 ### Status colours
 
@@ -248,10 +264,41 @@ notice. Working and idle draw the plain pill.
     Connectors, Skills), and "Bot settings" for the tab last used.
   - Library: images (a three-column grid) and files shared in the section,
     newest first.
-  - Computer: every tool call in the section, housekeeping included, newest
-    first, each with its glyph, time and result mark, closed until clicked
-    open to its arguments and output. A plain-words line on top says what
-    the bot is doing while a tool runs, and the tab shows a still blue dot.
+  - Computer: the bots' shared computer on top, when the bot has Computer
+    use: its live screen, watch-only, with a still blue ring while a bot
+    acts there or the user has it, and one line under it saying what is
+    happening ("Scout is clicking on the computer", "You have control. Your
+    bots wait until you give it back."). Each bot that acted lately has a
+    cursor on the screen: an arrow in its face colour with its face beside
+    it. The cursor glides to where the bot acts, presses and rings on a
+    click, and the face taps while the bot types; it fades after 45 seconds
+    idle. "Take control" opens the screen large over the app, where the user
+    can click and type; "Give back" or closing the window hands it back.
+    The small screen keeps playing under the window, and a screen switching
+    between watching and control keeps its picture until the new one is up,
+    so neither goes black. A
+    menu has Open larger, Restart, Turn off and Reset… (asks first:
+    everything on it is erased, for every bot), then "Quality on this
+    device" with Auto (the default), 1080p · 60 fps, 1080p · 30 fps,
+    720p · 60 fps and 720p · 30 fps, a check on the chosen one. An off
+    computer shows "Turn on"; a daemon without Cua shows how to install it.
+    Reached at a plain http:// address on the network, where the screen
+    cannot play, it says so in place of the screen, without Take control.
+    Under it, the bot's other tool calls in the section, housekeeping
+    included, newest first, each with its glyph, time and result mark,
+    closed until clicked open to its arguments and output. Computer actions are not listed here; the
+    screen and cursor show them. A plain-words line on top
+    says what the bot is doing while a tool runs, and the tab shows a still
+    blue dot.
+    The mobile app shows the same computer on a front card from a computer
+    button in the chat's header, which carries a dot while a bot acts there
+    or you have it: the screen with the same face cursors, the line under
+    it, Take control or Give back, Restart, Turn off and Reset… as rows,
+    and a "Quality on this device" group with the same five choices.
+    Its screen, too, keeps its picture through Take control and Give back.
+    Closing the card while you have control gives it back.
+
+    ![The Computer tab's menu with the quality choices](screens/computer-quality.png)
 - Opening and closing is one 240 ms move: the panel's column widens or
   narrows while the chat column follows, and the card slides in from the
   right edge. The panel remembers open or closed, and its tab, per window.
@@ -285,8 +332,7 @@ nested inside a card and no row carries more than one line of explanation.
   that connector's set-up sheet, which is how a "Fix Notion" action in the
   chat lands here.
 - Tabs in three groups: Profile, Soul, Model; Abilities (Memory, Tools,
-  Connectors, Skills); Manage (Approvals, Check-ins for the primary bot,
-  Advanced).
+  Connectors, Skills); Manage (Approvals, Heartbeat, Advanced).
 - Tabs: Profile (face, name, label, description), Soul
   (full-height editor, template menu with a confirm, word count), Model
   (configured providers only, the provider's model list with the
@@ -343,9 +389,9 @@ nested inside a card and no row carries more than one line of explanation.
 
 ### Settings (the shared shell, global tabs)
 
-Tabs in four groups: Models (Providers, Usage), Devices (Network, Hex
+Tabs in five groups: Models (Providers, Usage), Devices (Network, Hex
 Connect), You (Memory, Approvals, Appearance), App (Updates,
-About). A daemon belongs to one person, so there is no Users tab; Memory
+About), Advanced (Diagnostics). A daemon belongs to one person, so there is no Users tab; Memory
 starts with your name, the one Get Started asked for.
 
 - Providers: a search pill, then "Connected" and "More providers" cards,
@@ -359,9 +405,26 @@ starts with your name, the one Get Started asked for.
 - Approvals: "Choose when Hexbot asks before a bot acts. Bots and rooms can
   override it." Modes Manual, Auto, and Bypass, one row each;
   a notice when the daemon has no OS sandbox.
-- Appearance: theme System, Light, Dark.
+- Appearance: theme System, Light, Dark; Sounds, off by default: a soft
+  synthesised tone when a bot starts, finishes, or needs you, in the open
+  conversation while the window is visible (`lib/sounds.ts`). Web and
+  desktop only for now: the mobile app plays no audio of its own and
+  leaves sound to the phone's notifications.
 - Updates: current version, channel, check now.
 - About: version, license, links.
+- Diagnostics: what the daemon measured since it started, polled every 5
+  seconds while the page is open, with Copy report. It takes a wider
+  measure than other pages and has five pill views. Overview: six stat
+  tiles (launch time, uptime, CPU, memory, prompt and database cache hits),
+  the launch phases on one time axis, load, host, daemon, and this window's
+  load and round trip. Resources: CPU and memory over the last hour, one
+  series per chart with a crosshair readout, and the live process tree;
+  selecting a process charts its last ten minutes. Traces: recent runs, each
+  opening a waterfall of its model calls and tools with their details; span
+  names with count, failures, average, p95 and max; and the span log,
+  filtered by name. Failures: most common and last. Caches: prompt cache by
+  bot and model, and the local database. Desktop and web only: the mobile
+  app has no Diagnostics.
 
 ### Pairing on the daemon side
 

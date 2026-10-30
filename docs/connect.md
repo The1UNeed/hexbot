@@ -21,7 +21,8 @@ Three parts:
 1. **Connect service**, `apps/connect`: Next.js on Vercel, Clerk for
    identity, Postgres (Neon) for state, the Cloudflare API for tunnels,
    PostHog for product analytics (consent-gated, shared project with the
-   site). AGPL like the rest of the repo. Free during beta.
+   site). Apache-2.0, like the rest of Hexbot's own source (see `NOTICE`).
+   Free during beta.
 2. **Daemon side**, `backend/hexbot-core/src/services.rs` and the
    `hexbot connect` CLI: registers the daemon, heartbeats, supervises
    `cloudflared`, and verifies grants. `server.rs` accepts grants through
@@ -225,10 +226,10 @@ per minute per running app instance, when a registration is created.
    with the daemon token, the first one as soon as the tunnel starts; Connect
    records `last_seen_at` and the port, which only the loopback development
    address uses.
-6. Check-in push: `POST /api/daemons/{id}/push {targets: [{token, device}],
-   section}` with the daemon token, when the primary bot messages the user
-   from a check-in. Connect relays it to Expo's push service in its own words,
-   "Hexbot: Your primary bot has a message for you.", with `section` and
+6. Bot message push: `POST /api/daemons/{id}/push {targets: [{token, device}],
+   section}` with the daemon token, when a bot's heartbeat posts in its chat.
+   Connect relays it to Expo's push service in its own words,
+   "Hexbot: One of your bots has a message for you.", with `section` and
    `device` (the phone's paired device id, so it opens the right saved daemon)
    as data. A daemon sends only ids and tokens: the message never reaches
    Connect, and no daemon can put its own text in a push. Connect stores

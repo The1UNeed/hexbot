@@ -1,8 +1,9 @@
 import type { CSSProperties } from 'react'
 
 import { cn } from '../../lib/cn'
+import { useFaceVisibility } from '../../lib/face-visibility'
 
-import { FaceEyes, type FaceMood } from './avatar'
+import { type FaceMood, LiveFace } from './avatar'
 import { ActProps, type HexbotActName, useAct } from './hexbot-act'
 
 /**
@@ -24,21 +25,24 @@ export function HexbotMark({
   style?: CSSProperties
 }) {
   const playing = useAct(act)
+  const { ref, visible } = useFaceVisibility<HTMLSpanElement>()
 
   return (
     <span
       aria-hidden
       className={cn('hex-face relative inline-block shrink-0 text-foreground', className)}
+      data-visible={visible}
       onClick={playing.play}
+      ref={ref}
       style={{ height: size, width: size, ...style }}
     >
-      <svg className={cn('size-full', playing.act?.body)} viewBox="0 0 100 100">
-        <path
-          d="M44 6a12 12 0 0 1 12 0l30 17a12 12 0 0 1 6 10v34a12 12 0 0 1-6 10L56 94a12 12 0 0 1-12 0L14 77a12 12 0 0 1-6-10V33a12 12 0 0 1 6-10Z"
-          fill="currentColor"
-        />
-        <FaceEyes fill="var(--hex-background)" mood={playing.act?.mood ?? mood} />
-      </svg>
+      <LiveFace
+        className={playing.act?.body}
+        color="currentColor"
+        eyes="var(--hex-background)"
+        mood={playing.act?.mood ?? mood}
+        still={Boolean(playing.act)}
+      />
       {playing.name ? <ActProps name={playing.name} /> : null}
     </span>
   )

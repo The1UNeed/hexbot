@@ -10,9 +10,18 @@ export type {
   Provider,
   ModelOption,
   Connector,
+  PasswordLogin,
+  Plugin,
+  PluginsList,
+  SignInForm,
   SkillInfo,
+  SkillRequirement,
   NetworkInfo,
-  UsageSummary
+  UsageSummary,
+  ComputerCursor,
+  ComputerQuality,
+  ComputerSize,
+  ComputerStatus
 } from '../../../web/src/lib/types'
 import type { CurrentUser as WireUser } from '../../../web/src/lib/types'
 export type CurrentUser = Omit<WireUser, 'role'>
@@ -57,6 +66,8 @@ export interface ChatMessage {
   createdAt?: number
   tools?: ChatTool[]
   attachments?: { name: string; uri?: string }[]
+  /** The key your message was sent with, which names it for Recall. */
+  inputId?: string
 }
 export interface PendingApproval {
   requestId: string
@@ -64,6 +75,8 @@ export interface PendingApproval {
   command: string
   reason?: string
   choices: string[]
+  /** The sign-in card a bot shows to save a password. */
+  form?: import('../../../web/src/lib/types').SignInForm
 }
 export interface PendingQuestion {
   requestId: string

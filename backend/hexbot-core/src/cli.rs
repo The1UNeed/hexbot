@@ -23,11 +23,14 @@ pub const USAGE: &str = concat!(
     "hexbot setup [--activate] [--no-code-tools] [--json]\n",
     "hexbot service install | uninstall | start | stop | restart | status [--json] | logs [-f]\n",
     "hexbot status [--json]\n",
+    "hexbot diagnostics\n",
     "hexbot pair\n",
     "hexbot bots list | create NAME [--title TEXT] [--description TEXT] [--persona TEXT] [--provider NAME] [--model NAME] [--reasoning-effort LEVEL] | delete NAME\n",
     "hexbot bots primary [NAME]\n",
-    "hexbot checkins [now | on | off | every MINUTES | hours HH:MM-HH:MM | cancel ID]\n",
+    "hexbot heartbeat on | off | status BOT | now BOT | set BOT TEXT\n",
+    "hexbot computer [on | off | restart | reset | give-back | size small|medium|large]\n",
     "hexbot rooms list\n",
+    "hexbot plugins [list [--bot NAME]] | assign connector|skill|capability ID [BOT ...]\n",
     "hexbot devices list | revoke ID\n",
     "hexbot connect [--name TEXT | status | disconnect]\n",
     "hexbot lan on | off\n",
@@ -41,6 +44,7 @@ fn command(args: &[String]) -> Result<(&'static str, Value)> {
     let a: Vec<&str> = args.iter().map(String::as_str).collect();
     match a.as_slice() {
         ["connect"] => Ok(("register", json!({}))),
+        ["diagnostics"] => Ok(("hexbot.diagnostics.get", json!({}))),
         ["connect", "--name", name] => Ok(("register", json!({"name":name}))),
         ["connect", "status"] => Ok(("hexbot.connect.status", json!({}))),
         ["connect", "disconnect"] => Ok(("hexbot.connect.disconnect", json!({}))),
@@ -51,20 +55,33 @@ fn command(args: &[String]) -> Result<(&'static str, Value)> {
         ["bots", "delete", name] => Ok(("hexbot.bots.delete", json!({"name":name}))),
         ["bots", "primary"] => Ok(("hexbot.bots.create_primary", json!({}))),
         ["bots", "primary", name] => Ok(("hexbot.bots.set_primary", json!({"name":name}))),
-        ["checkins"] => Ok(("hexbot.checkins.status", json!({}))),
-        ["checkins", "now"] => Ok(("hexbot.checkins.run_now", json!({}))),
-        ["checkins", "cancel", id] => Ok(("hexbot.checkins.cancel_wakeup", json!({"id":id}))),
-        ["checkins", toggle @ ("on" | "off")] => Ok((
+        ["heartbeat", toggle @ ("on" | "off")] => Ok((
             "hexbot.settings.set",
-            json!({"patch":{"checkin_enabled":*toggle == "on"}}),
+            json!({"patch":{"heartbeat_enabled":*toggle == "on"}}),
         )),
-        ["checkins", "every", minutes] => Ok((
-            "hexbot.settings.set",
-            json!({"patch":{"checkin_every_minutes":minutes.parse::<u64>().map_err(|_| invalid())?}}),
-        )),
-        ["checkins", "hours", window] => Ok((
-            "hexbot.settings.set",
-            json!({"patch":{"checkin_hours":window}}),
+        ["heartbeat", "status", bot] => Ok(("hexbot.heartbeat.status", json!({"bot":bot}))),
+        ["heartbeat", "now", bot] => Ok(("hexbot.heartbeat.run_now", json!({"bot":bot}))),
+        ["heartbeat", "set", bot, text] => {
+            Ok(("hexbot.heartbeat.set", json!({"bot":bot,"text":text})))
+        }
+        ["computer"] => Ok(("hexbot.computer.status", json!({}))),
+        ["computer", "on"] => Ok(("hexbot.computer.start", json!({}))),
+        ["computer", "off"] => Ok(("hexbot.computer.stop", json!({}))),
+        ["computer", "restart"] => Ok(("hexbot.computer.restart", json!({}))),
+        ["computer", "reset"] => Ok(("hexbot.computer.reset", json!({}))),
+        ["computer", "give-back"] => Ok(("hexbot.computer.control", json!({"holder":"bot"}))),
+        ["computer", "size", size] => Ok(("hexbot.computer.configure", json!({"size":size}))),
+        ["plugins"] | ["plugins", "list"] => Ok(("hexbot.plugins.list", json!({}))),
+        ["plugins", "list", "--bot", bot] => Ok(("hexbot.plugins.list", json!({"bot":bot}))),
+        [
+            "plugins",
+            "assign",
+            kind @ ("connector" | "skill" | "capability"),
+            id,
+            bots @ ..,
+        ] => Ok((
+            "hexbot.plugins.set_bots",
+            json!({"kind":kind,"id":id,"bots":bots}),
         )),
         ["send", bot, text] => Ok((
             "hexbot.cli.send",
@@ -460,10 +477,16 @@ async fn invoke(home: &Path, socket: &mut Option<Socket>, method: &str, p: Value
     if method == "hexbot.cli.send" {
         return offline_send(home, &p).await;
     }
-    if method.starts_with("hexbot.checkins.") {
+    if method.starts_with("hexbot.heartbeat.") {
         return Err(Error::new(
             4208,
-            "Check-ins run in the daemon. Start it with `hexbot serve` or `hexbot service start`.",
+            "The heartbeat runs in the daemon. Start it with `hexbot serve` or `hexbot service start`.",
+        ));
+    }
+    if method.starts_with("hexbot.diagnostics.") {
+        return Err(Error::new(
+            4208,
+            "Diagnostics come from a running daemon. Start it with `hexbot serve` or `hexbot service start`.",
         ));
     }
     if method == "hexbot.connect.register_poll" {
@@ -472,6 +495,7 @@ async fn invoke(home: &Path, socket: &mut Option<Socket>, method: &str, p: Value
     if let Some(result) = auth::call(home, "local", method, &p)
         .or_else(|| catalog::call(home, "local", method, &p))
         .or_else(|| settings::call(home, "local", method, &p))
+        .or_else(|| crate::plugins::call(home, "local", method, &p))
     {
         return result;
     }
@@ -569,7 +593,17 @@ pub async fn execute(home: &Path, args: &[String]) -> Result<Value> {
 pub async fn dispatch(home: &Path, args: &[String]) -> Option<Result<()>> {
     let recognized = matches!(
         args.first().map(String::as_str),
-        Some("connect" | "devices" | "lan" | "send" | "checkins" | "hermes")
+        Some(
+            "connect"
+                | "devices"
+                | "lan"
+                | "send"
+                | "heartbeat"
+                | "computer"
+                | "plugins"
+                | "diagnostics"
+                | "hermes"
+        )
     ) || (args.first().map(String::as_str) == Some("bots")
         && args.get(1).map(String::as_str) != Some("list"));
     if !recognized {
@@ -588,7 +622,11 @@ pub async fn dispatch(home: &Path, args: &[String]) -> Option<Result<()>> {
             if v["lan_enabled"] == true {
                 println!("Direct LAN HTTP does not encrypt sign-ins or chat. Use Tailscale or HTTPS on untrusted networks.");
             }
-        } else if let Some(text) = v["text"].as_str() {
+        // A heartbeat's status holds its checklist as `text`; show all of it.
+        } else if let Some(text) = v["text"]
+            .as_str()
+            .filter(|_| args.first().map(String::as_str) != Some("heartbeat"))
+        {
             println!("{text}");
         } else if let Some(url) = v["connected"].as_str() {
             println!("Connected: {url}");

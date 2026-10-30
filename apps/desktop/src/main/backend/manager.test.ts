@@ -1,16 +1,24 @@
 import { EventEmitter } from 'node:events'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile, realpath } from 'node:fs/promises'
 import net from 'node:net'
 import http from 'node:http'
 import { PassThrough } from 'node:stream'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it, vi } from 'vitest'
-import { DaemonManager, backoffSchedule, findFreePort, parseReadyLine, parseUpdateRequestLine, runningDaemonPort } from './manager'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  DaemonManager,
+  backoffSchedule,
+  findFreePort,
+  parseReadyLine,
+  parseUpdateRequestLine,
+  runningDaemonPort
+} from './manager'
 
 const spawnDaemon = vi.hoisted(() => vi.fn())
 vi.mock('node:child_process', () => ({ spawn: spawnDaemon }))
 vi.mock('electron', () => ({ app: { on: () => undefined, isPackaged: true } }))
+beforeEach(() => spawnDaemon.mockReset())
 
 describe('a daemon that already owns the home', () => {
   it('is used instead of starting a second daemon, and only while it is running', async () => {
@@ -25,7 +33,9 @@ describe('a daemon that already owns the home', () => {
       response.end(JSON.stringify(identity))
     })
     try {
-      const port = await new Promise<number>(resolve => server.listen(0, '127.0.0.1', () => resolve((server.address() as net.AddressInfo).port)))
+      const port = await new Promise<number>(resolve =>
+        server.listen(0, '127.0.0.1', () => resolve((server.address() as net.AddressInfo).port))
+      )
       await writeFile(join(home, 'install_id'), 'this-home')
       await writeFile(join(home, 'serve-state.json'), JSON.stringify({ host: '127.0.0.1', port }))
       expect(await runningDaemonPort(home)).toBeUndefined()
@@ -42,6 +52,14 @@ describe('a daemon that already owns the home', () => {
       expect(await manager.start()).toEqual({ state: 'external', port })
       expect(await manager.start()).toEqual({ state: 'external', port })
       expect(await manager.stop()).toEqual({ state: 'external', port })
+      const prepare = vi.fn(async () => ({ executable: join(home, 'selected'), version: '1.0.0' }))
+      expect(await manager.start(prepare, 'attach-or-start')).toEqual({ state: 'external', port })
+      expect(prepare).toHaveBeenCalledOnce()
+      expect(port).not.toBe(9119)
+      expect(spawnDaemon).not.toHaveBeenCalled()
+      await expect(
+        manager.start(async () => ({ executable: join(home, 'selected'), version: '1.0.0' }))
+      ).rejects.toThrow('does not own')
       expect(spawnDaemon).not.toHaveBeenCalled()
       await writeFile(join(home, 'native-daemon.lock'), '2147483647')
       expect(await runningDaemonPort(home)).toBeUndefined()
@@ -57,12 +75,140 @@ describe('a daemon that already owns the home', () => {
   })
 })
 
+it('cancels a prepared start before it can spawn when Stop is requested', async () => {
+  const manager = new DaemonManager()
+  let release: () => void = () => undefined
+  let entered: () => void = () => undefined
+  const prepared = new Promise<void>(resolve => {
+    release = resolve
+  })
+  const preparing = new Promise<void>(resolve => {
+    entered = resolve
+  })
+  const start = manager.start(async () => {
+    entered()
+    await prepared
+    return { executable: '/unused', version: '1.0.0' }
+  })
+  const failed = expect(start).rejects.toThrow('superseded')
+  await preparing
+  const stopping = manager.stop()
+  release()
+  await failed
+  expect(await stopping).toEqual({ state: 'stopped' })
+})
+
+it('does not stop a healthy owned daemon when preparation rejects', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'hexbot-manager-prepare-'))
+  const previous = process.env.HEXBOT_HOME
+  process.env.HEXBOT_HOME = home
+  const child = Object.assign(new EventEmitter(), {
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+    pid: process.pid,
+    kill: vi.fn(() => {
+      queueMicrotask(() => child.emit('exit', 0, null))
+      return true
+    })
+  })
+  spawnDaemon.mockReturnValueOnce(child)
+  const manager = new DaemonManager(9120)
+  try {
+    await manager.start()
+    child.stdout.write('HERMES_BACKEND_READY port=9120\n')
+    await expect(
+      manager.start(async () => {
+        throw new Error('Damaged runtime identity')
+      })
+    ).rejects.toThrow('Damaged runtime identity')
+    expect(manager.status().state).toBe('running')
+    expect(child.kill).not.toHaveBeenCalled()
+  } finally {
+    await manager.stop()
+    if (previous === undefined) delete process.env.HEXBOT_HOME
+    else process.env.HEXBOT_HOME = previous
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+it('runs the newer preparation after it supersedes an older pending start', async () => {
+  const manager = new DaemonManager()
+  let release: () => void = () => undefined
+  let entered: () => void = () => undefined
+  const pending = new Promise<void>(resolve => {
+    release = resolve
+  })
+  const preparing = new Promise<void>(resolve => {
+    entered = resolve
+  })
+  const first = manager.start(async () => {
+    entered()
+    await pending
+    return { executable: '/unused', version: '1.0.0' }
+  })
+  const firstFailed = expect(first).rejects.toThrow('superseded')
+  await preparing
+  const prepare = vi.fn(async () => {
+    throw new Error('Second validation failed')
+  })
+  const second = manager.start(prepare)
+  const secondFailed = expect(second).rejects.toThrow('Second validation failed')
+  release()
+  await firstFailed
+  await secondFailed
+  expect(prepare).toHaveBeenCalledTimes(1)
+})
+
+it('waits for a prepared daemon from stopped state and bounds missing readiness', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'hexbot-manager-ready-'))
+  const previous = process.env.HEXBOT_HOME
+  process.env.HEXBOT_HOME = home
+  const executable = join(home, 'selected')
+  await writeFile(executable, 'runtime')
+  const child = Object.assign(new EventEmitter(), {
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+    pid: process.pid,
+    kill: vi.fn(() => {
+      queueMicrotask(() => child.emit('exit', 0, null))
+      return true
+    })
+  })
+  spawnDaemon.mockReturnValueOnce(child)
+  const manager = new DaemonManager(9120)
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  try {
+    const waiting = new Promise<void>(resolve =>
+      manager.on('newListener', name => {
+        if (name === 'status') resolve()
+      })
+    )
+    const start = manager.start(async () => ({
+      executable: await realpath(executable),
+      version: '1.0.0'
+    }))
+    const failed = expect(start).rejects.toThrow('did not become ready')
+    await waiting
+    expect(manager.status().state).toBe('starting')
+    await vi.advanceTimersByTimeAsync(30_000)
+    await failed
+  } finally {
+    await manager.stop()
+    vi.useRealTimers()
+    if (previous === undefined) delete process.env.HEXBOT_HOME
+    else process.env.HEXBOT_HOME = previous
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
 it('attaches to a service that takes the home lock before a restart', async () => {
   const home = await mkdtemp(join(tmpdir(), 'hexbot-manager-restart-'))
   const oldHome = process.env.HEXBOT_HOME
   process.env.HEXBOT_HOME = home
   const child = Object.assign(new EventEmitter(), {
-    stdout: new PassThrough(), stderr: new PassThrough(), pid: process.pid,
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+    pid: process.pid,
     kill: vi.fn()
   })
   spawnDaemon.mockReturnValueOnce(child)
@@ -80,9 +226,11 @@ it('attaches to a service that takes the home lock before a restart', async () =
     await writeFile(join(home, 'native-daemon.lock'), String(process.pid))
     await writeFile(join(home, 'serve-state.json'), JSON.stringify({ port }))
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
-    const running = new Promise<void>(resolve => manager.on('status', status => {
-      if (status.state === 'external') resolve()
-    }))
+    const running = new Promise<void>(resolve =>
+      manager.on('status', status => {
+        if (status.state === 'external') resolve()
+      })
+    )
     child.emit('exit', 4208, null)
     await vi.advanceTimersByTimeAsync(backoffSchedule[0])
     await running

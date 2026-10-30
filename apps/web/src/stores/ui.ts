@@ -1,12 +1,14 @@
 /**
- * Client-only preferences, persisted to localStorage: theme, right panel,
- * sidebar width and the last opened section (used by `/` to restore the app
+ * Client-only preferences, persisted to localStorage: theme, sound cues,
+ * the bots' computer's screen quality, right panel, sidebar width and the last opened section (used by `/` to restore the app
  * where the user left it). The open thread panel is session state and is not
  * persisted.
  */
 
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+
+import type { ComputerQuality } from '../lib/types'
 
 export type ThemePreference = 'dark' | 'light' | 'system'
 
@@ -32,6 +34,8 @@ export type PanelTab = 'computer' | 'details' | 'library'
 
 export interface UiState {
   closeThread: () => void
+  /** How the bots' computer's screen streams to this device: each network differs. */
+  computerQuality: ComputerQuality
   lastSection: LastSection | null
   openThread: (thread: ThreadRef) => void
   /** A finished ask learned the thread's id: fill it in if that thread is open. */
@@ -41,10 +45,14 @@ export interface UiState {
   panelTab: PanelTab
   rightPanelOpen: boolean
   setPanelTab: (tab: PanelTab) => void
+  setComputerQuality: (quality: ComputerQuality) => void
   setLastSection: (value: LastSection | null) => void
   setSidebarWidth: (width: number) => void
+  setSounds: (on: boolean) => void
   setTheme: (theme: ThemePreference) => void
   sidebarWidth: number
+  /** Soft cues when a bot starts, finishes, or needs you. Off by default. */
+  sounds: boolean
   theme: ThemePreference
   thread: null | ThreadRef
   /** Bumped when the daemon reports a section changed while a thread is open: read it again. */
@@ -59,10 +67,12 @@ export const SIDEBAR_MAX_WIDTH = 480
 export const useUi = create<UiState>()(
   persist(
     set => ({
+      computerQuality: 'auto',
       lastSection: null,
       panelTab: 'details',
       rightPanelOpen: true,
       sidebarWidth: 280,
+      sounds: false,
       theme: 'system',
       thread: null,
       threadChanged: 0,
@@ -70,6 +80,14 @@ export const useUi = create<UiState>()(
       setTheme(theme) {
         set({ theme })
         applyTheme(theme)
+      },
+
+      setSounds(sounds) {
+        set({ sounds })
+      },
+
+      setComputerQuality(computerQuality) {
+        set({ computerQuality })
       },
 
       openPanel(tab) {
@@ -122,11 +140,21 @@ export const useUi = create<UiState>()(
     }),
     {
       name: 'hexbot.ui',
-      partialize: ({ lastSection, panelTab, rightPanelOpen, sidebarWidth, theme }) => ({
+      partialize: ({
+        computerQuality,
         lastSection,
         panelTab,
         rightPanelOpen,
         sidebarWidth,
+        sounds,
+        theme
+      }) => ({
+        computerQuality,
+        lastSection,
+        panelTab,
+        rightPanelOpen,
+        sidebarWidth,
+        sounds,
         theme
       }),
       version: 1

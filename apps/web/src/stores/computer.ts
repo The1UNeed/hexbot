@@ -1,0 +1,102 @@
+/**
+ * The bots' computer, one Cua sandbox per daemon: what the daemon reports.
+ * Loaded when something shows it; `hexbot.computer.changed` keeps it current
+ * as it starts, a bot acts, or someone takes over.
+ */
+
+import { create } from 'zustand'
+
+import {
+  computerConfigure,
+  computerControl,
+  computerStatus,
+  computerStep,
+  computerView
+} from '../lib/api'
+import type { ComputerQuality, ComputerSize, ComputerStatus } from '../lib/types'
+
+import { useConnection } from './connection'
+
+const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
+
+export interface ComputerStoreState {
+  apply: (status: Partial<ComputerStatus>) => void
+  configure: (size: ComputerSize) => Promise<void>
+  /** Hand the computer to the user, or back to the bots. */
+  control: (holder: 'bot' | 'user') => Promise<void>
+  /** The last failed request; the daemon's own errors live in the status. */
+  error: null | string
+  /** The connection (`connects`) the status was last read on. */
+  read: null | number
+  refresh: () => Promise<void>
+  status: ComputerStatus | null
+  step: (step: 'reset' | 'restart' | 'start' | 'stop') => Promise<void>
+  /** The last request to take control, answered or not. */
+  taking: Promise<void>
+  view: (control: boolean, quality?: ComputerQuality) => Promise<null | string>
+}
+
+export const useComputer = create<ComputerStoreState>(set => {
+  const run = async (request: () => Promise<ComputerStatus>) => {
+    const target = useConnection.getState().target
+
+    try {
+      set({ error: null })
+      const result = await request()
+
+      // An answer from a daemon the app has since left describes another computer.
+      if (useConnection.getState().target !== target) {
+        return false
+      }
+
+      set(state => ({ status: { ...state.status, ...result } }))
+
+      return true
+    } catch (error) {
+      set({ error: message(error) })
+
+      return false
+    }
+  }
+
+  return {
+    // An event before the first load has no availability or size yet.
+    apply: status =>
+      set(state => (state.status ? { status: { ...state.status, ...status } } : state)),
+    async configure(size) {
+      await run(() => computerConfigure(size))
+    },
+    async control(holder) {
+      const request = run(() => computerControl(holder)).then(() => undefined)
+
+      if (holder === 'user') {
+        set({ taking: request })
+      }
+
+      await request
+    },
+    error: null,
+    read: null,
+    async refresh() {
+      const connection = useConnection.getState().connects
+
+      if (await run(computerStatus)) {
+        set({ read: connection })
+      }
+    },
+    status: null,
+    taking: Promise.resolve(),
+    async step(step) {
+      await run(() => computerStep(step))
+    },
+    async view(control, quality) {
+      try {
+        return (await computerView(control, quality)).path
+      } catch (error) {
+        set({ error: message(error) })
+
+        return null
+      }
+    }
+  }
+})

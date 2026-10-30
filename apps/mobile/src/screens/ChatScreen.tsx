@@ -1,8 +1,8 @@
 import { Ionicons } from '@expo/vector-icons'
-import { type ReactNode, useMemo, useState } from 'react'
+import { memo, type ReactNode, useCallback, useMemo, useState } from 'react'
 import {
-  ActivityIndicator,
   FlatList,
+  type ListRenderItemInfo,
   Image,
   Pressable,
   ScrollView,
@@ -15,14 +15,16 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import {
   Banner,
   BotFace,
+  LoadingFace,
   type BotStatus,
   bubbleFill,
   Button,
+  dividesChat,
+  type FaceMood,
   type FaceSource,
   formatDayDivider,
   Glass,
   IconButton,
-  type IconName,
   mono,
   radius,
   RoomFace,
@@ -33,12 +35,13 @@ import {
   useTheme,
   withAlpha
 } from '../ui'
+import { SignInCard } from './SignInCard'
 import type {
   ApprovalChoice,
   ApprovalRequestView,
   AttachmentView,
   ChatItem,
-  ToolActivity
+  SignInAnswer
 } from './types'
 
 type MessageItem = Extract<ChatItem, { kind: 'message' }>
@@ -46,10 +49,14 @@ type MessageItem = Extract<ChatItem, { kind: 'message' }>
 export interface ChatScreenProps {
   /** The bot's or the room's name. */
   title: string
+  /** A line under the name, such as a room's members. */
+  subtitle?: string | null
   /** The bot's face. Rooms pass `members` instead. */
   face?: FaceSource
   members?: FaceSource[]
   status?: BotStatus
+  /** What the bot feels right now, worn over its status for a moment. */
+  emotion?: FaceMood
 
   /** The transcript, oldest first. */
   items: ChatItem[]
@@ -75,23 +82,35 @@ export interface ChatScreenProps {
   onBack: () => void
   onOpenSettings?: () => void
 
-  onApprove: (requestId: string, choice: ApprovalChoice) => void
+  onApprove: (
+    requestId: string,
+    choice: ApprovalChoice,
+    signIn?: SignInAnswer
+  ) => Promise<unknown> | void
   onMessageLongPress?: (id: string) => void
+  /** Your message Recall can take back; a long press on it recalls it. */
+  recallId?: string | null
+  onRecall?: (id: string) => void
 
   archived?: boolean
   onUnarchive?: () => void
 
+  /** The history is still on its way: show the face loading, not an empty chat. */
+  opening?: boolean
   hasEarlier?: boolean
   loadingEarlier?: boolean
   onLoadEarlier?: () => void
 
   error?: string | null
   onRetry?: () => void
+  onDismissError?: () => void
 
   /** Draw a message's text yourself, such as with a Markdown renderer. */
   renderMessageText?: (item: MessageItem) => ReactNode
-  /** Opens one tool call on its own card. */
-  onOpenTool?: (tool: ToolActivity) => void
+  /** Opens the bots' computer on its own card; the button shows only with this. */
+  onOpenComputer?: () => void
+  /** A bot is acting on the computer, or you have it: the button shows a dot. */
+  computerLive?: boolean
   /** Opens a visual item from the transcript. */
   onOpenVisual?: (id: string) => void
   /** Under the empty state of a new chat, such as the model it will use. */
@@ -99,6 +118,9 @@ export interface ChatScreenProps {
 }
 
 type Entry = ChatItem | { id: string; kind: 'waiting' }
+type ListEntry = { id: string; entry: Entry; continued: boolean }
+const waitingEntry: Entry = { id: 'waiting', kind: 'waiting' }
+const entryKey = (item: ListEntry) => item.id
 
 /**
  * One conversation: a bot's chat or a room. Bot messages sit on soft grey
@@ -106,29 +128,56 @@ type Entry = ChatItem | { id: string; kind: 'waiting' }
  * one quiet line per run, and approvals stop the transcript with a card.
  */
 export function ChatScreen(props: ChatScreenProps) {
-  const { face, members, onBack, onOpenSettings, status, title } = props
+  const {
+    computerLive,
+    face,
+    members,
+    onBack,
+    onOpenComputer,
+    onOpenSettings,
+    status,
+    subtitle,
+    title
+  } = props
+  const theme = useTheme()
   const room = !!members
 
   const header = (
-    <View
+    <Pressable
+      accessibilityHint={
+        onOpenSettings ? (room ? 'Opens the room settings' : 'Opens the profile') : undefined
+      }
       accessibilityLabel={title}
-      accessibilityRole="header"
-      style={styles.titleButton}
+      accessibilityRole={onOpenSettings ? 'button' : 'header'}
+      disabled={!onOpenSettings}
+      onPress={onOpenSettings}
+      style={({ pressed }) => [styles.titleButton, { opacity: pressed ? 0.7 : 1 }]}
       testID="chat-title"
     >
-      <Glass radius={24} style={styles.titlePill}>
+      <Glass interactive={!!onOpenSettings} radius={24} style={styles.titlePill}>
         {room ? (
           <RoomFace members={members} name={title} size={30} status={status} />
         ) : (
-          <BotFace {...(face ?? { name: title })} name={title} size={30} status={status} />
+          <BotFace
+            {...(face ?? { name: title })}
+            mood={props.emotion}
+            name={title}
+            size={30}
+            status={status}
+          />
         )}
         <View style={styles.titleText}>
           <Text numberOfLines={1} variant="subhead">
             {title}
           </Text>
+          {subtitle ? (
+            <Text numberOfLines={1} tone="muted" variant="caption">
+              {subtitle}
+            </Text>
+          ) : null}
         </View>
       </Glass>
-    </View>
+    </Pressable>
   )
 
   return (
@@ -139,6 +188,27 @@ export function ChatScreen(props: ChatScreenProps) {
         testID="chat-bar"
         trailing={
           <>
+            {onOpenComputer ? (
+              <View>
+                <IconButton
+                  accessibilityLabel="Your bots' computer"
+                  icon="desktop-outline"
+                  iconSize={20}
+                  onPress={onOpenComputer}
+                  testID="chat-computer"
+                  variant="glass"
+                />
+                {computerLive ? (
+                  <View
+                    pointerEvents="none"
+                    style={[
+                      styles.computerDot,
+                      { backgroundColor: theme.info, borderColor: theme.background }
+                    ]}
+                  />
+                ) : null}
+              </View>
+            ) : null}
             {onOpenSettings ? (
               <IconButton
                 accessibilityLabel={room ? 'Room settings' : `Edit ${title}`}
@@ -157,13 +227,8 @@ export function ChatScreen(props: ChatScreenProps) {
   )
 }
 
-/**
- * The transcript and the composer without a screen around them, so a tab
- * can host a conversation. `bottomInset` lifts the composer above a tab bar.
- */
-export function ChatBody(
-  props: Omit<ChatScreenProps, 'onBack'> & { onBack?: () => void; bottomInset?: number }
-) {
+/** The transcript and the composer. */
+function ChatBody(props: ChatScreenProps) {
   const {
     archived,
     busy,
@@ -174,25 +239,107 @@ export function ChatBody(
     loadingEarlier,
     members,
     onLoadEarlier,
+    onDismissError,
     onRetry,
+    opening,
     title,
     waiting
   } = props
   const room = !!members
   const keyboard = useKeyboardVisible()
   const insets = useSafeAreaInsets()
-  const bottom = keyboard ? 8 : Math.max(props.bottomInset ?? insets.bottom, 8)
+  const bottom = keyboard ? 8 : Math.max(insets.bottom, 8)
 
   // Inverted list: newest first, so the view starts at the bottom and stays there.
-  const entries = useMemo<Entry[]>(() => {
-    const list: Entry[] = [...items].reverse()
+  const entries = useMemo<ListEntry[]>(() => {
+    const list: ListEntry[] = []
+    // The last message with something to show; a step with no words or files draws nothing.
+    let said: MessageItem | undefined
+    for (const [index, entry] of items.entries()) {
+      const previous = items[index - 1]
+      const shown =
+        entry.kind === 'message' && Boolean(entry.text || entry.attachments?.length || entry.error)
+      // Between days and after a quiet spell, a divider says when.
+      const at = shown ? (entry.createdAt ?? 0) : 0
+      const divided = dividesChat(said ? (said.createdAt ?? 0) : undefined, at)
+      if (divided)
+        list.push({
+          id: `day-${entry.id}`,
+          entry: { kind: 'day', id: `day-${entry.id}`, at },
+          continued: false
+        })
+      if (shown) said = entry
+      list.push({
+        id: entry.id,
+        entry,
+        continued:
+          !divided &&
+          entry.kind === 'message' &&
+          previous?.kind === 'message' &&
+          previous.role === entry.role &&
+          previous.author?.name === entry.author?.name
+      })
+    }
+    list.reverse()
 
-    return waiting ? [{ id: 'waiting', kind: 'waiting' }, ...list] : list
-  }, [items, waiting])
+    return waiting ? [{ id: 'waiting', entry: waitingEntry, continued: false }, ...list] : list
+  }, [items, !!waiting])
+  const fallbackFace = useMemo(() => face ?? { name: title }, [face, title])
+  const {
+    emotion,
+    onApprove,
+    onMessageLongPress,
+    onOpenVisual,
+    onRecall,
+    recallId,
+    renderMessageText
+  } = props
+  const waitingLabel = waiting?.label
+  const waitingWho = waiting?.who ?? (room ? null : fallbackFace)
+  const renderItem = useCallback(
+    ({ item: { entry, continued } }: ListRenderItemInfo<ListEntry>) => (
+      <TranscriptEntry
+        entry={entry}
+        continued={continued}
+        face={entry.kind === 'message' && !room ? fallbackFace : undefined}
+        room={room}
+        onLongPress={
+          entry.kind === 'message'
+            ? entry.id === recallId && onRecall
+              ? onRecall
+              : onMessageLongPress
+            : undefined
+        }
+        renderText={entry.kind === 'message' ? renderMessageText : undefined}
+        onApprove={entry.kind === 'approval' ? onApprove : undefined}
+        onOpenVisual={entry.kind === 'visual' ? onOpenVisual : undefined}
+        waitingLabel={entry.kind === 'waiting' ? waitingLabel : undefined}
+        waitingWho={entry.kind === 'waiting' ? waitingWho : undefined}
+        mood={entry.kind === 'waiting' ? emotion : undefined}
+      />
+    ),
+    [
+      room,
+      fallbackFace,
+      recallId,
+      onRecall,
+      onMessageLongPress,
+      renderMessageText,
+      onApprove,
+      onOpenVisual,
+      waitingLabel,
+      waitingWho,
+      emotion
+    ]
+  )
 
   return (
     <>
-      {items.length === 0 && !waiting ? (
+      {items.length === 0 && !waiting && opening ? (
+        <View style={styles.empty} testID="chat-opening">
+          <LoadingFace {...(face ?? { name: title })} name={title} />
+        </View>
+      ) : items.length === 0 && !waiting ? (
         <ScrollView
           contentContainerStyle={styles.empty}
           keyboardDismissMode="interactive"
@@ -233,18 +380,10 @@ export function ChatBody(
           contentContainerStyle={styles.transcript}
           data={entries}
           inverted
-          keyExtractor={entry => entry.id}
+          keyExtractor={entryKey}
           keyboardDismissMode="interactive"
           keyboardShouldPersistTaps="handled"
-          renderItem={({ index, item }) => (
-            <TranscriptEntry
-              entry={item}
-              // Inverted, so the chronologically previous entry is the next index.
-              previous={entries[index + 1]}
-              props={props}
-              room={room}
-            />
-          )}
+          renderItem={renderItem}
           testID="chat-transcript"
         />
       )}
@@ -255,6 +394,7 @@ export function ChatBody(
             actionLabel={onRetry ? 'Try again' : undefined}
             message={error}
             onAction={onRetry}
+            onDismiss={onDismissError}
             testID="chat-error"
           />
         </View>
@@ -281,25 +421,34 @@ export function ChatBody(
   )
 }
 
-function TranscriptEntry({
+const TranscriptEntry = memo(function TranscriptEntry({
   entry,
-  previous,
-  props,
-  room
+  continued,
+  face,
+  room,
+  onLongPress,
+  renderText,
+  onApprove,
+  onOpenVisual,
+  waitingLabel,
+  waitingWho,
+  mood
 }: {
   entry: Entry
-  previous?: Entry
-  props: Omit<ChatScreenProps, 'onBack'>
+  continued: boolean
+  face?: FaceSource
   room: boolean
+  onLongPress?: (id: string) => void
+  renderText?: ChatScreenProps['renderMessageText']
+  onApprove?: ChatScreenProps['onApprove']
+  onOpenVisual?: ChatScreenProps['onOpenVisual']
+  waitingLabel?: string | null
+  waitingWho?: FaceSource | null
+  mood?: FaceMood
 }) {
   switch (entry.kind) {
     case 'waiting':
-      return (
-        <WaitingRow
-          label={props.waiting?.label}
-          who={props.waiting?.who ?? (room ? null : (props.face ?? { name: props.title }))}
-        />
-      )
+      return <WaitingRow label={waitingLabel} mood={mood} who={waitingWho} />
     case 'day':
       return (
         <Text align="center" style={styles.day} tone="muted" variant="caption">
@@ -317,39 +466,36 @@ function TranscriptEntry({
           {entry.text}
         </Text>
       )
-    case 'tools':
-      return <ToolsCard id={entry.id} onOpen={props.onOpenTool} tools={entry.tools} />
     case 'visual':
       return (
         <View style={styles.visualItem}>
           <VisualCard
-            onOpen={() => props.onOpenVisual?.(entry.id)}
+            onOpen={() => onOpenVisual?.(entry.id)}
             testID={`visual-open-${entry.index}`}
             title={entry.title}
           />
         </View>
       )
     case 'approval':
-      return <ApprovalCard onAnswer={props.onApprove} request={entry.request} />
+      return entry.request.form ? (
+        <SignInCard form={entry.request.form} onAnswer={onApprove!} request={entry.request} />
+      ) : (
+        <ApprovalCard onAnswer={onApprove!} request={entry.request} />
+      )
     case 'message': {
-      const run =
-        previous?.kind === 'message' &&
-        previous.role === entry.role &&
-        previous.author?.name === entry.author?.name
-
       return (
         <MessageBubble
-          chat={{ face: room ? null : (props.face ?? { name: props.title }), room }}
-          continued={run}
+          chat={{ face: face ?? null, room }}
+          continued={continued}
           item={entry}
-          onLongPress={props.onMessageLongPress}
-          renderText={props.renderMessageText}
-          showAuthor={room && entry.role !== 'user' && !run}
+          onLongPress={onLongPress}
+          renderText={renderText}
+          showAuthor={room && entry.role !== 'user' && !continued}
         />
       )
     }
   }
-}
+})
 
 function MessageBubble({
   chat,
@@ -436,111 +582,21 @@ function MessageBubble({
   )
 }
 
-function WaitingRow({ label, who }: { label?: string | null; who?: FaceSource | null }) {
+function WaitingRow({
+  label,
+  mood,
+  who
+}: {
+  label?: string | null
+  mood?: FaceMood
+  who?: FaceSource | null
+}) {
   return (
     <View accessibilityLiveRegion="polite" style={styles.waiting} testID="chat-waiting">
-      {who ? <BotFace {...who} mood="working" size={26} /> : null}
+      {who ? <BotFace {...who} mood={mood ?? 'working'} size={26} /> : null}
       <Text tone="muted" variant="footnote">
         {label || 'Thinking…'}
       </Text>
-    </View>
-  )
-}
-
-const TOOL_GLYPHS: Record<string, IconName> = {
-  browser: 'compass-outline',
-  clarify: 'help-circle-outline',
-  delegate: 'git-branch-outline',
-  edit: 'create-outline',
-  edit_file: 'create-outline',
-  read_file: 'document-text-outline',
-  write_file: 'create-outline',
-  web_fetch: 'globe-outline',
-  message_bot: 'chatbubbles-outline',
-  memory: 'bookmark-outline',
-  hexbot_show_html: 'bar-chart-outline',
-  ls: 'folder-open-outline',
-  read: 'document-text-outline',
-  terminal: 'terminal-outline',
-  bash: 'terminal-outline',
-  web_search: 'search-outline',
-  write: 'create-outline'
-}
-
-const glyphFor = (name = ''): IconName => TOOL_GLYPHS[name] ?? 'construct-outline'
-
-/** How many tool lines show before the rest fold away. */
-const TOOL_LINES = 3
-
-/**
- * A run of tool calls as quiet lines under the bot's message, one per call,
- * like a log you can skim. Tap a line to see the call on its own card.
- */
-function ToolsCard({
-  id,
-  onOpen,
-  tools
-}: {
-  id: string
-  tools: ToolActivity[]
-  onOpen?: (tool: ToolActivity) => void
-}) {
-  const theme = useTheme()
-  const [open, setOpen] = useState(false)
-  const shown = open ? tools : tools.slice(-TOOL_LINES)
-  const hidden = tools.length - shown.length
-  const color = { error: theme.danger, ok: theme.muted, running: theme.info }
-
-  return (
-    <View style={styles.tools} testID={`chat-tools-${id}`}>
-      {hidden > 0 ? (
-        <Pressable
-          accessibilityRole="button"
-          onPress={() => setOpen(true)}
-          style={styles.toolLine}
-          testID={`chat-tools-${id}-more`}
-        >
-          <Ionicons color={theme.faint} name="chevron-up" size={15} />
-          <Text tone="muted" variant="footnote">
-            {hidden === 1 ? '1 earlier step' : `${hidden} earlier steps`}
-          </Text>
-        </Pressable>
-      ) : null}
-      {shown.map(tool => (
-        <Pressable
-          accessibilityHint={onOpen ? 'Shows what this step did' : undefined}
-          accessibilityLabel={`${tool.label}, ${tool.status === 'running' ? 'running' : tool.status === 'error' ? 'failed' : 'done'}`}
-          accessibilityRole={onOpen ? 'button' : undefined}
-          disabled={!onOpen}
-          key={tool.id}
-          onPress={() => onOpen?.(tool)}
-          style={({ pressed }) => [styles.toolLine, { opacity: pressed ? 0.6 : 1 }]}
-          testID={`chat-tool-${tool.id}`}
-        >
-          {tool.status === 'running' ? (
-            <ActivityIndicator color={theme.info} size="small" style={styles.toolSpinner} />
-          ) : (
-            <Ionicons
-              color={color[tool.status]}
-              name={tool.status === 'error' ? 'alert-circle-outline' : glyphFor(tool.name)}
-              size={16}
-            />
-          )}
-          <Text
-            numberOfLines={1}
-            style={[styles.toolLabel, tool.status === 'error' && { color: theme.danger }]}
-            tone="muted"
-            variant="footnote"
-          >
-            {tool.label}
-          </Text>
-          {tool.detail ? (
-            <Text numberOfLines={1} style={styles.toolDetail} tone="faint" variant="caption">
-              {tool.detail.replace(/\s+/g, ' ')}
-            </Text>
-          ) : null}
-        </Pressable>
-      ))}
     </View>
   )
 }
@@ -880,11 +936,15 @@ const styles = StyleSheet.create({
     paddingRight: 14
   },
   titleText: { flexShrink: 1 },
-  toolDetail: { flexShrink: 2, marginLeft: 'auto', maxWidth: '45%' },
-  toolLabel: { flexShrink: 1 },
-  toolLine: { alignItems: 'center', flexDirection: 'row', gap: 8, minHeight: 30 },
-  toolSpinner: { height: 16, transform: [{ scale: 0.7 }], width: 16 },
-  tools: { alignSelf: 'stretch', marginTop: 10, paddingHorizontal: 4 },
+  computerDot: {
+    borderRadius: 5,
+    borderWidth: 1.5,
+    height: 10,
+    position: 'absolute',
+    right: 4,
+    top: 4,
+    width: 10
+  },
   transcript: { paddingBottom: 8, paddingHorizontal: 14, paddingTop: 12 },
   visual: {
     alignItems: 'center',

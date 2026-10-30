@@ -66,7 +66,6 @@ vi.mock('../ui', () => ({
   Layer: () => null,
   Text: ({ children }: { children: ReactNode }) => children,
   useTheme: () => ({ scheme: 'light' }),
-  useTabBarInset: () => 0,
   Banner: () => null,
   Button: () => null, Field: () => null, Form: () => null,
   Group: () => null, Row: () => null, mono: 'monospace'
@@ -87,15 +86,18 @@ vi.mock('../screens', async () => {
   }
   return {
     HomeScreen: (props: HomeScreenProps) => createElement('div', null,
-      ...props.bots.flatMap(bot => [
+      ...props.conversations.filter(c => c.kind === 'bot').flatMap(bot => [
         createElement('button', { key: `pulse-${bot.id}`, onClick: () => props.onOpenPulse?.(bot.id) }, `Pulse ${bot.name}`),
-        createElement('button', { key: `bot-${bot.id}`, onClick: () => props.onOpenBot(bot.id) }, `Bot ${bot.name}`)
+        createElement('button', { key: `bot-${bot.id}`, onClick: () => props.onOpen(bot) }, `Bot ${bot.name}`)
       ]),
-      props.tab === 'rooms' ? props.roomChat : null
+      ...props.conversations.filter(c => c.kind !== 'bot').map(c =>
+        createElement('button', { key: `${c.kind}-${c.id}`, onClick: () => props.onOpen(c) }, `Open ${c.name}`)
+      )
     ),
-    ChatScreen: chat, ChatBody: chat,
+    ChatScreen: chat,
     ChatChooser: () => null, ConnectionScreen: () => null,
-    DaemonSwitcher: () => null, ModelSummary: () => null
+    DaemonSwitcher: () => null, LibraryScreen: () => null,
+    ModelSummary: () => null, SettingsScreen: () => null
   }
 })
 
@@ -191,4 +193,49 @@ it.each(['archived', 'missing'] as const)('an unavailable %s room gives way to t
   await open()
   await screen.findByText('thread history')
   expect(calls('hexbot.rooms.log')).toHaveLength(0)
+})
+
+it('lists Check-ins with the chats and opens that conversation, not the chat', async () => {
+  sections = [owner, { ...owner, id: 'checkins', purpose: 'checkins', live_session_id: 'live-checkins' } as Section]
+  bot = { ...bot, primary: true, status: 'idle', status_detail: null }
+  render(createElement(App))
+  fireEvent.click(await screen.findByRole('button', { name: 'Open Check-ins' }))
+  await screen.findByText('checkins history')
+  expect(calls('hexbot.sections.create')).toHaveLength(0)
+})
+
+it('lists rooms with the chats and opens one full screen', async () => {
+  rooms = [room]
+  render(createElement(App))
+  fireEvent.click(await screen.findByRole('button', { name: 'Open Garden' }))
+  await screen.findByTestId('chat')
+  await waitFor(() => expect(state.request).toHaveBeenCalledWith('hexbot.rooms.log', expect.objectContaining({ id: 'garden' })))
+  expect(state.chat!.title).toBe('Garden')
+})
+
+it('leaves archived rooms and Check-ins of a bot that is not primary out of the list', async () => {
+  rooms = [{ ...room, archived_at: 1 }]
+  sections = [owner, { ...owner, id: 'checkins', purpose: 'checkins' } as Section]
+  render(createElement(App))
+  await screen.findByRole('button', { name: 'Bot Owl' })
+  expect(screen.queryByRole('button', { name: 'Open Garden' })).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Open Check-ins' })).toBeNull()
+})
+
+
+it('keeps historical items, the face and row callbacks stable while a reply streams', async () => {
+  await open('Bot')
+  await screen.findByText('owner history')
+  const before = state.chat!
+  act(() => state.event({ type: 'message.start', session_id: 'live-owner', payload: {} }))
+  for (let i = 0; i < 5; i++)
+    act(() => state.event({ type: 'message.delta', session_id: 'live-owner', payload: { text: 'token' } }))
+  const after = state.chat!
+  expect(after.items[0]).toBe(before.items[0])
+  expect(after.face).toBe(before.face)
+  expect(after.renderMessageText).toBe(before.renderMessageText)
+  expect(after.onRecall).toBe(before.onRecall)
+  expect(after.onApprove).toBe(before.onApprove)
+  expect(after.onOpenVisual).toBe(before.onOpenVisual)
+  expect(after.items.at(-2)).toMatchObject({ streaming: true, text: 'tokentokentokentokentoken' })
 })

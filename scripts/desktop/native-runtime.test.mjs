@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { promisify } from 'node:util'
 import { toolAsset } from '../../apps/desktop/src/main/backend/tools.ts'
-import { createNativeArchive, launchers, nativeTarget, stageNativeRuntime, rustTarget, pruneRuntimeDependencies, directoryBytes, standaloneNode, NODE_VERSION, NODE_SHA256 } from './native-runtime.mjs'
+import { createNativeArchive, launchers, nativeTarget, stageNativeRuntime, rustTarget, pruneRuntimeDependencies, directoryBytes, standaloneNode, retryDownload, NODE_VERSION, NODE_SHA256 } from './native-runtime.mjs'
 const exec = promisify(execFile)
 test('target supports both desktop architectures and Linux arm64', () => {
   for (const os of ['darwin', 'linux']) for (const arch of ['x64', 'arm64']) assert.equal(nativeTarget(os, arch), `${os}-${arch}`)
@@ -36,6 +36,12 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
   try {
     for (const path of ['apps/desktop', 'apps/web/dist', 'skills', 'backend/pi-runtime', `backend/hexbot-core/target/${rustTarget(process.platform, process.arch)}/release`]) await mkdir(join(root, path), { recursive: true })
     await writeFile(join(root, 'skills/.history.json'), '{}\n')
+    // The repository's own license files, byte for byte.
+    const notices = {}
+    for (const file of ['LICENSE', 'NOTICE']) {
+      notices[file] = await readFile(new URL(`../../${file}`, import.meta.url))
+      await writeFile(join(root, file), notices[file])
+    }
     await writeFile(join(root, 'apps/web/dist/index.html'), '<html>Hexbot</html>')
     await writeFile(join(root, 'apps/desktop/package.json'), JSON.stringify({ version: '1.2.3' }))
     await writeFile(join(root, 'backend/pi-runtime/package.json'), JSON.stringify({ dependencies: { '@earendil-works/pi-coding-agent': '1.0.1' } }))
@@ -68,6 +74,13 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
     assert(calls.find(c => c.command === 'npm').args.includes(`--os=${process.platform}`))
     assert(calls.find(c => c.command === 'npm').args.includes('--ignore-scripts'))
     assert.deepEqual(calls.at(-1).args.slice(-1), ['--version'])
+    for (const [file, bytes] of Object.entries(notices)) assert.deepEqual(await readFile(join(result.destination, file)), bytes)
+    // Headless installs and daemon updates unpack this archive.
+    const archive = join(root, 'native.tar.gz')
+    await createNativeArchive(result.destination, archive)
+    const unpacked = join(root, 'unpacked'); await mkdir(unpacked)
+    await exec('tar', ['-xzf', archive, '-C', unpacked])
+    for (const [file, bytes] of Object.entries(notices)) assert.deepEqual(await readFile(join(unpacked, file)), bytes)
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
@@ -105,6 +118,27 @@ test('standalone Node rejects unpinned versions and tampered archives without fe
   assert.ok(urls.every(url => url.endsWith('.tar.gz') && url.includes(`/v${NODE_VERSION}/`)))
   await assert.rejects(standaloneNode('/unused', 'darwin', 'arm64', '99.0.0'), /not pinned/)
   assert.equal(urls.length, 4)
+})
+
+test('standalone Node downloads again after a cut-short transfer', async t => {
+  let calls = 0
+  t.mock.method(globalThis, 'fetch', async () => {
+    if (++calls === 1) return new Response(new ReadableStream({ pull(controller) { controller.error(new TypeError('terminated')) } }))
+    return new Response('tampered archive')
+  })
+  const waits = []
+  const retry = task => retryDownload(task, { wait: async ms => { waits.push(ms) } })
+  await assert.rejects(standaloneNode('/unused', 'darwin', 'arm64', NODE_VERSION, retry), /checksum mismatch/)
+  assert.equal(calls, 2)
+  assert.deepEqual(waits, [5_000])
+})
+
+test('downloads give up after their last attempt', async () => {
+  let calls = 0
+  const waits = []
+  await assert.rejects(retryDownload(async () => { calls++; throw new TypeError('terminated') }, { wait: async ms => { waits.push(ms) } }), /terminated/)
+  assert.equal(calls, 4)
+  assert.deepEqual(waits, [5_000, 10_000, 15_000])
 })
 
 test('macOS update archives omit AppleDouble files and extended attributes', { skip: process.platform !== 'darwin' }, async () => {

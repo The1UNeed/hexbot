@@ -3,15 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { Connector, Message, ToolCall } from '../../lib/types'
 import { useConnectors } from '../../stores/connectors'
 
-import {
-  activityLabel,
-  liveStatus,
-  runningLabel,
-  toolLabel,
-  visibleSteps,
-  workShown,
-  workSummary
-} from './steps'
+import { activityLabel, liveMood, runningLabel, toolLabel } from './steps'
 
 const call = (partial: Partial<ToolCall>): ToolCall => ({
   args: null,
@@ -92,12 +84,6 @@ describe('runningLabel', () => {
   })
 })
 
-describe('visibleSteps', () => {
-  it('drops housekeeping', () => {
-    expect(visibleSteps([call({ name: 'memory' }), call({ name: 'terminal' })])).toHaveLength(1)
-  })
-})
-
 describe('activityLabel', () => {
   it('says what the bot is doing in plain words, never the command or query', () => {
     expect(activityLabel(call({ name: 'web_search', summary: 'apple' }), 'Scout')).toBe(
@@ -130,96 +116,33 @@ describe('activityLabel', () => {
     )
   })
 })
-
-describe('workShown', () => {
-  it('waits for the turn to run a while, then keeps long work and drops short work', () => {
-    const now = 100_000
-    const live = message({ createdAt: now - 500, thinking: 'Hmm.' })
-    expect(workShown(live, now)).toBe(false)
-    expect(workShown(live, now + 2_000)).toBe(true)
-    expect(workShown(message({ createdAt: now - 5_000 }), now)).toBe(false)
-
-    const done = (workUntil: number) =>
-      message({ createdAt: now, streaming: false, thinking: 'Hmm.', workUntil })
-
-    expect(workShown(done(now + 800))).toBe(false)
-    expect(workShown(done(now + 2_500))).toBe(true)
+describe('liveMood', () => {
+  it('follows a whole turn and returns to idle once streaming ends', () => {
+    const turn = message({})
+    expect(liveMood(turn)).toBe('thinking')
+    expect(
+      liveMood({ ...turn, toolCalls: [call({ name: 'web_search', status: 'running' })] })
+    ).toBe('searching')
+    expect(liveMood({ ...turn, toolCalls: [call({ name: 'web_search', status: 'ok' })] })).toBe(
+      'working'
+    )
+    expect(liveMood({ ...turn, text: 'Here is the result.' })).toBe('writing')
+    expect(liveMood({ ...turn, text: 'Here is the result.', streaming: false })).toBeUndefined()
   })
 
-  it('shows restored steps whose timing is unknown', () => {
-    expect(workShown(message({ createdAt: 0, streaming: false, toolCalls: [call({})] }))).toBe(true)
-  })
-})
-
-describe('workSummary', () => {
-  it.each([undefined, 'Hmm.'])(
-    'reads a step blocked on approval as live work, trace %s',
-    thinking => {
-      const pending = call({ status: 'running', summary: 'rm -rf ./approval-probe' })
-      const blocked = message({ streaming: false, thinking, toolCalls: [pending] })
-      expect(workSummary(blocked, 'Scout')).toBe('Scout is running a command')
-      expect(workSummary({ ...blocked, toolCalls: [{ ...pending, status: 'ok' }] })).not.toContain(
-        'rm -rf'
-      )
-    }
-  )
-
-  it('names only the time, never the steps or their costs', () => {
-    expect(workSummary(message({ createdAt: 1_000, thinking: 'Hmm.', workUntil: 13_400 }))).toBe(
-      'Thought for 12s'
+  it('shows work during approval checking, provider waits and delegation', () => {
+    expect(liveMood(message({ checking: 'Checking this step' }))).toBe('working')
+    expect(liveMood(message({ activity: 'Waiting on the provider' }))).toBe('working')
+    expect(liveMood(message({ toolCalls: [call({ name: 'ask_bot', status: 'running' })] }))).toBe(
+      'working'
     )
     expect(
-      workSummary(
+      liveMood(
         message({
-          createdAt: 1_000,
-          thinking: 'Hmm.',
-          toolCalls: [call({ name: 'terminal' }), call({ name: 'read_file' })],
-          workUntil: 61_000
+          toolCalls: [call({ name: 'terminal', status: 'running' })],
+          text: 'Earlier text'
         })
       )
-    ).toBe('Thought for 1m')
-    expect(
-      workSummary(message({ toolCalls: [call({ durationS: 2.6, name: 'web_search' })] }))
-    ).toBe('Worked for 3s')
-  })
-
-  it('counts steps when restored history has no timing, and is empty for housekeeping', () => {
-    expect(workSummary(message({ toolCalls: [call({ durationS: null, name: 'terminal' })] }))).toBe(
-      'Worked on 1 step'
-    )
-    expect(workSummary(message({ toolCalls: [call({ name: 'memory' })] }))).toBe('')
-  })
-})
-
-describe('liveStatus', () => {
-  it('prefers the running step, then a wait notice, then what the bot is doing', () => {
-    expect(liveStatus(message({ activity: 'waiting on the provider' }), 'Scout').label).toBe(
-      'waiting on the provider'
-    )
-
-    const running = liveStatus(
-      message({
-        activity: 'waiting',
-        toolCalls: [call({ name: 'web_search', status: 'running', summary: 'x' })]
-      }),
-      'Scout'
-    )
-
-    expect(running.label).toBe('Scout is searching the web')
-    expect(running.call?.name).toBe('web_search')
-    expect(liveStatus(message({}), 'Scout')).toEqual({ label: 'Scout is working' })
-    expect(
-      liveStatus(
-        message({
-          checking: 'Checking this step',
-          toolCalls: [call({ name: 'terminal', status: 'running' })]
-        }),
-        'Scout'
-      ).label
-    ).toBe('Checking this step')
-    expect(liveStatus(message({ thinking: 'Hmm.' }), 'Scout').label).toBe('Scout is thinking')
-    expect(liveStatus(message({ text: 'Sure', thinking: 'Hmm.' }), 'Scout').label).toBe(
-      'Scout is writing'
-    )
+    ).toBe('working')
   })
 })

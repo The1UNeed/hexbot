@@ -782,7 +782,7 @@ export function AboutStep({
           data-testid="onboarding-about-name"
           maxLength={NAME_CAP}
           onChange={patch('name')}
-          placeholder="Alex"
+          placeholder="First and last name"
           value={about.name}
         />
       </label>
@@ -791,30 +791,24 @@ export function AboutStep({
         <Input
           data-testid="onboarding-about-work"
           onChange={patch('work')}
-          placeholder="I run a small design studio."
+          placeholder="Your job, or what you study"
           value={about.work}
         />
       </label>
       <label className="block space-y-2">
         <span className="font-medium">How your bots should talk to you</span>
-        <span className="block text-secondary text-muted">
-          Tone, length, language, anything a bot should keep in mind. You can change all of this
-          later in Settings, Memory.
-        </span>
         <Textarea
           data-testid="onboarding-about-preferences"
           onChange={patch('preferences')}
-          placeholder="Short, direct answers. Casual tone. Metric units."
+          placeholder="Tone, length, language, anything a bot should keep in mind"
           rows={3}
           value={about.preferences}
         />
-        <span
-          className={cn(
-            'block text-right text-[length:var(--text-meta)]',
-            text.length > ABOUT_CAP ? 'text-danger' : 'text-muted'
-          )}
-        >
-          {text.length} / {ABOUT_CAP}
+        <span className="flex justify-between gap-3 text-[length:var(--text-meta)] text-muted">
+          <span>You can change all of this later in Settings, Memory.</span>
+          <span className={cn('shrink-0', text.length > ABOUT_CAP && 'text-danger')}>
+            {text.length} / {ABOUT_CAP}
+          </span>
         </span>
       </label>
       <SetupActions className="pt-3">

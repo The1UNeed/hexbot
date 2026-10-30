@@ -112,8 +112,9 @@ locked npm dependencies. It removes foreign optional binaries, source maps,
 type declarations and development docs/examples, then probes the packaged
 runtime. The Intel macOS target can be built on Apple Silicon with Rosetta.
 `make-native-update.mjs` writes archives and manifests below `daemon/native/`.
-Source staging copies only `pyproject.toml`, `uv.lock`, and the three Python
-files in `backend/python-handoff/hexbot/`, then writes
+Source staging copies only `pyproject.toml`, `uv.lock`, the Python files in
+`backend/python-handoff/hexbot/` listed in `handoffFiles`, and the root
+`LICENSE` and `NOTICE`, then writes
 `HEXBOT_NATIVE_TRANSITION.json` and `HEXBOT_BUILD.json`. Tests, caches and web
 assets never enter `resources/hexbot-src`. Both staging CLI forms always write
 the transition marker. This is only the service handoff described

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { checkinMessage, emptyChat, reduceChat, historyMessages, replayChat } from './chat'
+import { heartbeatMessage, emptyChat, reduceChat, historyMessages, replayChat } from './chat'
 import type { GatewayEvent } from '@hermes/shared'
 const event = (type: string, payload: Record<string, unknown> = {}): GatewayEvent => ({
   type,
@@ -64,6 +64,24 @@ describe('chat event projection', () => {
     expect(s.approvals).toHaveLength(1)
     expect(s.approvals[0].sessionId).toBe('s1')
     expect(reduceChat(s, event('message.complete')).approvals).toEqual([])
+  })
+  it("keeps a sign-in card's fields and drops a malformed form", () => {
+    const form = {
+      kind: 'sign_in',
+      site: 'app.schoology.com',
+      title: 'Schoology',
+      username: 'alex'
+    }
+    let s = reduceChat(
+      emptyChat(),
+      event('approval.request', { request_id: 'r1', command: 'Sign in to Schoology', form })
+    )
+    expect(s.approvals[0].form).toEqual(form)
+    s = reduceChat(
+      emptyChat(),
+      event('approval.request', { request_id: 'r2', form: { kind: 'other', site: 1 } })
+    )
+    expect(s.approvals[0].form).toBeUndefined()
   })
   it('moves a question card forward on a re-send with newer answers, never back', () => {
     const questions = [
@@ -213,15 +231,32 @@ describe('restored tools and questions', () => {
     expect(loaded.state.busy).toBe(true)
   })
 })
-describe('check-in messages', () => {
+describe('message times', () => {
+  it('come from history rows, in milliseconds, and are left out when unknown', () => {
+    const rows = [
+      { role: 'user', text: 'Morning', timestamp: 1_793_340_000.5 },
+      { role: 'assistant', text: 'Hi' }
+    ]
+    expect(historyMessages(rows).map(m => m.createdAt)).toEqual([1_793_340_000_500, undefined])
+  })
+  it('stamp a reply when it finishes', () => {
+    const now = Date.now()
+    const done = reduceChat(emptyChat(), event('message.complete', { text: 'Done.' }))
+    expect(done.messages[0]?.createdAt).toBeGreaterThanOrEqual(now)
+  })
+})
+describe('heartbeat messages', () => {
   it('join the open thread once', () => {
-    const once = checkinMessage(emptyChat(), 'checkin-1', 'Your PE feedback is due tonight.')
+    const once = heartbeatMessage(emptyChat(), 'heartbeat-1', 'BA 286 is two hours late.')
     expect(once.messages).toEqual([
-      { id: 'checkin-1', role: 'assistant', text: 'Your PE feedback is due tonight.' }
+      { id: 'heartbeat-1', role: 'assistant', text: 'BA 286 is two hours late.', createdAt: expect.any(Number) }
     ])
-    expect(checkinMessage(once, 'checkin-1', 'Your PE feedback is due tonight.')).toBe(once)
+    expect(heartbeatMessage(once, 'heartbeat-1', 'BA 286 is two hours late.')).toBe(once)
     // Already in the history it loaded, under the same row id.
-    const loaded = { ...emptyChat(), messages: historyMessages([{ role: 'assistant', text: 'Hi', row_id: 'checkin-2' }]) }
-    expect(checkinMessage(loaded, 'checkin-2', 'Hi')).toBe(loaded)
+    const loaded = {
+      ...emptyChat(),
+      messages: historyMessages([{ role: 'assistant', text: 'Hi', row_id: 'heartbeat-2' }])
+    }
+    expect(heartbeatMessage(loaded, 'heartbeat-2', 'Hi')).toBe(loaded)
   })
 })

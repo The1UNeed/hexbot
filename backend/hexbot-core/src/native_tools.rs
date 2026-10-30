@@ -275,6 +275,12 @@ pub(crate) fn not_set_up_with_config(
             .collect(),
     )
 }
+/// Whether a toolset's program or service is set up for the daemon as a
+/// whole, before any bot's own settings.
+pub(crate) fn set_up_on_daemon(home: &Path, toolset: &str) -> Result<bool> {
+    let env = connectors::profile_credentials(home, home)?;
+    Ok(set_up(home, &common::read_config(home)?, &env, toolset))
+}
 fn set_up(
     home: &Path,
     cfg: &Value,
@@ -284,7 +290,7 @@ fn set_up(
     let has = |name: &str| !credential(env, name).is_empty();
     match toolset {
         "code_execution" => on_path(&python_command(home, cfg, env)).is_some(),
-        "computer_use" => on_path(text(&computer_config(cfg, env), "command", "")).is_some(),
+        "computer_use" => crate::computers::command(cfg, env).is_some(),
         "browser" => {
             let browser = &cfg["browser"];
             if text(browser, "backend", "") == "off" {
@@ -427,81 +433,8 @@ pub fn descriptors(home: &Path, bot: &str) -> Result<Vec<Value>> {
             ),
         );
     }
-    if on_path(text(&computer_config(&cfg, &env), "command", "")).is_some() {
-        add(
-            "computer_use",
-            descriptor(
-                "computer_use",
-                "Control desktop applications through the configured cua-driver. Capture first, then use returned element indices or window coordinates. Preserve verdicts and recapture after changes.",
-                json!({
-                    "action": {
-                        "type": "string",
-                        "enum": [
-                            "capture",
-                            "click",
-                            "double_click",
-                            "right_click",
-                            "middle_click",
-                            "drag",
-                            "scroll",
-                            "type",
-                            "key",
-                            "set_value",
-                            "wait",
-                            "list_apps",
-                            "list_windows",
-                            "focus_app"
-                        ]
-                    },
-                    "mode": {
-                        "type": "string",
-                        "enum": ["som", "vision", "ax"]
-                    },
-                    "app": { "type": "string" },
-                    "pid": { "type": "integer" },
-                    "window_id": { "type": "integer" },
-                    "element": { "type": "integer" },
-                    "coordinate": {
-                        "type": "array",
-                        "items": { "type": "integer" },
-                        "minItems": 2,
-                        "maxItems": 2
-                    },
-                    "from_coordinate": {
-                        "type": "array",
-                        "items": { "type": "integer" },
-                        "minItems": 2,
-                        "maxItems": 2
-                    },
-                    "to_coordinate": {
-                        "type": "array",
-                        "items": { "type": "integer" },
-                        "minItems": 2,
-                        "maxItems": 2
-                    },
-                    "from_element": { "type": "integer" },
-                    "to_element": { "type": "integer" },
-                    "button": { "type": "string" },
-                    "modifiers": {
-                        "type": "array",
-                        "items": { "type": "string" }
-                    },
-                    "text": { "type": "string" },
-                    "keys": { "type": "string" },
-                    "value": { "type": "string" },
-                    "direction": { "type": "string" },
-                    "amount": { "type": "integer" },
-                    "seconds": { "type": "number" },
-                    "delivery_mode": {
-                        "type": "string",
-                        "enum": ["background", "foreground"]
-                    },
-                    "bring_to_front": { "type": "boolean" },
-                    "capture_after": { "type": "boolean" }
-                }),
-                &["action"],
-            ),
-        );
+    if crate::computers::command(&cfg, &env).is_some() {
+        add("computer_use", crate::computers::descriptor());
     }
     if !matches!(text(&cfg["browser"], "backend", ""), "browser-use" | "off") {
         for (name, description, properties, required) in [
@@ -655,7 +588,7 @@ pub async fn call(
                     "web_extract" => extract(home, bot, &cfg, &env, args).await,
                     "execute_code" => execute_code(home, bot, stored, &cfg, &env, args).await,
                     "vision_analyze" => vision(home, bot, &cfg, &env, args).await,
-                    "computer_use" => computer_use(home, bot, stored, &cfg, &env, args).await,
+                    "computer_use" => crate::computers::act(home, bot, &cfg, &env, args).await,
                     "text_to_speech" => speech(home, bot, &cfg, &env, args).await,
                     "image_generate" => image_generate(home, bot, &cfg, &env, args).await,
                     "browser_exec" => browser_exec().await,
@@ -663,7 +596,8 @@ pub async fn call(
                     "browser_navigate" | "browser_snapshot" | "browser_click" | "browser_type"
                     | "browser_scroll" | "browser_back" | "browser_press"
                     | "browser_get_images" | "browser_vision" | "browser_console" => {
-                        browser_tool(home, bot, stored, &cfg, &env, name, args).await
+                        let result = browser_tool(home, bot, stored, &cfg, &env, name, args).await;
+                        scrub_filled(home, bot, stored, result).await
                     }
                     _ => Err(Error::new(4204, format!("unknown native tool: {name}"))),
                 }
@@ -1191,21 +1125,6 @@ pub async fn close_session(home: &Path, stored: &str) {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(&(home.to_owned(), stored.to_owned()));
-    let removed_computers = {
-        let mut map = computers().lock().await;
-        let keys = map
-            .keys()
-            .filter(|(h, _, s)| h == home && s == stored)
-            .cloned()
-            .collect::<Vec<_>>();
-        for key in &keys {
-            map.remove(key);
-        }
-        keys
-    };
-    for (_, bot, session) in removed_computers {
-        connectors::close_config(home, &bot, &format!("hexbot-cua-{session}")).await;
-    }
     let removed = {
         let mut map = kernels().lock().await;
         let keys = map
@@ -2271,354 +2190,7 @@ async fn browser_cdp(
     .await
     .map_err(|_| failure("browser command timed out"))?
 }
-#[derive(Default)]
-struct Computer {
-    started: bool,
-    target: Option<Value>,
-    tokens: HashMap<i64, String>,
-}
-type ComputerMap = HashMap<(PathBuf, String, String), Arc<Mutex<Computer>>>;
-fn computers() -> &'static Mutex<ComputerMap> {
-    static COMPUTERS: OnceLock<Mutex<ComputerMap>> = OnceLock::new();
-    COMPUTERS.get_or_init(Default::default)
-}
-fn computer_config(cfg: &Value, env: &std::collections::BTreeMap<String, String>) -> Value {
-    let mut command = credential(env, "HEXBOT_CUA_DRIVER_CMD");
-    if command.is_empty() {
-        command = credential(env, "HERMES_CUA_DRIVER_CMD");
-    }
-    if command.is_empty() {
-        command = on_path("cua-driver")
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default();
-    }
-    json!({
-        "command": text(
-            &cfg["computer_use"],
-            "command",
-            if command.is_empty() {
-                "cua-driver"
-            } else {
-                &command
-            },
-        ),
-        "args": cfg["computer_use"]
-            .get("args")
-            .cloned()
-            .unwrap_or(json!(["mcp"])),
-        "isolated_env": true,
-        "env": {
-            "CUA_DRIVER_RS_TELEMETRY_ENABLED": if cfg["computer_use"]["telemetry"] == true {
-                "1"
-            } else {
-                "0"
-            }
-        }
-    })
-}
-fn mcp_data(result: &Value) -> Value {
-    if let Some(value) = result.get("structuredContent") {
-        return value.clone();
-    }
-    for value in result["content"].as_array().into_iter().flatten() {
-        if let Some(text) = value["text"].as_str()
-            && let Ok(json) = serde_json::from_str::<Value>(text)
-        {
-            return json;
-        }
-    }
-    result.clone()
-}
-async fn computer_request(
-    home: &Path,
-    bot: &str,
-    server: &str,
-    config: &Value,
-    tool: &str,
-    args: Value,
-) -> Result<Value> {
-    let result = connectors::mcp_call_config(home, bot, server, config, tool, args).await?;
-    if result["isError"] == true {
-        return Err(failure(format!(
-            "computer action {tool} failed: {}",
-            result["content"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|v| v["text"].as_str())
-                .collect::<Vec<_>>()
-                .join("\n")
-        )));
-    }
-    Ok(result)
-}
-async fn computer_use(
-    home: &Path,
-    bot: &str,
-    stored: &str,
-    cfg: &Value,
-    env: &std::collections::BTreeMap<String, String>,
-    args: &Value,
-) -> Result<Value> {
-    let action = common::required(args, "action")?;
-    if action == "wait" {
-        let seconds = args["seconds"].as_f64().unwrap_or(1.);
-        if !(0. ..=30.).contains(&seconds) {
-            return Err(Error::new(4202, "wait seconds must be between 0 and 30"));
-        }
-        tokio::time::sleep(Duration::from_secs_f64(seconds)).await;
-        return Ok(json!({"ok":true,"action":"wait"}));
-    }
-    let config = computer_config(cfg, env);
-    let server = format!("hexbot-cua-{stored}");
-    let session = format!("hexbot-{stored}");
-    let state = computers()
-        .lock()
-        .await
-        .entry((home.to_owned(), bot.to_owned(), stored.to_owned()))
-        .or_insert_with(|| Arc::new(Mutex::new(Computer::default())))
-        .clone();
-    let mut state = state.lock().await;
-    if !state.started {
-        computer_request(
-            home,
-            bot,
-            &server,
-            &config,
-            "start_session",
-            json!({"session":session}),
-        )
-        .await?;
-        state.started = true;
-    }
-    if matches!(action, "list_apps" | "list_windows") {
-        return computer_request(
-            home,
-            bot,
-            &server,
-            &config,
-            action,
-            json!({"session":session}),
-        )
-        .await;
-    }
-    if action == "capture" || action == "focus_app" {
-        state.target = None;
-        state.tokens.clear();
-        let app = text(args, "app", "");
-        if matches!(app, "screen" | "fullscreen" | "full screen" | "all") {
-            let result = computer_request(
-                home,
-                bot,
-                &server,
-                &config,
-                "get_desktop_state",
-                json!({"session":session}),
-            )
-            .await?;
-            return save_capture(home, bot, result);
-        }
-        let target = if args["pid"].as_i64().is_some_and(|v| v > 0)
-            && args["window_id"].as_i64().is_some_and(|v| v > 0)
-        {
-            json!({"pid":args["pid"],"window_id":args["window_id"]})
-        } else {
-            let windows = computer_request(
-                home,
-                bot,
-                &server,
-                &config,
-                "list_windows",
-                json!({"session":session,"on_screen_only":true}),
-            )
-            .await?;
-            let data = mcp_data(&windows);
-            let windows = data["windows"]
-                .as_array()
-                .ok_or_else(|| failure("computer driver returned no window list"))?;
-            let app = app.to_lowercase();
-            let mut matches = windows
-                .iter()
-                .filter(|w| {
-                    w["is_on_screen"] != false
-                        && w["pid"].as_i64().is_some_and(|v| v > 0)
-                        && w["window_id"].as_i64().is_some_and(|v| v > 0)
-                })
-                .filter(|w| {
-                    app.is_empty()
-                        || text(w, "app_name", "").to_lowercase().contains(&app)
-                        || text(w, "title", "").to_lowercase().contains(&app)
-                })
-                .collect::<Vec<_>>();
-            matches.sort_by(|a, b| {
-                b["z_index"]
-                    .as_i64()
-                    .unwrap_or(0)
-                    .cmp(&a["z_index"].as_i64().unwrap_or(0))
-            });
-            let selected = matches
-                .iter()
-                .find(|w| text(w, "app_name", "").eq_ignore_ascii_case(&app))
-                .copied()
-                .or_else(|| matches.first().copied())
-                .ok_or_else(|| failure("no on-screen window matched the requested app"))?;
-            json!({"pid":selected["pid"],"window_id":selected["window_id"]})
-        };
-        let mut params = target.clone();
-        params["session"] = json!(session);
-        if action == "focus_app" && args["bring_to_front"] == true {
-            computer_request(
-                home,
-                bot,
-                &server,
-                &config,
-                "bring_to_front",
-                params.clone(),
-            )
-            .await?;
-        }
-        let capture =
-            computer_request(home, bot, &server, &config, "get_window_state", params).await?;
-        for element in mcp_data(&capture)["elements"]
-            .as_array()
-            .into_iter()
-            .flatten()
-        {
-            if let (Some(index), Some(token)) = (
-                element["element_index"].as_i64(),
-                element["element_token"].as_str(),
-            ) {
-                state.tokens.insert(index, token.to_owned());
-            }
-        }
-        state.target = Some(target);
-        return save_capture(home, bot, capture);
-    }
-    let mut params = state
-        .target
-        .clone()
-        .ok_or_else(|| failure("no active computer window; capture first"))?;
-    params["session"] = json!(session);
-    for key in ["delivery_mode", "bring_to_front"] {
-        if let Some(value) = args.get(key) {
-            params[key] = value.clone()
-        }
-    }
-    if let Some(index) = args["element"].as_i64() {
-        params["element_index"] = json!(index);
-        if let Some(token) = state.tokens.get(&index) {
-            params["element_token"] = json!(token)
-        }
-    }
-    if let Some(xy) = args["coordinate"].as_array().filter(|v| v.len() == 2) {
-        params["x"] = xy[0].clone();
-        params["y"] = xy[1].clone();
-    }
-    if let Some(modifiers) = args.get("modifiers") {
-        params["modifier"] = modifiers.clone()
-    }
-    let tool = match action {
-        "click" | "double_click" | "right_click" | "middle_click" => {
-            if params.get("element_index").is_none() && params.get("x").is_none() {
-                return Err(Error::new(4200, "click requires element or coordinate"));
-            }
-            params["button"] = json!(match action {
-                "right_click" => "right",
-                "middle_click" => "middle",
-                _ => text(args, "button", "left"),
-            });
-            if action == "double_click" {
-                "double_click"
-            } else {
-                "click"
-            }
-        }
-        "type" => {
-            params["text"] = json!(common::required(args, "text")?);
-            "type_text"
-        }
-        "key" => {
-            let keys = common::required(args, "keys")?
-                .split(['+', '-'])
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-                .collect::<Vec<_>>();
-            if keys.len() > 1 {
-                params["keys"] = json!(keys);
-                "hotkey"
-            } else {
-                params["key"] = json!(
-                    keys.first()
-                        .ok_or_else(|| Error::new(4202, "empty key combination"))?
-                );
-                "press_key"
-            }
-        }
-        "scroll" => {
-            params["direction"] = json!(common::required(args, "direction")?);
-            params["amount"] = json!(args["amount"].as_u64().unwrap_or(3).clamp(1, 50));
-            "scroll"
-        }
-        "set_value" => {
-            if params.get("element_index").is_none() {
-                return Err(Error::new(4200, "set_value requires element"));
-            }
-            params["value"] = args
-                .get("value")
-                .cloned()
-                .ok_or_else(|| Error::new(4200, "missing parameter: value"))?;
-            "set_value"
-        }
-        "drag" => {
-            for direction in ["from", "to"] {
-                if let Some(index) = args.get(format!("{direction}_element")) {
-                    params[format!("{direction}_element")] = index.clone()
-                } else if let Some(xy) = args[format!("{direction}_coordinate")]
-                    .as_array()
-                    .filter(|v| v.len() == 2)
-                {
-                    params[format!("{direction}_x")] = xy[0].clone();
-                    params[format!("{direction}_y")] = xy[1].clone()
-                } else {
-                    return Err(Error::new(
-                        4200,
-                        format!("drag requires {direction}_element or {direction}_coordinate"),
-                    ));
-                }
-            }
-            "drag"
-        }
-        _ => {
-            return Err(Error::new(
-                4202,
-                format!("unknown computer action: {action}"),
-            ));
-        }
-    };
-    let result = computer_request(home, bot, &server, &config, tool, params).await?;
-    if args["capture_after"] == true {
-        let mut params = state.target.clone().expect("selected target");
-        params["session"] = json!(session);
-        let capture =
-            computer_request(home, bot, &server, &config, "get_window_state", params).await?;
-        state.tokens.clear();
-        for element in mcp_data(&capture)["elements"]
-            .as_array()
-            .into_iter()
-            .flatten()
-        {
-            if let (Some(index), Some(token)) = (
-                element["element_index"].as_i64(),
-                element["element_token"].as_str(),
-            ) {
-                state.tokens.insert(index, token.to_owned());
-            }
-        }
-        return Ok(json!({"action_result":result,"capture":save_capture(home,bot,capture)?}));
-    }
-    Ok(result)
-}
-fn save_capture(home: &Path, bot: &str, mut result: Value) -> Result<Value> {
+pub(crate) fn save_capture(home: &Path, bot: &str, mut result: Value) -> Result<Value> {
     let image = result["content"]
         .as_array()
         .into_iter()
@@ -2629,11 +2201,6 @@ fn save_capture(home: &Path, bot: &str, mut result: Value) -> Result<Value> {
                 text(v, "mimeType", "image/png").to_owned(),
                 text(v, "data", "").to_owned(),
             )
-        })
-        .or_else(|| {
-            mcp_data(&result)["screenshot_png_b64"]
-                .as_str()
-                .map(|v| ("image/png".into(), v.to_owned()))
         });
     if let Some((mime, data)) = image {
         if data.len() > BODY_LIMIT * 2 {
@@ -2641,7 +2208,7 @@ fn save_capture(home: &Path, bot: &str, mut result: Value) -> Result<Value> {
         }
         let raw = STANDARD
             .decode(&data)
-            .map_err(|_| failure("computer driver returned invalid image"))?;
+            .map_err(|_| failure("the computer returned an invalid image"))?;
         let output = artifact(
             home,
             bot,
@@ -2691,7 +2258,7 @@ fn browsers() -> &'static Mutex<BrowserMap> {
     static BROWSERS: OnceLock<Mutex<BrowserMap>> = OnceLock::new();
     BROWSERS.get_or_init(Default::default)
 }
-fn on_path(command: &str) -> Option<PathBuf> {
+pub(crate) fn on_path(command: &str) -> Option<PathBuf> {
     let cwd = std::env::current_dir().ok()?;
     if let Some(path) = common::command_path(command, &cwd) {
         return Some(path);
@@ -3046,7 +2613,235 @@ async fn browser_tool(
     }
     Ok(result)
 }
+type FilledMap = HashMap<(PathBuf, String, String), Vec<String>>;
+/// Secrets typed into each section's browser. A page script can read a
+/// field back, so every later browser result has them blanked out.
+fn filled() -> &'static Mutex<FilledMap> {
+    static FILLED: OnceLock<Mutex<FilledMap>> = OnceLock::new();
+    FILLED.get_or_init(Default::default)
+}
+const BLANKED: &str = "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}";
+/// Blanks each secret, longest first, as typed and as it reads inside a
+/// JSON string (a page script that stringified it).
+fn blank(text: &str, secrets: &[String]) -> String {
+    let mut secrets = secrets.iter().filter(|s| !s.is_empty()).collect::<Vec<_>>();
+    secrets.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    secrets.into_iter().fold(text.to_owned(), |text, secret| {
+        let quoted = serde_json::to_string(secret).unwrap_or_default();
+        let escaped = &quoted[1..quoted.len() - 1];
+        text.replace(secret.as_str(), BLANKED)
+            .replace(escaped, BLANKED)
+    })
+}
+fn blank_value(value: &mut Value, secrets: &[String]) {
+    match value {
+        Value::String(text) => *text = blank(text, secrets),
+        Value::Array(items) => items.iter_mut().for_each(|v| blank_value(v, secrets)),
+        // A screenshot's base64 is not text a page wrote; blanking would break it.
+        Value::Object(map) if map.get("type") == Some(&json!("image")) => {}
+        Value::Object(map) => {
+            *map = std::mem::take(map)
+                .into_iter()
+                .map(|(key, mut v)| {
+                    blank_value(&mut v, secrets);
+                    (blank(&key, secrets), v)
+                })
+                .collect();
+        }
+        _ => {}
+    }
+}
+async fn scrub_filled(
+    home: &Path,
+    bot: &str,
+    stored: &str,
+    result: Result<Value>,
+) -> Result<Value> {
+    let secrets = filled()
+        .lock()
+        .await
+        .get(&(home.to_owned(), bot.to_owned(), stored.to_owned()))
+        .cloned()
+        .unwrap_or_default();
+    if secrets.is_empty() {
+        return result;
+    }
+    match result {
+        Ok(mut value) => {
+            blank_value(&mut value, &secrets);
+            Ok(value)
+        }
+        Err(mut error) => {
+            error.message = blank(&error.message, &secrets);
+            Err(error)
+        }
+    }
+}
+
+/// Types saved secrets into the section's open browser, `(ref, secret)` in
+/// order, once its page passes `allowed`. The secrets go to agent-browser on
+/// stdin, never its command line, and its output, which repeats them, is
+/// dropped. Returns the page's address.
+pub async fn browser_fill(
+    home: &Path,
+    bot: &str,
+    stored: &str,
+    allowed: impl Fn(&str) -> bool,
+    fills: &[(String, String)],
+) -> Result<String> {
+    if !enabled(home, bot, "browser")? {
+        return Err(Error::new(4302, "tool is disabled: browser"));
+    }
+    let key = (home.to_owned(), bot.to_owned(), stored.to_owned());
+    let state = browsers().lock().await.get(&key).cloned();
+    let open = || {
+        Error::new(
+            4204,
+            "No page is open in your browser here. Open the sign-in page with browser_navigate first.",
+        )
+    };
+    let state = state.ok_or_else(open)?;
+    let mut state = state.lock().await;
+    let browser = state.as_mut().ok_or_else(open)?;
+    if !browser.cdp.is_empty() {
+        return Err(Error::new(
+            4302,
+            "Saved passwords are typed only into a browser Hexbot runs, not a cloud browser.",
+        ));
+    }
+    let page = agent_browser(browser, "get", &["url".into()]).await?;
+    let url = page["data"]["url"].as_str().unwrap_or("").to_owned();
+    if !allowed(&url) {
+        return Err(Error::new(
+            4302,
+            format!(
+                "This page ({url}) isn't the site the password was saved for, so it was not filled. Open the site's own sign-in page."
+            ),
+        ));
+    }
+    for (reference, _) in fills {
+        if reference.is_empty() || reference.contains(char::is_whitespace) {
+            return Err(Error::new(
+                4202,
+                "ref must be an element reference from browser_snapshot",
+            ));
+        }
+    }
+    let commands = fills
+        .iter()
+        .map(|(reference, secret)| {
+            let reference = if reference.starts_with('@') {
+                reference.clone()
+            } else {
+                format!("@{reference}")
+            };
+            json!(["fill", reference, secret])
+        })
+        .collect::<Vec<_>>();
+    let result = run(
+        agent_command(browser, "batch", &["--bail".into()]),
+        json!(commands).to_string().as_bytes(),
+        120,
+    )
+    .await?;
+    let steps: Value =
+        serde_json::from_str(result["output"].as_str().unwrap_or("")).unwrap_or(Value::Null);
+    let failed = steps
+        .as_array()
+        .map(|steps| steps.len() < fills.len() || steps.iter().any(|s| s["success"] != true))
+        .unwrap_or(true);
+    {
+        let mut filled = filled().lock().await;
+        let secrets = filled.entry(key).or_default();
+        for (_, secret) in fills {
+            if !secrets.contains(secret) {
+                secrets.push(secret.clone());
+            }
+        }
+    }
+    if failed || result["success"] != true {
+        // The step's error names the field, never what was typed.
+        let reason = steps
+            .as_array()
+            .and_then(|steps| steps.iter().find(|s| s["success"] != true))
+            .and_then(|s| s["error"].as_str())
+            .map(|e| blank(e, &fills.iter().map(|(_, s)| s.clone()).collect::<Vec<_>>()))
+            .unwrap_or_else(|| "the browser did not answer".into());
+        return Err(failure(format!(
+            "Could not fill the field: {reason}. Take a new browser_snapshot and use its refs."
+        )));
+    }
+    Ok(url)
+}
+
+/// Types saved secrets on the bots' computer, `(point, secret)` in order.
+pub async fn computer_fill(
+    home: &Path,
+    bot: &str,
+    fills: &[(Option<Value>, String)],
+) -> Result<()> {
+    if !enabled(home, bot, "computer_use")? {
+        return Err(Error::new(4302, "tool is disabled: computer_use"));
+    }
+    let mut points = vec![];
+    for (point, secret) in fills {
+        let point = match point {
+            Some(point) => Some(
+                point
+                    .as_array()
+                    .filter(|v| v.len() == 2)
+                    .and_then(|v| Some((v[0].as_i64()?, v[1].as_i64()?)))
+                    .ok_or_else(|| Error::new(4200, "coordinate must be [x, y]"))?,
+            ),
+            None => None,
+        };
+        points.push((point, secret.clone()));
+    }
+    let cfg = common::merged_config(home, bot)?;
+    let env = connectors::credentials(home, bot)?;
+    crate::computers::fill(home, bot, &cfg, &env, &points).await
+}
+
+#[cfg(test)]
+mod blank_tests {
+    use super::*;
+
+    #[test]
+    fn filled_secrets_are_blanked_however_they_are_written() {
+        let secrets = [
+            "pass\"word".to_owned(),
+            "a\\b".to_owned(),
+            "abc".to_owned(),
+            "abcdef".to_owned(),
+        ];
+        let mut value = json!({
+            "data": {"result": ["pass\"word", "a\\b", "abcdef"]},
+            "pass\"word": true,
+            "content": [{"type": "image", "data": "iVBORw0K"}],
+            "page": format!("{{\"p\":{}}}", serde_json::to_string("pass\"word").unwrap()),
+        });
+        blank_value(&mut value, &secrets);
+        let text = value.to_string();
+        assert!(
+            !text.contains("word") && !text.contains("a\\\\b") && !text.contains("abc"),
+            "{text}"
+        );
+        assert_eq!(
+            value["data"]["result"][2], BLANKED,
+            "the longest secret goes first"
+        );
+        let images = json!({"content": [{"type": "image", "data": "iVBORabc"}]});
+        let mut shot = images.clone();
+        blank_value(&mut shot, &secrets);
+        assert_eq!(shot, images, "a screenshot stays intact");
+    }
+}
+
 async fn close_browsers(home: &Path, stored: &str) {
+    filled()
+        .lock()
+        .await
+        .retain(|(h, _, s), _| !(h == home && s == stored));
     let removed = {
         let mut map = browsers().lock().await;
         let keys = map

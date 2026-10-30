@@ -2,6 +2,7 @@ import { JsonRpcGatewayError } from '@hermes/shared'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
 
+import * as avatar from '../../components/ui/avatar'
 import { authorizeCache, resetDeviceCacheForTests, writeCache } from '../../lib/device-cache'
 import { restoreRoster } from '../../lib/roster-cache'
 import { setActiveRpc } from '../../lib/rpc'
@@ -80,6 +81,7 @@ beforeEach(() => {
     byId: { old: section('old') },
     idsByBot: { owl: ['old'] },
     liveSessionId: {},
+    cachedMessages: {},
     choosing: null
   })
   useTranscripts.setState({ bySession: {} })
@@ -256,4 +258,170 @@ it('keeps a deep-linked bot and remembered chat while an incomplete cached roste
     await resetDeviceCacheForTests()
     vi.unstubAllGlobals()
   }
+})
+it('shows the bot loading, not an empty chat, until the history arrives', async () => {
+  const held = deferred()
+  call.mockImplementation((method: string, input: { id?: string }) =>
+    method === 'hexbot.sections.open' ? held.promise : reply(method, input)
+  )
+  render(<ConversationColumn />)
+  expect(await screen.findByRole('status', { name: "Opening Owl's chat" })).toBeInTheDocument()
+  await waitFor(() =>
+    expect(call.mock.calls.some(([method]) => method === 'hexbot.sections.open')).toBe(true)
+  )
+  expect(screen.getByRole('status', { name: "Opening Owl's chat" })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /What can you help me/i })).toBeNull()
+  await act(async () => {
+    held.resolve({
+      section: section('old', 'live-old'),
+      messages: [{ role: 'assistant', text: 'Owl history' }]
+    })
+  })
+  expect(await screen.findByText('Owl history')).toBeInTheDocument()
+  expect(screen.queryByRole('status', { name: "Opening Owl's chat" })).toBeNull()
+})
+it('keeps loading over an empty saved history until the read finds what arrived since', async () => {
+  const held = deferred()
+  call.mockImplementation((method: string, input: { id?: string }) =>
+    method === 'hexbot.sections.open' ? held.promise : reply(method, input)
+  )
+  useSections.setState({ cachedMessages: { old: [] } })
+  render(<ConversationColumn />)
+  await waitFor(() =>
+    expect(call.mock.calls.some(([method]) => method === 'hexbot.sections.open')).toBe(true)
+  )
+  expect(screen.getByRole('status', { name: "Opening Owl's chat" })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /What can you help me/i })).toBeNull()
+  await act(async () => {
+    held.resolve({
+      section: section('old', 'live-old'),
+      messages: [{ role: 'assistant', text: 'Sent from the phone' }]
+    })
+  })
+  expect(await screen.findByText('Sent from the phone')).toBeInTheDocument()
+})
+it('shows an empty chat once its history is read', async () => {
+  call.mockImplementation((method: string, input: { id?: string }) =>
+    method === 'hexbot.sections.open'
+      ? Promise.resolve({ section: section('old'), messages: [] })
+      : reply(method, input)
+  )
+  render(<ConversationColumn />)
+  expect(await screen.findByRole('button', { name: /What can you help me/i })).toBeInTheDocument()
+  expect(screen.queryByRole('status', { name: "Opening Owl's chat" })).toBeNull()
+})
+it("shows a failure with nowhere else to show, such as a dream's, in an empty chat", async () => {
+  useBots.setState({
+    byName: {
+      owl: {
+        name: 'owl',
+        display_name: 'Owl',
+        status: 'stopped',
+        status_detail: {
+          action: { kind: 'retry' },
+          in_chat: true,
+          room_id: null,
+          section_id: 'dream-1',
+          session_id: 'live-dream',
+          since: 1_757_600_000,
+          text: 'fetch failed'
+        }
+      } as Bot
+    }
+  })
+  call.mockImplementation((method: string, input: { id?: string }) =>
+    method === 'hexbot.sections.open'
+      ? Promise.resolve({ section: section('old', 'live-old'), messages: [] })
+      : reply(method, input)
+  )
+  render(<ConversationColumn />)
+  expect(await screen.findByTestId('stopped-card')).toHaveTextContent('fetch failed')
+  fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+  expect(screen.queryByTestId('stopped-card')).toBeNull()
+  expect(call).toHaveBeenCalledWith('hexbot.bots.clear_status', { name: 'owl' })
+})
+it('a slower read of a chat left since does not put the next one back to loading', async () => {
+  const held = deferred()
+  call.mockImplementation((method: string, input: { id?: string }) =>
+    method === 'hexbot.sections.open'
+      ? input.id === 'old'
+        ? held.promise
+        : Promise.resolve({ section: section(input.id ?? '', `live-${input.id}`), messages: [] })
+      : reply(method, input)
+  )
+  useSections.setState(state => ({
+    byId: { ...state.byId, next: section('next') },
+    idsByBot: { owl: ['old', 'next'] }
+  }))
+  const view = render(<ConversationColumn />)
+  await waitFor(() =>
+    expect(
+      call.mock.calls.some(
+        ([method, input]) => method === 'hexbot.sections.open' && input.id === 'old'
+      )
+    ).toBe(true)
+  )
+  params = { bot: 'owl', section: 'next' }
+  view.rerender(<ConversationColumn />)
+  expect(await screen.findByRole('button', { name: /What can you help me/i })).toBeInTheDocument()
+  await act(async () => {
+    held.resolve({ section: section('old', 'live-old'), messages: [] })
+  })
+  expect(screen.getByRole('button', { name: /What can you help me/i })).toBeInTheDocument()
+  expect(screen.queryByRole('status', { name: "Opening Owl's chat" })).toBeNull()
+})
+
+it('renders only the streaming row on each delta, keeping finished rows and Markdown still', async () => {
+  call.mockImplementation((method: string, input: { id?: string }) =>
+    method === 'hexbot.sections.open'
+      ? Promise.resolve({
+          section: section('old', 'live-old'),
+          messages: Array.from({ length: 60 }, (_, i) => ({
+            row_id: `r${i}`,
+            role: 'assistant',
+            text: `Finished ${i}`
+          }))
+        })
+      : reply(method, input)
+  )
+  render(<ConversationColumn />)
+  await screen.findByText('Finished 59')
+  await waitFor(() => expect(useSections.getState().liveSessionId.old).toBe('live-old'))
+  const rowRender = vi.spyOn(avatar, 'useFaceColor')
+  act(() => useTranscripts.getState().messageStart('live-old'))
+  rowRender.mockClear()
+  const before = useTranscripts.getState().bySession['live-old']!.messages
+
+  for (let i = 0; i < 5; i++) {
+    act(() => useTranscripts.getState().messageDelta('live-old', 'token'))
+  }
+
+  expect(rowRender).toHaveBeenCalledTimes(5)
+  expect(useTranscripts.getState().bySession['live-old']!.messages[0]).toBe(before[0])
+  rowRender.mockRestore()
+})
+
+it('resets the rendered history window when navigating to another section', async () => {
+  call.mockImplementation((method: string, input: { id?: string }) =>
+    method === 'hexbot.sections.open'
+      ? Promise.resolve({
+          section: section(input.id!, `live-${input.id}`),
+          messages: Array.from({ length: 130 }, (_, i) => ({
+            row_id: `r${i}`,
+            role: 'assistant',
+            text: `${input.id} ${i}`
+          }))
+        })
+      : reply(method, input)
+  )
+  const view = render(<ConversationColumn />)
+  await screen.findByText('old 129')
+  expect(screen.getAllByTestId('bot-message')).toHaveLength(60)
+  fireEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }))
+  expect(screen.getAllByTestId('bot-message')).toHaveLength(120)
+  params = { bot: 'owl', section: 'new' }
+  useSections.setState({ byId: { new: section('new') } })
+  view.rerender(<ConversationColumn />)
+  await screen.findByText('new 129')
+  expect(screen.getAllByTestId('bot-message')).toHaveLength(60)
 })

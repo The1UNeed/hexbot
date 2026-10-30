@@ -28,7 +28,7 @@ Three facts shape most decisions:
   resumes first, keep its prompt until another compaction. And because a
   bot's chat never ends, when the bot's tools or connected servers change,
   including when it becomes the primary bot, or an update changes Hexbot's
-  own tools, the chat, and the primary bot's Check-ins too, is rebuilt with
+  own tools, the chat is rebuilt with
   them at its next message (`tools_stale` in `runtime.rs`); that one request
   misses the cache. Rooms, threads between bots, jobs and delegates keep what
   they started with.
@@ -54,14 +54,16 @@ Use these words consistently in code, UI copy, docs, and commit messages.
 - **Track**: the channel an installed app takes updates from, Stable or Nightly. Defaults to the channel the build came from; the user switches it in Settings, Updates.
 - **Update server**: `updates.hexbot.app`, a Cloudflare R2 bucket holding every package, the electron-updater feed files, the native daemon archives, and the installers with their `install/<track>.json` manifests. Written only by `release.yml`.
 - **Bot**: a named agent with its own soul, model, skills, and memory. One bot profile with independent Pi conversations managed by the daemon.
-- **Chat**: your one ongoing conversation with a bot, like a contact in a messaging app. A bot has exactly one chat with you; it never ends, and summarising older messages keeps it going. There is no new chat, archive, or delete; deleting the bot deletes it. Its dream reports appear in it.
+- **Chat**: your one ongoing conversation with a bot, like a contact in a messaging app. A bot has exactly one chat with you; it never ends, and summarising older messages keeps it going. There is no new chat, archive, or delete; deleting the bot deletes it. Dreams run out of sight and post nothing in it; reports an earlier version posted stay.
 - **Primary bot**: the one bot that looks after the others, created by onboarding as **HexBot** (handle `hexbot`, which no other bot may take). In its own chat it can create, change, and delete bots, manage rooms, schedule jobs for any bot, and change settings; deleting anything and changing settings, approval modes, or working folders always ask, even in Bypass. It cannot be deleted. An install from before it adds HexBot or promotes a bot once. Internal column `bots.is_primary`. UI copy says "primary bot", since the user may rename HexBot.
-- **Check-in**: the primary bot looking at what is going on, on its own: regularly during the user's hours (every hour, 08:00 to 22:00 by default) and at **wake-ups** it sets for itself. It messages the user only when something needs them, in its **Check-ins** conversation, which is not its chat, and as a notification on their app, browser, and phone. A check-in runs unattended like a scheduled job and only reads. Internal names `checkins`, `hexbot_notify`, `hexbot_wakeups`.
-- **Section** = **conversation** = **thread**: the daemon's name for one persistent Pi session with its own context window: a bot's chat, a room conversation, the primary bot's Check-ins, or a thread in which one bot asks another for help. UI copy says chat, room, or conversation, not section.
+- **Heartbeat**: every bot working through its own checklist, `HEARTBEAT.md` in its profile, every 30 minutes, day and night, without reading its chat. The user writes the checklist, and the bot keeps it from its chat. It posts in the bot's chat only when something needs the user, with a notification on their app, browser, and phone. A heartbeat runs unattended like a scheduled job and only reads; an empty checklist runs nothing. It replaced the primary bot's check-ins and wake-ups; an earlier **Check-ins** conversation stays until the user deletes it. Internal names `heartbeat`, `hexbot_heartbeat`, `hexbot_notify`.
+- **Section** = **conversation** = **thread**: the daemon's name for one persistent Pi session with its own context window: a bot's chat, a room conversation, or a thread in which one bot asks another for help. UI copy says chat, room, or conversation, not section.
 - **Room**: a group chat with one or more humans and any number of bots. May have a **main bot** that responds when nobody is @-mentioned.
 - **Turn**: one user message and everything the bots do in response. The room turn engine (`backend/hexbot-core/src/rooms.rs`) decides who speaks.
 - **Soul**: a bot's persona, the `SOUL.md` in its profile. The user and the bot both edit it; the bot says so when it does.
 - **Visual**: an interactive HTML page (chart, table, diagram, mockup) a bot shows in its chat with `hexbot_show_html`. It sits in a bubble above the bot's final reply, in a sandboxed frame, and can open beside the chat as a tab. Not available in rooms.
+- **Plugin**: anything a bot can use beyond its own tools, all in Settings, Plugins, where the user chooses the bots that get each one: a **connector** (a service Hexbot supports, such as web search or Notion, set up with a key), an **MCP server** (one the user or a bot adds), a **skill**, or a built-in tool that needs a program (Computer use, Browser, Code execution; internally a capability). A **plugin package** installs an MCP server with the skills that explain it, or several skills, as one, in `~/.hexbot/plugins/<name>/`. A bot asks for a plugin with `hexbot_plugins`; installing or turning one on always asks the user, even in Bypass, and puts it on for that bot only. The primary bot can do the same for any bot from its own chat and remove packages. Internal names `plugins.rs`, `hexbot.plugins.*`.
+- **Passwords**: the sign-ins a user saves for their bots, in Settings, Passwords, kept in one KeePass (KDBX 4) vault per user, `users/<id>/passwords/passwords.kdbx`, whose key is in the OS keychain or an owner-only key file. A bot lists the logins it may use and has the daemon type one into a page with `hexbot_passwords`; it never sees a password. When none fits, it shows a **sign-in card** in its chat, and what the user types there is saved for every bot. The user, or the primary bot from its own chat, chooses which bots get each login. Internal names `passwords.rs`, `runtime_passwords.rs`, `hexbot.passwords.*`.
 - **Notes**: a bot's daily record in `memories/notes/YYYY-MM-DD.md`. The bot appends during conversations; dreaming folds what lasts into memory. The user can edit or delete a day. Days older than 30 days are removed when notes are read, listed, appended, or a dream runs.
 - **Memory**: a bot's durable facts, preferences, and lessons, the `MEMORY.md` in its profile. The bot writes it during chat, dreaming curates it, the user can edit it.
 - **About you**: one text per user, written only by the user and read by every bot they own (`users/<id>/user.md`).
@@ -188,7 +190,14 @@ A change is done when it works in every place the feature appears:
 - **Install options**: Full, Client, and Headless. A daemon feature that a
   user sets up in the app must also be reachable from a paired app or the
   `hexbot` CLI when no app runs on the daemon's computer.
-- **Clients**: the Electron app and the browser bundle served by the daemon.
+- **Clients**: the Electron app, the browser bundle served by the daemon,
+  and the mobile app in `apps/mobile` (iOS and Android). A change a user can
+  see or use in `apps/web` lands in `apps/mobile` in the same PR, or the PR
+  says why it is desktop-only. The mobile app reuses the wire types in
+  `apps/web/src/lib/types.ts` and talks to the daemon through
+  `apps/mobile/src/core/useMobile.ts`; it shares no components, so port the
+  behaviour, not the markup. Run `pnpm mobile:check`, and the mobile smoke
+  test when navigation or a flow changes (`docs/testing.md`, "Mobile").
 - **Connection modes**: LAN pairing, Tailscale, and Connect.
 - **Reverse states**: a toggle needs both directions; archive needs
   unarchive; a revoked device needs to land back on the connect screen.
@@ -247,6 +256,12 @@ exercise the graph.
   animations; the bot faces are the one place motion is allowed.
 - Copy is short, concrete, and uses glossary words. No "seamless", no
   exclamation marks.
+- The mobile app is a messaging app. One list holds every bot's chat, every
+  room, newest first, with the primary bot pinned. Settings
+  sit behind your initials at the top left, new bots and rooms behind +,
+  and every bot's profile, scheduled jobs and all rooms behind the grid
+  button next to Search. There are no tabs. A new feature finds its place
+  in one of these; it does not add a tab or a home-screen section.
 
 ## Cursor Cloud specific instructions
 

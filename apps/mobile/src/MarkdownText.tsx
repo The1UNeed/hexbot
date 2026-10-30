@@ -1,5 +1,6 @@
-import { type ReactNode } from 'react'
+import { memo, type ReactNode } from 'react'
 import { Linking, Text as NativeText, View } from 'react-native'
+import { readableMath } from './core/math'
 import { mono, useTheme } from './ui'
 function inline(text: string, ink: string): ReactNode[] {
   return text.split(/(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\(https?:\/\/[^\s)]+\))/g).map((part, i) => {
@@ -20,7 +21,7 @@ function inline(text: string, ink: string): ReactNode[] {
     if (part.startsWith('**') && part.endsWith('**'))
       return (
         <NativeText key={i} style={{ fontWeight: '700' }}>
-          {part.slice(2, -2)}
+          {readableMath(part.slice(2, -2))}
         </NativeText>
       )
     if (part.startsWith('`') && part.endsWith('`'))
@@ -29,10 +30,16 @@ function inline(text: string, ink: string): ReactNode[] {
           {part.slice(1, -1)}
         </NativeText>
       )
-    return part
+    return readableMath(part)
   })
 }
-export function MarkdownText({ text, user = false }: { text: string; user?: boolean }) {
+export const MarkdownText = memo(function MarkdownText({
+  text,
+  user = false
+}: {
+  text: string
+  user?: boolean
+}) {
   const theme = useTheme()
   // Links are underlined in the text colour too; the accent is too faint on a washed bubble.
   const color = user ? theme.onInk : theme.text
@@ -78,4 +85,4 @@ export function MarkdownText({ text, user = false }: { text: string; user?: bool
         })}
     </View>
   )
-}
+})

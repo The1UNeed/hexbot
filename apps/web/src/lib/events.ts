@@ -19,7 +19,7 @@
  *   session.usage          usage badge
  *   error                  inline error row
  *   hexbot.bots.incident   Stopped card in the section's transcript, notification
- *   hexbot.checkins.message the primary bot messaged you on its own: notification
+ *   hexbot.heartbeat.message a bot's heartbeat posted in its chat: notification
  *
  * Session-less `hexbot.*.changed` events refresh the cold stores.
  */
@@ -27,9 +27,12 @@
 import type { GatewayEvent } from '@hermes/shared'
 
 import { useBots } from '../stores/bots'
-import { useCheckins } from '../stores/checkins'
+import { useComputer } from '../stores/computer'
 import { useConnectors } from '../stores/connectors'
+import { useHeartbeat } from '../stores/heartbeat'
 import { useMe } from '../stores/me'
+import { refreshPasswordsIfLoaded } from '../stores/passwords'
+import { refreshPluginsIfLoaded } from '../stores/plugins'
 import { useRooms } from '../stores/rooms'
 import { keepHistory, useSections } from '../stores/sections'
 import { useSettings } from '../stores/settings'
@@ -38,7 +41,7 @@ import type {
   ToolCompletePayload,
   ToolStartPayload
 } from '../stores/transcripts'
-import { holdCheckinMessage, transcriptNotify, useTranscripts } from '../stores/transcripts'
+import { holdHeartbeatMessage, transcriptNotify, useTranscripts } from '../stores/transcripts'
 import { useUi } from '../stores/ui'
 
 import { getBridge } from './bridge'
@@ -46,6 +49,7 @@ import type { HexbotRpcClient } from './rpc'
 import type {
   ApprovalChoice,
   ClarifyRequestPayload,
+  ComputerStatus,
   ContextUsage,
   RoomEvent,
   RoomTurn,
@@ -69,9 +73,13 @@ export interface EventRouterDeps {
 const defaultDeps: Required<EventRouterDeps> = {
   refreshBots: () => {
     void useBots.getState().refresh()
+    // A bot added or deleted elsewhere changes the bots each plugin can go to.
+    refreshPluginsIfLoaded()
+    refreshPasswordsIfLoaded()
   },
   refreshConnectors: () => {
     void useConnectors.getState().refreshAll()
+    refreshPluginsIfLoaded()
   },
   refreshNetwork: () => {
     void useSettings.getState().refreshNetwork()
@@ -159,20 +167,31 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
     case 'hexbot.memory.user.changed':
       return
 
-    case 'hexbot.checkins.changed':
-      // Changed elsewhere, through another app or `hexbot checkins`.
-      void useSettings.getState().refresh()
-
-      if (useCheckins.getState().loaded) {
-        void useCheckins.getState().refresh()
-      }
+    case 'hexbot.computer.changed':
+      useComputer.getState().apply(payload as Partial<ComputerStatus>)
 
       return
-    case 'hexbot.checkins.message': {
+
+    case 'hexbot.heartbeat.changed':
+      // A run started or ended, or the switch or a checklist changed elsewhere:
+      // another app, the bot itself, or `hexbot heartbeat`.
+      if (typeof payload.bot !== 'string') {
+        void useSettings.getState().refresh()
+      }
+
+      void useHeartbeat
+        .getState()
+        .refreshLoaded(typeof payload.bot === 'string' ? payload.bot : undefined)
+
+      return
+
+    // A daemon from before the heartbeat sends check-in messages the same way.
+    case 'hexbot.checkins.message':
+    case 'hexbot.heartbeat.message': {
       const bot = typeof payload.bot === 'string' ? payload.bot : ''
       const whole = typeof payload.text === 'string' ? payload.text : ''
       const sectionId = typeof payload.section_id === 'string' ? payload.section_id : undefined
-      // An open Check-ins section shows it at once; history has the same row id.
+      // An open chat shows it at once; history has the same row id.
       const live = sectionId ? useSections.getState().liveSessionId[sectionId] : undefined
 
       if (sectionId && whole && typeof payload.row_id === 'string') {
@@ -184,15 +203,15 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
 
         // Opening as it arrives: it joins once the history is in (stores/sections.ts).
         if (live && transcripts.bySession[live]) {
-          transcripts.checkinMessage(live, row)
+          transcripts.heartbeatMessage(live, row)
         } else {
-          holdCheckinMessage(sectionId, row)
+          holdHeartbeatMessage(sectionId, row)
         }
       }
 
       if (whole && botNotifies(bot)) {
         const title = useBots.getState().byName[bot]?.display_name ?? bot
-        // A notification shows a few lines; the whole message is in the section.
+        // A notification shows a few lines; the whole message is in the chat.
         const body = whole.length > NOTIFY_BODY ? `${whole.slice(0, NOTIFY_BODY - 1)}…` : whole
         // The app notifies even with its window closed. A browser tab has no app
         // to go through, so it shows its own while in the background.
@@ -219,6 +238,11 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
 
     case 'hexbot.connectors.changed':
       effects.refreshConnectors()
+
+      return
+
+    case 'hexbot.passwords.changed':
+      refreshPasswordsIfLoaded()
 
       return
     case 'hexbot.bots.incident': {
@@ -281,7 +305,35 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
     case 'hexbot.sections.changed':
       // A dream report landed in the chat; an open view reads it again.
       if (payload.reload === true && typeof payload.id === 'string') {
-        useSections.getState().forgetLive(payload.id)
+        // A recalled message leaves every open view, with what followed it.
+        const sections = useSections.getState()
+
+        const live =
+          sections.liveSessionId[payload.id] ?? sections.byId[payload.id]?.live_session_id
+
+        const recalled = payload.recalled as { input_id?: unknown; row_id?: unknown } | undefined
+
+        const shown = (live && recalled && transcripts.bySession[live]?.messages) || []
+
+        const message = shown.find(
+          item =>
+            item.role === 'user' &&
+            (item.id === recalled?.row_id ||
+              (typeof recalled?.input_id === 'string' && item.inputId === recalled.input_id))
+        )
+
+        if (live && message) {
+          transcripts.recallFrom(live, message.id)
+        } else if (live) {
+          // A view opened before it was sent shows only its turn's cards, last.
+          const kept = shown.findLastIndex(item => !(item.createdAt && item.error))
+
+          for (const card of shown.slice(kept + 1)) {
+            transcripts.dismiss(live, card.id)
+          }
+        }
+
+        sections.forgetLive(payload.id)
       }
 
       effects.refreshSections()
