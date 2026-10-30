@@ -97,6 +97,7 @@ CREATE INDEX IF NOT EXISTS idx_heartbeat_messages_section ON heartbeat_messages(
 CREATE INDEX IF NOT EXISTS idx_sections_bot ON sections(bot);
 CREATE INDEX IF NOT EXISTS idx_memory_proposals_bot_pending ON memory_proposals(bot,consumed_at,created_at);
 CREATE INDEX IF NOT EXISTS idx_room_events_room_seq ON room_events(room_id,seq);
+CREATE INDEX IF NOT EXISTS idx_room_waiting_trigger ON room_events(room_id,json_extract(payload_json,'$.trigger_seq')) WHERE kind='waiting.human';
 CREATE INDEX IF NOT EXISTS idx_room_turns_room_trigger ON room_turns(room_id,trigger_seq);
 CREATE INDEX IF NOT EXISTS idx_bot_messages_pair ON bot_messages(from_bot,to_bot,created_at);
 CREATE INDEX IF NOT EXISTS idx_dreams_bot_started ON dreams(bot,started_at DESC);
