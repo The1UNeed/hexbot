@@ -562,7 +562,10 @@ function closeForCard(transcript: Transcript): Transcript {
   }
 
   return {
-    ...replaceMessage(transcript, current.id, message => settle({ ...message, streaming: false })),
+    // Its words are done when the card arrives, so it was sent then.
+    ...replaceMessage(transcript, current.id, message =>
+      settle({ ...message, sentAt: Date.now(), streaming: false })
+    ),
     streamingMessageId: null,
     turnPrefix: (transcript.turnPrefix ?? '') + [...(current.parts ?? []), current.text].join('')
   }

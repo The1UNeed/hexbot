@@ -1153,7 +1153,7 @@ export function messagesFromHistory(
         durationS: null,
         name: String(row.name ?? 'tool'),
         result: row.text ?? null,
-        // History keeps no timestamps; 0 is "unknown", so no time is shown.
+        // History keeps no tool start times; 0 is "unknown", so no time is shown.
         startedAt: 0,
         status: row.is_error === true ? ('error' as const) : ('ok' as const),
         summary: typeof row.context === 'string' ? row.context : undefined,

@@ -1629,7 +1629,7 @@ function BotConversation() {
   const shown = messages.slice(-visible)
 
   // Messages, question cards and approval cards in the order they happened.
-  // Restored history carries no times and stays first, each question it
+  // Restored history (createdAt 0) stays first, each question it
   // asked right under the message that asked it.
   const timeline = useMemo(() => {
     // The store's message order is authoritative after hydration. Cards with

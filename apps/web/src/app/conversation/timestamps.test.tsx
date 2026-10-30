@@ -102,6 +102,22 @@ it('dates a live reply from when it finished, not when it started', () => {
   expect(sentAt(reply!)).toBe(new Date(2026, 9, 26, 10, 30).getTime())
 })
 
+it('dates a reply a card closed from when the card arrived', () => {
+  vi.useFakeTimers({ now: new Date(2026, 9, 26, 10, 0) })
+  const transcripts = useTranscripts.getState()
+  transcripts.messageStart('card')
+  transcripts.messageDelta('card', 'May I run this?')
+  vi.setSystemTime(new Date(2026, 9, 26, 10, 30))
+  transcripts.approvalRequest('card', { command: 'ls', request_id: 'a1' })
+  vi.setSystemTime(new Date(2026, 9, 26, 10, 45))
+  transcripts.messageComplete('card', {})
+  vi.useRealTimers()
+
+  const [reply] = useTranscripts.getState().bySession.card!.messages
+
+  expect(sentAt(reply!)).toBe(new Date(2026, 9, 26, 10, 30).getTime())
+})
+
 it('separates restored messages by when they were sent', async () => {
   await useSections.getState().open('chat')
   render(<ConversationColumn />)
