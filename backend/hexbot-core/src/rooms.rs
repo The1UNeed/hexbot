@@ -4,6 +4,8 @@ use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
 use std::{collections::HashSet, path::Path};
 
+const CANDIDATES: &str = "SELECT e.*, (SELECT json_group_array(t.bot) FROM room_turns t WHERE t.room_id=e.room_id AND t.trigger_seq=e.seq) AS done_bots, EXISTS(SELECT 1 FROM room_events w WHERE w.room_id=e.room_id AND w.kind='waiting.human' AND json_extract(w.payload_json,'$.trigger_seq')=e.seq) AS waited FROM room_events e WHERE e.room_id=? AND e.seq>? AND e.kind IN ('message.user','message.bot') ORDER BY e.seq";
+
 /// A room is its owner's; nobody else reads or changes it.
 pub fn get(home: &Path, caller: &str, room: &str) -> Result<Value> {
     user(home, caller)?;
@@ -837,11 +839,7 @@ impl RoomEngine {
             // Query candidates directly, avoiding the old first-1000-events ceiling.
             let candidates = {
                 let conn = db::open(&self.home)?;
-                let mut events = rows(
-                    &conn,
-                    "SELECT e.*, (SELECT json_group_array(t.bot) FROM room_turns t WHERE t.room_id=e.room_id AND t.trigger_seq=e.seq) AS done_bots, EXISTS(SELECT 1 FROM room_events w WHERE w.room_id=e.room_id AND w.kind='waiting.human' AND json_extract(w.payload_json,'$.trigger_seq')=e.seq) AS waited FROM room_events e WHERE e.room_id=? AND e.seq>? AND e.kind IN ('message.user','message.bot') ORDER BY e.seq",
-                    &[&room_id, &after_seq],
-                )?;
+                let mut events = rows(&conn, CANDIDATES, &[&room_id, &after_seq])?;
                 for e in &mut events {
                     e["payload"] = json_field(&e["payload_json"]);
                 }
@@ -1355,6 +1353,61 @@ fn validate_approval_mode(p: &Value) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod candidate_tests {
+    use super::*;
+
+    #[test]
+    fn waiting_index_survives_migration_and_preserves_trigger_affinity() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        let conn = db::open(home.path()).unwrap();
+        let assert_index = |conn: &rusqlite::Connection| {
+            let plan = conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {CANDIDATES}"))
+                .unwrap()
+                .query_map(params!["room", 0], |row| row.get::<_, String>(3))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            assert!(
+                plan.iter()
+                    .any(|step| step.contains("SEARCH w USING INDEX idx_room_waiting_trigger")),
+                "{plan:#?}"
+            );
+        };
+        assert_index(&conn);
+        conn.execute_batch(
+            "INSERT INTO rooms(id,name) VALUES('room','Room'),('other','Other');
+             INSERT INTO room_events(room_id,seq,kind,payload_json) VALUES
+             ('room',1,'message.user','{}'),('room',2,'message.user','{}'),
+             ('room',3,'message.bot','{}'),('room',4,'message.bot','{}'),
+             ('room',5,'waiting.human','{\"trigger_seq\":1}'),
+             ('room',6,'waiting.human','{\"trigger_seq\":\"2\"}'),
+             ('room',7,'waiting.human','{\"trigger_seq\":\"003\"}'),
+             ('room',8,'waiting.human','{\"trigger_seq\":null}'),
+             ('other',1,'waiting.human','{\"trigger_seq\":4}');
+             DROP INDEX idx_room_waiting_trigger;",
+        )
+        .unwrap();
+        let before = rows(&conn, CANDIDATES, &[&"room", &0]).unwrap();
+        assert_eq!(
+            before
+                .iter()
+                .map(|event| event["waited"].clone())
+                .collect::<Vec<_>>(),
+            vec![json!(1), json!(1), json!(1), json!(0)]
+        );
+        drop(conn);
+        // An existing database at the current schema version gets the index too.
+        db::migrate(home.path()).unwrap();
+        db::migrate(home.path()).unwrap();
+        let conn = db::open(home.path()).unwrap();
+        assert_index(&conn);
+        assert_eq!(before, rows(&conn, CANDIDATES, &[&"room", &0]).unwrap());
+    }
 }
 
 #[cfg(test)]
