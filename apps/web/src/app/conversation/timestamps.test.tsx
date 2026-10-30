@@ -11,7 +11,7 @@ import {
   useTranscripts
 } from '../../stores/transcripts'
 
-import { ConversationColumn, dayLabel } from './index'
+import { ConversationColumn, dayLabel, sentAt } from './index'
 
 vi.mock('@tanstack/react-router', () => {
   const router = {
@@ -92,6 +92,19 @@ afterEach(() => {
   useSections.getState().reset()
   setActiveRpc(null)
   resetTranscriptEffects()
+})
+
+it('dates a live reply from when it finished, not when it started', () => {
+  vi.useFakeTimers({ now: new Date(2026, 9, 26, 10, 0) })
+  const transcripts = useTranscripts.getState()
+  transcripts.messageStart('live')
+  vi.setSystemTime(new Date(2026, 9, 26, 10, 30))
+  transcripts.messageComplete('live', { text: 'Done.' })
+  vi.useRealTimers()
+
+  const [reply] = useTranscripts.getState().bySession.live!.messages
+
+  expect(sentAt(reply!)).toBe(new Date(2026, 9, 26, 10, 30).getTime())
 })
 
 it('shows when restored messages were sent, once per run', async () => {

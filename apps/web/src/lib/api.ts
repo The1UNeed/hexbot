@@ -1046,7 +1046,7 @@ export const clarifyAnswered = (clarify: ClarifyRequest) =>
  */
 /**
  * Restored messages get `createdAt: 0`, which marks them as history; the
- * time their first row was stored is `sentAt`, for showing when it was sent.
+ * time their last row was stored is `sentAt`, for showing when it was sent.
  *
  * Hidden rows are dropped, with one exception: in a thread (`sender` given),
  * the sender bot's questions arrive as hidden user rows `@<sender>: <text>`
@@ -1233,6 +1233,8 @@ export function messagesFromHistory(
 
       previous.text = text
       previous.textId = row.row_id == null ? undefined : String(row.row_id)
+      // The reply was sent when it ended, not when its first step began.
+      Object.assign(previous, sent(row))
       previous.fragmentIds = [
         ...(previous.fragmentIds ?? []),
         ...(previous.textId ? [previous.textId] : [])

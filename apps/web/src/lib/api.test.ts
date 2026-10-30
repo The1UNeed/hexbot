@@ -60,8 +60,8 @@ describe('history projection', () => {
 
     expect(messages.map(message => [message.createdAt, message.sentAt])).toEqual([
       [0, 1_793_340_000_500],
-      // A turn is sent when it starts.
-      [0, 1_793_340_010_000],
+      // A reply is sent when it ends, not when its first step began.
+      [0, 1_793_340_030_000],
       [0, undefined]
     ])
   })

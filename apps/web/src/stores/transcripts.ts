@@ -1115,6 +1115,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           activity: undefined,
           checking: undefined,
           error: payload.error ?? message.error,
+          sentAt: Date.now(),
           status: payload.status,
           streaming: false,
           toolCalls: message.toolCalls.map(call =>

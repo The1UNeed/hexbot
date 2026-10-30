@@ -146,9 +146,9 @@ export function dayLabel(time: number, now = Date.now()): string {
   return `${day} ${clock}`
 }
 
-/** When a message was sent: live ones carry `createdAt`, restored ones `sentAt`. 0 is unknown. */
+/** When a message was sent: `sentAt` once known, else when it started. 0 is unknown. */
 export const sentAt = (message: { createdAt: number; sentAt?: number }) =>
-  toMillis(message.createdAt || message.sentAt)
+  toMillis(message.sentAt || message.createdAt)
 
 /**
  * A time separator before a message sent `at`: between days and after 20
