@@ -48,6 +48,9 @@ const SUB: Record<string, string> = {
 /** One term that needs no brackets after / or √: 4, x², 2π, n′. */
 const atom = (text: string) => /^[\p{L}\p{N}.′]+$/u.test(text)
 const wrap = (text: string) => (atom(text) ? text : `(${text})`)
+/** Under a fraction line or a root, only one number or one letter goes bare: 1/(2x), √(xy). */
+const single = (text: string) =>
+  /^(?:[\p{Nd}.]+|\p{L})[\p{No}\p{Lm}′]*$/u.test(text) ? text : `(${text})`
 function script(text: string, map: Record<string, string>, mark: string) {
   const chars = [...text]
   if (chars.length && chars.every(c => c in map)) return chars.map(c => map[c]).join('')
@@ -57,7 +60,8 @@ function script(text: string, map: Record<string, string>, mark: string) {
 export function texToText(tex: string): string {
   let i = 0
   const space = () => {
-    while (tex[i] === ' ') i++
+    // TeX lets an argument sit after any whitespace, a line break included.
+    while (/\s/.test(tex[i] ?? '')) i++
   }
   const command = () => {
     const name = /^[a-zA-Z]+|^./s.exec(tex.slice(i))?.[0] ?? ''
@@ -94,12 +98,7 @@ export function texToText(tex: string): string {
       const name = command()
       if (name === 'frac' || name === 'dfrac' || name === 'tfrac') {
         const top = arg()
-        const bottom = arg()
-        // Only one number or one letter goes bare below the line: 1/(2x), not 1/2x.
-        const under = /^(?:[\p{Nd}.]+|\p{L})[\p{No}\p{Lm}′]*$/u.test(bottom)
-          ? bottom
-          : `(${bottom})`
-        const fraction = `${wrap(top)}/${under}`
+        const fraction = `${wrap(top)}/${single(arg())}`
         // A term touching the fraction keeps it apart: (3/2)², 2(1/2), (1/2)(3/4), (1/2)x.
         const touching =
           /[\p{L}\p{N})]$/u.test(out) ||
@@ -115,7 +114,7 @@ export function texToText(tex: string): string {
         }
         const root =
           index === '3' ? '∛' : index === '4' ? '∜' : index ? `${script(index, SUP, '')}√` : '√'
-        out += root + wrap(arg())
+        out += root + single(arg())
       } else if (name === 'mathbb') {
         const text = arg()
         out += BLACKBOARD[text] ?? text

@@ -14,6 +14,8 @@ describe('math on the phone', () => {
     expect(texToText(String.raw`\sqrt[3]{x}`)).toBe('∛x')
     expect(texToText(String.raw`3\sqrt{x+1}`)).toBe('3√(x+1)')
     expect(texToText(String.raw`\frac{3}{2}^2`)).toBe('(3/2)²')
+    expect(texToText(String.raw`\sqrt{xy} \ne \sqrt{x}y`)).toBe('√(xy) ≠ √xy')
+    expect(readableMath('\\[\n\\frac{1}\n\t{2}\n\\]')).toBe('1/2')
     expect(texToText(String.raw`\frac{1}{2x} + \frac{1}{x^2} + \frac{a}{b_{1}}`)).toBe(
       '1/(2x) + 1/x² + a/b₁'
     )
