@@ -94,7 +94,12 @@ export function texToText(tex: string): string {
       const name = command()
       if (name === 'frac' || name === 'dfrac' || name === 'tfrac') {
         const top = arg()
-        const fraction = `${wrap(top)}/${wrap(arg())}`
+        const bottom = arg()
+        // Only one number or one letter goes bare below the line: 1/(2x), not 1/2x.
+        const under = /^(?:[\p{Nd}.]+|\p{L})[\p{No}\p{Lm}′]*$/u.test(bottom)
+          ? bottom
+          : `(${bottom})`
+        const fraction = `${wrap(top)}/${under}`
         // A term touching the fraction keeps it apart: (3/2)², 2(1/2), (1/2)(3/4), (1/2)x.
         const touching =
           /[\p{L}\p{N})]$/u.test(out) ||
