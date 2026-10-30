@@ -1613,7 +1613,7 @@ function Licenses({ onBack }: { onBack: () => void }) {
       >
         About
       </Button>
-      <Heading description="Hexbot is Apache-2.0 software built with these open source projects. Each project's license is in its repository.">
+      <Heading description="Hexbot is Apache-2.0 software built with these open source projects. The license and notices of every package this app includes are under Third-party notices.">
         Licenses
       </Heading>
       <div className="space-y-8">
@@ -1645,7 +1645,52 @@ function Licenses({ onBack }: { onBack: () => void }) {
             ))}
           </Group>
         ))}
+        <Group title="Third-party notices">
+          <ThirdPartyNotices />
+        </Group>
       </div>
     </>
+  )
+}
+
+/** The licenses of the packages bundled into this app, which the build writes beside it. */
+function ThirdPartyNotices() {
+  const [text, setText] = useState<string | null>(null)
+
+  useEffect(() => {
+    let live = true
+    fetch('/third-party-notices.txt')
+      .then(async response =>
+        response.ok && response.headers.get('content-type')?.startsWith('text/plain')
+          ? response.text()
+          : ''
+      )
+      .catch(() => '')
+      .then(body => {
+        if (live) {
+          setText(body)
+        }
+      })
+
+    return () => {
+      live = false
+    }
+  }, [])
+
+  if (text === null) {
+    return <SkeletonLines label="Loading notices" />
+  }
+
+  return text ? (
+    <pre
+      className="max-h-[60vh] overflow-auto whitespace-pre rounded-2xl bg-foreground/[0.04] p-4 font-mono text-[length:var(--text-meta)]"
+      data-testid="third-party-notices"
+    >
+      {text}
+    </pre>
+  ) : (
+    <p className="px-1 text-[length:var(--text-secondary)] text-muted">
+      The build adds them. This copy of Hexbot runs from source.
+    </p>
   )
 }

@@ -31,9 +31,28 @@ imported code is licensed under the MIT License:
 
 The bundled skills in skills/ were imported with Hermes Agent. Each states
 its license in its SKILL.md, and some directories also include a LICENSE
-file; all of them are MIT. skills/creative/humanizer/ is a port of Humanizer
-by Siqi Chen (https://github.com/blader/humanizer), MIT License,
-Copyright (c) 2025 Siqi Chen; its license is in that directory.
+file; all of them are MIT. Some adapt other projects, all under the MIT
+License, with each project's license in the skill's directory:
+
+  skills/creative/architecture-diagram/: architecture-diagram-generator
+  (https://github.com/Cocoon-AI/architecture-diagram-generator),
+  Copyright (c) 2025 Cocoon AI.
+  skills/creative/baoyu-infographic/: baoyu-skills
+  (https://github.com/JimLiu/baoyu-skills), Copyright (c) 2026 Jim Liu.
+  skills/creative/humanizer/: Humanizer (https://github.com/blader/humanizer),
+  Copyright (c) 2025 Siqi Chen. Humanizer is based on Wikipedia's "Signs of
+  AI writing" (https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing),
+  by Wikipedia contributors, licensed under CC BY-SA 4.0
+  (https://creativecommons.org/licenses/by-sa/4.0/).
+  skills/creative/popular-web-designs/: awesome-design-md
+  (https://github.com/VoltAgent/awesome-design-md), Copyright (c) 2026 VoltAgent.
+  skills/social-media/xurl/: the xurl skill of OpenClaw
+  (https://github.com/openclaw/openclaw), Copyright (c) 2026 OpenClaw Foundation.
+  skills/software-development/requesting-code-review/, systematic-debugging/,
+  and test-driven-development/: Superpowers (https://github.com/obra/superpowers),
+  Copyright (c) 2025 Jesse Vincent.
+  skills/software-development/spike/: Get Shit Done
+  (https://github.com/gsd-build/get-shit-done), Copyright (c) 2025 Lex Christopherson.
 
 The connection, pairing, and auth patterns of the desktop client are modelled
 on T3 Code (https://github.com/pingdotgg/t3code), MIT License,
@@ -42,3 +61,7 @@ Copyright (c) 2026 T3 Tools Inc. No T3 Code source is included.
 Connector icons in apps/web/src/assets/connectors/ are from Simple Icons
 (https://simpleicons.org), released under CC0 1.0 Universal. Brand names and
 logos remain the property of their respective owners.
+
+The licenses and notices of the third-party software each Hexbot package
+includes are in THIRD_PARTY_NOTICES beside this file, in the hexbot-install
+--license output, and in the app under Settings, About, Licenses.

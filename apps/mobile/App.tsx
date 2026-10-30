@@ -581,8 +581,9 @@ function MobileApp() {
     icon: DaemonArea['icon'],
     detail?: string | null
   ): DaemonArea => ({ key, label, icon, detail })
+  const licenses = { areas: [area('licenses', 'Licenses', 'document-text-outline')] }
   const settingsGroups: { title?: string; areas: DaemonArea[] }[] = demo
-    ? []
+    ? [licenses]
     : [
         { areas: [area('about', 'About you', 'person-outline')] },
         {
@@ -614,7 +615,8 @@ function MobileApp() {
             area('connect', 'Hex Connect', 'cloud-outline'),
             area('updates', 'Updates', 'download-outline', mobile.info?.version ?? null)
           ]
-        }
+        },
+        licenses
       ]
   const { items: historyItems, visuals } = useMemo(() => {
     const botByName = (name: string) => mobile.bots.find(b => b.name === name)
