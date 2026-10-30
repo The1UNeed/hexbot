@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { ChatScreen } from '../screens/ChatScreen'
 import type { ChatScreenProps } from '../screens/ChatScreen'
 import type { ChatItem } from '../screens/types'
-import { formatClock, formatDayDivider } from '../ui/format'
+import { formatDayDivider } from '../ui/format'
 
 // FlatList's native windowing is irrelevant here; exercise every production row.
 vi.mock('react-native', async () => {
@@ -61,7 +61,7 @@ it('renders only the streaming row per delta, and refreshes historical rows when
   expect(renderText).toHaveBeenCalledTimes(61)
 })
 
-it('says when messages were sent: a divider between days and quiet spells, a time under each run', () => {
+it('divides the chat between days and after quiet spells, not between quick messages', () => {
   const start = new Date(2026, 9, 26, 10, 12).getTime()
   const at = (minutes: number) => start + minutes * 60_000
   const message = (id: string, role: 'bot' | 'user', minutes: number): ChatItem => ({
@@ -69,38 +69,17 @@ it('says when messages were sent: a divider between days and quiet spells, a tim
   })
   const items = [
     message('Spawn a Biology bot', 'user', 0),
-    message('On it.', 'bot', 1),
     message('Biology is ready.', 'bot', 2),
-    // Together but minutes apart: each keeps its own time.
-    message('Thanks', 'user', 3),
+    // A restored step with no words neither divides nor resets the quiet spell.
+    { kind: 'message', id: 'step', role: 'bot', text: '', createdAt: at(30) } as ChatItem,
     message('One more thing', 'user', 12),
-    // Hours later: a divider first.
     message('Your summative is due today.', 'bot', 180),
+    message('Still not started.', 'bot', 24 * 60),
     { kind: 'message', id: 'live', role: 'bot', text: 'Writing', streaming: true } as ChatItem
   ]
   render(createElement(ChatScreen, {
     title: 'Owl', face: { name: 'Owl' }, items, onSend: vi.fn(), onBack: vi.fn(), onApprove: vi.fn()
   }))
-  expect(screen.getByText(formatDayDivider(at(0)))).toBeTruthy()
-  expect(screen.getByText(formatDayDivider(at(180)))).toBeTruthy()
-  // The inverted list draws newest first.
-  expect(screen.getAllByTestId('chat-message-time').map(time => time.textContent).reverse()).toEqual(
-    [0, 2, 3, 12, 180].map(minutes => formatClock(at(minutes)))
-  )
-})
-
-it('keeps the time of a message above a step that draws nothing', () => {
-  const at = (minutes: number) => new Date(2026, 9, 26, 10, minutes).getTime()
-  const items: ChatItem[] = [
-    { kind: 'message', id: 'checking', role: 'bot', text: 'Checking.', createdAt: at(0) },
-    // A restored tool call with no words.
-    { kind: 'message', id: 'step', role: 'bot', text: '', createdAt: at(1) },
-    { kind: 'message', id: 'done', role: 'bot', text: 'Done.', createdAt: at(10) }
-  ]
-  render(createElement(ChatScreen, {
-    title: 'Owl', face: { name: 'Owl' }, items, onSend: vi.fn(), onBack: vi.fn(), onApprove: vi.fn()
-  }))
-  expect(screen.getAllByTestId('chat-message-time').map(time => time.textContent).reverse()).toEqual(
-    [0, 10].map(minutes => formatClock(at(minutes)))
-  )
+  expect([0, 180, 24 * 60].map(minutes => screen.getByText(formatDayDivider(at(minutes))))).toHaveLength(3)
+  for (const minutes of [2, 12, 30]) expect(screen.queryByText(formatDayDivider(at(minutes)))).toBeNull()
 })

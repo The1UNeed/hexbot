@@ -19,11 +19,9 @@ import {
   type BotStatus,
   bubbleFill,
   Button,
-  closeInTime,
   dividesChat,
   type FaceMood,
   type FaceSource,
-  formatClock,
   formatDayDivider,
   Glass,
   IconButton,
@@ -109,7 +107,7 @@ export interface ChatScreenProps {
 }
 
 type Entry = ChatItem | { id: string; kind: 'waiting' }
-type ListEntry = { id: string; entry: Entry; continued: boolean; time: number }
+type ListEntry = { id: string; entry: Entry; continued: boolean }
 const waitingEntry: Entry = { id: 'waiting', kind: 'waiting' }
 const entryKey = (item: ListEntry) => item.id
 
@@ -244,51 +242,36 @@ function ChatBody(props: ChatScreenProps) {
   // Inverted list: newest first, so the view starts at the bottom and stays there.
   const entries = useMemo<ListEntry[]>(() => {
     const list: ListEntry[] = []
-    // The last message with a bubble, and the last row that shows something.
+    // The last message with something to show; a step with no words or files draws nothing.
     let said: MessageItem | undefined
-    let previous: ListEntry | undefined
-    for (const entry of items) {
-      // A step with no words or files draws nothing: it neither ends a run nor takes its time.
-      if (entry.kind === 'message' && !entry.text && !entry.attachments?.length && !entry.error) {
-        list.push({ id: entry.id, entry, continued: true, time: 0 })
-        continue
-      }
-      const at = entry.kind === 'message' ? (entry.createdAt ?? 0) : 0
+    for (const [index, entry] of items.entries()) {
+      const previous = items[index - 1]
+      const shown =
+        entry.kind === 'message' && Boolean(entry.text || entry.attachments?.length || entry.error)
       // Between days and after a quiet spell, a divider says when.
-      const divided =
-        entry.kind === 'message' && dividesChat(said ? (said.createdAt ?? 0) : undefined, at)
+      const at = shown ? (entry.createdAt ?? 0) : 0
+      const divided = dividesChat(said ? (said.createdAt ?? 0) : undefined, at)
       if (divided)
         list.push({
           id: `day-${entry.id}`,
           entry: { kind: 'day', id: `day-${entry.id}`, at },
-          continued: false,
-          time: 0
+          continued: false
         })
-      const before = previous?.entry
-      const continued =
-        !divided &&
-        entry.kind === 'message' &&
-        before?.kind === 'message' &&
-        before.role === entry.role &&
-        before.author?.name === entry.author?.name &&
-        closeInTime(before.createdAt ?? 0, at)
-      // The last message of a run shows when it was sent; one still being
-      // written has no time yet and leaves the time above it.
-      if (continued && previous && at > 0 && !entry.streaming) previous.time = 0
-      previous = {
+      if (shown) said = entry
+      list.push({
         id: entry.id,
         entry,
-        continued,
-        time: entry.kind === 'message' && !entry.streaming ? at : 0
-      }
-      list.push(previous)
-      if (entry.kind === 'message') said = entry
+        continued:
+          !divided &&
+          entry.kind === 'message' &&
+          previous?.kind === 'message' &&
+          previous.role === entry.role &&
+          previous.author?.name === entry.author?.name
+      })
     }
     list.reverse()
 
-    return waiting
-      ? [{ id: 'waiting', entry: waitingEntry, continued: false, time: 0 }, ...list]
-      : list
+    return waiting ? [{ id: 'waiting', entry: waitingEntry, continued: false }, ...list] : list
   }, [items, !!waiting])
   const fallbackFace = useMemo(() => face ?? { name: title }, [face, title])
   const {
@@ -303,11 +286,10 @@ function ChatBody(props: ChatScreenProps) {
   const waitingLabel = waiting?.label
   const waitingWho = waiting?.who ?? (room ? null : fallbackFace)
   const renderItem = useCallback(
-    ({ item: { entry, continued, time } }: ListRenderItemInfo<ListEntry>) => (
+    ({ item: { entry, continued } }: ListRenderItemInfo<ListEntry>) => (
       <TranscriptEntry
         entry={entry}
         continued={continued}
-        time={time}
         face={entry.kind === 'message' && !room ? fallbackFace : undefined}
         room={room}
         onLongPress={
@@ -431,7 +413,6 @@ function ChatBody(props: ChatScreenProps) {
 const TranscriptEntry = memo(function TranscriptEntry({
   entry,
   continued,
-  time,
   face,
   room,
   onLongPress,
@@ -444,7 +425,6 @@ const TranscriptEntry = memo(function TranscriptEntry({
 }: {
   entry: Entry
   continued: boolean
-  time: number
   face?: FaceSource
   room: boolean
   onLongPress?: (id: string) => void
@@ -496,7 +476,6 @@ const TranscriptEntry = memo(function TranscriptEntry({
           onLongPress={onLongPress}
           renderText={renderText}
           showAuthor={room && entry.role !== 'user' && !continued}
-          time={time}
         />
       )
     }
@@ -509,16 +488,13 @@ function MessageBubble({
   item,
   onLongPress,
   renderText,
-  showAuthor,
-  time
+  showAuthor
 }: {
   /** The thread's bot, for replies that do not name one. */
   chat: { face: FaceSource | null; room: boolean }
   item: MessageItem
   continued: boolean
   showAuthor: boolean
-  /** When it was sent, shown under it as the last message of a run; 0 shows none. */
-  time: number
   onLongPress?: (id: string) => void
   renderText?: (item: MessageItem) => ReactNode
 }) {
@@ -586,11 +562,6 @@ function MessageBubble({
             {item.error}
           </Text>
         </View>
-      ) : null}
-      {time > 0 && (item.text || item.attachments?.length) ? (
-        <Text style={styles.time} testID="chat-message-time" tone="muted" variant="caption">
-          {formatClock(time)}
-        </Text>
       ) : null}
     </View>
   )
@@ -940,7 +911,6 @@ const styles = StyleSheet.create({
     paddingLeft: 12,
     paddingRight: 4
   },
-  time: { marginTop: 4, paddingHorizontal: 4 },
   titleButton: { maxWidth: '100%' },
   titlePill: {
     alignItems: 'center',

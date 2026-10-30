@@ -43,17 +43,12 @@ const minutes = (n: number) => start + n * 60
 
 const rows = [
   { role: 'user', row_id: 1, text: 'Spawn a Biology bot', timestamp: minutes(0) },
-  { role: 'assistant', row_id: 2, text: 'On it.', timestamp: minutes(1) },
-  { role: 'assistant', row_id: 3, text: 'Biology is ready.', timestamp: minutes(2) },
-  // Together but minutes apart: each keeps its own time.
-  { role: 'user', row_id: 4, text: 'Thanks', timestamp: minutes(3) },
-  { role: 'user', row_id: 5, text: 'One more thing', timestamp: minutes(12) },
-  // Hours later: a separator first.
-  { role: 'assistant', row_id: 6, text: 'Your summative is due today.', timestamp: minutes(180) }
+  { role: 'assistant', row_id: 2, text: 'Biology is ready.', timestamp: minutes(2) },
+  { role: 'user', row_id: 3, text: 'One more thing', timestamp: minutes(12) },
+  // Hours later, and the next day: a separator before each.
+  { role: 'assistant', row_id: 4, text: 'Your summative is due today.', timestamp: minutes(180) },
+  { role: 'assistant', row_id: 5, text: 'Still not started.', timestamp: minutes(24 * 60) }
 ]
-
-const clock = (seconds: number) =>
-  new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(new Date(seconds * 1000))
 
 beforeEach(() => {
   useSections.getState().reset()
@@ -107,22 +102,14 @@ it('dates a live reply from when it finished, not when it started', () => {
   expect(sentAt(reply!)).toBe(new Date(2026, 9, 26, 10, 30).getTime())
 })
 
-it('shows when restored messages were sent, once per run', async () => {
+it('separates restored messages by when they were sent', async () => {
   await useSections.getState().open('chat')
   render(<ConversationColumn />)
-  expect(await screen.findByText('Your summative is due today.')).toBeVisible()
+  expect(await screen.findByText('Still not started.')).toBeVisible()
 
-  // The chat opens on its day, and hours later says when again.
-  expect(screen.getByText(dayLabel(minutes(0)))).toBeVisible()
-  expect(screen.getByText(dayLabel(minutes(180)))).toBeVisible()
-
-  // Your first message, the bot's two-message reply, your two messages nine
-  // minutes apart, and the later report: one time under each run's last bubble.
-  expect(screen.getAllByTestId('message-time').map(time => time.textContent)).toEqual([
-    clock(minutes(0)),
-    clock(minutes(2)),
-    clock(minutes(3)),
-    clock(minutes(12)),
-    clock(minutes(180))
-  ])
+  // The chat opens on its day, then says when again after hours and on a new day.
+  expect([0, 180, 24 * 60].map(at => screen.getByText(dayLabel(minutes(at))))).toHaveLength(3)
+  // Minutes apart stays together.
+  expect(screen.queryByText(dayLabel(minutes(2)))).toBeNull()
+  expect(screen.queryByText(dayLabel(minutes(12)))).toBeNull()
 })

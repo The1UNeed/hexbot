@@ -48,11 +48,6 @@ export function formatDayDivider(ms: number, now = Date.now()) {
   return `${new Date(ms).toLocaleDateString([], { day: 'numeric', month: 'short' })}, ${time}`
 }
 
-/** A message's time under its bubble: "8:41 AM". */
-export function formatClock(ms: number) {
-  return new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-}
-
 /**
  * A divider before a message sent `at`: between days and after 20 quiet
  * minutes. `before` is undefined for the first message; 0 is an unknown time,
@@ -64,11 +59,6 @@ export function dividesChat(before: number | undefined, at: number) {
     (before === undefined ||
       (before > 0 && (startOfDay(before) !== startOfDay(at) || at - before > 20 * 60_000)))
   )
-}
-
-/** Messages from one side read as one run, with one time, unless minutes apart. */
-export function closeInTime(before: number, at: number) {
-  return !before || !at || at - before <= 5 * 60_000
 }
 
 /** "Seen 5 minutes ago" style text for devices and daemons. */

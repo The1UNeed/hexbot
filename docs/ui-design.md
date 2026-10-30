@@ -157,16 +157,13 @@ the roster slides in as a drawer.
   and a new speaker starts 12 px lower. Each message a bot finishes is its
   own bubble, so a turn that says "I'll run both" and then reports back is
   two bubbles, live and after a reload. A bot's bubbles stand alone, with
-  nothing beside them and only the time under them: no thinking line, no
-  memory or soul marks, no copy or retry. A copy icon appears beside your own last bubble on
+  nothing under or beside them: no thinking line, no memory or soul marks,
+  no copy or retry. A copy icon appears beside your own last bubble on
   hover. The same holds for history from before this change. Markdown body with code blocks (a fenced block
   is a block even without a language; its copy button shows on hover),
   tables, images. Time separators ("Today 9:13 PM") between days and after
-  20 quiet minutes, after a reload too. The last bubble of a run (one side,
-  at most 5 minutes apart) has its time under it in muted words ("9:13 PM",
-  the full date on hover), so messages minutes apart each keep their own;
-  a message still being written has none yet. Rooms and the mobile app
-  show times the same way.
+  20 quiet minutes, after a reload too; a bot's reply counts from when it
+  finished. Rooms and the mobile app separate the same way.
 - Live status: from the moment a turn starts until the whole turn is done,
   a line sits at its foot, under the messages the bot has finished: the
   bot's face, in the mood of its work, and "General is working" in muted

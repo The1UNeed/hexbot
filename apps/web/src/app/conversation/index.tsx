@@ -163,28 +163,6 @@ export function separates(before: number | undefined, at: number) {
   )
 }
 
-/** Messages from one side read as one run, with one time, unless minutes apart. */
-export const closeInTime = (before: number, at: number) =>
-  !before || !at || at - before <= 5 * 60_000
-
-/** The time under the last bubble of a run: "11:34 AM", the full date on hover. */
-export function MessageTime({ time }: { time: number }) {
-  const date = new Date(time)
-
-  return (
-    <time
-      className="px-1 text-[length:var(--text-meta)] text-muted tabular-nums"
-      data-testid="message-time"
-      dateTime={date.toISOString()}
-      title={new Intl.DateTimeFormat(undefined, { dateStyle: 'full', timeStyle: 'short' }).format(
-        date
-      )}
-    >
-      {new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(date)}
-    </time>
-  )
-}
-
 export function DaySeparator({ time }: { time: number }) {
   return (
     <div className="pt-6 pb-2 text-center text-[length:var(--text-meta)] font-medium text-muted">
@@ -512,8 +490,7 @@ export const MessageRow = memo(function MessageRow({
   retryMessage,
   fresh = false,
   joined = false,
-  showFace = false,
-  time = 0
+  showFace = false
 }: {
   bot?: Bot
   message: TranscriptMessage
@@ -530,8 +507,6 @@ export const MessageRow = memo(function MessageRow({
   joined?: boolean
   /** Rooms draw a face beside every bot bubble; a bot's own chat does not. */
   showFace?: boolean
-  /** When it was sent, shown under it as the last message of a run; 0 shows none. */
-  time?: number
 }) {
   const assistant = message.role === 'assistant'
   const settled = useRef<number>(undefined)
@@ -667,9 +642,6 @@ export const MessageRow = memo(function MessageRow({
           )}
         >
           {column}
-          {time > 0 && column.length > 0 && !message.streaming && !isWorking(message) ? (
-            <MessageTime time={time} />
-          ) : null}
           {assistant && isWorking(message) ? (
             <LiveStatus
               face={
@@ -1220,13 +1192,9 @@ const bubbleShown = (message: TranscriptMessage) =>
   (message.role === 'assistant' || message.role === 'user') &&
   Boolean(message.text || message.attachments.length)
 
-/** Two bubbles from the same side, one soon after the other, read as one run. */
+/** Two bubbles from the same side, one after the other, read as one run. */
 const joins = (a: TranscriptMessage, b: TranscriptMessage) =>
-  a.role === b.role &&
-  bubbleShown(a) &&
-  bubbleShown(b) &&
-  !a.streaming &&
-  closeInTime(sentAt(a), sentAt(b))
+  a.role === b.role && bubbleShown(a) && bubbleShown(b) && !a.streaming
 
 /** Tracks an element's height, for content that scrolls under floating glass. */
 function useHeight<T extends HTMLElement>(): [React.RefObject<T | null>, number] {
@@ -2050,17 +2018,6 @@ function BotConversation() {
               const joined =
                 !separator && before?.kind === 'message' && joins(before.message, message)
 
-              // The last message of a run shows when it was sent; one still
-              // being written leaves the time above it.
-              const after = timeline[position + 1]
-
-              const ends = !(
-                after?.kind === 'message' &&
-                !isWorking(after.message) &&
-                !separatedFrom(shown[after.index - 1], after.message) &&
-                joins(message, after.message)
-              )
-
               return (
                 <div key={message.id}>
                   {separator ? <DaySeparator time={sentAt(message)} /> : null}
@@ -2075,7 +2032,6 @@ function BotConversation() {
                     onRecall={canRecall(message) ? recall : undefined}
                     onRetry={message.error ? retry : undefined}
                     retryMessage={message.error ? retryInput(message) : undefined}
-                    time={ends ? sentAt(message) : 0}
                   />
                 </div>
               )
