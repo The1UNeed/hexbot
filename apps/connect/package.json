@@ -23,7 +23,7 @@
     "posthog-js": "^1.428.9",
     "react": "19.2.7",
     "react-dom": "19.2.7",
-    "zod": "4.6.6"
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@types/node": "22.20.1",
