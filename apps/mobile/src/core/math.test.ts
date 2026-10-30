@@ -15,6 +15,10 @@ describe('math on the phone', () => {
     expect(texToText(String.raw`3\sqrt{x+1}`)).toBe('3√(x+1)')
     expect(texToText(String.raw`\frac{3}{2}^2`)).toBe('(3/2)²')
     expect(texToText('{x+1}^2 + {y}^2')).toBe('(x+1)² + y²')
+    expect(texToText(String.raw`\dot{x}=v, \bar{x}, \vec{v}, \overline{AB}`)).toBe(
+      'x\u0307=v, x\u0304, v\u20d7, A\u0305B\u0305'
+    )
+    expect(texToText(String.raw`\begin{pmatrix}1&2\\3&4\end{pmatrix}`)).toBe('1 2\n3 4')
   })
 
   it('keeps the lines of a display formula', () => {

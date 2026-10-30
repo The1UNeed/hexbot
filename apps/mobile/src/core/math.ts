@@ -26,8 +26,12 @@ const DROPPED = new Set(['left', 'right', 'displaystyle', 'textstyle', 'limits',
 /** Commands whose one argument is shown as it is. */
 // prettier-ignore
 const PLAIN = new Set(['boxed', 'text', 'textbf', 'textit', 'mathrm', 'mathbf', 'mathit',
-  'mathsf', 'mathcal', 'operatorname', 'bm', 'boldsymbol', 'overline', 'hat', 'bar', 'vec',
-  'tilde', 'dot', 'underline'])
+  'mathsf', 'mathcal', 'operatorname', 'bm', 'boldsymbol', 'underline'])
+/** Accents mean something (ẋ is a derivative, x̄ a mean), so each letter keeps its mark. */
+// prettier-ignore
+const ACCENTS: Record<string, string> = { hat: '\u0302', widehat: '\u0302', bar: '\u0304',
+  overline: '\u0305', vec: '\u20d7', dot: '\u0307', ddot: '\u0308', tilde: '\u0303',
+  widetilde: '\u0303' }
 const BLACKBOARD: Record<string, string> = { R: 'ℝ', N: 'ℕ', Z: 'ℤ', Q: 'ℚ', C: 'ℂ' }
 // prettier-ignore
 const SUP: Record<string, string> = {
@@ -109,6 +113,8 @@ export function texToText(tex: string): string {
         out += BLACKBOARD[text] ?? text
       } else if (name === 'begin' || name === 'end') {
         raw()
+      } else if (name in ACCENTS) {
+        out += [...arg()].map(c => c + ACCENTS[name]).join('')
       } else if (PLAIN.has(name)) {
         out += arg()
       } else if (!DROPPED.has(name)) {
@@ -126,7 +132,8 @@ export function texToText(tex: string): string {
       out += /^ *[\^_]/.test(tex.slice(i)) ? wrap(group) : group
     } else {
       i++
-      if (c !== '}' && c !== '&') out += c === '~' ? ' ' : c
+      // & separates matrix and aligned columns: 1&2 is "1 2", not 12.
+      if (c !== '}') out += c === '~' || c === '&' ? ' ' : c
     }
   }
   return out
