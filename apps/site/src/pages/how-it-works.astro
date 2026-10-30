@@ -1,8 +1,8 @@
 ---
 import Base from '../layouts/Base.astro'
-import Scene from '../components/Scene.astro'
+import Shot from '../components/Shot.astro'
 
-type Step = { title: string; text: string[]; shot?: { src: string; width: number; height: number; alt: string }; scene?: 'hexbot' | 'heartbeat' | 'computer' | 'visual' | 'phone'; link?: [string, string] }
+type Step = { title: string; text: string[]; shot?: { src: string; width: number; height: number; alt: string }; scene?: 'installer' | 'hexbot' | 'heartbeat-settings' | 'computer' | 'visual' | 'phone'; link?: [string, string] }
 const steps: Step[] = [
   {
     title: 'Install one app',
@@ -10,6 +10,7 @@ const steps: Step[] = [
       'Download the Hexbot Installer for Mac or Linux, or run one line in a terminal, and choose Full. The app starts the daemon: the part that runs your bots, keeps their memory, and serves the app.',
       'Choose Client on your other computers, or Headless to run the daemon alone on a server. The daemon keeps working when you close the window, so heartbeats, scheduled jobs, and long tasks carry on.',
     ],
+    scene: 'installer',
     link: ['Install', '/docs/install/'],
   },
   {
@@ -71,7 +72,7 @@ const steps: Step[] = [
       'Every 30 minutes, day and night, each bot works through its heartbeat: a short checklist you write, or that it keeps when you say "let me know if…". It reads its memory, its connectors, and the web.',
       'Most heartbeats end quietly. When something needs you, it sends one short message to its chat and your devices. An empty checklist runs nothing and costs nothing.',
     ],
-    scene: 'heartbeat',
+    scene: 'heartbeat-settings',
     link: ['Heartbeat', '/docs/bots-and-sections/#heartbeat'],
   },
   {
@@ -112,7 +113,7 @@ const steps: Step[] = [
 <Base title="How it works" description="How Hexbot works, from install to a working crew: connect a model, make bots that interview you, put them in rooms, and let them remember and dream.">
   <section class="mx-auto max-w-[1120px] px-5 pt-10 sm:px-8 lg:pt-16">
     <h1 class="display text-[clamp(2.75rem,7vw,4.25rem)]">How Hexbot works</h1>
-    <p class="lede mt-4">From install to a crew that knows your work, in {steps.length} steps. Screenshots come from real nightly builds; the drawings show the newest features.</p>
+    <p class="lede mt-4">From install to a crew that knows your work, in {steps.length} steps. Every picture is a screenshot of the app.</p>
   </section>
 
   <ol class="mx-auto max-w-[1120px] px-5 sm:px-8">
@@ -125,7 +126,7 @@ const steps: Step[] = [
           {step.link && <p class="mt-4"><a class="font-medium hover:text-accent" href={step.link[1]}>{step.link[0]}</a></p>}
         </div>
         {step.shot && <figure class="shot self-start bg-paper"><img src={step.shot.src} width={step.shot.width} height={step.shot.height} alt={step.shot.alt} loading={i < 2 ? 'eager' : 'lazy'} /></figure>}
-        {step.scene && <div class="self-start"><Scene name={step.scene} /></div>}
+        {step.scene && <div class="self-start"><Shot name={step.scene} eager={i < 2} /></div>}
       </li>
     ))}
   </ol>

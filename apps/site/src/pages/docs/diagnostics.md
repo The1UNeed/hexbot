@@ -6,6 +6,8 @@ description: See how your Hexbot daemon launched, what it uses, how its runs wen
 
 Diagnostics shows what the daemon has measured since it started. Use it when Hexbot feels slow, a bot keeps failing, or you want to know what a run cost in time. Open Settings, Advanced, **Diagnostics** in the desktop app or a browser. The page refreshes every 5 seconds while it is open. The mobile app has no Diagnostics.
 
+![Settings, Diagnostics: launch time, uptime, CPU, memory and cache hit tiles above the launch waterfall.](/screens/diagnostics.webp)
+
 ## Overview
 
 Six tiles sum up the daemon:

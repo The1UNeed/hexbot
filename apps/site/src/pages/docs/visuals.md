@@ -6,6 +6,8 @@ description: Let a Hexbot bot show a chart, table, diagram, or mockup in its cha
 
 When a picture says more than prose, a bot can show a **visual** in its chat: a chart, table, diagram, timeline, or mockup, drawn as one small web page. It appears in the bot's bubble above its reply, under a title, and stays live, so you can hover over a point, switch a tab, or scroll a table.
 
+![Ledger answers how September went with a live bar chart of sales by channel above its reply.](/screens/visual.webp)
+
 ## Ask for one
 
 Bots decide on their own when a visual helps, such as a table of totals or a timeline of a project. You can also ask: "Show September's sales by channel as a bar chart" or "Sketch the signup screen as a mockup." The bot draws the visual first, then replies under it with only what the visual doesn't show.

@@ -1,0 +1,31 @@
+---
+/**
+ * Pictures of the real app, captured from Hexbot itself: the daemon and web
+ * bundle (or the mobile app and the installer) at 2x, with a made-up
+ * ceramics studio for data. Maya owns it; HexBot, Scout, Ledger, Juniper and
+ * Quill are her bots. `phone` shows two phone screens side by side.
+ */
+interface Props { name: keyof typeof screens | 'phone'; class?: string; eager?: boolean }
+const screens = {
+  hexbot: { width: 1600, height: 594, alt: 'Maya asks HexBot for someone to check her newsletter. HexBot replies that Quill is ready, and Quill appears in the bot list with a violet face.' },
+  visual: { width: 1320, height: 784, alt: 'Ledger answers "How did September go?" with a bar chart of September sales by channel: Harbourside Market $2,290, Online shop $1,492, Night Market $861, total $4,643.' },
+  heartbeat: { width: 1320, height: 410, alt: 'Maya asks Scout to tell her when Sam replies about the lease. Scout adds it to its heartbeat, and later writes that Sam replied with an offer.' },
+  'heartbeat-settings': { width: 1300, height: 1291, alt: 'Scout\'s Heartbeat settings: a HEARTBEAT.md checklist with four checks, Run heartbeats turned on, the next heartbeat time, and Run now.' },
+  computer: { width: 1600, height: 1116, alt: 'Your bots\' computer, open large: a Linux desktop with a Night Market booking form. Juniper\'s cursor, wearing its pink face, types in a field while Scout\'s blue cursor waits. Take control sits at the top.' },
+  plugins: { width: 1300, height: 754, alt: 'Settings, Plugins: a search field, a row of bots to filter by, and connectors such as web search and a cloud browser, each on for every bot or off.' },
+  recall: { width: 1320, height: 350, alt: 'Maya hovers over her latest message, "Tell the café we can do 400 mugs by Friday", while Ledger is working. Copy and Recall buttons appear beside it.' },
+  reasoning: { width: 1300, height: 1021, alt: 'Ledger\'s model settings with the Reasoning menu open: Off, Minimal, Low, Medium, High, Extra high, and Max.' },
+  diagnostics: { width: 1400, height: 1078, alt: 'Settings, Diagnostics: launch time, uptime, CPU, memory, and cache hit rates, above a waterfall of each launch step.' },
+  installer: { width: 1520, height: 1080, alt: 'The Hexbot Installer asking how you want to use Hexbot, with Headless, Client, and Full, and Full chosen.' },
+} as const
+const { name, class: className, eager = false } = Astro.props
+const loading = eager ? 'eager' : 'lazy'
+---
+{name === 'phone' ? (
+  <div class:list={['phones', className]}>
+    <img class="phone-screen" src="/screens/phone-home.webp" width="786" height="1704" loading={loading} alt="The Hexbot phone app: one list of chats with HexBot, Juniper, Scout, Ledger, and Quill, newest first, with Search at the bottom." />
+    <img class="phone-screen" src="/screens/phone-chat.webp" width="786" height="1704" loading={loading} alt="Ledger's chat on the phone: September sales by channel as a visual card with Open, above Ledger's summary." />
+  </div>
+) : (
+  <figure class:list={['shot', className]}><img src={`/screens/${name}.webp`} width={screens[name].width} height={screens[name].height} alt={screens[name].alt} loading={loading} /></figure>
+)}

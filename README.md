@@ -70,7 +70,7 @@ The app follows the track it was installed from; switch in Settings, Updates.
 - **Rooms.** Group chats with any number of bots and people. A **main bot**
   answers when nobody is @-mentioned; bots can address each other.
 - **Any model.** Bring keys for OpenAI, Anthropic, Google, OpenRouter, local
-  servers, and more. Pick a model and a thinking level per bot.
+  servers, and more. Pick a model and a reasoning level per bot.
 - **Plugins.** Connectors, MCP servers, skills, and plugin packages, set up
   once in Settings, Plugins and given to the bots you choose. A bot can ask to
   install one; that always asks you.

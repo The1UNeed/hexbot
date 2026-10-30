@@ -13,6 +13,8 @@ We'll use the same made-up ceramics studio as [last month's post](/blog/three-bo
 
 Setup now ends in a chat with **HexBot**, your primary bot. It is the one bot that manages the others. Tell it "I need someone to check my newsletter before it goes out" and it makes a writer for the job, with a face, a soul, and a working folder. It can also put bots in rooms, change who is in them, schedule jobs for any bot, and change settings, skills, and connectors.
 
+![Maya asks HexBot for someone to check her newsletter, and HexBot makes Quill, a newsletter editor that appears in the bot list.](/screens/hexbot.webp)
+
 It always asks before it deletes a bot, room, or job, changes an approval mode or a working folder, changes a setting, or turns a skill or connector on or off. That holds even in Bypass. It never sees your API keys or connector credentials. You can rename it and give it a different face, but you can't delete it.
 
 If you used Hexbot before HexBot existed, the bot list offers to add it, or to make one of your bots primary instead. [The primary bot](/docs/bots-and-sections/#the-primary-bot) has the details.
@@ -20,6 +22,8 @@ If you used Hexbot before HexBot existed, the bot list offers to add it, or to m
 ## Every bot has a heartbeat
 
 Most assistants wait for you to ask. A heartbeat doesn't. Every 30 minutes, day and night, each bot works through its own checklist, `HEARTBEAT.md`:
+
+![Scout adds a line to its heartbeat when Maya asks to hear about the lease, then writes when Sam replies.](/screens/heartbeat.webp)
 
 ```md
 - Has Sam replied about the studio lease?
@@ -38,6 +42,8 @@ The heartbeat replaced the primary bot's check-ins from earlier in the month. [H
 
 Some jobs only exist behind a web page with no API: a supplier's order form, a booking site, an old admin panel. Your bots now have a computer for those. It's a Linux desktop with a browser and a terminal, made with [Cua](https://cua.ai) in Docker on the daemon computer, and kept apart from yours.
 
+![Your bots' computer, open large, with Juniper's pink cursor filling in a Night Market booking form and Scout's blue cursor beside it.](/screens/computer.webp)
+
 Open the Computer tab beside a chat, or tap the computer button on your phone, and watch it live. Each bot working on it has a cursor wearing its own face, and the line under the screen says who is doing what. Bots take turns, one action at a time. If something goes wrong, choose **Take control**: the screen opens large, takes your clicks and keys, and the bots wait until you choose **Give back**.
 
 The screen streams over Hex Connect too. **Auto** quality stays as sharp and smooth as your connection allows and never drops below 720p at 30 fps. See [Your bots' computer](/docs/tools-and-skills/#your-bots-computer) to install it.
@@ -45,6 +51,8 @@ The screen streams over Hex Connect too. **Auto** quality stays as sharp and smo
 ## Charts in the chat
 
 When Maya asks Ledger how September went, a table says more than a paragraph. Bots can now show a **visual**: a chart, table, diagram, or mockup, drawn as a small web page above the reply. It stays live, so you can hover over a bar or switch a tab, and **Expand** opens it beside the chat in a tab of its own. It follows your light or dark theme and runs sandboxed, with no network access beyond a few script libraries.
+
+![Ledger answers how September went with a live bar chart of sales by channel above its reply.](/screens/visual.webp)
 
 Visuals show in a bot's chat on the desktop app, in the browser, and on the phone. In rooms, bots describe things in words instead. [Visuals](/docs/visuals/) explains how to ask for one.
 
@@ -62,13 +70,17 @@ Turn on **Sounds** in Settings, Appearance to hear a bot start, finish, or need 
 
 Everything a bot can use beyond its own tools now lives on one page: Settings, **Plugins**. That covers connectors such as web search and Notion, MCP servers, skills, and built-in tools that need a program, such as Computer use. Set a plugin up once, then choose which bots get it.
 
+![Settings, Plugins, with a row of bots to filter by and connectors such as web search.](/screens/plugins.webp)
+
 A **plugin package** installs an MCP server together with the skills that explain how to use it. And when a bot needs a service it can't reach, it can find a server for it and ask to install it. You see exactly what it runs, every value it passes, and the skills it adds. Installing always asks, even in Bypass, and a plugin a bot installs is on for that bot only. See [Plugins](/docs/tools-and-skills/#plugins).
 
 ## One chat per bot, and Recall
 
 A bot is now like a contact in a messaging app: you have one chat with it, and it never ends. When the chat outgrows the model's context, Hexbot summarises older messages and keeps going. What lasts goes into memory, and the bot can still search older history for an exact detail.
 
-If you send something you regret, **Recall** it. Hover over your latest message (or long-press on the phone) and the bot stops, forgets it, and hands the text back to edit. The rest of the chat stays as it was, so the next reply still uses the provider's prompt cache. Anything the bot already did stays done.
+![Copy and Recall beside Maya's latest message while Ledger is still working on it.](/screens/recall.webp)
+
+If you send something you regret, **Recall** it while the bot is still working on it. Hover over your latest message (or long-press on the phone) and the bot stops, forgets it, and hands the text back to edit. The rest of the chat stays as it was, so the next reply still uses the provider's prompt cache. Anything the bot already did stays done.
 
 ## Memory that ages well
 
@@ -88,6 +100,8 @@ There is no App Store or Play Store release yet, so for now you build it from so
 
 The new installer handles every kind of install, from a window or from one line in a terminal:
 
+![The Hexbot Installer offering Headless, Client, and Full.](/screens/installer.webp)
+
 ```sh
 curl -fsSL https://hexbot.app/install.sh | sh
 ```
@@ -96,7 +110,7 @@ Choose **Full** on the computer your bots live on, **Client** on your other comp
 
 ## Smaller things worth knowing
 
-- **Thinking levels.** Each bot chooses how hard it thinks, from Off to Max. The list shows only the levels its model supports.
+- **Reasoning levels.** Each bot has its own Reasoning setting, from Off to Max, for how hard it thinks. The list shows only the levels its model supports.
 - **Diagnostics.** Settings, Advanced, Diagnostics shows launch time, CPU and memory over the last hour, a waterfall for every run, recent failures, and prompt cache hit rates. Copy report saves it for a bug report. `hexbot diagnostics` prints the same from a terminal. See [Diagnostics](/docs/diagnostics/).
 - **Bots keep working with the window closed.** Replies and heartbeats still arrive as notifications until you choose Quit.
 - **Signed updates.** Native daemon and installer updates install only if Hexbot's release key signed them.
