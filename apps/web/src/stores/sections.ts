@@ -737,7 +737,8 @@ export const useSections = create<SectionsState>((set, get) => ({
       const title =
         section.title === DEFAULT_TITLE && !section.title_by ? titleFromPrompt(text) : ''
 
-      return section.message_count && !title
+      // The chat list shows what the user just said until the bot answers.
+      return section.message_count && !title && !text
         ? state
         : {
             byId: {
@@ -745,6 +746,7 @@ export const useSections = create<SectionsState>((set, get) => ({
               [id]: {
                 ...section,
                 message_count: section.message_count || 1,
+                ...(text ? { preview: text } : {}),
                 ...(title ? { title, title_by: 'bot' as const } : {})
               }
             },
