@@ -3,6 +3,7 @@ import Base from '../layouts/Base.astro'
 import Face from '../components/Face.astro'
 import Logo from '../components/Logo.astro'
 import DownloadList from '../components/DownloadList.astro'
+import Shot from '../components/Shot.astro'
 import { loadDownloads } from '../lib/downloads'
 import { toolGroups } from '../lib/tools'
 
@@ -11,11 +12,28 @@ const github = 'https://github.com/The1UNeed/hexbot'
 const label = downloads?.channel === 'stable' ? '' : 'nightly'
 
 // The hero crowd: shapes and colours straight from the app's face builder.
-// Each face flies in, then drifts; positions and timings are the hf-* classes
-// in global.css, because the site's CSP (style-src 'self') blocks style attributes.
+// Each face flies in, then moves and changes mood with the app's face engine;
+// positions and timings are the hf-* classes in global.css, because the
+// site's CSP (style-src 'self') blocks style attributes.
 const crowd = [
-  ['squircle', '#f5a524', 'hf-1', 0], ['round', '#3b82f6', 'hf-2', 0.7], ['cloud', '#8b5cf6', 'hf-3', 2.8],
-  ['hex', '#22a55b', 'hf-4', 1.4], ['drop', '#ec2f8a', 'hf-5', 2.1], ['tri', '#f97316', 'hf-6', 4.2],
+  ['squircle', '#f5a524', 'hf-1', ['idle', 'thinking', 'writing', 'happy']],
+  ['round', '#3b82f6', 'hf-2', ['searching', 'curious', 'idle']],
+  ['cloud', '#8b5cf6', 'hf-3', ['drowsy', 'sleeping', 'surprised', 'idle']],
+  ['hexagon', '#22a55b', 'hf-4', ['working', 'proud', 'celebrating', 'idle']],
+  ['drop', '#ec2f8a', 'hf-5', ['listening', 'shy', 'happy']],
+  ['triangle', '#14b8a6', 'hf-6', ['idle', 'loading', 'idle', 'happy']],
+] as const
+
+// The faces section: every face goes through the moods it shows in the app.
+const moodRow = [
+  ['triangle', '#14b8a6', ['thinking', 'writing', 'happy']],
+  ['round', '#3b82f6', ['searching', 'curious', 'surprised']],
+  ['hexagon', '#22a55b', ['working', 'proud', 'celebrating']],
+  ['drop', '#ec2f8a', ['listening', 'shy', 'happy']],
+  ['square', '#8b5cf6', ['writing', 'confused', 'frustrated']],
+  ['cloud', '#f97316', ['bored', 'drowsy', 'sleeping']],
+  ['squircle', '#f5a524', ['loading', 'idle', 'celebrating']],
+  ['pill', '#ef4444', ['idle', 'sad', 'happy']],
 ] as const
 
 const generations = [
@@ -28,6 +46,22 @@ const steps = [
   ['Give it a face and a name', 'Pick a shape, a colour, a role, and the model it runs on.', '/screens/step-face.webp', 'The Hexbot bot builder with a blue round face named Scout.'],
   ['It interviews you', 'A new bot asks a few questions, then writes its own soul and memory from your answers.', '/screens/step-interview.webp', 'Ledger asking what it should mainly be used for, with four suggested answers.'],
   ['It remembers', 'Each bot keeps notes you can read and edit, and tidies them every night.', '/screens/step-memory.webp', 'Scout\'s memory settings showing its notes and the daily dreaming schedule.'],
+] as const
+
+// The newest work, each with a picture of the real app from components/Shot.astro.
+const features = [
+  { name: 'heartbeat', title: 'A heartbeat every 30 minutes', text: 'Give a bot a checklist: a reply you are waiting on, a delivery, a price. Day and night it looks each one up in its memory, its connectors, and the web, and stays quiet unless something needs you. Then it writes one short message and your phone lights up.', href: '/docs/bots-and-sections/#heartbeat', wide: false },
+  { name: 'visual', title: 'Charts in the chat', text: 'When a table or a chart says more than a paragraph, the bot draws one above its reply. Hover it, click it, and expand it into a tab beside the chat. It runs sandboxed and follows your light or dark theme.', href: '/docs/visuals/', wide: false },
+  { name: 'computer', title: 'A computer your bots share, and you can take over', text: 'Bots get their own Linux desktop with a browser and a terminal, apart from yours. Watch it live from any app or phone. Each bot moves a cursor with its own face, and they take turns. Choose Take control to drive, then Give back.', href: '/docs/tools-and-skills/#your-bots-computer', wide: true },
+  { name: 'plugins', title: 'Plugins, on for the bots you choose', text: 'Connectors, MCP servers, skills, and built-in tools all live on one Plugins page. Set one up once and pick which bots get it. A bot that needs something new finds it and asks first, every time, even in Bypass.', href: '/docs/tools-and-skills/#plugins', wide: false },
+  { name: 'recall', title: 'Take your last message back', text: 'Sent the wrong thing? Recall it while the bot is still working on it. The bot stops, forgets it, and hands the text back to edit. The rest of the chat stays as it was, so the next reply still uses the prompt cache.', href: '/docs/bots-and-sections/#recall-a-message', wide: false },
+] as const
+
+const smaller = [
+  { name: 'phone', title: 'A messaging app for your bots', text: 'For iPhone and Android, built from source for now. One list holds every chat and room, newest first, with HexBot pinned. Approve steps, answer questions, and watch the computer from your pocket.', href: '/docs/mobile/' },
+  { name: 'installer', title: 'One installer, three ways', text: 'Full on the computer your bots live on, Client everywhere else, Headless for a server. From a window or one curl line, and it downloads only what you pick.', href: '/docs/install/' },
+  { name: 'reasoning', title: 'Choose how hard each bot thinks', text: 'Set each bot\'s reasoning from Off to Max. The list shows only the levels its model supports, so quick bots stay quick and the bookkeeper can take its time.', href: '/docs/providers/' },
+  { name: 'diagnostics', title: 'See what the daemon is doing', text: 'Launch time, CPU and memory over the last hour, a waterfall for every run, failures, and how often the prompt cache hits.', href: '/docs/diagnostics/' },
 ] as const
 
 const openSource = [
@@ -55,8 +89,8 @@ const software = {
 <Base title="Hexbot: your team of AI agents works, remembers, and communicates" jsonLd={[software]}>
   <section class="hero relative mx-auto max-w-[1120px] px-5 pb-16 text-center sm:px-8">
     <div class="hero-crowd" aria-hidden="true">
-      {crowd.map(([shape, color, position, delay]) => (
-        <span class:list={['hero-face', position]}><span class="hero-face-in"><Face shape={shape} color={color} delay={delay} /></span></span>
+      {crowd.map(([shape, color, position, moods]) => (
+        <span class:list={['hero-face', position]}><span class="hero-face-in"><Face shape={shape} color={color} moods={[...moods]} /></span></span>
       ))}
     </div>
     <a class="eyebrow rise relative" href="/faq/#alpha"><span class="nightly-dot" aria-hidden="true"></span>Alpha: very early development</a>
@@ -95,20 +129,79 @@ const software = {
 
   <section class="mx-auto grid max-w-[1120px] gap-10 px-5 pt-24 sm:px-8 lg:grid-cols-3 lg:gap-8">
     <div class="flex flex-col gap-3">
-      <Face shape="round" color="#3b82f6" size={44} delay={0.4} />
+      <Face shape="round" color="#3b82f6" size={44} />
       <h2 class="display-sm text-[1.6rem]">Memory that lasts</h2>
-      <p class="max-w-[36em] text-mute">Every conversation stays until you archive it. Each bot has a soul, its own memory and a searchable history, and one About you text tells all your bots who you are. Overnight, bots dream over the day and keep what mattered.</p>
+      <p class="max-w-[36em] text-mute">You have one chat with each bot, and it never ends. Each bot has a soul, its own memory, daily notes, and a searchable history, and one About you text tells all your bots who you are. Overnight, bots dream over the day and keep what mattered.</p>
     </div>
     <div class="flex flex-col gap-3">
-      <span class="flex"><Face shape="squircle" color="#f5a524" size={44} delay={1.1} /><span class="-ml-2.5"><Face shape="drop" color="#ec2f8a" size={44} delay={2.2} /></span></span>
+      <span class="flex"><Face shape="squircle" color="#f5a524" size={44} look="right" /><span class="-ml-2.5"><Face shape="drop" color="#ec2f8a" size={44} look="left" /></span></span>
       <h2 class="display-sm text-[1.6rem]">Rooms for people and bots</h2>
       <p class="max-w-[36em] text-mute">Put several bots and several people in one chat. Mention a bot to bring it in, or pick a main bot that answers when nobody is named. Bots can message each other, and you can watch the whole exchange.</p>
     </div>
     <div class="flex flex-col gap-3">
-      <Face shape="hex" color="#22a55b" size={44} delay={1.8} />
+      <Face shape="hexagon" color="#22a55b" size={44} />
       <h2 class="display-sm text-[1.6rem]">Runs where you say</h2>
       <p class="max-w-[36em] text-mute">The daemon lives on one machine and keeps working when the app is closed. Pair a phone or a second laptop with a short code on your network, over Tailscale, or through <a href="/docs/connect/">Hex Connect</a> when you are away.</p>
     </div>
+  </section>
+
+  <section id="hexbot" class="mx-auto grid max-w-[1120px] scroll-mt-8 items-center gap-10 px-5 pt-28 sm:px-8 lg:grid-cols-2 lg:gap-16">
+    <div>
+      <p class="text-[13px] font-semibold uppercase tracking-[.08em] text-mute">Meet HexBot</p>
+      <h2 class="display-sm mt-3 text-[clamp(2rem,4.5vw,2.75rem)]">One bot looks after the rest.</h2>
+      <p class="mt-5 text-[1.0625rem]">Setup ends with HexBot, your primary bot. Tell it what you need and it makes the bot for the job, with a face, a soul, and a workspace. It puts bots together in rooms, schedules their work, and changes settings, so you never have to dig through menus.</p>
+      <p class="mt-4 text-mute">It asks before it deletes anything or changes a setting, an approval mode, or a working folder, even in Bypass. It never sees your API keys. Rename it, give it another face, and it is still the one in charge.</p>
+      <p class="mt-5"><a class="font-medium hover:text-accent" href="/docs/bots-and-sections/#the-primary-bot">The primary bot</a></p>
+    </div>
+    <Shot name="hexbot" />
+  </section>
+
+  <section id="new" class="mx-auto max-w-[1120px] scroll-mt-8 px-5 pt-28 sm:px-8">
+    <div class="flex flex-wrap items-end justify-between gap-4">
+      <h2 class="display-sm max-w-[18ch] text-[clamp(2rem,4.5vw,2.75rem)]">New in the alpha.</h2>
+      <a class="text-[15px] font-medium hover:text-accent" href="/blog/october-nightlies/">Everything new this month</a>
+    </div>
+    <div class="mt-10 grid gap-4 lg:grid-cols-2">
+      {features.map(feature => (
+        <article class:list={['flex flex-col gap-5 rounded-[24px] border border-line p-5 sm:p-7', feature.wide && 'lg:col-span-2 lg:grid lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:items-center lg:gap-12']}>
+          <div class:list={[feature.wide && 'lg:order-2']}><Shot name={feature.name} /></div>
+          <div>
+            <h3 class="display-sm text-[1.5rem]">{feature.title}</h3>
+            <p class="mt-2 text-mute">{feature.text}</p>
+            <p class="mt-3"><a class="text-[15px] font-medium hover:text-accent" href={feature.href}>Read more</a></p>
+          </div>
+        </article>
+      ))}
+    </div>
+  </section>
+
+  <section id="faces" class="mx-auto max-w-[1120px] scroll-mt-8 px-5 pt-28 sm:px-8">
+    <div class="rounded-[28px] bg-wash px-5 py-10 sm:px-10 sm:py-14">
+      <div class="mx-auto max-w-[40em] text-center">
+        <h2 class="display-sm text-[clamp(2rem,4.5vw,2.75rem)]">Faces that feel the work.</h2>
+        <p class="mt-4 text-mute">A face folds into dots while its bot thinks, turns into a pencil while it writes, and peers around while it searches. It also reacts to what happens, and Hexbot reads that from the conversation without asking the model, so it costs nothing. Turn on Sounds to hear a bot start, finish, or need you.</p>
+      </div>
+      <div class="face-row mt-10">
+        {moodRow.map(([shape, color, moods]) => <Face shape={shape} color={color} moods={[...moods]} />)}
+      </div>
+      <p class="mt-8 text-center text-[14px] text-mute">These are the app's own faces and motion, live: thinking, writing, searching, working, listening, and reactions from shy to celebrating.</p>
+    </div>
+  </section>
+
+  <section class="mx-auto max-w-[1120px] px-5 pt-28 sm:px-8">
+    <h2 class="display-sm max-w-[20ch] text-[clamp(2rem,4.5vw,2.75rem)]">And wherever you are.</h2>
+    <div class="mt-10 grid gap-x-10 gap-y-14 md:grid-cols-2">
+      {smaller.map(item => (
+        <div class="flex flex-col gap-5">
+          <Shot name={item.name} />
+          <div>
+            <h3 class="display-sm text-[1.35rem]"><a class="hover:text-accent" href={item.href}>{item.title}</a></h3>
+            <p class="mt-1.5 text-mute">{item.text}</p>
+          </div>
+        </div>
+      ))}
+    </div>
+    <p class="mt-10 max-w-[44em] text-mute">Close the window and your bots keep working. Replies and heartbeats still arrive as notifications, and the app keeps running until you choose Quit.</p>
   </section>
 
   <section class="mx-auto max-w-[1120px] px-5 pt-28 sm:px-8">
@@ -152,8 +245,9 @@ const software = {
       <p>Conversations, memory, files, and provider keys live in <code class="rounded-md bg-wash px-1.5 py-0.5 font-mono text-[.92em]">~/.hexbot</code> on the machine running the daemon. Bring your own API key or a subscription you already pay for, from more than 50 model providers.</p>
       <ul class="flex flex-col gap-3 border-t border-line pt-5">
         <li class="grid gap-1 sm:grid-cols-[12rem_1fr]"><strong class="font-semibold">Approvals</strong><span class="text-mute">Bots work inside a sandboxed workspace. Anything outside it, from internet access to a file change elsewhere, waits for you.</span></li>
+        <li class="grid gap-1 sm:grid-cols-[12rem_1fr]"><strong class="font-semibold">Signed updates</strong><span class="text-mute">Daemon and installer updates install only if Hexbot's release key signed them.</span></li>
         <li class="grid gap-1 sm:grid-cols-[12rem_1fr]"><strong class="font-semibold">Devices you can revoke</strong><span class="text-mute">Every paired phone and laptop appears in settings with a revoke button.</span></li>
-        <li class="grid gap-1 sm:grid-cols-[12rem_1fr]"><strong class="font-semibold">Delete means delete</strong><span class="text-mute">Removing a conversation removes its history for good.</span></li>
+        <li class="grid gap-1 sm:grid-cols-[12rem_1fr]"><strong class="font-semibold">Delete means delete</strong><span class="text-mute">Deleting a bot removes its chat, memory, and notes for good.</span></li>
         <li class="grid gap-1 sm:grid-cols-[12rem_1fr]"><strong class="font-semibold">Connect stays out of the way</strong><span class="text-mute">Hex Connect brokers your identity and a hostname. Chat traffic never passes through it.</span></li>
       </ul>
     </div>

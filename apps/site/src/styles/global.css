@@ -1,7 +1,5 @@
 @import "tailwindcss";
 @import "@fontsource-variable/bricolage-grotesque/opsz.css";
-/* Face blink delays are emitted as arbitrary classes from a prop, so Tailwind cannot see them in source. Add new delays here. */
-@source inline("[animation-delay:{0,0.4,0.7,1.1,1.2,1.4,1.8,2.1,2.2,2.6,2.8,3.5,4.2,4.9}s]");
 
 @theme {
   --color-paper: #ffffff;
@@ -46,20 +44,19 @@ p a { color: var(--color-accent); text-decoration: underline; text-underline-off
 .more[open] > summary svg { transform: rotate(180deg); }
 
 /* The hero: headline lines rise in, and the crowd of faces flies in around
-   them and then drifts. This is the site's one moment of motion. */
+   them. From then on each face moves the way it does in the app (scripts/faces.ts). */
 .hero { padding-top: 5rem; }
 .hero-crowd { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
 .hero-face { position: absolute; left: calc(50% + var(--x)); top: var(--y); width: var(--s); height: var(--s); margin-left: calc(var(--s) / -2); }
-.hero-face-in { display: block; width: 100%; height: 100%; animation: face-in 1s cubic-bezier(.2, .7, .2, 1) var(--in) both, face-drift var(--dd) ease-in-out calc(var(--in) + 1s) infinite; }
+.hero-face-in { display: block; width: 100%; height: 100%; animation: face-in 1s cubic-bezier(.2, .7, .2, 1) var(--in) both; }
 .hero-face-in .face { width: 100%; height: 100%; }
 @keyframes face-in { from { opacity: 0; transform: translate(var(--fx), var(--fy)) rotate(calc(var(--rot) + 24deg)) scale(.6); } to { opacity: 1; transform: translate(0, 0) rotate(var(--rot)) scale(1); } }
-@keyframes face-drift { 0%, 100% { transform: translate(0, 0) rotate(var(--rot)); } 50% { transform: translate(var(--dx), var(--dy)) rotate(calc(var(--rot) + var(--wob))); } }
-.hf-1 { --x: -450px; --y: 110px; --s: 104px; --rot: -10deg; --fx: -80px; --fy: 40px; --dx: 6px; --dy: -10px; --wob: 3deg; --in: 240ms; --dd: 9s; }
-.hf-2 { --x: -230px; --y: 6px; --s: 68px; --rot: -5deg; --fx: -40px; --fy: -60px; --dx: -5px; --dy: 8px; --wob: -3deg; --in: 380ms; --dd: 11s; }
-.hf-3 { --x: 230px; --y: 10px; --s: 72px; --rot: 6deg; --fx: 40px; --fy: -60px; --dx: 6px; --dy: 7px; --wob: 3deg; --in: 460ms; --dd: 10s; }
-.hf-4 { --x: 460px; --y: 120px; --s: 100px; --rot: 8deg; --fx: 80px; --fy: 40px; --dx: -7px; --dy: -8px; --wob: -3deg; --in: 300ms; --dd: 8.5s; }
-.hf-5 { --x: -420px; --y: 380px; --s: 76px; --rot: -7deg; --fx: -70px; --fy: 60px; --dx: 7px; --dy: 6px; --wob: 4deg; --in: 560ms; --dd: 12s; }
-.hf-6 { --x: 430px; --y: 390px; --s: 76px; --rot: 7deg; --fx: 70px; --fy: 60px; --dx: -6px; --dy: 8px; --wob: -4deg; --in: 640ms; --dd: 9.5s; }
+.hf-1 { --x: -450px; --y: 110px; --s: 104px; --rot: -10deg; --fx: -80px; --fy: 40px; --in: 240ms; }
+.hf-2 { --x: -230px; --y: 6px; --s: 68px; --rot: -5deg; --fx: -40px; --fy: -60px; --in: 380ms; }
+.hf-3 { --x: 230px; --y: 10px; --s: 72px; --rot: 6deg; --fx: 40px; --fy: -60px; --in: 460ms; }
+.hf-4 { --x: 460px; --y: 120px; --s: 100px; --rot: 8deg; --fx: 80px; --fy: 40px; --in: 300ms; }
+.hf-5 { --x: -420px; --y: 380px; --s: 76px; --rot: -7deg; --fx: -70px; --fy: 60px; --in: 560ms; }
+.hf-6 { --x: 430px; --y: 390px; --s: 76px; --rot: 7deg; --fx: 70px; --fy: 60px; --in: 640ms; }
 @media (width <= 820px) {
   .hero { padding-top: 7.5rem; }
   .hf-1 { --x: -37vw; --y: 24px; --s: 60px; }
@@ -75,16 +72,11 @@ p.rise, div.rise { display: block; }
 div.rise { display: flex; }
 .rise-2 { animation-delay: 90ms; } .rise-3 { animation-delay: 180ms; } .rise-4 { animation-delay: 300ms; } .rise-5 { animation-delay: 420ms; }
 
-/* Bot faces. Eyes blink at rest; a small script points them at the cursor. */
+/* Bot faces (components/Face.astro). The app's face engine moves them. */
 .face { display: inline-block; }
-.face .eyes { transform-box: fill-box; transform-origin: center; animation: blink 5.4s infinite; }
-.face .pupils { transition: transform 160ms ease-out; }
-@keyframes blink { 0%, 93%, 100% { transform: scaleY(1); } 96.5% { transform: scaleY(.08); } }
 @media (prefers-reduced-motion: reduce) {
   .hero-face-in { animation: none; transform: rotate(var(--rot)); }
   .rise { animation: none; }
-  .face .eyes { animation: none; }
-  .face .pupils { transition: none; }
   .button:hover { transform: none; }
   html { scroll-behavior: auto; }
 }
@@ -148,3 +140,13 @@ div.rise { display: flex; }
 .legal dl { margin: 1rem 0; }
 .legal dt { font-weight: 650; }
 .legal dd { margin: .15rem 0 .75rem; color: var(--color-mute); }
+
+/* Phone screens from the mobile app (components/Shot.astro), side by side. */
+.phones { display: flex; justify-content: center; gap: clamp(.75rem, 3vw, 1.5rem); }
+.phone-screen { width: min(46%, 240px); height: auto; border-radius: 30px; box-shadow: 0 0 0 7px #17171a, 0 30px 60px -30px rgb(0 0 0 / .5); }
+.phone-screen + .phone-screen { margin-top: 2.5rem; }
+
+/* Live faces (components/Face.astro) in a row, each going through its moods. */
+.face-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2rem 1rem; justify-items: center; }
+@media (min-width: 768px) { .face-row { grid-template-columns: repeat(8, minmax(0, 1fr)); } }
+.face-row .face { width: min(100%, 88px); }

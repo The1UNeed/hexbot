@@ -44,7 +44,7 @@ Shows whether the daemon is running, its version and port, its LAN addresses whe
 hexbot diagnostics
 ```
 
-Prints what the running daemon measured since it started, as JSON: how long it took to launch, its processes and their CPU and memory over the last hour, load, prompt and database cache hit rates, recent runs and requests with their timings, and the failures it saw. The app shows the same in Settings, Advanced, Diagnostics, where Copy report copies it.
+Prints what the running daemon measured since it started, as JSON: how long it took to launch, its processes and their CPU and memory over the last hour, load, prompt and database cache hit rates, recent runs and requests with their timings, and the failures it saw. The app shows the same in Settings, Advanced, [Diagnostics](/docs/diagnostics/), where Copy report copies it.
 
 ## Run the daemon as a service
 

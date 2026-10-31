@@ -1,36 +1,78 @@
 ---
 /**
- * A bot face as the app draws it: a shape, a colour, two capsule eyes painted
- * on a ball (apps/web/src/lib/avatar-builder.ts has the same geometry). The
- * eyes sit in the ball frame, so the script that turns them toward the
- * pointer moves a small triangle and a big round face by the same angle.
+ * A bot face, drawn exactly as the app's LiveFace draws it
+ * (apps/web/src/components/ui/avatar.tsx), from the app's own geometry and
+ * rest poses. scripts/faces.ts then moves it with the app's face engine
+ * (apps/web/src/lib/face-motion.ts): it blinks, glances, bobs and changes
+ * mood the way it does in Hexbot.
  * Give `size` for a fixed face, or omit it and size the parent: the SVG then fills its container.
+ * `moods` makes the face go through those moods in turn, as a bot's face does while it works.
  */
-interface Props { shape: keyof typeof shapes; color: string; size?: number; class?: string; delay?: number }
-const shapes = {
-  round: { path: 'M50 5a45 45 0 1 1 0 90a45 45 0 1 1 0-90Z', cy: 54, r: 45 },
-  squircle: { path: 'M50 5c34 0 45 11 45 45S84 95 50 95 5 84 5 50 16 5 50 5Z', cy: 54, r: 45 },
-  square: { path: 'M24 7h52a17 17 0 0 1 17 17v52a17 17 0 0 1-17 17H24A17 17 0 0 1 7 76V24A17 17 0 0 1 24 7Z', cy: 53, r: 43 },
-  wide: { path: 'M50 20c31 0 47 13 47 30S81 80 50 80 3 67 3 50s16-30 47-30Z', cy: 51, r: 32 },
-  tri: { path: 'M43 12a8 8 0 0 1 14 0l38 66a8 8 0 0 1-7 12H12a8 8 0 0 1-7-12Z', cy: 67, r: 24 },
-  hex: { path: 'M44 6a12 12 0 0 1 12 0l30 17a12 12 0 0 1 6 10v34a12 12 0 0 1-6 10L56 94a12 12 0 0 1-12 0L14 77a12 12 0 0 1-6-10V33a12 12 0 0 1 6-10Z', cy: 52, r: 44 },
-  cloud: { path: 'M26 85a19 19 0 0 1-5.9-37 28 28 0 0 1 55.8-4.6 21 21 0 0 1-3.9 41.6Z', cy: 57, r: 30 },
-  drop: { path: 'M50 5c12.7 19.8 38 36.3 38 52a38 38 0 0 1-76 0C12 41.3 37.3 24.8 50 5Z', cy: 59, r: 37 },
-}
+import { AVATAR_SHAPES, ballTransform, CAPSULE_EYE, type FaceLook, type FaceMood, INK } from '../../../web/src/lib/face-geometry'
+import { coreTransform, dotLift, dotTransform, MORPH_KINDS, pencilTransform, restFrame, SPARKS, tints } from '../../../web/src/lib/face-motion'
+
+interface Props { shape: string; color: string; size?: number; class?: string; mood?: FaceMood; moods?: FaceMood[]; look?: FaceLook }
+const { shape, color, size, class: className = '', mood = 'idle', moods, look } = Astro.props
+const outline = AVATAR_SHAPES.find(item => item.id === shape) ?? AVATAR_SHAPES[0]!
 /** Chalk is the one colour too light for white eyes. */
-const LIGHT = ['#ececf0']
-const { shape, color, size, class: className = '', delay = 0 } = Astro.props
-const { path, cy, r } = shapes[shape]
-const eyes = LIGHT.includes(color.toLowerCase()) ? '#151517' : '#ffffff'
+const eyes = color.toLowerCase() === '#ececf0' ? INK : '#ffffff'
+const start = moods?.[0] ?? mood
+const rest = restFrame(start, look)
+const tint = `face-tint-${Math.random().toString(36).slice(2, 9)}`
+const SPARK = 'M0 -1Q0.16 -0.16 1 0Q0.16 0.16 0 1Q-0.16 0.16 -1 0Q-0.16 -0.16 0 -1Z'
+const whirls = [
+  { dash: '55 45', rx: 38, ry: 13, turn: -22, width: 6 },
+  { dash: '38 62', rx: 31, ry: 10, turn: 30, width: 4.5 },
+]
 ---
-<svg aria-hidden="true" class:list={['face', size === undefined && 'h-auto w-full', className]} viewBox="0 0 100 100" width={size ?? 100} height={size ?? 100} data-face>
-  <path d={path} fill={color}></path>
-  <g transform={`translate(50 ${cy}) scale(${r / 45})`}>
-    <g class="pupils">
-      <g class:list={['eyes', `[animation-delay:${delay}s]`]}>
-        <rect x="-20.35" y="-13.5" width="11.7" height="27" rx="5.85" fill={eyes}></rect>
-        <rect x="8.65" y="-13.5" width="11.7" height="27" rx="5.85" fill={eyes}></rect>
+<svg aria-hidden="true" class:list={['face overflow-visible', size === undefined && 'h-auto w-full', className]} viewBox="0 0 100 100" width={size ?? 100} height={size ?? 100} data-face data-mood={start} data-moods={moods?.join(',')} data-look={look}>
+  <defs>
+    <linearGradient id={tint} x1="0" x2="1" y1="0" y2="0.3">
+      {tints(color).map((stop, index) => <stop offset={index / 2} stop-color={stop.color} stop-opacity={stop.opacity}></stop>)}
+    </linearGradient>
+  </defs>
+  <g data-part="head" transform={rest.head}>
+    <g data-part="body" display={rest.bodyShown ? 'inline' : 'none'} transform={rest.body}>
+      <path d={outline.path} fill={color}></path>
+      <g transform={ballTransform(outline.ball)}>
+        <g data-part="gaze" transform={rest.gaze}>
+          {rest.eyes.map(transform => <g data-part="eye" transform={transform}><path d={CAPSULE_EYE} fill={eyes}></path></g>)}
+        </g>
       </g>
     </g>
+    <g data-part="trail" display="none">
+      {[{ dash: '38 62', width: 7 }, { dash: '26 74', width: 4.5 }].map(({ dash, width }, index) => (
+        <ellipse cx="50" cy={outline.ball.cy} data-part="trail-band" fill="none" pathLength="100" rx={outline.ball.r * 1.22 + index * 4} ry={outline.ball.r * 0.3 + index * 2} stroke={`url(#${tint})`} stroke-dasharray={dash} stroke-dashoffset="0" stroke-linecap="round" stroke-width={width}></ellipse>
+      ))}
+    </g>
+  </g>
+  {MORPH_KINDS.map(kind => (
+    <g data-morph={kind} data-part="morph" display={rest.morph === kind ? 'inline' : 'none'} transform={rest.morph === kind ? rest.morphScale : coreTransform(0)}>
+      {kind === 'dots' && [0, 1, 2].map(index => {
+        const lift = dotLift(index, 0)
+        return <g data-part="dot" opacity={Math.round((0.45 + 0.55 * lift) * 100) / 100} transform={dotTransform(index, lift)}><circle fill={color} r="1"></circle></g>
+      })}
+      {kind === 'pencil' && (
+        <g data-part="pencil" transform={pencilTransform(0)}>
+          <path d="M-7 -30a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4v42h-14Z" fill={color}></path>
+          <path d="M-7 -24h14v5h-14Z" fill={eyes} opacity="0.55"></path>
+          <path d="M-7 12h14l-7 17Z" fill={color} opacity="0.55"></path>
+          <path d="M-2.6 22.4h5.2l-2.6 6.6Z" fill={color}></path>
+        </g>
+      )}
+      {kind === 'whirl' && (
+        <>
+          {whirls.map(({ dash, rx, ry, turn, width }) => (
+            <g transform={`translate(50 52) rotate(${turn})`}>
+              <ellipse data-part="whirl" fill="none" pathLength="100" rx={rx} ry={ry} stroke={`url(#${tint})`} stroke-dasharray={dash} stroke-dashoffset="0" stroke-linecap="round" stroke-width={width}></ellipse>
+            </g>
+          ))}
+          <circle cx="50" cy="52" fill={color} r="7"></circle>
+        </>
+      )}
+    </g>
+  ))}
+  <g data-part="sparks" display="none">
+    {Array.from({ length: SPARKS }, () => <g data-part="spark" transform="scale(0)"><path d={SPARK} fill={color}></path></g>)}
   </g>
 </svg>

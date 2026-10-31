@@ -1,29 +1,41 @@
 ---
 import Base from '../layouts/Base.astro'
+import Shot from '../components/Shot.astro'
 
-type Step = { title: string; text: string[]; shot?: { src: string; width: number; height: number; alt: string }; link?: [string, string] }
+type Step = { title: string; text: string[]; shot?: { src: string; width: number; height: number; alt: string }; scene?: 'installer' | 'hexbot' | 'heartbeat-settings' | 'computer' | 'visual' | 'phone'; link?: [string, string] }
 const steps: Step[] = [
   {
     title: 'Install one app',
     text: [
-      'Download Hexbot for Mac or Linux and choose "Run on this machine". The app starts the daemon: the part that runs your bots, keeps their memory, and serves the app.',
-      'The daemon keeps working when you close the window, so scheduled jobs and long tasks carry on.',
+      'Download the Hexbot Installer for Mac or Linux, or run one line in a terminal, and choose Full. The app starts the daemon: the part that runs your bots, keeps their memory, and serves the app.',
+      'Choose Client on your other computers, or Headless to run the daemon alone on a server. The daemon keeps working when you close the window, so heartbeats, scheduled jobs, and long tasks carry on.',
     ],
+    scene: 'installer',
     link: ['Install', '/docs/install/'],
   },
   {
     title: 'Connect a model',
     text: [
       'Sign in with a subscription you already have, or paste an API key. More than 50 providers are listed, and local models work too.',
-      'Pick a default model for new bots and an optional fallback for when a provider is down.',
+      'Pick a default model for new bots and an optional fallback for when a provider is down. Each bot can also think harder or faster, from Off to Max.',
     ],
     shot: { src: '/screens/providers.webp', width: 1100, height: 1113, alt: 'The Connect a provider step, with OpenCode Go connected and subscription providers listed.' },
     link: ['Providers and billing', '/docs/providers/'],
   },
   {
-    title: 'Make a bot',
+    title: 'Meet HexBot',
+    text: [
+      'Setup ends in a chat with HexBot, your primary bot. Ask it for a bot that does a job, and it makes one. It also builds rooms, schedules work, and changes settings for you.',
+      'It always asks before deleting anything or changing a setting, even in Bypass, and it never sees your keys.',
+    ],
+    scene: 'hexbot',
+    link: ['The primary bot', '/docs/bots-and-sections/#the-primary-bot'],
+  },
+  {
+    title: 'Or make a bot yourself',
     text: [
       'Give it a face, a name, and a starting role such as Research scout, Writer, Planner, Coder, Ops, or Chief of staff. Each bot can run on a different model.',
+      'Its face moves with the work and reacts to what happens: shy when you thank it, proud after a long job.',
     ],
     shot: { src: '/screens/create-bot.webp', width: 1000, height: 1329, alt: 'The bot builder: a blue round face named Scout with the Chief of staff role selected.' },
   },
@@ -48,16 +60,42 @@ const steps: Step[] = [
   {
     title: 'Bots remember and dream',
     text: [
-      'Each bot keeps its own memory as it works. About you is one text you write that every bot reads.',
-      'Once a day, at 3 a.m. by default, each bot dreams: it reads the day\'s conversations and tidies its memory, merging notes, sharpening them, and dropping what went stale.',
+      'Each bot keeps its own memory as it works, and short daily notes about what happened. About you is one text you write that every bot reads.',
+      'Once a day, at 3 a.m. by default, each bot dreams: it reads the day\'s notes and conversations and folds what lasts into its memory, merging, sharpening, and dropping what went stale.',
     ],
     shot: { src: '/screens/memory.webp', width: 1800, height: 1326, alt: 'Scout\'s Memory settings with its notes, the About you link, and the dreaming schedule.' },
     link: ['Dreaming', '/docs/dreaming/'],
   },
   {
+    title: 'It keeps an eye on things',
+    text: [
+      'Every 30 minutes, day and night, each bot works through its heartbeat: a short checklist you write, or that it keeps when you say "let me know if…". It reads its memory, its connectors, and the web.',
+      'Most heartbeats end quietly. When something needs you, it sends one short message to its chat and your devices. An empty checklist runs nothing and costs nothing.',
+    ],
+    scene: 'heartbeat-settings',
+    link: ['Heartbeat', '/docs/bots-and-sections/#heartbeat'],
+  },
+  {
+    title: 'It uses a computer you can watch',
+    text: [
+      'Your bots share a Linux desktop of their own, made with Cua on the daemon computer. They click and type in its browser and terminal, one action at a time, each with a cursor wearing its face.',
+      'Watch from the Computer tab or your phone. Choose Take control when something goes wrong, then Give back.',
+    ],
+    scene: 'computer',
+    link: ["Your bots' computer", '/docs/tools-and-skills/#your-bots-computer'],
+  },
+  {
+    title: 'It shows you, not only tells you',
+    text: [
+      'In its chat, a bot can draw a chart, table, diagram, or mockup above its reply. It stays live, so you can hover and click, and Expand opens it in a tab beside the chat.',
+    ],
+    scene: 'visual',
+    link: ['Visuals', '/docs/visuals/'],
+  },
+  {
     title: 'You approve what matters',
     text: [
-      'Bots work inside a sandboxed workspace and ask before stepping outside it: a command that needs the internet, a file change elsewhere on your computer. Manual mode asks before every change; Bypass asks nothing.',
+      'Bots work freely inside a sandboxed workspace. A step outside it, such as a command that needs the internet or a file change elsewhere, is checked by the bot\'s model first: routine steps run, and risky ones wait for you. That check is a judgment, not a sandbox. Manual asks before every change; Bypass asks nothing.',
     ],
     link: ['Approvals', '/docs/approvals/'],
   },
@@ -65,7 +103,9 @@ const steps: Step[] = [
     title: 'Reach it from any device',
     text: [
       'Pair a phone or another laptop with a one-time code on your network. Away from home, use Tailscale or Hex Connect. Every paired device can be revoked in Settings.',
+      'The iPhone and Android app reads like a messaging app: every chat and room in one list, with HexBot pinned at the top.',
     ],
+    scene: 'phone',
     link: ['Pairing and LAN', '/docs/pairing-and-lan/'],
   },
 ]
@@ -73,12 +113,12 @@ const steps: Step[] = [
 <Base title="How it works" description="How Hexbot works, from install to a working crew: connect a model, make bots that interview you, put them in rooms, and let them remember and dream.">
   <section class="mx-auto max-w-[1120px] px-5 pt-10 sm:px-8 lg:pt-16">
     <h1 class="display text-[clamp(2.75rem,7vw,4.25rem)]">How Hexbot works</h1>
-    <p class="lede mt-4">From install to a crew that knows your work, in eight steps. Every screenshot comes from a real nightly build.</p>
+    <p class="lede mt-4">From install to a crew that knows your work, in {steps.length} steps. Every picture is a screenshot of the app.</p>
   </section>
 
   <ol class="mx-auto max-w-[1120px] px-5 sm:px-8">
     {steps.map((step, i) => (
-      <li id={`step-${i + 1}`} class:list={['grid scroll-mt-8 gap-8 border-b border-line py-16 lg:gap-16', step.shot && 'lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]']}>
+      <li id={`step-${i + 1}`} class:list={['grid scroll-mt-8 gap-8 border-b border-line py-16 lg:gap-16', (step.shot || step.scene) && 'lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]']}>
         <div class="max-w-[34em]">
           <span class="step-number">{i + 1}</span>
           <h2 class="display-sm mt-4 text-[clamp(1.75rem,4vw,2.25rem)]">{step.title}</h2>
@@ -86,6 +126,7 @@ const steps: Step[] = [
           {step.link && <p class="mt-4"><a class="font-medium hover:text-accent" href={step.link[1]}>{step.link[0]}</a></p>}
         </div>
         {step.shot && <figure class="shot self-start bg-paper"><img src={step.shot.src} width={step.shot.width} height={step.shot.height} alt={step.shot.alt} loading={i < 2 ? 'eager' : 'lazy'} /></figure>}
+        {step.scene && <div class="self-start"><Shot name={step.scene} eager={i < 2} /></div>}
       </li>
     ))}
   </ol>
@@ -93,7 +134,7 @@ const steps: Step[] = [
   <section class="mx-auto max-w-[1120px] px-5 pt-16 sm:px-8">
     <h2 class="display-sm text-[clamp(1.75rem,4vw,2.25rem)]">Under the hood</h2>
     <div class="mt-6 grid gap-8 text-mute sm:grid-cols-3">
-      <p>Hexbot is built on <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a>, an open-source agent core. Each bot is its own profile, and one daemon runs them all.</p>
+      <p>One daemon, written in Rust, runs every bot. Each conversation is an agent session on <a href="https://github.com/earendil-works/pi">Pi</a>. Hexbot began as a fork of <a href="https://github.com/NousResearch/hermes-agent">Hermes Agent</a> by Nous Research.</p>
       <p>Every conversation is one long-lived session with its own context. The prompt is not rebuilt mid-conversation, so providers can reuse their cache and each turn stays cheaper.</p>
       <p>Everything lives in <code class="rounded-md bg-wash px-1.5 py-0.5 font-mono text-[.92em]">~/.hexbot</code> on your machine. Hex Connect, if you use it, only brokers sign-in and a hostname.</p>
     </div>
