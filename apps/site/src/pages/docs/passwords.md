@@ -4,11 +4,11 @@ title: Passwords
 description: Save sign-ins for your bots. They type them into pages and never see them.
 ---
 
-A bot that uses the Browser or Computer use can sign in to websites for you with passwords you save in Hexbot. The bot never reads a password: it asks Hexbot to type one into a field, and Hexbot does that only on the site the password was saved for.
+Every bot can sign in to websites for you on its computer with passwords you save in Hexbot. The bot never reads a password: it asks Hexbot to type one into a field on the bots' computer.
 
 ## Saving a password from a chat
 
-When a bot needs to sign in somewhere and has no password for it, it shows a **Sign in** card in its chat with fields for your username and password. What you type goes from your app to the daemon, which saves it and types it into the page. It never appears in the conversation, in the bot's history, or in what is sent to the model provider. The card then shows **Submitted**. Choose **Cancel** to tell the bot no.
+When a bot needs to sign in somewhere and has no password for it, it shows a **Sign in** card in its chat with fields for your username and password. What you type goes from your app to the daemon, which saves it. It never appears in the conversation, in the bot's history, or in what is sent to the model provider. The card then shows **Submitted**. Choose **Cancel** to tell the bot no.
 
 If a saved password stops working, the bot shows the card again for that site so you can enter the current one.
 
@@ -36,8 +36,7 @@ Bots' shell commands and file tools can't read the vault or its key in Auto or M
 
 ## Where bots can use them
 
-- **Browser**: Hexbot checks the page's address first. A password saved for `app.schoology.com` is typed only into a page on `app.schoology.com`, `schoology.com`, or a site inside one of them, and never from an `https` site into an `http` page.
 - **Computer use**: Hexbot can't see which site the bots' computer shows, so it asks you before typing unless the bot uses Bypass. Look at the computer before you allow it.
 - Passwords work in a bot's own chat and in its scheduled jobs. A scheduled job can use a saved password but can't show the Sign in card. Rooms and conversations between bots can't use passwords.
 
-A page's own scripts can read a field after it is filled. Hexbot hides filled passwords in anything the browser shows the bot afterwards, but a bot set on finding one could still get it. Give each password only to bots that need it.
+A page's own scripts can read a field after it is filled, and a bot set on finding a password could still get it. Give each password only to bots that need it.

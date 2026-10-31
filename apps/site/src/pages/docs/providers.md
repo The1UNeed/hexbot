@@ -81,7 +81,7 @@ Model names, prices, context limits, and availability can change. Check the prov
 
 ## Model credentials and connectors
 
-A model provider generates replies. Web search, cloud browser, image generation, and premium voice are separate [connectors](/docs/tools-and-skills/) with their own credentials and per-bot switches. If a bot can reply but cannot use one of those tools, check its Connectors settings instead of replacing the model key.
+A model provider generates replies. Web search, image generation, and premium voice are separate [connectors](/docs/tools-and-skills/) with their own credentials and per-bot switches. If a bot can reply but cannot use one of those tools, check its Connectors settings instead of replacing the model key.
 
 ## Understand charges
 

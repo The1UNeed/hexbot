@@ -64,6 +64,44 @@ function botsText(plugin: Plugin, bots: PluginBot[]): string {
   return `${on.length} bots`
 }
 
+type Category = 'connectors' | 'servers' | 'skills'
+
+const CATEGORIES: {
+  description: string
+  empty: string
+  id: Category
+  label: string
+  search: string
+}[] = [
+  {
+    description:
+      'Services Hexbot supports. Keys are stored once on this daemon; each bot you turn one on for uses them.',
+    empty: 'No connector matches that.',
+    id: 'connectors',
+    label: 'Connectors',
+    search: 'Search connectors'
+  },
+  {
+    description:
+      'Servers you or your bots add. A server can come with skills that explain it. A bot that needs one asks you first.',
+    empty: 'No MCP server matches that.',
+    id: 'servers',
+    label: 'MCP servers',
+    search: 'Search MCP servers'
+  },
+  {
+    description:
+      "Instructions bots follow for particular jobs. Skills a bot writes for itself stay in that bot's settings.",
+    empty: 'No skill matches that.',
+    id: 'skills',
+    label: 'Skills',
+    search: 'Search skills'
+  }
+]
+
+const categoryOf = (plugin: Plugin): Category =>
+  plugin.category === 'mcp' ? 'servers' : plugin.kind === 'connector' ? 'connectors' : 'skills'
+
 export function PluginsSettings(): React.JSX.Element {
   const byName = useBots(state => state.byName)
   const order = useBots(state => state.order)
@@ -83,6 +121,7 @@ export function PluginsSettings(): React.JSX.Element {
   const loading = usePlugins(state => state.loading)
   const loadError = usePlugins(state => state.error)
   const refresh = usePlugins(state => state.refresh)
+  const [category, setCategory] = useState<Category>('connectors')
   const [query, setQuery] = useState('')
   const [focus, setFocus] = useState<null | string>(null)
   const [expanded, setExpanded] = useState<null | string>(null)
@@ -101,23 +140,32 @@ export function PluginsSettings(): React.JSX.Element {
 
   // A bot that was deleted while it was chosen falls back to every bot.
   const focused = bots.find(bot => bot.name === focus) ?? null
+  const current = CATEGORIES.find(item => item.id === category)!
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase()
 
     return plugins.filter(
       item =>
-        !needle ||
-        `${item.name} ${item.description} ${item.category}`.toLowerCase().includes(needle)
+        categoryOf(item) === category &&
+        (!needle ||
+          `${item.name} ${item.description} ${item.category}`.toLowerCase().includes(needle))
     )
-  }, [plugins, query])
+  }, [category, plugins, query])
 
-  const connectors = visible.filter(item => item.kind === 'connector' && item.category !== 'mcp')
-  const servers = visible.filter(item => item.category === 'mcp')
-  const skillPackages = visible.filter(item => item.kind === 'package' && item.category !== 'mcp')
+  const counts = useMemo(() => {
+    const result: Record<Category, number> = { connectors: 0, servers: 0, skills: 0 }
+
+    for (const item of plugins) {
+      result[categoryOf(item)]++
+    }
+
+    return result
+  }, [plugins])
+
+  const skillPackages = visible.filter(item => item.kind === 'package')
   const skills = visible.filter(item => item.kind === 'skill')
   const skillCategories = [...new Set(skills.map(item => item.category))].sort()
-  const tools = visible.filter(item => item.kind === 'capability')
   const sheetPlugin = plugins.find(item => keyOf(item) === sheet)?.connector
 
   const row = (plugin: Plugin) => (
@@ -134,20 +182,56 @@ export function PluginsSettings(): React.JSX.Element {
 
   return (
     <>
-      <Heading description="Everything your bots can use: services Hexbot supports, MCP servers, skills and built-in tools. Choose which bots get each one.">
+      <Heading description="Connectors, MCP servers and skills your bots can use. Choose which bots get each one.">
         Plugins
       </Heading>
-      <div className="mb-8 grid gap-3">
+      <div
+        aria-label="Plugin kinds"
+        className="mb-5 flex gap-6 border-b border-foreground/[0.08]"
+        role="tablist"
+      >
+        {CATEGORIES.map(item => (
+          <button
+            aria-controls="plugins-panel"
+            aria-selected={category === item.id}
+            className={cn(
+              'hex-focus -mb-px flex h-9 items-center gap-1.5 border-b-2 text-[length:var(--text-body)] transition-colors duration-[var(--hex-motion-fast)]',
+              category === item.id
+                ? 'border-foreground font-medium text-foreground'
+                : 'border-transparent text-muted hover:text-foreground'
+            )}
+            key={item.id}
+            onClick={() => {
+              setCategory(item.id)
+              setExpanded(null)
+              setAdding(false)
+            }}
+            role="tab"
+            type="button"
+          >
+            {item.label}
+            {plugins.length ? (
+              <span className="text-[length:var(--text-meta)] font-normal text-muted tabular-nums">
+                {counts[item.id]}
+              </span>
+            ) : null}
+          </button>
+        ))}
+      </div>
+      <p className="-mt-1 mb-4 text-[length:var(--text-secondary)] text-muted">
+        {current.description}
+      </p>
+      <div className="mb-6 grid gap-3">
         <label className="relative block">
           <Search
             className="pointer-events-none absolute top-1/2 left-3.5 -translate-y-1/2 text-muted"
             size={15}
           />
           <Input
-            aria-label="Search plugins"
+            aria-label={current.search}
             className="rounded-full pl-9"
             onChange={event => setQuery(event.target.value)}
-            placeholder="Search plugins"
+            placeholder={current.search}
             value={query}
           />
         </label>
@@ -180,27 +264,21 @@ export function PluginsSettings(): React.JSX.Element {
       ) : null}
       {loading && !plugins.length ? <SkeletonLines label="Loading plugins" /> : null}
       {plugins.length ? (
-        <div className="space-y-12">
-          <PluginSection
-            description="Services Hexbot supports. Keys are stored once on this daemon; each bot you turn one on for uses them."
-            title="Connectors"
-          >
-            {CONNECTOR_GROUPS.map(group => {
-              const rows = connectors.filter(item => item.category === group.id)
+        <div className="space-y-6" id="plugins-panel" role="tabpanel">
+          {category === 'connectors'
+            ? CONNECTOR_GROUPS.map(group => {
+                const rows = visible.filter(item => item.category === group.id)
 
-              return rows.length ? (
-                <Group key={group.id} title={group.title}>
-                  {rows.map(row)}
-                </Group>
-              ) : null
-            })}
-          </PluginSection>
-          <PluginSection
-            description="Servers you or your bots add. A server can come with skills that explain it. A bot that needs one asks you first."
-            title="MCP servers"
-          >
+                return rows.length ? (
+                  <Group key={group.id} title={group.title}>
+                    {rows.map(row)}
+                  </Group>
+                ) : null
+              })
+            : null}
+          {category === 'servers' ? (
             <Group>
-              {servers.map(row)}
+              {visible.map(row)}
               {adding ? (
                 <AddServerForm onDone={() => setAdding(false)} />
               ) : (
@@ -216,31 +294,22 @@ export function PluginsSettings(): React.JSX.Element {
                 </button>
               )}
             </Group>
-          </PluginSection>
-          <PluginSection
-            description="Instructions bots follow for particular jobs. Skills a bot writes for itself stay in that bot's settings."
-            title="Skills"
-          >
-            {skillPackages.length ? (
-              <Group title="Skill packages">{skillPackages.map(row)}</Group>
-            ) : null}
-            {skillCategories.map(category => (
-              <Group key={category} title={categoryTitle(category)}>
-                {skills.filter(item => item.category === category).map(row)}
-              </Group>
-            ))}
-          </PluginSection>
-          {tools.length ? (
-            <PluginSection
-              description="Tools that need a program on the daemon's computer. One that isn't set up says what it takes."
-              title="Built-in tools"
-            >
-              <Group>{tools.map(row)}</Group>
-            </PluginSection>
           ) : null}
-          {!visible.length ? (
+          {category === 'skills' ? (
+            <>
+              {skillPackages.length ? (
+                <Group title="Skill packages">{skillPackages.map(row)}</Group>
+              ) : null}
+              {skillCategories.map(name => (
+                <Group key={name} title={categoryTitle(name)}>
+                  {skills.filter(item => item.category === name).map(row)}
+                </Group>
+              ))}
+            </>
+          ) : null}
+          {!visible.length && (category !== 'servers' || query.trim()) ? (
             <p className="px-1 text-[length:var(--text-secondary)] text-muted">
-              No plugin matches that.
+              {query.trim() ? current.empty : 'Nothing here yet.'}
             </p>
           ) : null}
         </div>
@@ -255,24 +324,6 @@ export function PluginsSettings(): React.JSX.Element {
         />
       ) : null}
     </>
-  )
-}
-
-function PluginSection({
-  children,
-  description,
-  title
-}: {
-  children: React.ReactNode
-  description: string
-  title: string
-}) {
-  return (
-    <section aria-label={title}>
-      <h3 className="text-[length:var(--text-body)] font-semibold">{title}</h3>
-      <p className="mt-0.5 mb-4 text-[length:var(--text-secondary)] text-muted">{description}</p>
-      <div className="space-y-6">{children}</div>
-    </section>
   )
 }
 
@@ -293,11 +344,6 @@ function PluginRow({
 }) {
   const setBots = usePlugins(state => state.setBots)
   const [error, setError] = useState<null | string>(null)
-  // One that isn't set up can be taken away from bots, not given to them. A
-  // connector or skill can be ready for one bot through a key in its own
-  // `.env`, so only the daemon can tell; a built-in tool is the same for all.
-  const unready = !plugin.ready && plugin.kind === 'capability'
-  const hasSetup = Boolean(plugin.kind === 'connector' && plugin.connector?.fields.length)
 
   const choose = (next: string[]) => {
     setError(null)
@@ -307,26 +353,14 @@ function PluginRow({
   const toggle = (bot: string, on: boolean) =>
     choose(on ? [...plugin.bots, bot] : plugin.bots.filter(name => name !== bot))
 
+  // A connector or skill can be ready for one bot through a key in its own
+  // `.env`, so only the daemon can tell whether a bot may have it.
   const control = focus ? (
-    unready && !plugin.bots.includes(focus.name) ? (
-      hasSetup ? (
-        <Button
-          onClick={onSetup}
-          size="sm"
-          variant={plugin.state === 'error' ? 'primary' : undefined}
-        >
-          {plugin.state === 'error' ? 'Fix' : 'Set up'}
-        </Button>
-      ) : (
-        <span className="shrink-0 text-[length:var(--text-secondary)] text-muted">Not set up</span>
-      )
-    ) : (
-      <Switch
-        aria-label={`${plugin.name} for ${focus.display_name}`}
-        checked={plugin.bots.includes(focus.name)}
-        onCheckedChange={on => toggle(focus.name, on)}
-      />
-    )
+    <Switch
+      aria-label={`${plugin.name} for ${focus.display_name}`}
+      checked={plugin.bots.includes(focus.name)}
+      onCheckedChange={on => toggle(focus.name, on)}
+    />
   ) : (
     <span className="shrink-0 text-[length:var(--text-secondary)] text-muted">
       {botsText(plugin, bots)}
@@ -384,15 +418,8 @@ function PluginRow({
       {expanded ? (
         <div className="hex-fade grid gap-4 px-4 pt-1 pb-4 pl-[56px] text-[length:var(--text-secondary)]">
           {bots.length ? (
-            <BotPicker
-              bots={bots}
-              canAdd={!unready}
-              chosen={plugin.bots}
-              name={plugin.name}
-              onChange={choose}
-            />
+            <BotPicker bots={bots} chosen={plugin.bots} name={plugin.name} onChange={choose} />
           ) : null}
-          {unready ? <p className="text-muted">Set it up before you give it to a bot.</p> : null}
           {error ? (
             <p className="text-danger" role="alert">
               {error}
@@ -405,16 +432,14 @@ function PluginRow({
   )
 }
 
-/** One pill per bot; a filled pill is on. Without `canAdd`, bots can only be turned off. */
+/** One pill per bot; a filled pill is on. */
 function BotPicker({
   bots,
-  canAdd,
   chosen,
   name,
   onChange
 }: {
   bots: PluginBot[]
-  canAdd: boolean
   chosen: string[]
   name: string
   onChange: (bots: string[]) => void
@@ -428,7 +453,6 @@ function BotPicker({
         {bots.length > 1 ? (
           <button
             className="text-[length:var(--text-meta)] text-muted underline-offset-2 hover:text-foreground hover:underline disabled:pointer-events-none disabled:opacity-50"
-            disabled={!all && !canAdd}
             onClick={() => onChange(all ? [] : bots.map(bot => bot.name))}
             type="button"
           >
@@ -449,7 +473,6 @@ function BotPicker({
                   ? 'bg-accent text-accent-fg'
                   : 'bg-foreground/[0.07] text-foreground hover:bg-foreground/[0.11]'
               )}
-              disabled={!on && !canAdd}
               key={bot.name}
               onClick={() =>
                 onChange(on ? chosen.filter(item => item !== bot.name) : [...chosen, bot.name])

@@ -134,11 +134,11 @@ The native CLI lists rooms; create rooms and manage their members in the app or 
 ## List and assign plugins
 
 ```sh
-hexbot plugins                                   # connectors, skills, capabilities and their bots
+hexbot plugins                                   # connectors, MCP servers, skills and their bots
 hexbot plugins list --bot writer                 # the same, with writer's switches
 hexbot plugins assign connector mcp:files writer researcher
 hexbot plugins assign skill himalaya writer
-hexbot plugins assign capability computer_use    # take it from every bot
+hexbot plugins assign package github writer      # a server and its skills together
 ```
 
 `assign` gives the plugin to exactly the bots you name and takes it from your other bots. A plugin that is not set up yet can be taken away but not given. Set up connectors in the app or browser first.

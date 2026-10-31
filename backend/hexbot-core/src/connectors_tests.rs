@@ -42,7 +42,6 @@ async fn catalog_shapes_and_errors_match_clients() {
             .collect::<Vec<_>>(),
         [
             "web_search",
-            "cloud_browser",
             "image_gen",
             "video_gen",
             "premium_voice",
@@ -233,7 +232,8 @@ async fn toggles_preserve_other_toolsets_and_shared_credentials() {
     .await;
     assert_eq!(
         connectors::toolsets(home.path(), "owl").unwrap(),
-        vec!["file"]
+        // Every bot has Computer use, whatever was saved.
+        vec!["computer_use", "file"]
     );
     rpc(
         home.path(),
@@ -243,7 +243,7 @@ async fn toggles_preserve_other_toolsets_and_shared_credentials() {
     .await;
     assert_eq!(
         connectors::toolsets(home.path(), "owl").unwrap(),
-        vec!["file", "video_gen"]
+        vec!["computer_use", "file", "video_gen"]
     );
     let c = common::read_config(&home.path().join("profiles/owl")).unwrap();
     assert_eq!(

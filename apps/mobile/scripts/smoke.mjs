@@ -536,11 +536,11 @@ try {
   assert.equal(await readFile(path.join(workspace, 'mobile-approval.txt'), 'utf8'), 'approved')
   await expect(page.locator('[data-testid^="chat-tool"]')).toHaveCount(0)
   await shot('chat-approved')
-  // With the browser, the bot asks for a sign-in on a card. What is typed
+  // With Computer use, the bot asks for a sign-in on a card. What is typed
   // there is saved in Passwords and never reaches the model.
   await writeFile(
     path.join(home, 'profiles/owl/config.yaml'),
-    `model:\n  provider: lmstudio\n  default: mobile-test\n  base_url: ${modelBase}\n  api_key: test-key\ntools:\n  enabled_toolsets: [file, browser]\nbrowser:\n  command: ${process.execPath}\napproval_mode: manual\n`
+    `model:\n  provider: lmstudio\n  default: mobile-test\n  base_url: ${modelBase}\n  api_key: test-key\ntools:\n  enabled_toolsets: [file]\ncomputer_use:\n  command: ${process.execPath}\napproval_mode: manual\n`
   )
   await page.getByTestId('chat-input').fill('Sign in to the school site')
   await page.getByTestId('chat-send').click()

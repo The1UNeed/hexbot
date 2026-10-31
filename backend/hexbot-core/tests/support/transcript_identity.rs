@@ -2006,7 +2006,8 @@ async fn retained_uploads_survive_refresh_and_obey_quota_and_explicit_cleanup() 
             .unwrap();
         let saved: Value = serde_json::from_str(&saved).unwrap();
         assert_eq!(saved["model"], "claude-fable-5-1");
-        assert_eq!(saved["enabledToolsets"], json!(["hexbot"]));
+        // Every bot has Computer use, whatever its saved toolsets say.
+        assert_eq!(saved["enabledToolsets"], json!(["hexbot", "computer_use"]));
         runtime
             .call(
                 "alice",

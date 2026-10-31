@@ -513,25 +513,20 @@ fn saving_a_bots_skills_keeps_its_choice_for_one_waiting_for_setup() {
 }
 
 #[test]
-fn taking_a_capability_keeps_other_tools_waiting_for_setup() {
+fn every_bot_has_computer_use_and_never_the_daemons_code_or_browser() {
     let home = setup();
-    common::write_config(home.path(), &json!({"browser":{"backend":"off"}})).unwrap();
     common::write_config(
         &home.path().join("profiles/owl"),
-        &json!({"tools":{"enabled_toolsets":["browser","computer_use","terminal"]}}),
-    )
-    .unwrap();
-    call(
-        home.path(),
-        "alice",
-        "hexbot.plugins.set_bots",
-        json!({"kind":"capability","id":"computer_use","bots":[]}),
+        &json!({"tools":{"enabled_toolsets":["browser","code_execution","terminal"]}}),
     )
     .unwrap();
     assert_eq!(
         connectors::toolsets(home.path(), "owl").unwrap(),
-        ["browser", "terminal"]
+        ["terminal", "computer_use"]
     );
+    let listed = call(home.path(), "alice", "hexbot.plugins.list", json!({})).unwrap();
+    // Older clients still read the list; it stays, empty.
+    assert_eq!(listed["capabilities"], json!([]));
 }
 
 #[test]
@@ -564,44 +559,21 @@ fn a_bots_list_shows_its_own_view_of_each_skill() {
 }
 
 #[test]
-fn a_capability_that_is_not_set_up_cannot_be_given() {
+fn built_in_tools_are_not_plugins_any_more() {
     let home = setup();
-    common::write_config(
-        home.path(),
-        &json!({"computer_use":{"command":"/nonexistent/hexbot-test-cua"}}),
-    )
-    .unwrap();
-    let listed = call(home.path(), "alice", "hexbot.plugins.list", json!({})).unwrap();
-    let computer = row(&listed, "capabilities", "computer_use");
-    assert_eq!(computer["ready"], false);
-    assert!(
-        computer["setup"]
-            .as_str()
-            .unwrap()
-            .contains("uv tool install cua")
-    );
-    assert_eq!(
-        call(
-            home.path(),
-            "alice",
-            "hexbot.plugins.set_bots",
-            json!({"kind":"capability","id":"computer_use","bots":["owl"]}),
-        )
-        .unwrap_err()
-        .code,
-        4209
-    );
-    assert_eq!(
-        call(
-            home.path(),
-            "alice",
-            "hexbot.plugins.set_bots",
-            json!({"kind":"lamp","id":"x","bots":[]}),
-        )
-        .unwrap_err()
-        .code,
-        4202
-    );
+    for kind in ["capability", "lamp"] {
+        assert_eq!(
+            call(
+                home.path(),
+                "alice",
+                "hexbot.plugins.set_bots",
+                json!({"kind":kind,"id":"computer_use","bots":["owl"]}),
+            )
+            .unwrap_err()
+            .code,
+            4202
+        );
+    }
 }
 
 #[test]
@@ -652,30 +624,16 @@ fn a_connector_ready_through_a_bots_own_key_can_be_given_to_that_bot() {
 }
 
 #[test]
-fn assigning_the_cloud_browser_keeps_the_daemons_provider() {
+fn the_cloud_browser_is_gone() {
     let home = setup();
-    common::write_config(
-        home.path(),
-        &json!({"browser":{"cloud_provider":"browser-use"}}),
-    )
-    .unwrap();
-    fs::write(home.path().join(".env"), "BROWSER_USE_API_KEY=secret\n").unwrap();
-    for bots in [json!(["owl", "cat"]), json!(["owl"]), json!(["cat", "owl"])] {
-        let given = call(
-            home.path(),
-            "alice",
-            "hexbot.plugins.set_bots",
-            json!({"kind":"connector","id":"cloud_browser","bots":bots}),
-        )
-        .unwrap();
-        let mut want = strings_of(&bots);
-        want.sort();
-        assert_eq!(given["plugin"]["bots"], json!(want));
-        assert_eq!(
-            common::read_config(home.path()).unwrap()["browser"]["cloud_provider"],
-            "browser-use"
-        );
-    }
+    let listed = call(home.path(), "alice", "hexbot.plugins.list", json!({})).unwrap();
+    assert!(
+        !listed["connectors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["id"] == "cloud_browser")
+    );
 }
 fn strings_of(v: &Value) -> Vec<String> {
     v.as_array()

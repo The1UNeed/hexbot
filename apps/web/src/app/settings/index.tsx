@@ -53,6 +53,7 @@ import { MemoryEditor } from '../bot-settings/memory'
 import { ChoiceRow, dividerClass, Group, Heading, Row } from '../bot-settings/shared'
 import { ConfirmUpdate, installTarget } from '../confirm-update'
 
+import { ComputerSettings } from './computer'
 import { DiagnosticsSettings } from './diagnostics'
 import { OPEN_SOURCE } from './licenses'
 import { PasswordsSettings } from './passwords'
@@ -62,6 +63,7 @@ export const SETTINGS_TABS = [
   'providers',
   'plugins',
   'passwords',
+  'computer',
   'network',
   'connect',
   'memory',
@@ -119,6 +121,7 @@ export function SettingsPanel({ tab }: { tab: string }): React.JSX.Element {
       {tab === 'providers' && <ProvidersSettings />}
       {tab === 'plugins' && <PluginsSettings />}
       {tab === 'passwords' && <PasswordsSettings />}
+      {tab === 'computer' && <ComputerSettings />}
       {tab === 'network' && <NetworkSettings />}
       {tab === 'connect' && <ConnectSettings />}
       {tab === 'memory' && <MemorySettings />}

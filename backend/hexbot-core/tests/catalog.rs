@@ -7,6 +7,11 @@ fn setup() -> tempfile::TempDir {
     db::open(home.path()).unwrap().execute_batch("INSERT INTO users(id,display_name,role,created_at) VALUES ('alice','Alice','member',0),('bob','Bob','member',0)").unwrap();
     home
 }
+/// Points Computer use at `command`, so a test doesn't depend on whether
+/// this machine has Cua: every bot has Computer use where it is set up.
+fn computer(home: &Path, command: &Path) {
+    hexbot_core::common::write_config(home, &json!({"computer_use":{"command":command}})).unwrap();
+}
 fn call(home: &Path, user: &str, method: &str, p: Value) -> Value {
     catalog::call(home, user, method, &p).unwrap().unwrap()
 }
@@ -43,6 +48,7 @@ fn a_bot_can_be_created_with_a_reasoning_level() {
 fn lifecycle_preserves_memory_and_reopens_archived_sections() {
     let home = setup();
     let h = home.path();
+    computer(h, &h.join("absent-binary"));
     let created = create(h);
     let bot = &created["bot"];
     assert_eq!(bot["display_name"], "Research Owl");
@@ -812,6 +818,7 @@ fn section_deletion_preserves_owned_room_mappings_even_when_ambiguous() {
 #[test]
 fn create_accepts_explicit_empty_tool_selection_before_registry_insert() {
     let home = setup();
+    computer(home.path(), &home.path().join("absent-binary"));
     let created = call(
         home.path(),
         "alice",
@@ -819,6 +826,31 @@ fn create_accepts_explicit_empty_tool_selection_before_registry_insert() {
         json!({"name":"no-tools","tools":[]}),
     );
     assert_eq!(created["bot"]["tools"], json!([]));
+}
+
+#[test]
+fn every_bot_has_computer_use_once_it_is_set_up_and_never_the_daemons_code_or_browser() {
+    let home = setup();
+    computer(home.path(), Path::new("/bin/sh"));
+    let created = call(
+        home.path(),
+        "alice",
+        "hexbot.bots.create",
+        json!({"name":"no-tools","tools":[]}),
+    );
+    assert_eq!(created["bot"]["tools"], json!(["computer_use"]));
+    // Older clients still send the tools Computer use replaced; they are dropped.
+    let bot = call(
+        home.path(),
+        "alice",
+        "hexbot.bots.update",
+        json!({"name":"no-tools","tools":["files","code_execution","browser"]}),
+    )["bot"]
+        .clone();
+    assert_eq!(bot["tools"], json!(["files", "computer_use"]));
+    let available = bot["available_tools"].as_array().unwrap();
+    assert!(!available.contains(&json!("code_execution")));
+    assert!(!available.contains(&json!("browser")));
 }
 
 #[test]
@@ -848,6 +880,7 @@ fn tools_not_set_up_are_hidden_and_dropped_on_save() {
 #[test]
 fn combined_model_and_tool_edits_use_the_pending_provider() {
     let home = setup();
+    computer(home.path(), &home.path().join("absent-binary"));
     create(home.path());
     // No provider key is needed by Ollama. The original provider cannot run Vision.
     let changed = call(
@@ -992,6 +1025,7 @@ fn bot_and_workspace_dirs_never_open_the_hexbot_home() {
 #[test]
 fn create_persists_every_accepted_field() {
     let home = setup();
+    computer(home.path(), &home.path().join("absent-binary"));
     let workdir = tempfile::tempdir().unwrap();
     let created = call(
         home.path(),
