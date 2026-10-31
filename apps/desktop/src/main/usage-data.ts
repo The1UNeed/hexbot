@@ -62,7 +62,8 @@ export async function sendDailyUsage(options: Options = {}): Promise<void> {
   const day = usageDay(options.now?.())
   if (!ready || ready.state.usageDay === day) return
   await updateDesktopState({ usageDay: day }, options.file)
-  await sendUsageEvent(
+  // Sent in the background: turning usage data on never waits on PostHog.
+  void sendUsageEvent(
     ready.usage,
     'app_active',
     { channel: __HEXBOT_CHANNEL__, edition: __HEXBOT_EDITION__ },

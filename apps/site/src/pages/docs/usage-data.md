@@ -11,7 +11,7 @@ Hexbot can share a small amount of anonymous usage data with the Hexbot team, so
 Each place that can send usage data has its own switch, so turning on one does not turn on another.
 
 - **Desktop app** (macOS, Windows, Linux): the "Help improve Hexbot" step at the end of setup, then Settings, Privacy, "This app".
-- **Daemon**: the same setup step, then Settings, Privacy, "Daemon", or in a terminal `hexbot usage-data on` and `hexbot usage-data off`.
+- **Daemon**: the same setup step, then Settings, Privacy, "Daemon" (on a phone, Settings, Daemon settings, Privacy), or in a terminal `hexbot usage-data on` and `hexbot usage-data off`.
 - **Phone and tablet app**: the switch on the first screen, then Settings, Privacy.
 - **hexbot.app and Hex Connect**: the cookie notice, reopened with Cookies at the foot of any page.
 
