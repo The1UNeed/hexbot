@@ -61,6 +61,14 @@ describe('usage data', () => {
     expect(event.distinct_id).toBe((await readDesktopState(file)).usageId)
   })
 
+  it('saves the choice without waiting on PostHog', async () => {
+    const file = await stateFile()
+    const send = vi.fn(() => new Promise<Response>(() => undefined))
+    await setUsageData(true, { file, key: 'phc_test', send })
+    expect(send).toHaveBeenCalledTimes(1)
+    expect((await readDesktopState(file)).usageData).toBe(true)
+  })
+
   it('forgets the install id when turned off', async () => {
     const file = await stateFile()
     const send = vi.fn()
