@@ -303,8 +303,10 @@ const markdownComponents: Components = {
       <table className="my-3 w-full border-collapse" {...props} />
     </div>
   ),
-  td: props => <td className="border border-border p-2" {...props} />,
-  th: props => <th className="border border-border bg-surface-2 p-2 text-left" {...props} />
+  // Tints of the text colour, not surface greys, so a table sits on any bubble:
+  // a bot's wash or your own inverted one.
+  td: props => <td className="border border-current/15 p-2" {...props} />,
+  th: props => <th className="border border-current/15 bg-current/6 p-2 text-left" {...props} />
 }
 
 // A lone $ is too often money, so math needs $$ (or the \( \) and \[ \] mathDelimiters converts).
@@ -606,7 +608,7 @@ export const MessageRow = memo(function MessageRow({
     column.splice(
       replied ? last : bubbles.length,
       0,
-      <Visuals fresh={fresh} key="visuals" visuals={visuals} />
+      <Visuals color={color} fresh={fresh} key="visuals" visuals={visuals} />
     )
   }
 
