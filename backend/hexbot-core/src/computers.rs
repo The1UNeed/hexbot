@@ -1515,12 +1515,6 @@ pub async fn act(
             ));
         }
     };
-    let taken_over = || {
-        Error::new(
-            4302,
-            "The user has taken over the computer. Wait until they hand it back before using it again, and ask what changed if it matters.",
-        )
-    };
     if with(home, |c| c.user_control) {
         return Err(taken_over());
     }
@@ -1544,13 +1538,7 @@ pub async fn act(
     changed(home);
     let _acting = Acting { home };
     let turn = Arc::new(turn);
-    let server = json!({
-        "command": command(cfg, env).ok_or_else(unavailable)?,
-        "args": ["mcp", "--sandbox", sandbox(home), "--permissions", "computer:all"],
-        "isolated_env": true,
-        "env": overrides(cfg),
-        "client_name": display_name(home, bot),
-    });
+    let server = mcp_server(home, bot, cfg, env)?;
     if action == "scroll"
         && let Some((x, y)) = at
     {
@@ -1588,6 +1576,91 @@ pub async fn act(
     }
     Ok(result)
 }
+fn taken_over() -> Error {
+    Error::new(
+        4302,
+        "The user has taken over the computer. Wait until they hand it back before using it again, and ask what changed if it matters.",
+    )
+}
+
+fn mcp_server(
+    home: &Path,
+    bot: &str,
+    cfg: &Value,
+    env: &BTreeMap<String, String>,
+) -> Result<Value> {
+    Ok(json!({
+        "command": command(cfg, env).ok_or_else(unavailable)?,
+        "args": ["mcp", "--sandbox", sandbox(home), "--permissions", "computer:all"],
+        "isolated_env": true,
+        "env": overrides(cfg),
+        "client_name": display_name(home, bot),
+    }))
+}
+
+/// Types saved secrets: a click on each field first when a point is given,
+/// all in one turn, so no other bot's click lands between a click and its
+/// typing. Nothing Cua answers goes back to the bot.
+pub async fn fill(
+    home: &Path,
+    bot: &str,
+    cfg: &Value,
+    env: &BTreeMap<String, String>,
+    fills: &[(Option<(i64, i64)>, String)],
+) -> Result<()> {
+    if with(home, |c| c.user_control) {
+        return Err(taken_over());
+    }
+    if command(cfg, env).is_none() {
+        return Err(unavailable());
+    }
+    ensure(home, cfg, env).await?;
+    let turn = tokio::time::timeout(TURN_WAIT, turns(home).lock_owned())
+        .await
+        .map_err(|_| Error::new(4209, "Another bot kept the computer busy. Try again."))?;
+    if with(home, |c| c.user_control) {
+        return Err(taken_over());
+    }
+    with(home, |c| {
+        c.actor = Some(bot.to_owned());
+        c.activity = Some("type".to_owned());
+    });
+    changed(home);
+    let _acting = Acting { home };
+    let turn = Arc::new(turn);
+    let server = mcp_server(home, bot, cfg, env)?;
+    for (point, secret) in fills {
+        if let Some((x, y)) = *point {
+            aim(home, bot, "click", Some((x, y)));
+            request(
+                home,
+                bot,
+                &server,
+                "computer_click",
+                json!({"x":x,"y":y,"button":"left"}),
+                &turn,
+            )
+            .await?;
+        }
+        request(
+            home,
+            bot,
+            &server,
+            "computer_type",
+            json!({"text":secret}),
+            &turn,
+        )
+        .await
+        .map_err(|_| {
+            Error::new(
+                4211,
+                "Could not type on the computer. Take a screenshot and try again.",
+            )
+        })?;
+    }
+    Ok(())
+}
+
 /// One call to the computer. It runs to its end even if the bot is stopped,
 /// and keeps the turn until then, so no other bot acts on the screen meanwhile.
 async fn request(

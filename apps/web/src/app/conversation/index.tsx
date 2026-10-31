@@ -80,6 +80,7 @@ import { AskingRow } from './asking-row'
 import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
 import { RoomConversation } from './room'
+import { SignInCard } from './sign-in-card'
 import { liveMood } from './steps'
 import { visualsOf } from './visual'
 import { Visuals } from './visual-frame'
@@ -302,8 +303,10 @@ const markdownComponents: Components = {
       <table className="my-3 w-full border-collapse" {...props} />
     </div>
   ),
-  td: props => <td className="border border-border p-2" {...props} />,
-  th: props => <th className="border border-border bg-surface-2 p-2 text-left" {...props} />
+  // Tints of the text colour, not surface greys, so a table sits on any bubble:
+  // a bot's wash or your own inverted one.
+  td: props => <td className="border border-current/15 p-2" {...props} />,
+  th: props => <th className="border border-current/15 bg-current/6 p-2 text-left" {...props} />
 }
 
 // A lone $ is too often money, so math needs $$ (or the \( \) and \[ \] mathDelimiters converts).
@@ -605,7 +608,7 @@ export const MessageRow = memo(function MessageRow({
     column.splice(
       replied ? last : bubbles.length,
       0,
-      <Visuals fresh={fresh} key="visuals" visuals={visuals} />
+      <Visuals color={color} fresh={fresh} key="visuals" visuals={visuals} />
     )
   }
 
@@ -720,6 +723,14 @@ const APPROVAL_CHOICES: Record<ApprovalChoice, string> = {
 }
 
 export function ApprovalCard({ approval }: { approval: ApprovalRequest }) {
+  if (approval.form) {
+    return <SignInCard approval={approval} form={approval.form} />
+  }
+
+  return <ChoiceCard approval={approval} />
+}
+
+function ChoiceCard({ approval }: { approval: ApprovalRequest }) {
   const choose = async (choice: ApprovalChoice) => {
     await approvalRespond(approval.sessionId, approval.requestId, choice)
     transcriptActions().resolveApproval(approval.sessionId, approval.requestId, choice)
@@ -1618,7 +1629,7 @@ function BotConversation() {
       'Notification' in window &&
       Notification.permission === 'granted'
     ) {
-      new Notification('Approval needed', {
+      new Notification(approvals.at(-1)?.form ? 'Sign-in needed' : 'Approval needed', {
         body:
           approvals.at(-1)?.command ?? approvals.at(-1)?.reason ?? 'A bot is asking for permission.'
       })

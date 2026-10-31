@@ -24,6 +24,7 @@ import {
   ModelSummary,
   SettingsScreen,
   type ApprovalChoice,
+  type SignInAnswer,
   type AttachmentView,
   type BotStatus,
   type BotSummary,
@@ -581,8 +582,9 @@ function MobileApp() {
     icon: DaemonArea['icon'],
     detail?: string | null
   ): DaemonArea => ({ key, label, icon, detail })
+  const licenses = { areas: [area('licenses', 'Licenses', 'document-text-outline')] }
   const settingsGroups: { title?: string; areas: DaemonArea[] }[] = demo
-    ? []
+    ? [licenses]
     : [
         { areas: [area('about', 'About you', 'person-outline')] },
         {
@@ -595,7 +597,8 @@ function MobileApp() {
               'Plugins',
               'extension-puzzle-outline',
               'Connectors, MCP servers, skills'
-            )
+            ),
+            area('passwords', 'Passwords', 'key-outline', 'Sign-ins your bots use')
           ]
         },
         {
@@ -613,7 +616,8 @@ function MobileApp() {
             area('connect', 'Hex Connect', 'cloud-outline'),
             area('updates', 'Updates', 'download-outline', mobile.info?.version ?? null)
           ]
-        }
+        },
+        licenses
       ]
   const { items: historyItems, visuals } = useMemo(() => {
     const botByName = (name: string) => mobile.bots.find(b => b.name === name)
@@ -842,7 +846,12 @@ function MobileApp() {
     [act, chatKey, route?.kind, route?.kind === 'section' ? route.bot.display_name : null]
   )
   const approve = useCallback(
-    (id: string, choice: ApprovalChoice) => act(() => mobileRef.current.approval(id, choice)),
+    (id: string, choice: ApprovalChoice, signIn?: SignInAnswer) => {
+      // The sign-in card waits for this to keep its form when it fails.
+      const work = mobileRef.current.approval(id, choice, signIn)
+      act(() => work)
+      return work
+    },
     [act]
   )
   const openVisual = useCallback((id: string) => setVisual(visuals.get(id) ?? null), [visuals])

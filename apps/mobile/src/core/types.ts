@@ -10,8 +10,10 @@ export type {
   Provider,
   ModelOption,
   Connector,
+  PasswordLogin,
   Plugin,
   PluginsList,
+  SignInForm,
   SkillInfo,
   SkillRequirement,
   NetworkInfo,
@@ -73,6 +75,8 @@ export interface PendingApproval {
   command: string
   reason?: string
   choices: string[]
+  /** The sign-in card a bot shows to save a password. */
+  form?: import('../../../web/src/lib/types').SignInForm
 }
 export interface PendingQuestion {
   requestId: string

@@ -181,4 +181,9 @@ the current nightly and says stable is coming soon.
 ## License
 
 Hexbot's own source code is Apache-2.0, except where a file or directory
-states otherwise. See `LICENSE` and `NOTICE`. 
+states otherwise. See `LICENSE` and `NOTICE`.
+The licenses of the third-party software each package includes are written by
+`scripts/desktop/third-party-notices.mjs`: `THIRD_PARTY_NOTICES` beside
+`LICENSE` in the app, the daemon runtime and the windowed installer,
+`hexbot-install --license`, Settings, About, Licenses in the app, and
+Settings, Licenses on mobile. 

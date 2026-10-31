@@ -35,7 +35,14 @@ import {
   useTheme,
   withAlpha
 } from '../ui'
-import type { ApprovalChoice, ApprovalRequestView, AttachmentView, ChatItem } from './types'
+import { SignInCard } from './SignInCard'
+import type {
+  ApprovalChoice,
+  ApprovalRequestView,
+  AttachmentView,
+  ChatItem,
+  SignInAnswer
+} from './types'
 
 type MessageItem = Extract<ChatItem, { kind: 'message' }>
 
@@ -75,7 +82,11 @@ export interface ChatScreenProps {
   onBack: () => void
   onOpenSettings?: () => void
 
-  onApprove: (requestId: string, choice: ApprovalChoice) => void
+  onApprove: (
+    requestId: string,
+    choice: ApprovalChoice,
+    signIn?: SignInAnswer
+  ) => Promise<unknown> | void
   onMessageLongPress?: (id: string) => void
   /** Your message Recall can take back; a long press on it recalls it. */
   recallId?: string | null
@@ -466,7 +477,11 @@ const TranscriptEntry = memo(function TranscriptEntry({
         </View>
       )
     case 'approval':
-      return <ApprovalCard onAnswer={onApprove!} request={entry.request} />
+      return entry.request.form ? (
+        <SignInCard form={entry.request.form} onAnswer={onApprove!} request={entry.request} />
+      ) : (
+        <ApprovalCard onAnswer={onApprove!} request={entry.request} />
+      )
     case 'message': {
       return (
         <MessageBubble
