@@ -151,6 +151,8 @@ export interface Bot {
   name: string
   owner_id: string
   persona: string
+  /** When SOUL.md last changed, in Unix seconds; null before it exists. Older daemons leave it out. */
+  persona_updated_at?: null | number
   /** The one bot that looks after the others; it can't be deleted. Older daemons leave it out. */
   primary?: boolean
   provider: null | string

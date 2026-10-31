@@ -22,6 +22,7 @@ import {
   HomeScreen,
   LibraryScreen,
   ModelSummary,
+  SearchSheet,
   SettingsScreen,
   type ApprovalChoice,
   type SignInAnswer,
@@ -52,6 +53,7 @@ import { MarkdownText } from './src/MarkdownText'
 import { VisualFrame } from './src/VisualFrame'
 import { visualDocument } from './src/core/visual'
 import { parseArgs } from './src/core/chat'
+import { type SearchDocument, searchEntries } from './src/core/search'
 import { Management, type Panel } from './src/Management'
 import { useMobile } from './src/core/useMobile'
 import { useFeeling } from './src/core/feelings'
@@ -148,6 +150,10 @@ function MobileApp() {
   const [visual, setVisual] = useState<{ title: string; html: string } | null>(null)
   /** The bots' computer card is open. */
   const [computerOpen, setComputerOpen] = useState(false)
+  /** Search in the open conversation, and the message it last asked the transcript to show. */
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [focus, setFocus] = useState<{ id: string; nonce: number } | null>(null)
+  const [searchMemory, setSearchMemory] = useState('')
   const [draft, setDraft] = useState('')
   const [attachments, setAttachments] = useState<AttachmentView[]>([])
   const [question, setQuestion] = useState<{
@@ -287,6 +293,25 @@ function MobileApp() {
     route?.kind === 'section' ? route.section.id : route?.kind === 'room' ? route.room.id : null
   const openChat = useRef(chatKey)
   openChat.current = chatKey
+  // Search belongs to the conversation it was opened in.
+  useEffect(() => {
+    setSearchOpen(false)
+    setFocus(null)
+    setSearchMemory('')
+  }, [chatKey])
+  const searchBot = route?.kind === 'section' ? route.bot.name : null
+  // A bot's memory is searched too; read it when search opens.
+  useEffect(() => {
+    if (!searchOpen || !searchBot) return
+    let live = true
+    void mobile
+      .rpc<{ memory_md?: string }>('hexbot.memory.bot.get', { bot: searchBot })
+      .then(result => live && setSearchMemory(result.memory_md ?? ''))
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [searchOpen, searchBot])
   // The message whose stopped turn's error was closed: still yours to recall.
   const [closedOn, setClosedOn] = useState<string | null>(null)
   // When the failure you closed happened; it stays closed while the bot's state catches up.
@@ -859,8 +884,39 @@ function MobileApp() {
     [route?.kind === 'section' ? route.bot : null]
   )
 
+  const entries = useMemo(
+    () =>
+      searchOpen
+        ? searchEntries(mobile.chat.messages, m =>
+            m.role === 'user'
+              ? route?.kind !== 'room' || m.sender === mobile.user?.id
+                ? 'You'
+                : m.senderName || 'Former member'
+              : ((m.sender && mobile.bots.find(b => b.name === m.sender)?.display_name) ??
+                (route?.kind === 'section' ? route.bot.display_name : (m.sender ?? 'Bot')))
+          )
+        : [],
+    [searchOpen, mobile.chat.messages, mobile.bots, mobile.user?.id, route]
+  )
+  const searchDocuments = useMemo<SearchDocument[] | undefined>(
+    () =>
+      route?.kind === 'section'
+        ? [
+            {
+              kind: 'soul',
+              text: (mobile.bots.find(b => b.name === route.bot.name) ?? route.bot).persona,
+              title: 'Soul'
+            },
+            { kind: 'memory', text: searchMemory, title: 'Memory' }
+          ]
+        : undefined,
+    [route, mobile.bots, searchMemory]
+  )
+
   const conversation = {
     items,
+    onOpenSearch: () => setSearchOpen(true),
+    focus,
     renderMessageText,
     busy: mobile.chat.busy,
     waiting: mobile.chat.busy && !mobile.chat.streaming ? { label: 'Working' } : undefined,
@@ -1239,6 +1295,27 @@ function MobileApp() {
           />
         ) : null}
       </Layer>
+      <SearchSheet
+        documents={searchDocuments}
+        entries={entries}
+        name={
+          route?.kind === 'room'
+            ? route.room.name
+            : `your chat with ${route?.kind === 'section' ? route.bot.display_name : 'this bot'}`
+        }
+        onClose={() => setSearchOpen(false)}
+        onDocument={file => {
+          if (route?.kind !== 'section') return
+          const bot = botByName(route.bot.name) ?? route.bot
+          setPanels([
+            { kind: 'bot', bot },
+            { kind: file, bot }
+          ])
+        }}
+        onMessage={id => setFocus(previous => ({ id, nonce: (previous?.nonce ?? 0) + 1 }))}
+        onVisual={openVisual}
+        visible={searchOpen && !!route}
+      />
       <Layer
         visible={computerOpen}
         onClose={() => setComputerOpen(false)}
