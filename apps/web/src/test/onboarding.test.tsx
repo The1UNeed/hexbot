@@ -21,6 +21,7 @@ import {
   compileAboutYou,
   createHexBot,
   initialOnboardingStep,
+  installFailure,
   installPercent,
   InstallStep,
   JobsStep,
@@ -382,6 +383,33 @@ describe('onboarding', () => {
     expect(Number(screen.getByRole('progressbar').getAttribute('aria-valuenow'))).toBeGreaterThan(
       before
     )
+  })
+
+  it('stops a failed install, says so plainly, keeps the cause in the log, and offers Try again', () => {
+    const cause = installFailure(
+      new Error(
+        "Error invoking remote method 'hexbot:daemon:start': Error: C:\\Hexbot\\hexbot.exe exited with code 0xC0000135"
+      )
+    )
+
+    expect(cause).toBe('C:\\Hexbot\\hexbot.exe exited with code 0xC0000135')
+    const onRetry = vi.fn()
+    render(
+      <InstallStep
+        error={cause}
+        onRetry={onRetry}
+        progress={[{ message: 'Preparing Hexbot runtime', stage: 'runtime' }]}
+      />
+    )
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Hexbot could not start on this computer.')
+    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument()
+    expect(screen.queryByText('Unpacking Hexbot')).not.toBeInTheDocument()
+    expect(document.querySelector('[data-act]')).toBeNull()
+    expect(screen.getByText(/exited with code 0xC0000135/)).toBeVisible()
+    expect(screen.queryByText(/Error invoking remote method/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(onRetry).toHaveBeenCalledOnce()
   })
 
   it('works through the acts of a long stage', () => {

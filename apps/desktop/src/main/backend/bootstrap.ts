@@ -80,8 +80,10 @@ export async function runChild(
     child.once('close', code => {
       flush()
       void logs.then(() => {
+        // Windows crash codes are NTSTATUS values, searchable only in hex (0xC0000135).
+        const shown = code === null ? 'unknown' : code > 0xffff ? `0x${code.toString(16).toUpperCase()}` : code
         const failure = code === 0 ? undefined : new Error(
-          `${command} exited with code ${code ?? 'unknown'}${stderr.trim() ? `: ${stderr.trim()}` : ''}`
+          `${command} exited with code ${shown}${stderr.trim() ? `: ${stderr.trim()}` : ''}`
         )
         if (logFailure) reject(new AggregateError(
           [...(failure ? [failure] : []), logFailure], 'Runtime command logging failed'
