@@ -1099,7 +1099,127 @@ body {
   animation: hex-shimmer 1.8s linear infinite;
 }
 
+/* A message search found: marked once, then it fades. */
+.hex-search-flash {
+  border-radius: 18px;
+  animation: hex-search-flash 1600ms var(--hex-ease-out) both;
+}
+@keyframes hex-search-flash {
+  0%,
+  35% {
+    background-color: color-mix(in srgb, var(--hex-accent) 14%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+/* The panel's close button opening into search and close, once, as the panel opens. */
+.hex-split {
+  animation: hex-split 420ms var(--hex-ease-out) both;
+}
+.hex-split-in {
+  animation: hex-split-in 420ms var(--hex-ease-out) both;
+}
+@keyframes hex-split {
+  from {
+    width: 2rem;
+  }
+}
+@keyframes hex-split-in {
+  0%,
+  25% {
+    opacity: 0;
+    transform: translateX(1.25rem) scale(0.6);
+  }
+}
+
+/* Soul and memory in their editor: a document, not a chat bubble. */
+.hex-document {
+  font-size: 15px;
+  line-height: 1.7;
+  color: var(--hex-text);
+}
+.hex-document > :first-child {
+  margin-top: 0;
+}
+.hex-document p,
+.hex-document ul,
+.hex-document ol,
+.hex-document blockquote,
+.hex-document pre {
+  margin: 0.6em 0;
+}
+.hex-document h1,
+.hex-document h2,
+.hex-document h3 {
+  font-weight: 600;
+  line-height: 1.25;
+}
+.hex-document h1 {
+  margin: 1.1em 0 0.45em;
+  font-size: 1.9em;
+}
+.hex-document h2 {
+  margin: 1.1em 0 0.4em;
+  font-size: 1.4em;
+}
+.hex-document h3 {
+  margin: 1em 0 0.35em;
+  font-size: 1.15em;
+}
+.hex-document ul,
+.hex-document ol {
+  padding-left: 1.5em;
+}
+.hex-document ul {
+  list-style: disc;
+}
+.hex-document ol {
+  list-style: decimal;
+}
+.hex-document li > p {
+  margin: 0.15em 0;
+}
+.hex-document strong {
+  font-weight: 600;
+}
+.hex-document blockquote {
+  border-left: 2px solid var(--hex-border);
+  padding-left: 1em;
+  color: var(--hex-muted-text);
+}
+.hex-document code {
+  font-family: var(--hex-font-mono);
+  font-size: 0.88em;
+}
+.hex-document pre {
+  overflow-x: auto;
+  border-radius: 10px;
+  background: var(--hex-surface-2);
+  padding: 0.8em 1em;
+}
+.hex-document hr {
+  border: 0;
+  border-top: 1px solid var(--hex-border);
+  margin: 1.4em 0;
+}
+.hex-document a {
+  color: var(--hex-accent);
+  text-decoration: underline;
+}
+.hex-document p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  color: var(--hex-muted-text);
+  pointer-events: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .hex-search-flash,
+  .hex-split,
+  .hex-split-in,
   .hex-think,
   .hex-tap,
   .hex-catch,

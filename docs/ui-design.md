@@ -257,13 +257,38 @@ notice. Working and idle draw the plain pill.
   label as bare fields saved on blur ("Add a label" when empty), and while
   the bot works, a blue status chip saying what it is doing in plain words
   that opens Computer.
-- Three tabs in a segmented control:
+- Top right, Search and Close. Close sits alone as the panel opens, then
+  splits once into the two (420 ms, `.hex-split`; none with reduced
+  motion). Search swaps the face and tabs for a search box and results
+  from the whole chat, grouped as Messages, Files (shared, or written by
+  the bot, with their path), Visuals, and Soul and memory. Every word must
+  match; case and accents do not matter; matches are marked. A message or
+  file scrolls the chat to its message and tints it for 1.6 s, widening
+  the shown history if it is older; under 1100 px the panel closes first.
+  A visual opens beside the chat; soul and memory open their editor.
+  Escape clears the box, then leaves search. Search belongs to the
+  conversation and resets when you leave it. A room has no profile panel:
+  a Search button beside Room settings opens the same search in the panel
+  slot, over the room's messages and files. The pure search is
+  `lib/search.ts`, which the mobile app shares.
+- Four tabs in a segmented control:
   - Details: the description, a card with Model (opens Bot settings, Model)
     and the "Notify me" switch (native notifications when this bot stops or
     needs you), a card of doors into Bot settings (Soul, Memory, Tools,
     Connectors, Skills), and "Bot settings" for the tab last used.
-  - Library: images (a three-column grid) and files shared in the section,
-    newest first.
+  - Library: the visuals the bot drew (each opens beside the chat), then
+    images (a three-column grid) and files shared in the section, newest
+    first.
+  - Fingerprint: the bot's soul and memory as two cards, red and blue,
+    each with the day the file last changed (`persona_updated_at` on the
+    bot, `updated_at` from `hexbot.memory.bot.get`), and a door to Notes
+    and dreaming. A card opens its file full window: an "About this file"
+    note that is not part of it, the file formatted and edited in place
+    (bold, italic, H1 to H3, bulleted and numbered lists), saved 0.8 s after
+    typing stops and on close, Escape, or Cmd+S; opening alone saves
+    nothing. Memory shows its length against its cap. The menu has View
+    source, Copy, Download (Markdown) and Download as PDF (the system print
+    dialog). An untouched editor follows the bot's own changes.
   - Computer: the bots' shared computer on top, when the bot has Computer
     use: its live screen, watch-only, with a still blue ring while a bot
     acts there or the user has it, and one line under it saying what is

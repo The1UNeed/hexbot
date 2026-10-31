@@ -37,6 +37,7 @@ import { requirementText } from './core/skills'
 import { pluginRows } from '../../web/src/lib/plugin-rows'
 import { isOpenRoom } from './core/routes'
 import { pickFile } from './core/pickFile'
+import { aboutFile, DocumentPanel, FingerprintCards } from './Fingerprint'
 import type { useMobile } from './core/useMobile'
 export type Panel = {
   kind:
@@ -71,6 +72,7 @@ export type Panel = {
     | 'skill'
     | 'skill-create'
     | 'skills'
+    | 'soul'
     | 'tools'
     | 'updates'
     | 'usage'
@@ -321,12 +323,20 @@ export function Management({
             dream_enabled: bot.dream_enabled,
             notify: bot.notify ?? true
           }
+        // The memory card shows the day it changed; the card opens without it if the read fails.
+        if (bot) detail = await rpc('hexbot.memory.bot.get', { bot: bot.name }).catch(() => ({}))
         break
       case 'memory': {
-        const result = await rpc('hexbot.memory.bot.get', { bot: bot?.name })
-        fields = { memory_md: str(result.memory_md) }
+        detail = await rpc('hexbot.memory.bot.get', { bot: bot?.name })
+        fields = { memory_md: str(detail.memory_md) }
         break
       }
+      case 'soul':
+        // The bot may have changed it since this card's bot was read.
+        fields = {
+          persona: (mobile.bots.find(b => b.name === bot?.name) ?? bot)?.persona ?? ''
+        }
+        break
       case 'about': {
         const result = await rpc('hexbot.memory.user.get')
         fields = { text: str(result.text) }
@@ -723,7 +733,8 @@ export function Management({
           display_name: values.display_name,
           title: values.title,
           description: values.description,
-          persona: values.persona,
+          // A bot's soul is saved from its own card; only a new bot starts with one here.
+          ...(bot ? {} : { persona: values.persona }),
           // Without a model the daemon uses its default.
           ...(values.provider && values.model
             ? { provider: values.provider, model: values.model }
@@ -818,13 +829,23 @@ export function Management({
               400
             )}
           </View>
-          {field(
-            'persona',
-            'Soul',
-            true,
-            `${str(values.display_name) || 'The bot'} can edit its soul too and says when it does. Your chat takes changes after it summarises older messages.`,
-            false,
-            4000
+          {bot ? (
+            <FingerprintCards
+              disabled={busy || mobile.connection !== 'connected'}
+              memoryAt={extra.updated_at as null | number | undefined}
+              name={bot.display_name}
+              onOpen={file => navigate(file)}
+              soulAt={(mobile.bots.find(b => b.name === bot.name) ?? bot).persona_updated_at}
+            />
+          ) : (
+            field(
+              'persona',
+              'Soul',
+              true,
+              `${str(values.display_name) || 'The bot'} can edit its soul too and says when it does. Your chat takes changes after it summarises older messages.`,
+              false,
+              4000
+            )
           )}
           <Group title="Model" footer="Applies from the next message.">
             <View style={styles.inset}>
@@ -864,7 +885,6 @@ export function Management({
                 {row('Skills', 'skills', bot.skills.length ? `${bot.skills.length} on` : undefined)}
               </Group>
               <Group title="What it remembers">
-                {row('Memory', 'memory')}
                 {toggle('dream_enabled', 'Dreaming')}
                 {row('Dreaming history', 'dreams')}
                 {row('Scheduled jobs', 'jobs')}
@@ -923,7 +943,26 @@ export function Management({
       break
     case 'memory':
       save = () => rpc('hexbot.memory.bot.set', { bot: bot?.name, memory_md: values.memory_md })
-      content = field('memory_md', 'Bot memory', true)
+      content = (
+        <DocumentPanel
+          about={aboutFile('memory', bot?.display_name ?? 'The bot')}
+          cap={Number(extra.cap) || undefined}
+          fileName="MEMORY.md"
+          onChange={text => set('memory_md', text)}
+          value={str(values.memory_md)}
+        />
+      )
+      break
+    case 'soul':
+      save = () => rpc('hexbot.bots.update', { name: bot?.name, persona: values.persona })
+      content = (
+        <DocumentPanel
+          about={aboutFile('soul', bot?.display_name ?? 'The bot')}
+          fileName="SOUL.md"
+          onChange={text => set('persona', text)}
+          value={str(values.persona)}
+        />
+      )
       break
     case 'licenses':
       content = <Licenses />
@@ -2176,6 +2215,7 @@ export function Management({
     'bot-create': 'New bot',
     bot: bot ? `Edit ${bot.display_name}` : 'Edit bot',
     memory: 'Memory',
+    soul: 'Soul',
     about: 'About you',
     licenses: 'Licenses',
     tools: 'Tools',

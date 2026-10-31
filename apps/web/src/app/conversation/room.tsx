@@ -1,5 +1,5 @@
 import { useNavigate, useParams } from '@tanstack/react-router'
-import { Info } from 'lucide-react'
+import { Info, Search } from 'lucide-react'
 import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { Avatar, useFaceColor } from '../../components/ui/avatar'
@@ -19,11 +19,13 @@ import { connectorsActions } from '../../stores/connectors'
 import { useEmotion, useEmotions, useRoomFeelings } from '../../stores/emotions'
 import { useMe } from '../../stores/me'
 import { roomFailure, roomStatus, useRooms } from '../../stores/rooms'
+import { useSearch } from '../../stores/search'
 import { useTranscripts } from '../../stores/transcripts'
 
 import { AskingRow, AskRows } from './asking-row'
 import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
+import { useSearchJump } from './search-jump'
 import { type Ask, liveMood } from './steps'
 import { WaitingBanner } from './waiting-banner'
 import { WorkStatus } from './work-status'
@@ -272,6 +274,8 @@ export function RoomMentionPopover({
 export function RoomConversation() {
   const { room: roomId } = useParams({ strict: false }) as { room: string }
   const navigate = useNavigate()
+  const searching = useSearch(state => state.open)
+  const setSearching = useSearch(state => state.setOpen)
   const room = useRoomOrLeave(roomId, 'open')
   const events = useRooms(state => state.eventsByRoom[roomId] ?? NO_EVENTS)
   const loaded = useRooms(state => roomId in state.eventsByRoom)
@@ -308,7 +312,16 @@ export function RoomConversation() {
     setWindow({ room: roomId, first: events[start].seq })
   }
 
+  // A search result older than the shown part widens the window to reach it.
+  const jump = useSearch(state => state.jump)
+  const jumpSeq = jump ? Number(jump.id) : NaN
+
+  if (jumpSeq < (events[start]?.seq ?? 0) && events.some(event => event.seq === jumpSeq)) {
+    setWindow({ room: roomId, first: jumpSeq })
+  }
+
   const shown = events.slice(start)
+  useSearchJump(viewport, start)
 
   const loadEarlier = () => {
     const node = viewport.current
@@ -440,14 +453,27 @@ export function RoomConversation() {
             {members.length} bot{members.length === 1 ? '' : 's'}
           </span>
         </div>
-        <button
-          aria-label="Room settings"
-          className="hex-glass hex-glass-press hex-focus hex-no-drag absolute top-2.5 right-3 grid size-9 place-items-center rounded-full text-foreground/70 hover:text-foreground"
-          onClick={() => void navigate({ params: { room: roomId }, to: '/r/$room/settings' })}
-          type="button"
-        >
-          <Info size={16} />
-        </button>
+        <div className="hex-no-drag absolute top-2.5 right-3 flex items-center gap-1.5">
+          {searching ? null : (
+            <button
+              aria-label="Search this room"
+              className="hex-glass hex-glass-press hex-focus hex-fade grid size-9 place-items-center rounded-full text-foreground/70 hover:text-foreground"
+              onClick={() => setSearching(true)}
+              title="Search"
+              type="button"
+            >
+              <Search size={16} />
+            </button>
+          )}
+          <button
+            aria-label="Room settings"
+            className="hex-glass hex-glass-press hex-focus grid size-9 place-items-center rounded-full text-foreground/70 hover:text-foreground"
+            onClick={() => void navigate({ params: { room: roomId }, to: '/r/$room/settings' })}
+            type="button"
+          >
+            <Info size={16} />
+          </button>
+        </div>
       </header>
       <ConnectedToolsNotice sectionId={`room:${roomId}`} />
       {status === 'needs_you' ? (
@@ -476,11 +502,13 @@ export function RoomConversation() {
             return (
               <div key={event.seq}>
                 {separator ? <DaySeparator time={event.created_at} /> : null}
-                <RoomEventRow
-                  event={event}
-                  fresh={toMillis(event.created_at) > openedAt}
-                  latest={event.actor_id ? latestByBot[event.actor_id] === event.seq : false}
-                />
+                <div data-search-id={event.seq}>
+                  <RoomEventRow
+                    event={event}
+                    fresh={toMillis(event.created_at) > openedAt}
+                    latest={event.actor_id ? latestByBot[event.actor_id] === event.seq : false}
+                  />
+                </div>
               </div>
             )
           })}
