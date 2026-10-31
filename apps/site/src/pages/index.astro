@@ -3,7 +3,7 @@ import Base from '../layouts/Base.astro'
 import Face from '../components/Face.astro'
 import Logo from '../components/Logo.astro'
 import DownloadList from '../components/DownloadList.astro'
-import { loadDownloads } from '../lib/downloads'
+import { loadDownloads, testflightUrl } from '../lib/downloads'
 import { toolGroups } from '../lib/tools'
 
 const downloads = await loadDownloads()
@@ -42,7 +42,7 @@ const software = {
   '@type': 'SoftwareApplication',
   name: 'Hexbot',
   applicationCategory: 'BusinessApplication',
-  operatingSystem: 'macOS, Linux',
+  operatingSystem: 'macOS, Linux, iOS',
   description: 'A self-hosted team of AI agents with names, faces, and memory of their own. Rooms for people and bots, your choice of model, running on your own machine.',
   url: 'https://hexbot.app/',
   downloadUrl: 'https://hexbot.app/download/',
@@ -69,7 +69,7 @@ const software = {
         <a class="button button-lg" href="/download/"><span data-download-label={label}>Download{label && ' nightly'} for Mac</span></a>
         <a class="button button-lg button-quiet" href="/how-it-works/">See how it works</a>
       </div>
-      <p class="text-[15px] text-mute">Free and open source under Apache-2.0. Nightly builds only for now. <a class="text-ink underline decoration-line underline-offset-4 hover:text-accent" href={github}>Source on GitHub</a></p>
+      <p class="text-[15px] text-mute">Free and open source under Apache-2.0. Nightly builds only for now. <a class="text-ink underline decoration-line underline-offset-4 hover:text-accent" href={testflightUrl}>iPhone beta</a> · <a class="text-ink underline decoration-line underline-offset-4 hover:text-accent" href={github}>Source on GitHub</a></p>
     </div>
   </section>
 
@@ -107,7 +107,7 @@ const software = {
     <div class="flex flex-col gap-3">
       <Face shape="hex" color="#22a55b" size={44} delay={1.8} />
       <h2 class="display-sm text-[1.6rem]">Runs where you say</h2>
-      <p class="max-w-[36em] text-mute">The daemon lives on one machine and keeps working when the app is closed. Pair a phone or a second laptop with a short code on your network, over Tailscale, or through <a href="/docs/connect/">Hex Connect</a> when you are away.</p>
+      <p class="max-w-[36em] text-mute">The daemon lives on one machine and keeps working when the app is closed. Pair the <a href={testflightUrl}>iPhone app</a> or a second laptop with a short code on your network, over Tailscale, or through <a href="/docs/connect/">Hex Connect</a> when you are away.</p>
     </div>
   </section>
 

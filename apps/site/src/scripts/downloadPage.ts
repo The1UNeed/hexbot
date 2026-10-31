@@ -3,11 +3,13 @@
 // a script the page offers the first build and lists the rest.
 import type { DownloadChoice } from '../lib/downloadChoices'
 import { detectTarget, type Target } from '../lib/detectPlatform'
+import { testflightUrl } from '../lib/downloads'
 
 const title = document.querySelector<HTMLElement>('#dl-title')
 const sub = document.querySelector<HTMLElement>('#dl-sub')
 const primary = document.querySelector<HTMLAnchorElement>('#dl-primary')
 const label = document.querySelector<HTMLElement>('#dl-primary-label')
+const iphone = document.querySelector<HTMLElement>('#dl-iphone')
 
 async function architecture(): Promise<string | undefined> {
   try {
@@ -30,6 +32,15 @@ function renderer(): string | undefined {
 
 function show(target: Target) {
   if (!title || !sub || !primary || !label) return
+  if (target === 'ios') {
+    title.textContent = 'Hexbot for iPhone is in beta.'
+    sub.textContent = 'Join the beta on TestFlight, then pair the app with Hexbot on your Mac, Linux computer, or server.'
+    primary.href = testflightUrl
+    primary.removeAttribute('download')
+    label.textContent = 'Join the TestFlight beta'
+    if (iphone) iphone.hidden = true
+    return
+  }
   const builds: DownloadChoice[] = JSON.parse(primary.dataset.builds ?? '[]')
   const build = builds.find(build => build.key === target)
   if (target === 'other' || !build) {

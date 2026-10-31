@@ -15,6 +15,9 @@ export type Downloads = {
 
 export const releasesUrl = 'https://github.com/The1UNeed/hexbot/releases'
 
+// Hexbot for iPhone, a client that pairs with a daemon, in public beta.
+export const testflightUrl = 'https://testflight.apple.com/join/byKAKWMW'
+
 // One entry per row of `full` and `client`, in feed order.
 export const targets = [
   { key: 'mac-arm64', os: 'mac', name: 'Mac (Apple Silicon)', pill: 'Apple Silicon (.dmg)' },
