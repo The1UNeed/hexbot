@@ -102,6 +102,21 @@ describe('search', () => {
     expect(search(chat, '   ').total).toBe(0)
   })
 
+  it('keeps two uploads with the same name apart', () => {
+    const entry = (id: string) => ({
+      author: 'You',
+      files: [{ name: 'invoice.pdf' }],
+      id,
+      text: '',
+      visuals: []
+    })
+
+    expect(search([entry('1'), entry('2')], 'invoice').files.map(hit => hit.target)).toEqual([
+      { id: '2', kind: 'entry' },
+      { id: '1', kind: 'entry' }
+    ])
+  })
+
   it('matches a visual by its words, not its markup or code', () => {
     expect(search(chat, 'spend month').visuals).toHaveLength(1)
     expect(search(chat, 'h1').visuals).toHaveLength(0)

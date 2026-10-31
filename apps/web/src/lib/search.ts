@@ -154,7 +154,8 @@ export function search(
     }
 
     for (const file of entry.files) {
-      const id = file.path ?? file.attachment?.id ?? file.name
+      // A file known only by name is told apart by its message: two invoice.pdf uploads are two files.
+      const id = file.path ?? file.attachment?.id ?? `${entry.id}:${file.name}`
 
       if (seenFiles.has(id) || !snippetOf(file.path ?? file.name, terms)) {
         continue

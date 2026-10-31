@@ -26,6 +26,17 @@ const SAVE_DELAY = 800
 
 type SaveState = 'error' | 'idle' | 'saved' | 'saving'
 
+const words = (text: string) => (text.match(/[\p{L}\p{N}]+/gu) ?? []).join(' ')
+
+/**
+ * Whether the formatted view would lose part of the file: a table, or words
+ * (an image's address, raw HTML) the editor drops when it writes it back.
+ * Such a file is edited as source only.
+ */
+export function loses(original: string, formatted: string): boolean {
+  return /^\s*\|.*\|\s*$/m.test(original) || words(original) !== words(formatted)
+}
+
 export interface DocumentEditorProps {
   /** What the file is, above it and not part of it. */
   about: ReactNode
@@ -205,7 +216,6 @@ export function DocumentEditor({
   title,
   value
 }: DocumentEditorProps) {
-  const [source, setSource] = useState<null | string>(null)
   const [saveState, setSaveState] = useState<SaveState>('idle')
   const [error, setError] = useState<null | string>(null)
   const [length, setLength] = useState(value.length)
@@ -238,14 +248,19 @@ export function DocumentEditor({
     }
   })
 
+  // Computed once, as the file opens: a file the formatted view would damage opens as source.
+  const [sourceOnly] = useState(() => loses(value, editor.getMarkdown()))
+  const [source, setSource] = useState<null | string>(sourceOnly ? value : null)
+  // The source text as it was shown, to tell whether switching back needs to reload the editor.
+  const shownSource = useRef(source)
+
+  // Until something is edited, the file is its own text, not the editor's rewrite of it.
   const current = useCallback(
-    () => (source !== null ? source : editor.getMarkdown()),
+    () => (source !== null ? source : edited.current ? editor.getMarkdown() : saved.current),
     [editor, source]
   )
 
-  /** Saves an edit; false when the daemon refused it, so closing keeps the draft. */
-  const save = useCallback(async () => {
-    window.clearTimeout(timer.current)
+  const write = useCallback(async () => {
     const text = current()
 
     if (!edited.current || text === saved.current) {
@@ -269,9 +284,21 @@ export function DocumentEditor({
     }
   }, [current, onSave])
 
-  // The latest save, for the timer and the close; both outlive the render that set them.
+  // Saves run one after another, each reading the draft when its turn comes, so an
+  // earlier save cannot land after a later one.
+  const queue = useRef(Promise.resolve(true))
+  const writeRef = useRef(write)
+  writeRef.current = write
+
+  /** Saves an edit; false when the daemon refused it, so closing keeps the draft. */
+  const save = useCallback(() => {
+    window.clearTimeout(timer.current)
+    queue.current = queue.current.then(() => writeRef.current())
+
+    return queue.current
+  }, [])
+
   const saveRef = useRef(save)
-  saveRef.current = save
 
   function schedule() {
     window.clearTimeout(timer.current)
@@ -280,14 +307,17 @@ export function DocumentEditor({
 
   // The bot may change the file while it is open; an untouched editor follows.
   useEffect(() => {
-    const untouched = source === null && (!edited.current || editor.getMarkdown() === saved.current)
-
-    if (value === saved.current || !untouched) {
+    if (value === saved.current || edited.current) {
       return
     }
 
-    editor.commands.setContent(value, { contentType: 'markdown', emitUpdate: false })
-    edited.current = false
+    if (source !== null) {
+      setSource(value)
+      shownSource.current = value
+    } else {
+      editor.commands.setContent(value, { contentType: 'markdown', emitUpdate: false })
+    }
+
     saved.current = value
     setLength(value.length)
   }, [editor, source, value])
@@ -318,12 +348,17 @@ export function DocumentEditor({
 
   const toggleSource = () => {
     if (source === null) {
-      setSource(editor.getMarkdown())
+      const text = current()
+      shownSource.current = text
+      setSource(text)
 
       return
     }
 
-    editor.commands.setContent(source, { contentType: 'markdown', emitUpdate: false })
+    if (source !== shownSource.current) {
+      editor.commands.setContent(source, { contentType: 'markdown', emitUpdate: false })
+    }
+
     setSource(null)
   }
 
@@ -386,6 +421,7 @@ export function DocumentEditor({
                   source === null ? <Code size={14} /> : <FileText size={14} />,
                   source === null ? 'View source' : 'View formatted'
                 ),
+                disabled: sourceOnly,
                 onSelect: toggleSource
               },
               { label: '', separator: true },
@@ -435,6 +471,12 @@ export function DocumentEditor({
               role="alert"
             >
               {error}
+            </p>
+          ) : null}
+          {sourceOnly ? (
+            <p className="mb-5 text-[length:var(--text-secondary)] text-muted">
+              This file has a table, image or HTML that the formatted view would drop, so it opens
+              as Markdown.
             </p>
           ) : null}
           {source !== null ? (
