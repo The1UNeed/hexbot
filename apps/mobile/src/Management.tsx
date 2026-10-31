@@ -35,6 +35,7 @@ import { botPhoto } from './core/avatar'
 import { scheduleChange } from './core/jobs'
 import { requirementText } from './core/skills'
 import { pluginRows } from '../../web/src/lib/plugin-rows'
+import { PluginIcon } from './ui/PluginIcon'
 import { isOpenRoom } from './core/routes'
 import { pickFile } from './core/pickFile'
 import type { useMobile } from './core/useMobile'
@@ -102,18 +103,6 @@ const TOOLS: { key: string; label: string; description: string }[] = [
     description: 'Run commands in a sandbox. Leaving it is checked first, except in Bypass.'
   },
   { key: 'files', label: 'Files', description: 'Read, write and search files in the workspace.' },
-  {
-    key: 'code_execution',
-    label: 'Code execution',
-    description: 'Run scripts in a sandbox for data work and quick checks.'
-  },
-  { key: 'browser', label: 'Browser', description: 'Drive a local Chrome window.' },
-  {
-    key: 'computer_use',
-    label: 'Computer use',
-    description:
-      "Work on your bots' shared Linux desktop, which you can watch and take over. Uses Cua."
-  },
   { key: 'vision', label: 'Vision', description: 'Look at images you attach.' },
   {
     key: 'voice',
@@ -161,7 +150,7 @@ const PASSWORD_STORE_TEXT: Record<string, string> = {
   locked: "Hexbot can't read the vault's key. Unlock the keychain on the daemon's computer.",
   secret_service: "The vault's key is in the keyring of the daemon's computer."
 }
-/** How big the bots' shared computer is; a new size applies when it is reset. */
+/** How big the bots' computer is; a new size applies when it is reset. Every bot has it. */
 function ComputerSize({ mobile }: { mobile: ReturnType<typeof useMobile> }) {
   const status = mobile.computer
   const [error, setError] = useState<string | null>(null)
@@ -171,11 +160,11 @@ function ComputerSize({ mobile }: { mobile: ReturnType<typeof useMobile> }) {
   if (!status?.sizes) return error ? <Text tone="danger">{error}</Text> : null
   return (
     <Group
-      title="Computer size"
+      title="Computer use"
       footer={
         status.state === 'absent'
-          ? 'Shared by all your bots. Used when the computer is made.'
-          : "Shared by all your bots. A new size applies after Reset, on the bots' computer card."
+          ? 'Every bot runs code, browses and uses apps on it. Used when the computer is made.'
+          : "Every bot runs code, browses and uses apps on it. A new size applies after Reset, on the bots' computer card."
       }
     >
       {status.sizes.map(size => (
@@ -712,6 +701,7 @@ export function Management({
               {toggle('heartbeat_enabled', 'Heartbeat')}
             </Group>
           ) : null}
+          <ComputerSize mobile={mobile} />
         </>
       )
       break
@@ -962,13 +952,6 @@ export function Management({
           ))}
         </Group>
       )
-      if ((bot?.tools as string[] | undefined)?.includes('computer_use'))
-        content = (
-          <>
-            {content}
-            <ComputerSize mobile={mobile} />
-          </>
-        )
       break
     }
     case 'rooms':
@@ -1434,6 +1417,7 @@ export function Management({
       const item = (p: Plugin) => (
         <Row
           key={keyOf(p)}
+          leading={<PluginIcon icon={p.icon} />}
           title={p.name}
           subtitle={`${p.state_text} · ${pluginBots(p, bots)}`}
           testID={`plugin-${keyOf(p)}`}
@@ -1463,12 +1447,6 @@ export function Management({
             {row('Create skill', 'skill-create')}
             {skills.map(item)}
           </Group>
-          <Group
-            title="Built-in tools"
-            footer="Tools that need a program on the daemon's computer."
-          >
-            {plugins.filter(p => p.kind === 'capability').map(item)}
-          </Group>
         </>
       )
       break
@@ -1476,10 +1454,8 @@ export function Management({
     case 'plugin': {
       const bots = pluginRoster
       const p = (extra.plugin ?? panel!.data) as unknown as Plugin
-      // One that isn't set up can be taken away from bots, not given to them. A
-      // connector or skill can be ready for one bot through its own key, so
-      // only the daemon can tell; a built-in tool is the same for all.
-      const unready = !p.ready && p.kind === 'capability'
+      // A connector or skill can be ready for one bot through its own key, so
+      // only the daemon can tell whether a bot may have it.
       const server = p.server
       const values_ = server ? (server.transport === 'http' ? server.headers : server.env) : []
       const valueKind = server?.transport === 'http' ? 'headers' : 'env'
@@ -1500,19 +1476,14 @@ export function Management({
           <Text tone={p.state === 'error' ? 'danger' : 'muted'} variant="footnote">
             {p.state_text}
           </Text>
-          <Group
-            title="Bots"
-            footer={unready ? `Set it up before you give it to a bot. ${p.state_text}` : undefined}
-          >
+          <Group title="Bots">
             {bots.map(b => (
               <SwitchRow
                 key={b.name}
                 title={b.display_name}
                 testID={`plugin-bot-${b.name}`}
                 value={p.bots.includes(b.name)}
-                disabled={
-                  (unready && !p.bots.includes(b.name)) || busy || mobile.connection !== 'connected'
-                }
+                disabled={busy || mobile.connection !== 'connected'}
                 onValueChange={on =>
                   choose(on ? [...p.bots, b.name] : p.bots.filter(name => name !== b.name))
                 }

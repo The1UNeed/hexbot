@@ -6914,48 +6914,6 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
     }
 }
 
-#[cfg(test)]
-mod code_environment_tests {
-    use super::*;
-    #[tokio::test]
-    async fn python_child_does_not_receive_connector_credentials() {
-        let home = tempfile::tempdir().unwrap();
-        db::migrate(home.path()).unwrap();
-        db::open(home.path())
-            .unwrap()
-            .execute_batch(
-                "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);INSERT INTO bots(name,owner_id,workdir) VALUES('owl','alice','/tmp');INSERT INTO sections(id,bot,owner_id) VALUES('first','owl','alice');",
-            )
-            .unwrap();
-        common::atomic_write(
-            &home.path().join("profiles/owl/config.yaml"),
-            b"tools:\n  enabled_toolsets: [code_execution]\n",
-        )
-        .unwrap();
-        common::atomic_write(
-            &home.path().join(".env"),
-            b"OPENAI_API_KEY=provider-secret\nCUSTOM_CONNECTOR_VALUE=connector-secret\n",
-        )
-        .unwrap();
-        let result = crate::native_tools::call(
-            home.path(),
-            "alice",
-            "owl",
-            "first",
-            "execute_code",
-            &json!({
-                "code": "import os\nprint(os.environ.get('OPENAI_API_KEY'))\nprint(os.environ.get('CUSTOM_CONNECTOR_VALUE'))"
-            }),
-        )
-        .await
-        .unwrap();
-        crate::native_tools::close_session(home.path(), "first").await;
-        assert!(!result.to_string().contains("provider-secret"));
-        assert!(!result.to_string().contains("connector-secret"));
-        assert!(result["output"].as_str().unwrap().contains("None"));
-    }
-}
-
 /// The checked target and whether a write needs approval: every write in Manual;
 /// in Auto, writes outside `writable` and host configuration files from
 /// credential-policy.json. Bypass checks nothing.

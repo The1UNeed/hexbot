@@ -728,7 +728,11 @@ async fn idle_restart_preserves_live_id_prompt_tools_and_client_watermarks() {
     let after = processes(home.path());
     // The chat restarts once, with its bot's new tools; it keeps its model.
     assert_eq!(after.len(), 2);
-    assert_eq!(after[1]["config"]["enabledToolsets"], json!(["terminal"]));
+    // Every bot has Computer use, whatever its saved toolsets say.
+    assert_eq!(
+        after[1]["config"]["enabledToolsets"],
+        json!(["terminal", "computer_use"])
+    );
     assert_eq!(after[0]["config"]["model"], after[1]["config"]["model"]);
     assert_eq!(open(&runtime).await, id);
     assert_eq!(processes(home.path()).len(), 2);
@@ -4176,139 +4180,6 @@ async fn memory_edits_leave_fenced_code_unstamped() {
             "```sh\nls -a\npwd\n```\nLikes tea. [{}]",
             crate::memory::month_stamp()
         )
-    );
-    runtime.shutdown().await;
-}
-
-/// Code runs in the workspace sandbox without asking in Auto, asks first in
-/// Manual and runs read-only there, and leaves the sandbox in Bypass. The code floor holds in every mode.
-#[tokio::test]
-async fn code_runs_sandboxed_in_auto_asks_in_manual_and_keeps_its_floor() {
-    let (home, runtime, hub) = setup();
-    let s = runtime.open_session("alice", "owl", "first").await.unwrap();
-    let sandboxed = crate::credentials::isolation_available();
-    let set_mode = |mode: &str| {
-        db::open(home.path())
-            .unwrap()
-            .execute("UPDATE bots SET approval_mode=?", [mode])
-            .unwrap();
-    };
-    set_mode("manual");
-    let mut events = hub.subscribe();
-    let task = {
-        let runtime = runtime.clone();
-        let s = s.clone();
-        tokio::spawn(async move {
-            runtime
-                .tool(&s, "execute_code", &json!({"code":"print(42)"}))
-                .await
-        })
-    };
-    let payload = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let event = events.recv().await.unwrap();
-            if event.frame["params"]["type"] == "approval.request" {
-                break event.frame["params"]["payload"].clone();
-            }
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!(payload["tool"], "execute_code");
-    assert_eq!(
-        payload["reason"],
-        if sandboxed {
-            "Manual mode asks before running code."
-        } else {
-            crate::credentials::UNSANDBOXED_REASON
-        }
-    );
-    runtime
-        .call(
-            "alice",
-            "approval.respond",
-            &json!({"session_id":s.id,"request_id":payload["request_id"],"choice":"deny"}),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(task.await.unwrap().unwrap_err().code, 4302);
-    if sandboxed {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let code = format!(
-            "import socket\ntry:\n    socket.create_connection(('127.0.0.1', {port}), 2)\n    print('connected')\nexcept OSError:\n    print('blocked')"
-        );
-        std::fs::write(
-            home.path().join("profiles/owl/config.yaml"),
-            "model:\n  provider: openai\n  default: fixture\ntools:\n  enabled_toolsets: [code_execution]\n",
-        )
-        .unwrap();
-        set_mode("smart");
-        let mut events = hub.subscribe();
-        let result = runtime
-            .tool(&s, "execute_code", &json!({"code":code}))
-            .await
-            .unwrap();
-        assert!(result.to_string().contains("blocked"), "{result}");
-        while let Ok(event) = events.try_recv() {
-            assert_ne!(event.frame["params"]["type"], "approval.request");
-        }
-        // Approved Manual code gets the Manual shell's read-only sandbox, not Auto's.
-        let write = "try:\n    open('hexbot-probe.txt', 'w').write('x')\n    print('wrote')\nexcept OSError:\n    print('read-only')";
-        let result = runtime
-            .tool(&s, "execute_code", &json!({"code":write}))
-            .await
-            .unwrap();
-        assert!(result.to_string().contains("wrote"), "{result}");
-        set_mode("manual");
-        let mut events = hub.subscribe();
-        let task = {
-            let runtime = runtime.clone();
-            let s = s.clone();
-            tokio::spawn(async move {
-                runtime
-                    .tool(&s, "execute_code", &json!({"code":write}))
-                    .await
-            })
-        };
-        let payload = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let event = events.recv().await.unwrap();
-                if event.frame["params"]["type"] == "approval.request" {
-                    break event.frame["params"]["payload"].clone();
-                }
-            }
-        })
-        .await
-        .unwrap();
-        runtime
-            .call(
-                "alice",
-                "approval.respond",
-                &json!({"session_id":s.id,"request_id":payload["request_id"],"choice":"once"}),
-            )
-            .await
-            .unwrap()
-            .unwrap();
-        let result = task.await.unwrap().unwrap();
-        assert!(result.to_string().contains("read-only"), "{result}");
-        // The worker restarts outside the workspace sandbox once the mode allows it.
-        set_mode("off");
-        let result = runtime
-            .tool(&s, "execute_code", &json!({"code":code}))
-            .await
-            .unwrap();
-        assert!(result.to_string().contains("connected"), "{result}");
-    }
-    set_mode("off");
-    assert!(
-        runtime
-            .tool(&s, "execute_code", &json!({"code":"shutil.rmtree('/')"}))
-            .await
-            .unwrap_err()
-            .message
-            .contains("blocked")
     );
     runtime.shutdown().await;
 }

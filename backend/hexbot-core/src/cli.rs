@@ -30,7 +30,7 @@ pub const USAGE: &str = concat!(
     "hexbot heartbeat on | off | status BOT | now BOT | set BOT TEXT\n",
     "hexbot computer [on | off | restart | reset | give-back | size small|medium|large]\n",
     "hexbot rooms list\n",
-    "hexbot plugins [list [--bot NAME]] | assign connector|skill|capability ID [BOT ...]\n",
+    "hexbot plugins [list [--bot NAME]] | assign connector|skill|package ID [BOT ...]\n",
     "hexbot devices list | revoke ID\n",
     "hexbot connect [--name TEXT | status | disconnect]\n",
     "hexbot lan on | off\n",
@@ -76,7 +76,7 @@ fn command(args: &[String]) -> Result<(&'static str, Value)> {
         [
             "plugins",
             "assign",
-            kind @ ("connector" | "skill" | "capability"),
+            kind @ ("connector" | "skill" | "package"),
             id,
             bots @ ..,
         ] => Ok((

@@ -552,7 +552,7 @@ describe('tools tab', () => {
       />
     )
     expect(screen.getByRole('switch', { name: 'Files' })).toBeChecked()
-    expect(screen.queryByRole('switch', { name: 'Browser' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('switch', { name: 'Vision' })).not.toBeInTheDocument()
     expect(screen.queryByText('Senses')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('switch', { name: 'Terminal' }))
     expect(onSave).toHaveBeenCalledWith({ tools: ['files', 'terminal'] })
@@ -560,7 +560,15 @@ describe('tools tab', () => {
 
   it('shows every tool when the daemon does not say what is set up', () => {
     render(<ToolsTab bot={bot} onSave={vi.fn()} />)
-    expect(screen.getByRole('switch', { name: 'Browser' })).toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: 'Vision' })).toBeInTheDocument()
+  })
+
+  it('leaves Computer use, code and the browser to Settings, Manuals', () => {
+    render(<ToolsTab bot={bot} onSave={vi.fn()} />)
+    for (const name of ['Computer use', 'Code execution', 'Browser']) {
+      expect(screen.queryByRole('switch', { name })).not.toBeInTheDocument()
+    }
+    expect(screen.getByText('Working directory')).toBeInTheDocument()
   })
 })
 

@@ -271,12 +271,6 @@ pub(crate) fn not_set_up_with_config(
             .collect(),
     )
 }
-/// Whether a toolset's program or service is set up for the daemon as a
-/// whole, before any bot's own settings.
-pub(crate) fn set_up_on_daemon(home: &Path, toolset: &str) -> Result<bool> {
-    let env = connectors::profile_credentials(home, home)?;
-    Ok(set_up(home, &common::read_config(home)?, &env, toolset))
-}
 fn set_up(
     home: &Path,
     cfg: &Value,
@@ -3147,44 +3141,6 @@ mod safety_tests {
         close_session(home.path(), "section").await;
         assert_eq!(result["success"], true, "{result}");
         assert_eq!(result["output"], "ok\n");
-    }
-    #[tokio::test]
-    async fn kernel_uses_frozen_cwd_without_connector_secrets() {
-        let home = fixture();
-        fs::write(
-            home.path().join(".env"),
-            "OPENAI_API_KEY=secret\nAWS_SECRET_ACCESS_KEY=secret\nPYTHONPATH=/wrong\n",
-        )
-        .unwrap();
-        let cwd = home.workspace().with_file_name("scheduled-directory");
-        fs::create_dir(&cwd).unwrap();
-        fs::write(cwd.join("from-pi.txt"), "shared cwd").unwrap();
-        crate::runtime_store::open(home.path())
-            .unwrap()
-            .execute(
-                "INSERT INTO native_sessions(stored_id,owner,bot,prompt,options) VALUES('section','alice','owl','frozen',?)",
-                [json!({ "cwd": cwd }).to_string()],
-            )
-            .unwrap();
-        let result = call(
-            home.path(),
-            "alice",
-            "owl",
-            "section",
-            "execute_code",
-            &json!({
-                "code": "import os\nassert 'OPENAI_API_KEY' not in os.environ\nassert 'AWS_SECRET_ACCESS_KEY' not in os.environ\nassert 'PYTHONPATH' not in os.environ\nprint(open('from-pi.txt').read())"
-            }),
-        )
-        .await
-        .unwrap();
-        close_session(home.path(), "section").await;
-        assert_eq!(result["success"], true, "{result}");
-        assert_eq!(result["output"], "shared cwd\n");
-        assert_eq!(
-            workdir(home.path(), "owl").unwrap(),
-            home.workspace().canonicalize().unwrap()
-        );
     }
     #[tokio::test]
     async fn media_paths_reject_escapes_and_nonregular_files() {

@@ -203,8 +203,8 @@ more freedom and more capability than a hosted product can offer.
   read-only even there. A command that needs the internet or a write outside
   the workspace sets `full_access` with a one-sentence `reason`, and runs
   with the sandbox's base layer only (credential files still unreadable).
-  File tools change the workspace without asking. Code execution runs in the
-  same workspace sandbox without asking. Absolute cron script paths ask.
+  File tools change the workspace without asking. Absolute cron script paths
+  ask.
   File changes to shell profiles and login items use user approval rather than
   model review. Full-access shell commands can change them after model review,
   including without a card when the owner requested that exact change.
@@ -288,8 +288,13 @@ more freedom and more capability than a hosted product can offer.
   nothing is saved. Reviewed Auto cards, incomplete file scans and requests
   the daemon raises itself (code runs, browser scripts, cron) offer Approve
   and Deny only. Native notifications for approvals and mentions.
-- New bots get files, web search, browser and terminal (terminal gated by
-  approvals). Computer use is off until enabled. Self-authored skills are on,
+- New bots get files, web search and terminal (terminal gated by
+  approvals). Every bot has Computer use: the bots' own computer, a Cua
+  sandbox separate from the daemon's computer, where they run code, install
+  programs, browse and use apps. Nothing a bot runs there lands on the
+  daemon's computer. Settings, Manuals, Computer use holds its size and
+  controls; Settings, Plugins shows connectors, MCP servers and skills on
+  three tabs. Self-authored skills are on,
   with a transcript notice. Bundled and user-shared skills form one library,
   enabled for every bot unless disabled globally or for that bot. A skill
   whose frontmatter names a platform, program or key this computer lacks

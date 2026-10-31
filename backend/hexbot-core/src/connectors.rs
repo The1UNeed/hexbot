@@ -177,7 +177,21 @@ fn required_keys(home: &Path, spec: &Value) -> Result<Vec<String>> {
         &selected(home, spec)?.unwrap_or_else(|| spec.clone())["keys"],
     ))
 }
+/// Toolsets that ran on the daemon's computer. Bots now run code and browse
+/// on their own computer through Computer use, so these are never offered.
+const RETIRED_TOOLSETS: &[&str] = &["code_execution", "browser"];
+/// Every bot has Computer use; it works once the computer is set up.
+const BUILT_IN_TOOLSET: &str = "computer_use";
+
 pub fn toolsets(home: &Path, bot: &str) -> Result<Vec<String>> {
+    let mut sets = configured_toolsets(home, bot)?;
+    sets.retain(|set| !RETIRED_TOOLSETS.contains(&set.as_str()));
+    if !sets.iter().any(|set| set == BUILT_IN_TOOLSET) {
+        sets.push(BUILT_IN_TOOLSET.to_owned());
+    }
+    Ok(sets)
+}
+fn configured_toolsets(home: &Path, bot: &str) -> Result<Vec<String>> {
     let config = read_config(&profile(home, bot)?)?;
     for v in [
         &config["tools"]["enabled_toolsets"],
@@ -200,7 +214,6 @@ pub fn toolsets(home: &Path, bot: &str) -> Result<Vec<String>> {
         "terminal",
         "file",
         "web",
-        "browser",
         "vision",
         "image_gen",
         "tts",
@@ -415,9 +428,6 @@ pub(crate) fn enabled(home: &Path, bot: &str, id: &str) -> Result<bool> {
     if id == "web_search" {
         return Ok(tools.iter().any(|t| t == "web" || t == "search"));
     }
-    if id == "cloud_browser" && selected(home, &s)?.is_none() {
-        return Ok(false);
-    }
     Ok(strings(&s["toolsets"]).iter().all(|t| tools.contains(t)))
 }
 pub(crate) fn set_enabled(home: &Path, bot: &str, id: &str, on: bool) -> Result<()> {
@@ -427,12 +437,6 @@ pub(crate) fn set_enabled(home: &Path, bot: &str, id: &str, on: bool) -> Result<
             let _guard = crate::skills::read_lock()?;
             crate::skills::find_unlocked(home, Some(bot), skill)?;
             return crate::skills::set_enabled(home, Some(bot), skill, on);
-        }
-        if id == "cloud_browser" {
-            if !on {
-                write_all(home, "browser", "cloud_provider", Value::Null)?;
-            }
-            return Ok(());
         }
     }
     if let Some(server) = id.strip_prefix("mcp:") {
