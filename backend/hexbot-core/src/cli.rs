@@ -34,6 +34,7 @@ pub const USAGE: &str = concat!(
     "hexbot devices list | revoke ID\n",
     "hexbot connect [--name TEXT | status | disconnect]\n",
     "hexbot lan on | off\n",
+    "hexbot usage-data on | off\n",
     "hexbot send BOT TEXT"
 );
 
@@ -50,6 +51,10 @@ fn command(args: &[String]) -> Result<(&'static str, Value)> {
         ["connect", "disconnect"] => Ok(("hexbot.connect.disconnect", json!({}))),
         ["lan", "on"] => Ok(("hexbot.network.set", json!({"lan_enabled":true}))),
         ["lan", "off"] => Ok(("hexbot.network.set", json!({"lan_enabled":false}))),
+        ["usage-data", toggle @ ("on" | "off")] => Ok((
+            "hexbot.settings.set",
+            json!({"patch":{"usage_data":*toggle == "on"}}),
+        )),
         ["devices", "list"] => Ok(("hexbot.devices.list", json!({}))),
         ["devices", "revoke", id] => Ok(("hexbot.devices.revoke", json!({"id":id}))),
         ["bots", "delete", name] => Ok(("hexbot.bots.delete", json!({"name":name}))),
@@ -574,6 +579,7 @@ pub async fn dispatch(home: &Path, args: &[String]) -> Option<Result<()>> {
             "connect"
                 | "devices"
                 | "lan"
+                | "usage-data"
                 | "send"
                 | "heartbeat"
                 | "computer"
@@ -587,7 +593,13 @@ pub async fn dispatch(home: &Path, args: &[String]) -> Option<Result<()>> {
         return None;
     }
     Some(execute(home, args).await.map(|v| {
-        if args.first().map(String::as_str) == Some("lan") {
+        if args.first().map(String::as_str) == Some("usage-data") {
+            if v["usage_data"] == true {
+                println!("Usage data is on. Anonymous counts go to the Hexbot team: https://hexbot.app/docs/usage-data/");
+            } else {
+                println!("Usage data is off, and this daemon's install ID is deleted.");
+            }
+        } else if args.first().map(String::as_str) == Some("lan") {
             println!(
                 "LAN access is {}.",
                 if v["lan_enabled"] == true {
@@ -611,4 +623,27 @@ pub async fn dispatch(home: &Path, args: &[String]) -> Option<Result<()>> {
             println!("{}", serde_json::to_string_pretty(&v).unwrap());
         }
     }))
+}
+
+#[cfg(test)]
+mod usage_data_tests {
+    use super::*;
+
+    fn args(words: &[&str]) -> Vec<String> {
+        words.iter().map(|word| word.to_string()).collect()
+    }
+
+    #[test]
+    fn usage_data_on_and_off_set_the_owner_setting() {
+        assert_eq!(
+            command(&args(&["usage-data", "on"])).unwrap(),
+            ("hexbot.settings.set", json!({"patch":{"usage_data":true}}))
+        );
+        assert_eq!(
+            command(&args(&["usage-data", "off"])).unwrap(),
+            ("hexbot.settings.set", json!({"patch":{"usage_data":false}}))
+        );
+        assert!(command(&args(&["usage-data", "maybe"])).is_err());
+        assert!(USAGE.contains("hexbot usage-data on | off"));
+    }
 }

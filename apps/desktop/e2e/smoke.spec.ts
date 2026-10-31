@@ -70,6 +70,12 @@ test('creates a bot, chats, and reopens its one chat', async () => {
     await page.getByTestId('onboarding-defaults-skip').click()
     await expect(page.getByTestId('onboarding-tool-item-web_search')).toBeVisible()
     await page.getByTestId('onboarding-tools-continue').click()
+    // Usage data is asked once and stays off unless turned on.
+    await expect(page.getByRole('switch', { name: 'Share anonymous usage data' })).toHaveAttribute(
+      'aria-checked',
+      'false'
+    )
+    await page.getByTestId('onboarding-usage-continue').click()
 
     await page.getByTestId('onboarding-bot-display-input').fill('Scout')
     await page.getByTestId('onboarding-bot-name-input').fill('scout')

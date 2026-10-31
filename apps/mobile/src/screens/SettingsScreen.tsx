@@ -13,6 +13,7 @@ import {
   Row,
   Screen,
   STATUS_LABELS,
+  SwitchRow,
   Text,
   TopBar,
   useTheme,
@@ -61,6 +62,8 @@ export interface SettingsScreenProps {
   onDisconnect?: () => void
   refreshing?: boolean
   onRefresh?: () => void
+  /** Anonymous usage data from this phone; leave out where it cannot be sent. */
+  usageData?: { on: boolean; onChange: (on: boolean) => void; onOpenDocs: () => void }
 }
 
 const STATE: Record<ConnectionState, string> = {
@@ -87,6 +90,7 @@ export function SettingsScreen({
   onRefresh,
   onSwitchDaemon,
   refreshing,
+  usageData,
   user
 }: SettingsScreenProps) {
   const theme = useTheme()
@@ -250,6 +254,26 @@ export function SettingsScreen({
             ))}
           </Group>
         ))}
+
+        {usageData ? (
+          <Group
+            footer="Once a day: that the app was opened, its version, and whether this is a phone or a tablet. Never what you write, names, or your location."
+            title="Privacy"
+          >
+            <SwitchRow
+              onValueChange={usageData.onChange}
+              testID="settings-usage-data"
+              title="Share anonymous usage data"
+              value={usageData.on}
+            />
+            <Row
+              chevron
+              onPress={usageData.onOpenDocs}
+              testID="settings-usage-docs"
+              title="Every event we collect"
+            />
+          </Group>
+        ) : null}
 
         {user || onDisconnect ? (
           <View style={styles.footer}>
