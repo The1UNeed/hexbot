@@ -176,6 +176,7 @@ impl App {
         let start = common::now() * 1000.;
         let result = self.call_locked(owner, method, p).await;
         crate::diagnostics::get().rpc(method, start, &result);
+        crate::usage::rpc(&self.home, method, &result);
         result
     }
     async fn call_locked(self: &Arc<Self>, owner: &str, method: &str, p: &Value) -> Result<Value> {

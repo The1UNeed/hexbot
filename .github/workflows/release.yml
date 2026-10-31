@@ -27,7 +27,9 @@
 #   SITE_DEPLOY_HOOK_URL                                    redeploy hexbot.app
 #   EXPO_TOKEN                                             required for nightly TestFlight
 # Variables (optional): R2_UPDATES_BUCKET (default hexbot-updates),
-#   HEXBOT_CRASH_URL (crash report endpoint baked into the app).
+#   HEXBOT_CRASH_URL (crash report endpoint baked into the app),
+#   HEXBOT_POSTHOG_KEY (public PostHog project key for anonymous usage data,
+#   baked into the app and the daemon; unset, they can never send it).
 name: Release
 
 on:
@@ -238,6 +240,7 @@ jobs:
       - name: Build the package
         env:
           HEXBOT_CRASH_URL: ${{ vars.HEXBOT_CRASH_URL }}
+          HEXBOT_POSTHOG_KEY: ${{ vars.HEXBOT_POSTHOG_KEY }}
         run: node scripts/desktop/dist.mjs ${{ matrix.target }} --channel "$CHANNEL" ${{ matrix.edition == 'client' && '--client' || '' }}
       - name: Verify packaged macOS signatures and launch
         if: runner.os == 'macOS'

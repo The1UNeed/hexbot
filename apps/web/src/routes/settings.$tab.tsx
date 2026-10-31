@@ -10,6 +10,7 @@ import {
   LockKeyhole,
   Puzzle,
   ShieldCheck,
+  ShieldEllipsis,
   SunMoon,
   Wifi
 } from 'lucide-react'
@@ -43,6 +44,7 @@ const ITEMS: Record<SettingsTab, SettingsTabItem<SettingsTab>> = {
   network: { icon: Wifi, id: 'network', label: 'Network' },
   passwords: { icon: LockKeyhole, id: 'passwords', label: 'Passwords' },
   plugins: { icon: Puzzle, id: 'plugins', label: 'Plugins' },
+  privacy: { icon: ShieldEllipsis, id: 'privacy', label: 'Privacy' },
   providers: { icon: KeyRound, id: 'providers', label: 'Providers' },
   updates: { icon: Download, id: 'updates', label: 'Updates' },
   usage: { icon: Gauge, id: 'usage', label: 'Usage' }
@@ -53,7 +55,7 @@ const GROUPS: { ids: SettingsTab[]; label: string }[] = [
   { ids: ['plugins', 'passwords'], label: 'Bots' },
   { ids: ['network', 'connect'], label: 'Devices' },
   { ids: ['memory', 'approvals', 'appearance'], label: 'You' },
-  { ids: ['updates', 'about'], label: 'App' },
+  { ids: ['updates', 'privacy', 'about'], label: 'App' },
   { ids: ['diagnostics'], label: 'Advanced' }
 ]
 

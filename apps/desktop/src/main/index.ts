@@ -32,8 +32,9 @@ import { notify } from './notify'
 import { pair, pairingReply, pairWithGrant, type GrantPairOptions, type PairOptions } from './pair'
 import { installService, serviceStatus, uninstallService } from './service'
 import { createTray } from './tray'
-import { setCrashReports, startCrashReports } from './crash-reports'
+import { crashReportsAvailable, setCrashReports, startCrashReports } from './crash-reports'
 import { readDesktopState, updateDesktopState } from './desktop-state'
+import { readUsageData, setUsageData, startUsageData, usageAvailable } from './usage-data'
 import { errorMessage, log } from './log'
 import { WindowLifecycle } from './window-lifecycle'
 import { handleDaemonUpdateRequest } from './remote-update'
@@ -58,6 +59,7 @@ const devIcon = !app.isPackaged ? join(currentDirectory, '../../resources/icon-d
 // install is self-contained and tests with a temporary home start clean.
 app.setPath('userData', join(hexbotHome(), 'desktop-data'))
 await startCrashReports()
+startUsageData()
 registerAppScheme()
 let mainWindow: BrowserWindow | null = null
 let pendingLink = app.isPackaged ? process.argv.find(arg => parseDeepLink(arg) !== null) : undefined
@@ -334,6 +336,16 @@ function registerIpc(): void {
     if (typeof enabled !== 'boolean') throw new TypeError('Invalid crash report preference')
     return setCrashReports(enabled)
   })
+  handle('hexbot:usage-data:set', (_event, enabled: unknown) => {
+    if (typeof enabled !== 'boolean') throw new TypeError('Invalid usage data preference')
+    return setUsageData(enabled)
+  })
+  handle('hexbot:privacy:get', async () => ({
+    crashReports: (await readDesktopState()).crashReports === true,
+    crashReportsAvailable: crashReportsAvailable(),
+    usageData: await readUsageData(),
+    usageDataAvailable: usageAvailable()
+  }))
   handle('hexbot:service:install', () => {
     requireRuntime('Starting the daemon at login')
     return daemon.installService(installService)

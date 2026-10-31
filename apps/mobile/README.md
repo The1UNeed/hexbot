@@ -210,6 +210,30 @@ choose production, then App Store Connect to assign a valid API key. Retry
 the existing build after fixing credentials. Do not revoke a shared key
 without checking its other uses.
 
+## Store privacy answers
+
+Keep the App Store Connect "App Privacy" answers and the Google Play "Data
+safety" form in step with `docs/usage-data.md` and hexbot.app/privacy. With
+usage data as it is now:
+
+- Privacy policy URL: `https://hexbot.app/privacy/`.
+- Tracking: none. Nothing is combined with other companies' data or used for
+  advertising, so the app shows no App Tracking Transparency prompt.
+- Usage Data, Product Interaction: collected, not linked to the user, used for
+  Analytics. Optional: only after the user turns on usage data.
+- Diagnostics, Other Diagnostic Data (`app_error`, the error type only):
+  collected, not linked to the user, used for Analytics. Optional, as above.
+- Identifiers, Device ID: the random usage data install ID and the Expo push
+  token. Not linked to the user. Used for Analytics (install ID) and App
+  Functionality (push token, which goes to the user's own daemon and through
+  Connect to Expo only to deliver notifications).
+- Everything is encrypted in transit. Turning usage data off deletes the
+  install ID, after which past events cannot be tied to the phone.
+
+The production build gets the project key from `EXPO_PUBLIC_POSTHOG_KEY` in
+`eas.json`; development and simulator builds have none and show no usage
+data switch.
+
 ## Verify
 
 ```sh

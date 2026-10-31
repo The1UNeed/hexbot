@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ActivityIndicator, BackHandler, Platform, View } from 'react-native'
+import { ActivityIndicator, AppState, BackHandler, Platform, View } from 'react-native'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 import { StatusBar } from 'expo-status-bar'
 import * as ExpoLinking from 'expo-linking'
@@ -54,6 +54,8 @@ import { visualDocument } from './src/core/visual'
 import { parseArgs } from './src/core/chat'
 import { Management, type Panel } from './src/Management'
 import { useMobile } from './src/core/useMobile'
+import { USAGE_DOCS_URL } from '@hermes/shared'
+import { captureUsage, sendDailyUsage, useUsageData, watchUsageErrors } from './src/core/usage'
 import { useFeeling } from './src/core/feelings'
 import { clearTapped, useTappedSection } from './src/core/tapped'
 import { chatPreview, pulseTarget, purposeOf, stoppedIn } from './src/core/routes'
@@ -132,6 +134,17 @@ export default function App() {
 }
 function MobileApp() {
   const mobile = useMobile()
+  const usage = useUsageData()
+  // Counted once a day while the app is used, including after it comes back
+  // from the background; nothing unless usage data is on.
+  useEffect(() => {
+    watchUsageErrors()
+    void sendDailyUsage()
+    const subscription = AppState.addEventListener('change', state => {
+      if (state === 'active') void sendDailyUsage()
+    })
+    return () => subscription.remove()
+  }, [])
   const theme = useTheme()
   // Pages pushed over the chat list; an open conversation shows above them.
   const [page, setPage] = useState<'home' | 'library' | 'settings'>('home')
@@ -969,6 +982,7 @@ function MobileApp() {
         saved={saved}
         initialLink={initialLink}
         onCancel={mobile.active ? () => setAddDaemon(false) : undefined}
+        usageData={usage.available ? { on: usage.on, onChange: usage.setOn } : undefined}
         onOpenSaved={id =>
           act(async () => {
             const target = mobile.saved.find(d => d.id === id)
@@ -982,6 +996,7 @@ function MobileApp() {
               input.mode === 'link' ? input.link : input.address,
               input.mode === 'code' ? input.code : ''
             )
+            void captureUsage('daemon_paired', { method: input.mode })
             setAddDaemon(false)
           })
         }
@@ -1098,6 +1113,15 @@ function MobileApp() {
         }}
         refreshing={refreshing}
         onRefresh={demo ? undefined : refresh}
+        usageData={
+          usage.available
+            ? {
+                on: usage.on,
+                onChange: usage.setOn,
+                onOpenDocs: () => void WebBrowser.openBrowserAsync(USAGE_DOCS_URL)
+              }
+            : undefined
+        }
       />
     ) : page === 'library' ? (
       <LibraryScreen

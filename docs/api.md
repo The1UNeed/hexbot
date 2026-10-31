@@ -245,8 +245,11 @@ mutation methods check ownership.
   `<HEXBOT_HOME>/install_id` file and migrates an early native `install-id` file
   only if the original file has no ID.
 - `hexbot.settings.get {}` → `{approval_mode, lan_enabled,
-  service_installed, workspace_dir, billing_notice_ack, dream_time, dream_enabled}`.
-  `approval_mode` defaults to `smart` (Auto).
+  service_installed, workspace_dir, billing_notice_ack, dream_time, dream_enabled,
+  usage_data}`. `approval_mode` defaults to `smart` (Auto). `usage_data`
+  (default `false`) lets the daemon send anonymous usage data
+  (`docs/usage-data.md`); turning it off deletes `<HEXBOT_HOME>/usage.json`.
+  Bots cannot change it.
 - `hexbot.settings.set {patch}` → same shape; only whitelisted keys.
   Room settings are `room_bot_turns_per_human_turn` (default 8),
   `room_budget_tokens_per_human_turn` (default null), and

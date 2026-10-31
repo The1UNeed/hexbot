@@ -10,6 +10,10 @@ export interface DesktopState {
   height?: number
   backgroundExplained?: boolean
   updateChannel?: UpdateChannel
+  /** Anonymous usage data (usage-data.ts): the user's choice, the install id, the last day counted. */
+  usageData?: boolean
+  usageDay?: string
+  usageId?: string
   width?: number
   x?: number
   y?: number

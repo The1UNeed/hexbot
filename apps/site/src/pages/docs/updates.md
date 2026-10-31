@@ -64,6 +64,6 @@ The updater requests package, platform, and architecture-specific metadata from 
 
 ## Crash reports
 
-Crash reporting is off by default. If you opt in through desktop settings, Electron may upload a report when the desktop process crashes. Turning the setting off stops later uploads.
+Crash reporting is off by default. Turn it on in Settings, Privacy, "Send crash reports", and Electron uploads a report when the desktop process crashes. Turning the setting off stops later uploads. Builds without a crash report address do not show the switch. Anonymous usage data is a separate switch on the same page; see [Usage data](/docs/usage-data/).
 
 Crash reporting concerns the desktop app, not your model conversations. Review the setting before enabling it on a machine where process diagnostics may contain sensitive system details.

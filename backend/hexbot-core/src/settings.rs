@@ -24,7 +24,8 @@ pub fn defaults() -> Value {
         "dream_enabled": true,
         "heartbeat_enabled": true,
         "default_model": null,
-        "fallback_model": null
+        "fallback_model": null,
+        "usage_data": false
     })
 }
 
@@ -68,7 +69,7 @@ fn validate(patch: &Value) -> Result<()> {
                 value.is_null() || value.as_str().is_some_and(|s| s.contains('/'))
             }
             "dream_enabled" | "heartbeat_enabled" | "lan_enabled" | "service_installed"
-            | "billing_notice_ack" => value.is_boolean(),
+            | "billing_notice_ack" | "usage_data" => value.is_boolean(),
             "workspace_dir" => value
                 .as_str()
                 .is_some_and(|s| !s.is_empty() && !s.contains('\0')),
@@ -180,6 +181,12 @@ pub fn update(home: &Path, caller: &str, patch: &Value) -> Result<Value> {
         writer.write(profile, config)?;
     }
     tx.commit()?;
+    match patch["usage_data"].as_bool() {
+        Some(false) => crate::usage::forget(home),
+        // Counted from the moment it is turned on, not at the next hourly check.
+        Some(true) => crate::usage::daily(home),
+        None => {}
+    }
     Ok(settings)
 }
 
