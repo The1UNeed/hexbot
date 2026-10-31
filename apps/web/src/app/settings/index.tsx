@@ -58,6 +58,7 @@ import { DiagnosticsSettings } from './diagnostics'
 import { OPEN_SOURCE } from './licenses'
 import { PasswordsSettings } from './passwords'
 import { PluginsSettings } from './plugins'
+import { PrivacySettings } from './privacy'
 
 export const SETTINGS_TABS = [
   'providers',
@@ -71,6 +72,7 @@ export const SETTINGS_TABS = [
   'approvals',
   'appearance',
   'updates',
+  'privacy',
   'about',
   'diagnostics'
 ] as const
@@ -129,6 +131,7 @@ export function SettingsPanel({ tab }: { tab: string }): React.JSX.Element {
       {tab === 'approvals' && <ApprovalsSettings />}
       {tab === 'appearance' && <AppearanceSettings />}
       {tab === 'updates' && <UpdatesSettings />}
+      {tab === 'privacy' && <PrivacySettings />}
       {tab === 'about' && <AboutSettings />}
       {tab === 'diagnostics' && <DiagnosticsSettings />}
     </section>

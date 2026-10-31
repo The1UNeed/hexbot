@@ -60,7 +60,7 @@ const reply = (method: string) =>
         providers: [{ id: 'lmstudio', label: 'Local', configured: true }]
       },
       'hexbot.models.list': { all: [{ id: 'local-model', label: 'Local model' }], curated: [] },
-      'hexbot.settings.get': { default_model: 'lmstudio/local-model' },
+      'hexbot.settings.get': { default_model: 'lmstudio/local-model', usage_data: false },
       'hexbot.connectors.list': { connectors: [] },
       'hexbot.bots.create_primary': { bot, section: canonical }
     }[method] ?? {}
@@ -292,13 +292,14 @@ async function firstBot() {
   const defaults = await screen.findByTestId('onboarding-defaults-continue')
   await waitFor(() => expect(defaults).toBeEnabled())
   fireEvent.click(defaults)
-  await screen.findByTestId('onboarding-tools-continue')
+  fireEvent.click(await screen.findByTestId('onboarding-tools-continue'))
+  await screen.findByTestId('onboarding-usage-continue')
 
   return view
 }
 
-/** The tools step's Continue creates HexBot. */
-const createHexBot = () => fireEvent.click(screen.getByTestId('onboarding-tools-continue'))
+/** The usage data step's Continue creates HexBot. */
+const createHexBot = () => fireEvent.click(screen.getByTestId('onboarding-usage-continue'))
 
 it.each(['healthy', 'room', 'unmount', 'daemon', 'epoch', 'install', 'avatar'] as const)(
   'HexBot creation keeps its caller lifetime: %s',
@@ -417,7 +418,7 @@ it('duplicate HexBot clicks make one request, and a creation error permits a hea
   call.mockImplementation((method: string) =>
     method === 'hexbot.bots.create_primary' ? held.promise : reply(method)
   )
-  const button = screen.getByTestId('onboarding-tools-continue')
+  const button = screen.getByTestId('onboarding-usage-continue')
   await act(async () => {
     fireEvent.click(button)
     fireEvent.click(button)

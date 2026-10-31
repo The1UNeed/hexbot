@@ -96,6 +96,8 @@ const hexbot = Object.freeze({
       ipcRenderer.invoke('hexbot:updater:set-channel', channel)
   }),
   setCrashReports: (enabled: boolean) => ipcRenderer.invoke('hexbot:crash-reports:set', enabled),
+  setUsageData: (enabled: boolean) => ipcRenderer.invoke('hexbot:usage-data:set', enabled),
+  privacy: () => ipcRenderer.invoke('hexbot:privacy:get'),
   service: Object.freeze({
     install: () => ipcRenderer.invoke('hexbot:service:install'),
     uninstall: () => ipcRenderer.invoke('hexbot:service:uninstall'),
