@@ -26,6 +26,12 @@ async function assertStopped(pid) {
   assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' }, 'Packaged Full left its owned daemon alive')
   await assertHomeStopped()
 }
+// Task Stop ends the task's job, so the daemon cannot remove serve-state.json.
+// The released home lock is what readers check first.
+async function assertTaskStopped(pid) {
+  assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' }, 'Task stop left its daemon alive')
+  await assertHomeLock('free')
+}
 async function assertHomeStopped() {
   await assert.rejects(readFile(join(home, 'serve-state.json')), { code: 'ENOENT' })
   try { await lstat(join(home, 'native-daemon.lock')) }
@@ -272,7 +278,7 @@ try {
     // A stopped task can coexist with an app-owned daemon. Toggle off must
     // hand off that owned process before task removal, then restart it once.
     await native(selected, ['service', 'stop'], nativeOptions)
-    await assertStopped(servicePid)
+    await assertTaskStopped(servicePid)
     stoppedTaskPid = servicePid
     servicePid = undefined
     ownedPid = (await startOwned(stoppedTaskPid)).pid
@@ -297,7 +303,7 @@ try {
     // temporarily owns the daemon, then Quit must repair/start the same task.
     for (const missingScript of [false, true]) {
       await native(selected, ['service', 'stop'], nativeOptions)
-      await assertStopped(servicePid)
+      await assertTaskStopped(servicePid)
       stoppedTaskPid = servicePid
       servicePid = undefined
       const serviceScript = join(root, 'AppData/Local/Hexbot/daemon.ps1')
@@ -336,7 +342,7 @@ try {
     // startup must replace the task process before returning daemon:start.
     await app.close(); app = undefined
     await native(selected, ['service', 'stop'], nativeOptions)
-    await assertStopped(servicePid)
+    await assertTaskStopped(servicePid)
     const current = JSON.parse(await readFile(join(home, 'runtime/native-current.json'), 'utf8'))
     const older = join(home, 'runtime/native/older-task-relaunch')
     await cp(dirname(selected), older, { recursive: true })

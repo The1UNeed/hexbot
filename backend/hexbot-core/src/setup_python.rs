@@ -384,6 +384,17 @@ fn reparse(metadata: &fs::Metadata) -> bool {
 fn reparse(metadata: &fs::Metadata) -> bool {
     metadata.file_type().is_symlink()
 }
+/// Directory attribute of a no-follow entry. Rust reports Windows junctions
+/// and directory symlinks as symlinks, so `is_dir()` is false for them.
+#[cfg(windows)]
+fn directory_attribute(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    metadata.file_attributes() & 0x10 != 0
+}
+#[cfg(not(windows))]
+fn directory_attribute(metadata: &fs::Metadata) -> bool {
+    metadata.is_dir()
+}
 fn lstat(path: &Path) -> io::Result<Option<Observed>> {
     match fs::symlink_metadata(path) {
         Ok(m) => Ok(Some(Observed {
@@ -587,7 +598,7 @@ fn check_tree(stage: &str, root: &Path, alias: Option<&Path>) -> Result<()> {
             let metadata = entry
                 .metadata()
                 .map_err(io_stage(stage, format!("inspect {}", path.display())))?;
-            if reparse(&metadata) && (metadata.is_dir() || cfg!(unix)) {
+            if reparse(&metadata) && (directory_attribute(&metadata) || cfg!(unix)) {
                 if alias == Some(path.as_path()) {
                     continue;
                 }
@@ -1220,6 +1231,9 @@ pub(super) fn classify(
             return Health::Refused(format!("probe omitted module {}", locked.module));
         };
         let package_dir = site_canonical.join(locked.module);
+        // An owned source syntax error also fails each extension's import,
+        // through the same parent package file.
+        let mut owned_syntax_error = None;
         let module_missing = match (module.status.as_str(), &module.error) {
             ("ok", _) => {
                 let origin = module.origin.as_deref().map(Path::new).and_then(canon);
@@ -1252,18 +1266,14 @@ pub(super) fn classify(
                 true
             }
             ("error", Some(e)) if e.kind == "SyntaxError" => {
-                let owned = e
-                    .filename
-                    .as_deref()
-                    .map(Path::new)
-                    .and_then(canon)
-                    .is_some_and(|f| {
-                        f.extension().is_some_and(|extension| extension == "py")
-                            && LOCKED.iter().any(|member| {
-                                f.starts_with(site_canonical.join(member.module))
-                                    || f == site_canonical.join(format!("{}.py", member.module))
-                            })
-                    });
+                let file = e.filename.as_deref().map(Path::new).and_then(canon);
+                let owned = file.as_ref().is_some_and(|f| {
+                    f.extension().is_some_and(|extension| extension == "py")
+                        && LOCKED.iter().any(|member| {
+                            f.starts_with(site_canonical.join(member.module))
+                                || *f == site_canonical.join(format!("{}.py", member.module))
+                        })
+                });
                 if !owned {
                     return Health::Refused(format!(
                         "{} has a syntax error outside its owned files",
@@ -1274,6 +1284,7 @@ pub(super) fn classify(
                     "{} has an invalid owned source file",
                     locked.module
                 ));
+                owned_syntax_error = file;
                 false
             }
             ("error", Some(e)) => {
@@ -1318,6 +1329,12 @@ pub(super) fn classify(
                             e.name.as_deref() == Some(full) || e.name.as_deref() == Some(short);
                         if e.exact_import_error && name_ok && path_ok {
                             note(format!("{full} failed to load from its expected file"));
+                        } else if e.kind == "SyntaxError"
+                            && owned_syntax_error.is_some()
+                            && e.filename.as_deref().map(Path::new).and_then(canon)
+                                == owned_syntax_error
+                        {
+                            note(format!("{full} inherits the owned syntax error"));
                         } else {
                             return Health::Refused(format!(
                                 "{full} import failed without an exact load failure: {}",
