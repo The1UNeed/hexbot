@@ -287,6 +287,60 @@ describe('Fingerprint', () => {
     expect(update).not.toHaveBeenCalled()
   })
 
+  it('opens a file with a table as Markdown, and saves the table intact', async () => {
+    const update = vi.fn(async () => {})
+    const table = '# Soul\n\n| Day | Plan |\n| --- | --- |\n| Mon | Walk |\n'
+    useBots.setState({ byName: { muse: { ...bot, persona: table } }, update } as never)
+    render(<ProfilePanel />)
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Fingerprint' }))
+    fireEvent.click(screen.getByTestId('fingerprint-soul'))
+    const editor = await screen.findByTestId('document-editor')
+    const source = within(editor).getByRole('textbox', { name: 'Muse · Soul source' })
+    expect(source).toHaveValue(table)
+    fireEvent.click(within(editor).getByRole('button', { name: 'More' }))
+    expect((await screen.findByText('View formatted')).closest('[role=menuitem]')).toHaveAttribute(
+      'aria-disabled',
+      'true'
+    )
+
+    fireEvent.change(source, { target: { value: `${table}| Tue | Read |\n` } })
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledWith('muse', { persona: `${table}| Tue | Read |\n` })
+    )
+  })
+
+  it('saves in order: undoing back while a save is in flight still saves the undo', async () => {
+    let finish = () => {}
+
+    const update = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise<void>(resolve => (finish = resolve)))
+      .mockResolvedValue(undefined)
+
+    useBots.setState({ update } as never)
+    render(<ProfilePanel />)
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Fingerprint' }))
+    fireEvent.click(screen.getByTestId('fingerprint-soul'))
+    const editor = await screen.findByTestId('document-editor')
+    fireEvent.click(within(editor).getByRole('button', { name: 'More' }))
+    fireEvent.click(await screen.findByText('View source'))
+    const source = within(editor).getByRole('textbox', { name: 'Muse · Soul source' })
+
+    fireEvent.change(source, { target: { value: 'B' } })
+    await waitFor(() => expect(update).toHaveBeenCalledWith('muse', { persona: 'B' }))
+    fireEvent.change(source, { target: { value: bot.persona } })
+    fireEvent.keyDown(window, { key: 'Escape' })
+    await act(async () => finish())
+
+    await waitFor(() => expect(screen.queryByTestId('document-editor')).toBeNull())
+    expect(update.mock.calls.map(call => call[1])).toEqual([
+      { persona: 'B' },
+      { persona: bot.persona }
+    ])
+  })
+
   it('opening and closing without an edit saves nothing', async () => {
     const update = vi.fn(async () => {})
     useBots.setState({ update } as never)
