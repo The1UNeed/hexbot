@@ -97,7 +97,7 @@ vi.mock('../screens', async () => {
     ChatScreen: chat,
     ChatChooser: () => null, ConnectionScreen: () => null,
     DaemonSwitcher: () => null, LibraryScreen: () => null,
-    ModelSummary: () => null, SettingsScreen: () => null
+    ModelSummary: () => null, SearchSheet: () => null, SettingsScreen: () => null
   }
 })
 

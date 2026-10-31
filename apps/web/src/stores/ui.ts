@@ -29,8 +29,8 @@ export interface ThreadRef {
   sectionId?: string
 }
 
-/** The side panel's tabs: the bot at a glance, the files shared in the section, its tool calls. */
-export type PanelTab = 'computer' | 'details' | 'library'
+/** The side panel's tabs: the bot at a glance, what the chat holds, its soul and memory, its computer. */
+export type PanelTab = 'computer' | 'details' | 'fingerprint' | 'library'
 
 export interface UiState {
   closeThread: () => void

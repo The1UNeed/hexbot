@@ -48,6 +48,7 @@ fn lifecycle_preserves_memory_and_reopens_archived_sections() {
     assert_eq!(bot["display_name"], "Research Owl");
     assert_eq!(bot["sections_total"], 1);
     assert!(bot["persona"].as_str().unwrap().contains("Research Owl"));
+    assert!(bot["persona_updated_at"].as_f64().unwrap() > 0.0);
     assert_eq!(bot["model"], "model-a");
     let id = created["section"]["id"].as_str().unwrap();
     assert_eq!(

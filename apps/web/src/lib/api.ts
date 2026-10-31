@@ -72,6 +72,8 @@ export interface HistoryRow {
 export interface BotMemory {
   cap: number
   memory_md: string
+  /** When MEMORY.md last changed, in Unix seconds; null before it exists. Older daemons leave it out. */
+  updated_at?: null | number
 }
 
 /** One day of a bot's notes: the local day it was filed under and its text. */

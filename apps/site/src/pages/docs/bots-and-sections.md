@@ -94,6 +94,10 @@ A failed send or upload keeps the bot's current answer and Stop available, inclu
 
 Close a Stopped card with its **×** once you have read it. If the bot shows Stopped for this chat, that clears too. On the phone, the error under the chat has the same button.
 
+## Search a chat
+
+In the web and desktop apps, choose the search button at the top of a bot's side panel to search your whole chat with it: what you and the bot said, files you shared or it wrote, the visuals it drew, and its soul and memory. Choose a message or file to scroll the chat to it; a visual opens beside the chat, and soul or memory opens in its editor. In a room, the search button next to Room settings searches the room's messages and files. On the phone, the search button is at the top of the chat. Search looks at what the app has loaded: all of a bot's chat, and a room's recent messages (show earlier ones to search further back on the phone).
+
 ## Recall a message
 
 While the bot is working on your latest message, or after its answer stopped, you can take that message back. In the web and desktop apps, hover over it and choose **Recall**. On the phone, long-press it. A running answer stops first. The message and what the bot said after it leave the chat in every app, and the bot forgets them. The text goes back in the message box to edit; attached files do not, so attach them again. Anything the bot already did, such as changing a file, stays done.

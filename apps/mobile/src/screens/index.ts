@@ -10,6 +10,7 @@ export {
 } from './ConnectionScreen'
 export { HomeScreen, type HomeScreenProps } from './HomeScreen'
 export { LibraryScreen, type LibraryScreenProps } from './LibraryScreen'
+export { SearchSheet, type SearchSheetProps } from './SearchSheet'
 export { type DaemonArea, SettingsScreen, type SettingsScreenProps } from './SettingsScreen'
 export type * from './types'
 export { type ModelValue, ModelPill, ModelSummary } from './ModelMenu'

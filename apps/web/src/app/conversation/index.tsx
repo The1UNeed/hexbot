@@ -57,6 +57,7 @@ import { useConnection } from '../../stores/connection'
 import { connectorsActions } from '../../stores/connectors'
 import { draftsActions } from '../../stores/drafts'
 import { useConversationFeelings, useEmotion } from '../../stores/emotions'
+import { useSearch } from '../../stores/search'
 import {
   knownChat,
   liveSectionsOf,
@@ -80,6 +81,7 @@ import { AskingRow } from './asking-row'
 import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
 import { RoomConversation } from './room'
+import { useSearchJump } from './search-jump'
 import { SignInCard } from './sign-in-card'
 import { liveMood } from './steps'
 import { visualsOf } from './visual'
@@ -1351,6 +1353,7 @@ function BotConversation() {
 
     earlierAnchor.current = null
   }, [visible, params.section])
+  useSearchJump(viewport, visible)
   const togglePanel = useUi(state => state.toggleRightPanel)
   const panelOpen = useUi(state => state.rightPanelOpen)
   const [composerBox, composerHeight] = useHeight<HTMLDivElement>()
@@ -1379,6 +1382,14 @@ function BotConversation() {
     () => (ready || kept ? (transcript?.messages ?? cached ?? []) : []),
     [ready, kept, cached, transcript?.messages]
   )
+
+  // A search result older than the shown part widens the window to reach it.
+  const jump = useSearch(state => state.jump)
+  const jumpIndex = jump ? messages.findIndex(message => message.id === jump.id) : -1
+
+  if (jumpIndex >= 0 && messages.length - jumpIndex > visible) {
+    setWindow({ section: params.section, count: messages.length - jumpIndex + 20 })
+  }
 
   const approvals = useMemo(() => transcript?.approvals ?? [], [transcript?.approvals])
   const clarifies = useMemo(() => transcript?.clarifies ?? [], [transcript?.clarifies])
@@ -2032,18 +2043,21 @@ function BotConversation() {
               return (
                 <div key={message.id}>
                   {separator ? <DaySeparator time={sentAt(message)} /> : null}
-                  <MessageRow
-                    bot={bot}
-                    fresh={toMillis(message.createdAt) > openedAt}
-                    joined={joined}
-                    message={message}
-                    onDismiss={message.error ? dismiss : undefined}
-                    onFix={fixConnector}
-                    onImage={setLightbox}
-                    onRecall={canRecall(message) ? recall : undefined}
-                    onRetry={message.error ? retry : undefined}
-                    retryMessage={message.error ? retryInput(message) : undefined}
-                  />
+                  {/* Search marks the message, not the day above it. */}
+                  <div data-search-id={message.id}>
+                    <MessageRow
+                      bot={bot}
+                      fresh={toMillis(message.createdAt) > openedAt}
+                      joined={joined}
+                      message={message}
+                      onDismiss={message.error ? dismiss : undefined}
+                      onFix={fixConnector}
+                      onImage={setLightbox}
+                      onRecall={canRecall(message) ? recall : undefined}
+                      onRetry={message.error ? retry : undefined}
+                      retryMessage={message.error ? retryInput(message) : undefined}
+                    />
+                  </div>
                 </div>
               )
             })}

@@ -7,7 +7,6 @@ use std::{
     ops::Range,
     path::{Component, Path, PathBuf},
     sync::Mutex,
-    time::UNIX_EPOCH,
 };
 
 use chrono::NaiveDate;
@@ -82,7 +81,8 @@ impl MemoryStore {
         self.require_bot(caller, bot)?;
         let cap = self.bot_cap(bot)?;
         let path = self.path(&bot_path(bot).join("memories/MEMORY.md"))?;
-        Ok(json!({"memory_md": read_optional(&path)?, "cap": cap}))
+        let updated_at = crate::common::modified_at(&path)?;
+        Ok(json!({"memory_md": read_optional(&path)?, "cap": cap, "updated_at": updated_at}))
     }
 
     pub fn set_bot(&self, caller: &str, bot: &str, text: &str) -> Result<Value> {
@@ -113,7 +113,8 @@ impl MemoryStore {
         let text = edit(&current)?;
         check_cap(&text, cap, "memory")?;
         self.write(&relative, &text)?;
-        Ok(json!({"memory_md": text, "cap": cap}))
+        let updated_at = crate::common::modified_at(&self.path(&relative)?)?;
+        Ok(json!({"memory_md": text, "cap": cap, "updated_at": updated_at}))
     }
 
     /// Append a note to today's file while excluding other bot writers.
@@ -311,16 +312,7 @@ impl MemoryStore {
     fn read_user(&self, owner: &str) -> Result<Value> {
         let path = self.path(&PathBuf::from("users").join(owner).join("user.md"))?;
         let text = read_optional(&path)?;
-        let updated_at = match fs::metadata(&path) {
-            Ok(meta) => Some(
-                meta.modified()?
-                    .duration_since(UNIX_EPOCH)
-                    .map_err(|error| Error::new(5200, error.to_string()))?
-                    .as_secs_f64(),
-            ),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => return Err(error.into()),
-        };
+        let updated_at = crate::common::modified_at(&path)?;
         Ok(json!({"text": text, "cap": USER_CAP, "updated_at": updated_at}))
     }
 
