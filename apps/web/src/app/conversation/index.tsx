@@ -946,6 +946,10 @@ async function submitOrReopen(
   }
 
   const accepted = () => {
+    if (pending.inputId) {
+      settleDraft(pending.inputId)
+    }
+
     if (identified) {
       transcriptActions().inputSettled(
         active,
@@ -1029,6 +1033,7 @@ async function submitOrReopen(
           if (identified) {
             const inputId = newInputId()
             transcriptActions().setInputId(active, pending.id, inputId)
+            rekeyDraft(retry.pending.inputId, inputId)
             pending = { ...pending, inputId }
           }
 
@@ -1122,10 +1127,11 @@ interface DraftAttachment {
 }
 
 /**
- * What the composer held for each message it sent, by row. The field clears
- * when the bubble appears; a send that ends where neither its bubble nor its
- * card can retry it comes back to edit from here. The saved draft stays until
- * the bot takes the message, so a reload never loses one that did not send.
+ * What the composer held for each message it sent, by input key. The field
+ * clears when the bubble appears; a send that ends where neither its bubble
+ * nor its card can retry it comes back to edit from here. The saved draft
+ * stays until the bot takes the message, so a reload never loses one that did
+ * not send.
  */
 const sentDrafts = new Map<
   string,
@@ -1133,17 +1139,27 @@ const sentDrafts = new Map<
 >()
 
 /** The bot took it: its saved draft goes, unless something new was typed since. */
-function settleDraft(id: string) {
-  const held = sentDrafts.get(id)
+function settleDraft(key: string) {
+  const held = sentDrafts.get(key)
 
   if (!held) {
     return
   }
 
-  sentDrafts.delete(id)
+  sentDrafts.delete(key)
 
   if (held.section && draftsActions().byId[held.section] === held.text) {
     draftsActions().clear(held.section)
+  }
+}
+
+/** The same message sent under a new key keeps its saved draft. */
+function rekeyDraft(from: string | undefined, to: string) {
+  const held = from ? sentDrafts.get(from) : undefined
+
+  if (held && from !== to) {
+    sentDrafts.delete(from!)
+    sentDrafts.set(to, held)
   }
 }
 
@@ -1181,10 +1197,10 @@ function Composer({
 
     // A message still in its bubble shows there, not here as well.
     return [...sentDrafts].some(
-      ([id, held]) =>
+      ([key, held]) =>
         held.section === sectionId &&
         held.text === saved &&
-        shown.some(message => message.id === id)
+        shown.some(message => message.inputId === key)
     )
       ? ''
       : saved
@@ -1277,31 +1293,20 @@ function Composer({
       // with Retry if it does not, so the field clears at once. Older daemons
       // cannot say which send failed and keep the draft until one is taken.
       if (identified) {
-        sentDrafts.set(pending.id, { files, section: sectionId, text })
+        sentDrafts.set(pending.inputId!, { files, section: sectionId, text })
         setText('')
         setFiles([])
         setSending(false)
       }
 
-      const sent = await submitOrReopen(sessionId, sectionId, text.trim(), {
-        current,
-        files: files.map(item => item.file),
-        pending,
-        uploads
-      })
-
-      // Taken, even if this view has gone since.
       if (
-        useTranscripts
-          .getState()
-          .bySession[sessionId]?.messages.some(
-            message => message.id === pending.id && message.submission?.status === 'accepted'
-          )
+        !(await submitOrReopen(sessionId, sectionId, text.trim(), {
+          current,
+          files: files.map(item => item.file),
+          pending,
+          uploads
+        }))
       ) {
-        settleDraft(pending.id)
-      }
-
-      if (!sent) {
         return
       }
 
@@ -1342,17 +1347,21 @@ function Composer({
   const strandedId = useTranscripts(state =>
     sessionId
       ? state.bySession[sessionId]?.messages.find(
-          message => sentDrafts.has(message.id) && stranded(message)
-        )?.id
+          message => message.inputId && sentDrafts.has(message.inputId) && stranded(message)
+        )?.inputId
       : undefined
   )
 
-  // One the bot took on a later try lets its saved draft go too.
+  // One history now holds lets its saved draft go too.
   const takenId = useTranscripts(state =>
     sessionId
       ? state.bySession[sessionId]?.messages.find(
-          message => sentDrafts.has(message.id) && message.submission?.status === 'accepted'
-        )?.id
+          message =>
+            message.role === 'user' &&
+            !message.createdAt &&
+            message.inputId &&
+            sentDrafts.has(message.inputId)
+        )?.inputId
       : undefined
   )
 
@@ -2218,6 +2227,7 @@ function BotConversation() {
 
       const inputId = newInputId()
       transcriptActions().setInputId(liveId, pending.id, inputId)
+      rekeyDraft(pending.inputId, inputId)
       void submitOrReopen(liveId, null, input.text, {
         current: canPrompt,
         files: [],
@@ -2281,13 +2291,14 @@ function BotConversation() {
         return
       }
 
-      const undo = transcriptActions().resendInPlace(liveId, input.id, newInputId())
+      const key = newInputId()
+      const undo = transcriptActions().resendInPlace(liveId, input.id, key)
       transcriptActions().inputSubmitting(liveId, input.id, [])
 
       // Recall takes the stored copy away: the saved draft holds the message
       // until the bot takes it again, so a reload in between keeps it.
       if (!draftsActions().byId[sectionId]?.trim()) {
-        sentDrafts.set(input.id, { files: [], section: sectionId, text: input.text })
+        sentDrafts.set(key, { files: [], section: sectionId, text: input.text })
         draftsActions().set(sectionId, input.text)
       }
       void (async () => {
@@ -2297,8 +2308,15 @@ function BotConversation() {
             rowId: source ? undefined : input.id
           })
         } catch (error) {
-          // History still has it.
-          settleDraft(input.id)
+          if (error instanceof JsonRpcGatewayError) {
+            // Refused: history still has it.
+            settleDraft(key)
+          } else {
+            // It may have been taken back: the draft keeps it, in view.
+            sentDrafts.delete(key)
+            setDraftVersion(version => version + 1)
+          }
+
           undo()
           transcriptActions().requestFailed(
             liveId,
@@ -2313,29 +2331,19 @@ function BotConversation() {
           .bySession[liveId]?.messages.find(message => message.id === input.id)
 
         if (pending && canPrompt()) {
-          await submitOrReopen(liveId, sectionId, input.text, {
+          void submitOrReopen(liveId, sectionId, input.text, {
             current: canPrompt,
             files: [],
             pending,
             uploads: []
           })
 
-          if (
-            useTranscripts
-              .getState()
-              .bySession[liveId]?.messages.some(
-                message => message.id === input.id && message.submission?.status === 'accepted'
-              )
-          ) {
-            settleDraft(input.id)
-          }
-
           return
         }
 
         // Taken back, but you left the chat: it waits in the draft, as Recall
         // leaves it, ahead of anything typed there since.
-        sentDrafts.delete(input.id)
+        sentDrafts.delete(key)
         transcriptActions().recallFrom(liveId, input.id)
         const typed = (draftsActions().byId[sectionId] ?? '').trim()
 

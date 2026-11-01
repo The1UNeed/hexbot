@@ -1129,6 +1129,19 @@ describe('Retry on a turn that failed on your latest message', () => {
     expect(rows.filter(row => row.role === 'user')).toHaveLength(0)
   })
 
+  it("keeps the message in the draft, in view, when Recall's answer is lost", async () => {
+    recalling(new Error('Connection lost'))
+    const view = await mount()
+    await fail(view)
+    fireEvent.click(mark())
+    // Recall may have taken it back: the draft holds it.
+    await waitFor(() =>
+      expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Read my plan')
+    )
+    expect(useDrafts.getState().byId.chat).toBe('Read my plan')
+    expect(submits()).toHaveLength(1)
+  })
+
   it('puts the failure back when the daemon keeps the first try', async () => {
     recalling(new JsonRpcGatewayError('session is already working', { code: 4002 }))
     const view = await mount()
@@ -1202,5 +1215,14 @@ it('keeps the saved draft of a message that did not send until the bot takes it'
   expect(useDrafts.getState().byId.chat).toBe('Read my plan')
   fireEvent.click(retryOn(card!)!)
   await waitFor(() => expect(delivered).toHaveLength(1))
+  await waitFor(() => expect(useDrafts.getState().byId.chat).toBeUndefined())
+})
+
+it('lets the saved draft go once a send that reopened the chat is taken', async () => {
+  answers = [new JsonRpcGatewayError('session not found', { code: 4001 })]
+  const view = await mount()
+  await send(view, [])
+  await waitFor(() => expect(delivered).toHaveLength(1))
+  expect(submits()[1]!.input_id).not.toBe(submits()[0]!.input_id)
   await waitFor(() => expect(useDrafts.getState().byId.chat).toBeUndefined())
 })
