@@ -294,6 +294,8 @@ export function RoomConversation() {
   const [text, setText] = useState('')
   const [unsent, setUnsent] = useState<Unsent[]>([])
   const attempts = useRef(new Map<string, number>())
+  // Each send's request still out, answering whether it posted.
+  const inflight = useRef(new Map<string, Promise<boolean>>())
   // Room events a send's reply named, by room and seq: they belong to that
   // send, never another.
   const answered = useRef(new Set<string>())
@@ -465,6 +467,18 @@ export function RoomConversation() {
     const current = () => attempts.current.get(item.id) === attempt
     attempts.current.set(item.id, attempt)
 
+    // A retry while an earlier try is still out waits for its answer: a
+    // second request could post the message twice.
+    const earlier = inflight.current.get(item.id)
+
+    if (earlier) {
+      patch(item.id, { delivery: 'sending', reason: undefined })
+
+      if ((await earlier) || !current()) {
+        return
+      }
+    }
+
     // A retry first looks for the first try in the room, as the list does.
     const landed = landedIn(
       useRooms.getState().eventsByRoom[item.roomId] ?? [],
@@ -486,22 +500,34 @@ export function RoomConversation() {
       }
     }, SEND_TIMEOUT_MS)
 
-    try {
-      const { event } = await roomsSend(item.roomId, item.text)
-      answered.current.add(`${item.roomId}:${event.seq}`)
-      // Lands the event now, so the bubble never blinks out before the broadcast.
-      useRooms.getState().handleEvent(item.roomId, event)
-      attempts.current.delete(item.id)
-      patch(item.id, null)
-    } catch (error) {
-      if (current()) {
-        patch(item.id, {
-          delivery: 'failed',
-          reason: plainError(error instanceof Error ? error.message : String(error))
-        })
+    const request = roomsSend(item.roomId, item.text).then(
+      ({ event }) => {
+        answered.current.add(`${item.roomId}:${event.seq}`)
+        // Lands the event now, so the bubble never blinks out before the broadcast.
+        useRooms.getState().handleEvent(item.roomId, event)
+        attempts.current.delete(item.id)
+        patch(item.id, null)
+
+        return true
+      },
+      (error: unknown) => {
+        if (current()) {
+          patch(item.id, {
+            delivery: 'failed',
+            reason: plainError(error instanceof Error ? error.message : String(error))
+          })
+        }
+
+        return false
       }
-    } finally {
-      clearTimeout(timer)
+    )
+
+    inflight.current.set(item.id, request)
+    await request
+    clearTimeout(timer)
+
+    if (inflight.current.get(item.id) === request) {
+      inflight.current.delete(item.id)
     }
   }
 

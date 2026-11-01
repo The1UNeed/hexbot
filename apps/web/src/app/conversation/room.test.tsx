@@ -17,6 +17,7 @@ import {
 import { useUi } from '../../stores/ui'
 
 import { RoomConversation, RoomEventRow, RoomMentionPopover } from './room'
+import { SEND_TIMEOUT_MS } from './unsent'
 
 const navigate = vi.fn()
 let roomId = 'r1'
@@ -638,6 +639,60 @@ describe('sending in a room', () => {
     await act(async () => lose())
     expect(screen.queryByText('Not sent')).toBeNull()
     expect(screen.queryByTestId('room-unsent')).toBeNull()
+  })
+
+  it('waits for a late first try before Retry posts again', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    let answer!: (ok: boolean) => void
+    let tries = 0
+
+    try {
+      const { call } = await mount(text =>
+        ++tries === 1
+          ? new Promise((resolve, reject) => {
+              answer = ok =>
+                ok ? resolve({ event: stored(1, text) }) : reject(new Error('timed out'))
+            })
+          : Promise.resolve({ event: stored(2, text) })
+      )
+
+      act(() => vi.advanceTimersByTime(SEND_TIMEOUT_MS))
+      fireEvent.click(await screen.findByRole('button', { name: 'Retry' }))
+      // The first try is still out: Retry waits for it instead of posting again.
+      expect(screen.getByRole('status', { name: 'Sending' })).toBeInTheDocument()
+      expect(sends(call)).toBe(1)
+      await act(async () => answer(true))
+      await waitFor(() => expect(screen.queryByTestId('room-unsent')).toBeNull())
+      expect(sends(call)).toBe(1)
+      expect(screen.getAllByText('hi')).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('sends again once a late first try fails', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    let answer!: (ok: boolean) => void
+    let tries = 0
+
+    try {
+      const { call } = await mount(text =>
+        ++tries === 1
+          ? new Promise((resolve, reject) => {
+              answer = ok =>
+                ok ? resolve({ event: stored(1, text) }) : reject(new Error('timed out'))
+            })
+          : Promise.resolve({ event: stored(2, text) })
+      )
+
+      act(() => vi.advanceTimersByTime(SEND_TIMEOUT_MS))
+      fireEvent.click(await screen.findByRole('button', { name: 'Retry' }))
+      await act(async () => answer(false))
+      await waitFor(() => expect(screen.queryByTestId('room-unsent')).toBeNull())
+      expect(sends(call)).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('shows one bubble when the room broadcasts it before the send answers', async () => {

@@ -1154,6 +1154,8 @@ function Composer({
   const [text, setText] = useState(() => (sectionId ? draftsActions().byId[sectionId] : '') ?? '')
   const [files, setFiles] = useState<DraftAttachment[]>([])
   const [sending, setSending] = useState(false)
+  // The newest send owns `sending`: an earlier one ending never unlocks it.
+  const sends = useRef(0)
   const picker = useRef<HTMLInputElement>(null)
 
   const addFiles = (incoming: File[]) =>
@@ -1171,6 +1173,7 @@ function Composer({
       return
     }
 
+    const own = ++sends.current
     setSending(true)
 
     // Capture the sender before uploading: a route or daemon can change
@@ -1267,7 +1270,9 @@ function Composer({
         )
       }
     } finally {
-      setSending(false)
+      if (sends.current === own) {
+        setSending(false)
+      }
 
       if (sectionId && current()) {
         void sectionsActions().settleTitle(sectionId)
@@ -1285,7 +1290,7 @@ function Composer({
   }, [text])
 
   // A message sent from here that nothing can retry comes back to edit,
-  // unless something new was typed meanwhile.
+  // whole, once the composer is empty: never mixed into a newer draft.
   const strandedId = useTranscripts(state =>
     sessionId
       ? state.bySession[sessionId]?.messages.find(
@@ -1294,21 +1299,23 @@ function Composer({
       : undefined
   )
 
+  const empty = !text.trim() && !files.length
+
   useEffect(() => {
     const held = strandedId ? sentDrafts.get(strandedId) : undefined
 
-    if (!strandedId || !held) {
+    if (!strandedId || !held || !empty) {
       return
     }
 
     sentDrafts.delete(strandedId)
-    setText(typed => typed || held.text)
-    setFiles(chosen => (chosen.length ? chosen : held.files))
+    setText(held.text)
+    setFiles(held.files)
 
-    if (sectionId && !draftsActions().byId[sectionId]) {
+    if (sectionId) {
       draftsActions().set(sectionId, held.text)
     }
-  }, [sectionId, strandedId])
+  }, [empty, sectionId, strandedId])
 
   useEffect(() => {
     if (draftVersion && sectionId) {
@@ -2234,14 +2241,26 @@ function BotConversation() {
           .getState()
           .bySession[liveId]?.messages.find(message => message.id === input.id)
 
-        if (pending) {
+        if (pending && canPrompt()) {
           void submitOrReopen(liveId, sectionId, input.text, {
             current: canPrompt,
             files: [],
             pending,
             uploads: []
           })
+
+          return
         }
+
+        // Taken back, but you left the chat: it waits in the draft, as Recall
+        // leaves it, ahead of anything typed there since.
+        transcriptActions().recallFrom(liveId, input.id)
+        const typed = (draftsActions().byId[sectionId] ?? '').trim()
+
+        draftsActions().set(
+          sectionId,
+          typed && typed !== input.text.trim() ? `${input.text}\n\n${typed}` : input.text
+        )
       })()
     },
     [canPrompt, liveId, params.section]

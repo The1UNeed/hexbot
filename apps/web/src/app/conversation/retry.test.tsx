@@ -941,13 +941,15 @@ it.each(['send', 'upload'] as const)(
 describe('Retry on a turn that failed on your latest message', () => {
   // The daemon's session.recall, as in runtime_recall.rs: the row and what
   // followed it leave history, every view hears it, then it answers.
-  const recalling = (refusal?: Error) => {
+  const recalling = (refusal?: Error, hold?: Promise<unknown>) => {
     useConnection.setState({ daemon: { ...identity, recall: true } })
     const original = call.getMockImplementation()!
     call.mockImplementation(async (method: string, input: Record<string, unknown>) => {
       if (method !== 'session.recall') {
         return original(method, input)
       }
+
+      await hold
 
       if (refusal) {
         throw refusal
@@ -1033,6 +1035,21 @@ describe('Retry on a turn that failed on your latest message', () => {
     expect(screen.getAllByTestId('user-message')).toHaveLength(1)
   })
 
+  it('keeps the message in the draft when you leave before Recall answers', async () => {
+    const answer = deferred()
+    recalling(undefined, answer.promise)
+    const view = await mount()
+    await fail(view)
+    fireEvent.click(mark())
+    await act(async () => {
+      await view.router.navigate({ to: '/r/$room', params: { room: 'garden' } })
+    })
+    expect(await screen.findByText('Garden room')).toBeVisible()
+    await act(async () => answer.resolve())
+    await waitFor(() => expect(useDrafts.getState().byId.chat).toBe('Read my plan'))
+    expect(submits()).toHaveLength(1)
+  })
+
   it('puts the failure back when the daemon keeps the first try', async () => {
     recalling(new JsonRpcGatewayError('session is already working', { code: 4002 }))
     const view = await mount()
@@ -1044,4 +1061,54 @@ describe('Retry on a turn that failed on your latest message', () => {
     expect(screen.getAllByTestId('user-message')).toHaveLength(1)
     expect(mark()).toBeEnabled()
   })
+})
+
+it('restores a send nothing can retry only into an empty composer, files and text together', async () => {
+  gate = deferred()
+  answers = [new JsonRpcGatewayError('attachment not found', { code: 4204 })]
+  const view = await mount()
+  await send(view)
+  const field = screen.getByRole('textbox', { name: 'Message' })
+  await waitFor(() => expect(field).toHaveValue(''))
+  fireEvent.change(field, { target: { value: 'Something else' } })
+  await act(async () => gate!.resolve())
+  await waitFor(() => expect(userRows()[0]!.submission?.status).toBe('unavailable'))
+  // Typed since: the failed send's file stays out of it.
+  expect(field).toHaveValue('Something else')
+  expect(screen.queryByRole('button', { name: 'Remove plan.txt' })).toBeNull()
+  fireEvent.change(field, { target: { value: '' } })
+  await waitFor(() => expect(field).toHaveValue('Read my plan'))
+  expect(screen.getByRole('button', { name: 'Remove plan.txt' })).toBeVisible()
+})
+
+it('keeps a newer upload busy when an earlier send finishes', async () => {
+  gate = deferred()
+  const upload = deferred()
+  const original = call.getMockImplementation()!
+  let attaches = 0
+  call.mockImplementation(async (method: string, input: Record<string, unknown>) => {
+    if (method === 'file.attach' && ++attaches === 1) {
+      await upload.promise
+    }
+
+    return original(method, input)
+  })
+  const view = await mount()
+  await send(view, [])
+  const field = screen.getByRole('textbox', { name: 'Message' })
+  await waitFor(() => expect(field).toHaveValue(''))
+  // A second message with a file starts uploading while the first is still out.
+  fireEvent.change(view.container.querySelector('input[type=file]')!, {
+    target: { files: [new File(['notes'], 'notes.txt', { type: 'text/plain' })] }
+  })
+  fireEvent.change(field, { target: { value: 'And my notes' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await act(async () => gate!.resolve())
+  await waitFor(() => expect(delivered).toHaveLength(1))
+  fireEvent.keyDown(field, { key: 'Enter' })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  expect(attaches).toBe(1)
+  await act(async () => upload.resolve())
+  await waitFor(() => expect(delivered).toHaveLength(2))
+  expect(userRows()).toHaveLength(2)
 })
