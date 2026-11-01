@@ -203,13 +203,25 @@ the roster slides in as a drawer.
   reload: the daemon replays a pending question when the section opens,
   and answered cards come back from the section's history, each under the
   message that asked it.
-- Errors: a Stopped card with the message and a retry action; one card per
+- Sending (web and desktop): the field clears at once and your bubble greys
+  with a small spinner beside it until the daemon takes it. After 15 s with
+  no answer, or when the send is refused or the bot's turn fails on it, the
+  bubble gets a red ! beside it and "Not sent · Retry" under it, the reason
+  on hover; the ! retries too. An unknown outcome retries under the same
+  input key, so a copy that did arrive is never taken twice, and stays Not
+  sent until the stored row shows it. A turn that failed on your latest
+  message in a bot's chat retries in place: Recall takes the message and the
+  failed turn back and the same bubble sends again, so one copy stays. Until
+  the bot takes a message its saved draft keeps it, so a reload never loses
+  one that did not send. Rooms show the same bubble for sends. The phone
+  keeps its error banner.
+- Errors: a failure that is not about your message, such as a dream's, is a
+  small Stopped card with a red dot and a retry action; one card per
   failure, even when the gateway and the daemon both report it. Retry requires
   durable input ownership. Older daemons offer no Retry for failed sends or
   answers; failed sends retain their draft for manual resend.
   A failed send or upload leaves any running answer, tools and Stop available,
-  including with an older daemon. An unknown send outcome offers no Retry;
-  the draft stays available while the user checks whether the message arrived.
+  including with an older daemon.
   Every Stopped card has a close button (×) in its header. Closing one built
   from the bot's Stopped state for this chat clears that state
   (`hexbot.bots.clear_status`), so it does not come back. The phone's error

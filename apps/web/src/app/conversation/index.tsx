@@ -2004,7 +2004,9 @@ function BotConversation() {
       input => input.role === 'user' && input.submission?.card === card.id
     )
 
-    const owner = bound ?? follows
+    // A request that failed on its own (an upload, a Recall) is not the turn
+    // of the message before it: only its bound input owns it.
+    const owner = bound ?? (card.request ? undefined : follows)
 
     if (!owner) {
       continue

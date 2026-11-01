@@ -315,6 +315,22 @@ it('still shows a recalled refused message after leaving the chat and coming bac
   expect(field()).toHaveValue('Too soon')
 })
 
+it('never ties a failed upload to the message before it', async () => {
+  rows.push({ role: 'user', row_id: 'user-1', text: 'Read my plan', input_id: 'first' })
+  await mount()
+  await stop('Provider stopped')
+  // A new message's upload fails before its bubble exists.
+  await act(async () => useTranscripts.getState().requestFailed('chat', 'Upload refused'))
+
+  const upload = screen
+    .getAllByTestId('stopped-card')
+    .find(card => card.textContent?.includes('Upload refused'))!
+
+  expect(within(upload).queryByRole('button', { name: 'Retry' })).toBeNull()
+  expect(upload).not.toHaveTextContent('Not sent')
+  expect(call.mock.calls.some(([method]) => method === 'session.recall')).toBe(false)
+})
+
 it('retries a failed message from history in place, after a reload', async () => {
   rows.push({ role: 'user', row_id: 'user-1', text: 'Read my plan', input_id: 'first' })
   await mount()
