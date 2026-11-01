@@ -123,8 +123,9 @@ the roster slides in as a drawer.
 - Header: a window-drag strip (padded for the macOS traffic lights) with one
   row: the search pill and a round glass "+" menu (New bot, New room). No app name. The selected row is a white card on the canvas.
 - List: bots and rooms in one list, ordered by last activity. A bot row is
-  its face (40px), name, optional label, and a status dot on the face (see
-  "Status colours"). No times and no message preview. A pencil replaces the
+  its face (40px), name, the latest message in its chat (yours or the bot's,
+  as one plain line; the bot's label until the chat has one), and a status dot
+  on the face (see "Status colours"). No times. A pencil replaces the
   status tag while the bot's chat holds an unsent draft. A room row is the room's cluster
   (one face, or up to four in a 2x2 grid), name, latest message, and the
   same status dot. Both rows end in a status tag while it applies: a purple
