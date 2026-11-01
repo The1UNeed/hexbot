@@ -80,6 +80,30 @@ describe('usage data', () => {
     expect(state.usageDay).toBeUndefined()
   })
 
+  it('never sends after an opt-out that a daily check overlapped', async () => {
+    const file = await stateFile()
+    const send = vi.fn()
+    await setUsageData(true, {
+      file,
+      key: 'phc_test',
+      now: () => new Date('2026-10-30T10:00:00Z'),
+      send
+    })
+    send.mockClear()
+
+    const check = sendDailyUsage({ file, key: 'phc_test', send })
+    const off = setUsageData(false, { file, key: 'phc_test', send })
+    await Promise.all([check, off])
+    await sendDailyUsage({ file, key: 'phc_test', send })
+
+    const state = await readDesktopState(file)
+    expect(state.usageData).toBe(false)
+    expect(state.usageId).toBeUndefined()
+    expect(state.usageDay).toBeUndefined()
+    // The check that started first may count today; nothing starts after the opt-out.
+    expect(send.mock.calls.length).toBeLessThanOrEqual(1)
+  })
+
   it('honours DO_NOT_TRACK and HEXBOT_USAGE_DATA=0', () => {
     expect(usageRefused({ DO_NOT_TRACK: '1' })).toBe(true)
     expect(usageRefused({ HEXBOT_USAGE_DATA: '0' })).toBe(true)

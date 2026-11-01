@@ -31,6 +31,15 @@ interface Options {
   send?: typeof fetch
 }
 
+// Every read-then-write of the choice runs in turn, so an hourly check that
+// started before an opt-out can never restore its day or send with the old id.
+let queue: Promise<unknown> = Promise.resolve()
+function inTurn<T>(step: () => Promise<T>): Promise<T> {
+  const next = queue.then(step, step)
+  queue = next.catch(() => undefined)
+  return next
+}
+
 async function context({ file = desktopStateFile(), key = projectKey }: Options) {
   const state = await readDesktopState(file)
   if (state.usageData !== true || !usageAvailable(key)) return null
@@ -52,16 +61,20 @@ export async function captureUsage(
   properties: UsageProperties = {},
   options: Options = {}
 ) {
-  const ready = await context(options)
+  const ready = await inTurn(() => context(options))
   if (ready) await sendUsageEvent(ready.usage, event, properties, options.send)
 }
 
 /** `app_active` at most once per UTC day, so weekly active installs can be counted. */
 export async function sendDailyUsage(options: Options = {}): Promise<void> {
-  const ready = await context(options)
   const day = usageDay(options.now?.())
-  if (!ready || ready.state.usageDay === day) return
-  await updateDesktopState({ usageDay: day }, options.file)
+  const ready = await inTurn(async () => {
+    const found = await context(options)
+    if (!found || found.state.usageDay === day) return null
+    await updateDesktopState({ usageDay: day }, options.file)
+    return found
+  })
+  if (!ready) return
   // Sent in the background: turning usage data on never waits on PostHog.
   void sendUsageEvent(
     ready.usage,
@@ -73,9 +86,11 @@ export async function sendDailyUsage(options: Options = {}): Promise<void> {
 
 /** Turning usage data off forgets the install id; turning it on counts today straight away. */
 export async function setUsageData(enabled: boolean, options: Options = {}): Promise<void> {
-  await updateDesktopState(
-    enabled ? { usageData: true } : { usageData: false, usageDay: undefined, usageId: undefined },
-    options.file
+  await inTurn(() =>
+    updateDesktopState(
+      enabled ? { usageData: true } : { usageData: false, usageDay: undefined, usageId: undefined },
+      options.file
+    )
   )
   if (enabled) await sendDailyUsage(options)
 }

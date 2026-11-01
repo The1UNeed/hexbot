@@ -952,12 +952,23 @@ export function UsageStep({
   const [busy, setBusy] = useState(false)
   const skipped = useRef(false)
 
+  // A choice saved earlier in setup shows as it is. If the app and the daemon
+  // differ, the switch shows on, because something is still being shared.
   useEffect(() => {
-    void settingsGet().then(
-      settings => setDaemon(settings.usage_data !== undefined),
-      () => setDaemon(false)
-    )
-  }, [])
+    void Promise.all([
+      settingsGet().then(
+        settings => settings.usage_data,
+        () => undefined
+      ),
+      bridge?.privacy?.().then(
+        privacy => privacy.usageData,
+        () => false
+      )
+    ]).then(([daemonOn, appOn]) => {
+      setOn(daemonOn === true || appOn === true)
+      setDaemon(daemonOn !== undefined)
+    })
+  }, [bridge])
 
   useEffect(() => {
     if (daemon === false && !app && !skipped.current) {

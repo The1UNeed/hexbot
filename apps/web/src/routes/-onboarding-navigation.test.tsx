@@ -18,7 +18,7 @@ import { useConnection } from '../stores/connection'
 import { useSections } from '../stores/sections'
 import { useUi } from '../stores/ui'
 
-import { Route } from './onboarding'
+import { Route, UsageStep } from './onboarding'
 
 import { Route as HomeRoute } from './index'
 
@@ -645,4 +645,65 @@ it('a roster refresh during HexBot creation does not repeat the completed decisi
   await screen.findByText('Owner chat')
   expect(view.router.state.location.pathname).toBe('/b/owl/s/canonical')
   expect(call.mock.calls.filter(([name]) => name === 'hexbot.bots.introduce')).toHaveLength(1)
+})
+
+describe('usage data step', () => {
+  const settings = (usage_data: boolean) =>
+    call.mockImplementation((method: string) =>
+      method === 'hexbot.settings.get' ? Promise.resolve({ usage_data }) : reply(method)
+    )
+
+  const app = (usageData: boolean) => {
+    const setUsageData = vi.fn(async () => undefined)
+    window.hexbot = {
+      privacy: async () => ({
+        crashReports: false,
+        crashReportsAvailable: false,
+        usageData,
+        usageDataAvailable: true
+      }),
+      setUsageData
+    } as never
+
+    return setUsageData
+  }
+
+  const step = () => render(<UsageStep onContinue={vi.fn()} onError={vi.fn()} />)
+
+  const usageSwitch = async () => {
+    const control = await screen.findByRole('switch', { name: 'Share anonymous usage data' })
+    await waitFor(() => expect(control).toBeEnabled())
+
+    return control
+  }
+
+  afterEach(() => {
+    delete window.hexbot
+  })
+
+  it('starts off when nothing was turned on', async () => {
+    settings(false)
+    app(false)
+    step()
+    expect(await usageSwitch()).not.toBeChecked()
+  })
+
+  it('shows a choice saved earlier in setup', async () => {
+    settings(true)
+    app(true)
+    step()
+    expect(await usageSwitch()).toBeChecked()
+  })
+
+  it('shows on while either side still shares, and turning it off turns off both', async () => {
+    settings(false)
+    const setUsageData = app(true)
+    step()
+    const control = await usageSwitch()
+    expect(control).toBeChecked()
+    fireEvent.click(control)
+    await waitFor(() => expect(control).not.toBeChecked())
+    expect(call).toHaveBeenCalledWith('hexbot.settings.set', { patch: { usage_data: false } })
+    expect(setUsageData).toHaveBeenCalledWith(false)
+  })
 })
