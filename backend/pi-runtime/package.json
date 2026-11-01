@@ -8,5 +8,8 @@
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "1.0.1"
+  },
+  "overrides": {
+    "undici": "8.12.2"
   }
 }
