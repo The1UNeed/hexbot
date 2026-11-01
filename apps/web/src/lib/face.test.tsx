@@ -138,13 +138,12 @@ describe('original faces', () => {
   })
 
   it('pairs activity with status and preserves the original brand outline', () => {
-    expect(['working', 'needs_you', 'done', 'idle', 'stopped'].map(moodForStatus)).toEqual([
-      'working',
-      'listening',
-      'happy',
-      'idle',
-      'idle'
-    ])
+    expect(
+      ['working', 'needs_you', 'done', 'idle', 'stopped'].map(status => moodForStatus(status))
+    ).toEqual(['working', 'listening', 'happy', 'idle', 'idle'])
+    // While it works, the face of the reply it is writing; otherwise the status decides.
+    expect(moodForStatus('working', 'thinking')).toBe('thinking')
+    expect(moodForStatus('needs_you', 'writing')).toBe('listening')
     const { container } = render(<HexbotMark mood="loading" />)
     expect(container.querySelector('path')).toHaveAttribute('fill', 'currentColor')
     expect(container.querySelector('path')).toHaveAttribute(
@@ -235,5 +234,85 @@ describe('original faces', () => {
     rerender(<LiveFace color="pink" eyes="white" look={null} still />)
     expect(container.querySelector('svg')).not.toHaveAttribute('data-look')
     expect(head).toHaveAttribute('transform', restFrame('idle').head)
+  })
+
+  it('moves every face of one bot as one, however late each appeared', () => {
+    vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'cancelAnimationFrame', 'performance'] })
+
+    const faces = (count: number, mood: 'thinking' | 'working') => (
+      <>
+        {Array.from({ length: count }, (_, index) => (
+          <LiveFace color="pink" eyes="white" key={index} mood={mood} sync="Scout" />
+        ))}
+        {/* Mounted with the late ones, but on its own clock. */}
+        {count > 1 ? <LiveFace color="pink" eyes="white" key="alone" mood={mood} /> : null}
+      </>
+    )
+
+    const frame = (container: HTMLElement) =>
+      [...container.querySelectorAll('svg')].map(svg =>
+        [...svg.querySelectorAll('[data-part="head"], [data-part="eye"], [data-part="dot"]')]
+          .map(part => `${part.getAttribute('transform')} ${part.getAttribute('opacity')}`)
+          .join()
+      )
+
+    // The sidebar's face has moved for a while before the header's and the chat's appear.
+    const { container, rerender, unmount } = render(faces(1, 'working'))
+    act(() => vi.advanceTimersByTime(900))
+    rerender(faces(3, 'working'))
+    act(() => vi.advanceTimersByTime(450))
+    const [sidebar, header, chat, alone] = frame(container)
+    expect(header).toBe(sidebar)
+    expect(chat).toBe(sidebar)
+    expect(alone).not.toBe(sidebar)
+
+    // A change of mood moves them together too.
+    rerender(faces(3, 'thinking'))
+    act(() => vi.advanceTimersByTime(1000))
+    const thinking = frame(container)
+    expect(new Set(thinking.slice(0, 3)).size).toBe(1)
+    expect(container.querySelector('[data-morph="dots"]')).toHaveAttribute('display', 'inline')
+
+    unmount()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it("plays a clicked act on every face of one bot, and on no other bot's", () => {
+    vi.useFakeTimers()
+
+    const { container, unmount } = render(
+      <>
+        <Avatar name="Scout" size="lg" />
+        <Avatar name="Scout" size="sm" />
+        <Avatar name="Builder" size="sm" />
+      </>
+    )
+
+    fireEvent.click(container.querySelector('[aria-label="Scout"]')!)
+
+    const acts = [...container.querySelectorAll('[data-act]')].map(item =>
+      item.getAttribute('data-act')
+    )
+
+    expect(acts).toHaveLength(2)
+    expect(acts[0]).toBe(acts[1])
+    expect(container.querySelector('[aria-label="Builder"] [data-act]')).toBeNull()
+    act(() => vi.advanceTimersByTime(4000))
+    expect(container.querySelector('[data-act]')).toBeNull()
+    unmount()
+
+    // Two bots that share a display name stay apart: faces sync by the bot's own name.
+    const twins = render(
+      <>
+        <Avatar name="Scout" sync="scout" />
+        <Avatar name="Scout" sync="scout-2" />
+      </>
+    )
+
+    fireEvent.click(twins.container.querySelector('[aria-label="Scout"]')!)
+    expect(twins.container.querySelectorAll('[data-act]')).toHaveLength(1)
+    expect(twins.container.querySelectorAll('svg[data-sync="scout-2"]')).toHaveLength(1)
+    twins.unmount()
+    expect(vi.getTimerCount()).toBe(0)
   })
 })

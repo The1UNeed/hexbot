@@ -58,6 +58,8 @@ own visual identity. Read `CLAUDE.md` for the words.
   search tool runs, writes while text streams, and works during other steps.
   Roster and header
   faces, including every face in a room's cluster, match their status dots;
+  while a reply streams, the roster and header wear the chat's live face, so
+  a thinking bot thinks in all three places;
   a cluster without a dot, as in room settings, stays idle. Faces in asks
   turn and look toward each other.
   Faces also show emotions (`lib/emotions.ts`), read from what happens in
@@ -75,10 +77,14 @@ own visual identity. Read `CLAUDE.md` for the words.
   sparks to celebrate. Mobile shows the same emotions, still, on a bot
   chat's header and waiting faces.
   One frame loop moves every visible face and stops when none moves.
+  Every face of one bot in one mood and look shares one motion, so the
+  sidebar, header and chat copies sway, blink and glance in step however
+  late each appeared.
   Reduced motion draws each mood's rest pose, morph included, and offscreen
   or hidden-page faces stop. Mobile draws the same settled expressions.
-  Click a face or the in-app mark for one of the existing 21 acts. Acts hold
-  the face at rest and clean up with their React subtree.
+  Click a face or the in-app mark for one of the existing 21 acts; a bot's
+  act plays on every face of that bot. Acts hold the face at rest and clean
+  up with their React subtree.
   The site's faces, logo, favicon, and package icons use the same capsule
   eyes.
 - Shadows only on floating layers (menus, dialogs, the glass chrome) and the

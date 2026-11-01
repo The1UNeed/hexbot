@@ -376,3 +376,31 @@ export function liveMood(message: Message): LiveMood | undefined {
   // Nothing has happened yet: the bot thinks until it does, whatever the model shows.
   return message.toolCalls.length ? 'working' : 'thinking'
 }
+
+/**
+ * The live face of every section with a reply streaming in an open
+ * transcript, by section. The sidebar and the header read it so they wear
+ * the face the chat shows on that reply.
+ */
+export function liveMoodsOf(
+  bySession: Record<
+    string,
+    { messages: Message[]; sectionId?: string; streamingMessageId: null | string }
+  >
+): Record<string, LiveMood> {
+  const moods: Record<string, LiveMood> = {}
+
+  for (const { messages, sectionId, streamingMessageId } of Object.values(bySession)) {
+    const message = streamingMessageId
+      ? messages.findLast(item => item.id === streamingMessageId)
+      : undefined
+
+    const mood = message && liveMood(message)
+
+    if (sectionId && mood) {
+      moods[sectionId] = mood
+    }
+  }
+
+  return moods
+}
