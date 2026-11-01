@@ -3,6 +3,10 @@
 //! Bypass, and a scheduled job or a check-in, which nobody watches, cannot.
 //! A package a bot installs is on for that bot only. The primary bot, in its
 //! own chat, does the same for any bot and removes packages.
+//!
+//! Each of these asks with a plugin card in the chat, which also takes the
+//! keys a plugin still needs: what the user types there goes to the waiting
+//! tool only and is saved as Settings, Plugins saves it. The bot never sees it.
 use super::*;
 
 pub(super) const NAME: &str = "hexbot_plugins";
@@ -19,18 +23,18 @@ pub(super) fn descriptor() -> Value {
     json!({
         "name": NAME,
         "label": "Plugins",
-        "description": "See and add plugins: connectors (services Hexbot supports), MCP servers, skills, and packages. list shows every plugin and whether it is on for you; ids look like skill:pdf or package:github. install adds a package, an MCP server and the skills that explain it, or skills alone, and turns it on for you. enable turns a plugin on for you; disable turns it off. Installing and enabling always ask the user first. Read the mcp skill before installing an MCP server, and skill-create before writing skills. The primary bot, in its own chat, can pass bot to act for another bot, and remove a package for every bot.",
+        "description": "See and add plugins: connectors (services Hexbot supports), MCP servers, skills, and packages. list shows every plugin and whether it is on for you; ids look like skill:pdf or package:github. install adds a package, an MCP server and the skills that explain it, or skills alone, and turns it on for you. enable turns a plugin on for you; disable turns it off. Installing and enabling always show the user a card to approve first, where they can also enter the keys the plugin needs. setup shows the user a card to enter a plugin's keys, such as an API key or token: when a plugin is not ready, call setup straight away, without asking first. What the user types is saved for their bots and never reaches you. Never ask the user to paste a key in the chat. Read the mcp skill before installing an MCP server, and skill-create before writing skills. The primary bot, in its own chat, can pass bot to act for another bot, and remove a package for every bot.",
         "parameters": {
             "type": "object",
             "properties": {
-                "action": { "type": "string", "enum": ["list", "install", "enable", "disable", "remove"] },
-                "id": { "type": "string", "description": "With enable, disable or remove: the plugin's id from list" },
+                "action": { "type": "string", "enum": ["list", "install", "enable", "setup", "disable", "remove"] },
+                "id": { "type": "string", "description": "With enable, setup, disable or remove: the plugin's id from list" },
                 "bot": { "type": "string", "description": "Primary bot only: the bot to act for. Defaults to you." },
                 "name": { "type": "string", "description": "With install: the package's name, lowercase letters, digits, - or _" },
                 "description": { "type": "string", "description": "With install: what the package is for, in one line" },
                 "mcp": {
                     "type": "object",
-                    "description": "With install: the MCP server. Either command and args for a server run on this computer, with env for its environment, or url for a streamable HTTP server, with headers. Leave secret values empty; the user fills them in.",
+                    "description": "With install: the MCP server. Either command and args for a server run on this computer, with env for its environment, or url for a streamable HTTP server, with headers. Leave secret values empty; the user fills them in on the card.",
                     "properties": {
                         "command": { "type": "string" },
                         "args": strings,
@@ -122,16 +126,30 @@ impl Runtime {
                         "A plugin you install can't refer to stored keys with ${…}. Leave the value empty; the user fills it in Settings, Plugins.",
                     ));
                 }
-                self.ask_plugin(
-                    s,
-                    format!(
-                        "Install the plugin {} for {whom}: it {}",
-                        package.name,
-                        package.summary()
-                    ),
-                    args,
-                )
-                .await?;
+                let full = format!("package:{}", package.name);
+                let form = json!({
+                    "kind": "plugin",
+                    "action": "install",
+                    "id": full,
+                    "name": package.name,
+                    "description": package.description,
+                    "bot": whom,
+                    "other": !own,
+                    "detail": package.summary(),
+                    "run": package.server.as_ref().map(runs).unwrap_or_default(),
+                    "fields": package.server.as_ref().map(|server| server_fields(server, false)).unwrap_or_default(),
+                });
+                let answer = self
+                    .ask_card(
+                        s,
+                        format!(
+                            "Install the plugin {} for {whom}: it {}",
+                            package.name,
+                            package.summary()
+                        ),
+                        form.clone(),
+                    )
+                    .await?;
                 crate::plugins::install(
                     &self.home,
                     owner,
@@ -139,6 +157,7 @@ impl Runtime {
                     Some(&s.bot),
                     Some(std::slice::from_ref(&target)),
                 )?;
+                self.save_keys(owner, &target, &form, &answer).await?;
                 self.plugins_changed(owner);
                 let plugin = crate::plugins::find_for(
                     &self.home,
@@ -148,9 +167,9 @@ impl Runtime {
                     Some(&target),
                 )?;
                 Ok(json!({
-                    "plugin": format!("package:{}", package.name),
+                    "plugin": full,
                     "on": plugin["enabled_for_bot"],
-                    "note": after_change(&plugin, own, &package.skills.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>()),
+                    "note": after_change(&plugin, &full, own, &package.skills.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>()),
                 }))
             }
             "enable" | "disable" => {
@@ -164,18 +183,20 @@ impl Runtime {
                 if on && was && kind != "package" {
                     return Ok(json!({"plugin": full, "on": true, "note": "Already on."}));
                 }
-                // Turning one off for yourself takes nothing new; everything else asks.
-                if on || !own {
-                    let verb = if on { "Turn on" } else { "Turn off" };
-                    self.ask_plugin(
-                        s,
-                        format!(
-                            "{verb} the plugin {} for {whom}",
-                            plugin["name"].as_str().unwrap_or(id)
-                        ),
-                        args,
-                    )
-                    .await?;
+                let title = format!(
+                    "{} the plugin {} for {whom}",
+                    if on { "Turn on" } else { "Turn off" },
+                    plugin["name"].as_str().unwrap_or(id)
+                );
+                // Turning one on asks with its card, which takes the keys it
+                // still needs. Turning one off for yourself takes nothing new.
+                if on {
+                    let mut form = self.plugin_form(owner, &target, &whom, full, "enable")?;
+                    form["other"] = json!(!own);
+                    let answer = self.ask_card(s, title, form.clone()).await?;
+                    self.save_keys(owner, &target, &form, &answer).await?;
+                } else if !own {
+                    self.ask_plugin(s, title, args).await?;
                 }
                 // Read again after the user answered: only this bot changes.
                 crate::plugins::set_for_bot(&self.home, owner, kind, id, &target, on)?;
@@ -191,8 +212,54 @@ impl Runtime {
                 Ok(json!({
                     "plugin": full,
                     "on": on,
-                    "note": if on { after_change(&plugin, own, &skills) } else { "Off from the next message.".into() },
+                    "note": if on { after_change(&plugin, full, own, &skills) } else { "Off from the next message.".into() },
                 }))
+            }
+            "setup" => {
+                let full = required(args, "id")?;
+                let (kind, id) = split(full)?;
+                let settings = self.session_settings(s)?;
+                let mut form = self.plugin_form(owner, &target, &whom, full, "setup")?;
+                form["other"] = json!(!own);
+                let name = form["name"].as_str().unwrap_or(id).to_owned();
+                if form["fields"].as_array().is_none_or(Vec::is_empty) {
+                    return Err(Error::new(
+                        4202,
+                        format!(
+                            "{name} has nothing to fill in. If it still fails, ask the user to check it in Settings, Plugins."
+                        ),
+                    ));
+                }
+                if settings["canAsk"] == false || settings["job"].is_string() {
+                    return Err(Error::new(
+                        4302,
+                        format!(
+                            "Nobody can answer a card here. Tell the user to finish {name} in Settings, Plugins."
+                        ),
+                    ));
+                }
+                let answer = self
+                    .ask_card(s, format!("Set up {name}"), form.clone())
+                    .await?;
+                let test = self.save_keys(owner, &target, &form, &answer).await?;
+                self.plugins_changed(owner);
+                let plugin = crate::plugins::find_for(&self.home, owner, kind, id, Some(&target))?;
+                let note = match test.as_ref().filter(|t| t["ok"] != true) {
+                    Some(test) => format!(
+                        "Saved, but the test failed: {}. Tell the user, and call setup again if they want to fix it.",
+                        test["message"].as_str().unwrap_or("no reply")
+                    ),
+                    None if plugin["enabled_for_bot"] != true => {
+                        format!("Set up. It is off for {whom}: call enable to turn it on.")
+                    }
+                    None if server(kind, id).is_some() => {
+                        "Set up. Its tools reach you from your next message.".into()
+                    }
+                    None => "Set up. Try it now.".into(),
+                };
+                Ok(
+                    json!({"plugin": full, "ready": test.is_none_or(|t| t["ok"] == true), "note": note}),
+                )
             }
             "remove" => {
                 if !primary {
@@ -284,6 +351,149 @@ impl Runtime {
         Ok(out)
     }
 
+    /// The card for a plugin that exists: what it is, and with setup, or
+    /// when it is not ready, the keys the user can enter on it.
+    fn plugin_form(
+        &self,
+        owner: &str,
+        bot: &str,
+        whom: &str,
+        full: &str,
+        action: &str,
+    ) -> Result<Value> {
+        let (kind, id) = split(full)?;
+        let setup = action == "setup";
+        let plugin = crate::plugins::find_for(&self.home, owner, kind, id, Some(bot))?;
+        let config = common::read_config(&self.home)?;
+        let mut form = json!({
+            "kind": "plugin",
+            "action": action,
+            "id": full,
+            "name": plugin["name"].as_str().unwrap_or(id),
+            "description": plugin["description"].as_str().unwrap_or(""),
+            "icon": plugin["icon"],
+            "bot": whom,
+            "fields": [],
+        });
+        if let Some(name) = server(kind, id) {
+            let entry = &config["mcp_servers"][name];
+            // As list shows it: a server's own description only, never its address.
+            form["description"] = json!(entry["description"].as_str().unwrap_or(""));
+            form["fields"] = json!(server_fields(entry, setup));
+        } else if kind == "connector" && (setup || plugin["ready"] == false) {
+            let fields = plugin["fields"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|f| f["advanced"] != true)
+                .map(|f| {
+                    json!({
+                        "key": f["key"],
+                        "label": f["label"],
+                        "help": f["help"],
+                        "url": f["url"],
+                        "secret": f["secret"],
+                        "provider": f["provider"],
+                        "set": f["set"],
+                        "hint": f["hint"],
+                    })
+                })
+                .collect::<Vec<_>>();
+            if let Some(providers) = plugin["providers"].as_array() {
+                form["providers"] = json!(
+                    providers
+                        .iter()
+                        .map(|p| json!({"id": p["id"], "label": p["label"]}))
+                        .collect::<Vec<_>>()
+                );
+                form["provider"] = match &plugin["provider"] {
+                    Value::Null => providers.first().map_or(Value::Null, |p| p["id"].clone()),
+                    chosen => chosen.clone(),
+                };
+            }
+            form["fields"] = json!(fields);
+        }
+        Ok(form)
+    }
+
+    /// Shows a plugin card and waits for the user: the keys they entered
+    /// and the provider they chose, as `answer` checked them.
+    async fn ask_card(&self, s: &Live, title: String, form: Value) -> Result<Value> {
+        let request = json!({
+            "tool": NAME,
+            "toolCall": {"title": title},
+            "reason": "Adding or changing a plugin always asks. Keys you enter here are saved for your bots; the bot never sees them.",
+            "form": form,
+        });
+        let Some(answer) = self.ask_native(s, request, true).await? else {
+            return Err(Error::new(
+                4302,
+                "The user said no. Leave it, and ask what they would like instead.",
+            ));
+        };
+        serde_json::from_str(&answer).map_err(|_| Error::new(5201, "The card sent no answer."))
+    }
+
+    /// Saves what the user entered on a card where Settings, Plugins saves
+    /// it. With setup, tests the plugin and returns the test.
+    async fn save_keys(
+        &self,
+        owner: &str,
+        bot: &str,
+        form: &Value,
+        answer: &Value,
+    ) -> Result<Option<Value>> {
+        let (kind, id) = split(form["id"].as_str().unwrap_or(""))?;
+        let setup = form["action"] == "setup";
+        let values = answer["values"].as_object().cloned().unwrap_or_default();
+        let fields = form["fields"].as_array().cloned().unwrap_or_default();
+        // A provider chosen on the card counts as a change even with no new key.
+        let chosen = answer["provider"] != form["provider"];
+        if fields.is_empty() || (values.is_empty() && !setup && !chosen) {
+            return Ok(None);
+        }
+        let Some(name) = server(kind, id) else {
+            let result = crate::connectors::call(
+                &self.home,
+                owner,
+                "hexbot.connectors.setup",
+                &json!({
+                    "id": id,
+                    "values": values,
+                    "provider": answer["provider"],
+                    "bot": bot,
+                    "enable_for_bot": false,
+                }),
+            )
+            .await
+            .expect("a connectors method")?;
+            return Ok(Some(result["test"].clone()));
+        };
+        if !values.is_empty() {
+            let mut change = json!({});
+            for field in &fields {
+                let key = field["key"].as_str().unwrap_or("");
+                if let Some(value) = values.get(key) {
+                    change[field["place"].as_str().unwrap_or("env")][key] = value.clone();
+                }
+            }
+            crate::plugins::configure(&self.home, name, &change)?;
+            crate::connectors::drop_sessions(&self.home, name).await;
+        }
+        if !setup {
+            return Ok(None);
+        }
+        let test = crate::connectors::call(
+            &self.home,
+            owner,
+            "hexbot.connectors.test",
+            &json!({"id": format!("mcp:{name}"), "bot": bot}),
+        )
+        .await
+        .expect("a connectors method")?;
+        Ok(Some(test))
+    }
+
     async fn ask_plugin(&self, s: &Live, title: String, args: &Value) -> Result<()> {
         let request = json!({"tool":NAME,"toolCall":{"title":title},"input":args,"reason":"Adding or changing a plugin always asks."});
         if !self.ask_approval(s, request, true).await? {
@@ -307,8 +517,116 @@ impl Runtime {
     }
 }
 
+/// The MCP server behind a plugin id, if it has one.
+fn server<'a>(kind: &str, id: &'a str) -> Option<&'a str> {
+    match kind {
+        "connector" => id.strip_prefix("mcp:"),
+        "package" => Some(id),
+        _ => None,
+    }
+}
+
+/// What an installed server runs, as the card shows it: its command line or
+/// address, then every value it is given that isn't left for the user.
+fn runs(server: &Value) -> Vec<String> {
+    let first = match server["url"].as_str() {
+        Some(url) => url.to_owned(),
+        None => std::iter::once(&server["command"])
+            .chain(server["args"].as_array().into_iter().flatten())
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(" "),
+    };
+    std::iter::once(first)
+        .chain(
+            [&server["env"], &server["headers"]]
+                .into_iter()
+                .flat_map(|v| v.as_object().into_iter().flatten())
+                .filter_map(|(key, value)| {
+                    value
+                        .as_str()
+                        .filter(|v| !v.is_empty())
+                        .map(|v| format!("{key}={v}"))
+                }),
+        )
+        .collect()
+}
+
+/// An MCP server's environment and headers as card fields: those still
+/// empty, or with `every` and none empty, all of them.
+fn server_fields(entry: &Value, every: bool) -> Vec<Value> {
+    let fields = [("env", &entry["env"]), ("headers", &entry["headers"])]
+        .into_iter()
+        .flat_map(|(place, values)| {
+            values
+                .as_object()
+                .into_iter()
+                .flatten()
+                .map(move |(key, value)| {
+                    json!({
+                        "key": key,
+                        "label": key,
+                        "place": place,
+                        "secret": true,
+                        "set": value.as_str().is_some_and(|v| !v.is_empty()),
+                    })
+                })
+        })
+        .collect::<Vec<_>>();
+    let empty = fields
+        .iter()
+        .filter(|f| f["set"] == false)
+        .cloned()
+        .collect::<Vec<_>>();
+    if empty.is_empty() && every {
+        fields
+    } else {
+        empty
+    }
+}
+
+/// What a plugin card answers, read from `approval.respond`: only the
+/// card's own fields, for the chosen provider. With setup, a field that has
+/// no saved value must be filled in. The values go to the waiting tool only.
+pub(super) fn answer(form: &Value, p: &Value) -> Result<Value> {
+    let providers = form["providers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p["id"].as_str())
+        .collect::<Vec<_>>();
+    let provider = p["provider"]
+        .as_str()
+        .filter(|p| !p.is_empty())
+        .or(form["provider"].as_str());
+    if !providers.is_empty() && !provider.is_some_and(|p| providers.contains(&p)) {
+        return Err(Error::new(4202, "Choose a provider."));
+    }
+    let setup = form["action"] == "setup";
+    let mut values = serde_json::Map::new();
+    for field in form["fields"].as_array().into_iter().flatten() {
+        if field["provider"].is_string() && field["provider"].as_str() != provider {
+            continue;
+        }
+        let key = field["key"].as_str().unwrap_or("");
+        let value = p["values"][key].as_str().unwrap_or("").trim();
+        if value.len() > 4096 {
+            return Err(Error::new(4202, "That value is too long."));
+        }
+        if !value.is_empty() {
+            values.insert(key.to_owned(), json!(value));
+        } else if setup && field["set"] != true {
+            return Err(Error::new(
+                4202,
+                format!("Enter the {}.", field["label"].as_str().unwrap_or(key)),
+            ));
+        }
+    }
+    Ok(json!({"values": values, "provider": provider}))
+}
+
 /// What the bot should know once a plugin is on.
-fn after_change(plugin: &Value, own: bool, skills: &[String]) -> String {
+fn after_change(plugin: &Value, id: &str, own: bool, skills: &[String]) -> String {
     let mut note = if own {
         "On for you. New tools reach you from your next message.".to_owned()
     } else {
@@ -317,11 +635,10 @@ fn after_change(plugin: &Value, own: bool, skills: &[String]) -> String {
     if own && !skills.is_empty() {
         note.push_str(&format!(" Read {} with skill_view now.", skills.join(", ")));
     }
-    if plugin["state"] == "not_set_up" {
+    if plugin["state"] == "not_set_up" || plugin["state"] == "error" {
         note.push_str(&format!(
-            " It is not ready yet ({}): ask the user to finish it in Settings, Plugins, {}.",
+            " It is not ready yet ({}): call setup with id {id} now, so the user can finish it on a card.",
             plugin["state_text"].as_str().unwrap_or("needs setup"),
-            plugin["name"].as_str().unwrap_or("")
         ));
     }
     note

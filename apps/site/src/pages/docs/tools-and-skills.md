@@ -56,9 +56,11 @@ Use the server's own instructions for credentials and permissions. Its tools can
 
 ## When a bot asks for a plugin
 
-A bot that needs a service it can't reach yet can find an MCP server for it and ask to install it, guided by the bundled `mcp` skill. You see what the server runs, every value it passes, and the skills it adds, and approve or decline. Hexbot asks every time, even in Bypass, and a scheduled job can't install anything. A bot can't hand a server your stored keys. A plugin a bot installs is on for that bot only, also when you add bots later. If it needs a token, the bot leaves the value empty and tells you where to fill it in.
+A bot that needs a service it can't reach yet can find an MCP server for it and ask to install it, guided by the bundled `mcp` skill. It shows a card in its chat with the plugin's icon and name: you see what the server runs, every value it passes, and the skills it adds, and choose **Install** or **Not now**. Hexbot asks every time, even in Bypass, and a scheduled job can't install anything. A bot can't hand a server your stored keys. A plugin a bot installs is on for that bot only, also when you add bots later. If it needs a token, the bot leaves the value empty and you can fill it in on the card, now or later.
 
-A bot can also ask to turn on a plugin that is off for it, which asks you the same way, and turn one off for itself without asking. Your primary bot can do all of this for any of your bots from its own chat, and remove packages, always asking first.
+A bot can also ask to turn on a plugin that is off for it, which shows the same card with **Turn on**, and turn one off for itself without asking. Your primary bot can do all of this for any of your bots from its own chat, and remove packages, always asking first.
+
+When a plugin needs a key, such as a Notion API key or an MCP server's token, the bot shows a **Connect** card instead of sending you to Settings. Choose **Connect** and paste the key. The card shows **Saved**: Hexbot keeps the key as Settings, Plugins would, tests the plugin, and the bot tells you whether it works. Where a connector has several providers, such as web search, the card lets you pick one. What you type goes from your app to the daemon; it never appears in the conversation, in the bot's history, or in what is sent to the model provider. **Get one** opens the page where the service hands out keys.
 
 ## Choose skills
 

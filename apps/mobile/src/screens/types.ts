@@ -83,8 +83,10 @@ export interface ApprovalRequestView {
   choices: ApprovalChoice[]
   /** Set once answered; the card stays and shows the answer. */
   decision?: ApprovalChoice | null
-  /** A sign-in card: the user types a login the bot never sees. */
-  form?: import('../../../web/src/lib/types').SignInForm
+  /** A sign-in or plugin card: the user types what the bot never sees. */
+  form?:
+    | import('../../../web/src/lib/types').PluginForm
+    | import('../../../web/src/lib/types').SignInForm
 }
 
 /** What the user typed into a sign-in card. */
@@ -92,6 +94,9 @@ export interface SignInAnswer {
   username: string
   password: string
 }
+
+/** What a card answers with: a login, or a plugin's keys. */
+export type CardAnswer = import('../../../web/src/lib/types').PluginAnswer | SignInAnswer
 
 export interface AttachmentView {
   id: string

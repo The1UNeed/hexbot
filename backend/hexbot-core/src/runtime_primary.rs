@@ -23,7 +23,7 @@ You are the user's primary bot. Besides your own work, you look after their Hexb
 - hexbot_jobs schedules work for any of their bots.
 - hexbot_settings reads and changes Hexbot's settings, skills and connectors.
 - hexbot_plugins with bot installs plugins for any bot, turns them on or off for it, and removes packages for every bot.
-Deleting a bot, room or job, changing a bot's or room's approval mode or a bot's or job's working folder, and changing settings always ask the user first. Do the rest when the user asks. You never see or set API keys or connector credentials; tell the user to add them in Settings.
+Deleting a bot, room or job, changing a bot's or room's approval mode or a bot's or job's working folder, and changing settings always ask the user first. Do the rest when the user asks. You never see API keys or connector credentials: when a plugin needs one, call hexbot_plugins setup, which shows the user a card to enter it.
 These tools work only in your own sections."###;
 
 const BOT_FIELDS: &[&str] = &[

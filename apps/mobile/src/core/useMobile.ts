@@ -42,6 +42,7 @@ import type {
   SavedDaemon,
   Rpc
 } from './types'
+import type { PluginAnswer } from '../../../web/src/lib/types'
 export type { ChatRoute }
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e))
 /** A room opens at its latest events and pages back this many at a time. */
@@ -797,11 +798,11 @@ export function useMobile() {
     if (owner && stoppedIn(owner, target.section))
       await rpc('hexbot.bots.clear_status', { name: owner.name })
   }
-  /** `signIn` answers a sign-in card: what was typed goes to the daemon, never the chat. */
+  /** `answer` answers a sign-in or plugin card: what was typed goes to the daemon, never the chat. */
   const approval = async (
     requestId: string,
     choice: string,
-    signIn?: { username: string; password: string }
+    answer?: PluginAnswer | { username: string; password: string }
   ) => {
     const pending = chat.approvals.find(a => a.requestId === requestId)
     if (!pending) return
@@ -809,7 +810,7 @@ export function useMobile() {
       session_id: pending.sessionId,
       request_id: requestId,
       choice,
-      ...signIn
+      ...answer
     })
     setChat(c => {
       if (!c.turns[pending.sessionId])

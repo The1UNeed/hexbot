@@ -2348,6 +2348,10 @@ impl Runtime {
             settled = json!({"choice":choice});
             if request["method"] == "confirm" {
                 json!({"confirmed":choice!="deny"})
+            } else if request["approval_payload"]["form"]["kind"] == "plugin" && choice != "deny" {
+                // The plugin card: the keys typed go to the waiting tool only.
+                let form = &request["approval_payload"]["form"];
+                json!({"value": plugin_tool::answer(form, p)?.to_string()})
             } else if request["approval_payload"]["form"].is_object() && choice != "deny" {
                 // The sign-in card: what was typed goes to the waiting tool
                 // only, never to an event, a log or the conversation.
@@ -3542,7 +3546,8 @@ impl Runtime {
     }
     /// Shows a daemon card and waits: None when the owner says no or the
     /// card goes, otherwise the answer. A card with a `form` (the sign-in
-    /// card) answers with what was typed, as JSON, and is never stored.
+    /// card, a plugin card) answers with what was typed, as JSON, and is
+    /// never stored.
     async fn ask_native(&self, s: &Live, params: Value, always: bool) -> Result<Option<String>> {
         let settings = self.session_settings(s)?;
         if settings["approvalMode"] == "off" && !always {
