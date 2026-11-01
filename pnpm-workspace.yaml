@@ -32,33 +32,45 @@ overrides:
   # Scoped: minimatch 3 and 5 need brace-expansion 1.x and 2.x.
   brace-expansion@^5: 5.0.12
   mermaid: 11.16.1
-  dompurify: 3.4.16
+  dompurify: 3.4.17
   ip-address: 10.3.1
   nanoid@^3: 3.3.18
   nanoid@^6: 6.0.0
   js-yaml@^4: 4.3.2
-  undici@^6: 6.28.1
-  undici@^7: 7.29.1
-  undici@^8: 8.10.2
+  undici@^6: 6.29.1
+  undici@^7: 7.30.1
+  undici@^8: 8.12.2
   devalue@^5: 5.9.3
-  seroval@^1: 1.6.3
+  seroval@^1: 1.6.11
   sharp@^0.35: 0.35.5
   smol-toml@^1: 1.9.0
   source-map-js@^1: 1.2.2
   postcss: 8.5.29
   tar: 7.5.22
+  fast-uri@^3: 3.1.9
+  katex: 0.18.2
+  node-forge@^1: 1.4.2
+  # zod 3 has no fix. Its users here (@expo/cli, @tanstack/router-plugin and
+  # router-generator) only call APIs zod 4 keeps.
+  zod@^3: 4.6.6
+  # eas-cli pins these exactly; its latest release still pins the old ones.
+  ajv@^8: 8.20.0
+  diff@^7: 8.0.4
+  joi@^17: 17.13.8
+  minimatch@^5: 5.1.9
+  uuid@<11: 11.1.1
+  yaml@^2: 2.9.0
 
 # Refuse releases younger than 14 days (the value is in minutes).
 minimumReleaseAge: 20160
 minimumReleaseAgeExclude:
   # Security fixes. Keep exceptions tied to the reviewed versions.
   - brace-expansion@5.0.12
-  - dompurify@3.4.16
-  - undici@6.28.1
-  - undici@7.29.1
-  - undici@8.10.2
   - devalue@5.9.3
-  - seroval@1.6.3
+  - seroval@1.6.11
+  - node-forge@1.4.2
+  # Already locked by #146; any re-resolve trips the age gate until 2026-11-02.
+  - browserslist@4.29.4
   - sharp@0.35.5
   - '@img/sharp-linux-arm@0.35.5'
   - '@img/sharp-linux-x64@0.35.5'
