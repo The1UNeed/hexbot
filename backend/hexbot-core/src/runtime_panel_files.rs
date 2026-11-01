@@ -75,6 +75,15 @@ fn modified_ms(meta: &fs::Metadata) -> u64 {
         .map_or(0, |since| since.as_millis() as u64)
 }
 
+/// A format that is bytes however they decode: a PDF can be all ASCII, and
+/// editing it as text would break it.
+fn binary_format(path: &Path) -> bool {
+    let mime = mime_of(path);
+    mime == "application/pdf"
+        || mime.contains("officedocument")
+        || (mime.starts_with("image/") && mime != "image/svg+xml")
+}
+
 fn mime_of(path: &Path) -> &'static str {
     let ext = path
         .extension()
@@ -119,7 +128,7 @@ pub(super) fn read_payload(path: &Path) -> Result<Value> {
         "mime": mime_of(path),
     });
     match std::str::from_utf8(&bytes) {
-        Ok(text) if bytes.len() <= TEXT_LIMIT && !text.contains('\0') => {
+        Ok(text) if bytes.len() <= TEXT_LIMIT && !text.contains('\0') && !binary_format(path) => {
             result["text"] = json!(text);
         }
         _ => {
@@ -172,7 +181,7 @@ pub(super) fn write_text(path: &Path, text: &str, expected: Option<u64>) -> Resu
         return Err(Error::new(4209, "the file changed since it was opened"));
     }
     let current = fs::read(path)?;
-    if std::str::from_utf8(&current).is_err() || current.contains(&0) {
+    if binary_format(path) || std::str::from_utf8(&current).is_err() || current.contains(&0) {
         return Err(Error::new(4202, "only text files can be edited here"));
     }
     replace(path, text.as_bytes(), &meta)?;
@@ -200,12 +209,21 @@ mod tests {
         fs::write(roots[1].join("abc-pins.csv"), "pin,use").unwrap();
         fs::write(dir.path().join("secret.txt"), "no").unwrap();
 
-        assert!(resolve_in(&roots, "plan.md").unwrap().ends_with("work/plan.md"));
+        assert!(
+            resolve_in(&roots, "plan.md")
+                .unwrap()
+                .ends_with("work/plan.md")
+        );
         let attached = roots[1].join("abc-pins.csv");
         assert!(resolve_in(&roots, attached.to_str().unwrap()).is_ok());
         assert_eq!(resolve_in(&roots, "../secret.txt").unwrap_err().code, 4302);
         let outside = dir.path().join("secret.txt");
-        assert_eq!(resolve_in(&roots, outside.to_str().unwrap()).unwrap_err().code, 4302);
+        assert_eq!(
+            resolve_in(&roots, outside.to_str().unwrap())
+                .unwrap_err()
+                .code,
+            4302
+        );
         assert_eq!(resolve_in(&roots, "missing.md").unwrap_err().code, 4204);
         assert_eq!(resolve_in(&roots, ".").unwrap_err().code, 4202);
     }
@@ -216,7 +234,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let roots = roots(dir.path());
         fs::write(dir.path().join("secret.txt"), "no").unwrap();
-        std::os::unix::fs::symlink(dir.path().join("secret.txt"), roots[0].join("link.txt")).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("secret.txt"), roots[0].join("link.txt"))
+            .unwrap();
 
         assert_eq!(resolve_in(&roots, "link.txt").unwrap_err().code, 4302);
     }
@@ -234,7 +253,12 @@ mod tests {
 
         let pdf = read_payload(&dir.path().join("doc.pdf")).unwrap();
         assert!(pdf["text"].is_null());
-        assert!(pdf["data_url"].as_str().unwrap().starts_with("data:application/pdf;base64,"));
+        assert!(
+            pdf["data_url"]
+                .as_str()
+                .unwrap()
+                .starts_with("data:application/pdf;base64,")
+        );
     }
 
     #[test]
@@ -254,10 +278,35 @@ mod tests {
         fs::write(&path, "the bot's version").unwrap();
         let stale = saved["modified"].as_u64().unwrap();
         if read_payload(&path).unwrap()["modified"].as_u64().unwrap() != stale {
-            assert_eq!(write_text(&path, "third", Some(stale)).unwrap_err().code, 4209);
+            assert_eq!(
+                write_text(&path, "third", Some(stale)).unwrap_err().code,
+                4209
+            );
             assert_eq!(fs::read_to_string(&path).unwrap(), "the bot's version");
         }
         assert!(write_text(&path, "third", None).is_ok());
+    }
+
+    #[test]
+    fn an_ascii_pdf_is_still_a_pdf() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = fs::canonicalize(dir.path()).unwrap().join("board.pdf");
+        fs::write(
+            &path,
+            "%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\n%%EOF\n",
+        )
+        .unwrap();
+
+        let read = read_payload(&path).unwrap();
+        assert!(read["text"].is_null());
+        assert!(
+            read["data_url"]
+                .as_str()
+                .unwrap()
+                .starts_with("data:application/pdf;base64,")
+        );
+        assert_eq!(write_text(&path, "oops", None).unwrap_err().code, 4202);
+        assert!(fs::read_to_string(&path).unwrap().starts_with("%PDF-1.4"));
     }
 
     #[test]

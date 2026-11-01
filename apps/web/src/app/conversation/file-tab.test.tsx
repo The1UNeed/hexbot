@@ -256,6 +256,50 @@ describe('a file beside the chat', () => {
     )
   })
 
+  it('saves an edit typed while the bot changed the file against the version it started from', async () => {
+    api.filesRead.mockResolvedValue({
+      mime: 'text/csv',
+      modified: 3,
+      name: 'pins.csv',
+      path: '/work/pins.csv',
+      size: 7,
+      text: 'pin,use'
+    })
+    act(() =>
+      visualsActions().open(
+        fileTab('pins.csv', { mime: 'text/csv', path: '/work/pins.csv', sessionId: 's' })
+      )
+    )
+    render(<VisualPanel />)
+    const field = await screen.findByLabelText('pins.csv source')
+
+    // The user types; before the save runs, the bot edits the same file.
+    fireEvent.change(field, { target: { value: 'pin,use\nGPIO9,BOOT' } })
+    api.filesRead.mockResolvedValue({
+      mime: 'text/csv',
+      modified: 9,
+      name: 'pins.csv',
+      path: '/work/pins.csv',
+      size: 20,
+      text: "pin,use\nthe bot's row"
+    })
+    act(() => transcript([call({ args: { path: '/work/pins.csv' }, name: 'edit' })]))
+    await waitFor(() => expect(api.filesRead).toHaveBeenCalledTimes(2))
+
+    // The draft stays, and its save names version 3, so the daemon can refuse it.
+    expect(field).toHaveValue('pin,use\nGPIO9,BOOT')
+    await waitFor(
+      () =>
+        expect(api.filesWrite).toHaveBeenCalledWith(
+          's',
+          '/work/pins.csv',
+          'pin,use\nGPIO9,BOOT',
+          3
+        ),
+      { timeout: 3000 }
+    )
+  })
+
   it('offers a download for a file it cannot show', async () => {
     api.filesRead.mockResolvedValue({
       data_url: 'data:application/zip;base64,UEs=',

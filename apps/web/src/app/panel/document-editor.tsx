@@ -49,6 +49,8 @@ export interface DocumentEditorProps {
   /** In the side panel beside the chat, instead of over the whole window. */
   inline?: boolean
   onClose: () => void
+  /** The editor took on a new `value`: what it shows is that version now. */
+  onFollow?: () => void
   onSave: (text: string) => Promise<void>
   /** Code and data: edited as plain text, with no formatted view. */
   plain?: boolean
@@ -220,6 +222,7 @@ export function DocumentEditor({
   footer,
   inline = false,
   onClose,
+  onFollow,
   onSave,
   plain = false,
   title,
@@ -236,6 +239,8 @@ export function DocumentEditor({
   const draft = useRef(value)
   const onSaveRef = useRef(onSave)
   onSaveRef.current = onSave
+  const onFollowRef = useRef(onFollow)
+  onFollowRef.current = onFollow
   const timer = useRef<number>(undefined)
 
   const editor = useEditor({
@@ -338,6 +343,7 @@ export function DocumentEditor({
 
     saved.current = value
     setLength(value.length)
+    onFollowRef.current?.()
   }, [editor, source, value])
 
   const close = useCallback(async () => {

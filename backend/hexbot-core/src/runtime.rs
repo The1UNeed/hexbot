@@ -47,10 +47,10 @@ use identity::with_fields;
 #[cfg(unix)]
 #[path = "runtime_files.rs"]
 mod files;
-#[path = "runtime_pi_files.rs"]
-mod pi_files;
 #[path = "runtime_panel_files.rs"]
 mod panel_files;
+#[path = "runtime_pi_files.rs"]
+mod pi_files;
 
 #[cfg(test)]
 #[path = "runtime_lifecycle_tests.rs"]

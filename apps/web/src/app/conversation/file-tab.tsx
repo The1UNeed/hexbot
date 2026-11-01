@@ -1,3 +1,4 @@
+import { JsonRpcGatewayError } from '@hermes/shared'
 import { ArrowUp, Download, FileText } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
@@ -311,6 +312,17 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
 
   const { error, file, saved, updated, working } = useOpenedFile(tab)
   const objectUrl = useObjectUrl(file?.data_url)
+  // The version the editor's text is based on. A refresh moves it only when the
+  // editor takes the new text; while it holds an unsaved edit, a save names the
+  // version that edit started from, so it cannot overwrite the bot's change.
+  const latest = useRef(file)
+  latest.current = file
+  const base = useRef<null | number>(null)
+
+  if (base.current === null && file) {
+    base.current = file.modified
+  }
+
   const name = tab.title
   const path = tab.file.path
   const text = file?.text
@@ -367,9 +379,29 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
           inline
           key={path}
           onClose={() => undefined}
+          onFollow={() => {
+            base.current = latest.current?.modified ?? base.current
+          }}
           onSave={async next => {
-            const result = await filesWrite(tab.file.sessionId, path, next, file.modified)
-            saved(next, result.modified, result.size)
+            try {
+              const result = await filesWrite(
+                tab.file.sessionId,
+                path,
+                next,
+                base.current ?? file.modified
+              )
+
+              base.current = result.modified
+              saved(next, result.modified, result.size)
+            } catch (cause) {
+              if (cause instanceof JsonRpcGatewayError && cause.code === 4209) {
+                throw new Error(
+                  `${botName} changed this file while you typed, so your edit was not saved. Copy it, then close and reopen the file.`
+                )
+              }
+
+              throw cause
+            }
           }}
           plain={plain}
           title={name}
