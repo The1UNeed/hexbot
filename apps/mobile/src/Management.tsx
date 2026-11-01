@@ -34,7 +34,7 @@ import {
 import { botPhoto } from './core/avatar'
 import { scheduleChange } from './core/jobs'
 import { requirementText } from './core/skills'
-import { pluginRows } from '../../web/src/lib/plugin-rows'
+import { canGive, pluginRows } from '../../web/src/lib/plugin-rows'
 import { PluginIcon } from './ui/PluginIcon'
 import { isOpenRoom } from './core/routes'
 import { pickFile } from './core/pickFile'
@@ -1525,7 +1525,8 @@ export function Management({
           <Text tone={p.state === 'error' ? 'danger' : 'muted'} variant="footnote">
             {p.state_text}
           </Text>
-          {/* Until it is set up, a plugin can be taken away from bots but not given. */}
+          {/* Until it is set up, a plugin can be taken away from bots but not given,
+              except to a bot whose own settings hold its key. */}
           <Group
             title="Bots"
             footer={p.ready ? undefined : `Set up ${p.name} before giving it to a bot.`}
@@ -1539,7 +1540,7 @@ export function Management({
                 disabled={
                   busy ||
                   mobile.connection !== 'connected' ||
-                  (!p.ready && !p.bots.includes(b.name))
+                  (!canGive(p, b.name) && !p.bots.includes(b.name))
                 }
                 onValueChange={on =>
                   choose(on ? [...p.bots, b.name] : p.bots.filter(name => name !== b.name))

@@ -354,6 +354,8 @@ export interface Connector {
   providers?: ConnectorProviderOption[]
   /** Set up, so it can be given to a bot. Older daemons omit it. */
   ready?: boolean
+  /** The bots it is set up for, as through a key in a bot's own settings. */
+  ready_bots?: string[]
   scope: 'bot' | 'daemon'
   state: ConnectorState
   state_text: string
@@ -410,6 +412,7 @@ export interface PluginsList {
     disabled_globally?: boolean
     id: string
     kind: 'skill'
+    ready_bots?: string[]
     source?: string
   })[]
 }
@@ -433,6 +436,8 @@ export interface Plugin {
   name: string
   /** It can be given to a bot now; one that isn't can still be taken away. */
   ready: boolean
+  /** The bots it can be given to while it is not set up for every bot. */
+  ready_bots?: string[]
   server?: null | PluginServer
   skills?: { description: string; name: string }[]
   source?: string
