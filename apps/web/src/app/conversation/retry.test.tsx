@@ -668,6 +668,27 @@ it.each([
   expect(retries()).toHaveLength(0)
 })
 
+it('keeps a same-key Retry refused as busy unconfirmed, under its first key', async () => {
+  answers = [
+    new Error('Connection lost'),
+    new JsonRpcGatewayError('session is already working', { code: 4002 })
+  ]
+  const view = await mount()
+  await send(view, [])
+  expect(await screen.findByText('Not sent')).toBeVisible()
+  const key = submits()[0]!.input_id
+  // The first try may still be waiting for Pi: only this retry was refused.
+  fireEvent.click(retries()[0]!)
+  await waitFor(() => expect(submits()).toHaveLength(2))
+  await waitFor(() => expect(userRows()[0]!.submission?.status).toBe('unknown'))
+  expect(cards()).toHaveLength(0)
+  expect(userRows()[0]!.inputId).toBe(key)
+  fireEvent.click(retries()[0]!)
+  await waitFor(() => expect(delivered).toHaveLength(1))
+  expect(submits().map(input => input.input_id)).toEqual([key, key, key])
+  expect(userRows()).toHaveLength(1)
+})
+
 it('does not trust a code property on an arbitrary transport error', async () => {
   answers = [Object.assign(new Error('Transport failed'), { code: 5201 })]
   const view = await mount()

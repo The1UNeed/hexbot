@@ -910,9 +910,9 @@ export function suggestedPrompts(description: string, name = 'this bot'): string
 /**
  * Reopen and resend once only after an explicit rejection before acceptance.
  *
- * An input whose outcome is unknown goes again under its own `input_id`. The
- * daemon reserves that key on first sight, so a copy that did arrive answers
- * "already reserved" and is never taken twice.
+ * `resend` tries an input whose outcome is unknown again under its own
+ * `input_id`. The daemon reserves that key on first sight, so a copy that did
+ * arrive answers "already reserved" and is never taken twice.
  */
 async function submitOrReopen(
   sessionId: string,
@@ -923,6 +923,7 @@ async function submitOrReopen(
     files: File[]
     pending: TranscriptMessage
     uploads: string[]
+    resend?: boolean
   }
 ): Promise<boolean> {
   const { current, files, uploads } = retry
@@ -1068,8 +1069,12 @@ async function submitOrReopen(
       // 5201 is Pi's refusal. 5200 can be a bot lost before it answered or a
       // title-save error after acceptance. Transport failures and arbitrary
       // error objects also prove nothing about whether Pi took input.
+      // A resend refused as busy may be waiting behind its own first try.
+      const busy = retry.resend && failure instanceof JsonRpcGatewayError && failure.code === 4002
+
       const rejected =
         !reserved &&
+        !busy &&
         failure instanceof JsonRpcGatewayError &&
         [4002, 4200, 4202, 5201].includes(failure.code ?? 0)
 
@@ -2240,6 +2245,7 @@ function BotConversation() {
         current: canPrompt,
         files: [],
         pending: input,
+        resend: true,
         uploads: source.uploads ?? []
       })
     },
