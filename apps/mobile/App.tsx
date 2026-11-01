@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons'
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { ActivityIndicator, BackHandler, Platform, View } from 'react-native'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ActivityIndicator, AppState, BackHandler, Platform, View } from 'react-native'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 import { StatusBar } from 'expo-status-bar'
 import * as ExpoLinking from 'expo-linking'
@@ -22,8 +22,10 @@ import {
   HomeScreen,
   LibraryScreen,
   ModelSummary,
+  SearchSheet,
   SettingsScreen,
   type ApprovalChoice,
+  type SignInAnswer,
   type AttachmentView,
   type BotStatus,
   type BotSummary,
@@ -51,11 +53,15 @@ import { MarkdownText } from './src/MarkdownText'
 import { VisualFrame } from './src/VisualFrame'
 import { visualDocument } from './src/core/visual'
 import { parseArgs } from './src/core/chat'
+import { type SearchDocument, searchEntries } from './src/core/search'
 import { Management, type Panel } from './src/Management'
 import { useMobile } from './src/core/useMobile'
+import { USAGE_DOCS_URL } from '@hermes/shared'
+import { captureUsage, sendDailyUsage, useUsageData, watchUsageErrors } from './src/core/usage'
 import { useFeeling } from './src/core/feelings'
 import { clearTapped, useTappedSection } from './src/core/tapped'
 import { chatPreview, pulseTarget, purposeOf, stoppedIn } from './src/core/routes'
+import { previewLine } from '../web/src/lib/preview'
 import { CONNECT_ORIGIN, parseConnectCallback } from './src/core/links'
 import { clearConnectSession, loadConnectSession, saveConnectSession } from './src/core/storage'
 import { connectGrant, request, RevokedError } from './src/core/transport'
@@ -131,6 +137,17 @@ export default function App() {
 }
 function MobileApp() {
   const mobile = useMobile()
+  const usage = useUsageData()
+  // Counted once a day while the app is used, including after it comes back
+  // from the background; nothing unless usage data is on.
+  useEffect(() => {
+    watchUsageErrors()
+    void sendDailyUsage()
+    const subscription = AppState.addEventListener('change', state => {
+      if (state === 'active') void sendDailyUsage()
+    })
+    return () => subscription.remove()
+  }, [])
   const theme = useTheme()
   // Pages pushed over the chat list; an open conversation shows above them.
   const [page, setPage] = useState<'home' | 'library' | 'settings'>('home')
@@ -147,6 +164,10 @@ function MobileApp() {
   const [visual, setVisual] = useState<{ title: string; html: string } | null>(null)
   /** The bots' computer card is open. */
   const [computerOpen, setComputerOpen] = useState(false)
+  /** Search in the open conversation, and the message it last asked the transcript to show. */
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [focus, setFocus] = useState<{ id: string; nonce: number } | null>(null)
+  const [searchMemory, setSearchMemory] = useState('')
   const [draft, setDraft] = useState('')
   const [attachments, setAttachments] = useState<AttachmentView[]>([])
   const [question, setQuestion] = useState<{
@@ -177,9 +198,9 @@ function MobileApp() {
   mobileRef.current = mobile
   const nativeUrl = ExpoLinking.useURL()
   const panel = panels.at(-1) ?? null
-  const act = (work: () => Promise<unknown>) => {
-    void work().catch(e => mobile.setError(messageOf(e)))
-  }
+  const act = useCallback((work: () => Promise<unknown>) => {
+    void work().catch(e => mobileRef.current.setError(messageOf(e)))
+  }, [])
   // Cards stack: a card already in the stack is returned to instead of opened twice.
   const navigate = (next: Panel, keep?: Record<string, string | boolean>) =>
     setPanels(stack => {
@@ -286,6 +307,25 @@ function MobileApp() {
     route?.kind === 'section' ? route.section.id : route?.kind === 'room' ? route.room.id : null
   const openChat = useRef(chatKey)
   openChat.current = chatKey
+  // Search belongs to the conversation it was opened in.
+  useEffect(() => {
+    setSearchOpen(false)
+    setFocus(null)
+    setSearchMemory('')
+  }, [chatKey])
+  const searchBot = route?.kind === 'section' ? route.bot.name : null
+  // A bot's memory is searched too; read it when search opens.
+  useEffect(() => {
+    if (!searchOpen || !searchBot) return
+    let live = true
+    void mobile
+      .rpc<{ memory_md?: string }>('hexbot.memory.bot.get', { bot: searchBot })
+      .then(result => live && setSearchMemory(result.memory_md ?? ''))
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [searchOpen, searchBot])
   // The message whose stopped turn's error was closed: still yours to recall.
   const [closedOn, setClosedOn] = useState<string | null>(null)
   // When the failure you closed happened; it stays closed while the bot's state catches up.
@@ -418,7 +458,7 @@ function MobileApp() {
       primary: b.primary === true,
       title: b.title,
       description: b.description,
-      preview: chatPreview(b.name, mobile.sections, b.sections_recent),
+      preview: previewLine(chatPreview(b.name, mobile.sections, b.sections_recent) ?? '') || null,
       activity: b.status_detail?.text,
       status:
         b.status === 'idle' &&
@@ -580,8 +620,9 @@ function MobileApp() {
     icon: DaemonArea['icon'],
     detail?: string | null
   ): DaemonArea => ({ key, label, icon, detail })
+  const licenses = { areas: [area('licenses', 'Licenses', 'document-text-outline')] }
   const settingsGroups: { title?: string; areas: DaemonArea[] }[] = demo
-    ? []
+    ? [licenses]
     : [
         { areas: [area('about', 'About you', 'person-outline')] },
         {
@@ -594,7 +635,8 @@ function MobileApp() {
               'Plugins',
               'extension-puzzle-outline',
               'Connectors, MCP servers, skills'
-            )
+            ),
+            area('passwords', 'Passwords', 'key-outline', 'Sign-ins your bots use')
           ]
         },
         {
@@ -612,49 +654,56 @@ function MobileApp() {
             area('connect', 'Hex Connect', 'cloud-outline'),
             area('updates', 'Updates', 'download-outline', mobile.info?.version ?? null)
           ]
-        }
+        },
+        licenses
       ]
-  const visuals = new Map<string, { title: string; html: string }>()
-  const items: ChatItem[] = mobile.chat.messages.flatMap((m): ChatItem[] =>
-    m.role === 'system'
-      ? [{ kind: 'notice', id: m.id, text: m.text, tone: m.tone }]
-      : [
-          // A conversation shows what bots say and the visuals they draw, not their steps.
-          ...(m.tools ?? [])
-            .filter(t => t.name === 'hexbot_show_html' && t.status === 'ok')
-            .flatMap((t, i) => {
-              const args = parseArgs(t.args) as { title?: string; html?: string } | null
-              if (typeof args?.html !== 'string') return []
-              const id = `visual-${m.id}-${i}`
-              visuals.set(id, { title: args.title || 'Visual', html: args.html })
-              return [
-                {
-                  kind: 'visual' as const,
-                  id,
-                  title: args.title || 'Visual',
-                  index: visuals.size - 1
-                }
-              ]
-            }),
-          {
-            kind: 'message',
-            id: m.id,
-            role:
-              m.role === 'user'
-                ? route?.kind !== 'room' || m.sender === mobile.user?.id
-                  ? 'user'
-                  : 'human'
-                : 'bot',
-            text: m.text,
-            author:
-              m.role === 'user'
-                ? { name: m.senderName || 'Former member' }
-                : m.sender && botByName(m.sender)
-                  ? faceOf(botByName(m.sender)!)
-                  : undefined
-          }
-        ]
-  )
+  const { items: historyItems, visuals } = useMemo(() => {
+    const botByName = (name: string) => mobile.bots.find(b => b.name === name)
+    const visuals = new Map<string, { title: string; html: string }>()
+    const items: ChatItem[] = mobile.chat.messages.flatMap((m): ChatItem[] =>
+      m.role === 'system'
+        ? [{ kind: 'notice', id: m.id, text: m.text, tone: m.tone }]
+        : [
+            // A conversation shows what bots say and the visuals they draw, not their steps.
+            ...(m.tools ?? [])
+              .filter(t => t.name === 'hexbot_show_html' && t.status === 'ok')
+              .flatMap((t, i) => {
+                const args = parseArgs(t.args) as { title?: string; html?: string } | null
+                if (typeof args?.html !== 'string') return []
+                const id = `visual-${m.id}-${i}`
+                visuals.set(id, { title: args.title || 'Visual', html: args.html })
+                return [
+                  {
+                    kind: 'visual' as const,
+                    id,
+                    title: args.title || 'Visual',
+                    index: visuals.size - 1
+                  }
+                ]
+              }),
+            {
+              kind: 'message',
+              id: m.id,
+              role:
+                m.role === 'user'
+                  ? route?.kind !== 'room' || m.sender === mobile.user?.id
+                    ? 'user'
+                    : 'human'
+                  : 'bot',
+              text: m.text,
+              createdAt: m.createdAt,
+              author:
+                m.role === 'user'
+                  ? { name: m.senderName || 'Former member' }
+                  : m.sender && botByName(m.sender)
+                    ? faceOf(botByName(m.sender)!)
+                    : undefined
+            }
+          ]
+    )
+    return { items, visuals }
+  }, [mobile.chat.messages, mobile.bots, mobile.user?.id, route?.kind])
+  const items = [...historyItems]
   const liveTurns =
     route?.kind === 'room'
       ? Object.values(mobile.chat.turns)
@@ -778,8 +827,10 @@ function MobileApp() {
       }
     })
   }
-  const renderMessageText: ChatScreenProps['renderMessageText'] = item =>
-    item.text ? <MarkdownText text={item.text} user={item.role === 'user'} /> : null
+  const renderMessageText = useCallback<NonNullable<ChatScreenProps['renderMessageText']>>(
+    item => (item.text ? <MarkdownText text={item.text} user={item.role === 'user'} /> : null),
+    []
+  )
   // Your latest message in a bot's chat, while the bot is on it or after its turn
   // stopped, with or without its closed error.
   const recallId = (() => {
@@ -816,8 +867,70 @@ function MobileApp() {
     !mobile.loading
   )
 
+  const recall = useCallback(
+    (id: string) =>
+      confirm(
+        'Recall',
+        `${route?.kind === 'section' ? route.bot.display_name : 'The bot'} forgets this message and its reply. The text goes back in the message box.`,
+        () =>
+          act(async () => {
+            const from = chatKey
+            const text = await mobileRef.current.recall(id)
+            // The message box belongs to the chat open now; another one keeps its own.
+            if (text && openChat.current === from)
+              setDraft(previous => (previous.trim() ? `${text}\n\n${previous}` : text))
+          })
+      ),
+    [act, chatKey, route?.kind, route?.kind === 'section' ? route.bot.display_name : null]
+  )
+  const approve = useCallback(
+    (id: string, choice: ApprovalChoice, signIn?: SignInAnswer) => {
+      // The sign-in card waits for this to keep its form when it fails.
+      const work = mobileRef.current.approval(id, choice, signIn)
+      act(() => work)
+      return work
+    },
+    [act]
+  )
+  const openVisual = useCallback((id: string) => setVisual(visuals.get(id) ?? null), [visuals])
+  const chatFace = useMemo(
+    () => (route?.kind === 'section' ? faceOf(route.bot) : undefined),
+    [route?.kind === 'section' ? route.bot : null]
+  )
+
+  const entries = useMemo(
+    () =>
+      searchOpen
+        ? searchEntries(mobile.chat.messages, m =>
+            m.role === 'user'
+              ? route?.kind !== 'room' || m.sender === mobile.user?.id
+                ? 'You'
+                : m.senderName || 'Former member'
+              : ((m.sender && mobile.bots.find(b => b.name === m.sender)?.display_name) ??
+                (route?.kind === 'section' ? route.bot.display_name : (m.sender ?? 'Bot')))
+          )
+        : [],
+    [searchOpen, mobile.chat.messages, mobile.bots, mobile.user?.id, route]
+  )
+  const searchDocuments = useMemo<SearchDocument[] | undefined>(
+    () =>
+      route?.kind === 'section'
+        ? [
+            {
+              kind: 'soul',
+              text: (mobile.bots.find(b => b.name === route.bot.name) ?? route.bot).persona,
+              title: 'Soul'
+            },
+            { kind: 'memory', text: searchMemory, title: 'Memory' }
+          ]
+        : undefined,
+    [route, mobile.bots, searchMemory]
+  )
+
   const conversation = {
     items,
+    onOpenSearch: () => setSearchOpen(true),
+    focus,
     renderMessageText,
     busy: mobile.chat.busy,
     waiting: mobile.chat.busy && !mobile.chat.streaming ? { label: 'Working' } : undefined,
@@ -828,8 +941,8 @@ function MobileApp() {
     onStop: () => act(mobile.stop),
     attachments,
     onRemoveAttachment: removeAttachment,
-    onApprove: (id: string, choice: ApprovalChoice) => act(() => mobile.approval(id, choice)),
-    onOpenVisual: (id: string) => setVisual(visuals.get(id) ?? null),
+    onApprove: approve,
+    onOpenVisual: openVisual,
     sendDisabledReason: uploading
       ? 'Sending attachments'
       : mobile.loading
@@ -848,19 +961,7 @@ function MobileApp() {
       act(mobile.dismissError)
     },
     recallId,
-    onRecall: (id: string) =>
-      confirm(
-        'Recall',
-        `${route?.kind === 'section' ? route.bot.display_name : 'The bot'} forgets this message and its reply. The text goes back in the message box.`,
-        () =>
-          act(async () => {
-            const from = chatKey
-            const text = await mobile.recall(id)
-            // The message box belongs to the chat open now; another one keeps its own.
-            if (text && openChat.current === from)
-              setDraft(previous => (previous.trim() ? `${text}\n\n${previous}` : text))
-          })
-      ),
+    onRecall: recall,
     onRetry: () =>
       act(async () => {
         await mobile.retry()
@@ -938,6 +1039,7 @@ function MobileApp() {
         saved={saved}
         initialLink={initialLink}
         onCancel={mobile.active ? () => setAddDaemon(false) : undefined}
+        usageData={usage.available ? { on: usage.on, onChange: usage.setOn } : undefined}
         onOpenSaved={id =>
           act(async () => {
             const target = mobile.saved.find(d => d.id === id)
@@ -951,6 +1053,7 @@ function MobileApp() {
               input.mode === 'link' ? input.link : input.address,
               input.mode === 'code' ? input.code : ''
             )
+            void captureUsage('daemon_paired', { method: input.mode })
             setAddDaemon(false)
           })
         }
@@ -992,7 +1095,7 @@ function MobileApp() {
               ? `With ${botByName(route.section.peer_bot)?.display_name ?? route.section.peer_bot}`
               : null
         }
-        face={faceOf(route.bot)}
+        face={chatFace}
         emotion={emotion}
         status={route.bot.status}
         opening={mobile.opening}
@@ -1067,6 +1170,15 @@ function MobileApp() {
         }}
         refreshing={refreshing}
         onRefresh={demo ? undefined : refresh}
+        usageData={
+          usage.available
+            ? {
+                on: usage.on,
+                onChange: usage.setOn,
+                onOpenDocs: () => void WebBrowser.openBrowserAsync(USAGE_DOCS_URL)
+              }
+            : undefined
+        }
       />
     ) : page === 'library' ? (
       <LibraryScreen
@@ -1208,6 +1320,27 @@ function MobileApp() {
           />
         ) : null}
       </Layer>
+      <SearchSheet
+        documents={searchDocuments}
+        entries={entries}
+        name={
+          route?.kind === 'room'
+            ? route.room.name
+            : `your chat with ${route?.kind === 'section' ? route.bot.display_name : 'this bot'}`
+        }
+        onClose={() => setSearchOpen(false)}
+        onDocument={file => {
+          if (route?.kind !== 'section') return
+          const bot = botByName(route.bot.name) ?? route.bot
+          setPanels([
+            { kind: 'bot', bot },
+            { kind: file, bot }
+          ])
+        }}
+        onMessage={id => setFocus(previous => ({ id, nonce: (previous?.nonce ?? 0) + 1 }))}
+        onVisual={openVisual}
+        visible={searchOpen && !!route}
+      />
       <Layer
         visible={computerOpen}
         onClose={() => setComputerOpen(false)}

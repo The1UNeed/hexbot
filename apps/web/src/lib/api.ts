@@ -8,6 +8,7 @@
 import { useConnection } from '../stores/connection'
 
 import { rpcCall } from './rpc'
+import { toMillis } from './time'
 import type {
   ApprovalChoice,
   Bot,
@@ -30,6 +31,8 @@ import type {
   ModelOption,
   NetworkInfo,
   PairingCode,
+  PasswordKeyStore,
+  PasswordLogin,
   PluginKind,
   PluginsList,
   Provider,
@@ -69,6 +72,8 @@ export interface HistoryRow {
 export interface BotMemory {
   cap: number
   memory_md: string
+  /** When MEMORY.md last changed, in Unix seconds; null before it exists. Older daemons leave it out. */
+  updated_at?: null | number
 }
 
 /** One day of a bot's notes: the local day it was filed under and its text. */
@@ -277,6 +282,54 @@ export function connectorsRemoveMcp(name: string): Promise<{ removed: boolean }>
 // ---------------------------------------------------------------------------
 // Plugins: connectors, MCP servers, skills, built-in tools and packages
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Passwords
+// ---------------------------------------------------------------------------
+
+export interface PasswordsList {
+  bots: string[]
+  logins: PasswordLogin[]
+  store: PasswordKeyStore
+}
+
+/** A new login (no `id`) or a change; fields left out stay. An empty `code` removes it. */
+export interface PasswordInput {
+  bots?: null | string[]
+  code?: string
+  id?: string
+  notes?: string
+  password?: string
+  title?: string
+  url?: string
+  username?: string
+}
+
+export function passwordsList(): Promise<PasswordsList> {
+  return rpcCall<PasswordsList>('hexbot.passwords.list', {})
+}
+
+export function passwordsSave(input: PasswordInput): Promise<{ login: PasswordLogin }> {
+  return rpcCall<{ login: PasswordLogin }>('hexbot.passwords.save', { ...input })
+}
+
+export function passwordsSetBots(
+  id: string,
+  bots: null | string[]
+): Promise<{ login: PasswordLogin }> {
+  return rpcCall<{ login: PasswordLogin }>('hexbot.passwords.set_bots', { bots, id })
+}
+
+export function passwordsDelete(id: string): Promise<unknown> {
+  return rpcCall('hexbot.passwords.delete', { id })
+}
+
+/** The password and the one-time code for now, for the owner only. */
+export function passwordsReveal(
+  id: string
+): Promise<{ code: null | { code: string; valid_for: number }; password: string }> {
+  return rpcCall('hexbot.passwords.reveal', { id })
+}
 
 export function pluginsList(): Promise<PluginsList> {
   return rpcCall<PluginsList>('hexbot.plugins.list', {})
@@ -789,12 +842,14 @@ export function setSectionModel(
 export function approvalRespond(
   sessionId: string,
   requestId: string,
-  choice: ApprovalChoice
+  choice: ApprovalChoice,
+  signIn?: { password: string; username: string }
 ): Promise<{ resolved: boolean }> {
   return rpcCall<{ resolved: boolean }>('approval.respond', {
     choice,
     request_id: requestId,
-    session_id: sessionId
+    session_id: sessionId,
+    ...signIn
   })
 }
 
@@ -1044,8 +1099,8 @@ export const clarifyAnswered = (clarify: ClarifyRequest) =>
  * live `tool.start` / `tool.complete` events are rendered.
  */
 /**
- * Hexbot history rows carry no timestamps, so restored messages get `createdAt: 0`
- * ("unknown") and the transcript draws no time separator for them.
+ * Restored messages get `createdAt: 0`, which marks them as history; the
+ * time their last row was stored is `sentAt`, for showing when it was sent.
  *
  * Hidden rows are dropped, with one exception: in a thread (`sender` given),
  * the sender bot's questions arrive as hidden user rows `@<sender>: <text>`
@@ -1064,6 +1119,12 @@ export function messagesFromHistory(
   const dreams = new Set<Message>()
   const rowCounts = new Map<string, number>()
   const reports = new Set(rows.filter(row => row.dream === true).map(row => String(row.row_id)))
+
+  // Rows carry `timestamp` in Unix seconds.
+  const sent = (row: HistoryRow) =>
+    typeof row.timestamp === 'number' && row.timestamp > 0
+      ? { sentAt: toMillis(row.timestamp) }
+      : {}
 
   for (const row of rows) {
     if (row.row_id != null) {
@@ -1146,7 +1207,7 @@ export function messagesFromHistory(
         durationS: null,
         name: String(row.name ?? 'tool'),
         result: row.text ?? null,
-        // History keeps no timestamps; 0 is "unknown", so no time is shown.
+        // History keeps no tool start times; 0 is "unknown", so no time is shown.
         startedAt: 0,
         status: row.is_error === true ? ('error' as const) : ('ok' as const),
         summary: typeof row.context === 'string' ? row.context : undefined,
@@ -1188,6 +1249,7 @@ export function messagesFromHistory(
           clarifies: clarify ? [clarify] : undefined,
           createdAt: 0,
           id: String(row.row_id ?? nextMessageId()),
+          ...sent(row),
           role: 'assistant',
           streaming: false,
           text: '',
@@ -1225,6 +1287,8 @@ export function messagesFromHistory(
 
       previous.text = text
       previous.textId = row.row_id == null ? undefined : String(row.row_id)
+      // The reply was sent when it ended, not when its first step began.
+      Object.assign(previous, sent(row))
       previous.fragmentIds = [
         ...(previous.fragmentIds ?? []),
         ...(previous.textId ? [previous.textId] : [])
@@ -1238,6 +1302,7 @@ export function messagesFromHistory(
       attachments: [],
       createdAt: 0,
       id: String(row.row_id ?? nextMessageId()),
+      ...sent(row),
       ...(typeof row.input_id === 'string' && { inputId: row.input_id }),
       ...(typeof row.turn_id === 'string' && { turnId: row.turn_id }),
       ...(role === 'assistant' &&

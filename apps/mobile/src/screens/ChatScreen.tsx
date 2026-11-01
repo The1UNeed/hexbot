@@ -1,6 +1,15 @@
 import { Ionicons } from '@expo/vector-icons'
-import { type ReactNode, useMemo, useState } from 'react'
-import { FlatList, Image, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native'
+import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  FlatList,
+  type ListRenderItemInfo,
+  Image,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  TextInput,
+  View
+} from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import {
@@ -10,6 +19,7 @@ import {
   type BotStatus,
   bubbleFill,
   Button,
+  dividesChat,
   type FaceMood,
   type FaceSource,
   formatDayDivider,
@@ -25,7 +35,14 @@ import {
   useTheme,
   withAlpha
 } from '../ui'
-import type { ApprovalChoice, ApprovalRequestView, AttachmentView, ChatItem } from './types'
+import { SignInCard } from './SignInCard'
+import type {
+  ApprovalChoice,
+  ApprovalRequestView,
+  AttachmentView,
+  ChatItem,
+  SignInAnswer
+} from './types'
 
 type MessageItem = Extract<ChatItem, { kind: 'message' }>
 
@@ -65,7 +82,11 @@ export interface ChatScreenProps {
   onBack: () => void
   onOpenSettings?: () => void
 
-  onApprove: (requestId: string, choice: ApprovalChoice) => void
+  onApprove: (
+    requestId: string,
+    choice: ApprovalChoice,
+    signIn?: SignInAnswer
+  ) => Promise<unknown> | void
   onMessageLongPress?: (id: string) => void
   /** Your message Recall can take back; a long press on it recalls it. */
   recallId?: string | null
@@ -92,11 +113,18 @@ export interface ChatScreenProps {
   computerLive?: boolean
   /** Opens a visual item from the transcript. */
   onOpenVisual?: (id: string) => void
+  /** Opens search in this conversation; the button shows only with this. */
+  onOpenSearch?: () => void
+  /** A message search found: the transcript scrolls to it and marks it. A new nonce shows it again. */
+  focus?: { id: string; nonce: number } | null
   /** Under the empty state of a new chat, such as the model it will use. */
   intro?: ReactNode
 }
 
 type Entry = ChatItem | { id: string; kind: 'waiting' }
+type ListEntry = { id: string; entry: Entry; continued: boolean }
+const waitingEntry: Entry = { id: 'waiting', kind: 'waiting' }
+const entryKey = (item: ListEntry) => item.id
 
 /**
  * One conversation: a bot's chat or a room. Bot messages sit on soft grey
@@ -104,8 +132,17 @@ type Entry = ChatItem | { id: string; kind: 'waiting' }
  * one quiet line per run, and approvals stop the transcript with a card.
  */
 export function ChatScreen(props: ChatScreenProps) {
-  const { computerLive, face, members, onBack, onOpenComputer, onOpenSettings, status, subtitle, title } =
-    props
+  const {
+    computerLive,
+    face,
+    members,
+    onBack,
+    onOpenComputer,
+    onOpenSettings,
+    status,
+    subtitle,
+    title
+  } = props
   const theme = useTheme()
   const room = !!members
 
@@ -155,6 +192,16 @@ export function ChatScreen(props: ChatScreenProps) {
         testID="chat-bar"
         trailing={
           <>
+            {props.onOpenSearch ? (
+              <IconButton
+                accessibilityLabel={room ? 'Search this room' : 'Search this chat'}
+                icon="search"
+                iconSize={19}
+                onPress={props.onOpenSearch}
+                testID="chat-search"
+                variant="glass"
+              />
+            ) : null}
             {onOpenComputer ? (
               <View>
                 <IconButton
@@ -213,16 +260,124 @@ function ChatBody(props: ChatScreenProps) {
     waiting
   } = props
   const room = !!members
+  const theme = useTheme()
   const keyboard = useKeyboardVisible()
   const insets = useSafeAreaInsets()
   const bottom = keyboard ? 8 : Math.max(insets.bottom, 8)
 
   // Inverted list: newest first, so the view starts at the bottom and stays there.
-  const entries = useMemo<Entry[]>(() => {
-    const list: Entry[] = [...items].reverse()
+  const entries = useMemo<ListEntry[]>(() => {
+    const list: ListEntry[] = []
+    // The last message with something to show; a step with no words or files draws nothing.
+    let said: MessageItem | undefined
+    for (const [index, entry] of items.entries()) {
+      const previous = items[index - 1]
+      const shown =
+        entry.kind === 'message' && Boolean(entry.text || entry.attachments?.length || entry.error)
+      // Between days and after a quiet spell, a divider says when.
+      const at = shown ? (entry.createdAt ?? 0) : 0
+      const divided = dividesChat(said ? (said.createdAt ?? 0) : undefined, at)
+      if (divided)
+        list.push({
+          id: `day-${entry.id}`,
+          entry: { kind: 'day', id: `day-${entry.id}`, at },
+          continued: false
+        })
+      if (shown) said = entry
+      list.push({
+        id: entry.id,
+        entry,
+        continued:
+          !divided &&
+          entry.kind === 'message' &&
+          previous?.kind === 'message' &&
+          previous.role === entry.role &&
+          previous.author?.name === entry.author?.name
+      })
+    }
+    list.reverse()
 
-    return waiting ? [{ id: 'waiting', kind: 'waiting' }, ...list] : list
-  }, [items, waiting])
+    return waiting ? [{ id: 'waiting', entry: waitingEntry, continued: false }, ...list] : list
+  }, [items, !!waiting])
+  const fallbackFace = useMemo(() => face ?? { name: title }, [face, title])
+  const list = useRef<FlatList<ListEntry>>(null)
+  const [flash, setFlash] = useState<null | { id: string; nonce: number }>(null)
+  const { focus } = props
+  // The request itself, not its nonce: a new conversation starts nonces over.
+  const shown = useRef<typeof focus>(null)
+  // Scroll to what search found once per request, not on every new message.
+  useEffect(() => {
+    if (!focus || shown.current === focus) return
+    const index = entries.findIndex(item => item.id === focus.id)
+    if (index < 0) return
+    shown.current = focus
+    list.current?.scrollToIndex({ animated: true, index, viewPosition: 0.5 })
+    setFlash(focus)
+  }, [entries, focus])
+  // Its own timer, so new messages arriving meanwhile cannot leave the mark on.
+  useEffect(() => {
+    if (!flash) return
+    const timer = setTimeout(() => setFlash(null), 1600)
+    return () => clearTimeout(timer)
+  }, [flash])
+  const {
+    emotion,
+    onApprove,
+    onMessageLongPress,
+    onOpenVisual,
+    onRecall,
+    recallId,
+    renderMessageText
+  } = props
+  const waitingLabel = waiting?.label
+  const waitingWho = waiting?.who ?? (room ? null : fallbackFace)
+  const renderItem = useCallback(
+    ({ item: { entry, continued } }: ListRenderItemInfo<ListEntry>) => {
+      const row = (
+        <TranscriptEntry
+          entry={entry}
+          continued={continued}
+          face={entry.kind === 'message' && !room ? fallbackFace : undefined}
+          room={room}
+          onLongPress={
+            entry.kind === 'message'
+              ? entry.id === recallId && onRecall
+                ? onRecall
+                : onMessageLongPress
+              : undefined
+          }
+          renderText={entry.kind === 'message' ? renderMessageText : undefined}
+          onApprove={entry.kind === 'approval' ? onApprove : undefined}
+          onOpenVisual={entry.kind === 'visual' ? onOpenVisual : undefined}
+          waitingLabel={entry.kind === 'waiting' ? waitingLabel : undefined}
+          waitingWho={entry.kind === 'waiting' ? waitingWho : undefined}
+          mood={entry.kind === 'waiting' ? emotion : undefined}
+        />
+      )
+      return entry.id === flash?.id ? (
+        <View style={[styles.flash, { backgroundColor: withAlpha(theme.accent, 0.12) }]}>
+          {row}
+        </View>
+      ) : (
+        row
+      )
+    },
+    [
+      flash,
+      theme.accent,
+      room,
+      fallbackFace,
+      recallId,
+      onRecall,
+      onMessageLongPress,
+      renderMessageText,
+      onApprove,
+      onOpenVisual,
+      waitingLabel,
+      waitingWho,
+      emotion
+    ]
+  )
 
   return (
     <>
@@ -271,18 +426,27 @@ function ChatBody(props: ChatScreenProps) {
           contentContainerStyle={styles.transcript}
           data={entries}
           inverted
-          keyExtractor={entry => entry.id}
+          keyExtractor={entryKey}
           keyboardDismissMode="interactive"
           keyboardShouldPersistTaps="handled"
-          renderItem={({ index, item }) => (
-            <TranscriptEntry
-              entry={item}
-              // Inverted, so the chronologically previous entry is the next index.
-              previous={entries[index + 1]}
-              props={props}
-              room={room}
-            />
-          )}
+          onScrollToIndexFailed={info => {
+            // Rows far up are not measured yet: get near, then try again.
+            list.current?.scrollToOffset({
+              animated: false,
+              offset: info.averageItemLength * info.index
+            })
+            setTimeout(
+              () =>
+                list.current?.scrollToIndex({
+                  animated: true,
+                  index: info.index,
+                  viewPosition: 0.5
+                }),
+              100
+            )
+          }}
+          ref={list}
+          renderItem={renderItem}
           testID="chat-transcript"
         />
       )}
@@ -320,26 +484,34 @@ function ChatBody(props: ChatScreenProps) {
   )
 }
 
-function TranscriptEntry({
+const TranscriptEntry = memo(function TranscriptEntry({
   entry,
-  previous,
-  props,
-  room
+  continued,
+  face,
+  room,
+  onLongPress,
+  renderText,
+  onApprove,
+  onOpenVisual,
+  waitingLabel,
+  waitingWho,
+  mood
 }: {
   entry: Entry
-  previous?: Entry
-  props: Omit<ChatScreenProps, 'onBack'>
+  continued: boolean
+  face?: FaceSource
   room: boolean
+  onLongPress?: (id: string) => void
+  renderText?: ChatScreenProps['renderMessageText']
+  onApprove?: ChatScreenProps['onApprove']
+  onOpenVisual?: ChatScreenProps['onOpenVisual']
+  waitingLabel?: string | null
+  waitingWho?: FaceSource | null
+  mood?: FaceMood
 }) {
   switch (entry.kind) {
     case 'waiting':
-      return (
-        <WaitingRow
-          label={props.waiting?.label}
-          mood={props.emotion}
-          who={props.waiting?.who ?? (room ? null : (props.face ?? { name: props.title }))}
-        />
-      )
+      return <WaitingRow label={waitingLabel} mood={mood} who={waitingWho} />
     case 'day':
       return (
         <Text align="center" style={styles.day} tone="muted" variant="caption">
@@ -361,37 +533,32 @@ function TranscriptEntry({
       return (
         <View style={styles.visualItem}>
           <VisualCard
-            onOpen={() => props.onOpenVisual?.(entry.id)}
+            onOpen={() => onOpenVisual?.(entry.id)}
             testID={`visual-open-${entry.index}`}
             title={entry.title}
           />
         </View>
       )
     case 'approval':
-      return <ApprovalCard onAnswer={props.onApprove} request={entry.request} />
+      return entry.request.form ? (
+        <SignInCard form={entry.request.form} onAnswer={onApprove!} request={entry.request} />
+      ) : (
+        <ApprovalCard onAnswer={onApprove!} request={entry.request} />
+      )
     case 'message': {
-      const run =
-        previous?.kind === 'message' &&
-        previous.role === entry.role &&
-        previous.author?.name === entry.author?.name
-
       return (
         <MessageBubble
-          chat={{ face: room ? null : (props.face ?? { name: props.title }), room }}
-          continued={run}
+          chat={{ face: face ?? null, room }}
+          continued={continued}
           item={entry}
-          onLongPress={
-            entry.id === props.recallId && props.onRecall
-              ? props.onRecall
-              : props.onMessageLongPress
-          }
-          renderText={props.renderMessageText}
-          showAuthor={room && entry.role !== 'user' && !run}
+          onLongPress={onLongPress}
+          renderText={renderText}
+          showAuthor={room && entry.role !== 'user' && !continued}
         />
       )
     }
   }
-}
+})
 
 function MessageBubble({
   chat,
@@ -832,6 +999,7 @@ const styles = StyleSheet.create({
     paddingRight: 14
   },
   titleText: { flexShrink: 1 },
+  flash: { borderRadius: 16 },
   computerDot: {
     borderRadius: 5,
     borderWidth: 1.5,

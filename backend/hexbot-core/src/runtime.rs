@@ -29,6 +29,8 @@ mod attachments;
 mod delegation;
 #[path = "runtime_identity.rs"]
 mod identity;
+#[path = "runtime_passwords.rs"]
+mod password_tool;
 #[path = "runtime_plugins.rs"]
 mod plugin_tool;
 #[path = "runtime_primary.rs"]
@@ -1394,6 +1396,9 @@ impl Runtime {
             tools.push(crate::dreaming::tool_descriptor());
         }
         tools.extend(crate::native_tools::descriptors(&self.home, bot)?);
+        if password_tool::offered(&tools, own && restricted.is_none(), overrides) {
+            tools.push(password_tool::descriptor());
+        }
         let primary = crate::catalog::primary_bot(&self.home, owner)?.as_deref() == Some(bot);
         // The primary bot looks after the others from its own sections only.
         if own && restricted.is_none() && overrides.is_none() && primary {
@@ -2343,6 +2348,14 @@ impl Runtime {
             settled = json!({"choice":choice});
             if request["method"] == "confirm" {
                 json!({"confirmed":choice!="deny"})
+            } else if request["approval_payload"]["form"].is_object() && choice != "deny" {
+                // The sign-in card: what was typed goes to the waiting tool
+                // only, never to an event, a log or the conversation.
+                let typed = |key: &str| p[key].as_str().filter(|v| v.len() <= 4096);
+                let password = typed("password")
+                    .filter(|v| !v.is_empty())
+                    .ok_or_else(|| Error::new(4202, "Enter the password."))?;
+                json!({"value": json!({"username": typed("username").unwrap_or(""), "password": password}).to_string()})
             } else {
                 json!({"value":choice})
             }
@@ -3525,9 +3538,15 @@ impl Runtime {
     }
     /// With `always`, asks even in Bypass.
     async fn ask_approval(&self, s: &Live, params: Value, always: bool) -> Result<bool> {
+        Ok(self.ask_native(s, params, always).await?.is_some())
+    }
+    /// Shows a daemon card and waits: None when the owner says no or the
+    /// card goes, otherwise the answer. A card with a `form` (the sign-in
+    /// card) answers with what was typed, as JSON, and is never stored.
+    async fn ask_native(&self, s: &Live, params: Value, always: bool) -> Result<Option<String>> {
         let settings = self.session_settings(s)?;
         if settings["approvalMode"] == "off" && !always {
-            return Ok(true);
+            return Ok(Some("once".into()));
         }
         if settings["canAsk"] == false {
             return Err(Error::new(
@@ -3541,13 +3560,18 @@ impl Runtime {
         if let Some(reason) = params["reason"].as_str() {
             payload["reason"] = json!(reason);
         }
+        if params["form"].is_object() {
+            payload["form"] = params["form"].clone();
+            // The card's own fields are the whole request; nothing else to show.
+            payload["args"] = json!({"tool": params["tool"]});
+        }
         payload["request_id"] = json!(id);
         payload["choices"] = json!(["once", "deny"]);
         {
             let _gate = s.event_gate.lock().unwrap();
             let mut state = s.state.lock().unwrap();
             if state.dialogs_cancelled() {
-                return Ok(false);
+                return Ok(None);
             }
             state.native_approvals.insert(id.clone(), sender);
             state.pending.insert(
@@ -3561,7 +3585,7 @@ impl Runtime {
         }
         let answer = receiver.await.unwrap_or_else(|_| "deny".into());
         s.state.lock().unwrap().pending.remove(&id);
-        Ok(answer != "deny")
+        Ok((answer != "deny").then_some(answer))
     }
     async fn one_shot(
         &self,
@@ -4577,6 +4601,7 @@ impl Runtime {
                 self.primary_tool(s, name, args).await
             }
             plugin_tool::NAME => self.plugins_tool(s, args).await,
+            password_tool::NAME => self.passwords_tool(s, args).await,
             "self_soul" | "hexbot_soul" => {
                 let path = self.home.join("profiles").join(&s.bot).join("SOUL.md");
                 if let Some(text) = args["text"].as_str() {
@@ -5727,7 +5752,7 @@ fn tool_context(name: &str, args: &Value) -> String {
         "message_bot" => "to",
         "hexbot_show_html" => "title",
         "hexbot_bots" | "hexbot_rooms" | "hexbot_jobs" | "hexbot_settings" | "hexbot_heartbeat"
-        | "hexbot_plugins" | "computer_use" => "action",
+        | "hexbot_plugins" | "hexbot_passwords" | "computer_use" => "action",
         "hexbot_notify" => "message",
         "hexbot_connector_read" => "path",
         name if name.starts_with("mcp__") => args
@@ -6886,48 +6911,6 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
         );
         assert!(s.tools.iter().any(|t| t["name"] == "hexbot_show_html"));
         runtime.shutdown().await;
-    }
-}
-
-#[cfg(test)]
-mod code_environment_tests {
-    use super::*;
-    #[tokio::test]
-    async fn python_child_does_not_receive_connector_credentials() {
-        let home = tempfile::tempdir().unwrap();
-        db::migrate(home.path()).unwrap();
-        db::open(home.path())
-            .unwrap()
-            .execute_batch(
-                "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);INSERT INTO bots(name,owner_id,workdir) VALUES('owl','alice','/tmp');INSERT INTO sections(id,bot,owner_id) VALUES('first','owl','alice');",
-            )
-            .unwrap();
-        common::atomic_write(
-            &home.path().join("profiles/owl/config.yaml"),
-            b"tools:\n  enabled_toolsets: [code_execution]\n",
-        )
-        .unwrap();
-        common::atomic_write(
-            &home.path().join(".env"),
-            b"OPENAI_API_KEY=provider-secret\nCUSTOM_CONNECTOR_VALUE=connector-secret\n",
-        )
-        .unwrap();
-        let result = crate::native_tools::call(
-            home.path(),
-            "alice",
-            "owl",
-            "first",
-            "execute_code",
-            &json!({
-                "code": "import os\nprint(os.environ.get('OPENAI_API_KEY'))\nprint(os.environ.get('CUSTOM_CONNECTOR_VALUE'))"
-            }),
-        )
-        .await
-        .unwrap();
-        crate::native_tools::close_session(home.path(), "first").await;
-        assert!(!result.to_string().contains("provider-secret"));
-        assert!(!result.to_string().contains("connector-secret"));
-        assert!(result["output"].as_str().unwrap().contains("None"));
     }
 }
 

@@ -7,7 +7,7 @@ import {
   Outlet,
   RouterProvider
 } from '@tanstack/react-router'
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 import { routeEvent } from '../../lib/events'
 import { setActiveRpc } from '../../lib/rpc'
@@ -300,4 +300,95 @@ it('takes back a refused message alone, keeping the replies after it', async () 
   expect(screen.queryByTestId('stopped-card')).toBeNull()
   expect(screen.getByText('A late reply')).toBeVisible()
   expect(call.mock.calls.some(([method]) => method === 'session.recall')).toBe(false)
+})
+
+it('still shows a recalled refused message after leaving the chat and coming back', async () => {
+  await mount()
+  fireEvent.change(field(), { target: { value: 'Too soon' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await screen.findByTestId('stopped-card')
+  await stop()
+  fireEvent.click(recallButton()!)
+  await waitFor(() => expect(field()).toHaveValue('Too soon'))
+  cleanup()
+  await mount()
+  expect(field()).toHaveValue('Too soon')
+})
+
+it('never ties a failed upload to the message before it', async () => {
+  rows.push({ role: 'user', row_id: 'user-1', text: 'Read my plan', input_id: 'first' })
+  await mount()
+  await stop('Provider stopped')
+  // A new message's upload fails before its bubble exists.
+  await act(async () => useTranscripts.getState().requestFailed('chat', 'Upload refused'))
+
+  const upload = screen
+    .getAllByTestId('stopped-card')
+    .find(card => card.textContent?.includes('Upload refused'))!
+
+  expect(within(upload).queryByRole('button', { name: 'Retry' })).toBeNull()
+  expect(upload).not.toHaveTextContent('Not sent')
+  expect(call.mock.calls.some(([method]) => method === 'session.recall')).toBe(false)
+})
+
+it('retries a failed message from history in place, after a reload', async () => {
+  rows.push({ role: 'user', row_id: 'user-1', text: 'Read my plan', input_id: 'first' })
+  await mount()
+  await stop('Provider stopped')
+
+  const bubble = screen.getByTestId('user-message')
+  fireEvent.click(within(bubble).getByRole('button', { name: 'Retry sending' }))
+  await waitFor(() => expect(call).toHaveBeenCalledWith('prompt.submit', expect.anything()))
+
+  const recalled = call.mock.calls.find(([method]) => method === 'session.recall')![1]
+  expect(recalled).toMatchObject({ session_id: 'chat', input_id: 'first' })
+  const submitted = call.mock.calls.find(([method]) => method === 'prompt.submit')![1]
+  expect(submitted).toMatchObject({ text: 'Read my plan', attachments: [] })
+  expect(submitted.input_id).not.toBe('first')
+  expect(screen.getAllByTestId('user-message')).toHaveLength(1)
+  expect(screen.queryByTestId('stopped-card')).toBeNull()
+  expect(rows.filter(row => row.role === 'user')).toHaveLength(1)
+  // The composer stays as it was: nothing comes back to edit.
+  expect(field()).toHaveValue('')
+})
+
+describe('the bot’s Stopped state under your last message', () => {
+  const stopped = (sectionId: string) =>
+    act(() =>
+      useBots.setState({
+        byName: {
+          owl: {
+            ...owl,
+            status: 'stopped',
+            status_detail: {
+              action: { kind: 'retry' },
+              in_chat: true,
+              section_id: sectionId,
+              since: Date.now() / 1000,
+              text: 'The requested model is not supported.'
+            }
+          } as unknown as Bot
+        }
+      })
+    )
+
+  it('reads as your message not sent when it is about this chat', async () => {
+    rows.push({ role: 'user', row_id: 'user-1', text: 'Read my plan', input_id: 'first' })
+    await mount()
+    stopped('chat')
+    const card = await screen.findByTestId('stopped-card')
+    expect(card).toHaveTextContent('Not sent')
+    const bubble = screen.getByTestId('user-message')
+    expect(within(bubble).getByRole('button', { name: 'Retry sending' })).toBeVisible()
+  })
+
+  it('stays its own card when a dream stopped, not your message', async () => {
+    rows.push({ role: 'user', row_id: 'user-1', text: 'Read my plan', input_id: 'first' })
+    await mount()
+    stopped('dream-1')
+    const card = await screen.findByTestId('stopped-card')
+    expect(card).not.toHaveTextContent('Not sent')
+    const bubble = screen.getByTestId('user-message')
+    expect(bubble.querySelector('.text-danger')).toBeNull()
+  })
 })

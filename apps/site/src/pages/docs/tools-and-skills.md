@@ -4,48 +4,45 @@ title: Tools, plugins, and skills
 description: Configure local tools, connectors, MCP servers, and skills for your Hexbot bots.
 ---
 
-Tools let a bot act on the daemon computer. Plugins are everything else a bot can use: connectors reach services Hexbot supports, MCP servers reach anything else, and skills tell a bot how to carry out particular work. Changed tools and plugins apply from your next message in the bot's chat; that one reply costs more than usual because it cannot reuse the provider's prompt cache.
+Tools let a bot act in its workspace and on its own computer. Plugins are everything else a bot can use: connectors reach services Hexbot supports, MCP servers reach anything else, and skills tell a bot how to carry out particular work. Changed tools and plugins apply from your next message in the bot's chat; that one reply costs more than usual because it cannot reuse the provider's prompt cache.
 
 ## Plugins
 
-Open Settings, Plugins to see every connector, MCP server, skill, and built-in tool that needs a program (Computer use, Browser, Code execution) on one page. Open a plugin to choose the bots that get it, set it up, test it, or remove it. To work through one bot's plugins, choose the bot at the top of the page: each plugin then shows a switch for that bot. A plugin that isn't set up can be taken from bots but not given to them until it is. Bot settings, Connectors and Skills show the same plugins for one bot.
+Open Settings, Plugins. It has three tabs: **Connectors**, **MCP servers** and **Skills**, each with its own search. Every plugin has an icon; skills you or a bot write share one. Open a plugin to choose the bots that get it, set it up, test it, or remove it. To work through one bot's plugins, choose the bot at the top of the page: each plugin then shows a switch for that bot. A plugin that isn't set up can be taken from bots but not given to them until it is. Bot settings, Connectors and Skills show the same plugins for one bot.
 
 ## Local tools
 
-Open Bot settings, Tools. Each switch controls one capability:
+Open Bot settings, Tools. Each switch controls one capability. Computer use isn't here: every bot has it, and it is in Settings, Manuals.
 
 | Tool | What it does |
 | --- | --- |
 | Terminal | Runs shell commands on the daemon computer. |
 | Files | Reads, writes, and searches files. |
-| Code execution | Runs Python code for data work and checks. |
-| Browser | Navigates and interacts with a configured browser. |
-| Computer use | Lets the bot work on your bots' shared computer, a Linux desktop it clicks and types in, which you can watch and take over. |
 | Vision | Reads images you attach. |
 | Voice | Speaks replies with the built-in voice; premium voice uses a connector. |
 | Message other bots | Asks a named teammate for help privately. |
 | Delegate | Hands a subtask to an isolated subagent. |
 | Scheduling | Creates and manages reminders and recurring jobs. |
 
-Tools execute where the daemon runs, even when you use the client app on another computer. A tool that needs something the daemon computer doesn't have is hidden from this list and from the bot until it's set up: code execution needs Python, browser needs a browser driver or a CDP address, computer use needs [Cua](https://cua.ai) and Docker, vision needs a key or endpoint for its vision model, and voice needs edge-tts or a voice provider key. Adding or removing a provider key refreshes tool availability in connected apps. A hidden tool that was switched on is switched off the next time you save the bot's tools. Full and Headless install Python for code execution and the voice tools. Neither installs Poppler: to render PDF pages, install it on the daemon computer (`brew install poppler` or `sudo apt install poppler-utils`).
+Tools execute where the daemon runs, even when you use the client app on another computer. A tool that needs something the daemon computer doesn't have is hidden from this list and from the bot until it's set up: computer use needs [Cua](https://cua.ai) and Docker, vision needs a key or endpoint for its vision model, and voice needs edge-tts or a voice provider key. Adding or removing a provider key refreshes tool availability in connected apps. A hidden tool that was switched on is switched off the next time you save the bot's tools. Full and Headless install Python for the voice tools. Neither installs Poppler: to render PDF pages, install it on the daemon computer (`brew install poppler` or `sudo apt install poppler-utils`).
 
 ### Your bots' computer
 
-Your bots share one computer: a Cua sandbox, a Linux desktop with a browser and a terminal, running in Docker on the daemon computer. It is made the first time a bot with Computer use needs it, and it is separate from your computer and from the bots' workspaces. Install Cua there with `uv tool install cua` and start Docker; the first start downloads the computer, a few GB.
+Your bots share one computer of their own: a Cua sandbox, a Linux desktop with a browser and a terminal, running in Docker on the daemon computer. Every bot has it. Bots run code, install the programs a job needs, browse and use apps there, so nothing they install lands on the daemon computer. It is made the first time a bot needs it, and it is separate from your computer and from the bots' workspaces. Settings, Manuals, Computer use shows whether it is on, turns it on or off, resets it and sets its size. Install Cua there with `uv tool install cua` and start Docker; the first start downloads the computer, a few GB.
 
-Open the side panel's Computer tab to watch the screen live; on the phone, tap the computer button at the top of a bot's chat. Each bot that works on it has a cursor with its face, which moves to where it clicks and types, and the line under the screen says who is doing what. Bots take turns one action at a time. If something goes wrong, choose **Take control**: the screen opens large and takes your clicks and keys, and the bots wait until you choose **Give back**. The tab's menu restarts the computer, turns it off, or resets it to a fresh one. It also sets the screen's quality on this device: **Auto**, the default, streams as sharp and smooth as your connection allows and drops to no less than 720p at 30 fps when it is slow; or hold 1080p or 720p at 60 or 30 fps. The phone has the same choice on the computer card. The screen plays only over a secure connection: through Hex Connect, or in Hexbot on the daemon computer. A phone or app paired at a plain `http://` address on your network says so instead of showing it. Bot settings, Tools sets its size (small, medium or large); a new size applies after Reset. Without the app, `hexbot computer` shows it, and `on`, `off`, `restart`, `reset`, `give-back` and `size` change it.
+Open the side panel's Computer tab to watch the screen live; on the phone, tap the computer button at the top of a bot's chat. Each bot that works on it has a cursor with its face, which moves to where it clicks and types, and the line under the screen says who is doing what. Bots take turns one action at a time. If something goes wrong, choose **Take control**: the screen opens large and takes your clicks and keys, and the bots wait until you choose **Give back**. The tab's menu restarts the computer, turns it off, or resets it to a fresh one. It also sets the screen's quality on this device: **Auto**, the default, streams as sharp and smooth as your connection allows and drops to no less than 720p at 30 fps when it is slow; or hold 1080p or 720p at 60 or 30 fps. The phone has the same choice on the computer card. The screen plays only over a secure connection: through Hex Connect, or in Hexbot on the daemon computer. A phone or app paired at a plain `http://` address on your network says so instead of showing it. Settings, Manuals, Computer use sets its size (small, medium or large); a new size applies after Reset. Without the app, `hexbot computer` shows it, and `on`, `off`, `restart`, `reset`, `give-back` and `size` change it.
 
 The **Working directory** is the bot's workspace. Choose a project folder outside `~/.hexbot`; the daemon refuses its own data directory as a workspace. [Approvals](/docs/approvals/) explains sandbox access, network requests, and credential protection.
 
 ## Connect outside services
 
-Connectors are the services Hexbot supports: web search, cloud browser, image and video generation, premium voice, Notion, Home Assistant, and others. The [tool catalog](/tools/) lists the capabilities.
+Connectors are the services Hexbot supports: web search, image and video generation, premium voice, Notion, Home Assistant, and others. The [tool catalog](/tools/) lists the capabilities.
 
 You set up a connector in Settings, Plugins, or in Bot settings, Connectors, by choosing its provider and entering the requested credentials. Each bot has its own on/off switch. A connector must be ready and enabled for that bot before its tools appear in the bot's chat.
 
 **Connected** means an authenticated probe answered. **Key saved** means Hexbot stored the key but has not verified it with a live probe. Use the connector's test action if a service stops working, and check its reported error before replacing credentials.
 
-Your model provider and your connectors may bill separately. A model subscription does not include an image service, browser session, or premium voice account.
+Your model provider and your connectors may bill separately. A model subscription does not include an image service or premium voice account.
 
 ## Add an MCP server
 

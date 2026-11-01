@@ -2,6 +2,7 @@ import { JsonRpcGatewayError } from '@hermes/shared'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
 
+import * as avatar from '../../components/ui/avatar'
 import { authorizeCache, resetDeviceCacheForTests, writeCache } from '../../lib/device-cache'
 import { restoreRoster } from '../../lib/roster-cache'
 import { setActiveRpc } from '../../lib/rpc'
@@ -354,7 +355,11 @@ it('a slower read of a chat left since does not put the next one back to loading
   }))
   const view = render(<ConversationColumn />)
   await waitFor(() =>
-    expect(call.mock.calls.some(([method, input]) => method === 'hexbot.sections.open' && input.id === 'old')).toBe(true)
+    expect(
+      call.mock.calls.some(
+        ([method, input]) => method === 'hexbot.sections.open' && input.id === 'old'
+      )
+    ).toBe(true)
   )
   params = { bot: 'owl', section: 'next' }
   view.rerender(<ConversationColumn />)
@@ -364,4 +369,59 @@ it('a slower read of a chat left since does not put the next one back to loading
   })
   expect(screen.getByRole('button', { name: /What can you help me/i })).toBeInTheDocument()
   expect(screen.queryByRole('status', { name: "Opening Owl's chat" })).toBeNull()
+})
+
+it('renders only the streaming row on each delta, keeping finished rows and Markdown still', async () => {
+  call.mockImplementation((method: string, input: { id?: string }) =>
+    method === 'hexbot.sections.open'
+      ? Promise.resolve({
+          section: section('old', 'live-old'),
+          messages: Array.from({ length: 60 }, (_, i) => ({
+            row_id: `r${i}`,
+            role: 'assistant',
+            text: `Finished ${i}`
+          }))
+        })
+      : reply(method, input)
+  )
+  render(<ConversationColumn />)
+  await screen.findByText('Finished 59')
+  await waitFor(() => expect(useSections.getState().liveSessionId.old).toBe('live-old'))
+  const rowRender = vi.spyOn(avatar, 'useFaceColor')
+  act(() => useTranscripts.getState().messageStart('live-old'))
+  rowRender.mockClear()
+  const before = useTranscripts.getState().bySession['live-old']!.messages
+
+  for (let i = 0; i < 5; i++) {
+    act(() => useTranscripts.getState().messageDelta('live-old', 'token'))
+  }
+
+  expect(rowRender).toHaveBeenCalledTimes(5)
+  expect(useTranscripts.getState().bySession['live-old']!.messages[0]).toBe(before[0])
+  rowRender.mockRestore()
+})
+
+it('resets the rendered history window when navigating to another section', async () => {
+  call.mockImplementation((method: string, input: { id?: string }) =>
+    method === 'hexbot.sections.open'
+      ? Promise.resolve({
+          section: section(input.id!, `live-${input.id}`),
+          messages: Array.from({ length: 130 }, (_, i) => ({
+            row_id: `r${i}`,
+            role: 'assistant',
+            text: `${input.id} ${i}`
+          }))
+        })
+      : reply(method, input)
+  )
+  const view = render(<ConversationColumn />)
+  await screen.findByText('old 129')
+  expect(screen.getAllByTestId('bot-message')).toHaveLength(60)
+  fireEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }))
+  expect(screen.getAllByTestId('bot-message')).toHaveLength(120)
+  params = { bot: 'owl', section: 'new' }
+  useSections.setState({ byId: { new: section('new') } })
+  view.rerender(<ConversationColumn />)
+  await screen.findByText('new 129')
+  expect(screen.getAllByTestId('bot-message')).toHaveLength(60)
 })

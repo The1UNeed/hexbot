@@ -43,6 +43,11 @@ Run the installer again to update or repair, change options, or uninstall;
 direct downloads for macOS (Apple Silicon and Intel) and Linux (AppImage and
 deb). [Install](https://hexbot.app/docs/install/) has the details.
 
+**Hexbot for iPhone** is in beta on
+[TestFlight](https://testflight.apple.com/join/byKAKWMW). Like Client, it
+runs no bots itself: pair it with a daemon (Full or Headless) over LAN,
+Tailscale, or Hex Connect.
+
 Stable and Nightly share `~/.hexbot`. Back it up before opening a nightly.
 The app follows the track it was installed from; switch in Settings, Updates.
 `docs/channels.md` has the full matrix.
@@ -60,9 +65,9 @@ The app follows the track it was installed from; switch in Settings, Updates.
   it.
 - **Heartbeat.** Every 30 minutes each bot works through its own checklist,
   `HEARTBEAT.md`, and writes to you only when something needs you.
-- **A shared computer.** With Computer use on, bots click and type on one
-  Linux desktop (a [Cua](https://cua.ai) sandbox in Docker) that you can
-  watch live and take over.
+- **The bots' computer.** Every bot runs code, browses, and clicks and types
+  on one Linux desktop of their own (a [Cua](https://cua.ai) sandbox in
+  Docker) that you can watch live and take over.
 - **Visuals.** In its chat a bot can show a chart, table, diagram, or mockup
   as a live, sandboxed page above its reply.
 - **Faces.** Each bot's face moves with what it does and reacts to what
@@ -200,4 +205,9 @@ the current nightly and says stable is coming soon.
 ## License
 
 Hexbot's own source code is Apache-2.0, except where a file or directory
-states otherwise. See `LICENSE` and `NOTICE`. 
+states otherwise. See `LICENSE` and `NOTICE`.
+The licenses of the third-party software each package includes are written by
+`scripts/desktop/third-party-notices.mjs`: `THIRD_PARTY_NOTICES` beside
+`LICENSE` in the app, the daemon runtime and the windowed installer,
+`hexbot-install --license`, Settings, About, Licenses in the app, and
+Settings, Licenses on mobile. 

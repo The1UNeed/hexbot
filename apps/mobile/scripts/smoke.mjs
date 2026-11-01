@@ -87,6 +87,11 @@ const model = createServer(async (req, res) => {
             }
           : !toolAnswered && prompt.includes('Ask for approval')
             ? { name: 'write', args: { path: 'mobile-approval.txt', content: 'approved' } }
+            : !toolAnswered && prompt.includes('Sign in to the school site')
+              ? {
+                  name: 'hexbot_passwords',
+                  args: { action: 'ask', title: 'Northfield School', url: 'https://school.example/login' }
+                }
             : !toolAnswered && prompt.startsWith('Read the other app attachment')
               ? { name: 'read', args: { path: retainedUploadPath } }
               : !toolAnswered && prompt.startsWith('# Heartbeat')
@@ -111,6 +116,8 @@ const model = createServer(async (req, res) => {
                 ? 'The mobile attachment reached Pi.'
                 : prompt.includes('Ask for approval')
                   ? 'The mobile approval reached Pi.'
+                  : prompt.includes('Sign in to the school site')
+                    ? 'The school sign-in is saved.'
                   : 'Your daemon received this from mobile. The connection is working.'
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
     const frame = (delta, finish_reason = null) =>
@@ -181,6 +188,8 @@ try {
   const env = {
     ...process.env,
     HEXBOT_HOME: home,
+    // The vault key stays in the temporary home, not the login keychain.
+    HEXBOT_PASSWORD_KEY_STORE: 'file',
     HEXBOT_PI_EXECUTABLE: piPath,
     HEXBOT_WEB_DEV_URL: appUrl
   }
@@ -527,23 +536,52 @@ try {
   assert.equal(await readFile(path.join(workspace, 'mobile-approval.txt'), 'utf8'), 'approved')
   await expect(page.locator('[data-testid^="chat-tool"]')).toHaveCount(0)
   await shot('chat-approved')
+  // With Computer use, the bot asks for a sign-in on a card. What is typed
+  // there is saved in Passwords and never reaches the model.
+  await writeFile(
+    path.join(home, 'profiles/owl/config.yaml'),
+    `model:\n  provider: lmstudio\n  default: mobile-test\n  base_url: ${modelBase}\n  api_key: test-key\ntools:\n  enabled_toolsets: [file]\ncomputer_use:\n  command: ${process.execPath}\napproval_mode: manual\n`
+  )
+  await page.getByTestId('chat-input').fill('Sign in to the school site')
+  await page.getByTestId('chat-send').click()
+  const signIn = page.locator('[data-testid^="sign-in-"][data-testid$="-password"]')
+  await expect(signIn).toBeVisible({ timeout: 30000 })
+  await expect(page.getByText('Sign in to Northfield School', { exact: true })).toBeVisible()
+  await page.locator('[data-testid^="sign-in-"][data-testid$="-username"]').fill('alex')
+  await signIn.fill('mobile-secret-42')
+  await page.screenshot({ path: path.join(artifacts, 'sign-in-card.png') })
+  await page.locator('[data-testid^="sign-in-"][data-testid$="-submit"]').click()
+  await expect(page.getByText('The school sign-in is saved.', { exact: true })).toBeVisible({
+    timeout: 30000
+  })
+  const saved = (await rpc('hexbot.passwords.list')).logins
+  assert.deepEqual(
+    saved.map(login => [login.title, login.site, login.username, login.bots]),
+    [['Northfield School', 'school.example', 'alex', null]]
+  )
+  assert.doesNotMatch(JSON.stringify(modelRequests), /mobile-secret-42/)
+  await shot('chat-signed-in')
   await page.getByTestId('chat-settings').click()
-  await expect(page.getByTestId('field-persona')).toBeVisible()
+  await expect(page.getByTestId('fingerprint-soul')).toBeVisible()
   await settle()
   await shot('profile')
   await page.getByTestId('action-delete-bot').scrollIntoViewIfNeeded()
   await shot('profile-setup')
-  await page.getByTestId('field-persona').fill('You are Owl. Give short, clear answers.')
+  // The soul opens from its card, formatted; Edit shows its Markdown.
+  await page.getByTestId('fingerprint-soul').click()
+  await expect(page.getByTestId('document-read')).toContainText('Keep replies short.')
+  await page.getByTestId('document-mode').getByText('Edit').click()
+  await page.getByTestId('document-source').fill('You are Owl. Give short, clear answers.')
   await page.getByTestId('management-sheet-action').click()
   await expect
     .poll(async () => (await rpc('hexbot.bots.get', { name: 'owl' })).bot.persona)
     .toBe('You are Owl. Give short, clear answers.')
-  await expect(page.getByTestId('management-sheet')).not.toBeVisible()
-  await page.getByTestId('chat-settings').click()
+  await expect(page.getByTestId('fingerprint-soul')).toBeVisible()
   await page.getByTestId('field-title').fill('Unsaved role on my phone')
-  await page.getByTestId('manage-memory').click()
-  await page.getByTestId('field-memory_md').fill('The user prefers jasmine tea.')
-  await expect(page.getByTestId('field-memory_md')).toHaveValue('The user prefers jasmine tea.')
+  await page.getByTestId('fingerprint-memory').click()
+  await page.getByTestId('document-mode').getByText('Edit').click()
+  await page.getByTestId('document-source').fill('The user prefers jasmine tea.')
+  await expect(page.getByTestId('document-source')).toHaveValue('The user prefers jasmine tea.')
   await shot('bot-memory')
   await page.getByTestId('management-sheet-action').click()
   await expect
@@ -551,7 +589,7 @@ try {
     .toBe('The user prefers jasmine tea.')
   assert.equal((await rpc('hexbot.memory.bot.get', { bot: 'fox' })).memory_md, '')
   // Saving a card opened from the profile returns to the profile.
-  await expect(page.getByTestId('field-persona')).toBeVisible()
+  await expect(page.getByTestId('fingerprint-memory')).toBeVisible()
   await expect(page.getByTestId('field-title')).toHaveValue('Unsaved role on my phone')
   await page.getByTestId('manage-tools').click()
   await expect(page.getByTestId('tool-files-row')).toBeVisible()
@@ -638,6 +676,7 @@ try {
     'settings',
     'providers',
     'plugins',
+    'passwords',
     'activity',
     'usage',
     'network',
@@ -659,6 +698,17 @@ try {
       await expect(page.getByTestId('management-sheet')).not.toBeVisible()
       await page.getByTestId('daemon-settings').click()
       await expect(page.getByTestId('management-loading')).not.toBeVisible()
+    }
+    if (area === 'passwords') {
+      // The saved sign-in opens, and its password shows only when asked.
+      await page.locator('[data-testid^="password-"]').first().click()
+      await expect(page.getByTestId('management-loading')).not.toBeVisible({ timeout: 30000 })
+      await expect(page.getByTestId('field-username')).toHaveValue('alex')
+      await page.getByTestId('action-show-password').click()
+      await expect(page.getByText('mobile-secret-42', { exact: true })).toBeVisible()
+      await settle()
+      await shot('password')
+      await page.getByTestId('management-sheet-back').click()
     }
     if (area === 'plugins') {
       // One plugin card chooses the bots that get it.

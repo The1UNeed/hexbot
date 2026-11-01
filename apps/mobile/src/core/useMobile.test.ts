@@ -750,3 +750,57 @@ describe('recall and closing an error in a bot chat', () => {
     expect(state.request.mock.calls.some(([m]) => m === 'hexbot.bots.clear_status')).toBe(false)
   })
 })
+
+
+describe('mobile history critical path', () => {
+  it.each([true, false])('uses sections.open busy=%s without session.status or a read-receipt wait', async busy => {
+    const hook = await connected()
+    const read = deferred()
+    state.request.mockImplementation((method: string, params: Record<string, unknown> = {}) => {
+      if (method === 'hexbot.sections.open') return Promise.resolve({ section: section('owl-chat'), messages: [{ row_id: 'history', role: 'assistant', text: 'Loaded' }], busy })
+      if (method === 'hexbot.sections.mark_read') return read.promise
+      return reply(method, params)
+    })
+    await act(async () => { await hook.result.current.openSection(bot) })
+    expect(hook.result.current.chat.messages).toMatchObject([{ text: 'Loaded' }])
+    expect(hook.result.current.chat.busy).toBe(busy)
+    expect(hook.result.current.opening).toBe(false)
+    expect(hook.result.current.loading).toBe(false)
+    expect(state.request.mock.calls.some(([m]) => m === 'session.status')).toBe(false)
+    await act(async () => { read.reject(new Error('read receipt failed')); await Promise.resolve() })
+    expect(hook.result.current.error).toBeNull()
+  })
+
+  it('still reads session.status on older daemons and never publishes a stale snapshot', async () => {
+    const hook = await connected()
+    const status = pause('session.status')
+    let opening!: Promise<void>
+    await act(async () => { opening = hook.result.current.openSection(bot); await status.called })
+    await act(async () => { await hook.result.current.openRoom(room) })
+    await act(async () => { status.resolve({ status: 'working' }); await opening })
+    expect(hook.result.current.route?.kind).toBe('room')
+    expect(hook.result.current.chat.busy).toBe(false)
+    expect(state.request).not.toHaveBeenCalledWith('hexbot.sections.mark_read', { id: 'owl-chat' })
+  })
+
+  it('starts room metadata alongside its log and finishes opening before the read receipt', async () => {
+    const hook = await connected()
+    const log = pause('hexbot.rooms.log')
+    const read = deferred()
+    const request = state.request.getMockImplementation()!
+    state.request.mockImplementation((method: string, params: Record<string, unknown> = {}) =>
+      method === 'hexbot.rooms.mark_read' ? read.promise : request(method, params)
+    )
+    let opening!: Promise<void>
+    await act(async () => { opening = hook.result.current.openRoom(room); await log.called })
+    expect(state.request).toHaveBeenCalledWith('hexbot.rooms.get', { id: 'room' })
+    await act(async () => {
+      log.resolve({ events: [{ room_id: 'room', seq: 3, kind: 'message.user', actor_kind: 'human', actor_id: 'local', payload: { text: 'Room history' } }] })
+      await opening
+    })
+    expect(hook.result.current.chat.messages).toMatchObject([{ text: 'Room history' }])
+    expect(hook.result.current.loading).toBe(false)
+    await act(async () => { read.reject(new Error('receipt failed')); await Promise.resolve() })
+    expect(hook.result.current.error).toBeNull()
+  })
+})

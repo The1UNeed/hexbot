@@ -39,6 +39,10 @@ The app exchanges the one-time code for a device token. It stores that token loc
 
 Chat links in the app open in your default browser.
 
+## On iPhone
+
+Hexbot for iPhone is in beta. Install it from [TestFlight](https://testflight.apple.com/join/byKAKWMW), open it, and enter the daemon's address and the code from the daemon computer. The iPhone app is a client: your bots keep running on the daemon computer. See [Mobile app](/docs/mobile/#connect-locally).
+
 ## Revoke a device
 
 The daemon owner can view paired devices in settings and revoke any device. Revocation invalidates its token, closes its connection, and returns the app to the connect screen. Pair that device again if you want to restore access.

@@ -176,6 +176,7 @@ impl App {
         let start = common::now() * 1000.;
         let result = self.call_locked(owner, method, p).await;
         crate::diagnostics::get().rpc(method, start, &result);
+        crate::usage::rpc(&self.home, method, &result);
         result
     }
     async fn call_locked(self: &Arc<Self>, owner: &str, method: &str, p: &Value) -> Result<Value> {
@@ -485,6 +486,12 @@ impl App {
                 } else if let Some(result) = settings::call(&self.home, owner, method, p) {
                     result
                 } else if let Some(result) = rooms::call(&self.home, owner, method, p) {
+                    result
+                } else if let Some(result) = crate::passwords::call(&self.home, owner, method, p) {
+                    if result.is_ok() && crate::passwords::CHANGES.contains(&method) {
+                        self.events
+                            .emit(owner, None, "hexbot.passwords.changed", json!({}));
+                    }
                     result
                 } else if let Some(result) = crate::computers::call(&self.home, method, p).await {
                     result

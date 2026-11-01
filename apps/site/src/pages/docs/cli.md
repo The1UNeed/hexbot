@@ -31,6 +31,10 @@ Turn on "Allow other devices" only when another device needs access: `hexbot lan
 
 When started directly in an interactive terminal, the daemon prints a one-time browser sign-in link. It does not print one when supervised as a service or redirected to a log.
 
+## Usage data
+
+`hexbot usage-data on` lets the daemon share anonymous counts with the Hexbot team, and `hexbot usage-data off` stops it and deletes its install ID. It is off until you turn it on. [Usage data](/docs/usage-data/) lists every event.
+
 ## Check the daemon
 
 ```sh
@@ -134,11 +138,11 @@ The native CLI lists rooms; create rooms and manage their members in the app or 
 ## List and assign plugins
 
 ```sh
-hexbot plugins                                   # connectors, skills, capabilities and their bots
+hexbot plugins                                   # connectors, MCP servers, skills and their bots
 hexbot plugins list --bot writer                 # the same, with writer's switches
 hexbot plugins assign connector mcp:files writer researcher
 hexbot plugins assign skill himalaya writer
-hexbot plugins assign capability computer_use    # take it from every bot
+hexbot plugins assign package github writer      # a server and its skills together
 ```
 
 `assign` gives the plugin to exactly the bots you name and takes it from your other bots. A plugin that is not set up yet can be taken away but not given. Set up connectors in the app or browser first.

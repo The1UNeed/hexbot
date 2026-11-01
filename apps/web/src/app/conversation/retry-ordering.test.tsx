@@ -538,8 +538,14 @@ it.each([4002, 5200])(
     }
 
     expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible()
-    expect(cards().find(card => card.textContent?.includes('Late request failed'))).toBeVisible()
     expect(userRows()[0]!.submission?.status).toBe(code === 4002 ? 'rejected' : 'unknown')
+
+    if (code === 4002) {
+      expect(cards().find(card => card.textContent?.includes('Late request failed'))).toBeVisible()
+    } else {
+      // An unknown outcome is told on its bubble, not a card.
+      expect(screen.getByText('Not sent')).toHaveAttribute('title', 'Late request failed')
+    }
   }
 )
 
@@ -900,10 +906,18 @@ it('keeps a newer stream after an actual accepted retry loses its title-save res
   expect(after.streamingMessageId).toBe(before.streamingMessageId)
   expect(after.turnActive).toBe(true)
   expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible()
-  expect(retries()).toHaveLength(0)
-  expect(
-    cards().find(card => card.textContent?.includes('It may not have been sent'))
-  ).toBeVisible()
+  expect(screen.getByText('Not sent')).toBeVisible()
+  // Retry under the same key is refused as reserved: nothing is taken twice,
+  // the send stays unconfirmed until history shows it, and the newer stream
+  // is left alone.
+  fireEvent.click(retries()[0]!)
+  await waitFor(() => expect(submits()).toHaveLength(3))
+  await waitFor(() => expect(userRows()[0]!.submission?.status).toBe('unknown'))
+  expect(delivered).toHaveLength(1)
+  expect(useTranscripts.getState().bySession.chat!.streamingMessageId).toBe(
+    before.streamingMessageId
+  )
+  expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible()
 })
 
 const opens = () =>
@@ -1259,7 +1273,14 @@ it.each(['message.complete', 'error'] as const)(
     expect(bound[0]!.error).toBe(
       terminal === 'error' ? 'Bot process exited' : 'Provider overloaded'
     )
-    expect(transcript.messages.find(row => row.errorDetail?.incidentId)?.retryRow).toBeUndefined()
+
+    // An incident that lands just before its failed reply folds into the
+    // terminal's own card, so the failure shows once, Retry on that card.
+    if (terminal === 'message.complete') {
+      expect(transcript.messages.filter(row => row.error)).toEqual(bound)
+      expect(cards()).toHaveLength(1)
+    }
+
     expect(cards().filter(card => retryOn(card))).toHaveLength(1)
 
     fireEvent.click(retries()[0]!)
@@ -1684,7 +1705,7 @@ it.each(['accepted', 'unknown'] as const)(
       await waitFor(() => expect(delivered).toHaveLength(2))
       expect(submits()[1]).toMatchObject({ text: 'Read my plan', attachments: [] })
     } else {
-      expect(screen.getByText(/It may not have been sent/)).toBeVisible()
+      // History already holds the row, so it was sent: no Retry under it.
       expect(retries()).toHaveLength(0)
       expect(submits()).toHaveLength(1)
     }

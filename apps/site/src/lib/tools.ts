@@ -12,9 +12,7 @@ export const toolGroups: ToolGroup[] = [
     tools: [
       { name: 'Terminal', does: 'Run shell commands and long-running processes.', note: 'Risky commands ask first in Manual mode' },
       { name: 'Files', does: 'Read, write, edit, and search files.' },
-      { name: 'Computer use', does: 'Click and type on your bots\' shared Linux desktop, which you can watch live and take over.', note: 'Needs Cua and Docker on the daemon computer' },
-      { name: 'Code execution', does: 'Run Python for data work and quick checks.', note: 'Risky scripts ask first' },
-      { name: 'Browser', does: 'Drive a local Chrome window: open pages, click, fill forms.' },
+      { name: 'Computer use', does: "Work on the bots' own Linux computer: run code, browse in Chrome, click and type in its apps. Watch it live and take over.", note: 'Every bot has it. Needs Cua and Docker' },
       { name: 'Vision', does: 'Look at images and screenshots you attach.', note: 'Needs a model that can see' },
       { name: 'Voice', does: 'Speak replies aloud with the built-in voice.', note: 'Premium voices are a connector' },
     ],
@@ -55,7 +53,6 @@ export const toolGroups: ToolGroup[] = [
     summary: 'Opt in, with your own account. Set one up once in Settings, Plugins, then choose the bots that get it.',
     tools: [
       { name: 'Web search', does: 'Search the web and read pages.', note: 'Exa, Tavily, Brave, Firecrawl, Parallel, Keenable, or your own SearXNG' },
-      { name: 'Cloud browser', does: 'A hosted browser for sites that block a local one.', note: 'Browserbase or Browser Use' },
       { name: 'Image generation', does: 'Make and edit images.', note: 'FAL or Krea' },
       { name: 'Video generation', does: 'Generate short clips.', note: 'FAL' },
       { name: 'Voice', does: 'Speak replies aloud.', note: 'ElevenLabs, OpenAI, or Mistral' },

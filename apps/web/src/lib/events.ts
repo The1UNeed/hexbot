@@ -31,6 +31,7 @@ import { useComputer } from '../stores/computer'
 import { useConnectors } from '../stores/connectors'
 import { useHeartbeat } from '../stores/heartbeat'
 import { useMe } from '../stores/me'
+import { refreshPasswordsIfLoaded } from '../stores/passwords'
 import { refreshPluginsIfLoaded } from '../stores/plugins'
 import { useRooms } from '../stores/rooms'
 import { keepHistory, useSections } from '../stores/sections'
@@ -74,6 +75,7 @@ const defaultDeps: Required<EventRouterDeps> = {
     void useBots.getState().refresh()
     // A bot added or deleted elsewhere changes the bots each plugin can go to.
     refreshPluginsIfLoaded()
+    refreshPasswordsIfLoaded()
   },
   refreshConnectors: () => {
     void useConnectors.getState().refreshAll()
@@ -238,6 +240,11 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
       effects.refreshConnectors()
 
       return
+
+    case 'hexbot.passwords.changed':
+      refreshPasswordsIfLoaded()
+
+      return
     case 'hexbot.bots.incident': {
       const incident = (payload.incident ?? {}) as Record<string, unknown>
       const bot = typeof payload.bot === 'string' ? payload.bot : ''
@@ -308,9 +315,12 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
 
         const shown = (live && recalled && transcripts.bySession[live]?.messages) || []
 
+        // A message this client is sending again under a new key was taken
+        // back to go again: it stays.
         const message = shown.find(
           item =>
             item.role === 'user' &&
+            !(item.submission?.status === 'sending' && item.inputId !== recalled?.input_id) &&
             (item.id === recalled?.row_id ||
               (typeof recalled?.input_id === 'string' && item.inputId === recalled.input_id))
         )

@@ -148,7 +148,9 @@ describe('ProfilePanel', () => {
     render(<ProfilePanel />)
 
     fireEvent.click(screen.getByRole('tab', { name: 'Library' }))
-    expect(screen.getByText('Images and files you share with Scout show up here.')).toBeVisible()
+    expect(
+      screen.getByText('Visuals Scout draws and the images and files you share show up here.')
+    ).toBeVisible()
   })
 
   it("shows the bots' computer live, with each bot's cursor, and hands it over", async () => {

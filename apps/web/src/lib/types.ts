@@ -47,6 +47,40 @@ export interface ClarifyRequest {
   sessionId: string
 }
 
+/**
+ * The sign-in card's fields, on an approval a bot asks with
+ * `hexbot_passwords`. What the user types goes to the daemon with the answer
+ * and is saved in Passwords; the bot never sees it.
+ */
+export interface SignInForm {
+  kind: 'sign_in'
+  /** The host, such as app.schoology.com. */
+  site: string
+  title: string
+  /** True when it replaces the password of a login already saved. */
+  update?: boolean
+  url?: string
+  username?: string
+}
+
+/** A saved login in Settings, Passwords: never its password or code key. */
+export interface PasswordLogin {
+  /** The bots that may use it; null means every bot, including new ones. */
+  bots: null | string[]
+  has_code: boolean
+  has_password: boolean
+  id: string
+  notes: string
+  site: null | string
+  title: string
+  updated_at: null | number
+  url: string
+  username: string
+}
+
+/** Where the vault's key is kept; null before the first password. */
+export type PasswordKeyStore = 'file' | 'keychain' | 'locked' | 'secret_service' | null
+
 export interface ApprovalRequest {
   messageId?: string
   turnId?: string
@@ -55,6 +89,7 @@ export interface ApprovalRequest {
   decision?: ApprovalChoice
   /** The command or action, rendered in monospace. */
   command?: string
+  form?: SignInForm
   reason?: string
   receivedAt: number
   requestId: string
@@ -116,6 +151,8 @@ export interface Bot {
   name: string
   owner_id: string
   persona: string
+  /** When SOUL.md last changed, in Unix seconds; null before it exists. Older daemons leave it out. */
+  persona_updated_at?: null | number
   /** The one bot that looks after the others; it can't be deleted. Older daemons leave it out. */
   primary?: boolean
   provider: null | string
@@ -177,8 +214,6 @@ export type ReasoningEffort = 'high' | 'low' | 'max' | 'medium' | 'minimal' | 'o
 
 /** Keys of `Bot.tools`; each maps to one Hexbot toolset on the daemon. */
 export type BotTool =
-  | 'browser'
-  | 'code_execution'
   | 'computer_use'
   | 'delegate'
   | 'files'
@@ -293,16 +328,6 @@ export interface PluginServer {
 
 /** `hexbot.plugins.list`: each kind with the bots it is given to. */
 export interface PluginsList {
-  capabilities: {
-    bots: string[]
-    description: string
-    id: string
-    kind: 'capability'
-    name: string
-    ready: boolean
-    /** What setting it up takes, when it isn't. */
-    setup: null | string
-  }[]
   /** Connectors and MCP servers; a server also carries `server`. */
   connectors: (Connector & {
     bots: string[]
@@ -335,7 +360,7 @@ export interface PluginsList {
   })[]
 }
 
-export type PluginKind = 'capability' | 'connector' | 'package' | 'skill'
+export type PluginKind = 'connector' | 'package' | 'skill'
 
 /** One row of Settings, Plugins, whatever its kind. */
 export interface Plugin {
@@ -479,6 +504,12 @@ export interface Message {
    */
   parts?: string[]
   role: MessageRole
+  /**
+   * When it was sent, for showing the time: a bot's reply when it finished,
+   * from its last history row or its live completion. `createdAt` stays 0 on
+   * restored messages, which marks them as history.
+   */
+  sentAt?: number
   /** Set once `message.complete` arrives with a non-ok status. */
   status?: string
   streaming: boolean
@@ -598,6 +629,8 @@ export interface Settings {
   dream_time: string
   /** Every bot's heartbeat. Absent on daemons from before the heartbeat. */
   heartbeat_enabled?: boolean
+  /** Anonymous usage data from this daemon (docs/usage-data.md). Absent on older daemons. */
+  usage_data?: boolean
 }
 
 export interface HeartbeatRun {

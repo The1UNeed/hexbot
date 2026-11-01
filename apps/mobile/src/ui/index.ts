@@ -34,7 +34,7 @@ export {
   resolveFace
 } from './faces'
 export { Field, type FieldProps, SearchField, type SearchFieldProps } from './Field'
-export { formatAgo, formatDayDivider, formatListTime, formatNextRun } from './format'
+export { dividesChat, formatAgo, formatDayDivider, formatListTime, formatNextRun } from './format'
 export { Glass, glassMaterial, type GlassProps } from './Glass'
 export {
   ChoiceRow,

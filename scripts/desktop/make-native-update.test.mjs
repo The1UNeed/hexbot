@@ -39,7 +39,7 @@ test('release archives the signed app runtime on both macOS targets and the stag
   const script = step[1].replace(/^          /gm, '')
   const root = await mkdtemp(join(tmpdir(), 'hexbot-release-native-'))
   try {
-    for (const file of ['make-native-update.mjs', 'native-runtime.mjs', 'native-build.mjs']) {
+    for (const file of ['make-native-update.mjs', 'native-runtime.mjs', 'native-build.mjs', 'third-party-notices.mjs']) {
       await mkdir(join(root, 'scripts/desktop'), { recursive: true })
       await cp(new URL(file, import.meta.url), join(root, 'scripts/desktop', file))
     }

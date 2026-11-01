@@ -433,6 +433,19 @@ pub fn read_regular_text(path: &Path, limit: usize) -> Result<String> {
     String::from_utf8(read_regular(path, limit)?)
         .map_err(|_| Error::new(4202, "file is not UTF-8 text"))
 }
+/// When a file last changed, in Unix seconds; None while it does not exist.
+pub fn modified_at(path: &Path) -> Result<Option<f64>> {
+    match fs::metadata(path) {
+        Ok(meta) => Ok(Some(
+            meta.modified()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|error| Error::new(5200, error.to_string()))?
+                .as_secs_f64(),
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
 pub fn managed_python(home: &Path) -> std::path::PathBuf {
     let managed = home.join("bin/python3.11");
     if managed.is_file() {

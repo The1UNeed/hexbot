@@ -41,6 +41,7 @@ test('dev shares pinned search tool installs, refreshes receipts and puts them o
     assert.equal(env.HEXBOT_HOME, root)
     assert.equal(env.HEXBOT_EXECUTABLE, '/dev/hexbot')
     assert.equal(env.HEXBOT_PI_EXECUTABLE, join(root, 'runtime/hexbot-pi'))
+    assert.equal(env.HEXBOT_PASSWORD_KEY_STORE, 'file')
     assert.equal(env.PATH.split(delimiter)[0], join(root, 'bin'))
     assert.deepEqual(downloads, assets.map(asset => asset.url))
     await prepareDevRuntime(root, '/dev/hexbot', '/dev/pi', deps)

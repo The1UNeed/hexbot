@@ -262,6 +262,9 @@ route and composer checked before continuing.
 ## Mobile
 
 `pnpm mobile:check` runs the Expo app's TypeScript, lint, protocol and chat-state tests.
+It also fails when `apps/mobile/third-party-notices.json`, the licenses the app
+shows under Settings, Licenses, no longer matches the app's dependencies;
+`node scripts/desktop/third-party-notices.mjs mobile` rewrites it.
 Room regressions cover simultaneous turns, reconnect cleanup, failure and limit
 notices, and former members' names. File tests cover size checks before reads.
 `pnpm --filter @hexbot/mobile run export` bundles iOS, Android and web.

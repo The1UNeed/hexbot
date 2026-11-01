@@ -1,0 +1,8 @@
+{
+  "rg": "15.2.0",
+  "fd": "10.5.0",
+  "libraries": [
+    { "name": "PCRE2", "version": "10.45", "license": "BSD-3-Clause WITH PCRE2-exception", "source": "https://github.com/PCRE2Project/pcre2/tree/pcre2-10.45", "file": "pcre2.txt", "note": "Built into ripgrep through pcre2-sys, whose crate leaves out this licence." },
+    { "name": "musl", "version": "1.2.5", "license": "MIT", "source": "https://git.musl-libc.org/cgit/musl/tree/?h=v1.2.5", "file": "musl.txt", "note": "Linked into the Linux builds of ripgrep and fd." }
+  ]
+}

@@ -3,9 +3,11 @@ use hexbot_installer::{
 };
 use std::io::{self, IsTerminal, Write};
 
-// Hexbot's own license and notices, for a download that is only this binary.
+// Hexbot's own license and notices, for a download that is only this binary,
+// then the licenses of the crates it links (build.rs).
 const LICENSE: &[u8] = include_bytes!("../../../LICENSE");
 const NOTICE: &[u8] = include_bytes!("../../../NOTICE");
+const THIRD_PARTY_NOTICES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/THIRD_PARTY_NOTICES"));
 
 #[derive(Default)]
 struct Args {
@@ -52,6 +54,8 @@ fn parse_args() -> Result<Args> {
                 let written = stdout
                     .write_all(LICENSE)
                     .and_then(|()| stdout.write_all(NOTICE))
+                    .and_then(|()| stdout.write_all(b"\n"))
+                    .and_then(|()| stdout.write_all(THIRD_PARTY_NOTICES))
                     .and_then(|()| stdout.flush());
                 // A reader such as `head` may close the pipe early.
                 match written {
@@ -67,7 +71,7 @@ fn parse_args() -> Result<Args> {
             }
             "--help" | "-h" => {
                 println!(
-                    "Hexbot installer\n\nhexbot-install [--headless|--client|--full] [--stable|--nightly]\nhexbot-install --repair\nhexbot-install --uninstall [--remove-data]\n\n--yes      Accept changes and uninstall without prompting\n--json     Write machine-readable progress\n--license  Print Hexbot's LICENSE and NOTICE\n\nHEXBOT_UPDATE_URL overrides the update server. HEXBOT_TRACK sets the default track."
+                    "Hexbot installer\n\nhexbot-install [--headless|--client|--full] [--stable|--nightly]\nhexbot-install --repair\nhexbot-install --uninstall [--remove-data]\n\n--yes      Accept changes and uninstall without prompting\n--json     Write machine-readable progress\n--license  Print Hexbot's LICENSE, NOTICE and third-party notices\n\nHEXBOT_UPDATE_URL overrides the update server. HEXBOT_TRACK sets the default track."
                 );
                 std::process::exit(0);
             }

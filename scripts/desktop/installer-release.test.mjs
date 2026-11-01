@@ -29,13 +29,16 @@ test('windowed installer release step handles bundle names with spaces on every 
     const bundle = join(root, 'apps/installer/src-tauri/target', target, 'release/bundle', bundles, `Hexbot Installer.${extension}`)
     const substituted = script.replaceAll('${{ matrix.rust-target }}', target)
       .replaceAll('${{ matrix.app-suffix }}', suffix).replaceAll('${{ matrix.bundles }}', bundles)
-    const options = { cwd: root, env: { ...process.env, VERSION: version, BUNDLE_PATH: bundle, PATH: `${join(root, 'bin')}:${process.env.PATH}` } }
+    const options = { cwd: root, env: { ...process.env, VERSION: version, RUNNER_TEMP: '/runner temp', BUNDLE_PATH: bundle, PATH: `${join(root, 'bin')}:${process.env.PATH}` } }
     await run('bash', ['-c', substituted], options)
     assert.equal(await readFile(join(root, 'installer-artifacts', `HexbotInstaller-${version}-${suffix}`), 'utf8'), 'bundle')
     const args = JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8'))
     assert.deepEqual(args.slice(0, 5), ['--filter', './apps/installer', 'run', 'tauri', 'build'])
     assert.equal(args[args.indexOf('--target') + 1], target)
-    assert.deepEqual(JSON.parse(args[args.indexOf('--config') + 1]), { version })
+    // Tauri merges the config: the notices join LICENSE and NOTICE.
+    assert.deepEqual(JSON.parse(args[args.indexOf('--config') + 1]), {
+      version, bundle: { resources: { '/runner temp/installer-app-notices.txt': 'THIRD_PARTY_NOTICES' } }
+    })
     await writeFile(join(dirname(bundle), `Other.${extension}`), 'ambiguous')
     await assert.rejects(run('bash', ['-c', substituted], options), /Expected exactly one windowed installer bundle/)
   }
@@ -54,4 +57,13 @@ test('installer signing falls back to ad-hoc when the certificate password is mi
   })
   assert.match(stdout, /::notice::.*ad-hoc signed/)
   assert.equal(await readFile(envFile, 'utf8'), 'APPLE_SIGNING_IDENTITY=-\n')
+})
+
+test('release builds both installers with third-party notices', async () => {
+  const source = await readFile(new URL('../../.github/workflows/release.yml', import.meta.url), 'utf8')
+  const notices = source.match(/- name: Write the installers' third-party notices\n([\s\S]*?)(?=      - name:)/)?.[1]
+  assert.match(notices, /third-party-notices\.mjs installer --out "\$RUNNER_TEMP\/hexbot-install-notices\.txt"/)
+  assert.match(notices, /third-party-notices\.mjs installer-app --out "\$RUNNER_TEMP\/installer-app-notices\.txt"/)
+  const cli = source.match(/- name: Build the CLI installer\n([\s\S]*?)(?=      - name:)/)?.[1]
+  assert.match(cli, /HEXBOT_THIRD_PARTY_NOTICES="\$RUNNER_TEMP\/hexbot-install-notices\.txt" cargo build --release/)
 })

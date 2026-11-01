@@ -296,11 +296,30 @@ pub fn resolve(home: &Path, bot: Option<&str>) -> Result<Vec<Skill>> {
     resolve_unlocked(home, bot)
 }
 
+/// A roster shares discovery only for this read; grants and private skills
+/// are still resolved separately for every bot.
+pub(crate) fn resolve_for_bots<'a>(
+    home: &Path,
+    bots: impl IntoIterator<Item = &'a str>,
+) -> Result<Vec<Vec<Skill>>> {
+    let mut bots = bots.into_iter().peekable();
+    if bots.peek().is_none() {
+        return Ok(vec![]);
+    }
+    let _guard = read_lock()?;
+    let shared = discover_shared(home, &bundled_root())?;
+    bots.map(|bot| resolve_discovered(home, Some(bot), shared.clone()))
+        .collect()
+}
+
 // Caller holds either side of LOCK through discovery and any body reads.
 pub(crate) fn resolve_unlocked(home: &Path, bot: Option<&str>) -> Result<Vec<Skill>> {
     resolve_with(home, bot, &bundled_root())
 }
 fn resolve_with(home: &Path, bot: Option<&str>, bundled: &Path) -> Result<Vec<Skill>> {
+    resolve_discovered(home, bot, discover_shared(home, bundled)?)
+}
+fn discover_shared(home: &Path, bundled: &Path) -> Result<BTreeMap<String, Skill>> {
     let mut found = BTreeMap::new();
     discover(bundled, bundled, "bundled", &mut found)?;
     // A package's skills sit under its name, like a category of their own.
@@ -320,6 +339,13 @@ fn resolve_with(home: &Path, bot: Option<&str>, bundled: &Path) -> Result<Vec<Sk
     let library = home.join("skills");
     safe_path(home, &library)?;
     discover(&library, &library, "library", &mut found)?;
+    Ok(found)
+}
+fn resolve_discovered(
+    home: &Path,
+    bot: Option<&str>,
+    mut found: BTreeMap<String, Skill>,
+) -> Result<Vec<Skill>> {
     let (config, env) = if let Some(bot) = bot {
         let profile = catalog::profile(home, bot)?;
         let root = profile.join("skills");
@@ -889,6 +915,75 @@ mod tests {
         .unwrap();
         dir
     }
+    #[test]
+    fn roster_discovery_matches_individual_reads_and_refreshes_between_calls() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        let package = h.join("plugins/test-package");
+        put(&package.join("skills"), "work/packaged", "packaged");
+        put(&package.join("skills"), "work/overridden", "packaged");
+        fs::write(package.join("plugin.json"), "{}").unwrap();
+        put(&h.join("skills"), "work/overridden", "library");
+        put(
+            &h.join("profiles/owl/skills"),
+            "private/overridden",
+            "private",
+        );
+        put(
+            &h.join("profiles/owl/skills"),
+            "private/owl-only",
+            "owl only",
+        );
+        let needs_env = put(&h.join("skills"), "work/needs-env", "needs env");
+        fs::write(
+            needs_env.join("SKILL.md"),
+            "---\ndescription: Needs a profile credential.\nprerequisites:\n  env_vars: [HEXBOT_ROSTER_TEST_CREDENTIAL]\n---\nBody.\n",
+        )
+        .unwrap();
+        fs::write(
+            h.join("profiles/owl/.env"),
+            "HEXBOT_ROSTER_TEST_CREDENTIAL=fixture\n",
+        )
+        .unwrap();
+        set_enabled(h, Some("fox"), "packaged", false).unwrap();
+        set_enabled(h, None, "owl-only", false).unwrap();
+        let check = || {
+            let roster = resolve_for_bots(h, ["owl", "fox"]).unwrap();
+            for (bot, skills) in ["owl", "fox"].into_iter().zip(&roster) {
+                assert_eq!(
+                    serde_json::to_vec(skills).unwrap(),
+                    serde_json::to_vec(&resolve(h, Some(bot)).unwrap()).unwrap(),
+                    "{bot}"
+                );
+            }
+            roster
+        };
+        let roster = check();
+        let find =
+            |index: usize, name: &str| roster[index].iter().find(|s| s.name == name).unwrap();
+        assert_eq!(find(0, "overridden").source, "bot");
+        assert_eq!(find(1, "overridden").source, "library");
+        assert_eq!(find(0, "packaged").plugin.as_deref(), Some("test-package"));
+        assert!(find(0, "packaged").enabled);
+        assert!(!find(1, "packaged").enabled_for_bot);
+        assert!(find(0, "owl-only").disabled_globally);
+        assert!(!roster[1].iter().any(|s| s.name == "owl-only"));
+        assert!(find(0, "needs-env").ready);
+        assert!(!find(1, "needs-env").ready);
+        assert!(roster[0].iter().any(|s| s.source == "bundled"));
+        put(&h.join("skills"), "work/added-later", "new");
+        set_enabled(h, Some("fox"), "packaged", true).unwrap();
+        let refreshed = check();
+        assert!(refreshed[1].iter().any(|s| s.name == "added-later"));
+        assert!(
+            refreshed[1]
+                .iter()
+                .find(|s| s.name == "packaged")
+                .unwrap()
+                .enabled
+        );
+    }
+
     #[test]
     fn precedence_grants_and_private_visibility() {
         let home = tempfile::tempdir().unwrap();

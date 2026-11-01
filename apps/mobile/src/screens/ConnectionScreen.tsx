@@ -15,6 +15,7 @@ import {
   type IconName,
   radius,
   Screen,
+  SwitchRow,
   Text,
   useTheme
 } from '../ui'
@@ -43,6 +44,8 @@ export interface ConnectionScreenProps {
   initialAddress?: string
   /** Return to the daemon in use; leave out on first run. */
   onCancel?: () => void
+  /** First run asks about anonymous usage data once, off until turned on. */
+  usageData?: { on: boolean; onChange: (on: boolean) => void }
 }
 
 /** Five faces in a loose huddle above the name: the first thing a new user sees. */
@@ -69,7 +72,8 @@ export function ConnectionScreen({
   onOpenSaved,
   onPair,
   pending = null,
-  saved
+  saved,
+  usageData
 }: ConnectionScreenProps) {
   const theme = useTheme()
   const insets = useSafeAreaInsets()
@@ -356,6 +360,18 @@ export function ConnectionScreen({
               <Ionicons color={theme.faint} name="chevron-forward" size={18} />
             </Pressable>
           ) : null}
+
+          {usageData && !onCancel ? (
+            <View style={[styles.usage, { borderColor: theme.hairline }]}>
+              <SwitchRow
+                onValueChange={usageData.onChange}
+                subtitle="Daily counts and the app version, never what you write. Change it in Settings."
+                testID="connection-usage-data"
+                title="Share anonymous usage data"
+                value={usageData.on}
+              />
+            </View>
+          ) : null}
         </View>
       </ScrollView>
     </Screen>
@@ -454,5 +470,6 @@ const styles = StyleSheet.create({
     padding: 12
   },
   tiles: { flexDirection: 'row', gap: 8 },
+  usage: { borderRadius: radius.card, borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden' },
   wordmark: { color: '#ffffff', fontSize: 40, letterSpacing: -0.5, lineHeight: 46 }
 })

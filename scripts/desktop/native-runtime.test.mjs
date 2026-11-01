@@ -47,7 +47,9 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
     await writeFile(join(root, `backend/hexbot-core/target/${rustTarget(process.platform, process.arch)}/release/hexbot`), 'daemon')
     const node = join(root, 'node'); await writeFile(node, 'node')
     const calls = []
-    const result = await stageNativeRuntime({ repository: root, nodeExecutable: node, download: async url => ['rg', 'fd'].map(tool => toolAsset(tool, process.platform, process.arch)).find(asset => asset.url === url).sha256, run: async (command, args, options) => {
+    let noticed
+    const thirdParty = async options => { noticed = options; return 'third-party notices\n' }
+    const result = await stageNativeRuntime({ repository: root, nodeExecutable: node, notices: thirdParty, download: async url => ['rg', 'fd'].map(tool => toolAsset(tool, process.platform, process.arch)).find(asset => asset.url === url).sha256, run: async (command, args, options) => {
       calls.push({ command, args })
       if (command === 'tar') {
         const file = join(args[args.indexOf('-C') + 1], args.at(-1))
@@ -73,12 +75,18 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
     assert(calls.find(c => c.command === 'npm').args.includes('--ignore-scripts'))
     assert.deepEqual(calls.at(-1).args.slice(-1), ['--version'])
     for (const [file, bytes] of Object.entries(notices)) assert.deepEqual(await readFile(join(result.destination, file)), bytes)
+    // Third-party notices cover the Pi packages as installed and the target's crates.
+    assert.match(noticed.nodeModules, /\/pi\/node_modules$/)
+    assert.deepEqual(noticed.targets, [rustTarget(process.platform, process.arch)])
+    assert.equal(noticed.node.version, '22.20.0')
+    assert.equal(await readFile(join(result.destination, 'THIRD_PARTY_NOTICES'), 'utf8'), 'third-party notices\n')
     // Headless installs and daemon updates unpack this archive.
     const archive = join(root, 'native.tar.gz')
     await createNativeArchive(result.destination, archive)
     const unpacked = join(root, 'unpacked'); await mkdir(unpacked)
     await exec('tar', ['-xzf', archive, '-C', unpacked])
     for (const [file, bytes] of Object.entries(notices)) assert.deepEqual(await readFile(join(unpacked, file)), bytes)
+    assert.equal(await readFile(join(unpacked, 'THIRD_PARTY_NOTICES'), 'utf8'), 'third-party notices\n')
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 

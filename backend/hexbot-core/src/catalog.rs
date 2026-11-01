@@ -16,8 +16,6 @@ use std::{
 const TOOLS: &[(&str, &str)] = &[
     ("terminal", "terminal"),
     ("files", "file"),
-    ("code_execution", "code_execution"),
-    ("browser", "browser"),
     ("computer_use", "computer_use"),
     ("vision", "vision"),
     ("voice", "tts"),
@@ -25,6 +23,8 @@ const TOOLS: &[(&str, &str)] = &[
     ("delegate", "delegation"),
     ("scheduling", "cronjob"),
 ];
+/// Bot tools that ran on the daemon's computer; Computer use does their work.
+const RETIRED_TOOLS: &[&str] = &["code_execution", "browser"];
 /// The primary bot's handle. Only the primary bot may take it.
 pub const PRIMARY_NAME: &str = "hexbot";
 const PRIMARY_DISPLAY_NAME: &str = "HexBot";
@@ -1459,7 +1459,13 @@ fn status_reader(home: &Path) -> Result<StatusReader> {
     };
     Ok(StatusReader { conn, query })
 }
-fn shape_bot(home: &Path, caller: &str, status: &StatusReader, row: Value) -> Result<Value> {
+fn shape_bot(
+    home: &Path,
+    caller: &str,
+    status: &StatusReader,
+    row: Value,
+    skills: Vec<crate::skills::Skill>,
+) -> Result<Value> {
     let name = row["name"].as_str().unwrap_or("");
     let cfg = config(home, name)?;
     let sections = list_sections(home, caller, &json!({"bot":name,"include_archived":true}))?;
@@ -1554,7 +1560,8 @@ fn shape_bot(home: &Path, caller: &str, status: &StatusReader, row: Value) -> Re
         "description": row["description"].as_str().unwrap_or(""),
         "primary": row["is_primary"].as_i64() == Some(1),
         "persona": read_text(home, &profile(home, name)?.join("SOUL.md"))?,
-        "skills": crate::skills::resolve(home, Some(name))?.into_iter().filter(|s| s.enabled).map(|s| s.name).collect::<Vec<_>>(),
+        "persona_updated_at": crate::common::modified_at(&profile(home, name)?.join("SOUL.md"))?,
+        "skills": skills.into_iter().filter(|s| s.enabled).map(|s| s.name).collect::<Vec<_>>(),
         "tools": tools,
         "available_tools": available.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
         "dream_enabled": row["dream_enabled"].as_i64().unwrap_or(1) != 0,
@@ -1581,7 +1588,13 @@ fn shape_bot(home: &Path, caller: &str, status: &StatusReader, row: Value) -> Re
 }
 pub fn bot(home: &Path, caller: &str, name: &str) -> Result<Value> {
     let row = bot_row(home, caller, name)?;
-    shape_bot(home, caller, &status_reader(home)?, row)
+    shape_bot(
+        home,
+        caller,
+        &status_reader(home)?,
+        row,
+        crate::skills::resolve(home, Some(name))?,
+    )
 }
 fn validate_patch(home: &Path, p: &Value) -> Result<()> {
     let object = p
@@ -1622,7 +1635,11 @@ fn validate_patch(home: &Path, p: &Value) -> Result<()> {
                     let item = item
                         .as_str()
                         .ok_or_else(|| Error::new(4202, format!("{key} must contain strings")))?;
-                    if key == "tools" && !TOOLS.iter().any(|(k, _)| *k == item) {
+                    // Clients from before Computer use took them over still send these.
+                    if key == "tools"
+                        && !TOOLS.iter().any(|(k, _)| *k == item)
+                        && !RETIRED_TOOLS.contains(&item)
+                    {
                         return Err(Error::new(4202, format!("unknown tool: {item}")));
                     }
                 }
@@ -1824,7 +1841,6 @@ fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
                     "terminal",
                     "file",
                     "web",
-                    "browser",
                     "vision",
                     "image_gen",
                     "tts",
@@ -1845,7 +1861,9 @@ fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
         // never keeps one switched on that settings no longer shows.
         let effective = common::merged_config_with(home, &cfg)?;
         let missing = crate::native_tools::not_set_up_with_config(home, name, &effective)?;
-        enabled.retain(|v| !TOOLS.iter().any(|(_, t)| v == t));
+        enabled.retain(|v| {
+            !TOOLS.iter().any(|(_, t)| v == t) && !RETIRED_TOOLS.iter().any(|t| v == t)
+        });
         for item in tools {
             if let Some((_, t)) = TOOLS.iter().find(|(k, _)| item == k)
                 && !missing.contains(t)
@@ -2467,6 +2485,7 @@ fn finish_bot_delete_locked(home: &Path, name: &str) -> Result<()> {
     // config cleanup must be retried before another bot can use this name.
     crate::connectors::forget_bot(home, name)?;
     crate::plugins::forget_bot(home, name)?;
+    crate::passwords::forget_bot(home, name)?;
     let targets = journal["targets"]
         .as_array()
         .ok_or_else(|| Error::new(5200, "Invalid bot deletion journal"))?;
@@ -2638,14 +2657,20 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
         "hexbot.bots.list" => {
             user(home, caller)?;
             let status = status_reader(home)?;
-            let bots = rows(
+            let bot_rows = rows(
                 &status.conn,
                 "SELECT * FROM bots WHERE owner_id=? ORDER BY is_primary DESC,last_activity_at DESC,name ASC",
                 &[&caller],
-            )?
-            .into_iter()
-            .map(|r| shape_bot(home, caller, &status, r))
-            .collect::<Result<Vec<_>>>()?;
+            )?;
+            let skills = crate::skills::resolve_for_bots(
+                home,
+                bot_rows.iter().map(|r| r["name"].as_str().unwrap_or("")),
+            )?;
+            let bots = bot_rows
+                .into_iter()
+                .zip(skills)
+                .map(|(r, skills)| shape_bot(home, caller, &status, r, skills))
+                .collect::<Result<Vec<_>>>()?;
             Ok(json!({"bots":bots}))
         }
         "hexbot.bots.clear_status" => {

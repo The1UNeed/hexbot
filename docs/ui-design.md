@@ -123,8 +123,9 @@ the roster slides in as a drawer.
 - Header: a window-drag strip (padded for the macOS traffic lights) with one
   row: the search pill and a round glass "+" menu (New bot, New room). No app name. The selected row is a white card on the canvas.
 - List: bots and rooms in one list, ordered by last activity. A bot row is
-  its face (40px), name, optional label, and a status dot on the face (see
-  "Status colours"). No times and no message preview. A pencil replaces the
+  its face (40px), name, the latest message in its chat (yours or the bot's,
+  as one plain line; the bot's label until the chat has one), and a status dot
+  on the face (see "Status colours"). No times. A pencil replaces the
   status tag while the bot's chat holds an unsent draft. A room row is the room's cluster
   (one face, or up to four in a 2x2 grid), name, latest message, and the
   same status dot. Both rows end in a status tag while it applies: a purple
@@ -162,7 +163,8 @@ the roster slides in as a drawer.
   hover. The same holds for history from before this change. Markdown body with code blocks (a fenced block
   is a block even without a language; its copy button shows on hover),
   tables, images. Time separators ("Today 9:13 PM") between days and after
-  20 quiet minutes.
+  20 quiet minutes, after a reload too; a bot's reply counts from when it
+  finished. Rooms and the mobile app separate the same way.
 - Live status: from the moment a turn starts until the whole turn is done,
   a line sits at its foot, under the messages the bot has finished: the
   bot's face, in the mood of its work, and "General is working" in muted
@@ -202,13 +204,25 @@ the roster slides in as a drawer.
   reload: the daemon replays a pending question when the section opens,
   and answered cards come back from the section's history, each under the
   message that asked it.
-- Errors: a Stopped card with the message and a retry action; one card per
+- Sending (web and desktop): the field clears at once and your bubble greys
+  with a small spinner beside it until the daemon takes it. After 15 s with
+  no answer, or when the send is refused or the bot's turn fails on it, the
+  bubble gets a red ! beside it and "Not sent · Retry" under it, the reason
+  on hover; the ! retries too. An unknown outcome retries under the same
+  input key, so a copy that did arrive is never taken twice, and stays Not
+  sent until the stored row shows it. A turn that failed on your latest
+  message in a bot's chat retries in place: Recall takes the message and the
+  failed turn back and the same bubble sends again, so one copy stays. Until
+  the bot takes a message its saved draft keeps it, so a reload never loses
+  one that did not send. Rooms show the same bubble for sends. The phone
+  keeps its error banner.
+- Errors: a failure that is not about your message, such as a dream's, is a
+  small Stopped card with a red dot and a retry action; one card per
   failure, even when the gateway and the daemon both report it. Retry requires
   durable input ownership. Older daemons offer no Retry for failed sends or
   answers; failed sends retain their draft for manual resend.
   A failed send or upload leaves any running answer, tools and Stop available,
-  including with an older daemon. An unknown send outcome offers no Retry;
-  the draft stays available while the user checks whether the message arrived.
+  including with an older daemon.
   Every Stopped card has a close button (×) in its header. Closing one built
   from the bot's Stopped state for this chat clears that state
   (`hexbot.bots.clear_status`), so it does not come back. The phone's error
@@ -256,13 +270,38 @@ notice. Working and idle draw the plain pill.
   label as bare fields saved on blur ("Add a label" when empty), and while
   the bot works, a blue status chip saying what it is doing in plain words
   that opens Computer.
-- Three tabs in a segmented control:
+- Top right, Search and Close. Close sits alone as the panel opens, then
+  splits once into the two (420 ms, `.hex-split`; none with reduced
+  motion). Search swaps the face and tabs for a search box and results
+  from the whole chat, grouped as Messages, Files (shared, or written by
+  the bot, with their path), Visuals, and Soul and memory. Every word must
+  match; case and accents do not matter; matches are marked. A message or
+  file scrolls the chat to its message and tints it for 1.6 s, widening
+  the shown history if it is older; under 1100 px the panel closes first.
+  A visual opens beside the chat; soul and memory open their editor.
+  Escape clears the box, then leaves search. Search belongs to the
+  conversation and resets when you leave it. A room has no profile panel:
+  a Search button beside Room settings opens the same search in the panel
+  slot, over the room's messages and files. The pure search is
+  `lib/search.ts`, which the mobile app shares.
+- Four tabs in a segmented control:
   - Details: the description, a card with Model (opens Bot settings, Model)
     and the "Notify me" switch (native notifications when this bot stops or
     needs you), a card of doors into Bot settings (Soul, Memory, Tools,
     Connectors, Skills), and "Bot settings" for the tab last used.
-  - Library: images (a three-column grid) and files shared in the section,
-    newest first.
+  - Library: the visuals the bot drew (each opens beside the chat), then
+    images (a three-column grid) and files shared in the section, newest
+    first.
+  - Fingerprint: the bot's soul and memory as two cards, red and blue,
+    each with the day the file last changed (`persona_updated_at` on the
+    bot, `updated_at` from `hexbot.memory.bot.get`), and a door to Notes
+    and dreaming. A card opens its file full window: an "About this file"
+    note that is not part of it, the file formatted and edited in place
+    (bold, italic, H1 to H3, bulleted and numbered lists), saved 0.8 s after
+    typing stops and on close, Escape, or Cmd+S; opening alone saves
+    nothing. Memory shows its length against its cap. The menu has View
+    source, Copy, Download (Markdown) and Download as PDF (the system print
+    dialog). An untouched editor follows the bot's own changes.
   - Computer: the bots' shared computer on top, when the bot has Computer
     use: its live screen, watch-only, with a still blue ring while a bot
     acts there or the user has it, and one line under it saying what is

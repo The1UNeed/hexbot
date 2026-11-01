@@ -24,6 +24,7 @@ pub mod native_external_tools;
 pub mod native_product_tools;
 pub mod native_tools;
 pub mod osutil;
+pub mod passwords;
 pub mod pi;
 pub mod plugins;
 pub mod provider_acp;
@@ -41,6 +42,7 @@ pub mod system_service;
 pub mod team;
 mod update_path;
 pub mod update_signature;
+pub mod usage;
 
 pub fn version() -> String {
     serde_json::from_str::<serde_json::Value>(include_str!("../../../apps/desktop/package.json"))

@@ -32,102 +32,29 @@ async fn call(home: &Path, name: &str, args: Value) -> hexbot_core::Result<Value
     native_tools::call(home, "local", "tester", "conversation", name, &args).await
 }
 #[tokio::test]
-async fn persistent_python_state_errors_reset_and_authorization() {
-    let h = home(json!({"tools":{"enabled_toolsets":["code_execution"]}}));
-    assert_eq!(
-        call(
-            h.path(),
-            "execute_code",
-            json!({"code":"answer=40\nprint(answer)"})
-        )
-        .await
-        .unwrap()["output"],
-        "40\n"
-    );
-    assert_eq!(
-        call(
-            h.path(),
-            "execute_code",
-            json!({"code":"answer+=2\nprint(answer)"})
-        )
-        .await
-        .unwrap()["output"],
-        "42\n"
-    );
-    let failure = call(
-        h.path(),
-        "execute_code",
-        json!({"code":"raise ValueError('expected failure')"}),
+async fn code_and_the_browser_never_run_on_the_daemons_computer() {
+    // A bot from before Computer use took them over still lists them.
+    let h = home(json!({"browser":{"command":"/bin/echo"}}));
+    common::write_config(
+        &h.path().join("profiles/tester"),
+        &json!({"tools":{"enabled_toolsets":["code_execution","browser"]}}),
     )
-    .await
     .unwrap();
-    assert_eq!(failure["success"], false);
-    assert!(
-        failure["stderr"]
-            .as_str()
-            .unwrap()
-            .contains("expected failure")
-    );
-    assert_eq!(
-        call(
-            h.path(),
-            "execute_code",
-            json!({"code":"print('answer' in globals())","reset":true})
-        )
-        .await
-        .unwrap()["output"],
-        "False\n"
-    );
-    assert_eq!(
-        call(h.path(), "web_search", json!({"query":"unused"}))
-            .await
-            .unwrap_err()
-            .code,
-        4302
-    );
-    assert_eq!(
-        native_tools::call(
-            h.path(),
-            "stranger",
-            "tester",
-            "conversation",
-            "execute_code",
-            &json!({"code":"print('not allowed')"})
-        )
-        .await
-        .unwrap_err()
-        .code,
-        4302
-    );
-    native_tools::close_session(h.path(), "conversation").await;
-}
-#[tokio::test]
-async fn python_timeout_resets_worker_and_output_is_bounded() {
-    let h = home(
-        json!({"tools":{"enabled_toolsets":["code_execution"]},"code_execution":{"timeout":1}}),
-    );
-    assert!(
-        call(h.path(), "execute_code", json!({"code":"while True: pass"}))
-            .await
-            .unwrap_err()
-            .message
-            .contains("timed out")
-    );
-    let result = call(
-        h.path(),
-        "execute_code",
-        json!({"code":"print('x'*500000)"}),
-    )
-    .await
-    .unwrap();
-    assert!(result["output"].as_str().unwrap().len() < 101000);
-    assert_eq!(
-        std::fs::read_to_string(result["output_path"].as_str().unwrap())
-            .unwrap()
-            .len(),
-        500001
-    );
-    native_tools::close_session(h.path(), "conversation").await;
+    let offered = native_tools::descriptors(h.path(), "tester").unwrap();
+    assert!(!offered.iter().any(|d| {
+        let name = d["name"].as_str().unwrap_or_default();
+        name == "execute_code" || name.starts_with("browser_")
+    }));
+    for (name, args) in [
+        ("execute_code", json!({"code":"print(1)"})),
+        ("browser_navigate", json!({"url":"https://example.com"})),
+    ] {
+        assert_eq!(
+            call(h.path(), name, args).await.unwrap_err().code,
+            4302,
+            "{name}"
+        );
+    }
 }
 type Requests = Arc<Mutex<Vec<(HeaderMap, Value)>>>;
 async fn service(
@@ -188,67 +115,6 @@ async fn configured_web_search_extract_headers_payload_and_artifacts() {
     assert_eq!(saved[0].1, json!({"query":"test phrase","max_results":7}));
     assert_eq!(saved[1].1["format"], "markdown");
     server.abort();
-}
-#[tokio::test]
-async fn cdp_attaches_to_target_and_routes_response() {
-    use futures_util::{SinkExt, StreamExt};
-    use tokio_tungstenite::tungstenite::Message;
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.unwrap();
-        let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-        let message = socket.next().await.unwrap().unwrap();
-        let attach: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
-        assert_eq!(attach["method"], "Target.attachToTarget");
-        assert_eq!(attach["params"]["targetId"], "tab-id");
-        socket
-            .send(Message::Text(
-                json!({"id":attach["id"],"result":{"sessionId":"session-id"}})
-                    .to_string()
-                    .into(),
-            ))
-            .await
-            .unwrap();
-        let message = socket.next().await.unwrap().unwrap();
-        let command: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
-        assert_eq!(command["sessionId"], "session-id");
-        assert_eq!(command["method"], "Page.getLayoutMetrics");
-        socket
-            .send(Message::Text(
-                json!({"method":"Page.frameNavigated","params":{}})
-                    .to_string()
-                    .into(),
-            ))
-            .await
-            .unwrap();
-        socket
-            .send(Message::Text(
-                json!({"id":command["id"],"result":{"result":{"value":42}}})
-                    .to_string()
-                    .into(),
-            ))
-            .await
-            .unwrap();
-    });
-    let h = home(
-        json!({"tools":{"enabled_toolsets":["browser"]},"browser":{"cdp_url":format!("ws://{address}")}}),
-    );
-    assert!(
-        native_tools::descriptors(h.path(), "tester")
-            .unwrap()
-            .iter()
-            .any(|t| t["name"] == "browser_cdp")
-    );
-    let result = call(
-        h.path(),
-        "browser_cdp",
-        json!({"method":"Page.getLayoutMetrics","params":{},"target_id":"tab-id"}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(result["result"]["value"], 42);
-    server.await.unwrap();
 }
 #[tokio::test]
 async fn vision_and_speech_execute_configured_http_services() {
@@ -334,40 +200,6 @@ async fn speech_checks_the_requested_provider_instead_of_the_default() {
 }
 
 #[tokio::test]
-async fn python_hermes_tools_calls_conversation_dispatcher_and_propagates_denial() {
-    let h = home(json!({"tools":{"enabled_toolsets":["code_execution"]}}));
-    let requests = Arc::new(Mutex::new(Vec::<(String, Value)>::new()));
-    let recorded = requests.clone();
-    native_tools::register_dispatcher(
-        h.path(),
-        "conversation",
-        Arc::new(move |name, args| {
-            let recorded = recorded.clone();
-            Box::pin(async move {
-                recorded.lock().unwrap().push((name.clone(), args.clone()));
-                if name == "web_search" {
-                    Ok(json!({"results":[args["query"].clone()]}))
-                } else {
-                    Err(hexbot_core::Error::new(4302, "tool denied"))
-                }
-            })
-        }),
-    );
-    let result=call(h.path(),"execute_code",json!({"code":"from hermes_tools import web_search\nresult=web_search('meaning of life')\nprint(result['results'][0])"})).await.unwrap();
-    assert_eq!(result["output"], "meaning of life\n");
-    assert_eq!(requests.lock().unwrap()[0].0, "web_search");
-    let denied = call(
-        h.path(),
-        "execute_code",
-        json!({"code":"from hermes_tools import forbidden\nforbidden()"}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(denied["success"], false);
-    assert!(denied["stderr"].as_str().unwrap().contains("tool denied"));
-    native_tools::close_session(h.path(), "conversation").await;
-}
-#[tokio::test]
 async fn vision_crop_and_openai_image_edit_send_actual_image_bytes() {
     use base64::Engine;
     let image = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
@@ -446,81 +278,6 @@ fn script(home: &Path, name: &str, code: &str) -> std::path::PathBuf {
     std::fs::write(&path, format!("#!/usr/bin/env python3\n{code}")).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
     path
-}
-#[cfg(unix)]
-#[tokio::test]
-async fn cloud_browser_creates_uses_and_releases_session() {
-    let requests: Requests = Default::default();
-    let created = requests.clone();
-    let released = requests.clone();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let router = Router::new()
-        .route(
-            "/v1/sessions",
-            post(move |headers: HeaderMap, Json(body): Json<Value>| {
-                let recorded = created.clone();
-                async move {
-                    recorded.lock().unwrap().push((headers, body));
-                    Json(
-                        json!({"id":"remote-browser","connectUrl":"wss://browser.invalid/session"}),
-                    )
-                }
-            }),
-        )
-        .route(
-            "/v1/sessions/remote-browser",
-            post(move |headers: HeaderMap, Json(body): Json<Value>| {
-                let recorded = released.clone();
-                async move {
-                    recorded.lock().unwrap().push((headers, body));
-                    Json(json!({"ok":true}))
-                }
-            }),
-        );
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let h = home(
-        json!({"tools":{"enabled_toolsets":["browser"]},"browser":{"cloud_provider":"browserbase"}}),
-    );
-    let cli = script(
-        h.path(),
-        "agent-browser-test",
-        r#"import json,sys,pathlib
-with pathlib.Path(__file__).with_suffix('.log').open('a') as f: f.write(json.dumps(sys.argv[1:])+'\n')
-print(json.dumps({'success':True,'data':{'snapshot':'[e1] Button','refs':{'e1':'Button'}}}))
-"#,
-    );
-    let mut config = common::read_config(h.path()).unwrap();
-    config["browser"]["command"] = json!(cli);
-    common::write_config(h.path(), &config).unwrap();
-    std::fs::write(h.path().join(".env"),format!("BROWSERBASE_API_KEY=browser-key\nBROWSERBASE_PROJECT_ID=project\nBROWSERBASE_BASE_URL=http://{address}\n")).unwrap();
-    assert!(
-        call(
-            h.path(),
-            "browser_navigate",
-            json!({"url":format!("http://{address}/")})
-        )
-        .await
-        .is_err()
-    );
-    let result = call(h.path(), "browser_snapshot", json!({})).await.unwrap();
-    assert_eq!(result["data"]["snapshot"], "[e1] Button");
-    assert_eq!(
-        call(h.path(), "browser_click", json!({"ref":"e1"}))
-            .await
-            .unwrap_err()
-            .code,
-        4302
-    );
-    native_tools::close_session(h.path(), "conversation").await;
-    let saved = requests.lock().unwrap();
-    assert_eq!(saved.len(), 2);
-    assert_eq!(saved[0].0["x-bb-api-key"], "browser-key");
-    assert_eq!(saved[0].1["projectId"], "project");
-    assert_eq!(saved[1].1["status"], "REQUEST_RELEASE");
-    let log = std::fs::read_to_string(cli.with_extension("log")).unwrap_or_default();
-    assert!(log.contains("wss://browser.invalid/session"));
-    server.abort();
 }
 /// A stand-in for the `cua` CLI: a sandbox recorded in a file, `cua mcp`
 /// answering the computer tools, and a viewer link to `upstream.txt`.
@@ -1203,55 +960,6 @@ async fn keenable_mistral_and_krea_use_selected_vendor_contracts() {
     server.abort();
 }
 #[tokio::test]
-async fn closing_conversation_interrupts_running_kernel() {
-    let h = home(
-        json!({"tools":{"enabled_toolsets":["code_execution"]},"code_execution":{"timeout":120}}),
-    );
-    let started = Arc::new(tokio::sync::Notify::new());
-    let signal = started.clone();
-    native_tools::register_dispatcher(
-        h.path(),
-        "conversation",
-        Arc::new(move |_, _| {
-            let signal = signal.clone();
-            Box::pin(async move {
-                signal.notify_one();
-                Ok(json!({"ok":true}))
-            })
-        }),
-    );
-    let path = h.path().to_owned();
-    let task = tokio::spawn(async move {
-        call(
-            &path,
-            "execute_code",
-            json!({"code":"from hermes_tools import ready\nready()\nwhile True: pass"}),
-        )
-        .await
-    });
-    tokio::time::timeout(std::time::Duration::from_secs(5), started.notified())
-        .await
-        .unwrap();
-    tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        native_tools::close_session(h.path(), "conversation"),
-    )
-    .await
-    .unwrap();
-    assert_eq!(task.await.unwrap().unwrap_err().code, 5201);
-    assert_eq!(
-        call(
-            h.path(),
-            "execute_code",
-            json!({"code":"print('recovered')"})
-        )
-        .await
-        .unwrap()["output"],
-        "recovered\n"
-    );
-    native_tools::close_session(h.path(), "conversation").await;
-}
-#[tokio::test]
 async fn fal_edits_route_to_model_edit_endpoint_and_translate_references() {
     use base64::Engine;
     let records: Requests = Default::default();
@@ -1350,35 +1058,4 @@ fn tools_are_offered_only_once_set_up() {
     let missing = native_tools::not_set_up(h.path(), "tester").unwrap();
     assert!(!missing.contains(&"tts") && !missing.contains(&"vision"));
     assert!(offered("text_to_speech") && offered("vision_analyze"));
-}
-#[cfg(unix)]
-#[tokio::test]
-async fn browser_use_backend_is_not_set_up() {
-    let h =
-        home(json!({"tools":{"enabled_toolsets":["browser"]},"browser":{"backend":"browser-use"}}));
-    std::fs::create_dir_all(h.path().join("bin")).unwrap();
-    script(
-        &h.path().join("bin"),
-        "uvx",
-        "import sys,json,os\nprint(json.dumps({'args':sys.argv[1:],'code':sys.stdin.read(),'session':os.environ['BU_NAME']}))",
-    );
-    // browser_exec needs network interception that was never ported, so the
-    // browser-use backend leaves the browser toolset without a working tool.
-    assert!(
-        !native_tools::descriptors(h.path(), "tester")
-            .unwrap()
-            .iter()
-            .any(|d| d["name"] == "browser_exec")
-    );
-    assert!(
-        native_tools::not_set_up(h.path(), "tester")
-            .unwrap()
-            .contains(&"browser")
-    );
-    let error = call(h.path(), "browser_exec", json!({"code":"print('test')"}))
-        .await
-        .unwrap_err();
-    assert_eq!(error.code, 4302);
-    assert!(error.message.contains("not set up"));
-    native_tools::close_session(h.path(), "conversation").await;
 }

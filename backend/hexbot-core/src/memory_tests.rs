@@ -30,7 +30,7 @@ fn reads_existing_python_files_and_writes_compatible_locations() {
     );
     assert_eq!(
         store.get_bot("alice", "owl").unwrap(),
-        json!({"memory_md":"", "cap":2200})
+        json!({"memory_md":"", "cap":2200, "updated_at":null})
     );
     let user = store.set_user("alice", "Tea and 中文").unwrap();
     assert!(user["updated_at"].as_f64().unwrap() > 0.0);
@@ -38,7 +38,8 @@ fn reads_existing_python_files_and_writes_compatible_locations() {
         fs::read_to_string(home.path().join("users/alice/user.md")).unwrap(),
         "Tea and 中文"
     );
-    store.set_bot("alice", "owl", "A note").unwrap();
+    let saved = store.set_bot("alice", "owl", "A note").unwrap();
+    assert!(saved["updated_at"].as_f64().unwrap() > 0.0);
     let memory = home.path().join("profiles/owl/memories/MEMORY.md");
     assert_eq!(fs::read_to_string(&memory).unwrap(), "A note");
     fs::write(memory, "Written by Python").unwrap();

@@ -7,6 +7,8 @@ import { tanstackRouter } from '@tanstack/router-plugin/vite'
 import react from '@vitejs/plugin-react'
 import { defineConfig, type Plugin } from 'vite'
 
+import { webNotices } from '../../scripts/desktop/third-party-notices.mjs'
+
 // `pnpm dev` (scripts/dev/run.mjs) serves the bundle from Vite and proxies the
 // loopback daemon behind the same origin, so the browser signs in with the
 // daemon's cookie flow exactly as it does on a daemon-served page.
@@ -33,9 +35,19 @@ const gzipAssets = (): Plugin => ({
   name: 'hexbot-gzip-assets'
 })
 
+// The licenses of the npm packages bundled into the scripts, served beside
+// them and shown in Settings, About, Licenses.
+const thirdPartyNotices = (): Plugin => ({
+  apply: 'build',
+  async generateBundle() {
+    this.emitFile({ fileName: 'third-party-notices.txt', source: await webNotices(), type: 'asset' })
+  },
+  name: 'hexbot-third-party-notices'
+})
+
 export default defineConfig({
   base: '/',
-  plugins: [tanstackRouter({ target: 'react' }), react(), tailwindcss(), gzipAssets()],
+  plugins: [tanstackRouter({ target: 'react' }), react(), tailwindcss(), gzipAssets(), thirdPartyNotices()],
   server: {
     // As the daemon does: frames load only from this origin, so a bot's
     // visual cannot navigate its frame to another site. The app in dev also

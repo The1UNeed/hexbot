@@ -83,6 +83,14 @@ export interface ApprovalRequestView {
   choices: ApprovalChoice[]
   /** Set once answered; the card stays and shows the answer. */
   decision?: ApprovalChoice | null
+  /** A sign-in card: the user types a login the bot never sees. */
+  form?: import('../../../web/src/lib/types').SignInForm
+}
+
+/** What the user typed into a sign-in card. */
+export interface SignInAnswer {
+  username: string
+  password: string
 }
 
 export interface AttachmentView {

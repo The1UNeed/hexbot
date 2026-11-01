@@ -2,7 +2,7 @@
 import Base from '../layouts/Base.astro'
 import Logo from '../components/Logo.astro'
 import DownloadList from '../components/DownloadList.astro'
-import { loadDownloads, releasesUrl } from '../lib/downloads'
+import { loadDownloads, releasesUrl, testflightUrl } from '../lib/downloads'
 import { loadInstallers } from '../lib/installers'
 import { downloadChoices } from '../lib/downloadChoices'
 import { loadNightlies, nightlyRows } from '../lib/nightlies'
@@ -44,7 +44,7 @@ const steps = [
   ]],
 ] as const
 ---
-<Base title="Download" description="Download the Hexbot nightly for Mac or Linux. In alpha, free and open source.">
+<Base title="Download" description="Download the Hexbot nightly for Mac or Linux, or join the iPhone beta on TestFlight. In alpha, free and open source.">
   <section class="mx-auto max-w-[720px] px-5 pt-14 text-center sm:px-8 lg:pt-20">
     <Logo tile size={112} class="mx-auto" />
     <p class="mt-8"><span class="eyebrow"><span class="nightly-dot" aria-hidden="true"></span>Alpha: very early development</span></p>
@@ -84,6 +84,7 @@ const steps = [
         <a class="button" href={`${releasesUrl}?q=nightly`}>Builds on GitHub</a>
       </div>
     )}
+    <p id="dl-iphone" class="mt-6 text-[15px] text-mute">On iPhone? <a class="text-ink underline decoration-line underline-offset-4 hover:text-accent" href={testflightUrl}>Join the beta on TestFlight</a> and pair it with Hexbot on your computer.</p>
   </section>
 
   {first && (
