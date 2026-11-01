@@ -2273,6 +2273,12 @@ function BotConversation() {
       const undo = transcriptActions().resendInPlace(liveId, input.id, newInputId())
       transcriptActions().inputSubmitting(liveId, input.id, [])
 
+      // Recall takes the stored copy away: the saved draft holds the message
+      // until the bot takes it again, so a reload in between keeps it.
+      if (!draftsActions().byId[sectionId]?.trim()) {
+        sentDrafts.set(input.id, { files: [], section: sectionId, text: input.text })
+        draftsActions().set(sectionId, input.text)
+      }
       void (async () => {
         try {
           await sessionRecall(liveId, {
@@ -2280,6 +2286,8 @@ function BotConversation() {
             rowId: source ? undefined : input.id
           })
         } catch (error) {
+          // History still has it.
+          settleDraft(input.id)
           undo()
           transcriptActions().requestFailed(
             liveId,
@@ -2294,18 +2302,29 @@ function BotConversation() {
           .bySession[liveId]?.messages.find(message => message.id === input.id)
 
         if (pending && canPrompt()) {
-          void submitOrReopen(liveId, sectionId, input.text, {
+          await submitOrReopen(liveId, sectionId, input.text, {
             current: canPrompt,
             files: [],
             pending,
             uploads: []
           })
 
+          if (
+            useTranscripts
+              .getState()
+              .bySession[liveId]?.messages.some(
+                message => message.id === input.id && message.submission?.status === 'accepted'
+              )
+          ) {
+            settleDraft(input.id)
+          }
+
           return
         }
 
         // Taken back, but you left the chat: it waits in the draft, as Recall
         // leaves it, ahead of anything typed there since.
+        sentDrafts.delete(input.id)
         transcriptActions().recallFrom(liveId, input.id)
         const typed = (draftsActions().byId[sectionId] ?? '').trim()
 

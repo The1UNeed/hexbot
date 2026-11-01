@@ -1050,6 +1050,32 @@ describe('Retry on a turn that failed on your latest message', () => {
     expect(submits()).toHaveLength(1)
   })
 
+  it('keeps the message in the saved draft until the resend is taken', async () => {
+    const answer = deferred()
+    recalling(undefined, answer.promise)
+    const view = await mount()
+    await fail(view)
+    fireEvent.click(mark())
+    // Recall is about to take the stored copy away.
+    expect(useDrafts.getState().byId.chat).toBe('Read my plan')
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('')
+    await act(async () => answer.resolve())
+    await waitFor(() => expect(delivered).toHaveLength(2))
+    await waitFor(() => expect(useDrafts.getState().byId.chat).toBeUndefined())
+  })
+
+  it('keeps the saved draft when the resend after Recall is refused', async () => {
+    recalling()
+    const view = await mount()
+    await fail(view)
+    answers = [refused()]
+    fireEvent.click(mark())
+    await waitFor(() => expect(submits()).toHaveLength(2))
+    await waitFor(() => expect(screen.getByText('Not sent')).toBeVisible())
+    expect(useDrafts.getState().byId.chat).toBe('Read my plan')
+    expect(rows.filter(row => row.role === 'user')).toHaveLength(0)
+  })
+
   it('puts the failure back when the daemon keeps the first try', async () => {
     recalling(new JsonRpcGatewayError('session is already working', { code: 4002 }))
     const view = await mount()
