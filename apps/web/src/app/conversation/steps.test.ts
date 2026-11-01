@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { Connector, Message, ToolCall } from '../../lib/types'
 import { useConnectors } from '../../stores/connectors'
 
-import { activityLabel, liveMood, runningLabel, toolLabel } from './steps'
+import { activityLabel, liveMood, liveMoodsOf, runningLabel, toolLabel } from './steps'
 
 const call = (partial: Partial<ToolCall>): ToolCall => ({
   args: null,
@@ -144,5 +144,31 @@ describe('liveMood', () => {
         })
       )
     ).toBe('working')
+  })
+})
+
+describe('liveMoodsOf', () => {
+  it('gives each section the face of the reply streaming in it, and nothing else', () => {
+    const transcript = (
+      sectionId: string,
+      messages: Message[],
+      streamingMessageId: null | string
+    ) => ({
+      messages,
+      sectionId,
+      streamingMessageId
+    })
+
+    expect(
+      liveMoodsOf({
+        a: transcript('one', [message({ id: 'r', text: 'Hello' })], 'r'),
+        b: transcript('two', [message({ id: 'r', streaming: false, text: 'Done' })], null),
+        c: transcript(
+          'three',
+          [message({ id: 'old', streaming: false }), message({ id: 'new' })],
+          'new'
+        )
+      })
+    ).toEqual({ one: 'writing', three: 'thinking' })
   })
 })

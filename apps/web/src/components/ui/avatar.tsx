@@ -20,6 +20,7 @@ import {
   dotLift,
   dotTransform,
   FaceMotion,
+  joinFaceMotion,
   MORPH_KINDS,
   type MorphKind,
   pencilTransform,
@@ -69,6 +70,8 @@ export interface LiveFaceProps {
   shape?: string
   /** Hold the face at rest while an act moves the body. */
   still?: boolean
+  /** Faces with one key move as one while they share a mood and a look. */
+  sync?: string
 }
 
 const REDUCED_MOTION = '(prefers-reduced-motion: reduce)'
@@ -174,12 +177,14 @@ export function LiveFace({
   look,
   mood = 'idle',
   shape = 'hexagon',
-  still = false
+  still = false,
+  sync
 }: LiveFaceProps) {
   const outline = AVATAR_SHAPES.find(item => item.id === shape) ?? AVATAR_SHAPES[0]!
   const { ref, visible } = useFaceVisibility<SVGSVGElement>()
   const reduced = useReducedMotion()
   const motion = useRef<FaceMotion | null>(null)
+  const lastMood = useRef(mood)
   const tint = `hex-tint-${useId().replace(/[^\w-]/g, '')}`
   const moving = visible && !still && !reduced
   const rest = restFrame(mood, look)
@@ -204,12 +209,24 @@ export function LiveFace({
   useLayoutEffect(() => {
     const face = motion.current
 
-    if (moving) {
+    if (moving && !sync) {
       face?.start()
     } else {
       face?.stop(still || reduced)
     }
-  }, [moving, reduced, still])
+  }, [moving, reduced, still, sync])
+
+  useLayoutEffect(() => {
+    // A synced face hands its motion to the copies it shares a mood with.
+    const from = lastMood.current
+    lastMood.current = mood
+
+    if (!moving || !sync) {
+      return
+    }
+
+    return joinFaceMotion(`${sync}|${mood}|${look ?? ''}`, ref.current!, { look, mood }, from)
+  }, [look, mood, moving, ref, sync])
 
   return (
     <svg
@@ -218,6 +235,7 @@ export function LiveFace({
       data-look={look ?? undefined}
       data-mood={mood}
       data-moving={moving}
+      data-sync={sync}
       ref={ref}
       viewBox={FACE_VIEWBOX}
     >
@@ -358,10 +376,11 @@ export function useFaceColor(
 
 /**
  * The generated face, live, whether the bot has none saved or saved one this
- * app drew; any other uploaded picture as it is.
+ * app drew; any other uploaded picture as it is. Every face of one bot (the
+ * sidebar, the header, the chat) moves as one and plays a clicked act together.
  */
 export function Avatar({ act, className, image, look, mood, name, size, style }: AvatarProps) {
-  const playing = useAct(act)
+  const playing = useAct(act, `avatar:${name}`)
   const { ref, visible } = useFaceVisibility<HTMLSpanElement>()
   const read = useFaceRead(image)
   const face = read ?? style ?? styleForName(name)
@@ -383,7 +402,13 @@ export function Avatar({ act, className, image, look, mood, name, size, style }:
         {picture ? (
           <img alt="" className="size-full rounded-full object-cover" src={picture} />
         ) : (
-          <Face look={look} mood={shownMood} still={Boolean(playing.act)} style={face} />
+          <Face
+            look={look}
+            mood={shownMood}
+            still={Boolean(playing.act)}
+            style={face}
+            sync={name}
+          />
         )}
       </span>
       {playing.name ? (

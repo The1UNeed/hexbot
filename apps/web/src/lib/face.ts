@@ -32,7 +32,16 @@ export const FACE_EMOTIONS = [
 
 export const FACE_VIEWBOX = '0 0 100 100'
 
-export function moodForStatus(status?: null | string): FaceMood {
+/**
+ * A bot's face for its status. While it works, the live face of the reply it
+ * is writing (thinking, searching, writing) when one is open, so the sidebar
+ * and the header wear the face the chat shows.
+ */
+export function moodForStatus(status?: null | string, live?: FaceMood | null): FaceMood {
+  if (status === 'working' && live) {
+    return live
+  }
+
   switch (status) {
     case 'working':
       return 'working'

@@ -84,7 +84,7 @@ import { composerFieldClass, ComposerShell } from './composer'
 import { RoomConversation } from './room'
 import { useSearchJump } from './search-jump'
 import { SignInCard } from './sign-in-card'
-import { liveMood } from './steps'
+import { liveMood, liveMoodsOf } from './steps'
 import { DeliveryMark, NotSent, useLate } from './unsent'
 import { visualsOf } from './visual'
 import { Visuals } from './visual-frame'
@@ -1696,6 +1696,12 @@ function BotConversation() {
     chat
   )
 
+  // The header wears the face the reply wears, as the sidebar does.
+  const liveFace =
+    transcript && liveId && params.section
+      ? liveMoodsOf({ [liveId]: transcript })[params.section]
+      : undefined
+
   useLayoutEffect(() => {
     let cancelled = false
 
@@ -2644,7 +2650,7 @@ function BotConversation() {
           <span className="relative shrink-0">
             <Avatar
               {...botFace(bot)}
-              mood={emotion ?? moodForStatus(status)}
+              mood={emotion ?? moodForStatus(status, liveFace)}
               name={name}
               size="sm"
             />
