@@ -718,17 +718,21 @@ async fn finite_healthy_checks_and_owned_path_refusals() {
     );
     case("E alias drift and escape refuse without selecting another base");
     let alias = f.path("python").join(ALIAS);
-    let base = f.path("python").join(f.key());
     let wrong = f.path("python/cpython-3.11.0-windows-x86_64-none");
     fs::create_dir(&wrong).unwrap();
+    // Park uv's own alias instead of rebuilding it through PowerShell, which
+    // can mangle this Unicode home in a junction target. Park it outside the
+    // operation roots, where it is not itself a refusable reparse entry.
+    let parked_alias = outside.path().join("parked-minor-alias");
+    fs::rename(&alias, &parked_alias).unwrap();
     for target in [outside.path(), wrong.as_path()] {
-        unlink_alias(&alias);
         junction(&alias, target);
         f.refusal("E alias escape/drift").await;
         unlink_alias(&alias);
-        junction(&alias, &base);
     }
+    fs::rename(&parked_alias, &alias).unwrap();
     fs::remove_dir(wrong).unwrap();
+    f.restored(&original);
 
     // Existing fixed shared leaves must refuse without changing their other link.
     for leaf in [
@@ -1262,7 +1266,11 @@ async fn actual_launcher_observer_refuses_unknown_diagnostics_alternate_and_acce
     let entry_bytes = fs::read(&entry).unwrap();
     fs::write(&entry, [b'g'; 64]).unwrap();
     let error = f.refusal("observer unknown native OS193").await;
-    assert!(error.contains("os error 193"), "{error}");
+    // 216 on Windows 11, 193 on older builds: both are an unrunnable image.
+    assert!(
+        error.contains("os error 193") || error.contains("os error 216"),
+        "{error}"
+    );
     fs::write(&entry, &entry_bytes).unwrap();
     // Execute permission denial leaves read/hash checks available. Only this
     // owned fixture leaf's deny ACE is changed and removed after the refusal.

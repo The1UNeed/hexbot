@@ -351,17 +351,27 @@ export function installPercent(progress: DaemonProgress[]): number {
   return Math.round(before + STAGES[index]!.weight * within)
 }
 
+/** Why the daemon did not start, without Electron's IPC wrapper. */
+export function installFailure(reason: unknown): string {
+  return (reason instanceof Error ? reason.message : String(reason))
+    .replace(/^Error invoking remote method '[^']*': /, '')
+    .replace(/^(Error: )+/, '')
+}
+
 /**
  * The install: Hexbot plays the act for the current stage, a bar shows how
  * far along it is, and under the bar is the stage and the line the installer
  * just printed. Each stage has its own acts, and a long stage works through
- * them so the page never looks stuck.
+ * them so the page never looks stuck. A failure stops all of that, says so,
+ * and offers Try again; the cause goes to the install log.
  */
 export function InstallStep({
   error,
+  onRetry,
   progress
 }: {
   error?: null | string
+  onRetry?: () => void
   progress: DaemonProgress[]
 }) {
   const last = progress.at(-1)
@@ -378,6 +388,33 @@ export function InstallStep({
   }, [stage])
 
   const acts = stage?.acts ?? STAGES[0]!.acts
+  const log = [...progress.map(item => item.message), ...(error ? [error] : [])].join('\n')
+
+  if (error) {
+    return (
+      <SetupFrame title="Setup stopped">
+        <div className="flex w-full flex-1 flex-col items-center justify-center gap-10 py-8">
+          <HexbotMark act={null} className={ACT_ROOM} size={132} />
+          <div className="flex w-full max-w-[360px] flex-col items-center gap-6 text-center">
+            <p className="text-secondary" role="alert">
+              Hexbot could not start on this computer. The install log below has the details.
+            </p>
+            {onRetry ? (
+              <Button className={PILL} onClick={onRetry} variant="primary">
+                Try again
+              </Button>
+            ) : null}
+          </div>
+        </div>
+        <details className="w-full pb-10 text-center text-secondary text-muted" open>
+          <summary className="cursor-pointer">Install log</summary>
+          <pre className="mt-2 max-h-40 overflow-y-auto text-left whitespace-pre-wrap font-mono text-meta">
+            {log}
+          </pre>
+        </details>
+      </SetupFrame>
+    )
+  }
 
   return (
     <SetupFrame title="Setting up Hexbot">
@@ -406,17 +443,12 @@ export function InstallStep({
           <p className="mt-1 h-[1.4em] truncate font-mono text-meta text-muted">
             {last && last.message !== label ? last.message : ''}
           </p>
-          {error ? (
-            <p className="mt-3 text-secondary text-danger" role="alert">
-              {error}
-            </p>
-          ) : null}
         </div>
       </div>
       <details className="w-full pb-10 text-center text-secondary text-muted">
         <summary className="cursor-pointer">Install log</summary>
         <pre className="mt-2 max-h-40 overflow-y-auto text-left whitespace-pre-wrap font-mono text-meta">
-          {progress.map(item => item.message).join('\n')}
+          {log}
         </pre>
       </details>
     </SetupFrame>
@@ -1101,6 +1133,8 @@ function OnboardingPage() {
 
   const [step, setStep] = useState<OnboardingStep>('welcome')
   const [progress, setProgress] = useState<DaemonProgress[]>([])
+  // Bumped by Try again, so a failed install starts the daemon once more.
+  const [installAttempt, setInstallAttempt] = useState(0)
   const [configured, setConfigured] = useState<Provider[]>([])
   const [defaultModel, setDefaultModel] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -1280,10 +1314,10 @@ function OnboardingPage() {
 
         return connectTo({ kind: 'local' })
       })
-      .catch(reason => setError(String(reason)))
+      .catch(reason => setError(installFailure(reason)))
 
     return off
-  }, [step])
+  }, [installAttempt, step])
 
   useEffect(() => setError(null), [step])
 
@@ -1340,7 +1374,17 @@ function OnboardingPage() {
   }
 
   if (step === 'install') {
-    return <InstallStep error={error} progress={progress} />
+    return (
+      <InstallStep
+        error={error}
+        onRetry={() => {
+          setError(null)
+          setProgress([])
+          setInstallAttempt(value => value + 1)
+        }}
+        progress={progress}
+      />
+    )
   }
 
   const copy = (

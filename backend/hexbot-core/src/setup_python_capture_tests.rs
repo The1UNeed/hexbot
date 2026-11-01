@@ -166,6 +166,9 @@ fn capture_fixture() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
+        // One unmeasured round absorbs first-use OS initialisation, so the
+        // baseline counts only what a capture could leak.
+        runtime.block_on(held_writers_once("both", None));
         let before = (handles(), threads());
         let after_baseline_threads_handles = handles();
         for round in 0..3 {
@@ -472,9 +475,11 @@ async fn native_spawn_193_and_access_5_keep_nochild_cleanup_and_original_causes(
     let directory = tempfile::tempdir().unwrap();
     let image = directory.path().join("invalid.exe");
     std::fs::write(&image, b"this is not a Windows executable image").unwrap();
-    for (case, path, code) in [
-        ("invalid-image", image.as_path(), 193),
-        ("directory-access", directory.path(), 5),
+    // Windows 11 reports a non-PE `.exe` as 216 (machine type mismatch);
+    // older builds report 193 (bad image format).
+    for (case, path, codes) in [
+        ("invalid-image", image.as_path(), &[193, 216][..]),
+        ("directory-access", directory.path(), &[5][..]),
     ] {
         let output =
             super::super::capture(tokio::process::Command::new(path), BOUND, CLEANUP).await;
@@ -487,7 +492,7 @@ async fn native_spawn_193_and_access_5_keep_nochild_cleanup_and_original_causes(
         let stdout = String::from_utf8_lossy(&output.stdout[..output.stdout.len().min(512)]);
         let stderr = String::from_utf8_lossy(&output.stderr[..output.stderr.len().min(512)]);
         eprintln!(
-            "spawn case={case} expected_os_error={code} path={path:?} absolute={} metadata={metadata:?} capture_failure={failure:?} status={:?} settlement={:?} cleanup_eligible={} complete={} stdout_len={} stdout_prefix={stdout:?} stderr_len={} stderr_prefix={stderr:?}",
+            "spawn case={case} expected_os_errors={codes:?} path={path:?} absolute={} metadata={metadata:?} capture_failure={failure:?} status={:?} settlement={:?} cleanup_eligible={} complete={} stdout_len={} stdout_prefix={stdout:?} stderr_len={} stderr_prefix={stderr:?}",
             path.is_absolute(),
             output.status,
             output.settlement,
@@ -500,11 +505,12 @@ async fn native_spawn_193_and_access_5_keep_nochild_cleanup_and_original_causes(
         assert_eq!(output.settlement.child, ChildState::NoChild);
         assert!(output.settlement.cleanup_eligible());
         assert!(!output.settlement.complete());
+        let failure = output.capture_failure.unwrap();
         assert!(
-            output
-                .capture_failure
-                .unwrap()
-                .contains(&format!("os error {code}"))
+            codes
+                .iter()
+                .any(|code| failure.contains(&format!("os error {code}"))),
+            "{failure}"
         );
     }
 }

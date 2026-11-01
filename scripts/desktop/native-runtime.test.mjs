@@ -197,6 +197,7 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
     const cargo = calls.find(c => c.command === 'cargo').args
     assert(cargo.includes('--locked'))
     assert.equal(cargo[cargo.indexOf('--target') + 1], rustTarget(process.platform, process.arch))
+    assert.equal(cargo.some(arg => arg.includes('crt-static')), process.platform === 'win32')
     assert(calls.find(c => c.command === 'npm').args.includes(`--cpu=${process.arch}`))
     assert(calls.find(c => c.command === 'npm').args.includes(`--os=${process.platform}`))
     assert(calls.find(c => c.command === 'npm').args.includes('--ignore-scripts'))
