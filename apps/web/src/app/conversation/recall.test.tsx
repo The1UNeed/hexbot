@@ -7,7 +7,7 @@ import {
   Outlet,
   RouterProvider
 } from '@tanstack/react-router'
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 import { routeEvent } from '../../lib/events'
 import { setActiveRpc } from '../../lib/rpc'
@@ -300,6 +300,19 @@ it('takes back a refused message alone, keeping the replies after it', async () 
   expect(screen.queryByTestId('stopped-card')).toBeNull()
   expect(screen.getByText('A late reply')).toBeVisible()
   expect(call.mock.calls.some(([method]) => method === 'session.recall')).toBe(false)
+})
+
+it('still shows a recalled refused message after leaving the chat and coming back', async () => {
+  await mount()
+  fireEvent.change(field(), { target: { value: 'Too soon' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await screen.findByTestId('stopped-card')
+  await stop()
+  fireEvent.click(recallButton()!)
+  await waitFor(() => expect(field()).toHaveValue('Too soon'))
+  cleanup()
+  await mount()
+  expect(field()).toHaveValue('Too soon')
 })
 
 it('retries a failed message from history in place, after a reload', async () => {

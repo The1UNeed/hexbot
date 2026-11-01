@@ -653,15 +653,18 @@ it.each([
   expect(staged.size).toBe(0)
   expect(userRows()[0]!.submission?.status).toBe('unknown')
   // The first try landed: Retry under the same key is refused as reserved,
-  // which proves it, and nothing is taken twice.
+  // so nothing is taken twice. Pi could still refuse a reserved input, so it
+  // stays unconfirmed until the stored row shows it.
   fireEvent.click(retries()[0]!)
-  await waitFor(() => expect(userRows()[0]!.submission?.status).toBe('accepted'))
+  await waitFor(() => expect(submits()).toHaveLength(2))
   expect(submits()[1]!.input_id).toBe(submits()[0]!.input_id)
+  await waitFor(() => expect(userRows()[0]!.submission?.status).toBe('unknown'))
   expect(delivered).toHaveLength(1)
-  expect(screen.queryByText('Not sent')).toBeNull()
+  expect(cards()).toHaveLength(0)
   await reload()
   expect(await screen.findByText('Reply 1')).toBeVisible()
   expect(userRows()).toHaveLength(1)
+  expect(screen.queryByText('Not sent')).toBeNull()
   expect(retries()).toHaveLength(0)
 })
 

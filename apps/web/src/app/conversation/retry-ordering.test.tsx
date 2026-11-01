@@ -907,10 +907,12 @@ it('keeps a newer stream after an actual accepted retry loses its title-save res
   expect(after.turnActive).toBe(true)
   expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible()
   expect(screen.getByText('Not sent')).toBeVisible()
-  // Retry under the same key is refused as reserved: it proves the send and
-  // leaves the newer stream alone.
+  // Retry under the same key is refused as reserved: nothing is taken twice,
+  // the send stays unconfirmed until history shows it, and the newer stream
+  // is left alone.
   fireEvent.click(retries()[0]!)
-  await waitFor(() => expect(userRows()[0]!.submission?.status).toBe('accepted'))
+  await waitFor(() => expect(submits()).toHaveLength(3))
+  await waitFor(() => expect(userRows()[0]!.submission?.status).toBe('unknown'))
   expect(delivered).toHaveLength(1)
   expect(useTranscripts.getState().bySession.chat!.streamingMessageId).toBe(
     before.streamingMessageId

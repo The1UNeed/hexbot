@@ -910,9 +910,9 @@ export function suggestedPrompts(description: string, name = 'this bot'): string
 /**
  * Reopen and resend once only after an explicit rejection before acceptance.
  *
- * `resend` tries an input whose outcome is unknown again under its own
- * `input_id`. The daemon reserves that key on first sight, so a copy that did
- * arrive answers "already reserved" and is never taken twice.
+ * An input whose outcome is unknown goes again under its own `input_id`. The
+ * daemon reserves that key on first sight, so a copy that did arrive answers
+ * "already reserved" and is never taken twice.
  */
 async function submitOrReopen(
   sessionId: string,
@@ -923,7 +923,6 @@ async function submitOrReopen(
     files: File[]
     pending: TranscriptMessage
     uploads: string[]
-    resend?: boolean
   }
 ): Promise<boolean> {
   const { current, files, uploads } = retry
@@ -974,18 +973,6 @@ async function submitOrReopen(
 
     if (!current()) {
       return false
-    }
-
-    if (
-      error instanceof JsonRpcGatewayError &&
-      error.code === 4202 &&
-      /already reserved/i.test(error.message)
-    ) {
-      // Another try under this key reached the daemon first.
-      failure = undefined
-      accepted()
-
-      return current()
     }
 
     // Network failures and provider errors leave acceptance unknown. Only
@@ -1070,10 +1057,19 @@ async function submitOrReopen(
     ) {
       const message = failure instanceof Error ? failure.message : String(failure)
 
+      // Another try under this key reached the daemon first, but Pi may
+      // still refuse it: the outcome stays unknown, with Retry, until the
+      // stored row or its turn shows it was taken.
+      const reserved =
+        failure instanceof JsonRpcGatewayError &&
+        failure.code === 4202 &&
+        /already reserved/i.test(failure.message)
+
       // 5201 is Pi's refusal. 5200 can be a bot lost before it answered or a
       // title-save error after acceptance. Transport failures and arbitrary
       // error objects also prove nothing about whether Pi took input.
       const rejected =
+        !reserved &&
         failure instanceof JsonRpcGatewayError &&
         [4002, 4200, 4202, 5201].includes(failure.code ?? 0)
 
@@ -1173,8 +1169,15 @@ function Composer({
   const [text, setText] = useState(() => {
     const saved = (sectionId ? draftsActions().byId[sectionId] : '') ?? ''
 
+    const shown = (sessionId && useTranscripts.getState().bySession[sessionId]?.messages) || []
+
     // A message still in its bubble shows there, not here as well.
-    return [...sentDrafts.values()].some(held => held.section === sectionId && held.text === saved)
+    return [...sentDrafts].some(
+      ([id, held]) =>
+        held.section === sectionId &&
+        held.text === saved &&
+        shown.some(message => message.id === id)
+    )
       ? ''
       : saved
   })
@@ -2237,7 +2240,6 @@ function BotConversation() {
         current: canPrompt,
         files: [],
         pending: input,
-        resend: true,
         uploads: source.uploads ?? []
       })
     },
