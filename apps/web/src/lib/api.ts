@@ -926,12 +926,14 @@ export function fileAttach(
 export interface OpenedFile {
   data_url?: string
   mime: string
-  /** Milliseconds since the epoch; a save passes it back to catch the bot's changes. */
+  /** Milliseconds since the epoch, for display. */
   modified: number
   name: string
   path: string
   size: number
   text?: string
+  /** The hash of its contents; a save passes it back to catch the bot's changes. */
+  version: string
 }
 
 /** Reads a file the bot can reach: its working folder, artifacts, or this chat's attachments. */
@@ -939,18 +941,18 @@ export function filesRead(sessionId: string, path: string): Promise<OpenedFile> 
   return rpcCall<OpenedFile>('hexbot.files.read', { path, session_id: sessionId })
 }
 
-/** Saves the user's edit; refused with 4209 when the file changed since `modified`. */
+/** Saves the user's edit; refused with 4209 when the file is no longer at `version`. */
 export function filesWrite(
   sessionId: string,
   path: string,
   text: string,
-  modified?: number
-): Promise<{ modified: number; path: string; size: number }> {
+  version?: string
+): Promise<{ modified: number; path: string; size: number; version: string }> {
   return rpcCall('hexbot.files.write', {
     path,
     session_id: sessionId,
     text,
-    ...(modified ? { modified } : {})
+    ...(version ? { version } : {})
   })
 }
 

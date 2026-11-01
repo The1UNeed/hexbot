@@ -153,7 +153,7 @@ function useOpenedFile(tab: FileTab) {
   const [error, setError] = useState<null | string>(null)
   const [updated, setUpdated] = useState(false)
   // The version last shown; a later read with another one is the bot's edit.
-  const shownVersion = useRef<null | number>(null)
+  const shownVersion = useRef<null | string>(null)
   // Counts the user's own saves: a read that started before one is older than
   // what the daemon holds now, and its answer is dropped.
   const saves = useRef(0)
@@ -162,7 +162,15 @@ function useOpenedFile(tab: FileTab) {
     if (!path) {
       setFile(
         url
-          ? { data_url: url, mime: tab.file.mime, modified: 0, name: tab.title, path: '', size: 0 }
+          ? {
+              data_url: url,
+              mime: tab.file.mime,
+              modified: 0,
+              name: tab.title,
+              path: '',
+              size: 0,
+              version: ''
+            }
           : null
       )
 
@@ -179,11 +187,11 @@ function useOpenedFile(tab: FileTab) {
           return
         }
 
-        if (shownVersion.current !== null && shownVersion.current !== next.modified) {
+        if (shownVersion.current !== null && shownVersion.current !== next.version) {
           setUpdated(true)
         }
 
-        shownVersion.current = next.modified
+        shownVersion.current = next.version
         setFile(next)
         setError(null)
       })
@@ -202,16 +210,23 @@ function useOpenedFile(tab: FileTab) {
     const timer = window.setTimeout(() => setUpdated(false), 2500)
 
     return () => window.clearTimeout(timer)
-  }, [updated, file?.modified])
+  }, [updated, file?.version])
 
   /** The user's own save: its new version is not the bot's edit. */
-  const saved = (text: string, modified: number, size: number) => {
+  const saved = (text: string, version: string, modified: number, size: number) => {
     saves.current += 1
-    shownVersion.current = modified
-    setFile(current => (current ? { ...current, modified, size, text } : current))
+    shownVersion.current = version
+    setFile(current => (current ? { ...current, modified, size, text, version } : current))
   }
 
-  return { error, file, saved, updated, working }
+  /** A version read on purpose (the user chose it), shown without the "Updated" flag. */
+  const adopt = (next: OpenedFile) => {
+    saves.current += 1
+    shownVersion.current = next.version
+    setFile(next)
+  }
+
+  return { adopt, error, file, saved, updated, working }
 }
 
 /**
@@ -355,23 +370,18 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
     selected?.bot ? (state.byName[selected.bot]?.display_name ?? 'The bot') : 'The bot'
   )
 
-  const { error, file, saved, updated, working } = useOpenedFile(tab)
+  const { adopt, error, file, saved, updated, working } = useOpenedFile(tab)
   const objectUrl = useObjectUrl(file?.data_url)
   // The version the editor's text is based on. A refresh moves it only when the
   // editor takes the new text; while it holds an unsaved edit, a save names the
   // version that edit started from, so it cannot overwrite the bot's change.
   const latest = useRef(file)
   latest.current = file
-  const base = useRef<null | number>(null)
-  // The text of that version: a refresh with the same text (the bot rewrote the
-  // file unchanged) moves the version along without the editor taking anything.
-  const baseText = useRef<string | undefined>(undefined)
+  // Versions are content hashes, so the bot rewriting the file unchanged keeps it.
+  const base = useRef<null | string>(null)
 
   if (base.current === null && file) {
-    base.current = file.modified
-    baseText.current = file.text
-  } else if (file?.text !== undefined && file.text === baseText.current) {
-    base.current = file.modified
+    base.current = file.version
   }
 
   // The editor's save: a request to the bot waits for the edit on screen to land first.
@@ -380,15 +390,28 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
   // in the editor until the user chooses the bot's version, which mounts a fresh
   // editor; the old one's last save is then ignored.
   const [conflict, setConflict] = useState(false)
+  const [loadError, setLoadError] = useState<null | string>(null)
   const [edition, setEdition] = useState(0)
   const editionRef = useRef(0)
 
-  const loadTheirs = () => {
-    editionRef.current += 1
-    base.current = latest.current?.modified ?? base.current
-    baseText.current = latest.current?.text
-    setConflict(false)
-    setEdition(editionRef.current)
+  // Reads the file as it is now (the change may not have come from the bot's
+  // steps), then shows it in a fresh editor. If the read fails, the edit stays.
+  const loadTheirs = async () => {
+    if (!path) {
+      return
+    }
+
+    try {
+      const current = await filesRead(tab.file.sessionId, path)
+      editionRef.current += 1
+      base.current = current.version
+      adopt(current)
+      setConflict(false)
+      setLoadError(null)
+      setEdition(editionRef.current)
+    } catch (cause) {
+      setLoadError(errorText(cause))
+    }
   }
 
   useEffect(() => {
@@ -459,10 +482,12 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
         ) : null}
         {conflict ? (
           <div className="mx-3 mt-2 flex items-center gap-2 rounded-[12px] bg-foreground/[0.05] px-3 py-2 text-[length:var(--text-meta)]">
-            <span className="min-w-0 flex-1 text-muted">Copy your edit if you want to keep it.</span>
+            <span className="min-w-0 flex-1 text-muted">
+              {loadError ?? 'Copy your edit if you want to keep it.'}
+            </span>
             <button
               className="hex-focus shrink-0 rounded-full bg-foreground px-2.5 py-1 font-medium text-background"
-              onClick={loadTheirs}
+              onClick={() => void loadTheirs()}
               type="button"
             >
               Load {botName}'s version
@@ -482,8 +507,7 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
           key={`${path}:${edition}`}
           onClose={() => undefined}
           onFollow={() => {
-            base.current = latest.current?.modified ?? base.current
-            baseText.current = latest.current?.text
+            base.current = latest.current?.version ?? base.current
           }}
           onSave={async next => {
             // An editor the user replaced with the bot's version saves nothing.
@@ -496,12 +520,11 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
                 tab.file.sessionId,
                 path,
                 next,
-                base.current ?? file.modified
+                base.current ?? file.version
               )
 
-              base.current = result.modified
-              baseText.current = next
-              saved(next, result.modified, result.size)
+              base.current = result.version
+              saved(next, result.version, result.modified, result.size)
             } catch (cause) {
               if (cause instanceof JsonRpcGatewayError && cause.code === 4209) {
                 setConflict(true)

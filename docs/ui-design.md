@@ -231,10 +231,14 @@ with Viewport Segments place both poses on the exact halves.
   and a field asks for anything else; each sends a message in the chat
   naming the file. Each edit the bot finishes shows in the tab as it lands,
   with "Updated by {bot}" for a moment; the editor follows unless it holds
-  an edit not saved yet. A save after the bot changed the file is refused
-  rather than overwriting it. While the bot works the quick tools wait. A
-  PDF opens in the viewer; any other file offers a download. Desktop and
-  browser only: the phone has no side panel.
+  an edit not saved yet; when the bot adds something the formatted view
+  would drop (a table), it switches to source. A save after the bot changed
+  the file is refused rather than overwriting it; the edit stays, with
+  "Load {bot}'s version" to drop it for the file as it is now. A quick tool
+  saves the edit on screen before it asks, and closing a tab or the panel
+  saves first and keeps a file whose edit did not save. While the bot works
+  the quick tools wait. A PDF opens in the viewer; any other file offers a
+  download. Desktop and browser only: the phone has no side panel.
 - Questions: when a bot asks through the clarify tool, a card with the
   question, the choices as rows A, B, C… (the first marked Recommended)
   and a field for the user's own answer. One click answers a single-choice

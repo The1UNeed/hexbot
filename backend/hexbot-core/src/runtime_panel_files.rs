@@ -26,8 +26,8 @@ impl Runtime {
             .as_str()
             .ok_or_else(|| Error::new(4200, "missing parameter: text"))?
             .to_owned();
-        let expected = p["modified"].as_u64();
-        tokio::task::spawn_blocking(move || write_text(&path, &text, expected))
+        let expected = p["version"].as_str().map(str::to_owned);
+        tokio::task::spawn_blocking(move || write_text(&path, &text, expected.as_deref()))
             .await
             .map_err(|e| Error::new(5200, e.to_string()))?
     }
@@ -128,6 +128,13 @@ fn mime_of(path: &Path) -> &'static str {
 
 /// Text when the file is UTF-8 without NUL bytes and small enough to edit,
 /// otherwise its bytes as a data URL.
+/// A file's version: the hash of its contents. Unlike a modification time it
+/// cannot repeat for a different file, however quickly the file is replaced.
+fn version_of(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(bytes))
+}
+
 pub(super) fn read_payload(path: &Path) -> Result<Value> {
     let meta = fs::metadata(path)?;
     if meta.len() > READ_LIMIT {
@@ -142,6 +149,7 @@ pub(super) fn read_payload(path: &Path) -> Result<Value> {
         "name": path.file_name().and_then(|n| n.to_str()).unwrap_or(""),
         "size": meta.len(),
         "modified": modified_ms(&meta),
+        "version": version_of(&bytes),
         "mime": mime_of(path),
     });
     match std::str::from_utf8(&bytes) {
@@ -181,10 +189,10 @@ fn replace(path: &Path, bytes: &[u8], meta: &fs::Metadata) -> Result<()> {
     Ok(())
 }
 
-/// Replaces a text file's contents in one step. `expected` is the modification
-/// time the editor last read; a different one means the bot changed the file
-/// since, and the save is refused rather than overwriting that change.
-pub(super) fn write_text(path: &Path, text: &str, expected: Option<u64>) -> Result<Value> {
+/// Replaces a text file's contents in one step. `expected` is the version the
+/// editor last read; a different one means the bot changed the file since, and
+/// the save is refused rather than overwriting that change.
+pub(super) fn write_text(path: &Path, text: &str, expected: Option<&str>) -> Result<Value> {
     let _save = SAVES
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -195,18 +203,23 @@ pub(super) fn write_text(path: &Path, text: &str, expected: Option<u64>) -> Resu
         ));
     }
     let meta = fs::metadata(path)?;
+    let current = fs::read(path)?;
     if let Some(expected) = expected
-        && modified_ms(&meta) != expected
+        && version_of(&current) != expected
     {
         return Err(Error::new(4209, "the file changed since it was opened"));
     }
-    let current = fs::read(path)?;
     if binary_format(path) || std::str::from_utf8(&current).is_err() || current.contains(&0) {
         return Err(Error::new(4202, "only text files can be edited here"));
     }
     replace(path, text.as_bytes(), &meta)?;
     let meta = fs::metadata(path)?;
-    Ok(json!({"path": path, "size": meta.len(), "modified": modified_ms(&meta)}))
+    Ok(json!({
+        "path": path,
+        "size": meta.len(),
+        "modified": modified_ms(&meta),
+        "version": version_of(text.as_bytes()),
+    }))
 }
 
 #[cfg(test)]
@@ -326,25 +339,29 @@ mod tests {
         // Saves take the resolved path `resolve_in` returns, never one through a link.
         let path = fs::canonicalize(dir.path()).unwrap().join("plan.md");
         fs::write(&path, "first").unwrap();
-        let opened = read_payload(&path).unwrap()["modified"].as_u64().unwrap();
+        let opened = read_payload(&path).unwrap()["version"]
+            .as_str()
+            .unwrap()
+            .to_owned();
 
-        let saved = write_text(&path, "second", Some(opened)).unwrap();
+        let saved = write_text(&path, "second", Some(&opened)).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "second");
         assert_eq!(saved["size"], 6);
+        let stale = saved["version"].as_str().unwrap().to_owned();
+        assert_eq!(read_payload(&path).unwrap()["version"], stale.as_str());
 
-        // The bot writes in between, stamping a time the editor never read:
-        // the stale editor may not overwrite it.
+        // The bot replaces the file within the same modification time the editor
+        // read: the version still differs, so the stale editor may not overwrite it.
+        let time = fs::metadata(&path).unwrap().modified().unwrap();
         fs::write(&path, "the bot's version").unwrap();
-        let stale = saved["modified"].as_u64().unwrap();
-        let bot_time = std::time::UNIX_EPOCH + Duration::from_millis(stale + 60_000);
         fs::File::options()
             .write(true)
             .open(&path)
             .unwrap()
-            .set_modified(bot_time)
+            .set_modified(time)
             .unwrap();
         assert_eq!(
-            write_text(&path, "third", Some(stale)).unwrap_err().code,
+            write_text(&path, "third", Some(&stale)).unwrap_err().code,
             4209
         );
         assert_eq!(fs::read_to_string(&path).unwrap(), "the bot's version");
@@ -356,21 +373,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = fs::canonicalize(dir.path()).unwrap().join("plan.md");
         fs::write(&path, "first").unwrap();
-        // An old stamp, so any save moves it.
-        fs::File::options()
-            .write(true)
-            .open(&path)
+        let opened = read_payload(&path).unwrap()["version"]
+            .as_str()
             .unwrap()
-            .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(1_000))
-            .unwrap();
-        let opened = read_payload(&path).unwrap()["modified"].as_u64().unwrap();
+            .to_owned();
 
         let start = std::sync::Arc::new(std::sync::Barrier::new(2));
         let saves = ["from the app", "from the phone"].map(|text| {
-            let (path, start) = (path.clone(), start.clone());
+            let (path, start, opened) = (path.clone(), start.clone(), opened.clone());
             std::thread::spawn(move || {
                 start.wait();
-                write_text(&path, text, Some(opened)).map_err(|error| error.code)
+                write_text(&path, text, Some(&opened)).map_err(|error| error.code)
             })
         });
         let mut results = saves.map(|save| save.join().unwrap()).to_vec();
