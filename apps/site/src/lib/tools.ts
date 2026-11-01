@@ -12,9 +12,7 @@ export const toolGroups: ToolGroup[] = [
     tools: [
       { name: 'Terminal', does: 'Run shell commands and long-running processes.', note: 'Risky commands ask first in Manual mode' },
       { name: 'Files', does: 'Read, write, edit, and search files.' },
-      { name: 'Code execution', does: 'Run short scripts for data work and quick checks.', note: 'Risky scripts ask first' },
-      { name: 'Browser', does: 'Drive a local Chrome window: open pages, click, fill forms.' },
-      { name: 'Computer use', does: 'See the screen, click, and type in other apps.', note: 'Needs the cua driver installed' },
+      { name: 'Computer use', does: "Work on the bots' own Linux computer: run code, browse in Chrome, click and type in its apps.", note: 'Every bot has it. Needs Cua and Docker' },
       { name: 'Vision', does: 'Look at images and screenshots you attach.', note: 'Needs a model that can see' },
     ],
   },
@@ -50,7 +48,6 @@ export const toolGroups: ToolGroup[] = [
     summary: 'Opt in, with your own account. Set one up once, then switch it on for the bots that need it.',
     tools: [
       { name: 'Web search', does: 'Search the web and read pages.', note: 'Exa, Tavily, Brave, Firecrawl, Parallel, Keenable, or your own SearXNG' },
-      { name: 'Cloud browser', does: 'A hosted browser for sites that block a local one.', note: 'Browserbase or Browser Use' },
       { name: 'Image generation', does: 'Make and edit images.', note: 'FAL or Krea' },
       { name: 'Video generation', does: 'Generate short clips.', note: 'FAL' },
       { name: 'Voice', does: 'Speak replies aloud.', note: 'ElevenLabs, OpenAI, or Mistral' },

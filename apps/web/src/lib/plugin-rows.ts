@@ -3,6 +3,7 @@
  * the mobile app reads the plugin list the same way.
  */
 
+import { serverIcon, skillIcon } from './plugin-icons'
 import type { Plugin, PluginsList, SkillRequirement } from './types'
 
 /** "Needs memo installed", as the bot's Skills tab words it. */
@@ -26,7 +27,7 @@ export function pluginRows(list: PluginsList): Plugin[] {
       category: row.mcp ? 'mcp' : row.group,
       connector: row,
       description: row.description,
-      icon: row.icon,
+      icon: row.mcp ? serverIcon(row.mcp.name ?? row.name, row.server) : row.icon,
       id: row.id,
       kind: 'connector',
       name: row.mcp?.name ?? row.name,
@@ -42,7 +43,7 @@ export function pluginRows(list: PluginsList): Plugin[] {
       description:
         row.description ||
         (row.server ? (row.connector?.description ?? '') : 'Skills installed together.'),
-      icon: row.server ? 'glyph:server' : 'glyph:package',
+      icon: row.server ? serverIcon(row.name, row.server) : 'glyph:package',
       id: row.id,
       installed_by: row.installed_by,
       kind: 'package',
@@ -58,7 +59,7 @@ export function pluginRows(list: PluginsList): Plugin[] {
       category: row.category || 'other',
       description: row.description,
       disabled_globally: row.disabled_globally,
-      icon: 'glyph:sparkles',
+      icon: skillIcon(row),
       id: row.id,
       kind: 'skill',
       name: row.name,
@@ -72,19 +73,9 @@ export function pluginRows(list: PluginsList): Plugin[] {
             ? 'Off for every bot'
             : row.source === 'bundled'
               ? 'Comes with Hexbot'
-              : 'Added by you'
-    })),
-    ...list.capabilities.map((row): Plugin => ({
-      bots: row.bots,
-      category: 'tools',
-      description: row.description,
-      icon: 'glyph:wrench',
-      id: row.id,
-      kind: 'capability',
-      name: row.name,
-      ready: row.ready,
-      state: row.ready ? 'ready' : 'not_set_up',
-      state_text: row.ready ? 'Ready' : (row.setup ?? 'Not set up')
+              : row.source === 'bot'
+                ? 'Written by a bot'
+                : 'Added by you'
     }))
   ]
 }

@@ -1,7 +1,8 @@
-//! Plugins: one view over connectors, skills and capabilities, and the bots
+//! Plugins: one view over connectors, MCP servers and skills, and the bots
 //! each is given to. Setup stays with each kind (`hexbot.connectors.setup`,
-//! the skill's own prerequisites, the program a capability runs); this module
-//! lists what is ready and assigns it to bots in one call.
+//! the skill's own prerequisites); this module lists what is ready and
+//! assigns it to bots in one call. Computer use is not a plugin: every bot
+//! has it (`connectors::toolsets`), and Settings, Manuals, looks after it.
 //!
 //! A package installs an MCP server with the skills that explain it, or
 //! several skills, as one plugin. It lives in `plugins/<name>/` as
@@ -10,7 +11,7 @@
 use crate::{
     Error, Result,
     common::{self, *},
-    connectors, db, native_tools, skills,
+    connectors, db, skills,
 };
 use serde_json::{Value, json};
 use std::{
@@ -18,32 +19,6 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
-
-/// Built-in tools that need a program or service on the daemon's computer:
-/// (bot tool, toolset, name, description, what setting it up takes).
-const CAPABILITIES: &[(&str, &str, &str, &str, &str)] = &[
-    (
-        "computer_use",
-        "computer_use",
-        "Computer use",
-        "Use the shared computer: see its screen, click and type in its apps.",
-        "Install Cua on the daemon's computer with `uv tool install cua` and start Docker.",
-    ),
-    (
-        "browser",
-        "browser",
-        "Browser",
-        "Open pages and click through them in Chrome.",
-        "Install Chrome or Chromium, or set up a cloud browser connector.",
-    ),
-    (
-        "code_execution",
-        "code_execution",
-        "Code execution",
-        "Run scripts in a sandbox for data work and quick checks.",
-        "Install Python 3 on the daemon's computer.",
-    ),
-];
 
 /// The caller's bots, by name.
 fn own_bots(home: &Path, caller: &str) -> Result<Vec<String>> {
@@ -139,42 +114,13 @@ fn skill_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<Valu
     Ok(rows)
 }
 
-fn capability_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<Value>> {
-    let toolsets = own
-        .iter()
-        .map(|b| Ok((b.as_str(), connectors::toolsets(home, b)?)))
-        .collect::<Result<Vec<_>>>()?;
-    let mut rows = vec![];
-    for (id, toolset, name, description, setup) in CAPABILITIES {
-        let ready = native_tools::set_up_on_daemon(home, toolset)?;
-        let given = toolsets
-            .iter()
-            .filter(|(_, sets)| sets.iter().any(|t| t == toolset))
-            .map(|(b, _)| *b)
-            .collect::<Vec<_>>();
-        let mut row = json!({
-            "kind": "capability",
-            "id": id,
-            "name": name,
-            "description": description,
-            "ready": ready,
-            "setup": if ready { Value::Null } else { json!(setup) },
-            "bots": given,
-        });
-        if let Some(bot) = bot {
-            row["enabled_for_bot"] = json!(given.contains(&bot));
-        }
-        rows.push(row);
-    }
-    Ok(rows)
-}
-
 pub(crate) fn list(home: &Path, caller: &str, bot: Option<&str>) -> Result<Value> {
     let own = own_bots(home, caller)?;
     Ok(json!({
         "connectors": connector_rows(home, &own, bot)?,
         "skills": skill_rows(home, &own, bot)?,
-        "capabilities": capability_rows(home, &own, bot)?,
+        // Clients from before Settings, Manuals, still read this list.
+        "capabilities": [],
         "packages": package_rows(home, &own, bot)?,
     }))
 }
@@ -195,7 +141,6 @@ pub(crate) fn find_for(
     let rows = match kind {
         "connector" => connector_rows(home, &own, bot)?,
         "skill" => skill_rows(home, &own, bot)?,
-        "capability" => capability_rows(home, &own, bot)?,
         "package" => package_rows(home, &own, bot)?,
         _ => return Err(Error::new(4202, format!("unknown plugin kind: {kind}"))),
     };
@@ -279,17 +224,12 @@ pub(crate) fn set_bots(home: &Path, caller: &str, p: &Value) -> Result<Value> {
         "connector" => {
             for bot in &own {
                 if wanted(bot) != current_bots.contains(bot) {
-                    // The cloud browser's provider is the daemon's; a bot has
-                    // it through its browser tool.
-                    if id == "cloud_browser" {
-                        connectors::set_toolsets(home, bot, id, wanted(bot))?;
-                    } else {
-                        connectors::set_enabled(home, bot, id, wanted(bot))?;
-                    }
+                    connectors::set_enabled(home, bot, id, wanted(bot))?;
                 }
             }
         }
-        "skill" => {
+        // `find` above refused any other kind.
+        _ => {
             let _guard = skills::LOCK
                 .write()
                 .map_err(|_| Error::new(5200, "skills lock unavailable"))?;
@@ -298,21 +238,6 @@ pub(crate) fn set_bots(home: &Path, caller: &str, p: &Value) -> Result<Value> {
                     skills::find_unlocked(home, Some(bot), id)?;
                     skills::set_enabled(home, Some(bot), id, wanted(bot))?;
                 }
-            }
-        }
-        _ => {
-            let toolset = CAPABILITIES
-                .iter()
-                .find(|(tool, ..)| *tool == id)
-                .map(|(_, toolset, ..)| *toolset)
-                .unwrap_or(id);
-            for bot in &own {
-                if wanted(bot) == current_bots.contains(bot) {
-                    continue;
-                }
-                // Only this capability's toolset changes; other granted tools
-                // stay on even while they wait for setup.
-                connectors::switch_toolsets(home, bot, &[toolset.to_string()], wanted(bot))?;
             }
         }
     }
@@ -718,20 +643,12 @@ pub(crate) fn set_for_bot(
         ("package", _) if has_server(home, id)? => Some(id.to_owned()),
         _ => None,
     };
-    let toolset = CAPABILITIES
-        .iter()
-        .find(|(tool, ..)| *tool == id)
-        .map(|(_, toolset, ..)| *toolset);
     // Ready for this bot: a skill or connector can be, through a key in its own `.env`.
     let ready = match kind {
         "skill" => skills::resolve(home, Some(bot))?
             .iter()
             .any(|s| s.name == id && s.ready),
         "connector" if server.is_none() => connectors::get(home, Some(bot), id)?["ready"] == true,
-        "capability" => native_tools::set_up_on_daemon(
-            home,
-            toolset.ok_or_else(|| Error::new(4213, format!("unknown capability: {id}")))?,
-        )?,
         _ => current["ready"] != false,
     };
     if on && !ready {
@@ -767,18 +684,15 @@ pub(crate) fn set_for_bot(
             }
         }
         "connector" if server.is_some() => {}
-        // The cloud browser's provider is the daemon's; a bot has it through
-        // its browser tool.
-        "connector" if id == "cloud_browser" => connectors::set_toolsets(home, bot, id, on)?,
         "connector" => connectors::set_enabled(home, bot, id, on)?,
-        "skill" => {
+        // `find` above refused any other kind.
+        _ => {
             let _guard = skills::LOCK
                 .write()
                 .map_err(|_| Error::new(5200, "skills lock unavailable"))?;
             skills::find_unlocked(home, Some(bot), id)?;
             skills::set_enabled(home, Some(bot), id, on)?;
         }
-        _ => connectors::switch_toolsets(home, bot, &[toolset.unwrap_or(id).to_string()], on)?,
     }
     Ok(())
 }

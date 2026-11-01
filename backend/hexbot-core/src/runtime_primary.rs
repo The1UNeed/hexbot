@@ -89,7 +89,7 @@ pub(super) fn descriptors() -> Vec<Value> {
                     "provider": { "type": "string" },
                     "model": { "type": "string" },
                     "reasoning_effort": { "type": "string", "description": "An empty string returns to the model's default" },
-                    "tools": { "type": "array", "items": { "type": "string", "enum": ["terminal", "files", "code_execution", "browser", "computer_use", "vision", "voice", "message_bots", "delegate", "scheduling"] } },
+                    "tools": { "type": "array", "items": { "type": "string", "enum": ["terminal", "files", "computer_use", "vision", "voice", "message_bots", "delegate", "scheduling"] } },
                     "skills": strings,
                     "approval_mode": { "type": "string", "enum": ["inherit", "manual", "smart", "off"], "description": "inherit follows Settings; smart is Auto; off is Bypass" },
                     "workdir": { "type": "string", "description": "A folder on this computer; an empty string returns the bot to the Settings workspace" },
