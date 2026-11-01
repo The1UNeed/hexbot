@@ -22,7 +22,7 @@ A face also reacts to how things are going:
 - proud after a long job, and celebrating when it reports passing tests, a merge, or a deploy;
 - bored after three quiet minutes in an open chat, and drowsy after eight.
 
-Each one lasts a few seconds, then the face goes back to its work. Hexbot reads all of this from the conversation without asking the model, so it costs nothing and never touches the prompt cache.
+Each one lasts a few seconds, then the face goes back to its work. Drowsy is the exception: it stays until something happens, and then the face jolts awake. Hexbot reads all of this from the conversation without asking the model, so it costs nothing and never touches the prompt cache.
 
 Turn on **Sounds** in Settings, Appearance to hear a bot start, finish, or need you. They're off by default.
 

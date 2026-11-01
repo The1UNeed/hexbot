@@ -20,7 +20,7 @@ Each memory entry now carries the month it was learned, like `[2026-10]`. When t
 
 ## Dreams that see the whole conversation
 
-When a long conversation outgrows the model's context, Hexbot summarises the older part. The dream now reads those summaries, so a long conversation isn't judged by its last few messages alone. And a long conversation picks up changes to the bot's soul and memory the next time it's summarised, without waiting for a new conversation.
+When a long conversation outgrows the model's context, Hexbot summarises the older part. The dream now reads those summaries, so a long conversation isn't judged by its last few messages alone. And a long conversation can now pick up changes to the bot's soul and memory after it's summarised, without waiting for a new conversation. If the bot is in the middle of a reply when that happens, the changes wait for the next summary.
 
 ## Scheduled jobs suggest instead of write
 

@@ -4,7 +4,7 @@ description: Settings has a new Plugins page. Set up a connector, MCP server, or
 date: 2026-10-29
 ---
 
-Until today, connectors and skills were set up bot by bot. Give a new bot an MCP server and it could end up with a copy that had lost its keys. Starting with today's nightly, everything a bot can use beyond its own tools lives on one page.
+Connectors and skills used to be set up bot by bot. Yesterday's nightly changed that underneath: an MCP server is now set up once and given to the bots you choose, and new bots no longer get a copy that has lost its keys. Starting with today's nightly, you can see and manage all of it on one page.
 
 ## Settings, Plugins
 
