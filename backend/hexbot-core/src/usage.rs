@@ -152,7 +152,7 @@ pub fn summary(home: &Path) -> Value {
     json!({
         "bots": count(home, "SELECT COUNT(*) FROM bots"),
         "rooms": count(home, "SELECT COUNT(*) FROM rooms WHERE archived_at IS NULL"),
-        "chats": count(home, "SELECT COUNT(*) FROM sections WHERE archived_at IS NULL"),
+        "chats": count(home, "SELECT COUNT(*) FROM sections WHERE archived_at IS NULL AND peer_bot IS NULL AND purpose IS NULL"),
         "users": count(home, "SELECT COUNT(*) FROM users WHERE disabled_at IS NULL"),
         "lan": settings["lan_enabled"] == true,
         "approval_mode": settings["approval_mode"],
@@ -300,6 +300,25 @@ mod tests {
         check.join().unwrap();
         opt_out.join().unwrap();
         assert!(!file.exists(), "the id came back after the opt-out");
+    }
+
+    #[test]
+    fn chats_count_only_chats_with_people() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        let conn = db::open(home.path()).unwrap();
+        for (id, peer, purpose) in [
+            ("chat", None, None),
+            ("between-bots", Some("fox"), None),
+            ("check-in", None, Some("checkin")),
+        ] {
+            conn.execute(
+                "INSERT INTO sections(id,bot,owner_id,title,peer_bot,purpose,created_at,updated_at) VALUES(?,'owl','local','t',?,?,0,0)",
+                rusqlite::params![id, peer, purpose],
+            )
+            .unwrap();
+        }
+        assert_eq!(summary(home.path())["chats"], 1);
     }
 
     #[test]
