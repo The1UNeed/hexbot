@@ -44,7 +44,7 @@ fn a_server_or_package_with_an_empty_value_is_not_given_until_set_up() {
     )
     .unwrap();
     let mut install = github();
-    install["bots"] = json!(["owl"]);
+    install["bots"] = json!(["owl", "cat"]);
     call(home.path(), "alice", "hexbot.plugins.install", install).unwrap();
     let listed = call(home.path(), "alice", "hexbot.plugins.list", json!({})).unwrap();
     let files = row(&listed, "connectors", "mcp:files");
@@ -71,12 +71,26 @@ fn a_server_or_package_with_an_empty_value_is_not_given_until_set_up() {
             .code,
         4209
     );
+    // Taking one bot away keeps the other's grant for when it is set up;
+    // giving one back waits for setup.
+    assert_eq!(
+        give("package", "github", json!(["owl"])).unwrap()["plugin"]["bots"],
+        json!([])
+    );
     assert_eq!(
         give("package", "github", json!(["owl", "cat"]))
             .unwrap_err()
             .code,
         4209
     );
+    plugins::configure(
+        home.path(),
+        "github",
+        &json!({"env": {"GITHUB_TOKEN": "secret"}}),
+    )
+    .unwrap();
+    let listed = call(home.path(), "alice", "hexbot.plugins.list", json!({})).unwrap();
+    assert_eq!(row(&listed, "packages", "github")["bots"], json!(["owl"]));
     // Taking it away is always allowed.
     assert_eq!(
         give("package", "github", json!([])).unwrap()["plugin"]["bots"],
@@ -369,6 +383,11 @@ fn a_skill_ready_through_a_bots_own_key_can_be_given_to_that_bot() {
             json!({"kind":"skill","id":"needs-key","bots":bots}),
         )
     };
+    // The page offers it to Owl alone.
+    let listed = call(home.path(), "alice", "hexbot.plugins.list", json!({})).unwrap();
+    let needs_key = row(&listed, "skills", "needs-key");
+    assert_eq!(needs_key["ready"], false);
+    assert_eq!(needs_key["ready_bots"], json!(["owl"]));
     assign(json!([])).unwrap();
     assign(json!(["owl"])).unwrap();
     assert_eq!(assign(json!(["owl", "cat"])).unwrap_err().code, 4209);
@@ -705,6 +724,11 @@ fn a_connector_ready_through_a_bots_own_key_can_be_given_to_that_bot() {
         "NOTION_API_KEY=owl-only\n",
     )
     .unwrap();
+    let listed = call(home.path(), "alice", "hexbot.plugins.list", json!({})).unwrap();
+    assert_eq!(
+        row(&listed, "connectors", "notion")["ready_bots"],
+        json!(["owl"])
+    );
     let assign = |bots: Value| {
         call(
             home.path(),

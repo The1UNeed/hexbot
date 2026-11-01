@@ -16,6 +16,7 @@ import {
   skillsSetGlobal
 } from '../../lib/api'
 import { cn } from '../../lib/cn'
+import { canGive } from '../../lib/plugin-rows'
 import type { Plugin, PluginValue } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
@@ -353,12 +354,14 @@ function PluginRow({
   const toggle = (bot: string, on: boolean) =>
     choose(on ? [...plugin.bots, bot] : plugin.bots.filter(name => name !== bot))
 
-  // Until it is set up, a plugin can be taken away from bots but not given.
+  // Until it is set up, a plugin can be taken away from bots but not given,
+  // except to a bot whose own settings hold its key.
   const setupFirst = !plugin.ready
+  const givable = (bot: string) => canGive(plugin, bot)
   const canSetUp = Boolean(plugin.kind === 'connector' && plugin.connector?.fields.length)
 
   const control = focus ? (
-    setupFirst && !plugin.bots.includes(focus.name) ? (
+    !givable(focus.name) && !plugin.bots.includes(focus.name) ? (
       plugin.kind === 'skill' ? null : (
         <Button onClick={canSetUp ? onSetup : expanded ? undefined : onExpand} size="sm">
           Set up
@@ -430,11 +433,11 @@ function PluginRow({
           {setupFirst ? (
             <p className="text-muted">Set up {plugin.name} before giving it to a bot.</p>
           ) : null}
-          {bots.length && (!setupFirst || plugin.bots.length) ? (
+          {bots.length && (bots.some(bot => givable(bot.name)) || plugin.bots.length) ? (
             <BotPicker
               bots={bots}
+              canGive={givable}
               chosen={plugin.bots}
-              giving={!setupFirst}
               name={plugin.name}
               onChange={choose}
             />
@@ -451,22 +454,22 @@ function PluginRow({
   )
 }
 
-/** One pill per bot; a filled pill is on. Without `giving`, pills only turn off. */
+/** One pill per bot; a filled pill is on. A bot it can't be given to can only be turned off. */
 function BotPicker({
   bots,
+  canGive,
   chosen,
-  giving,
   name,
   onChange
 }: {
   bots: PluginBot[]
+  canGive: (bot: string) => boolean
   chosen: string[]
-  giving: boolean
   name: string
   onChange: (bots: string[]) => void
 }) {
   const all = bots.every(bot => chosen.includes(bot.name))
-  const turnOn = giving && !all
+  const turnOn = !all && bots.every(bot => canGive(bot.name))
 
   return (
     <div>
@@ -495,7 +498,7 @@ function BotPicker({
                   ? 'bg-accent text-accent-fg'
                   : 'bg-foreground/[0.07] text-foreground hover:bg-foreground/[0.11]'
               )}
-              disabled={!on && !giving}
+              disabled={!on && !canGive(bot.name)}
               key={bot.name}
               onClick={() =>
                 onChange(on ? chosen.filter(item => item !== bot.name) : [...chosen, bot.name])

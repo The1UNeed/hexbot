@@ -249,8 +249,24 @@ describe('Settings, Plugins', () => {
     expect(within(picker).getByRole('button', { name: 'HexBot' })).toBeDisabled()
     expect(screen.queryByRole('button', { name: 'Turn on for every bot' })).toBeNull()
     fireEvent.click(within(picker).getByRole('button', { name: 'Owl' }))
+    await waitFor(() => expect(pluginsSetBots).toHaveBeenCalledWith('connector', 'web_search', []))
+  })
+
+  it('gives a plugin to a bot whose own settings hold its key', async () => {
+    const unset = { ...search, state: 'not_set_up' as const, state_text: 'Not set up' }
+    vi.mocked(pluginsList).mockResolvedValue(
+      list({
+        connectors: [{ ...unset, bots: [], kind: 'connector', ready: false, ready_bots: ['owl'] }]
+      })
+    )
+    render(<PluginsSettings />)
+    fireEvent.click(await screen.findByText('Web search'))
+    const picker = screen.getByRole('group', { name: 'Bots that use Web search' })
+    expect(within(picker).getByRole('button', { name: 'HexBot' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Turn on for every bot' })).toBeNull()
+    fireEvent.click(within(picker).getByRole('button', { name: 'Owl' }))
     await waitFor(() =>
-      expect(pluginsSetBots).toHaveBeenCalledWith('connector', 'web_search', [])
+      expect(pluginsSetBots).toHaveBeenCalledWith('connector', 'web_search', ['owl'])
     )
   })
 

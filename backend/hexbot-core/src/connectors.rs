@@ -605,11 +605,16 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
             Value::Null
         };
         // A bot has a connector once it is on and set up for that bot; a
-        // default left on before setup gives it to nobody.
+        // default left on before setup gives it to nobody. A key in a bot's
+        // own `.env` sets it up for that bot alone.
         let mut bots = vec![];
+        let mut ready_bots = vec![];
         for n in &names {
-            if enabled(home, n, id)? && has_keys(home, Some(n), &required)? {
-                bots.push(n.clone())
+            if has_keys(home, Some(n), &required)? {
+                ready_bots.push(n.clone());
+                if enabled(home, n, id)? {
+                    bots.push(n.clone())
+                }
             }
         }
         out.push(json!({
@@ -627,6 +632,7 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
             "fields": fields,
             "enabled_for_bot": bot.map(|b| bots.iter().any(|n| n == b)),
             "enabled_bots": bots,
+            "ready_bots": ready_bots,
             "last_error": err.map(|e| {
                 json!({
                 "text":e["text"],

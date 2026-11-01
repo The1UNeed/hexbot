@@ -19,6 +19,14 @@ function needs(missing: SkillRequirement[] = []): string {
   return words.length ? `Needs ${words.join(', ')}` : 'Not set up'
 }
 
+/**
+ * Whether a plugin can be given to a bot now: set up for every bot, or for
+ * that one through a key in its own settings.
+ */
+export function canGive(plugin: Plugin, bot: string): boolean {
+  return plugin.ready || Boolean(plugin.ready_bots?.includes(bot))
+}
+
 /** One list of rows, whatever their kind. */
 export function pluginRows(list: PluginsList): Plugin[] {
   return [
@@ -32,6 +40,7 @@ export function pluginRows(list: PluginsList): Plugin[] {
       kind: 'connector',
       name: row.mcp?.name ?? row.name,
       ready: row.ready !== false,
+      ready_bots: row.ready_bots,
       server: row.server ?? null,
       state: row.state,
       state_text: row.state_text
@@ -64,6 +73,7 @@ export function pluginRows(list: PluginsList): Plugin[] {
       kind: 'skill',
       name: row.name,
       ready: row.ready !== false,
+      ready_bots: row.ready_bots,
       source: row.source,
       state: row.ready === false ? 'not_set_up' : 'ready',
       state_text:
