@@ -1066,21 +1066,24 @@ async function submitOrReopen(
         failure.code === 4202 &&
         /already reserved/i.test(failure.message)
 
+      // A refused resend under the same key proves nothing either: the daemon
+      // checks that it is free and has the uploads before it looks at the
+      // key, so the first try may still be waiting or already taken. It stays
+      // unknown, under its key, until history shows which.
+      const settles = !reserved && !retry.resend
+
       // 5201 is Pi's refusal. 5200 can be a bot lost before it answered or a
       // title-save error after acceptance. Transport failures and arbitrary
       // error objects also prove nothing about whether Pi took input.
-      // A resend refused as busy may be waiting behind its own first try.
-      const busy = retry.resend && failure instanceof JsonRpcGatewayError && failure.code === 4002
-
       const rejected =
-        !reserved &&
-        !busy &&
+        settles &&
         failure instanceof JsonRpcGatewayError &&
         [4002, 4200, 4202, 5201].includes(failure.code ?? 0)
 
       const unavailable =
-        staged === null ||
-        (failure instanceof JsonRpcGatewayError && [4001, 4204].includes(failure.code ?? 0))
+        settles &&
+        (staged === null ||
+          (failure instanceof JsonRpcGatewayError && [4001, 4204].includes(failure.code ?? 0)))
 
       const status = unavailable ? 'unavailable' : rejected ? 'rejected' : 'unknown'
 

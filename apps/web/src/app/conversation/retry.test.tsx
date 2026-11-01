@@ -689,6 +689,35 @@ it('keeps a same-key Retry refused as busy unconfirmed, under its first key', as
   expect(userRows()).toHaveLength(1)
 })
 
+it('keeps a delivered send unconfirmed when its same-key Retry finds the uploads used', async () => {
+  const original = call.getMockImplementation()!
+  let tries = 0
+  call.mockImplementation(async (method: string, input: Record<string, unknown>) => {
+    if (method !== 'prompt.submit') {
+      return original(method, input)
+    }
+
+    // The daemon checks uploads before the key: the first try took them.
+    if (++tries > 1) {
+      throw new JsonRpcGatewayError('attachment not found: srv-1; attach it again', { code: 4204 })
+    }
+
+    await original(method, input)
+    throw new Error('Reply lost after acceptance')
+  })
+  const view = await mount()
+  await send(view)
+  expect(await screen.findByText('Not sent')).toBeVisible()
+  fireEvent.click(retries()[0]!)
+  await waitFor(() => expect(submits()).toHaveLength(2))
+  await waitFor(() => expect(userRows()[0]!.submission?.status).toBe('unknown'))
+  // Nothing comes back to send again under a new key.
+  const field = screen.getByRole('textbox', { name: 'Message' })
+  expect(field).toHaveValue('')
+  expect(screen.queryByRole('button', { name: 'Remove plan.txt' })).toBeNull()
+  expect(delivered).toHaveLength(1)
+})
+
 it('does not trust a code property on an arbitrary transport error', async () => {
   answers = [Object.assign(new Error('Transport failed'), { code: 5201 })]
   const view = await mount()
