@@ -477,6 +477,30 @@ fn migration_writes_each_servers_bots_and_drops_profile_copies() {
 }
 
 #[test]
+fn migration_keeps_the_bots_of_a_server_still_waiting_for_a_value() {
+    let home = setup();
+    common::write_config(
+        home.path(),
+        &json!({"mcp_servers":{"github":{"command":"node","env":{"GITHUB_TOKEN":""}}}}),
+    )
+    .unwrap();
+    db::migrate(home.path()).unwrap();
+    let root = common::read_config(home.path()).unwrap();
+    assert!(
+        !strings_of(&root["mcp_servers"]["github"]["bots"]).is_empty(),
+        "{root}"
+    );
+    assert!(!servers(home.path(), "owl").contains(&"github".into()));
+    crate::plugins::configure(
+        home.path(),
+        "github",
+        &json!({"env": {"GITHUB_TOKEN": "secret"}}),
+    )
+    .unwrap();
+    assert!(servers(home.path(), "owl").contains(&"github".into()));
+}
+
+#[test]
 fn a_skill_waiting_for_setup_is_hidden_and_cannot_be_given() {
     let home = setup();
     skill(
