@@ -45,17 +45,6 @@ const search: Connector = {
 
 function list(change: Partial<PluginsList> = {}): PluginsList {
   return {
-    capabilities: [
-      {
-        bots: [],
-        description: 'Use the shared computer.',
-        id: 'computer_use',
-        kind: 'capability',
-        name: 'Computer use',
-        ready: false,
-        setup: 'Install Cua with `uv tool install cua` and start Docker.'
-      }
-    ],
     connectors: [{ ...search, bots: ['hexbot', 'owl'], kind: 'connector', ready: true }],
     packages: [
       {
@@ -99,6 +88,12 @@ function list(change: Partial<PluginsList> = {}): PluginsList {
 const bot = (name: string, display_name: string, primary = false) =>
   ({ display_name, name, primary }) as Bot
 
+/** Switch to one of the three kinds once the list has loaded. */
+async function show(kind: 'Connectors' | 'MCP servers' | 'Skills') {
+  const kinds = await screen.findByRole('tablist', { name: 'Plugin kinds' })
+  fireEvent.click(await within(kinds).findByRole('tab', { name: new RegExp(`^${kind}`) }))
+}
+
 describe('Settings, Plugins', () => {
   beforeEach(() => {
     vi.mocked(pluginsList).mockResolvedValue(list())
@@ -109,27 +104,46 @@ describe('Settings, Plugins', () => {
     })
   })
 
-  it('puts connectors, MCP servers, skills and built-in tools on one page', async () => {
+  it('splits plugins into connectors, MCP servers and skills', async () => {
     render(<PluginsSettings />)
-    const connectors = await screen.findByRole('region', { name: 'Connectors' })
-    expect(within(connectors).getByText('Web search')).toBeInTheDocument()
-    expect(within(connectors).getByText('Every bot')).toBeInTheDocument()
-    const servers = screen.getByRole('region', { name: 'MCP servers' })
-    expect(within(servers).getByText('github')).toBeInTheDocument()
-    expect(within(servers).getByText('Needs GITHUB_TOKEN')).toBeInTheDocument()
-    expect(within(servers).getByText('Owl')).toBeInTheDocument()
-    const skills = screen.getByRole('region', { name: 'Skills' })
-    expect(within(skills).getByText('Productivity')).toBeInTheDocument()
-    expect(within(skills).getByText('pdf')).toBeInTheDocument()
-    const tools = screen.getByRole('region', { name: 'Built-in tools' })
-    expect(within(tools).getByText(/uv tool install cua/)).toBeInTheDocument()
+    expect(await screen.findByText('Web search')).toBeInTheDocument()
+    expect(screen.getByText('Every bot', { selector: 'span' })).toBeInTheDocument()
+    const kinds = screen.getByRole('tablist', { name: 'Plugin kinds' })
+    expect(
+      within(kinds)
+        .getAllByRole('tab')
+        .map(tab => tab.textContent)
+    ).toEqual(['Connectors1', 'MCP servers1', 'Skills1'])
+    expect(screen.queryByText('github')).not.toBeInTheDocument()
+    await show('MCP servers')
+    expect(screen.getByText('github')).toBeInTheDocument()
+    expect(screen.getByText('Needs GITHUB_TOKEN')).toBeInTheDocument()
+    expect(screen.queryByText('Web search')).not.toBeInTheDocument()
+    await show('Skills')
+    expect(screen.getByText('Productivity')).toBeInTheDocument()
+    expect(screen.getByText('pdf')).toBeInTheDocument()
+    // Built-in tools live in Settings, Manuals.
+    expect(screen.queryByText('Built-in tools')).not.toBeInTheDocument()
     // The primary bot comes first.
-    const tabs = screen.getAllByRole('tab').map(tab => tab.textContent)
-    expect(tabs).toEqual(['Every bot', 'HexBot', 'Owl'])
+    const picker = screen.getByRole('tablist', { name: 'Show plugins for' })
+    expect(
+      within(picker)
+        .getAllByRole('tab')
+        .map(tab => tab.textContent)
+    ).toEqual(['Every bot', 'HexBot', 'Owl'])
+  })
+
+  it('searches only the kind you are looking at', async () => {
+    render(<PluginsSettings />)
+    await show('Skills')
+    fireEvent.change(screen.getByLabelText('Search skills'), { target: { value: 'web' } })
+    expect(screen.getByText('No skill matches that.')).toBeInTheDocument()
+    expect(screen.queryByText('Web search')).not.toBeInTheDocument()
   })
 
   it('chooses the bots that get a package', async () => {
     render(<PluginsSettings />)
+    await show('MCP servers')
     fireEvent.click(await screen.findByText('github'))
     const picker = screen.getByRole('group', { name: 'Bots that use github' })
     const hexbot = within(picker).getByRole('button', { name: 'HexBot' })
@@ -145,18 +159,18 @@ describe('Settings, Plugins', () => {
   it('shows one switch per plugin for the bot you pick', async () => {
     render(<PluginsSettings />)
     fireEvent.click(await screen.findByRole('tab', { name: 'Owl' }))
+    await show('Skills')
     const toggle = screen.getByRole('switch', { name: 'pdf for Owl' })
     expect(toggle).not.toBeChecked()
     fireEvent.click(toggle)
     await waitFor(() =>
       expect(pluginsSetBots).toHaveBeenCalledWith('skill', 'pdf', ['hexbot', 'owl'])
     )
-    // A built-in tool that isn't set up says so instead of offering a switch.
-    expect(screen.queryByRole('switch', { name: 'Computer use for Owl' })).not.toBeInTheDocument()
   })
 
   it('fills in a server value without sending the others back', async () => {
     render(<PluginsSettings />)
+    await show('MCP servers')
     fireEvent.click(await screen.findByText('github'))
     fireEvent.change(screen.getByLabelText('GITHUB_TOKEN for github'), {
       target: { value: 'ghp_0123456789' }
@@ -171,6 +185,7 @@ describe('Settings, Plugins', () => {
 
   it('adds a server with a skill for your bots', async () => {
     render(<PluginsSettings />)
+    await show('MCP servers')
     fireEvent.click(await screen.findByRole('button', { name: 'Add MCP server' }))
     fireEvent.change(screen.getByLabelText('MCP server name'), { target: { value: 'linear' } })
     fireEvent.change(screen.getByLabelText('MCP command or URL'), {
@@ -201,26 +216,11 @@ describe('Settings, Plugins', () => {
 
   it('removes a package for every bot', async () => {
     render(<PluginsSettings />)
+    await show('MCP servers')
     fireEvent.click(await screen.findByText('github'))
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
     await waitFor(() => expect(pluginsRemove).toHaveBeenCalledWith('github'))
     await waitFor(() => expect(screen.queryByText('github')).not.toBeInTheDocument())
-  })
-
-  it('takes a built-in tool that is not set up away but does not give it', async () => {
-    const base = list()
-    vi.mocked(pluginsList).mockResolvedValue({
-      ...base,
-      capabilities: [{ ...base.capabilities[0]!, bots: ['owl'] }]
-    })
-    render(<PluginsSettings />)
-    fireEvent.click(await screen.findByText('Computer use'))
-    const picker = screen.getByRole('group', { name: 'Bots that use Computer use' })
-    expect(within(picker).getByRole('button', { name: 'HexBot' })).toBeDisabled()
-    fireEvent.click(within(picker).getByRole('button', { name: 'Owl' }))
-    await waitFor(() =>
-      expect(pluginsSetBots).toHaveBeenCalledWith('capability', 'computer_use', [])
-    )
   })
 
   it('leaves a connector without a daemon key to the daemon, which knows bot keys', async () => {
@@ -247,6 +247,7 @@ describe('Settings, Plugins', () => {
       skills: [{ ...base.skills[0]!, bots: [], disabled_globally: true }]
     })
     render(<PluginsSettings />)
+    await show('Skills')
     fireEvent.click(await screen.findByText('pdf'))
     fireEvent.click(screen.getByRole('button', { name: 'Undo Off for every bot' }))
     await waitFor(() => expect(skillsSetGlobal).toHaveBeenCalledWith('pdf', true))
@@ -261,7 +262,7 @@ describe('Settings, Plugins', () => {
     await usePlugins.getState().refresh()
     answerOld(list())
     await first
-    expect(usePlugins.getState().plugins.map(item => item.id)).toEqual(['pdf', 'computer_use'])
+    expect(usePlugins.getState().plugins.map(item => item.id)).toEqual(['pdf'])
     expect(usePlugins.getState().loading).toBe(false)
   })
 })

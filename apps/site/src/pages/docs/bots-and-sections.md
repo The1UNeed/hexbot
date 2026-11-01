@@ -15,7 +15,7 @@ Use Bot settings to configure how it works:
 | Profile    | Display name, face, and teammate description.                        |
 | Soul       | How the bot behaves and speaks. You and the bot can edit it.         |
 | Model      | The provider and model this bot uses.                                |
-| Tools      | Local capabilities and the working directory on the daemon computer. |
+| Tools      | Workspace tools, senses, working with other bots, and the working directory. Computer use is in Settings, Manuals. |
 | Connectors | Outside services and MCP servers this bot can use.                   |
 | Skills     | Instructions for particular kinds of work.                           |
 | Approvals  | A bot-specific override of the daemon's approval mode.               |

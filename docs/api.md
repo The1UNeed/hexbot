@@ -261,10 +261,12 @@ owner_id, dream_enabled, notify, approval_mode, workdir | null,
 status, status_detail | null, sections_total, sections_recent: [Section]}`
 
 `available_tools` lists the `tools` keys whose program or service exists on
-the daemon computer: code execution needs Python, browser a browser driver,
-CDP address, or cloud browser key, computer use the cua driver, vision a key
-or endpoint for its vision provider, and voice edge-tts or its provider's
-key. The others are always available. `tools` only reports available tools,
+the daemon computer: computer use needs the cua driver, vision a key or
+endpoint for its vision provider, and voice edge-tts or its provider's key.
+The others are always available. Every bot has `computer_use` while it is
+available, whatever its saved toolsets say; bots run code and browse there.
+`code_execution` and `browser` ran on the daemon's computer and are never
+offered. `tools` only reports available tools,
 and a tool that isn't available is never offered to a model; a frozen section
 that still lists one gets an error when calling it.
 Provider key changes broadcast `hexbot.bots.changed` to every user so paired
@@ -356,9 +358,9 @@ others (`DESIGN.md`, "The primary bot"). There is at most one per owner.
 - `hexbot.bots.update {name, display_name?, title?, description?, persona?,
   provider?, model?, reasoning_effort?, avatar?, face?, dream_enabled?,
   tools?, skills?, notify?, approval_mode?, workdir?}` →
-  `{bot: Bot}`. `tools` accepts `terminal`, `files`, `code_execution`, `browser`,
-  `computer_use`, `vision`, `voice`, `message_bots`, `delegate`, and
-  `scheduling`; toolsets owned by connectors (web, image_gen, mcp-*) are left
+  `{bot: Bot}`. `tools` accepts `terminal`, `files`, `computer_use`,
+  `vision`, `voice`, `message_bots`, `delegate`, and `scheduling`; older
+  clients may still send `code_execution` and `browser`, which are dropped; toolsets owned by connectors (web, image_gen, mcp-*) are left
   as they are. Both capability lists use replace semantics. A tool missing
   from `available_tools` is dropped from `tools` on write. Combined model and
   tool edits use the new provider when checking availability.
@@ -1065,10 +1067,9 @@ settings mirroring.
 
 ### Plugins
 
-Plugins are connectors, skills, capabilities (built-in tools that need a
-program or service on the daemon's computer: `computer_use`, `browser`,
-`code_execution`) and packages. Each is set up once for the daemon and given
-to bots.
+Plugins are connectors (MCP servers among them), skills and packages. Each is
+set up once for the daemon and given to bots. Computer use is not a plugin:
+every bot has it, and `hexbot.computer.*` looks after it.
 
 A package installs an MCP server with the skills that explain it, or several
 skills, as one plugin. It lives in `<home>/plugins/<name>/` as `plugin.json`
@@ -1082,26 +1083,26 @@ on their own (4202 or 4208); remove the package. `bots: null` means every
 bot, including bots created later; a list keeps bots created later off.
 
 - `hexbot.plugins.list {bot?}` → `{connectors: [Plugin], skills: [Plugin],
-  capabilities: [Plugin], packages: [Plugin]}`. A package's server and skills
+  capabilities: [], packages: [Plugin]}`. `capabilities` is always empty and
+  stays for older clients. A package's server and skills
   appear only in its package row. MCP server rows add `server: {transport,
   command?, args?, url?, env: [Value], headers: [Value]}`, where `Value` is
   `{key, set, hint}` and values never leave the daemon; a server with an empty
   value is `not_set_up` with `state_text` "Needs KEY". Package rows add
   `skills: [{name, description}]`, `installed_by`, `connector` and `server`
   for a package with a server, and count as given to a bot while any part is. Every row has `kind` (`connector`, `skill`,
-  `capability`), `id`, `name`, `description`, `ready` and `bots`, the caller's
+  `package`), `id`, `name`, `description`, `ready` and `bots`, the caller's
   bots it is given to. Connector rows are the `Connector` shape; one is
   `ready` when its required keys are saved or its MCP server is enabled,
   independently of an earlier connection error. Skill rows are the `Skill` shape
   without `path`, and their `bots` are the bots whose grant is on, ready or
-  not. Capability rows add `setup`, a sentence on what to install, while not
-  ready. With `bot`, rows add `enabled_for_bot`.
+  not. With `bot`, rows add `enabled_for_bot`.
 - `hexbot.plugins.set_bots {kind, id, bots}` → `{plugin: Plugin}`. Gives the
   plugin to exactly the caller's bots in `bots` and takes it from the
   caller's others; other owners' bots are untouched. A plugin that is not
   ready can be taken from bots but not given: 4209, "Set up NAME before
   giving it to a bot." An unknown kind is 4202 and an unknown id 4213.
-  Capabilities change through `hexbot.bots.update {tools}`. It emits the
+  It emits the
   kind's own event (`hexbot.connectors.changed {connector}` or
   `hexbot.skills.changed {name}`) and `hexbot.bots.changed`. For a package
   it switches the server and every skill, and choosing every bot sets
@@ -1224,16 +1225,13 @@ Deleting a bot takes it off every list; the bot's name stays reserved until that
 
 Changes, including a bot's sign-in card, emit `hexbot.passwords.changed {}`.
 
-The bot tool `hexbot_passwords` is offered to a bot with Browser or Computer
-use, in its own chat and its scheduled jobs; rooms and threads between bots
-never get it. `list` returns `{id, title, site, username, has_code}`. `ask`
-shows the sign-in card (refused in a job); the login it saves goes to every
-bot. `fill {id, fields: [{field: username | password | code, ref |
-coordinate}]}` types into the browser only when the page's host is the
-login's host or one inside the other, and never from an https login into an
-http page; the secrets reach agent-browser on stdin and every later browser
-result in that section has them blanked out. On the bots' computer it asks
-first unless the bot runs in Bypass. The primary bot, in its own chat, also
+The bot tool `hexbot_passwords` is offered to a bot with Computer use, in
+its own chat and its scheduled jobs; rooms and threads between bots never get
+it. `list` returns `{id, title, site, username, has_code}`. `ask` shows the
+sign-in card (refused in a job); the login it saves goes to every bot. `fill
+{id, fields: [{field: username | password | code, coordinate}]}` types on the
+bots' computer and asks first unless the bot runs in Bypass. A field with a
+`ref`, from the daemon's retired browser, is refused. The primary bot, in its own chat, also
 has `share {id, bots}`, `update {id, title?, url?, username?}` and `delete`
 (always asks).
 
@@ -1593,7 +1591,7 @@ on the pairing code or grant's single-use protection instead. CORS exposes
 - `hexbot devices list|revoke`, `hexbot bots list|create|delete`,
   `hexbot rooms list`, and `hexbot send <bot> <text>`.
 - `hexbot plugins [list [--bot NAME]]` and `hexbot plugins assign
-  connector|skill|capability ID [BOT ...]`: `hexbot.plugins.list` and
+  connector|skill|package ID [BOT ...]`: `hexbot.plugins.list` and
   `hexbot.plugins.set_bots`, with or without a running daemon.
 - Native commands use the running daemon when available, preserving event
   delivery and the single runtime owner. Offline mutations require its home lock.

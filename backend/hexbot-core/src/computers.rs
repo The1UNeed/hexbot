@@ -1324,7 +1324,7 @@ pub fn descriptor() -> Value {
     let point = json!({"type":"array","items":{"type":"integer"},"minItems":2,"maxItems":2});
     json!({
         "name": "computer_use",
-        "description": "Use the computer your bots share: a Linux desktop with a browser and a terminal, separate from the user's computer and your workspace. It starts on first use. Other bots may work on it too, one action at a time, and the user can watch and take over, so look before you act. Start with screenshot; coordinates are pixels in the latest screenshot. After an action that changes the screen, look again, or pass capture_after. Use shell for installs and files on that computer and open for a URL. If the user has taken over, wait for them to hand it back.",
+        "description": "Use the computer your bots share: a Linux desktop with a browser and a terminal, separate from the user's computer and your workspace. Run code, install programs and browse the web there, not on the user's computer. It starts on first use. Other bots may work on it too, one action at a time, and the user can watch and take over, so look before you act. Start with screenshot; coordinates are pixels in the latest screenshot. After an action that changes the screen, look again, or pass capture_after. Use shell for installs and files on that computer and open for a URL. If the user has taken over, wait for them to hand it back.",
         "parameters": {
             "type": "object",
             "properties": {

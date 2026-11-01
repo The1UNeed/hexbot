@@ -11,7 +11,6 @@ pub(super) const NAME: &str = "hexbot_plugins";
 const SECTIONS: &[(&str, &str)] = &[
     ("connectors", "connector"),
     ("skills", "skill"),
-    ("capabilities", "capability"),
     ("packages", "package"),
 ];
 
@@ -20,7 +19,7 @@ pub(super) fn descriptor() -> Value {
     json!({
         "name": NAME,
         "label": "Plugins",
-        "description": "See and add plugins: connectors (services Hexbot supports), MCP servers, skills, built-in tools such as the browser, and packages. list shows every plugin and whether it is on for you; ids look like skill:pdf or package:github. install adds a package, an MCP server and the skills that explain it, or skills alone, and turns it on for you. enable turns a plugin on for you; disable turns it off. Installing and enabling always ask the user first. Read the mcp skill before installing an MCP server, and skill-create before writing skills. The primary bot, in its own chat, can pass bot to act for another bot, and remove a package for every bot.",
+        "description": "See and add plugins: connectors (services Hexbot supports), MCP servers, skills, and packages. list shows every plugin and whether it is on for you; ids look like skill:pdf or package:github. install adds a package, an MCP server and the skills that explain it, or skills alone, and turns it on for you. enable turns a plugin on for you; disable turns it off. Installing and enabling always ask the user first. Read the mcp skill before installing an MCP server, and skill-create before writing skills. The primary bot, in its own chat, can pass bot to act for another bot, and remove a package for every bot.",
         "parameters": {
             "type": "object",
             "properties": {

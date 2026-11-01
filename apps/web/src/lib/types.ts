@@ -212,8 +212,6 @@ export type ReasoningEffort = 'high' | 'low' | 'max' | 'medium' | 'minimal' | 'o
 
 /** Keys of `Bot.tools`; each maps to one Hexbot toolset on the daemon. */
 export type BotTool =
-  | 'browser'
-  | 'code_execution'
   | 'computer_use'
   | 'delegate'
   | 'files'
@@ -328,16 +326,6 @@ export interface PluginServer {
 
 /** `hexbot.plugins.list`: each kind with the bots it is given to. */
 export interface PluginsList {
-  capabilities: {
-    bots: string[]
-    description: string
-    id: string
-    kind: 'capability'
-    name: string
-    ready: boolean
-    /** What setting it up takes, when it isn't. */
-    setup: null | string
-  }[]
   /** Connectors and MCP servers; a server also carries `server`. */
   connectors: (Connector & {
     bots: string[]
@@ -370,7 +358,7 @@ export interface PluginsList {
   })[]
 }
 
-export type PluginKind = 'capability' | 'connector' | 'package' | 'skill'
+export type PluginKind = 'connector' | 'package' | 'skill'
 
 /** One row of Settings, Plugins, whatever its kind. */
 export interface Plugin {
