@@ -8,6 +8,9 @@ use super::*;
 const TEXT_LIMIT: usize = 2 * 1024 * 1024;
 /// Anything shown read-only, as a data URL, matching the attachment limit.
 const READ_LIMIT: u64 = 45 * 1024 * 1024;
+/// One panel save at a time, so two clients saving from the same version
+/// cannot both pass the version check: the second sees the first's save.
+static SAVES: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 impl Runtime {
     pub(super) async fn read_file(&self, s: &Live, p: &Value) -> Result<Value> {
@@ -168,6 +171,9 @@ fn replace(path: &Path, bytes: &[u8], meta: &fs::Metadata) -> Result<()> {
 /// time the editor last read; a different one means the bot changed the file
 /// since, and the save is refused rather than overwriting that change.
 pub(super) fn write_text(path: &Path, text: &str, expected: Option<u64>) -> Result<Value> {
+    let _save = SAVES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if text.len() > TEXT_LIMIT {
         return Err(Error::new(
             4202,
@@ -290,6 +296,35 @@ mod tests {
         );
         assert_eq!(fs::read_to_string(&path).unwrap(), "the bot's version");
         assert!(write_text(&path, "third", None).is_ok());
+    }
+
+    #[test]
+    fn two_saves_from_the_same_version_cannot_both_land() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = fs::canonicalize(dir.path()).unwrap().join("plan.md");
+        fs::write(&path, "first").unwrap();
+        // An old stamp, so any save moves it.
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(1_000))
+            .unwrap();
+        let opened = read_payload(&path).unwrap()["modified"].as_u64().unwrap();
+
+        let start = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let saves = ["from the app", "from the phone"].map(|text| {
+            let (path, start) = (path.clone(), start.clone());
+            std::thread::spawn(move || {
+                start.wait();
+                write_text(&path, text, Some(opened)).map_err(|error| error.code)
+            })
+        });
+        let mut results = saves.map(|save| save.join().unwrap()).to_vec();
+        results.sort_by_key(|result| result.is_err());
+
+        assert!(results[0].is_ok());
+        assert_eq!(results[1], Err(4209));
     }
 
     #[test]

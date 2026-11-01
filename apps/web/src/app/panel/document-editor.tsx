@@ -49,6 +49,8 @@ export interface DocumentEditorProps {
   /** In the side panel beside the chat, instead of over the whole window. */
   inline?: boolean
   onClose: () => void
+  /** Set to the editor's save, so a caller can flush a pending edit first. */
+  flushRef?: { current: (() => Promise<boolean>) | null }
   /** The editor took on a new `value`: what it shows is that version now. */
   onFollow?: () => void
   onSave: (text: string) => Promise<void>
@@ -219,6 +221,7 @@ export function DocumentEditor({
   about,
   cap,
   fileName,
+  flushRef,
   footer,
   inline = false,
   onClose,
@@ -318,6 +321,18 @@ export function DocumentEditor({
   }, [])
 
   const saveRef = useRef(save)
+
+  useEffect(() => {
+    if (!flushRef) {
+      return
+    }
+
+    flushRef.current = save
+
+    return () => {
+      flushRef.current = null
+    }
+  }, [flushRef, save])
 
   function schedule() {
     window.clearTimeout(timer.current)

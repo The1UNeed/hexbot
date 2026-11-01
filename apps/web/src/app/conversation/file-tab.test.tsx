@@ -343,6 +343,83 @@ describe('a file beside the chat', () => {
     expect(screen.getByLabelText('pins.csv source')).toHaveValue('pin,use\nGPIO9,BOOT')
   })
 
+  async function openPins() {
+    api.filesRead.mockResolvedValue({
+      mime: 'text/csv',
+      name: 'pins.csv',
+      path: '/work/pins.csv',
+      modified: 3,
+      size: 7,
+      text: 'pin,use'
+    })
+    act(() =>
+      visualsActions().open(
+        fileTab('pins.csv', { mime: 'text/csv', path: '/work/pins.csv', sessionId: 's' })
+      )
+    )
+    render(<VisualPanel />)
+
+    return screen.findByLabelText('pins.csv source')
+  }
+
+  it('moves to the new version when the bot rewrites the file unchanged', async () => {
+    const field = await openPins()
+    api.filesRead.mockResolvedValue({
+      mime: 'text/csv',
+      name: 'pins.csv',
+      path: '/work/pins.csv',
+      modified: 9,
+      size: 7,
+      text: 'pin,use'
+    })
+    act(() => transcript([call({ args: { path: '/work/pins.csv' }, name: 'write' })]))
+    await waitFor(() => expect(api.filesRead).toHaveBeenCalledTimes(2))
+
+    fireEvent.change(field, { target: { value: 'pin,use\nGPIO2,ADC' } })
+    await waitFor(
+      () =>
+        expect(api.filesWrite).toHaveBeenCalledWith('s', '/work/pins.csv', 'pin,use\nGPIO2,ADC', 9),
+      { timeout: 3000 }
+    )
+  })
+
+  it('keeps the editor and its edit when a refresh fails', async () => {
+    const field = await openPins()
+    fireEvent.change(field, { target: { value: 'pin,use\nGPIO2,ADC' } })
+    api.filesRead.mockRejectedValue(new Error('not connected'))
+    act(() => transcript([call({ args: { path: '/work/pins.csv' }, name: 'edit' })]))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('not connected')
+    expect(screen.getByLabelText('pins.csv source')).toHaveValue('pin,use\nGPIO2,ADC')
+  })
+
+  it('saves the edit on screen before a quick tool asks the bot', async () => {
+    const field = await openPins()
+    fireEvent.change(field, { target: { value: 'pin,use\nGPIO2,ADC' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Fix bugs' }))
+
+    await waitFor(() => expect(chat.sendText).toHaveBeenCalled())
+    expect(api.filesWrite).toHaveBeenCalledWith('s', '/work/pins.csv', 'pin,use\nGPIO2,ADC', 3)
+    expect(api.filesWrite.mock.invocationCallOrder[0]!).toBeLessThan(
+      chat.sendText.mock.invocationCallOrder[0]!
+    )
+  })
+
+  it('sends nothing when the edit on screen does not save', async () => {
+    const field = await openPins()
+    api.filesWrite.mockRejectedValue(new Error('the file changed since it was opened'))
+    fireEvent.change(field, { target: { value: 'pin,use\nGPIO2,ADC' } })
+    fireEvent.change(screen.getByLabelText('Ask Scout about this file'), {
+      target: { value: 'Sort by pin' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Ask Scout' }))
+
+    await waitFor(() => expect(api.filesWrite).toHaveBeenCalled())
+    await act(async () => {})
+    expect(chat.sendText).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('Ask Scout about this file')).toHaveValue('Sort by pin')
+  })
+
   it('offers a download for a file it cannot show', async () => {
     api.filesRead.mockResolvedValue({
       data_url: 'data:application/zip;base64,UEs=',

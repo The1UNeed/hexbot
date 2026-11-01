@@ -262,6 +262,8 @@ function QuickTools({
     try {
       await onSend(ask.trim())
       setText('')
+    } catch {
+      // Not sent: the request stays in the field, and the editor shows why.
     } finally {
       setSending(false)
     }
@@ -335,10 +337,19 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
   const latest = useRef(file)
   latest.current = file
   const base = useRef<null | number>(null)
+  // The text of that version: a refresh with the same text (the bot rewrote the
+  // file unchanged) moves the version along without the editor taking anything.
+  const baseText = useRef<string | undefined>(undefined)
 
   if (base.current === null && file) {
     base.current = file.modified
+    baseText.current = file.text
+  } else if (file?.text !== undefined && file.text === baseText.current) {
+    base.current = file.modified
   }
+
+  // The editor's save: a request to the bot waits for the edit on screen to land first.
+  const flush = useRef<(() => Promise<boolean>) | null>(null)
 
   const name = tab.title
   const path = tab.file.path
@@ -347,6 +358,11 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
   const mime = file?.mime ?? tab.file.mime
 
   const ask = async (request: string) => {
+    if (flush.current && !(await flush.current())) {
+      // The editor says why the edit did not save; nothing is sent on stale text.
+      throw new Error('the edit on screen did not save')
+    }
+
     await sendText(
       tab.file.sessionId,
       selected?.section ?? null,
@@ -366,7 +382,7 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
 
   let body: React.ReactNode
 
-  if (error) {
+  if (error && !file) {
     body = (
       <p
         className="m-4 rounded-[12px] bg-danger/10 px-3.5 py-2.5 text-[length:var(--text-secondary)] text-danger"
@@ -385,6 +401,14 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
         id={`visual-tabpanel-${tab.toolId}`}
         role="tabpanel"
       >
+        {error ? (
+          <p
+            className="mx-3 mt-2 rounded-[12px] bg-danger/10 px-3 py-2 text-[length:var(--text-meta)] text-danger"
+            role="alert"
+          >
+            {error}
+          </p>
+        ) : null}
         {updated ? (
           <span className="hex-fade pointer-events-none absolute top-14 right-4 z-10 rounded-full bg-info/12 px-2.5 py-1 text-[length:var(--text-meta)] font-medium text-info">
             Updated by {botName}
@@ -392,12 +416,14 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
         ) : null}
         <DocumentEditor
           fileName={name}
+          flushRef={flush}
           footer={tools}
           inline
           key={path}
           onClose={() => undefined}
           onFollow={() => {
             base.current = latest.current?.modified ?? base.current
+            baseText.current = latest.current?.text
           }}
           onSave={async next => {
             try {
@@ -409,6 +435,7 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
               )
 
               base.current = result.modified
+              baseText.current = next
               saved(next, result.modified, result.size)
             } catch (cause) {
               if (cause instanceof JsonRpcGatewayError && cause.code === 4209) {
@@ -464,6 +491,14 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
       id={`visual-tabpanel-${tab.toolId}`}
       role="tabpanel"
     >
+      {error && file ? (
+        <p
+          className="mx-3 mt-2 rounded-[12px] bg-danger/10 px-3 py-2 text-[length:var(--text-meta)] text-danger"
+          role="alert"
+        >
+          {error}
+        </p>
+      ) : null}
       <div className="min-h-0 flex-1 overflow-auto p-1">{body}</div>
       {tools}
     </div>

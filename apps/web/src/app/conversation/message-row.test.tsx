@@ -238,6 +238,23 @@ describe('MessageRow files', () => {
     expect(onImage).toHaveBeenCalledWith('data:image/png;base64,AA==')
   })
 
+  it('keeps Recall on a message of files alone, with nothing to copy', () => {
+    const onRecall = vi.fn()
+    render(
+      <MessageRow
+        message={message({ attachments: [file], role: 'user', text: '' })}
+        onFile={() => {}}
+        onImage={() => {}}
+        onRecall={onRecall}
+        onRetry={() => {}}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Recall' }))
+    expect(onRecall).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('button', { name: 'Copy' })).toBeNull()
+  })
+
   it('plays a video where it is', () => {
     render(
       <MessageRow

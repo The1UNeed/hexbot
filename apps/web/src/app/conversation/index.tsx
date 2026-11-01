@@ -744,6 +744,8 @@ export const MessageRow = memo(function MessageRow({
           : [])
       ]
 
+  // Files with no words: nothing to copy, but Recall still applies.
+  const recallOnly = actions.filter(action => action.label !== 'Copy')
   const last = bubbles.length - 1
   const name = bot?.display_name ?? 'Bot'
 
@@ -795,7 +797,7 @@ export const MessageRow = memo(function MessageRow({
   }
 
   // What the message carries sits above its words, outside the bubble. A
-  // message of files alone keeps its delivery mark beside them.
+  // message of files alone keeps its delivery mark and Recall beside them.
   if (message.attachments.length) {
     column.unshift(
       <div
@@ -814,6 +816,9 @@ export const MessageRow = memo(function MessageRow({
         />
         {!bubbles.length && delivery ? (
           <DeliveryMark delivery={delivery} onRetry={retryMark} />
+        ) : null}
+        {!bubbles.length && delivery !== 'sending' && recallOnly.length > 0 && !message.streaming ? (
+          <BubbleActions actions={recallOnly} />
         ) : null}
       </div>
     )
