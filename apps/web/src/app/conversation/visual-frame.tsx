@@ -15,7 +15,7 @@ import { cn } from '../../lib/cn'
 import { useUi } from '../../stores/ui'
 import { isFileTab, useVisuals, visualsActions } from '../../stores/visuals'
 
-import { FileTabView } from './file-tab'
+import { closeTabs, FileTabView } from './file-tab'
 import {
   hostContext,
   mixHex,
@@ -419,7 +419,7 @@ export function VisualPanel() {
                 <button
                   aria-label={`Close ${tab.title}`}
                   className="hex-focus mr-1 grid size-5 shrink-0 place-items-center rounded-full text-muted hover:bg-foreground/[0.08] hover:text-foreground"
-                  onClick={() => visualsActions().close(tab.toolId)}
+                  onClick={() => void closeTabs([tab.toolId])}
                   type="button"
                 >
                   <X size={11} />
@@ -428,7 +428,10 @@ export function VisualPanel() {
             )
           })}
         </div>
-        <Action label="Close the side panel" onClick={() => visualsActions().closeAll()}>
+        <Action
+          label="Close the side panel"
+          onClick={() => void closeTabs(tabs.map(tab => tab.toolId))}
+        >
           <ChevronsRight size={16} />
         </Action>
       </div>

@@ -443,6 +443,23 @@ describe('a file beside the chat', () => {
     expect(screen.getByLabelText('Ask Scout about this file')).toHaveValue('Sort by pin')
   })
 
+  it('keeps a file open when closing the panel cannot save its edit', async () => {
+    const field = await openPins()
+    api.filesWrite.mockRejectedValue(new Error('not connected'))
+    fireEvent.change(field, { target: { value: 'pin,use\nGPIO2,ADC' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Close the side panel' }))
+
+    await waitFor(() => expect(api.filesWrite).toHaveBeenCalled())
+    await act(async () => {})
+    expect(useVisuals.getState().tabs).toHaveLength(1)
+    expect(screen.getByLabelText('pins.csv source')).toHaveValue('pin,use\nGPIO2,ADC')
+
+    // Once it saves, closing closes.
+    api.filesWrite.mockResolvedValue({ modified: 5, path: '/work/pins.csv', size: 20 })
+    fireEvent.click(screen.getByRole('button', { name: 'Close the side panel' }))
+    await waitFor(() => expect(useVisuals.getState().tabs).toHaveLength(0))
+  })
+
   it('offers a download for a file it cannot show', async () => {
     api.filesRead.mockResolvedValue({
       data_url: 'data:application/zip;base64,UEs=',

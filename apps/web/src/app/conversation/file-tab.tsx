@@ -80,6 +80,26 @@ export function openFile(sessionId: string, target: FileTarget) {
   )
 }
 
+/** Each open file's save, by tab, so closing a tab can save it first. */
+const flushes = new Map<string, () => Promise<boolean>>()
+
+/**
+ * Closes side tabs, saving each open file first. A file whose edit does not
+ * save stays open and is shown, with the editor saying why; nothing is lost.
+ */
+export async function closeTabs(toolIds: string[]) {
+  for (const toolId of toolIds) {
+    const flush = flushes.get(toolId)
+
+    // A visual has nothing to save and closes at once.
+    if (!flush || (await flush())) {
+      visualsActions().close(toolId)
+    } else {
+      visualsActions().activate(toolId)
+    }
+  }
+}
+
 /** Formatted as a document; any other text opens as plain text. */
 const DOCUMENT = /\.(md|markdown|txt)$/i
 
@@ -350,6 +370,14 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
 
   // The editor's save: a request to the bot waits for the edit on screen to land first.
   const flush = useRef<(() => Promise<boolean>) | null>(null)
+
+  useEffect(() => {
+    flushes.set(tab.toolId, () => flush.current?.() ?? Promise.resolve(true))
+
+    return () => {
+      flushes.delete(tab.toolId)
+    }
+  }, [tab.toolId])
 
   const name = tab.title
   const path = tab.file.path
