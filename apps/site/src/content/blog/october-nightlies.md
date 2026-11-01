@@ -1,7 +1,7 @@
 ---
 title: Everything new in the October nightlies
-description: A primary bot that looks after the others, heartbeats, a computer your bots share, charts in the chat, faces with feelings, plugins, a phone app, and a daemon rewritten in Rust.
-date: 2026-10-30
+description: A primary bot that looks after the others, heartbeats, a computer your bots share, charts in the chat, faces with feelings, plugins, passwords, a phone app, and a daemon rewritten in Rust.
+date: 2026-11-01
 image: /screens/faces.webp
 ---
 
@@ -73,6 +73,10 @@ Everything a bot can use beyond its own tools now lives on one page: Settings, *
 ![Settings, Plugins, with tabs for Connectors, MCP servers and Skills, a row of bots to filter by, and connectors such as web search.](/screens/plugins.webp)
 
 A **plugin package** installs an MCP server together with the skills that explain how to use it. And when a bot needs a service it can't reach, it can find a server for it and ask to install it. You see exactly what it runs, every value it passes, and the skills it adds. Installing always asks, even in Bypass, and a plugin a bot installs is on for that bot only. See [Plugins](/docs/tools-and-skills/#plugins).
+
+## Passwords your bots never see
+
+When a bot needs to sign in to a website, it shows a **Sign in** card in its chat. What you type goes straight to the daemon and is saved in Settings, **Passwords**. Hexbot types it into the page on the bots' computer, and the bot never reads it. Passwords live in one KeePass file per person, so KeePassXC can open it. See [Passwords](/docs/passwords/).
 
 ## One chat per bot, and Recall
 
