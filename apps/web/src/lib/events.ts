@@ -315,9 +315,12 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
 
         const shown = (live && recalled && transcripts.bySession[live]?.messages) || []
 
+        // A message this client is sending again under a new key was taken
+        // back to go again: it stays.
         const message = shown.find(
           item =>
             item.role === 'user' &&
+            !(item.submission?.status === 'sending' && item.inputId !== recalled?.input_id) &&
             (item.id === recalled?.row_id ||
               (typeof recalled?.input_id === 'string' && item.inputId === recalled.input_id))
         )

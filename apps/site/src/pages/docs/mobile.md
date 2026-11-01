@@ -9,6 +9,13 @@ their chats, rooms, approvals, models, memory, scheduled jobs and paired
 devices.
 Bots run on your daemon's computer while your phone is asleep.
 
+## Get the iPhone beta
+
+Hexbot for iPhone is in beta on TestFlight. On your iPhone or iPad, open
+[the TestFlight invite](https://testflight.apple.com/join/byKAKWMW), install
+TestFlight if asked, then install Hexbot and pair it with your daemon as
+described in [Connect locally](#connect-locally).
+
 iOS 26 uses native Liquid Glass for floating controls. Older iOS uses system
 blur. Android and Reduce Transparency use solid controls. The app follows
 light and dark appearance and supports larger text.

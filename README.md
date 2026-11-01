@@ -43,6 +43,11 @@ Run the installer again to update or repair, change options, or uninstall;
 direct downloads for macOS (Apple Silicon and Intel) and Linux (AppImage and
 deb). [Install](https://hexbot.app/docs/install/) has the details.
 
+**Hexbot for iPhone** is in beta on
+[TestFlight](https://testflight.apple.com/join/byKAKWMW). Like Client, it
+runs no bots itself: pair it with a daemon (Full or Headless) over LAN,
+Tailscale, or Hex Connect.
+
 Stable and Nightly share `~/.hexbot`. Back it up before opening a nightly.
 The app follows the track it was installed from; switch in Settings, Updates.
 `docs/channels.md` has the full matrix.
@@ -72,9 +77,9 @@ The app follows the track it was installed from; switch in Settings, Updates.
   scan is incomplete.
   Repositories created during a command are not protected on Linux. macOS
   filename rules also cover new `.git` metadata directories.
-- **Your hardware.** The daemon runs where you install it. Pair devices over
-  LAN or Tailscale, revoke them from settings, and delete conversations
-  together with the memory they produced.
+- **Your hardware.** The daemon runs where you install it. Pair devices,
+  including the iPhone app, over LAN or Tailscale, revoke them from settings,
+  and delete conversations together with the memory they produced.
 - **Hex Connect.** Sign in once, reach your daemon from outside the LAN in the app or a browser.
   Connect brokers identity and a hostname; chat traffic never passes through
   it.
