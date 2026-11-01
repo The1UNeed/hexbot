@@ -273,17 +273,22 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), "second");
         assert_eq!(saved["size"], 6);
 
-        // The bot writes in between: the stale editor may not overwrite it.
-        std::thread::sleep(Duration::from_millis(20));
+        // The bot writes in between, stamping a time the editor never read:
+        // the stale editor may not overwrite it.
         fs::write(&path, "the bot's version").unwrap();
         let stale = saved["modified"].as_u64().unwrap();
-        if read_payload(&path).unwrap()["modified"].as_u64().unwrap() != stale {
-            assert_eq!(
-                write_text(&path, "third", Some(stale)).unwrap_err().code,
-                4209
-            );
-            assert_eq!(fs::read_to_string(&path).unwrap(), "the bot's version");
-        }
+        let bot_time = std::time::UNIX_EPOCH + Duration::from_millis(stale + 60_000);
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(bot_time)
+            .unwrap();
+        assert_eq!(
+            write_text(&path, "third", Some(stale)).unwrap_err().code,
+            4209
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "the bot's version");
         assert!(write_text(&path, "third", None).is_ok());
     }
 

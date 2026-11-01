@@ -188,7 +188,28 @@ function useOpenedFile(tab: FileTab) {
   return { error, file, saved, updated, working }
 }
 
-/** A data URL the panel can frame or download; PDFs need an object URL to open in a frame. */
+/**
+ * A base64 data URL as a Blob, decoded here: the app's CSP lets the page fetch
+ * only http(s) and websockets, so `fetch('data:…')` is refused in Electron.
+ */
+export function blobFromDataUrl(dataUrl: string): Blob | null {
+  const match = /^data:([^;,]*)(?:;[^,]*)?;base64,(.*)$/s.exec(dataUrl)
+
+  if (!match) {
+    return null
+  }
+
+  const binary = atob(match[2]!)
+  const bytes = new Uint8Array(binary.length)
+
+  for (let index = 0; index < binary.length; index++) {
+    bytes[index] = binary.charCodeAt(index)
+  }
+
+  return new Blob([bytes], { type: match[1] || 'application/octet-stream' })
+}
+
+/** An object URL the panel can frame or download; PDFs need one to open in a frame. */
 function useObjectUrl(dataUrl?: string): string | undefined {
   const [url, setUrl] = useState<string>()
 
@@ -199,13 +220,9 @@ function useObjectUrl(dataUrl?: string): string | undefined {
       return
     }
 
-    let made: string | undefined
-    void fetch(dataUrl)
-      .then(response => response.blob())
-      .then(blob => {
-        made = URL.createObjectURL(blob)
-        setUrl(made)
-      })
+    const blob = blobFromDataUrl(dataUrl)
+    const made = blob ? URL.createObjectURL(blob) : undefined
+    setUrl(made)
 
     return () => {
       if (made) {

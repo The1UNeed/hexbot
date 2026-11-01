@@ -7,7 +7,7 @@ import { useTranscripts } from '../../stores/transcripts'
 import { useUi } from '../../stores/ui'
 import { fileTab, isFileTab, useVisuals, visualsActions } from '../../stores/visuals'
 
-import { editRequest, filesOf, mimeOf, openFile } from './file-tab'
+import { blobFromDataUrl, editRequest, filesOf, mimeOf, openFile } from './file-tab'
 import { VisualPanel } from './visual-frame'
 
 const api = vi.hoisted(() => ({ filesRead: vi.fn(), filesWrite: vi.fn() }))
@@ -120,6 +120,16 @@ describe('editRequest', () => {
     )
     expect(editRequest('Summarise it', 'deck.pdf')).toBe('Summarise it\n\nThis is about deck.pdf.')
     expect(mimeOf('Report.PDF')).toBe('application/pdf')
+  })
+})
+
+describe('blobFromDataUrl', () => {
+  it('decodes without fetch, which the app CSP refuses for data: URLs', async () => {
+    const blob = blobFromDataUrl('data:application/pdf;base64,JVBERi0=')!
+
+    expect(blob.type).toBe('application/pdf')
+    expect(await blob.text()).toBe('%PDF-')
+    expect(blobFromDataUrl('data:text/plain,hello')).toBeNull()
   })
 })
 
@@ -298,6 +308,39 @@ describe('a file beside the chat', () => {
         ),
       { timeout: 3000 }
     )
+  })
+
+  it('keeps an unsaved edit when another tab is shown and back', async () => {
+    api.filesRead.mockImplementation((_session: string, path: string) =>
+      Promise.resolve({
+        mime: 'text/csv',
+        modified: 3,
+        name: path.split('/').pop(),
+        path,
+        size: 7,
+        text: 'pin,use'
+      })
+    )
+    api.filesWrite.mockRejectedValue(new Error('the file changed since it was opened'))
+    act(() => {
+      visualsActions().open(
+        fileTab('pins.csv', { mime: 'text/csv', path: '/work/pins.csv', sessionId: 's' })
+      )
+      visualsActions().open(
+        fileTab('parts.csv', { mime: 'text/csv', path: '/work/parts.csv', sessionId: 's' })
+      )
+      visualsActions().activate('file:/work/pins.csv')
+    })
+    render(<VisualPanel />)
+
+    fireEvent.change(await screen.findByLabelText('pins.csv source'), {
+      target: { value: 'pin,use\nGPIO9,BOOT' }
+    })
+    act(() => visualsActions().activate('file:/work/parts.csv'))
+    await screen.findByLabelText('parts.csv source')
+    act(() => visualsActions().activate('file:/work/pins.csv'))
+
+    expect(screen.getByLabelText('pins.csv source')).toHaveValue('pin,use\nGPIO9,BOOT')
   })
 
   it('offers a download for a file it cannot show', async () => {

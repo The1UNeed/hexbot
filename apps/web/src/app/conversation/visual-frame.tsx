@@ -432,15 +432,18 @@ export function VisualPanel() {
           <ChevronsRight size={16} />
         </Action>
       </div>
+      {/* Every open file stays mounted, hidden when another tab shows, so an
+          edit that has not saved survives a switch of tabs. */}
       {tabs.map(tab =>
         isFileTab(tab) ? (
-          tab.toolId === active ? (
-            <div className="min-h-0 flex-1 px-3 pb-3" key={tab.toolId}>
-              <div className="h-full overflow-hidden rounded-[16px] bg-background shadow-card">
-                <FileTabView shown tab={tab} />
-              </div>
+          <div
+            className={cn('min-h-0 flex-1 px-3 pb-3', tab.toolId !== active && 'hidden')}
+            key={tab.toolId}
+          >
+            <div className="h-full overflow-hidden rounded-[16px] bg-background shadow-card">
+              <FileTabView shown={tab.toolId === active} tab={tab} />
             </div>
-          ) : null
+          </div>
         ) : null
       )}
       <div
