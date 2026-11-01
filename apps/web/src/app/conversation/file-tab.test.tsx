@@ -204,6 +204,29 @@ describe('a file beside the chat', () => {
     expect(screen.getByText('Updated by Scout')).toBeInTheDocument()
   })
 
+  it('switches to source when the bot adds what the formatted view would drop', async () => {
+    act(() =>
+      visualsActions().open(
+        fileTab('plan.md', { mime: 'text/markdown', path: '/work/plan.md', sessionId: 's' })
+      )
+    )
+    render(<VisualPanel />)
+    expect(await screen.findByText('Ship the board Friday')).toBeInTheDocument()
+
+    const table = 'Ship the board Friday\n\n| Pin | Use |\n| --- | --- |\n| GPIO15 | JTAG |'
+    api.filesRead.mockResolvedValue({
+      mime: 'text/markdown',
+      modified: 2,
+      name: 'plan.md',
+      path: '/work/plan.md',
+      size: table.length,
+      text: table
+    })
+    act(() => transcript([call({ args: { path: '/work/plan.md' }, name: 'edit' })]))
+
+    expect(await screen.findByLabelText('plan.md source')).toHaveValue(table)
+  })
+
   it('holds the quick tools while the bot is working', async () => {
     transcript([], true)
     act(() =>

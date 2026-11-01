@@ -38,14 +38,28 @@ impl Runtime {
             crate::catalog::profile(&self.home, &s.bot)?.join("artifacts"),
             store::session_dir(&self.home, &s.stored)?.join("attachments"),
         ];
-        resolve_in(&roots, value)
+        resolve_in(&roots, value, crate::osutil::user_home().as_deref())
+    }
+}
+
+/// `~`, `$HOME` or `${HOME}` at the start is the user's home, as the bot's file
+/// tools read it, so a path the bot wrote with one opens here too.
+fn expand_home(value: &str, home: Option<&Path>) -> PathBuf {
+    let rest = ["${HOME}", "$HOME", "~"].iter().find_map(|prefix| {
+        value
+            .strip_prefix(prefix)
+            .filter(|rest| rest.is_empty() || rest.starts_with('/'))
+    });
+    match (rest, home) {
+        (Some(rest), Some(home)) => home.join(rest.trim_start_matches('/')),
+        _ => PathBuf::from(value),
     }
 }
 
 /// The existing regular file `value` names, once symlinks are resolved, if it
 /// is inside one of `roots`. A relative path is taken from the first root.
-pub(super) fn resolve_in(roots: &[PathBuf], value: &str) -> Result<PathBuf> {
-    let input = PathBuf::from(value);
+pub(super) fn resolve_in(roots: &[PathBuf], value: &str, home: Option<&Path>) -> Result<PathBuf> {
+    let input = expand_home(value, home);
     let input = if input.is_absolute() {
         input
     } else {
@@ -216,22 +230,61 @@ mod tests {
         fs::write(dir.path().join("secret.txt"), "no").unwrap();
 
         assert!(
-            resolve_in(&roots, "plan.md")
+            resolve_in(&roots, "plan.md", None)
                 .unwrap()
                 .ends_with("work/plan.md")
         );
         let attached = roots[1].join("abc-pins.csv");
-        assert!(resolve_in(&roots, attached.to_str().unwrap()).is_ok());
-        assert_eq!(resolve_in(&roots, "../secret.txt").unwrap_err().code, 4302);
+        assert!(resolve_in(&roots, attached.to_str().unwrap(), None).is_ok());
+        assert_eq!(
+            resolve_in(&roots, "../secret.txt", None).unwrap_err().code,
+            4302
+        );
         let outside = dir.path().join("secret.txt");
         assert_eq!(
-            resolve_in(&roots, outside.to_str().unwrap())
+            resolve_in(&roots, outside.to_str().unwrap(), None)
                 .unwrap_err()
                 .code,
             4302
         );
-        assert_eq!(resolve_in(&roots, "missing.md").unwrap_err().code, 4204);
-        assert_eq!(resolve_in(&roots, ".").unwrap_err().code, 4202);
+        assert_eq!(
+            resolve_in(&roots, "missing.md", None).unwrap_err().code,
+            4204
+        );
+        assert_eq!(resolve_in(&roots, ".", None).unwrap_err().code, 4202);
+    }
+
+    #[test]
+    fn a_home_path_opens_as_the_bot_wrote_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let roots = roots(dir.path());
+        fs::write(roots[0].join("plan.md"), "# Plan").unwrap();
+        fs::write(dir.path().join("secret.txt"), "no").unwrap();
+        let home = Some(dir.path());
+
+        for value in [
+            "~/work/plan.md",
+            "$HOME/work/plan.md",
+            "${HOME}/work/plan.md",
+        ] {
+            assert!(
+                resolve_in(&roots, value, home)
+                    .unwrap()
+                    .ends_with("work/plan.md"),
+                "{value}"
+            );
+        }
+        assert_eq!(
+            resolve_in(&roots, "~/secret.txt", home).unwrap_err().code,
+            4302
+        );
+        // Only the whole word: "$HOMEWORK" is a name in the working folder.
+        assert_eq!(
+            resolve_in(&roots, "$HOMEWORK/plan.md", home)
+                .unwrap_err()
+                .code,
+            4204
+        );
     }
 
     #[cfg(unix)]
@@ -243,7 +296,7 @@ mod tests {
         std::os::unix::fs::symlink(dir.path().join("secret.txt"), roots[0].join("link.txt"))
             .unwrap();
 
-        assert_eq!(resolve_in(&roots, "link.txt").unwrap_err().code, 4302);
+        assert_eq!(resolve_in(&roots, "link.txt", None).unwrap_err().code, 4302);
     }
 
     #[test]

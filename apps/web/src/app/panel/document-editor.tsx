@@ -271,7 +271,7 @@ export function DocumentEditor({
   })
 
   // Computed once, as the file opens: a file the formatted view would damage opens as source.
-  const [sourceOnly] = useState(() => plain || loses(value, editor.getMarkdown()))
+  const [sourceOnly, setSourceOnly] = useState(() => plain || loses(value, editor.getMarkdown()))
   const [source, setSource] = useState<null | string>(sourceOnly ? value : null)
   // The source text as it was shown, to tell whether switching back needs to reload the editor.
   const shownSource = useRef(source)
@@ -354,6 +354,14 @@ export function DocumentEditor({
       shownSource.current = value
     } else {
       editor.commands.setContent(value, { contentType: 'markdown', emitUpdate: false })
+
+      // The new text has something the formatted view would drop (the bot added a
+      // table): show it as source from now on, so a later edit cannot lose it.
+      if (loses(value, editor.getMarkdown())) {
+        setSourceOnly(true)
+        setSource(value)
+        shownSource.current = value
+      }
     }
 
     saved.current = value
