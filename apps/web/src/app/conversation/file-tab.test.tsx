@@ -445,6 +445,39 @@ describe('a file beside the chat', () => {
     )
   })
 
+  it('keeps the editor and its edit when the bot makes the file too large to edit here', async () => {
+    api.filesWrite.mockRejectedValue(
+      new JsonRpcGatewayError('the file changed since it was opened', { code: 4209 })
+    )
+    const field = await openPins()
+    fireEvent.change(field, { target: { value: 'pin,use\nGPIO9,BOOT' } })
+
+    const large = {
+      data_url: 'data:text/csv;base64,cGluLHVzZQ==',
+      mime: 'text/csv',
+      modified: 9,
+      name: 'pins.csv',
+      path: '/work/pins.csv',
+      size: 3 * 1024 * 1024,
+      version: 'v9'
+    }
+
+    api.filesRead.mockResolvedValue(large)
+    act(() => transcript([call({ args: { path: '/work/pins.csv' }, name: 'write' })]))
+    await waitFor(() => expect(api.filesRead).toHaveBeenCalledTimes(2))
+
+    expect(
+      await screen.findByText(/Scout changed this file, and it can no longer be edited here/)
+    ).toBeVisible()
+    expect(screen.getByLabelText('pins.csv source')).toHaveValue('pin,use\nGPIO9,BOOT')
+    expect(screen.queryByText(/No preview for this file/)).toBeNull()
+
+    // Only the user's choice replaces the editor.
+    fireEvent.click(screen.getByRole('button', { name: "Load Scout's version" }))
+    expect(await screen.findByText(/No preview for this file/)).toBeVisible()
+    expect(screen.queryByLabelText('pins.csv source')).toBeNull()
+  })
+
   it('keeps an unsaved edit when another tab is shown and back', async () => {
     api.filesRead.mockImplementation((_session: string, path: string) =>
       Promise.resolve({

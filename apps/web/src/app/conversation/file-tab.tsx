@@ -173,6 +173,11 @@ function useOpenedFile(tab: FileTab, sessionId: string) {
   const [file, setFile] = useState<null | OpenedFile>(null)
   const [error, setError] = useState<null | string>(null)
   const [updated, setUpdated] = useState(false)
+  // The bot changed a text file shown in the editor so it can no longer be
+  // edited here (too large, or no longer text). The editor, and any edit in it,
+  // stays until the user loads the new version.
+  const [outgrown, setOutgrown] = useState(false)
+  const editable = useRef(false)
   // The version last shown; a later read with another one is the bot's edit.
   const shownVersion = useRef<null | string>(null)
   // Counts the user's own saves: a read that started before one is older than
@@ -208,11 +213,18 @@ function useOpenedFile(tab: FileTab, sessionId: string) {
           return
         }
 
+        if (editable.current && next.text === undefined) {
+          setOutgrown(true)
+
+          return
+        }
+
         if (shownVersion.current !== null && shownVersion.current !== next.version) {
           setUpdated(true)
         }
 
         shownVersion.current = next.version
+        editable.current = next.text !== undefined
         setFile(next)
         setError(null)
       })
@@ -244,10 +256,12 @@ function useOpenedFile(tab: FileTab, sessionId: string) {
   const adopt = (next: OpenedFile) => {
     saves.current += 1
     shownVersion.current = next.version
+    editable.current = next.text !== undefined
+    setOutgrown(false)
     setFile(next)
   }
 
-  return { adopt, error, file, saved, updated, working }
+  return { adopt, error, file, outgrown, saved, updated, working }
 }
 
 /**
@@ -392,7 +406,7 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
   )
 
   const sessionId = useFileSession(tab)
-  const { adopt, error, file, saved, updated, working } = useOpenedFile(tab, sessionId)
+  const { adopt, error, file, outgrown, saved, updated, working } = useOpenedFile(tab, sessionId)
   const objectUrl = useObjectUrl(file?.data_url)
   // The version the editor's text is based on. A refresh moves it only when the
   // editor takes the new text; while it holds an unsaved edit, a save names the
@@ -503,10 +517,13 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
             {error}
           </p>
         ) : null}
-        {conflict ? (
+        {conflict || outgrown ? (
           <div className="mx-3 mt-2 flex items-center gap-2 rounded-[12px] bg-foreground/[0.05] px-3 py-2 text-[length:var(--text-meta)]">
             <span className="min-w-0 flex-1 text-muted">
-              {loadError ?? 'Copy your edit if you want to keep it.'}
+              {loadError ??
+                (outgrown
+                  ? `${botName} changed this file, and it can no longer be edited here. Copy your edit if you want to keep it.`
+                  : 'Copy your edit if you want to keep it.')}
             </span>
             <button
               className="hex-focus shrink-0 rounded-full bg-foreground px-2.5 py-1 font-medium text-background"
