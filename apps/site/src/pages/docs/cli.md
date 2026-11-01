@@ -31,6 +31,10 @@ Turn on "Allow other devices" only when another device needs access: `hexbot lan
 
 When started directly in an interactive terminal, the daemon prints a one-time browser sign-in link. It does not print one when supervised as a service or redirected to a log.
 
+## Usage data
+
+`hexbot usage-data on` lets the daemon share anonymous counts with the Hexbot team, and `hexbot usage-data off` stops it and deletes its install ID. It is off until you turn it on. [Usage data](/docs/usage-data/) lists every event.
+
 ## Check the daemon
 
 ```sh

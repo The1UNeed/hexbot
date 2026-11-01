@@ -3,6 +3,9 @@ import { readDesktopState, updateDesktopState } from './desktop-state'
 
 const crashUrl = __HEXBOT_CRASH_URL__.trim()
 
+/** Builds without a crash endpoint cannot send reports, so Settings hides the switch. */
+export const crashReportsAvailable = (): boolean => crashUrl.length > 0
+
 export async function startCrashReports(): Promise<void> {
   const enabled = (await readDesktopState()).crashReports === true && crashUrl.length > 0
   crashReporter.start({

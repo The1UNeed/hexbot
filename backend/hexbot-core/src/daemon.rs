@@ -380,6 +380,7 @@ async fn run() -> Result<()> {
             diagnostics.launch_phase("Clean up old runtimes", phase);
             diagnostics.launched();
             hexbot_core::diagnostics::start_sampler();
+            hexbot_core::usage::start(home.clone());
         }
         if first
             && prints_sign_in_link(std::io::stdout().is_terminal(), |name| {

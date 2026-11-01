@@ -69,6 +69,9 @@ export interface HexbotBridge {
     status(): Promise<ServiceStatus>
   }
   setCrashReports(enabled: boolean): Promise<void>
+  /** The app's own privacy switches. Apps from before usage data leave these out. */
+  privacy?(): Promise<PrivacyState>
+  setUsageData?(enabled: boolean): Promise<void>
   updater: {
     channel(): Promise<UpdateChannel>
     check(): Promise<UpdateState>
@@ -79,6 +82,17 @@ export interface HexbotBridge {
     state(): Promise<UpdateState>
   }
   version: string
+}
+
+/**
+ * What the desktop app itself shares (apps/desktop/src/main/usage-data.ts).
+ * `*Available` is false in builds that cannot send it, such as dev builds.
+ */
+export interface PrivacyState {
+  crashReports: boolean
+  crashReportsAvailable: boolean
+  usageData: boolean
+  usageDataAvailable: boolean
 }
 
 /** The update track (docs/channels.md): tagged releases, or nightly builds of main. */

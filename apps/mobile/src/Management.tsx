@@ -655,6 +655,10 @@ export function Management({
             ...(typeof mobile.settings?.heartbeat_enabled === 'boolean'
               ? { heartbeat_enabled: values.heartbeat_enabled }
               : {}),
+            // Only a daemon that knows usage data can be asked about it.
+            ...(typeof mobile.settings?.usage_data === 'boolean'
+              ? { usage_data: values.usage_data }
+              : {}),
             default_model: values.default_model || null,
             fallback_model: values.fallback_model || null,
             bot_daily_token_budget: num(values.bot_daily_token_budget),
@@ -702,6 +706,14 @@ export function Management({
             </Group>
           ) : null}
           <ComputerSize mobile={mobile} />
+          {typeof mobile.settings?.usage_data === 'boolean' ? (
+            <Group
+              title="Privacy"
+              footer="The daemon's own anonymous usage data: counts of bots, rooms, chats, and messages, and error codes. Never what anyone writes. This phone has its own switch in Settings."
+            >
+              {toggle('usage_data', 'Share anonymous usage data')}
+            </Group>
+          ) : null}
         </>
       )
       break

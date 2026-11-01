@@ -33,6 +33,7 @@ export const docGroups = [
     title: 'Run and maintain Hexbot',
     pages: [
       { title: 'Updates', summary: 'Choose Stable or Nightly and update an app or remote daemon.', href: '/docs/updates/' },
+      { title: 'Usage data', summary: 'See every anonymous event Hexbot can share, and turn it on or off.', href: '/docs/usage-data/' },
       { title: 'CLI', summary: 'Start a daemon, manage devices, and send messages from a terminal.', href: '/docs/cli/' },
       { title: 'Run from source', summary: 'Develop Hexbot or build the daemon from a source checkout.', href: '/docs/development/' },
     ],

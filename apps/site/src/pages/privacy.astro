@@ -6,7 +6,7 @@ const sections: [string, string][] = [
   ['website', 'This website'],
   ['connect', 'Hex Connect'],
   ['never', 'What Connect never receives'],
-  ['app', 'The app and the daemon'],
+  ['app', 'The apps and the daemon'],
   ['providers', 'Service providers'],
   ['bases', 'Why we may process your data'],
   ['transfers', 'Where your data is stored'],
@@ -18,12 +18,13 @@ const sections: [string, string][] = [
   ['contact', 'Contact'],
 ]
 ---
-<Legal title="Privacy Policy" description="What hexbot.app, Hex Connect, and the app collect, and what they never see." lede="Hexbot is built so that your data stays on your hardware. This policy explains the small amount that this website and Hex Connect handle, and the much larger amount they never see." effective="25 September 2026" updated="25 September 2026" sections={sections}>
+<Legal title="Privacy Policy" description="What hexbot.app, Hex Connect, and the app collect, and what they never see." lede="Hexbot is built so that your data stays on your hardware. This policy explains the small amount that this website, Hex Connect, and the Hexbot apps handle, and the much larger amount they never see." effective="25 September 2026" updated="31 October 2026" sections={sections}>
   <section id="overview">
     <h2>The short version</h2>
     <ul>
       <li>Your conversations, bot memory, files, and provider keys live on the machine that runs your daemon. Neither this website nor Connect can read them.</li>
       <li>This website and Connect measure how they are used with PostHog, only after you press Accept in the cookie notice.</li>
+      <li>The Hexbot apps and the daemon send anonymous usage data only if you turn it on, in setup or in Settings, Privacy. It holds counts and versions, never what you write.</li>
       <li>Connect stores your sign-in identity, the daemons you register, and the devices and browsers you sign in with. It uses them only to run the service.</li>
       <li>We do not sell personal data, show advertising, or use anything of yours to train models.</li>
       <li>You can delete your Connect account and everything tied to it by emailing us.</li>
@@ -31,7 +32,7 @@ const sections: [string, string][] = [
   </section>
   <section id="controller">
     <h2>Who is responsible</h2>
-    <p>The Hexbot team, reachable at <a href="mailto:lumora.studio@hotmail.com">lumora.studio@hotmail.com</a>, is the controller of the personal data described in this policy. If you run your own Connect instance or your own daemon for other people, you are the controller of what those systems hold, and this policy does not cover them.</p>
+    <p>Lumora Studio ("we", "us"), which makes Hexbot and is reachable at <a href="mailto:lumora.studio@hotmail.com">lumora.studio@hotmail.com</a>, is the controller of the personal data described in this policy. If you run your own Connect instance or your own daemon for other people, you are the controller of what those systems hold, and this policy does not cover them.</p>
   </section>
   <section id="website">
     <h2>This website</h2>
@@ -71,9 +72,18 @@ const sections: [string, string][] = [
     <p>Connect never receives your conversations, bot memory, provider keys, files, tool results, or the long-lived device tokens your daemon issues. Chat traffic travels from your device through Cloudflare's edge and the tunnel process on your daemon host. The Connect service is not in that path and cannot read it. Cloudflare decrypts the traffic at its edge to route it through the tunnel, so Cloudflare can see it, and applies its own privacy policy to what it sees. LAN pairing and Tailscale do not pass through Cloudflare.</p>
   </section>
   <section id="app">
-    <h2>The app and the daemon</h2>
-    <p>The Hexbot app talks only to the daemon you pair with, to your chosen model providers, and to Connect if you sign in to it. What a bot sends to a model provider is governed by that provider's terms and privacy policy, as with any AI application.</p>
-    <p>Crash reporting is off by default. If you turn it on in Settings, Electron may upload a crash report when the desktop process crashes, as described in <a href="/docs/updates/">Updates</a>. Update checks fetch a small manifest from updates.hexbot.app and send nothing about you. The app and the daemon send nothing to PostHog.</p>
+    <h2>The apps and the daemon</h2>
+    <p>The Hexbot apps (for macOS, Windows, Linux, iPhone, iPad, and Android) talk to the daemon you pair with, to your chosen model providers, and to Connect if you sign in to it. The daemon talks to your model providers and to the tools you set up. What a bot sends to a model provider is governed by that provider's terms and privacy policy, as with any AI application.</p>
+    <dl>
+      <dt>Anonymous usage data</dt>
+      <dd>Off until you turn it on: in the last step of setup, on the phone app's first screen, in Settings, Privacy, or with <code>hexbot usage-data on</code>. Each app and each daemon has its own switch and sends nothing until it is on. When on, it sends PostHog a few events a day: that the app or daemon was used, how many bots, rooms, and chats a daemon has, that a message was sent, and error types and numbers, with the Hexbot version and your operating system. Each install uses a random ID that is not linked to you, your Connect account, or any other install, and is deleted when you turn usage data off. PostHog does not look up a location or build a profile from it. It never includes what you or your bots write, memory, files, names, keys, IP addresses, or error messages. <a href="/docs/usage-data/">Usage data</a> lists every event. Setting <code>DO_NOT_TRACK=1</code> on a computer stops it whatever the switch says.</dd>
+      <dt>Crash reports</dt>
+      <dd>Off by default. If you turn on Settings, Privacy, "Send crash reports" in the desktop app, Electron uploads a crash report, which can include the app's memory at that moment, when the desktop process crashes.</dd>
+      <dt>Phone notifications</dt>
+      <dd>If you allow notifications on a phone, the app gives the daemon you pair with a push token from Expo. When a bot's heartbeat posts a message in a chat, the daemon asks Connect to send a notification; Connect passes the token, the chat's ID, and the fixed text "One of your bots has a message for you" to Expo, which delivers it through Apple or Google. Connect does not store the token. Message text never leaves your daemon this way. Turn notifications off in your phone's settings, or remove the device from the daemon, to stop them.</dd>
+      <dt>Updates and app stores</dt>
+      <dd>Update checks fetch a small manifest from updates.hexbot.app and send nothing about you. If you install the phone app from the App Store, TestFlight, or Google Play, Apple or Google handle the download and any crash reports or feedback you choose to share with us there, under their own privacy policies.</dd>
+    </dl>
   </section>
   <section id="providers">
     <h2>Service providers</h2>
@@ -83,7 +93,9 @@ const sections: [string, string][] = [
       <li><strong>Cloudflare</strong> (tunnels and DNS): hostnames, tunnel identifiers, and the traffic passing through your daemon's tunnel, which Cloudflare decrypts at its edge.</li>
       <li><strong>Neon</strong> (database): the Connect records described above.</li>
       <li><strong>Vercel</strong> (hosting): request logs for this website and Connect.</li>
-      <li><strong>PostHog</strong> (analytics): the usage data described above, only with your consent.</li>
+      <li><strong>PostHog</strong> (analytics): the website and Connect analytics and the anonymous app and daemon usage data described above, only with your consent.</li>
+      <li><strong>Expo</strong> (phone notifications): push tokens, chat IDs, and the fixed notification text, to deliver notifications.</li>
+      <li><strong>Apple</strong> and <strong>Google</strong> (app stores and notification delivery): delivering notifications to your phone, and app downloads, crash reports, and feedback you choose to send through their stores.</li>
       <li><strong>Youform</strong> (contact form): what you send us through the form.</li>
       <li><strong>GitHub</strong> (source code and downloads): standard access logs when you visit our repository or download a release from it.</li>
     </ul>
@@ -91,18 +103,19 @@ const sections: [string, string][] = [
   </section>
   <section id="bases">
     <h2>Why we may process your data</h2>
-    <p>Where data protection law asks for a legal basis, ours are: <strong>performing our agreement with you</strong> for the Connect account and records that make the service work; <strong>your consent</strong> for analytics, which you can withdraw at any time; and <strong>our legitimate interests</strong> in keeping the services secure, answering your messages, and defending legal claims, which we balance against your rights.</p>
+    <p>Where data protection law asks for a legal basis, ours are: <strong>performing our agreement with you</strong> for the Connect account and records that make the service work, and for phone notifications you turn on; <strong>your consent</strong> for analytics and usage data, which you can withdraw at any time; and <strong>our legitimate interests</strong> in keeping the services secure, answering your messages, and defending legal claims, which we balance against your rights.</p>
   </section>
   <section id="transfers">
     <h2>Where your data is stored</h2>
-    <p>Connect's database and PostHog's servers are in the United States, and Clerk, Cloudflare, and Vercel operate worldwide. If you are in the European Economic Area, the United Kingdom, or another place with data transfer rules, your data is transferred under those providers' data processing agreements, which include the EU Standard Contractual Clauses or an equivalent approved mechanism.</p>
+    <p>Connect's database and the PostHog and Expo servers are in the United States, and Apple, Clerk, Cloudflare, Google, and Vercel operate worldwide. If you are in the European Economic Area, the United Kingdom, or another place with data transfer rules, your data is transferred under those providers' data processing agreements, which include the EU Standard Contractual Clauses or an equivalent approved mechanism.</p>
   </section>
   <section id="retention">
     <h2>How long we keep things</h2>
     <ul>
       <li>Daemon and device records stay while they are registered. Revoking a daemon or device marks it revoked and deletes its tunnel; the record is deleted within 90 days after that.</li>
       <li>Pending registration codes and browser sign-in codes are deleted within a day of expiring.</li>
-      <li>PostHog keeps events for up to a year and session recordings for up to 30 days.</li>
+      <li>PostHog keeps events, including app and daemon usage data, for up to a year and session recordings for up to 30 days.</li>
+      <li>Push tokens stay on your daemon until you remove the device or the token stops working. Expo keeps delivery records for a short period set by Expo.</li>
       <li>Hosting request logs are kept by Vercel for a short period set by Vercel.</li>
       <li>Emails and contact form messages are kept for as long as needed to help you and for up to two years after.</li>
     </ul>
@@ -110,7 +123,7 @@ const sections: [string, string][] = [
   <section id="rights">
     <h2>Your rights and choices</h2>
     <p>Depending on where you live you may have the right to access the personal data we hold about you, to have it corrected or deleted, to receive a copy in a portable format, to object to or restrict certain processing, and to withdraw consent. To use any of these rights, email <a href="mailto:lumora.studio@hotmail.com">lumora.studio@hotmail.com</a> from the address you signed in with. We answer within 30 days.</p>
-    <p>To delete your Connect account and every record tied to it, revoke your daemons at connect.hexbot.app or run <code>hexbot connect disconnect</code> on each, then email us; we remove the account from Clerk and our database within 30 days. Analytics consent is withdrawn with the Cookies link at the foot of any page. If you think we have handled your data wrongly, you can complain to the data protection authority where you live; we would appreciate the chance to fix it first.</p>
+    <p>To delete your Connect account and every record tied to it, revoke your daemons at connect.hexbot.app or run <code>hexbot connect disconnect</code> on each, then email us; we remove the account from Clerk and our database within 30 days. Analytics consent is withdrawn with the Cookies link at the foot of any page; usage data is turned off in Settings, Privacy or with <code>hexbot usage-data off</code>. Usage data is anonymous, so we can find yours only if you send us its install ID, as described in <a href="/docs/usage-data/#where-it-goes">Usage data</a>; we then delete its events. If you think we have handled your data wrongly, you can complain to the data protection authority where you live; we would appreciate the chance to fix it first.</p>
   </section>
   <section id="children">
     <h2>Children</h2>

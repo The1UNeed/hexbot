@@ -627,6 +627,8 @@ export interface Settings {
   dream_time: string
   /** Every bot's heartbeat. Absent on daemons from before the heartbeat. */
   heartbeat_enabled?: boolean
+  /** Anonymous usage data from this daemon (docs/usage-data.md). Absent on older daemons. */
+  usage_data?: boolean
 }
 
 export interface HeartbeatRun {

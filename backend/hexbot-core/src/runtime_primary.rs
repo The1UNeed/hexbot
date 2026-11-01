@@ -679,6 +679,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_the_user_can_turn_on_usage_data() {
+        // Consent to usage data is the user's alone (docs/usage-data.md).
+        assert!(!SETTINGS.contains(&"usage_data"));
+    }
+
+    #[test]
     fn settings_changes_read_in_plain_words() {
         let patch = json!({"approval_mode":"off","dream_time":"04:30"});
         assert_eq!(
