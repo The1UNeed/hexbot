@@ -496,7 +496,7 @@ it('offers no Retry when only some files reached the reopened chat', async () =>
   expect(retries()).toHaveLength(0)
   expect(submits()).toHaveLength(1)
   expect(delivered).toHaveLength(0)
-  expect(screen.getByRole('button', { name: 'Remove notes.txt' })).toBeVisible()
+  expect(await screen.findByRole('button', { name: 'Remove notes.txt' })).toBeVisible()
 })
 
 it('applies a refusal that lands after leaving the chat without drawing a card there', async () => {
