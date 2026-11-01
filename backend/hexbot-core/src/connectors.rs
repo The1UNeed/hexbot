@@ -243,9 +243,22 @@ fn assigned(entry: &Value, bot: &str) -> bool {
 /// server still waiting for a value reaches no bot.
 pub fn mcp_servers(home: &Path, bot: &str) -> Result<Value> {
     let root = read_config(home)?;
+    let mut servers = granted_servers(home, bot)?;
+    if let Some(servers) = servers.as_object_mut() {
+        servers.retain(|name, entry| {
+            !root["mcp_servers"].get(name).is_some_and(Value::is_object)
+                || missing_values(entry).is_empty()
+        });
+    }
+    Ok(servers)
+}
+/// The servers given to a bot, set up or not: what assignments and their
+/// migration count, so a value still missing never takes a server's bots.
+fn granted_servers(home: &Path, bot: &str) -> Result<Value> {
+    let root = read_config(home)?;
     let config = read_config(&profile(home, bot)?)?;
     let mut servers = root["mcp_servers"].as_object().cloned().unwrap_or_default();
-    servers.retain(|_, entry| assigned(entry, bot) && missing_values(entry).is_empty());
+    servers.retain(|_, entry| assigned(entry, bot));
     if let Some(own) = config["mcp_servers"].as_object() {
         for (name, entry) in own {
             if root["mcp_servers"].get(name).is_some_and(Value::is_object) {
@@ -320,7 +333,7 @@ pub(crate) fn mcp_bots(home: &Path, server: &str) -> Result<Vec<String>> {
 pub(crate) fn assigned_bots(home: &Path, server: &str) -> Result<Vec<String>> {
     let mut bots = vec![];
     for bot in names(home)? {
-        if mcp_servers(home, &bot)?.get(server).is_some() {
+        if granted_servers(home, &bot)?.get(server).is_some() {
             bots.push(bot);
         }
     }
