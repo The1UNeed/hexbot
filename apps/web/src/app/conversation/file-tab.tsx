@@ -73,10 +73,19 @@ function parse(text: string): unknown {
   }
 }
 
-/** Opens a file in a tab beside the chat, read and saved through the chat's live session. */
-export function openFile(sessionId: string, target: FileTarget) {
+/**
+ * Opens a file in a tab beside the chat, read and saved through the chat's live
+ * session. `askable` is false where the user cannot write (a thread between bots).
+ */
+export function openFile(sessionId: string, target: FileTarget, askable = true) {
   visualsActions().open(
-    fileTab(target.name, { mime: target.mime, path: target.path, sessionId, url: target.url })
+    fileTab(target.name, {
+      askable,
+      mime: target.mime,
+      path: target.path,
+      sessionId,
+      url: target.url
+    })
   )
 }
 
@@ -441,15 +450,16 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
     )
   }
 
-  const tools = (
-    <QuickTools
-      botName={botName}
-      disabled={working}
-      name={name}
-      onSend={ask}
-      tools={text === undefined ? [] : plain ? PLAIN_TOOLS : DOCUMENT_TOOLS}
-    />
-  )
+  const tools =
+    tab.file.askable === false ? null : (
+      <QuickTools
+        botName={botName}
+        disabled={working}
+        name={name}
+        onSend={ask}
+        tools={text === undefined ? [] : plain ? PLAIN_TOOLS : DOCUMENT_TOOLS}
+      />
+    )
 
   let body: React.ReactNode
 

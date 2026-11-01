@@ -349,19 +349,19 @@ export function DocumentEditor({
     edited.current = false
     draft.current = value
 
-    if (source !== null) {
-      setSource(value)
-      shownSource.current = value
-    } else {
-      editor.commands.setContent(value, { contentType: 'markdown', emitUpdate: false })
+    // Both views take the new text, so switching from source back to formatted
+    // shows it too. When the formatted view would drop part of it (the bot added
+    // a table), the file stays in source from now on, so a later edit cannot
+    // lose it.
+    editor.commands.setContent(value, { contentType: 'markdown', emitUpdate: false })
 
-      // The new text has something the formatted view would drop (the bot added a
-      // table): show it as source from now on, so a later edit cannot lose it.
+    if (source !== null || loses(value, editor.getMarkdown())) {
       if (loses(value, editor.getMarkdown())) {
         setSourceOnly(true)
-        setSource(value)
-        shownSource.current = value
       }
+
+      setSource(value)
+      shownSource.current = value
     }
 
     saved.current = value

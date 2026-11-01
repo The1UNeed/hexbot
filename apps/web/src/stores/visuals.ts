@@ -14,6 +14,8 @@ export interface FileTab {
     mime: string
     /** Where the daemon keeps it; absent for a file only this page holds. */
     path?: string
+    /** The chat takes the user's messages, so the quick tools may ask in it. */
+    askable?: boolean
     /** The live session it was opened from, to read and save through. */
     sessionId: string
     /** An object URL for a file this page still holds, such as a PDF just sent. */

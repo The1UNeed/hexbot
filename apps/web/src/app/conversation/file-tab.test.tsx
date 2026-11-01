@@ -236,6 +236,47 @@ describe('a file beside the chat', () => {
     expect(await screen.findByLabelText('plan.md source')).toHaveValue(table)
   })
 
+  it("shows the bot's change in the formatted view after it landed in source view", async () => {
+    act(() =>
+      visualsActions().open(
+        fileTab('plan.md', { mime: 'text/markdown', path: '/work/plan.md', sessionId: 's' })
+      )
+    )
+    render(<VisualPanel />)
+    expect(await screen.findByText('Ship the board Friday')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'More' }))
+    fireEvent.click(await screen.findByText('View source'))
+    await screen.findByLabelText('plan.md source')
+
+    api.filesRead.mockResolvedValue({
+      mime: 'text/markdown',
+      modified: 2,
+      name: 'plan.md',
+      path: '/work/plan.md',
+      size: 11,
+      text: 'Ship Monday',
+      version: 'v2'
+    })
+    act(() => transcript([call({ args: { path: '/work/plan.md' }, name: 'edit' })]))
+    await waitFor(() => expect(screen.getByLabelText('plan.md source')).toHaveValue('Ship Monday'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'More' }))
+    fireEvent.click(await screen.findByText('View formatted'))
+    expect(await screen.findByText('Ship Monday')).toBeInTheDocument()
+    expect(screen.queryByText('Ship the board Friday')).toBeNull()
+  })
+
+  it('opens a file from a thread between bots without quick tools', async () => {
+    act(() =>
+      openFile('s', { mime: 'text/markdown', name: 'plan.md', path: '/work/plan.md' }, false)
+    )
+    render(<VisualPanel />)
+
+    expect(await screen.findByText('Ship the board Friday')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Shorten' })).toBeNull()
+    expect(screen.queryByLabelText('Ask Scout about this file')).toBeNull()
+  })
+
   it('holds the quick tools while the bot is working', async () => {
     transcript([], true)
     act(() =>

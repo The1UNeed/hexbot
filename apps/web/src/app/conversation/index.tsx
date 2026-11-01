@@ -1723,13 +1723,15 @@ function BotConversation() {
   const liveId = ready ? loadedLiveId : null
 
   // Stable, so a streaming reply re-renders only its own row.
+  // A thread between bots is read-only for the user: its files open, but
+  // without quick tools that would post into it.
   const openBeside = useCallback(
     (file: FileTarget) => {
       if (liveId) {
-        openFile(liveId, file)
+        openFile(liveId, file, ownerInput)
       }
     },
-    [liveId]
+    [liveId, ownerInput]
   )
 
   // While the owner chat validated here is checked again (a reconnect, a
