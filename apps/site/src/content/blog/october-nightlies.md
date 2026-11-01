@@ -68,7 +68,7 @@ Turn on **Sounds** in Settings, Appearance to hear a bot start, finish, or need 
 
 ## Plugins, for the bots you choose
 
-Everything a bot can use beyond its own tools now lives on one page: Settings, **Plugins**. That covers connectors such as web search and Notion, MCP servers, skills, and built-in tools that need a program, such as Computer use. Set a plugin up once, then choose which bots get it.
+Everything a bot can use beyond its own tools now lives on one page: Settings, **Plugins**, with a tab each for connectors such as web search and Notion, MCP servers, and skills. Set a plugin up once, then choose which bots get it. Computer use isn't a plugin: every bot has it, and it sits in Settings, Manuals.
 
 ![Settings, Plugins, with tabs for Connectors, MCP servers and Skills, a row of bots to filter by, and connectors such as web search.](/screens/plugins.webp)
 
@@ -94,7 +94,7 @@ Auto, the default approval mode, now runs routine steps outside the workspace, s
 
 The iPhone and Android app now works like a messaging app. One list holds every chat and room, newest first, with HexBot pinned at the top. Settings sit behind your initials, new bots and rooms behind **+**, and profiles, jobs, and rooms behind the grid next to Search. From the phone you can answer questions, approve steps, edit a heartbeat, recall a message, and watch the computer.
 
-There is no App Store or Play Store release yet, so for now you build it from source. See [Mobile app](/docs/mobile/).
+The iPhone app is in beta on [TestFlight](https://testflight.apple.com/join/byKAKWMW). There is no Play Store release yet, so for now you build the Android app from source. See [Mobile app](/docs/mobile/).
 
 ## One installer, three ways
 
