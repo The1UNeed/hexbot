@@ -1,3 +1,4 @@
+import { JsonRpcGatewayError } from '@hermes/shared'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -458,6 +459,65 @@ describe('a file beside the chat', () => {
     api.filesWrite.mockResolvedValue({ modified: 5, path: '/work/pins.csv', size: 20 })
     fireEvent.click(screen.getByRole('button', { name: 'Close the side panel' }))
     await waitFor(() => expect(useVisuals.getState().tabs).toHaveLength(0))
+  })
+
+  it("lets the user drop a refused edit for the bot's version, then close", async () => {
+    const field = await openPins()
+    api.filesWrite.mockRejectedValue(
+      new JsonRpcGatewayError('the file changed since it was opened', { code: 4209 })
+    )
+    fireEvent.change(field, { target: { value: 'pin,use\nGPIO2,ADC' } })
+
+    const load = await screen.findByRole(
+      'button',
+      { name: "Load Scout's version" },
+      { timeout: 3000 }
+    )
+
+    api.filesRead.mockResolvedValue({
+      mime: 'text/csv',
+      name: 'pins.csv',
+      path: '/work/pins.csv',
+      modified: 9,
+      size: 20,
+      text: "pin,use\nthe bot's row"
+    })
+    act(() => transcript([call({ args: { path: '/work/pins.csv' }, name: 'edit' })]))
+    await waitFor(() => expect(api.filesRead).toHaveBeenCalledTimes(2))
+    const refused = api.filesWrite.mock.calls.length
+
+    fireEvent.click(load)
+    expect(await screen.findByLabelText('pins.csv source')).toHaveValue("pin,use\nthe bot's row")
+    await act(async () => {})
+    expect(api.filesWrite).toHaveBeenCalledTimes(refused)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close the side panel' }))
+    await waitFor(() => expect(useVisuals.getState().tabs).toHaveLength(0))
+  })
+
+  it("drops a read that started before the user's save landed", async () => {
+    const field = await openPins()
+
+    let answer: (file: unknown) => void = () => {}
+    api.filesRead.mockReturnValue(new Promise(resolve => (answer = resolve)))
+    act(() => transcript([call({ args: { path: '/work/pins.csv' }, name: 'edit' })]))
+    await waitFor(() => expect(api.filesRead).toHaveBeenCalledTimes(2))
+
+    api.filesWrite.mockResolvedValue({ modified: 5, path: '/work/pins.csv', size: 20 })
+    fireEvent.change(field, { target: { value: 'pin,use\nGPIO2,ADC' } })
+    await waitFor(() => expect(api.filesWrite).toHaveBeenCalled(), { timeout: 3000 })
+
+    await act(async () =>
+      answer({
+        mime: 'text/csv',
+        name: 'pins.csv',
+        path: '/work/pins.csv',
+        modified: 3,
+        size: 7,
+        text: 'pin,use'
+      })
+    )
+    expect(screen.getByLabelText('pins.csv source')).toHaveValue('pin,use\nGPIO2,ADC')
   })
 
   it('offers a download for a file it cannot show', async () => {

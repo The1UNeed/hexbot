@@ -28,6 +28,7 @@ import { StatusDot } from '../../components/ui/status-dot'
 import {
   approvalRespond,
   attachFile,
+  attachmentKind,
   type AttachResult,
   botsClearStatus,
   newInputId,
@@ -1398,13 +1399,10 @@ function Composer({
       }
 
       const attachments: Attachment[] = files.map((item, index) => {
-        const kind = item.file.type.startsWith('image/')
-          ? 'image'
-          : item.file.type.startsWith('video/')
-            ? 'video'
-            : item.file.type === 'application/pdf'
-              ? 'pdf'
-              : 'file'
+        // The same reading the upload used, so a .pdf with no type is a PDF here too.
+        const kind = item.file.type.startsWith('video/')
+          ? 'video'
+          : attachmentKind(item.file.type, item.file.name)
 
         return {
           dataUrl: item.preview,

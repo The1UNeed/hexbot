@@ -154,6 +154,9 @@ function useOpenedFile(tab: FileTab) {
   const [updated, setUpdated] = useState(false)
   // The version last shown; a later read with another one is the bot's edit.
   const shownVersion = useRef<null | number>(null)
+  // Counts the user's own saves: a read that started before one is older than
+  // what the daemon holds now, and its answer is dropped.
+  const saves = useRef(0)
 
   useEffect(() => {
     if (!path) {
@@ -167,10 +170,12 @@ function useOpenedFile(tab: FileTab) {
     }
 
     let current = true
+    const started = saves.current
+    const fresh = () => current && started === saves.current
 
     filesRead(sessionId, path)
       .then(next => {
-        if (!current) {
+        if (!fresh()) {
           return
         }
 
@@ -182,7 +187,7 @@ function useOpenedFile(tab: FileTab) {
         setFile(next)
         setError(null)
       })
-      .catch((cause: unknown) => current && setError(errorText(cause)))
+      .catch((cause: unknown) => fresh() && setError(errorText(cause)))
 
     return () => {
       current = false
@@ -201,6 +206,7 @@ function useOpenedFile(tab: FileTab) {
 
   /** The user's own save: its new version is not the bot's edit. */
   const saved = (text: string, modified: number, size: number) => {
+    saves.current += 1
     shownVersion.current = modified
     setFile(current => (current ? { ...current, modified, size, text } : current))
   }
@@ -370,6 +376,20 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
 
   // The editor's save: a request to the bot waits for the edit on screen to land first.
   const flush = useRef<(() => Promise<boolean>) | null>(null)
+  // Set when a save was refused because the bot changed the file. The edit stays
+  // in the editor until the user chooses the bot's version, which mounts a fresh
+  // editor; the old one's last save is then ignored.
+  const [conflict, setConflict] = useState(false)
+  const [edition, setEdition] = useState(0)
+  const editionRef = useRef(0)
+
+  const loadTheirs = () => {
+    editionRef.current += 1
+    base.current = latest.current?.modified ?? base.current
+    baseText.current = latest.current?.text
+    setConflict(false)
+    setEdition(editionRef.current)
+  }
 
   useEffect(() => {
     flushes.set(tab.toolId, () => flush.current?.() ?? Promise.resolve(true))
@@ -437,6 +457,18 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
             {error}
           </p>
         ) : null}
+        {conflict ? (
+          <div className="mx-3 mt-2 flex items-center gap-2 rounded-[12px] bg-foreground/[0.05] px-3 py-2 text-[length:var(--text-meta)]">
+            <span className="min-w-0 flex-1 text-muted">Copy your edit if you want to keep it.</span>
+            <button
+              className="hex-focus shrink-0 rounded-full bg-foreground px-2.5 py-1 font-medium text-background"
+              onClick={loadTheirs}
+              type="button"
+            >
+              Load {botName}'s version
+            </button>
+          </div>
+        ) : null}
         {updated ? (
           <span className="hex-fade pointer-events-none absolute top-14 right-4 z-10 rounded-full bg-info/12 px-2.5 py-1 text-[length:var(--text-meta)] font-medium text-info">
             Updated by {botName}
@@ -447,13 +479,18 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
           flushRef={flush}
           footer={tools}
           inline
-          key={path}
+          key={`${path}:${edition}`}
           onClose={() => undefined}
           onFollow={() => {
             base.current = latest.current?.modified ?? base.current
             baseText.current = latest.current?.text
           }}
           onSave={async next => {
+            // An editor the user replaced with the bot's version saves nothing.
+            if (edition !== editionRef.current) {
+              return
+            }
+
             try {
               const result = await filesWrite(
                 tab.file.sessionId,
@@ -467,8 +504,10 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
               saved(next, result.modified, result.size)
             } catch (cause) {
               if (cause instanceof JsonRpcGatewayError && cause.code === 4209) {
+                setConflict(true)
+
                 throw new Error(
-                  `${botName} changed this file while you typed, so your edit was not saved. Copy it, then close and reopen the file.`
+                  `${botName} changed this file while you typed, so your edit was not saved.`
                 )
               }
 
