@@ -81,6 +81,7 @@ import { useUi } from '../../stores/ui'
 import { AskingRow } from './asking-row'
 import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
+import { PluginCard } from './plugin-card'
 import { RoomConversation } from './room'
 import { useSearchJump } from './search-jump'
 import { SignInCard } from './sign-in-card'
@@ -851,6 +852,10 @@ const APPROVAL_CHOICES: Record<ApprovalChoice, string> = {
 }
 
 export function ApprovalCard({ approval }: { approval: ApprovalRequest }) {
+  if (approval.form?.kind === 'plugin') {
+    return <PluginCard approval={approval} form={approval.form} />
+  }
+
   if (approval.form) {
     return <SignInCard approval={approval} form={approval.form} />
   }
@@ -1925,10 +1930,13 @@ function BotConversation() {
       'Notification' in window &&
       Notification.permission === 'granted'
     ) {
-      new Notification(approvals.at(-1)?.form ? 'Sign-in needed' : 'Approval needed', {
+      new Notification(
+        approvals.at(-1)?.form?.kind === 'sign_in' ? 'Sign-in needed' : 'Approval needed',
+        {
         body:
           approvals.at(-1)?.command ?? approvals.at(-1)?.reason ?? 'A bot is asking for permission.'
-      })
+        }
+      )
     }
 
     previousApprovalCount.current = approvals.length

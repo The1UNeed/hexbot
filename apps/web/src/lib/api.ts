@@ -33,6 +33,7 @@ import type {
   PairingCode,
   PasswordKeyStore,
   PasswordLogin,
+  PluginAnswer,
   PluginKind,
   PluginsList,
   Provider,
@@ -843,13 +844,13 @@ export function approvalRespond(
   sessionId: string,
   requestId: string,
   choice: ApprovalChoice,
-  signIn?: { password: string; username: string }
+  answer?: PluginAnswer | { password: string; username: string }
 ): Promise<{ resolved: boolean }> {
   return rpcCall<{ resolved: boolean }>('approval.respond', {
     choice,
     request_id: requestId,
     session_id: sessionId,
-    ...signIn
+    ...answer
   })
 }
 

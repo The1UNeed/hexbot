@@ -58,13 +58,13 @@ const GLYPHS: Record<string, IconName> = {
 }
 
 /** A plugin's icon, as the web app draws it: a brand on its colour, or a plain glyph. */
-export function PluginIcon({ icon }: { icon: string }) {
+export function PluginIcon({ icon, size = 28 }: { icon: string; size?: number }) {
   const theme = useTheme()
   const brand = BRAND_ICONS[icon]
 
   if (brand) {
     return (
-      <View style={[styles.box, { backgroundColor: brand.color }]}>
+      <View style={[styles.box, box(size), { backgroundColor: brand.color }]}>
         <Svg fill="#ffffff" height={16} viewBox="0 0 24 24" width={16}>
           <Path d={brand.path} />
         </Svg>
@@ -73,7 +73,7 @@ export function PluginIcon({ icon }: { icon: string }) {
   }
 
   return (
-    <View style={[styles.box, { backgroundColor: theme.fill }]}>
+    <View style={[styles.box, box(size), { backgroundColor: theme.fill }]}>
       <Ionicons
         color={theme.text}
         name={GLYPHS[icon.replace(/^glyph:/, '')] ?? 'server-outline'}
@@ -82,6 +82,8 @@ export function PluginIcon({ icon }: { icon: string }) {
     </View>
   )
 }
+
+const box = (size: number) => ({ borderRadius: size * 0.29, height: size, width: size })
 
 const styles = StyleSheet.create({
   box: { alignItems: 'center', borderRadius: 8, height: 28, justifyContent: 'center', width: 28 }

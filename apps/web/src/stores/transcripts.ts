@@ -29,6 +29,7 @@ import type {
   ClarifyRequestPayload,
   ContextUsage,
   Message,
+  PluginForm,
   SessionInfo,
   SignInForm,
   StatusLine,
@@ -160,7 +161,7 @@ export interface ApprovalRequestPayload {
   turn_id?: string
   choices?: ApprovalChoice[]
   command?: string
-  form?: SignInForm
+  form?: PluginForm | SignInForm
   reason?: string
   request_id?: string
   tool?: string
@@ -1204,7 +1205,9 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         turnId: payload.turn_id,
         choices: payload.choices ?? ['once', 'deny'],
         command: payload.command,
-        ...(payload.form?.kind === 'sign_in' && { form: payload.form }),
+        ...((payload.form?.kind === 'sign_in' || payload.form?.kind === 'plugin') && {
+          form: payload.form
+        }),
         reason: payload.reason,
         receivedAt: Date.now(),
         requestId,
@@ -1238,7 +1241,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       effects.notify({
         body: payload.command ?? payload.reason ?? 'A bot is asking for permission.',
         sectionId: transcript?.sectionId,
-        title: payload.form ? 'Sign-in needed' : 'Approval needed'
+        title: payload.form?.kind === 'sign_in' ? 'Sign-in needed' : 'Approval needed'
       })
     },
 

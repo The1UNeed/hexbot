@@ -690,6 +690,27 @@ pub(crate) fn get(home: &Path, bot: Option<&str>, id: &str) -> Result<Value> {
         .cloned()
         .ok_or_else(|| Error::new(4213, format!("unknown connector: {id}")))
 }
+/// A server's error with its own environment and header values cut out:
+/// a server may quote the token it refused, and the message is saved and
+/// shown to bots.
+fn without_values(message: &str, entry: &Value, env: &BTreeMap<String, String>) -> String {
+    let resolved = expand_config(entry, env);
+    let mut secrets = [&resolved["env"], &resolved["headers"]]
+        .into_iter()
+        .flat_map(|v| v.as_object().into_iter().flatten())
+        .filter_map(|(_, v)| v.as_str().filter(|v| !v.is_empty()))
+        // A header such as `Bearer <token>` may be quoted by its token alone.
+        .flat_map(|v| {
+            std::iter::once(v).chain(v.split_whitespace().filter(|p| p.chars().count() >= 6))
+        })
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    // Longest first, so a whole value goes before a part of it.
+    secrets.sort_by_key(|v| std::cmp::Reverse(v.len()));
+    secrets.iter().fold(message.to_owned(), |text, secret| {
+        text.replace(secret.as_str(), "…")
+    })
+}
 async fn probe(home: &Path, id: &str, bot: Option<&str>) -> Result<Value> {
     if let Some(server) = id.strip_prefix("mcp:") {
         let root = read_config(home)?["mcp_servers"].clone();
@@ -742,7 +763,7 @@ async fn probe(home: &Path, id: &str, bot: Option<&str>) -> Result<Value> {
         .await;
         let result = match result {
             Ok(count) => json!({"ok":true,"message":"Connected.","tool_count":count}),
-            Err(e) => json!({"ok":false,"message":e.message}),
+            Err(e) => json!({"ok":false,"message":without_values(&e.message, entry, &env)}),
         };
         save_test(home, id, &result, true)?;
         return Ok(result);

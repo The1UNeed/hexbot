@@ -8,7 +8,7 @@ Every bot can sign in to websites for you on its computer with passwords you sav
 
 ## Saving a password from a chat
 
-When a bot needs to sign in somewhere and has no password for it, it shows a **Sign in** card in its chat with fields for your username and password. What you type goes from your app to the daemon, which saves it. It never appears in the conversation, in the bot's history, or in what is sent to the model provider. The card then shows **Submitted**. Choose **Cancel** to tell the bot no.
+When a bot needs to sign in somewhere and has no password for it, it shows a card in its chat with the site's name and a **Sign in** button. Choose it for fields for your username and password. What you type goes from your app to the daemon, which saves it in Passwords straight away. It never appears in the conversation, in the bot's history, or in what is sent to the model provider. The card then shows **Saved**. Choose **Not now** to tell the bot no.
 
 If a saved password stops working, the bot shows the card again for that site so you can enter the current one.
 

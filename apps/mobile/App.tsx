@@ -25,7 +25,7 @@ import {
   SearchSheet,
   SettingsScreen,
   type ApprovalChoice,
-  type SignInAnswer,
+  type CardAnswer,
   type AttachmentView,
   type BotStatus,
   type BotSummary,
@@ -884,9 +884,9 @@ function MobileApp() {
     [act, chatKey, route?.kind, route?.kind === 'section' ? route.bot.display_name : null]
   )
   const approve = useCallback(
-    (id: string, choice: ApprovalChoice, signIn?: SignInAnswer) => {
-      // The sign-in card waits for this to keep its form when it fails.
-      const work = mobileRef.current.approval(id, choice, signIn)
+    (id: string, choice: ApprovalChoice, answer?: CardAnswer) => {
+      // The sign-in and plugin cards wait for this to keep their form when it fails.
+      const work = mobileRef.current.approval(id, choice, answer)
       act(() => work)
       return work
     },

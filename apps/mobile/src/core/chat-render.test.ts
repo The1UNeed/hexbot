@@ -20,6 +20,7 @@ vi.mock('react-native', async () => {
   }
 })
 vi.mock('@expo/vector-icons', () => ({ Ionicons: () => null }))
+vi.mock('../ui/PluginIcon', () => ({ PluginIcon: () => null }))
 vi.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ bottom: 0 }) }))
 vi.mock('../ui', async () => {
   const { createElement } = await import('react')
@@ -32,7 +33,8 @@ vi.mock('../ui', async () => {
     BotFace: () => null, RoomFace: () => null, LoadingFace: () => null,
     Button: () => null, IconButton: () => null, Banner: () => null,
     useKeyboardVisible: () => false, useTheme: () => ({}),
-    bubbleFill: () => 'grey', withAlpha: () => 'grey', radius: {}, mono: 'monospace'
+    bubbleFill: () => 'grey', withAlpha: () => 'grey', radius: {}, mono: 'monospace',
+    Field: () => null, HIT: 44
   }
 })
 afterEach(cleanup)
@@ -82,4 +84,31 @@ it('divides the chat between days and after quiet spells, not between quick mess
   }))
   expect([0, 180, 24 * 60].map(minutes => screen.getByText(formatDayDivider(at(minutes))))).toHaveLength(3)
   for (const minutes of [2, 12, 30]) expect(screen.queryByText(formatDayDivider(at(minutes)))).toBeNull()
+})
+
+it('shows a plugin card and a sign-in card in the chat, folded until opened', () => {
+  const approval = (id: string, form: NonNullable<Extract<ChatItem, { kind: 'approval' }>['request']['form']>): ChatItem => ({
+    kind: 'approval', id, request: { requestId: id, choices: ['once', 'deny'], form }
+  })
+  render(createElement(ChatScreen, {
+    title: 'HexBot', items: [
+      approval('ap-1', {
+        kind: 'plugin', action: 'setup', id: 'connector:notion', name: 'Notion', bot: 'HexBot',
+        description: 'Read and write pages and databases in your workspace.', icon: 'notion',
+        fields: [{ key: 'NOTION_API_KEY', label: 'Notion API key', set: false }]
+      }),
+      approval('ap-2', {
+        kind: 'plugin', action: 'enable', id: 'skill:pdf', name: 'pdf', bot: 'Researcher', other: true, fields: []
+      }),
+      approval('ap-3', { kind: 'sign_in', site: 'app.schoology.com', title: 'Schoology' })
+    ],
+    onSend: vi.fn(), onBack: vi.fn(), onApprove: vi.fn()
+  }))
+  expect(screen.getByText('Notion')).toBeTruthy()
+  expect(screen.getByText('Read and write pages and databases in your workspace.')).toBeTruthy()
+  // Setup folds its keys behind Connect; turning on for another bot says which.
+  expect(screen.queryByText('Notion API key')).toBeNull()
+  expect(screen.getByText('For Researcher')).toBeTruthy()
+  expect(screen.getByText('Schoology')).toBeTruthy()
+  expect(screen.getByText('app.schoology.com')).toBeTruthy()
 })

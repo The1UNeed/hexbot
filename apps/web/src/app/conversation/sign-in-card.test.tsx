@@ -34,12 +34,17 @@ describe('sign-in card', () => {
     })
   })
 
-  it('sends what was typed with the answer and shows Submitted after', async () => {
+  it('opens behind Sign in, sends what was typed and shows Saved after', async () => {
     const { rerender } = render(<ApprovalCard approval={card} />)
 
-    expect(screen.getByText('Sign in to Schoology')).toBeVisible()
-    expect(screen.getByText('Secure form')).toBeVisible()
+    expect(screen.getByRole('group', { name: 'Sign in to Schoology' })).toBeVisible()
+    expect(screen.getByText('app.schoology.com')).toBeVisible()
+    expect(screen.queryByLabelText('Password')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+
     expect(screen.getByLabelText('Username or email')).toHaveValue('alex')
+    // With a username given, the password takes the focus.
+    expect(screen.getByLabelText('Password')).toHaveFocus()
     const signIn = screen.getByRole('button', { name: 'Sign in' })
     expect(signIn).toBeDisabled()
 
@@ -48,7 +53,7 @@ describe('sign-in card', () => {
     expect(password).toHaveAccessibleName('Password')
     expect(password).toHaveAttribute('type', 'password')
     fireEvent.change(password, { target: { value: 'hunter2' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Show password' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Show Password' }))
     expect(password).toHaveAttribute('type', 'text')
     fireEvent.click(signIn)
 
@@ -64,14 +69,15 @@ describe('sign-in card', () => {
     expect(JSON.stringify(useTranscripts.getState().bySession['s-1'])).not.toContain('hunter2')
 
     rerender(<ApprovalCard approval={settled} />)
-    expect(screen.getByText('Submitted')).toBeVisible()
+    expect(screen.getByText('Saved')).toBeVisible()
     expect(screen.queryByLabelText('Password')).toBeNull()
   })
 
   it('cancels without sending anything typed', async () => {
     render(<ApprovalCard approval={card} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'nope' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Not now' }))
     await waitFor(() =>
       expect(approvalRespond).toHaveBeenCalledWith('s-1', 'ap-1', 'deny', undefined)
     )
@@ -80,6 +86,7 @@ describe('sign-in card', () => {
   it('keeps the form and says why when the daemon refuses', async () => {
     vi.mocked(approvalRespond).mockRejectedValueOnce(new Error('request is no longer waiting'))
     render(<ApprovalCard approval={card} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'pw' } })
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('request is no longer waiting')

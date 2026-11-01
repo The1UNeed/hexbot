@@ -92,6 +92,11 @@ const model = createServer(async (req, res) => {
                   name: 'hexbot_passwords',
                   args: { action: 'ask', title: 'Northfield School', url: 'https://school.example/login' }
                 }
+            : !toolAnswered && prompt.includes('Set up Home Assistant')
+              ? {
+                  name: 'hexbot_plugins',
+                  args: { action: 'setup', id: 'connector:home_assistant' }
+                }
             : !toolAnswered && prompt.startsWith('Read the other app attachment')
               ? { name: 'read', args: { path: retainedUploadPath } }
               : !toolAnswered && prompt.startsWith('# Heartbeat')
@@ -118,6 +123,8 @@ const model = createServer(async (req, res) => {
                   ? 'The mobile approval reached Pi.'
                   : prompt.includes('Sign in to the school site')
                     ? 'The school sign-in is saved.'
+                  : prompt.includes('Set up Home Assistant')
+                    ? 'Home Assistant has its token.'
                   : 'Your daemon received this from mobile. The connection is working.'
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
     const frame = (delta, finish_reason = null) =>
@@ -544,9 +551,13 @@ try {
   )
   await page.getByTestId('chat-input').fill('Sign in to the school site')
   await page.getByTestId('chat-send').click()
+  // The card folds its form behind Sign in, like a plugin's Connect.
+  const open = page.locator('[data-testid^="sign-in-"][data-testid$="-open"]')
+  await expect(open).toBeVisible({ timeout: 30000 })
+  await expect(page.getByText('Northfield School', { exact: true })).toBeVisible()
+  await open.click()
   const signIn = page.locator('[data-testid^="sign-in-"][data-testid$="-password"]')
-  await expect(signIn).toBeVisible({ timeout: 30000 })
-  await expect(page.getByText('Sign in to Northfield School', { exact: true })).toBeVisible()
+  await expect(signIn).toBeVisible()
   await page.locator('[data-testid^="sign-in-"][data-testid$="-username"]').fill('alex')
   await signIn.fill('mobile-secret-42')
   await page.screenshot({ path: path.join(artifacts, 'sign-in-card.png') })
@@ -561,6 +572,30 @@ try {
   )
   assert.doesNotMatch(JSON.stringify(modelRequests), /mobile-secret-42/)
   await shot('chat-signed-in')
+  // A plugin's keys go on a card too: Connect opens its fields, and what is
+  // typed is saved as Settings, Plugins saves it, never reaching the model.
+  await writeFile(
+    path.join(home, 'profiles/owl/config.yaml'),
+    `model:\n  provider: lmstudio\n  default: mobile-test\n  base_url: ${modelBase}\n  api_key: test-key\ntools:\n  enabled_toolsets: [file, hexbot]\napproval_mode: manual\n`
+  )
+  await page.getByTestId('chat-input').fill('Set up Home Assistant')
+  await page.getByTestId('chat-send').click()
+  const connect = page.locator('[data-testid^="plugin-"][data-testid$="-open"]')
+  await expect(connect).toBeVisible({ timeout: 30000 })
+  await expect(page.getByText('Home Assistant', { exact: true })).toBeVisible()
+  await shot('plugin-card')
+  await connect.click()
+  await page.locator('[data-testid^="plugin-"][data-testid$="-HASS_URL"]').fill('http://127.0.0.1:9')
+  await page.locator('[data-testid^="plugin-"][data-testid$="-HASS_TOKEN"]').fill('mobile-ha-token-42')
+  await page.screenshot({ path: path.join(artifacts, 'plugin-card-open.png') })
+  await page.locator('[data-testid^="plugin-"][data-testid$="-submit"]').click()
+  await expect(page.getByText('Home Assistant has its token.', { exact: true })).toBeVisible({
+    timeout: 30000
+  })
+  const connectors = (await rpc('hexbot.connectors.list')).connectors
+  assert.equal(connectors.find(c => c.id === 'home_assistant').ready, true)
+  assert.doesNotMatch(JSON.stringify(modelRequests), /mobile-ha-token-42/)
+  await shot('chat-plugin-saved')
   await page.getByTestId('chat-settings').click()
   await expect(page.getByTestId('fingerprint-soul')).toBeVisible()
   await settle()
@@ -831,7 +866,7 @@ try {
     page.getByText('Your daemon received this from mobile. The connection is working.', {
       exact: true
     })
-  ).toBeVisible()
+  ).toBeVisible({ timeout: 30000 })
   await page.locator('[data-testid^="visual-open-"]').first().click()
   await expect(page.frameLocator('iframe').getByText('42 completed tasks')).toBeVisible()
   await page.getByTestId('visual-sheet-close').click()
@@ -849,7 +884,7 @@ try {
     page.getByText('Your daemon received this from mobile. The connection is working.', {
       exact: true
     })
-  ).toBeVisible()
+  ).toBeVisible({ timeout: 30000 })
   assert(
     modelRequests.length >= 2,
     'The real Pi process must call the streaming model for chat and room'

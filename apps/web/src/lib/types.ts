@@ -63,6 +63,57 @@ export interface SignInForm {
   username?: string
 }
 
+/** A key a plugin card asks for: never its value, only whether one is saved. */
+export interface PluginFormField {
+  help?: null | string
+  /** The end of a saved value, such as …a1b2, when there is one. */
+  hint?: null | string
+  key: string
+  label: string
+  /** Where an MCP server takes it. */
+  place?: 'env' | 'headers'
+  /** The provider it belongs to, for a connector with several. */
+  provider?: null | string
+  secret?: boolean
+  /** True when a value is saved; the field may then be left empty. */
+  set?: boolean
+  /** Where to get one. */
+  url?: null | string
+}
+
+/**
+ * The plugin card a bot shows with `hexbot_plugins`: install a package,
+ * turn a plugin on, or set it up. The keys typed on it go to the daemon with
+ * the answer and are saved as Settings, Plugins saves them.
+ */
+export interface PluginForm {
+  action: 'enable' | 'install' | 'setup'
+  /** The bot it is for, by name. */
+  bot: string
+  description?: string
+  /** What an install runs, in words. */
+  detail?: string
+  /** What an install runs: its command line or address, then each value it is given. */
+  run?: string[]
+  /** True when it is for another bot than the one asking. */
+  other?: boolean
+  fields: PluginFormField[]
+  /** A `BRAND_ICONS` key or `glyph:<name>`; skills and servers send none. */
+  icon?: null | string
+  /** The plugin's id, such as connector:notion or package:github. */
+  id: string
+  kind: 'plugin'
+  name: string
+  provider?: null | string
+  providers?: { id: string; label: string }[] | null
+}
+
+/** What a plugin card answers with. */
+export interface PluginAnswer {
+  provider?: null | string
+  values: Record<string, string>
+}
+
 /** A saved login in Settings, Passwords: never its password or code key. */
 export interface PasswordLogin {
   /** The bots that may use it; null means every bot, including new ones. */
@@ -89,7 +140,7 @@ export interface ApprovalRequest {
   decision?: ApprovalChoice
   /** The command or action, rendered in monospace. */
   command?: string
-  form?: SignInForm
+  form?: PluginForm | SignInForm
   reason?: string
   receivedAt: number
   requestId: string

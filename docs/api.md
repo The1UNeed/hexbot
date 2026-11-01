@@ -77,7 +77,19 @@ data model. The native transport and event projection live in
   sign-in card `hexbot_passwords` shows: answer `once` with `username` and
   `password` (4202 without a password), or `deny` to cancel. What was typed
   goes to the waiting tool only and is saved in Passwords; no event, log or
-  history row carries it. Questions arrive as `clarify.request` and
+  history row carries it. A `form` with `kind: "plugin"` is the plugin card
+  `hexbot_plugins` shows: `{action: "install" | "enable" | "setup", id, name,
+  description, icon, bot, other, detail, run, fields, providers, provider}`
+  (`other` when it is for another bot than the one asking; `run`, with
+  install, the server's command line or address and every value it is
+  given, one per line), where each
+  field is `{key, label, help, url, secret, provider, place, set, hint}` and
+  never carries a value. Answer `once` with `values` (`{key: value}`) and,
+  for a connector with several providers, `provider`; only the card's fields
+  for that provider are read. With `setup`, a field with nothing saved must
+  be filled (4202, and the card keeps waiting). The values are saved as
+  `hexbot.connectors.setup` or `hexbot.plugins.configure` saves them, and,
+  like a sign-in, reach no event, log or history row. Questions arrive as `clarify.request` and
   `pending_clarify` on section open; use `clarify.respond` to answer.
   Every card that stops waiting is settled once, to every client of the
   owner, by its `request_id`. An answer sends `approval.resolved
@@ -1130,14 +1142,20 @@ Install, configure, remove and giving a package emit
 Bots get `hexbot_plugins` with the `hexbot` toolset: `list` (each plugin as
 `kind:id`, whether it is on for the bot, without keys, values, or a server's
 address unless the server has a description), `install` (same fields as
-above), `enable`, `disable`, and, for the primary bot in its own chat,
+above), `enable`, `setup`, `disable`, and, for the primary bot in its own chat,
 `remove` and a `bot` argument for any bot. In a room or a job the primary bot
 gets only what any bot gets. `install`, `enable`, and every primary-bot change
 for another bot ask the user each time, even in Bypass; a scheduled job or a
 check-in cannot ask, so it gets 4302. The card lists the server's command or
 URL and every environment value and header, and a bot's server may not
 contain `${KEY}` references (4202), so it never receives stored keys the card
-doesn't show. A bot's own install is on for that bot only, and stays off for
+doesn't show. `install` and `enable` ask with the plugin card, which also
+takes the keys the plugin still needs (optional there). `setup` shows the
+card for a plugin's keys alone: a connector's fields, or an MCP server's
+empty environment values and headers (all of them when none is empty); it
+saves them, tests the plugin, and returns `{plugin, ready, note}`. A plugin
+with nothing to fill in gets 4202; a job, or a section that cannot ask,
+gets 4302. A bot's own install is on for that bot only, and stays off for
 bots created later. `disable` for itself does not ask. The chat takes the new
 server at its next message (`tools_stale`).
 

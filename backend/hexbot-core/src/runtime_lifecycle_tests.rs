@@ -268,6 +268,156 @@ async fn a_bot_asks_before_installing_a_plugin_for_itself() {
     runtime.shutdown().await;
 }
 
+#[tokio::test]
+async fn a_bot_asks_for_a_plugins_keys_on_a_card() {
+    let (home, runtime, hub) = setup();
+    db::open(home.path())
+        .unwrap()
+        .execute("UPDATE bots SET approval_mode='off' WHERE name='owl'", [])
+        .unwrap();
+    fs::write(
+        home.path().join("profiles/owl/config.yaml"),
+        "model:\n  provider: openai\n  default: fixture\ntools:\n  enabled_toolsets: [hexbot]\n",
+    )
+    .unwrap();
+    open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let mut events = hub.subscribe();
+    let card = async |events: &mut tokio::sync::broadcast::Receiver<_>| {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let event: crate::events::Event = events.recv().await.unwrap();
+                if event.frame["params"]["type"] == "approval.request" {
+                    break event.frame["params"]["payload"].clone();
+                }
+            }
+        })
+        .await
+        .unwrap()
+    };
+    let respond = async |card: &Value, extra: Value| {
+        let mut params = json!({"session_id":s.id,"request_id":card["request_id"],"choice":"once"});
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        runtime
+            .call("alice", "approval.respond", &params)
+            .await
+            .unwrap()
+    };
+    let tool = |args: Value| {
+        let runtime = runtime.clone();
+        let s = s.clone();
+        tokio::spawn(async move { runtime.tool(&s, "hexbot_plugins", &args).await })
+    };
+
+    // A connector's keys, even in Bypass: the card names the fields only.
+    let task = tool(json!({"action":"setup","id":"connector:home_assistant"}));
+    let shown = card(&mut events).await;
+    let form = &shown["form"];
+    assert_eq!(form["kind"], "plugin");
+    assert_eq!(form["action"], "setup");
+    assert_eq!(form["name"], "Home Assistant");
+    assert_eq!(form["icon"], "homeassistant");
+    let keys = form["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["key"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(keys, [json!("HASS_URL"), json!("HASS_TOKEN")]);
+    // A key left out keeps the card waiting; one it lacks is ignored.
+    let missing = respond(&shown, json!({"values":{"HASS_URL":"http://127.0.0.1:9"}}))
+        .await
+        .unwrap_err();
+    assert_eq!(missing.code, 4202);
+    assert_eq!(missing.message, "Enter the Long-lived access token.");
+    respond(
+        &shown,
+        json!({"values":{"HASS_URL":"http://127.0.0.1:9","HASS_TOKEN":"ha-secret-token","OPENAI_API_KEY":"sk-nope"}}),
+    )
+    .await
+    .unwrap();
+    let done = task.await.unwrap().unwrap();
+    assert_eq!(done["ready"], false);
+    assert!(
+        done["note"].as_str().unwrap().contains("test failed"),
+        "{done}"
+    );
+    assert!(!done.to_string().contains("ha-secret-token"));
+    let connector = crate::connectors::get(home.path(), None, "home_assistant").unwrap();
+    assert_eq!(connector["ready"], true);
+    // Nothing typed reaches an event.
+    while let Ok(event) = events.try_recv() {
+        assert!(!event.frame.to_string().contains("ha-secret-token"));
+    }
+
+    // A key entered while installing goes into the server's settings.
+    let task = tool(json!({
+        "action": "install",
+        "name": "echo",
+        "mcp": {"command": "node", "args": ["echo.js"], "env": {"ECHO_TOKEN": ""}},
+    }));
+    let shown = card(&mut events).await;
+    assert_eq!(shown["form"]["action"], "install");
+    assert_eq!(shown["form"]["fields"][0]["key"], "ECHO_TOKEN");
+    assert!(
+        shown["form"]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("node echo.js")
+    );
+    assert_eq!(shown["form"]["run"], json!(["node echo.js"]));
+    assert_eq!(shown["form"]["other"], false);
+    respond(&shown, json!({"values":{"ECHO_TOKEN":"echo-secret"}}))
+        .await
+        .unwrap();
+    let installed = task.await.unwrap().unwrap();
+    assert!(
+        !installed["note"].as_str().unwrap().contains("Needs"),
+        "{installed}"
+    );
+    assert_eq!(
+        common::read_config(home.path()).unwrap()["mcp_servers"]["echo"]["env"]["ECHO_TOKEN"],
+        "echo-secret"
+    );
+
+    // A server that quotes the token it refused: the test error the bot
+    // reads, and the one saved for later, leave the token out.
+    let script = home.path().join("refuser.js");
+    fs::write(&script, r#"require('node:readline').createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);if(m.id!==undefined)process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,error:{code:-32001,message:'Invalid token '+process.env.REFUSER_TOKEN}})+'\n')})"#).unwrap();
+    let task = tool(json!({
+        "action": "install",
+        "name": "refuser",
+        "mcp": {"command": "node", "args": [script], "env": {"REFUSER_TOKEN": ""}},
+    }));
+    let shown = card(&mut events).await;
+    respond(&shown, json!({})).await.unwrap();
+    task.await.unwrap().unwrap();
+    let task = tool(json!({"action":"setup","id":"package:refuser"}));
+    let shown = card(&mut events).await;
+    respond(&shown, json!({"values":{"REFUSER_TOKEN":"k9x2"}}))
+        .await
+        .unwrap();
+    let refused = task.await.unwrap().unwrap();
+    assert!(
+        refused["note"]
+            .as_str()
+            .unwrap()
+            .contains("Invalid token …"),
+        "{refused}"
+    );
+    let listed = runtime
+        .tool(&s, "hexbot_plugins", &json!({"action":"list"}))
+        .await
+        .unwrap();
+    for text in [refused.to_string(), listed.to_string()] {
+        assert!(!text.contains("k9x2"), "{text}");
+    }
+    runtime.shutdown().await;
+}
+
 fn processes(home: &Path) -> Vec<Value> {
     fs::read_to_string(home.join("processes.jsonl"))
         .unwrap()

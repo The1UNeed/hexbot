@@ -5,7 +5,7 @@
  */
 
 import { BRAND_ICONS } from './connector-icons'
-import type { PluginServer } from './types'
+import type { PluginForm, PluginServer } from './types'
 
 /** The icon for a skill you or a bot wrote. */
 export const DEFAULT_SKILL_ICON = 'glyph:sparkles'
@@ -139,4 +139,16 @@ export function serverIcon(name: string, server?: null | PluginServer): string {
   const rest = [server?.url, server?.command, ...(server?.args ?? [])].filter(Boolean).join(' ')
 
   return brandIn(name.toLowerCase()) ?? brandIn(rest.toLowerCase()) ?? DEFAULT_SERVER_ICON
+}
+
+/** A plugin card's icon: the daemon's for a connector, as Settings draws it otherwise. */
+export function pluginFormIcon(form: PluginForm): string {
+  if (form.icon) {
+    return form.icon
+  }
+
+  const [kind, ...rest] = form.id.split(':')
+  const id = rest.join(':')
+
+  return kind === 'skill' ? skillIcon({ name: id }) : serverIcon(id.replace(/^mcp:/, ''))
 }

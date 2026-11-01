@@ -75,8 +75,10 @@ export interface PendingApproval {
   command: string
   reason?: string
   choices: string[]
-  /** The sign-in card a bot shows to save a password. */
-  form?: import('../../../web/src/lib/types').SignInForm
+  /** The sign-in card a bot shows to save a password, or a plugin card. */
+  form?:
+    | import('../../../web/src/lib/types').PluginForm
+    | import('../../../web/src/lib/types').SignInForm
 }
 export interface PendingQuestion {
   requestId: string
