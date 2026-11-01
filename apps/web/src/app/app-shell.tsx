@@ -3,10 +3,12 @@ import { PanelLeft } from 'lucide-react'
 import { type CSSProperties, type ReactNode, useEffect, useState } from 'react'
 
 import { cn } from '../lib/cn'
+import { searchActions, useSearch } from '../stores/search'
 import { useUi } from '../stores/ui'
 import { useVisuals, visualsActions } from '../stores/visuals'
 
 import { VisualPanel } from './conversation/visual-frame'
+import { RoomSearchPanel } from './panel/search-panel'
 import { ThreadPanel } from './panel/thread'
 import { ConversationColumn, ProfilePanel, RosterColumn } from './slots'
 
@@ -33,7 +35,9 @@ export function AppShell({ children }: { children?: ReactNode }) {
   const showThread = Boolean(thread) && !children
   // Visuals opened beside the chat take the slot first, wider, as tabs.
   const showVisuals = useVisuals(state => state.tabs.length > 0) && !children
-  const showPanel = showVisuals || showThread || (panelOpen && !roomMode && !children)
+  // A room has no profile panel; its slot opens for search alone.
+  const showSearch = useSearch(state => state.open) && roomMode && !children
+  const showPanel = showVisuals || showThread || showSearch || (panelOpen && !roomMode && !children)
   const width = showVisuals ? visualsWidth : panelWidth
 
   // The panel stays in the tree for one beat after it closes, so it can slide
@@ -73,11 +77,14 @@ export function AppShell({ children }: { children?: ReactNode }) {
   // A thread belongs to the chat it was opened from; leaving that chat closes it.
   useEffect(() => closeThread(), [closeThread, params.bot, params.room, params.section])
   useEffect(() => visualsActions().closeAll(), [params.bot, params.room, params.section])
+  useEffect(() => searchActions().reset(), [params.bot, params.room, params.section])
 
   const panel = showVisuals ? (
     <VisualPanel />
   ) : thread && showThread ? (
     <ThreadPanel key={`${thread.bot}/${thread.peer}`} thread={thread} />
+  ) : roomMode ? (
+    <RoomSearchPanel />
   ) : (
     <ProfilePanel />
   )

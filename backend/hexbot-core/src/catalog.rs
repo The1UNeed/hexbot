@@ -1560,6 +1560,7 @@ fn shape_bot(
         "description": row["description"].as_str().unwrap_or(""),
         "primary": row["is_primary"].as_i64() == Some(1),
         "persona": read_text(home, &profile(home, name)?.join("SOUL.md"))?,
+        "persona_updated_at": crate::common::modified_at(&profile(home, name)?.join("SOUL.md"))?,
         "skills": skills.into_iter().filter(|s| s.enabled).map(|s| s.name).collect::<Vec<_>>(),
         "tools": tools,
         "available_tools": available.iter().map(|(k, _)| *k).collect::<Vec<_>>(),

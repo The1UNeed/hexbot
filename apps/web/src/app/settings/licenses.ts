@@ -165,6 +165,23 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
       },
       {
         license: 'MIT',
+        name: 'Tiptap',
+        packages: [
+          '@tiptap/extension-placeholder',
+          '@tiptap/markdown',
+          '@tiptap/pm',
+          '@tiptap/react',
+          '@tiptap/starter-kit'
+        ],
+        repository: 'https://github.com/ueberdosis/tiptap'
+      },
+      {
+        license: 'MIT',
+        name: 'ProseMirror',
+        repository: 'https://github.com/ProseMirror/prosemirror'
+      },
+      {
+        license: 'MIT',
         name: 'remark-gfm',
         packages: ['remark-gfm'],
         repository: 'https://github.com/remarkjs/remark-gfm'

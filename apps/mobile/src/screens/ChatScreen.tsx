@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons'
-import { memo, type ReactNode, useCallback, useMemo, useState } from 'react'
+import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   FlatList,
   type ListRenderItemInfo,
@@ -113,6 +113,10 @@ export interface ChatScreenProps {
   computerLive?: boolean
   /** Opens a visual item from the transcript. */
   onOpenVisual?: (id: string) => void
+  /** Opens search in this conversation; the button shows only with this. */
+  onOpenSearch?: () => void
+  /** A message search found: the transcript scrolls to it and marks it. A new nonce shows it again. */
+  focus?: { id: string; nonce: number } | null
   /** Under the empty state of a new chat, such as the model it will use. */
   intro?: ReactNode
 }
@@ -188,6 +192,16 @@ export function ChatScreen(props: ChatScreenProps) {
         testID="chat-bar"
         trailing={
           <>
+            {props.onOpenSearch ? (
+              <IconButton
+                accessibilityLabel={room ? 'Search this room' : 'Search this chat'}
+                icon="search"
+                iconSize={19}
+                onPress={props.onOpenSearch}
+                testID="chat-search"
+                variant="glass"
+              />
+            ) : null}
             {onOpenComputer ? (
               <View>
                 <IconButton
@@ -246,6 +260,7 @@ function ChatBody(props: ChatScreenProps) {
     waiting
   } = props
   const room = !!members
+  const theme = useTheme()
   const keyboard = useKeyboardVisible()
   const insets = useSafeAreaInsets()
   const bottom = keyboard ? 8 : Math.max(insets.bottom, 8)
@@ -285,6 +300,26 @@ function ChatBody(props: ChatScreenProps) {
     return waiting ? [{ id: 'waiting', entry: waitingEntry, continued: false }, ...list] : list
   }, [items, !!waiting])
   const fallbackFace = useMemo(() => face ?? { name: title }, [face, title])
+  const list = useRef<FlatList<ListEntry>>(null)
+  const [flash, setFlash] = useState<null | { id: string; nonce: number }>(null)
+  const { focus } = props
+  // The request itself, not its nonce: a new conversation starts nonces over.
+  const shown = useRef<typeof focus>(null)
+  // Scroll to what search found once per request, not on every new message.
+  useEffect(() => {
+    if (!focus || shown.current === focus) return
+    const index = entries.findIndex(item => item.id === focus.id)
+    if (index < 0) return
+    shown.current = focus
+    list.current?.scrollToIndex({ animated: true, index, viewPosition: 0.5 })
+    setFlash(focus)
+  }, [entries, focus])
+  // Its own timer, so new messages arriving meanwhile cannot leave the mark on.
+  useEffect(() => {
+    if (!flash) return
+    const timer = setTimeout(() => setFlash(null), 1600)
+    return () => clearTimeout(timer)
+  }, [flash])
   const {
     emotion,
     onApprove,
@@ -297,28 +332,39 @@ function ChatBody(props: ChatScreenProps) {
   const waitingLabel = waiting?.label
   const waitingWho = waiting?.who ?? (room ? null : fallbackFace)
   const renderItem = useCallback(
-    ({ item: { entry, continued } }: ListRenderItemInfo<ListEntry>) => (
-      <TranscriptEntry
-        entry={entry}
-        continued={continued}
-        face={entry.kind === 'message' && !room ? fallbackFace : undefined}
-        room={room}
-        onLongPress={
-          entry.kind === 'message'
-            ? entry.id === recallId && onRecall
-              ? onRecall
-              : onMessageLongPress
-            : undefined
-        }
-        renderText={entry.kind === 'message' ? renderMessageText : undefined}
-        onApprove={entry.kind === 'approval' ? onApprove : undefined}
-        onOpenVisual={entry.kind === 'visual' ? onOpenVisual : undefined}
-        waitingLabel={entry.kind === 'waiting' ? waitingLabel : undefined}
-        waitingWho={entry.kind === 'waiting' ? waitingWho : undefined}
-        mood={entry.kind === 'waiting' ? emotion : undefined}
-      />
-    ),
+    ({ item: { entry, continued } }: ListRenderItemInfo<ListEntry>) => {
+      const row = (
+        <TranscriptEntry
+          entry={entry}
+          continued={continued}
+          face={entry.kind === 'message' && !room ? fallbackFace : undefined}
+          room={room}
+          onLongPress={
+            entry.kind === 'message'
+              ? entry.id === recallId && onRecall
+                ? onRecall
+                : onMessageLongPress
+              : undefined
+          }
+          renderText={entry.kind === 'message' ? renderMessageText : undefined}
+          onApprove={entry.kind === 'approval' ? onApprove : undefined}
+          onOpenVisual={entry.kind === 'visual' ? onOpenVisual : undefined}
+          waitingLabel={entry.kind === 'waiting' ? waitingLabel : undefined}
+          waitingWho={entry.kind === 'waiting' ? waitingWho : undefined}
+          mood={entry.kind === 'waiting' ? emotion : undefined}
+        />
+      )
+      return entry.id === flash?.id ? (
+        <View style={[styles.flash, { backgroundColor: withAlpha(theme.accent, 0.12) }]}>
+          {row}
+        </View>
+      ) : (
+        row
+      )
+    },
     [
+      flash,
+      theme.accent,
       room,
       fallbackFace,
       recallId,
@@ -383,6 +429,23 @@ function ChatBody(props: ChatScreenProps) {
           keyExtractor={entryKey}
           keyboardDismissMode="interactive"
           keyboardShouldPersistTaps="handled"
+          onScrollToIndexFailed={info => {
+            // Rows far up are not measured yet: get near, then try again.
+            list.current?.scrollToOffset({
+              animated: false,
+              offset: info.averageItemLength * info.index
+            })
+            setTimeout(
+              () =>
+                list.current?.scrollToIndex({
+                  animated: true,
+                  index: info.index,
+                  viewPosition: 0.5
+                }),
+              100
+            )
+          }}
+          ref={list}
           renderItem={renderItem}
           testID="chat-transcript"
         />
@@ -936,6 +999,7 @@ const styles = StyleSheet.create({
     paddingRight: 14
   },
   titleText: { flexShrink: 1 },
+  flash: { borderRadius: 16 },
   computerDot: {
     borderRadius: 5,
     borderWidth: 1.5,
