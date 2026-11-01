@@ -251,6 +251,23 @@ describe('transcript reducer', () => {
     expect(useTranscripts.getState().bySession.s!.messages[0]!.submission?.status).toBe('accepted')
   })
 
+  it('undoes an in-place resend without dropping what was sent since', () => {
+    const actions = useTranscripts.getState()
+    const input = actions.appendUserMessage('s', 'hi')
+    actions.errorEvent('s', 'Provider stopped')
+    const undo = actions.resendInPlace('s', input.id, 'second-key')
+    const newer = actions.appendUserMessage('s', 'and this')
+    undo()
+    const { messages } = useTranscripts.getState().bySession.s!
+    expect(messages.map(message => message.text || message.error)).toEqual([
+      'hi',
+      'Provider stopped',
+      'and this'
+    ])
+    expect(messages[0]!.inputId).toBe(input.inputId)
+    expect(messages[2]!.id).toBe(newer.id)
+  })
+
   it('stops every running step when the turn ends', () => {
     const actions = useTranscripts.getState()
 

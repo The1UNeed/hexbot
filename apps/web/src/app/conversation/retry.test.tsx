@@ -1112,3 +1112,16 @@ it('keeps a newer upload busy when an earlier send finishes', async () => {
   await waitFor(() => expect(delivered).toHaveLength(2))
   expect(userRows()).toHaveLength(2)
 })
+
+it('keeps the saved draft of a message that did not send until the bot takes it', async () => {
+  answers = [refused()]
+  const view = await mount()
+  await send(view)
+  const [card] = await screen.findAllByTestId('stopped-card')
+  // The field is empty, but a reload would still find the message.
+  expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('')
+  expect(useDrafts.getState().byId.chat).toBe('Read my plan')
+  fireEvent.click(retryOn(card!)!)
+  await waitFor(() => expect(delivered).toHaveLength(1))
+  await waitFor(() => expect(useDrafts.getState().byId.chat).toBeUndefined())
+})

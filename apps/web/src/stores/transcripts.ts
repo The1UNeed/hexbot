@@ -1579,12 +1579,27 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           : transcript
       })
 
+      // Puts back the message and what followed it then; anything newer stays.
       return () =>
-        update(sessionId, transcript =>
-          before && transcript.messages.some(message => message.inputId === inputId)
-            ? { ...transcript, error: before.error, messages: before.messages }
-            : transcript
-        )
+        update(sessionId, transcript => {
+          const at = transcript.messages.findIndex(
+            message => message.id === messageId && message.inputId === inputId
+          )
+
+          const was = before?.messages.findIndex(message => message.id === messageId) ?? -1
+
+          return at < 0 || was < 0
+            ? transcript
+            : {
+                ...transcript,
+                error: before!.error,
+                messages: [
+                  ...transcript.messages.slice(0, at),
+                  ...before!.messages.slice(was),
+                  ...transcript.messages.slice(at + 1)
+                ]
+              }
+        })
     },
 
     heartbeatMessage(sessionId, message) {

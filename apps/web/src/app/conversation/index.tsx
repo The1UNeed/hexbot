@@ -1120,9 +1120,28 @@ interface DraftAttachment {
 /**
  * What the composer held for each message it sent, by row. The field clears
  * when the bubble appears; a send that ends where neither its bubble nor its
- * card can retry it comes back to edit from here.
+ * card can retry it comes back to edit from here. The saved draft stays until
+ * the bot takes the message, so a reload never loses one that did not send.
  */
-const sentDrafts = new Map<string, { files: DraftAttachment[]; text: string }>()
+const sentDrafts = new Map<
+  string,
+  { files: DraftAttachment[]; section: null | string; text: string }
+>()
+
+/** The bot took it: its saved draft goes, unless something new was typed since. */
+function settleDraft(id: string) {
+  const held = sentDrafts.get(id)
+
+  if (!held) {
+    return
+  }
+
+  sentDrafts.delete(id)
+
+  if (held.section && draftsActions().byId[held.section] === held.text) {
+    draftsActions().clear(held.section)
+  }
+}
 
 /** A send that failed where neither its bubble nor its card can retry it. */
 function stranded(message: TranscriptMessage): boolean {
@@ -1151,7 +1170,15 @@ function Composer({
   status?: BotStatus
   streaming: boolean
 }) {
-  const [text, setText] = useState(() => (sectionId ? draftsActions().byId[sectionId] : '') ?? '')
+  const [text, setText] = useState(() => {
+    const saved = (sectionId ? draftsActions().byId[sectionId] : '') ?? ''
+
+    // A message still in its bubble shows there, not here as well.
+    return [...sentDrafts.values()].some(held => held.section === sectionId && held.text === saved)
+      ? ''
+      : saved
+  })
+
   const [files, setFiles] = useState<DraftAttachment[]>([])
   const [sending, setSending] = useState(false)
   // The newest send owns `sending`: an earlier one ending never unlocks it.
@@ -1239,23 +1266,33 @@ function Composer({
       // with Retry if it does not, so the field clears at once. Older daemons
       // cannot say which send failed and keep the draft until one is taken.
       if (identified) {
-        sentDrafts.set(pending.id, { files, text })
-        clear()
+        sentDrafts.set(pending.id, { files, section: sectionId, text })
+        setText('')
+        setFiles([])
         setSending(false)
       }
 
+      const sent = await submitOrReopen(sessionId, sectionId, text.trim(), {
+        current,
+        files: files.map(item => item.file),
+        pending,
+        uploads
+      })
+
+      // Taken, even if this view has gone since.
       if (
-        !(await submitOrReopen(sessionId, sectionId, text.trim(), {
-          current,
-          files: files.map(item => item.file),
-          pending,
-          uploads
-        }))
+        useTranscripts
+          .getState()
+          .bySession[sessionId]?.messages.some(
+            message => message.id === pending.id && message.submission?.status === 'accepted'
+          )
       ) {
-        return
+        settleDraft(pending.id)
       }
 
-      sentDrafts.delete(pending.id)
+      if (!sent) {
+        return
+      }
 
       if (!identified) {
         clear()
@@ -1298,6 +1335,21 @@ function Composer({
         )?.id
       : undefined
   )
+
+  // One the bot took on a later try lets its saved draft go too.
+  const takenId = useTranscripts(state =>
+    sessionId
+      ? state.bySession[sessionId]?.messages.find(
+          message => sentDrafts.has(message.id) && message.submission?.status === 'accepted'
+        )?.id
+      : undefined
+  )
+
+  useEffect(() => {
+    if (takenId) {
+      settleDraft(takenId)
+    }
+  }, [takenId])
 
   const empty = !text.trim() && !files.length
 
