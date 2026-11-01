@@ -1728,10 +1728,10 @@ function BotConversation() {
   const openBeside = useCallback(
     (file: FileTarget) => {
       if (liveId) {
-        openFile(liveId, file, ownerInput)
+        openFile(liveId, file, ownerInput, params.section)
       }
     },
-    [liveId, ownerInput]
+    [liveId, ownerInput, params.section]
   )
 
   // While the owner chat validated here is checked again (a reconnect, a

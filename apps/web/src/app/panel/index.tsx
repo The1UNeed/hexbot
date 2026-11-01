@@ -132,10 +132,12 @@ function DetailsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
 function LibraryTab({
   messages,
   name,
+  sectionId,
   sessionId
 }: {
   messages: TranscriptMessage[]
   name: string
+  sectionId: null | string
   sessionId: null | string
 }) {
   const items = useMemo(
@@ -227,12 +229,17 @@ function LibraryTab({
                     <button
                       className={rowClass}
                       onClick={() =>
-                        openFile(sessionId, {
-                          mime: item.mime || mimeOf(item.name),
-                          name: item.name,
-                          path: item.path,
-                          url: item.url
-                        })
+                        openFile(
+                          sessionId,
+                          {
+                            mime: item.mime || mimeOf(item.name),
+                            name: item.name,
+                            path: item.path,
+                            url: item.url
+                          },
+                          true,
+                          sectionId
+                        )
                       }
                       type="button"
                     >
@@ -487,7 +494,12 @@ export function ProfilePanel(): React.JSX.Element {
           >
             {tab === 'details' ? <DetailsTab bot={bot} onSave={save} /> : null}
             {tab === 'library' ? (
-              <LibraryTab messages={messages} name={bot.display_name} sessionId={liveId} />
+              <LibraryTab
+                messages={messages}
+                name={bot.display_name}
+                sectionId={selected?.section ?? null}
+                sessionId={liveId}
+              />
             ) : null}
             {tab === 'fingerprint' ? (
               <FingerprintTab bot={bot} memory={memory} onOpen={setEditing} />

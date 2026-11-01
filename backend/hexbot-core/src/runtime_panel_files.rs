@@ -8,9 +8,7 @@ use super::*;
 const TEXT_LIMIT: usize = 2 * 1024 * 1024;
 /// Anything shown read-only, as a data URL, matching the attachment limit.
 const READ_LIMIT: u64 = 45 * 1024 * 1024;
-/// One panel save at a time, so two clients saving from the same version
-/// cannot both pass the version check: the second sees the first's save.
-static SAVES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+use super::pi_files::{SAVES, version_of};
 
 impl Runtime {
     pub(super) async fn read_file(&self, s: &Live, p: &Value) -> Result<Value> {
@@ -128,13 +126,6 @@ fn mime_of(path: &Path) -> &'static str {
 
 /// Text when the file is UTF-8 without NUL bytes and small enough to edit,
 /// otherwise its bytes as a data URL.
-/// A file's version: the hash of its contents. Unlike a modification time it
-/// cannot repeat for a different file, however quickly the file is replaced.
-fn version_of(bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    format!("{:x}", Sha256::digest(bytes))
-}
-
 pub(super) fn read_payload(path: &Path) -> Result<Value> {
     let meta = fs::metadata(path)?;
     if meta.len() > READ_LIMIT {

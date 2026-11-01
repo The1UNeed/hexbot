@@ -80,7 +80,10 @@ data model. The native transport and event projection live in
   to 2 MiB in one step through a directory handle that refuses symlinks and
   keeps its permissions, one write at a time; it refuses binary files (4202)
   and, when `version` (from the last read or write) no longer matches the
-  file, answers 4209 and changes nothing.
+  file, answers 4209 and changes nothing. In Auto and Manual a bot's `edit`
+  takes the same turn and is refused the same way when the file changed
+  after the bot read it, so it cannot undo a save made in between; the bot
+  reads the file again. In Bypass the bot's tools write directly.
 - Approvals: `approval.respond {session_id, request_id, choice}`
   with `choice` in `once | session | deny`. `session` ("Allow for now")
   quiets the same kind of Manual or unreviewed request until the section's

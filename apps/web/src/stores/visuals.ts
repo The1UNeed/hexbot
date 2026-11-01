@@ -16,7 +16,9 @@ export interface FileTab {
     path?: string
     /** The chat takes the user's messages, so the quick tools may ask in it. */
     askable?: boolean
-    /** The live session it was opened from, to read and save through. */
+    /** The chat it was opened from. Its live session changes when the daemon restarts. */
+    sectionId?: string
+    /** The live session it was opened from, used until the chat's current one is known. */
     sessionId: string
     /** An object URL for a file this page still holds, such as a PDF just sent. */
     url?: string

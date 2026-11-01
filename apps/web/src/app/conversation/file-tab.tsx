@@ -6,6 +6,7 @@ import { filesRead, filesWrite, type OpenedFile } from '../../lib/api'
 import { cn } from '../../lib/cn'
 import type { Message } from '../../lib/types'
 import { useBots } from '../../stores/bots'
+import { useLiveSessionId } from '../../stores/sections'
 import { useTranscript } from '../../stores/transcripts'
 import { useUi } from '../../stores/ui'
 import { type FileTab, fileTab, visualsActions } from '../../stores/visuals'
@@ -77,16 +78,27 @@ function parse(text: string): unknown {
  * Opens a file in a tab beside the chat, read and saved through the chat's live
  * session. `askable` is false where the user cannot write (a thread between bots).
  */
-export function openFile(sessionId: string, target: FileTarget, askable = true) {
+export function openFile(
+  sessionId: string,
+  target: FileTarget,
+  askable = true,
+  sectionId?: null | string
+) {
   visualsActions().open(
     fileTab(target.name, {
       askable,
       mime: target.mime,
       path: target.path,
+      sectionId: sectionId ?? undefined,
       sessionId,
       url: target.url
     })
   )
+}
+
+/** The chat's current live session: a daemon restart gives it a new one. */
+function useFileSession(tab: FileTab): string {
+  return useLiveSessionId(tab.file.sectionId ?? null) ?? tab.file.sessionId
 }
 
 /** Each open file's save, by tab, so closing a tab can save it first. */
@@ -140,8 +152,8 @@ export function editRequest(ask: string, name: string, path?: string, editable =
   return editable ? `${ask}\n\nEdit the file in place: \`${path}\`` : `${ask}\n\nFile: \`${path}\``
 }
 
-function useOpenedFile(tab: FileTab) {
-  const { path, sessionId, url } = tab.file
+function useOpenedFile(tab: FileTab, sessionId: string) {
+  const { path, url } = tab.file
   const transcript = useTranscript(sessionId)
   const working = Boolean(transcript?.streamingMessageId)
 
@@ -379,7 +391,8 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
     selected?.bot ? (state.byName[selected.bot]?.display_name ?? 'The bot') : 'The bot'
   )
 
-  const { adopt, error, file, saved, updated, working } = useOpenedFile(tab)
+  const sessionId = useFileSession(tab)
+  const { adopt, error, file, saved, updated, working } = useOpenedFile(tab, sessionId)
   const objectUrl = useObjectUrl(file?.data_url)
   // The version the editor's text is based on. A refresh moves it only when the
   // editor takes the new text; while it holds an unsaved edit, a save names the
@@ -411,7 +424,7 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
     }
 
     try {
-      const current = await filesRead(tab.file.sessionId, path)
+      const current = await filesRead(sessionId, path)
       editionRef.current += 1
       base.current = current.version
       adopt(current)
@@ -444,8 +457,8 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
     }
 
     await sendText(
-      tab.file.sessionId,
-      selected?.section ?? null,
+      sessionId,
+      tab.file.sectionId ?? selected?.section ?? null,
       editRequest(request, name, path, text !== undefined)
     )
   }
@@ -526,12 +539,7 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
             }
 
             try {
-              const result = await filesWrite(
-                tab.file.sessionId,
-                path,
-                next,
-                base.current ?? file.version
-              )
+              const result = await filesWrite(sessionId, path, next, base.current ?? file.version)
 
               base.current = result.version
               saved(next, result.version, result.modified, result.size)

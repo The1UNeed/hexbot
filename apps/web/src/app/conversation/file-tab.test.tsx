@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Bot, Message, ToolCall } from '../../lib/types'
 import { useBots } from '../../stores/bots'
+import { useSections } from '../../stores/sections'
 import { useTranscripts } from '../../stores/transcripts'
 import { useUi } from '../../stores/ui'
 import { fileTab, isFileTab, useVisuals, visualsActions } from '../../stores/visuals'
@@ -339,6 +340,63 @@ describe('a file beside the chat', () => {
         'pin,use\nGPIO15,JTAG source select'
       )
     )
+  })
+
+  it("reads, saves and follows through the chat's new session after a daemon restart", async () => {
+    useSections.setState({ liveSessionId: { daily: 'gone' } })
+    api.filesRead.mockResolvedValue({
+      mime: 'text/csv',
+      modified: 3,
+      version: 'v3',
+      name: 'pins.csv',
+      path: '/work/pins.csv',
+      size: 7,
+      text: 'pin,use'
+    })
+    act(() =>
+      openFile(
+        'gone',
+        { mime: 'text/csv', name: 'pins.csv', path: '/work/pins.csv' },
+        true,
+        'daily'
+      )
+    )
+    render(<VisualPanel />)
+    const field = await screen.findByLabelText('pins.csv source')
+    expect(api.filesRead).toHaveBeenLastCalledWith('gone', '/work/pins.csv')
+
+    // The daemon restarts and the chat reopens with a new live session.
+    act(() => useSections.setState({ liveSessionId: { daily: 's' } }))
+    await waitFor(() => expect(api.filesRead).toHaveBeenLastCalledWith('s', '/work/pins.csv'))
+
+    fireEvent.change(field, { target: { value: 'pin,use\nGPIO15,JTAG' } })
+    await waitFor(
+      () =>
+        expect(api.filesWrite).toHaveBeenCalledWith(
+          's',
+          '/work/pins.csv',
+          'pin,use\nGPIO15,JTAG',
+          'v3'
+        ),
+      { timeout: 3000 }
+    )
+
+    api.filesRead.mockResolvedValue({
+      mime: 'text/csv',
+      modified: 6,
+      version: 'v6',
+      name: 'pins.csv',
+      path: '/work/pins.csv',
+      size: 30,
+      text: 'pin,use\nGPIO15,JTAG source select'
+    })
+    act(() => transcript([call({ args: { path: '/work/pins.csv' }, name: 'edit' })]))
+    await waitFor(() =>
+      expect(screen.getByLabelText('pins.csv source')).toHaveValue(
+        'pin,use\nGPIO15,JTAG source select'
+      )
+    )
+    useSections.setState({ liveSessionId: {} })
   })
 
   it('saves an edit typed while the bot changed the file against the version it started from', async () => {

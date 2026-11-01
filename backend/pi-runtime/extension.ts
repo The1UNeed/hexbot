@@ -19,7 +19,7 @@ export function fileRequestTitle(args: any): string {
   return title;
 }
 function fileOperations(ctx: any, callId: string, tool: string, target: string, snapshot: any) {
-  let opened: {bytes: Buffer, parent: string[]} | undefined;
+  let opened: {bytes: Buffer, parent: string[], version: string} | undefined;
   const checked = (path: string) => { if (path !== target) throw new Error('The file changed after it was checked. Try again.'); };
   const request = async (operation: string, extra: any = {}) => {
     const title = fileRequestTitle({operation, path:target, callId, snapshot, ...extra});
@@ -38,10 +38,10 @@ function fileOperations(ctx: any, callId: string, tool: string, target: string, 
     access: async (path: string) => {
       checked(path);
       const result = await request('edit_open');
-      if (typeof result.content !== 'string' || !Array.isArray(result.parent) || result.parent.length !== 2 || !result.parent.every((value: any) => typeof value === 'string' && /^\d+$/.test(value))) throw new Error('Invalid private file reply');
+      if (typeof result.content !== 'string' || typeof result.version !== 'string' || !/^[0-9a-f]{64}$/.test(result.version) || !Array.isArray(result.parent) || result.parent.length !== 2 || !result.parent.every((value: any) => typeof value === 'string' && /^\d+$/.test(value))) throw new Error('Invalid private file reply');
       const bytes = Buffer.from(result.content,'base64');
       if (bytes.toString('base64') !== result.content) throw new Error('Invalid private file reply');
-      opened = {bytes, parent:result.parent};
+      opened = {bytes, parent:result.parent, version:result.version};
     },
     readFile: async (path: string) => {
       checked(path);
@@ -51,9 +51,10 @@ function fileOperations(ctx: any, callId: string, tool: string, target: string, 
     writeFile: async (path: string, content: string) => {
       checked(path);
       if (tool === 'edit' && !opened) throw new Error('The private file bridge is unavailable.');
-      const parent = opened?.parent;
+      const parent = opened?.parent, version = opened?.version;
       opened = undefined;
-      const result = await request(tool === 'edit' ? 'edit_commit' : 'write', {content:Buffer.from(content,'utf8').toString('base64'), ...(parent ? {parent} : {})});
+      // The daemon refuses the edit if the file changed since it was opened.
+      const result = await request(tool === 'edit' ? 'edit_commit' : 'write', {content:Buffer.from(content,'utf8').toString('base64'), ...(parent ? {parent, opened:version} : {})});
       if (result.success !== true) throw new Error('Invalid private file reply');
     },
   };
