@@ -223,6 +223,10 @@ export function DocumentEditor({
   // Set by typing in either view; opening or switching views alone saves nothing.
   const edited = useRef(false)
   const saved = useRef(value)
+  // The latest text typed, for the save that runs when the editor goes away.
+  const draft = useRef(value)
+  const onSaveRef = useRef(onSave)
+  onSaveRef.current = onSave
   const timer = useRef<number>(undefined)
 
   const editor = useEditor({
@@ -243,7 +247,8 @@ export function DocumentEditor({
       }
 
       edited.current = true
-      setLength(updated.getMarkdown().length)
+      draft.current = updated.getMarkdown()
+      setLength(draft.current.length)
       schedule()
     }
   })
@@ -344,7 +349,19 @@ export function DocumentEditor({
     return () => window.removeEventListener('keydown', keys)
   }, [close])
 
-  useEffect(() => () => window.clearTimeout(timer.current), [])
+  // Leaving without closing (another bot's chat opened) still saves the draft, to
+  // this file: the editor never outlives the file it was opened on.
+  useEffect(
+    () => () => {
+      window.clearTimeout(timer.current)
+
+      if (edited.current && draft.current !== saved.current) {
+        const text = draft.current
+        void queue.current.then(() => onSaveRef.current(text)).catch(() => undefined)
+      }
+    },
+    []
+  )
 
   const toggleSource = () => {
     if (source === null) {
@@ -485,6 +502,7 @@ export function DocumentEditor({
               className="min-h-[60vh] w-full resize-none bg-transparent font-mono text-[13px] leading-relaxed text-foreground outline-none"
               onChange={event => {
                 edited.current = true
+                draft.current = event.target.value
                 setSource(event.target.value)
                 setLength(event.target.value.length)
                 schedule()

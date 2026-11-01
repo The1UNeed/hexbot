@@ -284,7 +284,11 @@ export function ProfilePanel(): React.JSX.Element {
 
   const running = messages.at(-1)?.toolCalls.findLast(call => call.status === 'running')
   const searching = useSearch(state => state.open)
-  const [editing, setEditing] = useState<FingerprintFile | null>(null)
+  // The open file, and the bot it belongs to: opening another bot's chat closes it.
+  const [opened, setOpened] = useState<{ bot: string; file: FingerprintFile } | null>(null)
+  const editing = opened && opened.bot === bot?.name ? opened.file : null
+  const setEditing = (file: FingerprintFile | null) =>
+    setOpened(file && bot ? { bot: bot.name, file } : null)
   const writes = useMemo(() => memoryWrites(messages), [messages])
 
   const [memory, setMemory] = useBotMemory(
@@ -342,6 +346,7 @@ export function ProfilePanel(): React.JSX.Element {
       </header>
       {editing ? (
         <FingerprintEditor
+          key={`${bot.name}/${editing}`}
           bot={bot}
           file={editing}
           memory={memory}

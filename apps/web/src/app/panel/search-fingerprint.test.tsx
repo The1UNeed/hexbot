@@ -341,6 +341,29 @@ describe('Fingerprint', () => {
     ])
   })
 
+  it("opening another bot's chat closes the editor and saves the draft to its own bot", async () => {
+    const update = vi.fn(async () => {})
+    const scout = { ...bot, display_name: 'Scout', name: 'scout', persona: 'Scout soul' }
+    useBots.setState({ byName: { muse: bot, scout }, update } as never)
+    render(<ProfilePanel />)
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Fingerprint' }))
+    fireEvent.click(screen.getByTestId('fingerprint-soul'))
+    const editor = await screen.findByTestId('document-editor')
+    fireEvent.click(within(editor).getByRole('button', { name: 'More' }))
+    fireEvent.click(await screen.findByText('View source'))
+    fireEvent.change(within(editor).getByRole('textbox', { name: 'Muse · Soul source' }), {
+      target: { value: 'Muse draft' }
+    })
+
+    // Back in the browser lands on another bot's chat before the save ran.
+    act(() => useUi.setState({ lastSection: { bot: 'scout', section: 'other' } }))
+
+    expect(screen.queryByTestId('document-editor')).toBeNull()
+    await waitFor(() => expect(update).toHaveBeenCalledWith('muse', { persona: 'Muse draft' }))
+    expect(update).not.toHaveBeenCalledWith('scout', expect.anything())
+  })
+
   it('opening and closing without an edit saves nothing', async () => {
     const update = vi.fn(async () => {})
     useBots.setState({ update } as never)
