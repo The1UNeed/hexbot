@@ -62,6 +62,10 @@ export type TranscriptMessage = Message & {
     status: 'sending' | 'accepted' | 'rejected' | 'unknown' | 'unavailable'
     uploads: string[] | null
     card?: string
+    /** When the latest attempt started: a bubble still sending 15 s later offers Retry. */
+    since?: number
+    /** Why the latest attempt failed, for the bubble's Not sent line. */
+    reason?: string
   }
   retryRow?: string
   /** A card for a request this client made, not for the bot's turn. */
@@ -221,6 +225,11 @@ export interface TranscriptsState {
   dismiss: (sessionId: string, messageId: string) => void
   /** The owner recalled this message: it and everything after it go. */
   recallFrom: (sessionId: string, messageId: string) => void
+  /**
+   * Your message goes again where it is: what followed it goes, and it waits
+   * under `inputId`. Answers an undo for when the daemon keeps the first try.
+   */
+  resendInPlace: (sessionId: string, messageId: string, inputId: string) => () => void
   /**
    * A Stopped card from a daemon incident. Unlike `errorEvent` it leaves the
    * streaming message alone: the incident fires mid-turn (a tool refused) and
@@ -1132,7 +1141,37 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
             : message.workUntil
         })
 
-        let next = withCurrentAssistant(transcript, finalize)
+        // The daemon's incident can land just before message.complete for the
+        // same failure. Its card and the failed reply are one failure: the
+        // reply keeps it, with the incident's detail, and the card goes.
+        const at = transcript.streamingMessageId
+          ? transcript.messages.findIndex(item => item.id === transcript.streamingMessageId)
+          : -1
+
+        const incident = payload.error && at > 0 ? transcript.messages[at - 1] : undefined
+
+        const merged =
+          incident?.role === 'system' &&
+          incident.errorDetail?.incidentId &&
+          !incident.request &&
+          !incident.retryRow &&
+          Date.now() - toMillis(incident.createdAt) < INCIDENT_MERGE_MS
+            ? incident
+            : undefined
+
+        let next = withCurrentAssistant(
+          merged
+            ? { ...transcript, messages: transcript.messages.filter(item => item !== merged) }
+            : transcript,
+          finalize
+        )
+
+        if (merged && next.streamingMessageId) {
+          next = replaceMessage(next, next.streamingMessageId, message => ({
+            ...message,
+            errorDetail: merged.errorDetail
+          }))
+        }
 
         if (payload.error && next.streamingMessageId) {
           next = withTerminalCard(next, next.streamingMessageId, transcript.identity?.turnId)
@@ -1373,7 +1412,8 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
                 epoch,
                 installation: daemon?.install_id,
                 status: 'sending' as const,
-                uploads
+                uploads,
+                since: Date.now()
               }
             })
           }))
@@ -1400,15 +1440,21 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         return
       }
 
+      // Another try under this key was taken: a lost answer cannot undo it.
+      if (status === 'unknown' && source.status === 'accepted') {
+        return
+      }
+
       if (!input.createdAt && status === 'rejected') {
         status = 'accepted'
         uploads = []
       }
 
       update(sessionId, transcript => {
-        // A prompt refusal or unknown RPC outcome says nothing about the
-        // operation currently streaming. Its card belongs only to this request.
-        const card = error ? requestCard(error, row) : undefined
+        // A prompt refusal says nothing about the operation currently
+        // streaming. Its card belongs only to this request. An unknown outcome
+        // draws no card: the bubble itself says Not sent and offers Retry.
+        const card = error && status !== 'unknown' ? requestCard(error, row) : undefined
 
         const messages = transcript.messages.map(message =>
           message.submission?.row === row
@@ -1418,6 +1464,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
                   ...message.submission,
                   status,
                   uploads,
+                  reason: error,
                   card:
                     card?.id ??
                     message.submission.card ??
@@ -1503,6 +1550,41 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           ? transcript
           : { ...transcript, error: null, messages: transcript.messages.slice(0, index) }
       })
+    },
+
+    resendInPlace(sessionId, messageId, inputId) {
+      const before = get().bySession[sessionId]
+
+      update(sessionId, transcript => {
+        const index = transcript.messages.findIndex(message => message.id === messageId)
+        const input = transcript.messages[index]
+
+        // A row history holds has no time of its own; once taken back it is
+        // this client's again, and a read keeps it until the new row lands.
+        // The failed turn went with it: the next one binds it afresh.
+        return input
+          ? {
+              ...transcript,
+              error: null,
+              messages: [
+                ...transcript.messages.slice(0, index),
+                {
+                  ...input,
+                  createdAt: input.createdAt || Date.now(),
+                  inputId,
+                  turnId: undefined
+                }
+              ]
+            }
+          : transcript
+      })
+
+      return () =>
+        update(sessionId, transcript =>
+          before && transcript.messages.some(message => message.inputId === inputId)
+            ? { ...transcript, error: before.error, messages: before.messages }
+            : transcript
+        )
     },
 
     heartbeatMessage(sessionId, message) {

@@ -877,6 +877,15 @@ body {
   }
 }
 
+@keyframes hex-dim {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.5;
+  }
+}
+
 @keyframes hex-fade {
   from {
     opacity: 0;
@@ -1032,6 +1041,13 @@ body {
 .hex-message-mine {
   transform-origin: 100% 100%;
 }
+/* Your bubble before the daemon takes it. Waits a beat so a quick send never flickers. */
+.hex-pending {
+  animation: hex-dim var(--hex-motion-rise) var(--hex-ease-out) 300ms both;
+}
+.hex-pending-mark {
+  animation: hex-fade var(--hex-motion-rise) var(--hex-ease-out) 300ms both;
+}
 .hex-menu-in {
   animation: hex-menu-in var(--hex-motion-fast) var(--hex-ease-out) both;
   transform-origin: top center;
@@ -1110,6 +1126,7 @@ body {
   .hex-bubble,
   .hex-message,
   .hex-fade,
+  .hex-pending-mark,
   .hex-rise,
   .hex-pop-in,
   .hex-menu-in,
@@ -1122,6 +1139,10 @@ body {
   .hex-fold,
   .hex-slide-out {
     display: none;
+  }
+  .hex-pending {
+    animation: none;
+    opacity: 0.5;
   }
   .hex-dot,
   .hex-pulse {
