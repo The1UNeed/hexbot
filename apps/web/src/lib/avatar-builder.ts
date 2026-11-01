@@ -144,7 +144,7 @@ export function avatarSrc(avatar?: null | { data: string; mime: string }): null 
   return avatar.data.startsWith('data:') ? avatar.data : `data:${avatar.mime};base64,${avatar.data}`
 }
 
-const shown = new WeakMap<object, { image: null | string; style?: AvatarStyle }>()
+const shown = new WeakMap<object, { image: null | string; style?: AvatarStyle; sync?: string }>()
 
 /**
  * What to draw for a bot: the face picked in an app, live, when the daemon
@@ -156,8 +156,9 @@ export function botFace(
   bot?: null | {
     avatar?: null | { data: string; mime: string }
     face?: AvatarStyle | null
+    name?: string
   }
-): { image: null | string; style?: AvatarStyle } {
+): { image: null | string; style?: AvatarStyle; sync?: string } {
   if (!bot) {
     return { image: null }
   }
@@ -165,7 +166,10 @@ export function botFace(
   let face = shown.get(bot)
 
   if (!face) {
-    face = bot.face ? { image: null, style: bot.face } : { image: avatarSrc(bot.avatar) }
+    // The bot's unique name keeps its faces in step even when two bots share a display name.
+    face = bot.face
+      ? { image: null, style: bot.face, sync: bot.name }
+      : { image: avatarSrc(bot.avatar), sync: bot.name }
     shown.set(bot, face)
   }
 

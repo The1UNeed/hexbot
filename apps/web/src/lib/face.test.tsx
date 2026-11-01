@@ -300,6 +300,19 @@ describe('original faces', () => {
     act(() => vi.advanceTimersByTime(4000))
     expect(container.querySelector('[data-act]')).toBeNull()
     unmount()
+
+    // Two bots that share a display name stay apart: faces sync by the bot's own name.
+    const twins = render(
+      <>
+        <Avatar name="Scout" sync="scout" />
+        <Avatar name="Scout" sync="scout-2" />
+      </>
+    )
+
+    fireEvent.click(twins.container.querySelector('[aria-label="Scout"]')!)
+    expect(twins.container.querySelectorAll('[data-act]')).toHaveLength(1)
+    expect(twins.container.querySelectorAll('svg[data-sync="scout-2"]')).toHaveLength(1)
+    twins.unmount()
     expect(vi.getTimerCount()).toBe(0)
   })
 })

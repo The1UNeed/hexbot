@@ -59,6 +59,8 @@ export interface AvatarProps extends VariantProps<typeof avatarVariants> {
   name: string
   /** Face to draw when there is no image; defaults to one derived from the name. */
   style?: AvatarStyle
+  /** Which bot this face belongs to, from `botFace`; defaults to the name. */
+  sync?: string
 }
 
 export interface LiveFaceProps {
@@ -379,8 +381,18 @@ export function useFaceColor(
  * app drew; any other uploaded picture as it is. Every face of one bot (the
  * sidebar, the header, the chat) moves as one and plays a clicked act together.
  */
-export function Avatar({ act, className, image, look, mood, name, size, style }: AvatarProps) {
-  const playing = useAct(act, `avatar:${name}`)
+export function Avatar({
+  act,
+  className,
+  image,
+  look,
+  mood,
+  name,
+  size,
+  style,
+  sync = name
+}: AvatarProps) {
+  const playing = useAct(act, `avatar:${sync}`)
   const { ref, visible } = useFaceVisibility<HTMLSpanElement>()
   const read = useFaceRead(image)
   const face = read ?? style ?? styleForName(name)
@@ -407,7 +419,7 @@ export function Avatar({ act, className, image, look, mood, name, size, style }:
             mood={shownMood}
             still={Boolean(playing.act)}
             style={face}
-            sync={name}
+            sync={sync}
           />
         )}
       </span>
