@@ -527,15 +527,23 @@ describe('sending in a room', () => {
     seq
   })
 
-  async function mount(send: (text: string) => Promise<unknown>) {
+  async function mount(send: (text: string) => Promise<unknown>, history: RoomEvent[] = []) {
     Element.prototype.scrollIntoView = vi.fn()
     useMe.setState({ me: null })
-    useRooms.setState({ byId: { r1: room }, eventsByRoom: {}, liveTurnsByRoom: {}, order: ['r1'] })
+
+    useRooms.setState({
+      byId: { r1: room },
+      eventsByRoom: history.length ? { r1: history } : {},
+      liveTurnsByRoom: {},
+      order: ['r1']
+    })
 
     const call = vi.fn((method: string, input: Record<string, unknown>) =>
       method === 'hexbot.rooms.send'
         ? send(String(input.text))
-        : Promise.resolve(method === 'hexbot.rooms.log' ? { events: [] } : { room: { ...room } })
+        : Promise.resolve(
+            method === 'hexbot.rooms.log' ? { events: history } : { room: { ...room } }
+          )
     )
 
     setActiveRpc({ call } as never)
@@ -693,6 +701,17 @@ describe('sending in a room', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('never takes the same words already in the room for this send', async () => {
+    // Sent from another app a moment ago.
+    await mount(
+      () => Promise.reject(new JsonRpcGatewayError('room is busy', { code: 4002 })),
+      [stored(5, 'hi')]
+    )
+
+    expect(await screen.findByText('Not sent')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeVisible()
   })
 
   it('shows one bubble when the room broadcasts it before the send answers', async () => {

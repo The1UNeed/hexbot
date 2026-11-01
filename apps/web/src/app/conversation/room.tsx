@@ -46,6 +46,8 @@ import {
 
 /** Your room message before the daemon stores it; it becomes a room event once it does. */
 interface Unsent {
+  /** The room's newest event when it was sent: its copy comes after. */
+  after: number
   delivery: 'failed' | 'sending'
   id: string
   reason?: string
@@ -439,6 +441,7 @@ export function RoomConversation() {
             event.kind === 'message.user' &&
             (!me || event.actor_id === me.id) &&
             event.payload.text === item.text &&
+            event.seq > item.after &&
             toMillis(event.created_at) >= item.sentAt - 1000
         )
 
@@ -539,6 +542,7 @@ export function RoomConversation() {
     }
 
     const item: Unsent = {
+      after: events.reduce((newest, event) => Math.max(newest, event.seq), 0),
       delivery: 'sending',
       id: crypto.randomUUID(),
       roomId,
