@@ -23,7 +23,7 @@ pub(super) fn descriptor() -> Value {
     json!({
         "name": NAME,
         "label": "Plugins",
-        "description": "See and add plugins: connectors (services Hexbot supports), MCP servers, skills, and packages. list shows every plugin and whether it is on for you; ids look like skill:pdf or package:github. install adds a package, an MCP server and the skills that explain it, or skills alone, and turns it on for you. enable turns a plugin on for you; disable turns it off. Installing and enabling always show the user a card to approve first, where they can also enter the keys the plugin needs. setup shows the user a card to enter a plugin's keys, such as an API key or token: when a plugin is not ready, call setup straight away, without asking first. What the user types is saved for their bots and never reaches you. Never ask the user to paste a key in the chat. Read the mcp skill before installing an MCP server, and skill-create before writing skills. The primary bot, in its own chat, can pass bot to act for another bot, and remove a package for every bot.",
+        "description": "See and add plugins: connectors (services Hexbot supports), MCP servers, skills, and packages. list shows every plugin and whether it is on for you; ids look like skill:pdf or package:github. install adds a package, an MCP server and the skills that explain it, or skills alone, and turns it on for you once its keys are filled in. enable turns a plugin on for you; disable turns it off. Installing and enabling always show the user a card to approve first, where they can also enter the keys the plugin needs. setup shows the user a card to enter a plugin's keys, such as an API key or token: when a plugin is not ready, call setup straight away, without asking first. What the user types is saved for their bots and never reaches you. Never ask the user to paste a key in the chat. Read the mcp skill before installing an MCP server, and skill-create before writing skills. The primary bot, in its own chat, can pass bot to act for another bot, and remove a package for every bot.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -199,7 +199,16 @@ impl Runtime {
                     self.ask_plugin(s, title, args).await?;
                 }
                 // Read again after the user answered: only this bot changes.
-                crate::plugins::set_for_bot(&self.home, owner, kind, id, &target, on)?;
+                // A plugin still missing its keys reaches no bot yet.
+                crate::plugins::set_for_bot(&self.home, owner, kind, id, &target, on).map_err(
+                    |e| match e.code {
+                        4209 => Error::new(
+                            4209,
+                            format!("{} Call setup with id {full}, so the user can finish it on a card.", e.message),
+                        ),
+                        _ => e,
+                    },
+                )?;
                 self.plugins_changed(owner);
                 let plugin = crate::plugins::find_for(&self.home, owner, kind, id, Some(&target))?;
                 let skills = plugin["skills"]
@@ -627,6 +636,18 @@ pub(super) fn answer(form: &Value, p: &Value) -> Result<Value> {
 
 /// What the bot should know once a plugin is on.
 fn after_change(plugin: &Value, id: &str, own: bool, skills: &[String]) -> String {
+    // Installed but waiting for a value: no bot has it until the user sets it up.
+    if plugin["state"] == "not_set_up" {
+        return format!(
+            "Installed, not set up yet ({}): call setup with id {id} now, so the user can finish it on a card. {} from the next message after that.",
+            plugin["state_text"].as_str().unwrap_or("needs setup"),
+            if own {
+                "It reaches you"
+            } else {
+                "It reaches that bot"
+            }
+        );
+    }
     let mut note = if own {
         "On for you. New tools reach you from your next message.".to_owned()
     } else {
@@ -635,7 +656,7 @@ fn after_change(plugin: &Value, id: &str, own: bool, skills: &[String]) -> Strin
     if own && !skills.is_empty() {
         note.push_str(&format!(" Read {} with skill_view now.", skills.join(", ")));
     }
-    if plugin["state"] == "not_set_up" || plugin["state"] == "error" {
+    if plugin["state"] == "error" {
         note.push_str(&format!(
             " It is not ready yet ({}): call setup with id {id} now, so the user can finish it on a card.",
             plugin["state_text"].as_str().unwrap_or("needs setup"),

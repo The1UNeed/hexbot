@@ -373,6 +373,15 @@ fn resolve_discovered(
             .filter(|need| !met(need, &env))
             .cloned()
             .collect();
+        // A package's skills explain its server, so they wait for the values
+        // the server was added without.
+        if let Some(plugin) = &skill.plugin {
+            skill.missing.extend(
+                crate::connectors::missing_values(&global["mcp_servers"][plugin])
+                    .into_iter()
+                    .map(Requirement::Env),
+            );
+        }
         skill.ready = skill.missing.is_empty();
         skill.enabled = skill.enabled_for_bot && !skill.disabled_globally && skill.ready;
     }

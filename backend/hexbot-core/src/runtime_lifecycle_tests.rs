@@ -182,13 +182,32 @@ async fn a_bot_asks_before_installing_a_plugin_for_itself() {
     assert!(!home.path().join("plugins/echo").exists());
     let (_, installed) = ask("once").await;
     let installed = installed.unwrap();
-    assert_eq!(installed["on"], true);
+    // Its token is empty, so it reaches no bot until the user fills it in.
+    assert_eq!(installed["on"], false);
     let note = installed["note"].as_str().unwrap();
     assert!(
-        note.contains("skill_view") && note.contains("Needs ECHO_TOKEN"),
+        note.contains("Needs ECHO_TOKEN") && !note.contains("skill_view"),
         "{note}"
     );
-    // On for the bot that asked, and only for it.
+    assert!(
+        crate::connectors::mcp_servers(home.path(), "owl")
+            .unwrap()
+            .get("echo")
+            .is_none()
+    );
+    assert!(
+        !crate::catalog::enabled_skills(home.path(), "owl")
+            .unwrap()
+            .iter()
+            .any(|s| s["name"] == "echo-usage")
+    );
+    crate::plugins::configure(
+        home.path(),
+        "echo",
+        &json!({"env": {"ECHO_TOKEN": "secret"}}),
+    )
+    .unwrap();
+    // Then on for the bot that asked, and only for it.
     assert!(
         crate::connectors::mcp_servers(home.path(), "owl")
             .unwrap()
