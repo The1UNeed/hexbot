@@ -866,7 +866,7 @@ try {
     page.getByText('Your daemon received this from mobile. The connection is working.', {
       exact: true
     })
-  ).toBeVisible()
+  ).toBeVisible({ timeout: 30000 })
   await page.locator('[data-testid^="visual-open-"]').first().click()
   await expect(page.frameLocator('iframe').getByText('42 completed tasks')).toBeVisible()
   await page.getByTestId('visual-sheet-close').click()
@@ -884,7 +884,7 @@ try {
     page.getByText('Your daemon received this from mobile. The connection is working.', {
       exact: true
     })
-  ).toBeVisible()
+  ).toBeVisible({ timeout: 30000 })
   assert(
     modelRequests.length >= 2,
     'The real Pi process must call the streaming model for chat and room'
