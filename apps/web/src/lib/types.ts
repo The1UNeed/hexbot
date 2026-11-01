@@ -361,6 +361,8 @@ export interface Connector {
   name: string
   provider?: null | string
   providers?: ConnectorProviderOption[]
+  /** Set up, so it can be given to a bot. Older daemons omit it. */
+  ready?: boolean
   scope: 'bot' | 'daemon'
   state: ConnectorState
   state_text: string
@@ -394,7 +396,6 @@ export interface PluginsList {
   connectors: (Connector & {
     bots: string[]
     kind: 'connector'
-    ready?: boolean
     server?: PluginServer
   })[]
   /** Absent on daemons from before packages. */

@@ -1037,7 +1037,9 @@ or a clear.
   connected-server probe counts all tool pages and saves `tool_count`. The connector
   list reports the last probe count, or null when untested.
 - `hexbot.connectors.clear {id, bot?, bot_only?}` → `{connector}`.
-- `hexbot.connectors.set_for_bot {id, bot, enabled}` → `{connector}`.
+- `hexbot.connectors.set_for_bot {id, bot, enabled}` → `{connector}`. A
+  connector that is not `ready` for the bot can be turned off but not on:
+  4209, "Set up NAME before giving it to a bot."
 - `hexbot.connectors.add_mcp {name, command?, args?, env?, url?, transport?,
   bots?, bot?}` → `{connector}`; `hexbot.connectors.remove_mcp {name}` →
   `{removed: true}`. MCP servers are defined once, in the root `config.yaml`,
@@ -1147,11 +1149,16 @@ bot, including bots created later; a list keeps bots created later off.
   `skills: [{name, description}]`, `installed_by`, `connector` and `server`
   for a package with a server, and count as given to a bot while any part is. Every row has `kind` (`connector`, `skill`,
   `package`), `id`, `name`, `description`, `ready` and `bots`, the caller's
-  bots it is given to. Connector rows are the `Connector` shape; one is
-  `ready` when its required keys are saved or its MCP server is enabled,
-  independently of an earlier connection error. Skill rows are the `Skill` shape
-  without `path`, and their `bots` are the bots whose grant is on, ready or
-  not. With `bot`, rows add `enabled_for_bot`.
+  bots it is given to. A plugin is given to a bot only once it is set up for
+  that bot: one left on by default before setup (new bots start with Web
+  search, Image generation, Premium voice and every skill on) lists no bots,
+  and reaches them when it is set up. A switched-off server keeps its bots. Connector rows are the `Connector` shape; one is
+  `ready` when its required keys are saved, or its MCP server is enabled
+  with no empty value, independently of an earlier connection error. A
+  package with a server is `ready` when its server is. Skill rows are the `Skill` shape
+  without `path`, and their `bots` are the bots whose grant is on and that
+  have what the skill needs. A package's skills also wait for the values its
+  server was added without. With `bot`, rows add `enabled_for_bot`.
 - `hexbot.plugins.set_bots {kind, id, bots}` → `{plugin: Plugin}`. Gives the
   plugin to exactly the caller's bots in `bots` and takes it from the
   caller's others; other owners' bots are untouched. A plugin that is not
@@ -1196,8 +1203,9 @@ empty environment values and headers (all of them when none is empty); it
 saves them, tests the plugin, and returns `{plugin, ready, note}`. A plugin
 with nothing to fill in gets 4202; a job, or a section that cannot ask,
 gets 4302. A bot's own install is on for that bot only, and stays off for
-bots created later. `disable` for itself does not ask. The chat takes the new
-server at its next message (`tools_stale`).
+bots created later. A plugin whose keys are left empty on the card reaches
+no bot until they are filled in; `enable` then gets 4209. `disable` for
+itself does not ask. The chat takes the new server at its next message (`tools_stale`).
 
 Successful skill mutations emit `hexbot.skills.changed` and `hexbot.bots.changed`.
 Library changes reach all users with `{name}`; private changes reach the caller

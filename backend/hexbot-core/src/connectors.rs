@@ -239,12 +239,13 @@ fn assigned(entry: &Value, bot: &str) -> bool {
 }
 /// The servers a bot may use: daemon-level ones assigned to it, plus servers
 /// defined only in its own profile. A profile entry never redefines a
-/// daemon-level server; one marked disabled still withholds it.
+/// daemon-level server; one marked disabled still withholds it. A daemon-level
+/// server still waiting for a value reaches no bot.
 pub fn mcp_servers(home: &Path, bot: &str) -> Result<Value> {
     let root = read_config(home)?;
     let config = read_config(&profile(home, bot)?)?;
     let mut servers = root["mcp_servers"].as_object().cloned().unwrap_or_default();
-    servers.retain(|_, entry| assigned(entry, bot));
+    servers.retain(|_, entry| assigned(entry, bot) && missing_values(entry).is_empty());
     if let Some(own) = config["mcp_servers"].as_object() {
         for (name, entry) in own {
             if root["mcp_servers"].get(name).is_some_and(Value::is_object) {
@@ -430,7 +431,15 @@ pub(crate) fn enabled(home: &Path, bot: &str, id: &str) -> Result<bool> {
     }
     Ok(strings(&s["toolsets"]).iter().all(|t| tools.contains(t)))
 }
+/// Turn a connector on or off for one bot. One that is not set up for that
+/// bot can be turned off but not on.
 pub(crate) fn set_enabled(home: &Path, bot: &str, id: &str, on: bool) -> Result<()> {
+    if on {
+        let row = get(home, Some(bot), id)?;
+        if row["ready"] != true {
+            return Err(not_set_up(row["name"].as_str().unwrap_or(id)));
+        }
+    }
     if !id.starts_with("mcp:") {
         let s = spec(id)?;
         if let Some(skill) = s["skill"].as_str() {
@@ -449,6 +458,10 @@ pub(crate) fn set_enabled(home: &Path, bot: &str, id: &str, on: bool) -> Result<
         });
     }
     set_toolsets(home, bot, id, on)
+}
+/// Why a plugin that is not set up can't be given to a bot.
+pub(crate) fn not_set_up(name: &str) -> Error {
+    Error::new(4209, format!("Set up {name} before giving it to a bot."))
 }
 /// Turn a catalog connector's toolsets on or off for one bot.
 pub(crate) fn set_toolsets(home: &Path, bot: &str, id: &str, on: bool) -> Result<()> {
@@ -510,7 +523,8 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
     for s in catalog() {
         let id = s["id"].as_str().unwrap();
         let provider = selected(home, &s)?;
-        let ready = has_keys(home, bot, &required_keys(home, &s)?)?;
+        let required = required_keys(home, &s)?;
+        let ready = has_keys(home, bot, &required)?;
         let last = if ready { last_test(home, id)? } else { None };
         let err = incidents.iter().find(|i| i["connector"] == id);
         let (state, mut state_text) = if let Some(err) = err {
@@ -577,9 +591,11 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
         } else {
             Value::Null
         };
+        // A bot has a connector once it is on and set up for that bot; a
+        // default left on before setup gives it to nobody.
         let mut bots = vec![];
         for n in &names {
-            if enabled(home, n, id)? {
+            if enabled(home, n, id)? && has_keys(home, Some(n), &required)? {
                 bots.push(n.clone())
             }
         }
@@ -614,15 +630,33 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
             }
             let id = format!("mcp:{name}");
             let err = incidents.iter().find(|e| e["connector"] == id);
+            let disabled = entry["disabled"] == true;
+            let missing = missing_values(entry);
+            let ready = !disabled && missing.is_empty();
             let mut bots = vec![];
             for n in &names {
                 if enabled(home, n, &id)? {
                     bots.push(n.clone())
                 }
             }
-            let disabled = entry["disabled"] == true;
             let tested = last_test(home, &id)?;
             let failed = tested.as_ref().is_some_and(|v| v["ok"] == false);
+            // A value left empty keeps the server from starting, so it
+            // outranks an error from an earlier run.
+            let (state, state_text) = if !missing.is_empty() {
+                ("not_set_up", format!("Needs {}", missing.join(", ")))
+            } else if let Some(e) = err {
+                (
+                    "error",
+                    e["text"].as_str().unwrap_or("").chars().take(80).collect(),
+                )
+            } else if failed {
+                ("error", "Test failed".to_string())
+            } else if disabled {
+                ("not_set_up", "Disabled".to_string())
+            } else {
+                ("ready", "Running".to_string())
+            };
             let description = entry["url"].as_str().map(str::to_owned).unwrap_or_else(|| {
                 std::iter::once(entry["command"].as_str().unwrap_or("").to_string())
                     .chain(strings(&entry["args"]))
@@ -636,24 +670,9 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
                 "group": "mcp",
                 "icon": "glyph:server",
                 "scope": "daemon",
-                "ready": !disabled,
-                "state": if err.is_some() || failed {
-                    "error"
-                } else if disabled {
-                    "not_set_up"
-                } else {
-                    "ready"
-                },
-                "state_text": err
-                    .map(|e| {
-                        e["text"]
-                            .as_str()
-                            .unwrap_or("")
-                            .chars()
-                            .take(80)
-                            .collect::<String>()
-                    })
-                    .unwrap_or_else(|| if disabled { "Disabled" } else if failed { "Test failed" } else { "Running" }.to_string()),
+                "ready": ready,
+                "state": state,
+                "state_text": state_text,
                 "providers": null,
                 "provider": null,
                 "fields": [],
@@ -680,6 +699,16 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
         }
     }
     Ok(json!({"connectors":out}))
+}
+/// The env or header values a server was added with but left empty: the
+/// user still has to fill them in before it can start.
+pub(crate) fn missing_values(entry: &Value) -> Vec<String> {
+    [&entry["env"], &entry["headers"]]
+        .into_iter()
+        .flat_map(|v| v.as_object().into_iter().flatten())
+        .filter(|(_, v)| v.as_str().is_some_and(str::is_empty))
+        .map(|(k, _)| k.clone())
+        .collect()
 }
 pub(crate) fn get(home: &Path, bot: Option<&str>, id: &str) -> Result<Value> {
     list(home, bot)?["connectors"]

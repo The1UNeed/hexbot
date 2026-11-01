@@ -68,14 +68,16 @@ fn connector_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<
         if let Some(name) = row["mcp"]["name"].as_str() {
             let entry = &config["mcp_servers"][name];
             row["server"] = server_details(entry);
-            if let Some((state, text)) = needs(entry) {
-                row["state"] = state;
-                row["state_text"] = text;
-            }
         }
-        // A switched-off server is still given to the bots on its stored list.
+        // A switched-off server is still given to the bots on its stored list;
+        // one still waiting for a value is given to nobody yet.
         let bots = match row["id"].as_str().and_then(|id| id.strip_prefix("mcp:")) {
-            Some(server) => json!(connectors::mcp_bots(home, server)?),
+            Some(server)
+                if connectors::missing_values(&config["mcp_servers"][server]).is_empty() =>
+            {
+                json!(connectors::mcp_bots(home, server)?)
+            }
+            Some(_) => json!([]),
             None => row["enabled_bots"].clone(),
         };
         row["bots"] = only(&bots, own);
@@ -96,11 +98,12 @@ fn skill_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<Valu
     };
     let mut rows = vec![];
     for skill in listed.into_iter().filter(|s| s.plugin.is_none()) {
+        // A grant counts once the skill has what it needs for that bot.
         let given = per_bot
             .iter()
             .filter(|(_, list)| {
                 list.iter()
-                    .any(|s| s.name == skill.name && s.enabled_for_bot)
+                    .any(|s| s.name == skill.name && s.enabled_for_bot && s.ready)
             })
             .map(|(b, _)| *b)
             .collect::<Vec<_>>();
@@ -155,7 +158,12 @@ pub(crate) fn set_bots(home: &Path, caller: &str, p: &Value) -> Result<Value> {
     let kind = required(p, "kind")?;
     let id = required(p, "id")?;
     if kind == "package" {
+        let current = find(home, caller, kind, id)?;
+        let given = strings(&current["bots"]);
         let chosen = connectors::chosen_bots(home, caller, &[], &p["bots"])?;
+        if current["ready"] != true && chosen.iter().any(|b| !given.contains(b)) {
+            return Err(connectors::not_set_up(id));
+        }
         assign_package(home, caller, id, &chosen)?;
         // Choosing every bot means every bot, including later ones.
         let own = own_bots(home, caller)?;
@@ -171,7 +179,23 @@ pub(crate) fn set_bots(home: &Path, caller: &str, p: &Value) -> Result<Value> {
             .into_iter()
             .filter(|b| own.contains(b))
             .collect(),
-        None => strings(&current["bots"]),
+        // What is stored, not what is shown: a grant left on before setup
+        // can still be taken away.
+        None => {
+            let mut stored = vec![];
+            for bot in &own {
+                let on = match kind {
+                    "skill" => skills::resolve(home, Some(bot))?
+                        .iter()
+                        .any(|s| s.name == id && s.enabled_for_bot),
+                    _ => connectors::enabled(home, bot, id)?,
+                };
+                if on {
+                    stored.push(bot.clone());
+                }
+            }
+            stored
+        }
     };
     let chosen = connectors::chosen_bots(home, caller, &current_bots, &p["bots"])?;
     let wanted = |bot: &str| chosen.iter().any(|b| b == bot);
@@ -195,15 +219,7 @@ pub(crate) fn set_bots(home: &Path, caller: &str, p: &Value) -> Result<Value> {
     {
         blocked |= !ready_for(bot)?;
     }
-    let not_set_up = || {
-        Error::new(
-            4209,
-            format!(
-                "Set up {} before giving it to a bot.",
-                current["name"].as_str().unwrap_or(id)
-            ),
-        )
-    };
+    let not_set_up = || connectors::not_set_up(current["name"].as_str().unwrap_or(id));
     if blocked {
         return Err(not_set_up());
     }
@@ -882,22 +898,6 @@ fn server_details(entry: &Value) -> Value {
     details
 }
 
-/// A server with values left empty still needs them before it can start.
-fn needs(entry: &Value) -> Option<(Value, Value)> {
-    let missing = [&entry["env"], &entry["headers"]]
-        .into_iter()
-        .flat_map(|v| v.as_object().into_iter().flatten())
-        .filter(|(_, v)| v.as_str().is_some_and(str::is_empty))
-        .map(|(k, _)| k.clone())
-        .collect::<Vec<_>>();
-    (!missing.is_empty()).then(|| {
-        (
-            json!("not_set_up"),
-            json!(format!("Needs {}", missing.join(", "))),
-        )
-    })
-}
-
 fn package_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<Value>> {
     let config = read_config(home)?;
     let connectors = connectors::list(home, None)?["connectors"]
@@ -926,23 +926,27 @@ fn package_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<Va
         } else {
             vec![]
         };
+        let ready = server.is_none_or(|c| c["ready"] == true);
+        let waiting = server.is_some() && !connectors::missing_values(entry).is_empty();
         // On for a bot while any part is, so a part left on can always be
-        // taken away here; giving it switches every part on.
+        // taken away here; giving it switches every part on. Until its server
+        // has its values, it is given to nobody.
         let given = own
             .iter()
             .filter(|b| {
-                server_bots.contains(b)
-                    || per_bot.iter().any(|(owner, list)| {
-                        owner == *b
-                            && list.iter().any(|s| {
-                                parts.iter().any(|p| p.name == s.name) && s.enabled_for_bot
-                            })
-                    })
+                !waiting
+                    && (server_bots.contains(b)
+                        || per_bot.iter().any(|(owner, list)| {
+                            owner == *b
+                                && list.iter().any(|s| {
+                                    parts.iter().any(|p| p.name == s.name) && s.enabled_for_bot
+                                })
+                        }))
             })
             .cloned()
             .collect::<Vec<_>>();
         let (state, state_text) = match server {
-            Some(c) => needs(entry).unwrap_or((c["state"].clone(), c["state_text"].clone())),
+            Some(c) => (c["state"].clone(), c["state_text"].clone()),
             None => (
                 json!("ready"),
                 json!(format!(
@@ -957,7 +961,7 @@ fn package_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<Va
             "id": name,
             "name": name,
             "description": manifest["description"],
-            "ready": true,
+            "ready": ready,
             "state": state,
             "state_text": state_text,
             "bots": given,

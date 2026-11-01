@@ -353,14 +353,24 @@ function PluginRow({
   const toggle = (bot: string, on: boolean) =>
     choose(on ? [...plugin.bots, bot] : plugin.bots.filter(name => name !== bot))
 
-  // A connector or skill can be ready for one bot through a key in its own
-  // `.env`, so only the daemon can tell whether a bot may have it.
+  // Until it is set up, a plugin can be taken away from bots but not given.
+  const setupFirst = !plugin.ready
+  const canSetUp = Boolean(plugin.kind === 'connector' && plugin.connector?.fields.length)
+
   const control = focus ? (
-    <Switch
-      aria-label={`${plugin.name} for ${focus.display_name}`}
-      checked={plugin.bots.includes(focus.name)}
-      onCheckedChange={on => toggle(focus.name, on)}
-    />
+    setupFirst && !plugin.bots.includes(focus.name) ? (
+      plugin.kind === 'skill' ? null : (
+        <Button onClick={canSetUp ? onSetup : expanded ? undefined : onExpand} size="sm">
+          Set up
+        </Button>
+      )
+    ) : (
+      <Switch
+        aria-label={`${plugin.name} for ${focus.display_name}`}
+        checked={plugin.bots.includes(focus.name)}
+        onCheckedChange={on => toggle(focus.name, on)}
+      />
+    )
   ) : (
     <span className="shrink-0 text-[length:var(--text-secondary)] text-muted">
       {botsText(plugin, bots)}
@@ -417,8 +427,17 @@ function PluginRow({
       ) : null}
       {expanded ? (
         <div className="hex-fade grid gap-4 px-4 pt-1 pb-4 pl-[56px] text-[length:var(--text-secondary)]">
-          {bots.length ? (
-            <BotPicker bots={bots} chosen={plugin.bots} name={plugin.name} onChange={choose} />
+          {setupFirst ? (
+            <p className="text-muted">Set up {plugin.name} before giving it to a bot.</p>
+          ) : null}
+          {bots.length && (!setupFirst || plugin.bots.length) ? (
+            <BotPicker
+              bots={bots}
+              chosen={plugin.bots}
+              giving={!setupFirst}
+              name={plugin.name}
+              onChange={choose}
+            />
           ) : null}
           {error ? (
             <p className="text-danger" role="alert">
@@ -432,19 +451,22 @@ function PluginRow({
   )
 }
 
-/** One pill per bot; a filled pill is on. */
+/** One pill per bot; a filled pill is on. Without `giving`, pills only turn off. */
 function BotPicker({
   bots,
   chosen,
+  giving,
   name,
   onChange
 }: {
   bots: PluginBot[]
   chosen: string[]
+  giving: boolean
   name: string
   onChange: (bots: string[]) => void
 }) {
   const all = bots.every(bot => chosen.includes(bot.name))
+  const turnOn = giving && !all
 
   return (
     <div>
@@ -453,10 +475,10 @@ function BotPicker({
         {bots.length > 1 ? (
           <button
             className="text-[length:var(--text-meta)] text-muted underline-offset-2 hover:text-foreground hover:underline disabled:pointer-events-none disabled:opacity-50"
-            onClick={() => onChange(all ? [] : bots.map(bot => bot.name))}
+            onClick={() => onChange(turnOn ? bots.map(bot => bot.name) : [])}
             type="button"
           >
-            {all ? 'Turn off for every bot' : 'Turn on for every bot'}
+            {turnOn ? 'Turn on for every bot' : 'Turn off for every bot'}
           </button>
         ) : null}
       </div>
@@ -473,6 +495,7 @@ function BotPicker({
                   ? 'bg-accent text-accent-fg'
                   : 'bg-foreground/[0.07] text-foreground hover:bg-foreground/[0.11]'
               )}
+              disabled={!on && !giving}
               key={bot.name}
               onClick={() =>
                 onChange(on ? chosen.filter(item => item !== bot.name) : [...chosen, bot.name])
