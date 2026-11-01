@@ -9,11 +9,23 @@
 //! or `HEXBOT_USAGE_DATA=0` turns it off whatever the setting says.
 use crate::{common, db, settings};
 use serde_json::{Value, json};
-use std::{path::Path, sync::Once, time::Duration};
+use std::{
+    path::Path,
+    sync::{Mutex, MutexGuard, Once},
+    time::Duration,
+};
 
 const KEY: Option<&str> = option_env!("HEXBOT_POSTHOG_KEY");
 const CAPTURE_URL: &str = "https://us.i.posthog.com/i/v0/e/";
 const FILE: &str = "usage.json";
+
+// Every read-then-write of usage.json runs in turn with turning usage data
+// off, so a check that started before an opt-out can never write the id back.
+static TURN: Mutex<()> = Mutex::new(());
+
+fn turn() -> MutexGuard<'static, ()> {
+    TURN.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn key() -> Option<&'static str> {
     KEY.map(str::trim).filter(|key| !key.is_empty())
@@ -53,6 +65,7 @@ fn install_id(home: &Path) -> Option<String> {
 
 /// Turning usage data off forgets the install id, so turning it back on starts anew.
 pub fn forget(home: &Path) {
+    let _turn = turn();
     let _ = std::fs::remove_file(home.join(FILE));
 }
 
@@ -85,6 +98,12 @@ pub fn payload(key: &str, id: &str, event: &str, mut properties: Value) -> Value
 
 /// Sends one event in the background when usage data is on. Never fails the caller.
 pub fn capture(home: &Path, event: &str, properties: Value) {
+    let _turn = turn();
+    send(home, event, properties);
+}
+
+/// `capture` for a caller already holding the turn.
+fn send(home: &Path, event: &str, properties: Value) {
     let Some(key) = key() else { return };
     if !enabled(home) || tokio::runtime::Handle::try_current().is_err() {
         return;
@@ -142,6 +161,7 @@ pub fn summary(home: &Path) -> Value {
 
 /// Sends `daemon_active` at most once per UTC day.
 pub fn daily(home: &Path) {
+    let _turn = turn();
     if !enabled(home) {
         return;
     }
@@ -149,7 +169,7 @@ pub fn daily(home: &Path) {
     if state(home)["active_day"] == today.as_str() {
         return;
     }
-    capture(home, "daemon_active", summary(home));
+    send(home, "daemon_active", summary(home));
     // Read again: the capture may have just written the install id.
     let mut next = state(home);
     next["active_day"] = json!(today);
@@ -250,6 +270,36 @@ mod tests {
         assert_eq!(install_id(home.path()).unwrap(), id);
         forget(home.path());
         assert_ne!(install_id(home.path()).unwrap(), id);
+    }
+
+    #[test]
+    fn an_opt_out_waits_for_a_check_already_running() {
+        let home = tempfile::tempdir().unwrap();
+        let file = home.path().join(FILE);
+        let (asked, asking) = std::sync::mpsc::channel();
+        let check = {
+            let file = file.clone();
+            let (held, holding) = std::sync::mpsc::channel();
+            let check = std::thread::spawn(move || {
+                let _turn = turn();
+                held.send(()).unwrap();
+                // The opt-out has been asked for while this check still runs.
+                asking.recv().unwrap();
+                common::atomic_write(&file, br#"{"id":"old","active_day":"2026-10-31"}"#).unwrap();
+            });
+            holding.recv().unwrap();
+            check
+        };
+        let opt_out = {
+            let home = home.path().to_path_buf();
+            std::thread::spawn(move || {
+                asked.send(()).unwrap();
+                forget(&home);
+            })
+        };
+        check.join().unwrap();
+        opt_out.join().unwrap();
+        assert!(!file.exists(), "the id came back after the opt-out");
     }
 
     #[test]
