@@ -60,6 +60,7 @@ import { useConnection } from '../../stores/connection'
 import { connectorsActions } from '../../stores/connectors'
 import { draftsActions } from '../../stores/drafts'
 import { useConversationFeelings, useEmotion } from '../../stores/emotions'
+import { holdCopy } from '../../stores/page-copies'
 import { useSearch } from '../../stores/search'
 import {
   knownChat,
@@ -1415,7 +1416,7 @@ function Composer({
           // this page's copy.
           path: kind === 'image' ? undefined : answers[index]?.path,
           size: item.file.size,
-          url: kind === 'pdf' || kind === 'video' ? URL.createObjectURL(item.file) : undefined
+          url: kind === 'pdf' || kind === 'video' ? holdCopy(item.file) : undefined
         }
       })
 
