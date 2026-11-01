@@ -287,8 +287,10 @@ export function ProfilePanel(): React.JSX.Element {
   // The open file, and the bot it belongs to: opening another bot's chat closes it.
   const [opened, setOpened] = useState<{ bot: string; file: FingerprintFile } | null>(null)
   const editing = opened && opened.bot === bot?.name ? opened.file : null
+
   const setEditing = (file: FingerprintFile | null) =>
     setOpened(file && bot ? { bot: bot.name, file } : null)
+
   const writes = useMemo(() => memoryWrites(messages), [messages])
 
   const [memory, setMemory] = useBotMemory(
@@ -346,9 +348,9 @@ export function ProfilePanel(): React.JSX.Element {
       </header>
       {editing ? (
         <FingerprintEditor
-          key={`${bot.name}/${editing}`}
           bot={bot}
           file={editing}
+          key={`${bot.name}/${editing}`}
           memory={memory}
           onClose={() => setEditing(null)}
           onMemory={setMemory}
