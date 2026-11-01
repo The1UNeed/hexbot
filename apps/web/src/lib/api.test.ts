@@ -35,6 +35,39 @@ describe('attachment size limits', () => {
   })
 })
 
+describe('PDF attachments', () => {
+  beforeEach(() => vi.mocked(rpcCall).mockReset())
+
+  it('sends a PDF as a file when the daemon cannot render its pages', async () => {
+    vi.mocked(rpcCall)
+      .mockRejectedValueOnce(
+        new JsonRpcGatewayError('pdftoppm not installed (poppler-utils package required)', {
+          code: 5028
+        })
+      )
+      .mockResolvedValueOnce({ attached: true, path: '/s/attachments/a-board.pdf' })
+
+    await expect(
+      attachFile('session', new File(['%PDF-1.4'], 'board.pdf', { type: 'application/pdf' }))
+    ).resolves.toEqual({ attached: true, path: '/s/attachments/a-board.pdf' })
+    expect(vi.mocked(rpcCall).mock.calls.map(([method]) => method)).toEqual([
+      'pdf.attach',
+      'file.attach'
+    ])
+  })
+
+  it('keeps any other refusal', async () => {
+    vi.mocked(rpcCall).mockRejectedValueOnce(
+      new JsonRpcGatewayError('payload is not a PDF', { code: 4017 })
+    )
+
+    await expect(
+      attachFile('session', new File(['nope'], 'board.pdf', { type: 'application/pdf' }))
+    ).rejects.toThrow('payload is not a PDF')
+    expect(rpcCall).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('history projection', () => {
   it('keeps each message of a turn as its own part', () => {
     const [message] = messagesFromHistory([

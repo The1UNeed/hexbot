@@ -2,7 +2,7 @@ import 'katex/dist/katex.min.css'
 
 import { JsonRpcGatewayError } from '@hermes/shared'
 import { useNavigate, useParams, useRouter } from '@tanstack/react-router'
-import { ArrowDown, Copy, File, PanelRight, Undo2, X } from 'lucide-react'
+import { ArrowDown, Copy, PanelRight, Undo2, X } from 'lucide-react'
 import {
   type CSSProperties,
   isValidElement,
@@ -28,6 +28,7 @@ import { StatusDot } from '../../components/ui/status-dot'
 import {
   approvalRespond,
   attachFile,
+  type AttachResult,
   botsClearStatus,
   newInputId,
   promptSubmit,
@@ -81,6 +82,8 @@ import { useUi } from '../../stores/ui'
 import { AskingRow } from './asking-row'
 import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
+import { FileCard } from './file-card'
+import { filesOf, type FileTarget, mimeOf, openFile } from './file-tab'
 import { PluginCard } from './plugin-card'
 import { RoomConversation } from './room'
 import { useSearchJump } from './search-jump'
@@ -334,36 +337,102 @@ export const Markdown = memo(function Markdown({ text }: { text: string }) {
   )
 })
 
+/**
+ * What a message carries, above its bubble. A picture shows whole and opens
+ * over the chat; a video plays where it is; every other file is a card that
+ * opens beside the chat, where it can be read and, when it is text, edited
+ * with the bot. Without `onFile` (a room) a card only names the file.
+ */
 function Attachments({
   attachments,
+  mine,
+  onFile,
   onImage
 }: {
   attachments: Attachment[]
+  mine: boolean
+  onFile?: (file: FileTarget) => void
   onImage: (source: string) => void
 }) {
-  if (!attachments.length) {
-    return null
-  }
-
   return (
-    <div className="mt-2 flex flex-wrap gap-2">
-      {attachments.map(item =>
-        item.kind === 'image' && item.dataUrl ? (
-          <button key={item.id} onClick={() => onImage(item.dataUrl!)} type="button">
-            <img
-              alt={item.name}
-              className="max-h-64 rounded-panel object-contain"
-              src={item.dataUrl}
+    <div className={cn('flex max-w-full flex-wrap gap-2', mine && 'justify-end')}>
+      {attachments.map(item => {
+        if (item.kind === 'image' && item.dataUrl) {
+          return (
+            <button
+              aria-label={`Open ${item.name}`}
+              className="hex-focus rounded-panel"
+              key={item.id}
+              onClick={() => onImage(item.dataUrl!)}
+              type="button"
+            >
+              <img
+                alt={item.name}
+                className="max-h-64 rounded-panel object-contain"
+                src={item.dataUrl}
+              />
+            </button>
+          )
+        }
+
+        if (item.kind === 'video' && item.url) {
+          return (
+            <video
+              aria-label={item.name}
+              className="max-h-64 max-w-full rounded-panel bg-black"
+              controls
+              key={item.id}
+              playsInline
+              preload="metadata"
+              src={item.url}
             />
-          </button>
-        ) : (
-          <Chip key={item.id}>
-            <File size={12} />
-            {item.name}
-            <span>{Math.ceil(item.size / 1024)} KB</span>
-          </Chip>
+          )
+        }
+
+        const target = item.path || item.url
+
+        return (
+          <FileCard
+            key={item.id}
+            label={`Open ${item.name} beside the chat`}
+            name={item.name}
+            onOpen={
+              onFile && target
+                ? () =>
+                    onFile({
+                      mime: item.mime || mimeOf(item.name),
+                      name: item.name,
+                      path: item.path,
+                      url: item.url
+                    })
+                : undefined
+            }
+            size={item.size}
+          />
         )
-      )}
+      })}
+    </div>
+  )
+}
+
+/** The files the bot wrote in a message: each a card that opens beside the chat. */
+function WrittenFiles({
+  files,
+  onFile
+}: {
+  files: FileTarget[]
+  onFile: (file: FileTarget) => void
+}) {
+  return (
+    <div className="flex max-w-full flex-wrap gap-2">
+      {files.map(file => (
+        <FileCard
+          key={file.path}
+          label={`Open ${file.name} beside the chat`}
+          name={file.name}
+          onOpen={() => onFile(file)}
+        />
+      ))}
     </div>
   )
 }
@@ -564,6 +633,7 @@ export const MessageRow = memo(function MessageRow({
   mine = false,
   quiet = false,
   onDismiss,
+  onFile,
   onFix,
   onImage,
   onRecall,
@@ -585,6 +655,8 @@ export const MessageRow = memo(function MessageRow({
   /** A failure line a newer one replaces: kept for screen readers only. */
   quiet?: boolean
   onDismiss?: (message: TranscriptMessage) => void
+  /** Opens a file beside the chat; a bot's own chat only. */
+  onFile?: (file: FileTarget) => void
   onFix?: (connector: string) => void
   onImage: (source: string) => void
   /** Your latest message, while the bot is on it or after its turn stopped. */
@@ -655,10 +727,6 @@ export const MessageRow = memo(function MessageRow({
 
   const bubbles = words.filter(text => text.trim())
 
-  if (!bubbles.length && message.attachments.length && !message.streaming) {
-    bubbles.push('')
-  }
-
   // Bubbles drawn when the row first rendered stay still; later ones spring in.
   const still = settled.current ?? (settled.current = fresh ? 0 : bubbles.length)
 
@@ -707,9 +775,6 @@ export const MessageRow = memo(function MessageRow({
               <Markdown text={text} />
             </div>
           ) : null}
-          {index === last ? (
-            <Attachments attachments={message.attachments} onImage={onImage} />
-          ) : null}
         </div>
       </div>
       {index === last && delivery ? <DeliveryMark delivery={delivery} onRetry={retryMark} /> : null}
@@ -727,6 +792,37 @@ export const MessageRow = memo(function MessageRow({
       0,
       <Visuals color={color} fresh={fresh} key="visuals" visuals={visuals} />
     )
+  }
+
+  // What the message carries sits above its words, outside the bubble. A
+  // message of files alone keeps its delivery mark beside them.
+  if (message.attachments.length) {
+    column.unshift(
+      <div
+        className={cn(
+          'flex max-w-full gap-1',
+          !assistant && 'flex-row-reverse',
+          delivery === 'sending' && 'hex-pending'
+        )}
+        key="attachments"
+      >
+        <Attachments
+          attachments={message.attachments}
+          mine={!assistant}
+          onFile={onFile}
+          onImage={onImage}
+        />
+        {!bubbles.length && delivery ? (
+          <DeliveryMark delivery={delivery} onRetry={retryMark} />
+        ) : null}
+      </div>
+    )
+  }
+
+  const written = assistant && onFile ? filesOf(message) : []
+
+  if (written.length && onFile) {
+    column.push(<WrittenFiles files={written} key="written" onFile={onFile} />)
   }
 
   // The column reads in order: the bot's messages, then at the foot the live
@@ -1127,6 +1223,32 @@ async function submitOrReopen(
   }
 }
 
+/**
+ * Sends a message to the chat from outside the composer, as the quick tools
+ * beside an open file do: it shows as the user's message and goes through
+ * the same submission and retry. It takes none of the composer's attached files.
+ */
+export async function sendText(
+  sessionId: string,
+  sectionId: null | string,
+  text: string
+): Promise<boolean> {
+  const { target, epoch, daemon } = useConnection.getState()
+
+  const current = () =>
+    target === useConnection.getState().target &&
+    epoch === useConnection.getState().epoch &&
+    daemon?.install_id === useConnection.getState().daemon?.install_id
+
+  const pending = transcriptActions().appendUserMessage(sessionId, text, [])
+
+  if (sectionId) {
+    sectionsActions().markTouched(sectionId, text)
+  }
+
+  return submitOrReopen(sessionId, sectionId, text, { current, files: [], pending, uploads: [] })
+}
+
 interface DraftAttachment {
   file: File
   id: string
@@ -1253,9 +1375,11 @@ function Composer({
     try {
       const identified = useConnection.getState().daemon?.transcript_identity === true
       const uploads: string[] = []
+      const answers: AttachResult[] = []
 
       for (const item of files) {
         const uploaded = await attachFile(sessionId, item.file)
+        answers.push(uploaded)
 
         if (!current()) {
           return
@@ -1268,18 +1392,29 @@ function Composer({
         uploads.push(typeof uploaded.id === 'string' ? uploaded.id : item.id)
       }
 
-      const attachments: Attachment[] = files.map((item, index) => ({
-        dataUrl: item.preview,
-        id: uploads[index] ?? item.id,
-        kind: item.file.type.startsWith('image/')
+      const attachments: Attachment[] = files.map((item, index) => {
+        const kind = item.file.type.startsWith('image/')
           ? 'image'
-          : item.file.type === 'application/pdf'
-            ? 'pdf'
-            : 'file',
-        mime: item.file.type,
-        name: item.file.name,
-        size: item.file.size
-      }))
+          : item.file.type.startsWith('video/')
+            ? 'video'
+            : item.file.type === 'application/pdf'
+              ? 'pdf'
+              : 'file'
+
+        return {
+          dataUrl: item.preview,
+          id: uploads[index] ?? item.id,
+          kind,
+          mime: item.file.type,
+          name: item.file.name,
+          // A file the daemon keeps opens from there, and can be edited with the
+          // bot; a PDF it keeps only as page images, and a video, play from
+          // this page's copy.
+          path: kind === 'image' ? undefined : answers[index]?.path,
+          size: item.file.size,
+          url: kind === 'pdf' || kind === 'video' ? URL.createObjectURL(item.file) : undefined
+        }
+      })
 
       const pending = transcriptActions().appendUserMessage(sessionId, text.trim(), attachments)
 
@@ -1408,24 +1543,34 @@ function Composer({
       above={
         files.length ? (
           <div className="mb-2 flex flex-wrap gap-2">
-            {files.map(item => (
-              <Chip className="hex-glass py-1 pr-1.5 pl-1.5 text-foreground" key={item.id}>
-                {item.preview ? (
-                  <img alt="" className="size-5 rounded object-cover" src={item.preview} />
-                ) : (
-                  <File size={12} />
-                )}
-                {item.file.name}
-                <button
-                  aria-label={`Remove ${item.file.name}`}
-                  className="grid size-4 place-items-center rounded-full hover:bg-surface-3"
-                  onClick={() => setFiles(current => current.filter(file => file.id !== item.id))}
-                  type="button"
-                >
-                  <X size={11} />
-                </button>
-              </Chip>
-            ))}
+            {files.map(item => {
+              const remove = () => setFiles(current => current.filter(file => file.id !== item.id))
+
+              return item.preview ? (
+                <div className="relative" key={item.id} title={item.file.name}>
+                  <img
+                    alt={item.file.name}
+                    className="size-14 rounded-[14px] object-cover shadow-card"
+                    src={item.preview}
+                  />
+                  <button
+                    aria-label={`Remove ${item.file.name}`}
+                    className="hex-focus absolute -top-1.5 -right-1.5 grid size-5 place-items-center rounded-full bg-foreground text-background shadow-card"
+                    onClick={remove}
+                    type="button"
+                  >
+                    <X size={11} strokeWidth={2.5} />
+                  </button>
+                </div>
+              ) : (
+                <FileCard
+                  key={item.id}
+                  name={item.file.name}
+                  onRemove={remove}
+                  size={item.file.size}
+                />
+              )
+            })}
           </div>
         ) : null
       }
@@ -1573,6 +1718,16 @@ function BotConversation() {
   const ready = resolved?.entry === entry
   const ownerInput = ready && !resolved.peer
   const liveId = ready ? loadedLiveId : null
+
+  // Stable, so a streaming reply re-renders only its own row.
+  const openBeside = useCallback(
+    (file: FileTarget) => {
+      if (liveId) {
+        openFile(liveId, file)
+      }
+    },
+    [liveId]
+  )
 
   // While the owner chat validated here is checked again (a reconnect, a
   // daemon restart, the same URL), its composer stays, disabled, so staged
@@ -2604,6 +2759,7 @@ function BotConversation() {
                     message={shownMessage}
                     mine={Boolean(owner)}
                     onDismiss={shownMessage.error ? dismiss : undefined}
+                    onFile={liveId ? openBeside : undefined}
                     onFix={fixConnector}
                     onImage={setLightbox}
                     onRecall={canRecall(shownMessage) ? recall : undefined}

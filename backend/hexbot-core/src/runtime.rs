@@ -49,6 +49,8 @@ use identity::with_fields;
 mod files;
 #[path = "runtime_pi_files.rs"]
 mod pi_files;
+#[path = "runtime_panel_files.rs"]
+mod panel_files;
 
 #[cfg(test)]
 #[path = "runtime_lifecycle_tests.rs"]
@@ -2844,6 +2846,8 @@ impl Runtime {
                 | "pdf.attach"
                 | "file.attach"
                 | "attachments.clear"
+                | "hexbot.files.read"
+                | "hexbot.files.write"
         );
         if !matched {
             return None;
@@ -3142,6 +3146,8 @@ impl Runtime {
             }
             "image.attach_bytes" | "pdf.attach" | "file.attach" => self.attach(&s, method, p).await,
             "attachments.clear" => self.clear_attachments(&s).await,
+            "hexbot.files.read" => self.read_file(&s, p).await,
+            "hexbot.files.write" => self.write_file(&s, p).await,
             _ => Err(Error::new(-32601, "unknown runtime method")),
         }
     }

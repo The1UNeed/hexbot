@@ -1,5 +1,5 @@
-import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
 
 import type { Message } from '../../lib/types'
 import {
@@ -191,5 +191,113 @@ describe('CheckingRow', () => {
     )
 
     expect(screen.getAllByRole('status')).toHaveLength(1)
+  })
+})
+
+describe('MessageRow files', () => {
+  const file = {
+    id: 'f',
+    kind: 'file' as const,
+    mime: 'text/csv',
+    name: 'pins.csv',
+    path: '/s/attachments/pins.csv',
+    size: 2048
+  }
+
+  const image = {
+    dataUrl: 'data:image/png;base64,AA==',
+    id: 'i',
+    kind: 'image' as const,
+    mime: 'image/png',
+    name: 'board.png',
+    size: 10
+  }
+
+  it('opens a picture over the chat and any other file beside it', () => {
+    const onFile = vi.fn()
+    const onImage = vi.fn()
+    render(
+      <MessageRow
+        message={message({ attachments: [file, image], role: 'user', text: 'Check these' })}
+        onFile={onFile}
+        onImage={onImage}
+        onRetry={() => {}}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open pins.csv beside the chat' }))
+    expect(onFile).toHaveBeenCalledWith({
+      mime: 'text/csv',
+      name: 'pins.csv',
+      path: '/s/attachments/pins.csv',
+      url: undefined
+    })
+    expect(onImage).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByAltText('board.png'))
+    expect(onImage).toHaveBeenCalledWith('data:image/png;base64,AA==')
+  })
+
+  it('plays a video where it is', () => {
+    render(
+      <MessageRow
+        message={message({
+          attachments: [
+            {
+              id: 'v',
+              kind: 'video',
+              mime: 'video/mp4',
+              name: 'bench.mp4',
+              size: 4000,
+              url: 'blob:bench'
+            }
+          ],
+          role: 'user',
+          text: ''
+        })}
+        onFile={() => {}}
+        onImage={() => {}}
+        onRetry={() => {}}
+      />
+    )
+
+    const video = screen.getByLabelText('bench.mp4')
+    expect(video.tagName).toBe('VIDEO')
+    expect(video).toHaveAttribute('src', 'blob:bench')
+    expect(video).toHaveAttribute('controls')
+  })
+
+  it('offers the files the bot wrote, and none in a room', () => {
+    const wrote = message({
+      text: 'I drafted it.',
+      toolCalls: [
+        {
+          args: { content: '# Plan', path: '/work/plan.md' },
+          durationS: 0,
+          name: 'write',
+          result: null,
+          startedAt: 0,
+          status: 'ok',
+          toolId: 'w'
+        }
+      ]
+    })
+
+    const onFile = vi.fn()
+
+    const { unmount } = render(
+      <MessageRow message={wrote} onFile={onFile} onImage={() => {}} onRetry={() => {}} />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open plan.md beside the chat' }))
+    expect(onFile).toHaveBeenCalledWith({
+      mime: 'text/markdown',
+      name: 'plan.md',
+      path: '/work/plan.md'
+    })
+    unmount()
+
+    render(<MessageRow message={wrote} onImage={() => {}} onRetry={() => {}} />)
+    expect(screen.queryByRole('button', { name: 'Open plan.md beside the chat' })).toBeNull()
   })
 })

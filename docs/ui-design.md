@@ -213,8 +213,28 @@ with Viewport Segments place both poses on the exact halves.
 - While a turn runs the composer's send button becomes Stop. Text does not
   type itself out; each message appears whole and springs in. In a room the
   bot's words arrive as its room message when its turn ends.
-- Attachments: images render inline with a lightbox; files render as chips
-  with name, size, and type icon.
+- Attachments sit above the message's bubble. A picture shows whole and
+  opens over the chat in a lightbox; a video plays where it is. Every other
+  file is a card: a page icon banded in its type's colour (PDF red,
+  documents blue, spreadsheets green, presentations orange, code violet),
+  its name cut in the middle so the extension stays ("esp32-c6-mini-1_mini-1u_d…
+  .pdf"), and its size ("951kB"). A card opens the file beside the chat.
+  Each file the bot wrote or edited in a message is the same card under its
+  reply, with its kind in place of the size. The composer shows pictures as
+  thumbnails and other files as cards, each with a remove button. A room's
+  cards only name the file.
+- Files beside the chat open as tabs in the side panel, next to any
+  visuals. Text opens in the editor (Markdown and plain text formatted,
+  code and data as plain text) and saves 0.8 s after typing stops. Under
+  it, quick tools ask the bot to change the file (Polish, Shorten, Make
+  longer, Fix mistakes; for code and data Fix bugs, Add comments, Tidy up)
+  and a field asks for anything else; each sends a message in the chat
+  naming the file. Each edit the bot finishes shows in the tab as it lands,
+  with "Updated by {bot}" for a moment; the editor follows unless it holds
+  an edit not saved yet. A save after the bot changed the file is refused
+  rather than overwriting it. While the bot works the quick tools wait. A
+  PDF opens in the viewer; any other file offers a download. Desktop and
+  browser only: the phone has no side panel.
 - Questions: when a bot asks through the clarify tool, a card with the
   question, the choices as rows A, B, C… (the first marked Recommended)
   and a field for the user's own answer. One click answers a single-choice
@@ -310,7 +330,7 @@ notice. Working and idle draw the plain pill.
     Connectors, Skills), and "Bot settings" for the tab last used.
   - Library: the visuals the bot drew (each opens beside the chat), then
     images (a three-column grid) and files shared in the section, newest
-    first.
+    first; a file opens beside the chat.
   - Fingerprint: the bot's soul and memory as two cards, red and blue,
     each with the day the file last changed (`persona_updated_at` on the
     bot, `updated_at` from `hexbot.memory.bot.get`), and a door to Notes

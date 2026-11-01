@@ -1309,7 +1309,7 @@ async fn pages_only_frame_the_daemon_itself() {
             .unwrap();
         assert_eq!(
             response.headers()["content-security-policy"],
-            "frame-src 'self'",
+            "frame-src 'self' blob:",
             "{path}"
         );
     }

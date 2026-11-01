@@ -1,4 +1,4 @@
-import { ChartColumn, ChevronsRight, ExternalLink, Maximize2, X } from 'lucide-react'
+import { ChartColumn, ChevronsRight, ExternalLink, FileText, Maximize2, X } from 'lucide-react'
 import {
   type KeyboardEvent,
   type ReactNode,
@@ -13,8 +13,9 @@ import {
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
 import { useUi } from '../../stores/ui'
-import { useVisuals, visualsActions } from '../../stores/visuals'
+import { isFileTab, useVisuals, visualsActions } from '../../stores/visuals'
 
+import { FileTabView } from './file-tab'
 import {
   hostContext,
   mixHex,
@@ -380,7 +381,7 @@ export function VisualPanel() {
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center gap-1 px-3 pt-3 pb-2">
         <div
-          aria-label="Visuals"
+          aria-label="Beside the chat"
           className="flex min-w-0 flex-1 gap-1 overflow-x-auto"
           onKeyDown={step}
           role="tablist"
@@ -408,7 +409,11 @@ export function VisualPanel() {
                   tabIndex={shown ? 0 : -1}
                   type="button"
                 >
-                  <ChartColumn className="shrink-0" size={13} />
+                  {isFileTab(tab) ? (
+                    <FileText className="shrink-0" size={13} />
+                  ) : (
+                    <ChartColumn className="shrink-0" size={13} />
+                  )}
                   <span className="truncate">{tab.title}</span>
                 </button>
                 <button
@@ -423,14 +428,32 @@ export function VisualPanel() {
             )
           })}
         </div>
-        <Action label="Close visuals" onClick={() => visualsActions().closeAll()}>
+        <Action label="Close the side panel" onClick={() => visualsActions().closeAll()}>
           <ChevronsRight size={16} />
         </Action>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto px-3 pb-3">
-        {tabs.map(tab => (
-          <VisualTab key={tab.toolId} shown={tab.toolId === active} visual={tab} />
-        ))}
+      {tabs.map(tab =>
+        isFileTab(tab) ? (
+          tab.toolId === active ? (
+            <div className="min-h-0 flex-1 px-3 pb-3" key={tab.toolId}>
+              <div className="h-full overflow-hidden rounded-[16px] bg-background shadow-card">
+                <FileTabView shown tab={tab} />
+              </div>
+            </div>
+          ) : null
+        ) : null
+      )}
+      <div
+        className={cn(
+          'min-h-0 flex-1 overflow-auto px-3 pb-3',
+          tabs.some(tab => tab.toolId === active && isFileTab(tab)) && 'hidden'
+        )}
+      >
+        {tabs.map(tab =>
+          isFileTab(tab) ? null : (
+            <VisualTab key={tab.toolId} shown={tab.toolId === active} visual={tab} />
+          )
+        )}
       </div>
     </div>
   )

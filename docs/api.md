@@ -65,6 +65,19 @@ data model. The native transport and event projection live in
   Larger attachments return 4202 with the size limit. Browser clients check
   before reading or uploading. WebSocket frames and in-flight request bytes
   are capped at 64 MiB per connection.
+- Files beside the chat: `hexbot.files.read {session_id, path}` →
+  `{path, name, size, modified, mime, text? | data_url?}` and
+  `hexbot.files.write {session_id, path, text, modified?}` → `{path, size,
+  modified}`. Both reach only existing regular files, after symlinks are
+  resolved, inside the folders the session's bot may write: the chat's
+  working folder, the bot's `artifacts` folder, and the chat's
+  `attachments` folder (4302 elsewhere, 4204 when missing); a relative path
+  is taken from the working folder. A read answers `text` for UTF-8 without
+  NUL bytes up to 2 MiB, otherwise a `data_url`, up to 45 MiB (4202 over).
+  A write replaces a text file up to 2 MiB in one step through a directory
+  handle that refuses symlinks and keeps its permissions; it refuses
+  binary files (4202) and, when `modified` (milliseconds, from the last
+  read or write) no longer matches, answers 4209 and changes nothing.
 - Approvals: `approval.respond {session_id, request_id, choice}`
   with `choice` in `once | session | deny`. `session` ("Allow for now")
   quiets the same kind of Manual or unreviewed request until the section's

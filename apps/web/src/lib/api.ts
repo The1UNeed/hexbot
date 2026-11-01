@@ -5,6 +5,8 @@
  * a call before the connection is up rejects with `NotConnectedError`.
  */
 
+import { JsonRpcGatewayError } from '@hermes/shared'
+
 import { useConnection } from '../stores/connection'
 
 import { rpcCall } from './rpc'
@@ -920,6 +922,38 @@ export function fileAttach(
   return rpcCall<AttachResult>('file.attach', { data_url: dataUrl, name, session_id: sessionId })
 }
 
+/** A file opened beside the chat: text to edit, or its bytes to show. */
+export interface OpenedFile {
+  data_url?: string
+  mime: string
+  /** Milliseconds since the epoch; a save passes it back to catch the bot's changes. */
+  modified: number
+  name: string
+  path: string
+  size: number
+  text?: string
+}
+
+/** Reads a file the bot can reach: its working folder, artifacts, or this chat's attachments. */
+export function filesRead(sessionId: string, path: string): Promise<OpenedFile> {
+  return rpcCall<OpenedFile>('hexbot.files.read', { path, session_id: sessionId })
+}
+
+/** Saves the user's edit; refused with 4209 when the file changed since `modified`. */
+export function filesWrite(
+  sessionId: string,
+  path: string,
+  text: string,
+  modified?: number
+): Promise<{ modified: number; path: string; size: number }> {
+  return rpcCall('hexbot.files.write', {
+    path,
+    session_id: sessionId,
+    text,
+    ...(modified ? { modified } : {})
+  })
+}
+
 /** `data:<mime>;base64,<payload>` for the whole file. */
 export function readFileAsDataUrl(file: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -972,7 +1006,15 @@ export async function attachFile(sessionId: string, file: File): Promise<AttachR
   }
 
   if (kind === 'pdf') {
-    return pdfAttach(sessionId, base64FromDataUrl(dataUrl))
+    try {
+      return await pdfAttach(sessionId, base64FromDataUrl(dataUrl))
+    } catch (error) {
+      // A daemon without a PDF renderer (5028) still takes the PDF as a file:
+      // the bot reads it with its tools, and it opens beside the chat.
+      if (!(error instanceof JsonRpcGatewayError && error.code === 5028)) {
+        throw error
+      }
+    }
   }
 
   return fileAttach(sessionId, dataUrl, file.name)

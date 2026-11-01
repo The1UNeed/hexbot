@@ -157,9 +157,11 @@ export interface Attachment {
   /** Gateway-local path returned by `file.attach`. */
   path?: string
   size: number
+  /** An object URL for a file this page still holds (a PDF just sent), to open beside the chat. */
+  url?: string
 }
 
-export type AttachmentKind = 'file' | 'image' | 'pdf'
+export type AttachmentKind = 'file' | 'image' | 'pdf' | 'video'
 
 export interface Avatar {
   data: string

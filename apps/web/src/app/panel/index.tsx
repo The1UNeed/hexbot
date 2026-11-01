@@ -29,6 +29,7 @@ import { type PanelTab, useUi } from '../../stores/ui'
 import { visualsActions } from '../../stores/visuals'
 import { type BotSettingsTab, rememberedTab } from '../bot-settings'
 import { AvatarPicker, errorText, InlineField, type SaveBot } from '../bot-settings/shared'
+import { mimeOf, openFile } from '../conversation/file-tab'
 import { activityLabel } from '../conversation/steps'
 import { visualsOf } from '../conversation/visual'
 
@@ -128,7 +129,15 @@ function DetailsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
 }
 
 /** Every visual the bot drew, image and file shared in the section, newest first. */
-function LibraryTab({ messages, name }: { messages: TranscriptMessage[]; name: string }) {
+function LibraryTab({
+  messages,
+  name,
+  sessionId
+}: {
+  messages: TranscriptMessage[]
+  name: string
+  sessionId: null | string
+}) {
   const items = useMemo(
     () => messages.flatMap(message => message.attachments).reverse(),
     [messages]
@@ -201,15 +210,40 @@ function LibraryTab({ messages, name }: { messages: TranscriptMessage[]; name: s
         <section>
           <h3 className={headingClass}>Files</h3>
           <ul className={listClass}>
-            {files.map((item: Attachment) => (
-              <li className={rowClass} key={item.id}>
-                <RowIcon icon={File} />
-                <span className="min-w-0 flex-1 truncate font-medium">{item.name}</span>
-                <span className="shrink-0 text-[length:var(--text-meta)] text-muted">
-                  {Math.ceil(item.size / 1024)} KB
-                </span>
-              </li>
-            ))}
+            {files.map((item: Attachment) => {
+              const row = (
+                <>
+                  <RowIcon icon={File} />
+                  <span className="min-w-0 flex-1 truncate font-medium">{item.name}</span>
+                  <span className="shrink-0 text-[length:var(--text-meta)] text-muted">
+                    {Math.ceil(item.size / 1024)} KB
+                  </span>
+                </>
+              )
+
+              return (
+                <li key={item.id}>
+                  {sessionId && (item.path || item.url) ? (
+                    <button
+                      className={rowClass}
+                      onClick={() =>
+                        openFile(sessionId, {
+                          mime: item.mime || mimeOf(item.name),
+                          name: item.name,
+                          path: item.path,
+                          url: item.url
+                        })
+                      }
+                      type="button"
+                    >
+                      {row}
+                    </button>
+                  ) : (
+                    <div className={rowClass}>{row}</div>
+                  )}
+                </li>
+              )
+            })}
           </ul>
         </section>
       ) : null}
@@ -452,7 +486,9 @@ export function ProfilePanel(): React.JSX.Element {
             role="tabpanel"
           >
             {tab === 'details' ? <DetailsTab bot={bot} onSave={save} /> : null}
-            {tab === 'library' ? <LibraryTab messages={messages} name={bot.display_name} /> : null}
+            {tab === 'library' ? (
+              <LibraryTab messages={messages} name={bot.display_name} sessionId={liveId} />
+            ) : null}
             {tab === 'fingerprint' ? (
               <FingerprintTab bot={bot} memory={memory} onOpen={setEditing} />
             ) : null}
