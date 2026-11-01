@@ -70,7 +70,7 @@ Turn on **Sounds** in Settings, Appearance to hear a bot start, finish, or need 
 
 Everything a bot can use beyond its own tools now lives on one page: Settings, **Plugins**. That covers connectors such as web search and Notion, MCP servers, skills, and built-in tools that need a program, such as Computer use. Set a plugin up once, then choose which bots get it.
 
-![Settings, Plugins, with a row of bots to filter by and connectors such as web search.](/screens/plugins.webp)
+![Settings, Plugins, with tabs for Connectors, MCP servers and Skills, a row of bots to filter by, and connectors such as web search.](/screens/plugins.webp)
 
 A **plugin package** installs an MCP server together with the skills that explain how to use it. And when a bot needs a service it can't reach, it can find a server for it and ask to install it. You see exactly what it runs, every value it passes, and the skills it adds. Installing always asks, even in Bypass, and a plugin a bot installs is on for that bot only. See [Plugins](/docs/tools-and-skills/#plugins).
 
