@@ -945,7 +945,7 @@ async fn interrupted_pip_missing_record_and_unpacked_cache_integrity() {
     }
     assert_eq!(*f.events.borrow(), ["voice: Installing voice tools"]);
     f.restored(&original);
-    case("F/N5 actual populated cache, ordinary unpacked member tamper");
+    case("F/N5 pip leaves no unpacked member in the owned cache to reuse");
     let cache = f.path("runtime/uv-cache");
     let source_hash = digest(&source);
     let mut cached = Vec::new();
@@ -965,46 +965,28 @@ async fn interrupted_pip_missing_record_and_unpacked_cache_integrity() {
             }
         }
     }
-    find(&cache, &source_hash, &mut cached);
+    if cache.exists() {
+        find(&cache, &source_hash, &mut cached);
+    }
+    // uv checks hashes on download but not on cache reuse, so pip runs with
+    // --no-cache and nothing it installed can be replaced from the cache.
     assert!(
-        !cached.is_empty(),
-        "F: no ordinary unpacked source member found; native cache shape needs review"
+        cached.is_empty(),
+        "pip left a reusable unpacked member in the owned cache: {cached:?}"
     );
-    for path in &cached {
-        let mut bytes = fs::read(path).unwrap();
-        bytes.extend_from_slice(b"\n# owned cache-integrity tamper, imports remain healthy\n");
-        fs::write(path, bytes).unwrap();
-        assert_ne!(digest(path), source_hash);
-    }
-    assert_eq!(
-        digest(&source),
-        source_hash,
-        "cache mutation must not write through to installed bytes"
-    );
-    let completion = f.completion();
-    // An independently missing launcher reaches pip even while strict
-    // entrypoint aggregation leaves module-only repair unresolved. Keep the
-    // installed source healthy until uv actually tries to replace it.
+    // A missing launcher still repairs, from verified downloads.
     fs::remove_file(f.venv().join("Scripts/edge-tts.exe")).unwrap();
-    match f.setup().await {
-        Ok(()) => {
-            f.restored(&original);
-            assert_eq!(
-                digest(&source),
-                source_hash,
-                "UNSAFE cache reuse: altered unpacked payload passed final health"
-            );
-        }
-        Err(error) => {
-            assert_eq!(f.completion(), completion);
-            assert!(error.message.contains("Python code tools"));
-            let events = f.events.borrow();
-            assert_eq!(events.len(), 1);
-            assert!(events[0].starts_with("voice: Repairing voice tools:"));
-            case("F observed explicit safe failure; no completion publication");
-        }
+    f.setup().await.unwrap();
+    {
+        let events = f.events.borrow();
+        assert_eq!(events.len(), 1);
+        assert!(
+            events[0].starts_with("voice: Repairing voice tools:"),
+            "{events:?}"
+        );
     }
-    assert_eq!(f.completion(), completion);
+    f.restored(&original);
+    assert_eq!(digest(&source), source_hash);
     assert_eq!(fs::read(f.identity()).unwrap(), identity);
 }
 
