@@ -501,8 +501,19 @@ fn expand_home_in(path: &str, home: Option<std::ffi::OsString>) -> Result<std::p
 
 /// Refuse a working directory inside the daemon home, symlinks included, without creating it.
 /// The tool guards treat the working directory as writable, so it would open the home.
+/// On Windows it must be a plain path on a local fixed drive, judged before any
+/// file system call reaches it, so a network share or device is never opened.
 pub fn check_workdir(home: &Path, configured: &str) -> Result<std::path::PathBuf> {
     let path = std::path::absolute(expand_home(configured)?)?;
+    #[cfg(windows)]
+    {
+        let plain = path
+            .to_str()
+            .ok_or(crate::windows_paths::sandbox::RELATIVE)
+            .and_then(crate::windows_paths::sandbox::local)
+            .map_err(|reason| Error::new(4202, format!("{reason}: {configured}")))?;
+        crate::windows_sandbox::fixed_drive(&plain)?;
+    }
     if path
         .components()
         .any(|part| part == std::path::Component::ParentDir)
@@ -520,7 +531,7 @@ pub fn check_workdir(home: &Path, configured: &str) -> Result<std::path::PathBuf
         existing = parent;
     }
     let rest = path.strip_prefix(existing).unwrap_or(Path::new(""));
-    outside_home(home, &fs::canonicalize(existing)?.join(rest))?;
+    outside_home(home, &crate::credentials::canonical(existing)?.join(rest))?;
     Ok(path)
 }
 
@@ -539,7 +550,8 @@ pub fn configured_workdir<'a>(candidates: &[Option<&'a str>], settings: &'a Valu
 pub fn resolve_workdir(home: &Path, configured: &str) -> Result<std::path::PathBuf> {
     let path = check_workdir(home, configured)?;
     fs::create_dir_all(&path)?;
-    let path = fs::canonicalize(path)?;
+    // Plain on Windows too: cmd.exe cannot start in a `\\?\` folder.
+    let path = crate::credentials::canonical(&path)?;
     outside_home(home, &path)?;
     Ok(path)
 }
@@ -564,7 +576,7 @@ pub fn saved_workdir(home: &Path, saved: &str) -> Option<std::path::PathBuf> {
 }
 
 fn outside_home(home: &Path, canonical: &Path) -> Result<()> {
-    if canonical.starts_with(fs::canonicalize(home)?) {
+    if canonical.starts_with(crate::credentials::canonical(home)?) {
         return Err(Error::new(
             4202,
             "the working directory cannot be inside the Hexbot home",

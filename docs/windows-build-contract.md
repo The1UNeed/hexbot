@@ -3,9 +3,10 @@
 Windows packaging and publication are wired into the release workflow and the
 download page; native acceptance and the Auto/Manual execution boundary
 remain prerequisites before Windows is called supported. This document tracks
-that contract. It does not itself provide Windows confinement.
-The fail-closed execution boundary and independent GPT 6.1 and Opus 5.5 approval
-are required before merge or shipping, together with native validation.
+that contract. Windows confinement, the AppContainer sandbox that Auto and
+Manual run commands in, is described in [Windows security](windows-security.md).
+Native validation of that boundary and independent GPT 6.1 and Opus 5.5
+approval are required before merge or shipping.
 
 The installed Full app probe explicitly requests its first start through the
 normal renderer bridge. A fresh profile opens onboarding and does not start a
@@ -395,7 +396,9 @@ exactly one trailer in its immutable commit message:
 Hexbot-Windows-Build: <full lowercase 40-character build commit SHA>
 ```
 
-The recorded build must contain the build and refusal interfaces. Historical
+The recorded build must contain the build and security interfaces: the
+build markers, and `pub const UNAVAILABLE:` in `windows_sandbox.rs` with
+`pub fn require_native_worker(` in `credentials.rs`. Historical
 combination also requires the reviewed dependency ancestry and a unique merge
 base; any patch conflict fails. The workflow contains no particular build pin.
 After that build exists, a metadata-only security commit can carry the trailer

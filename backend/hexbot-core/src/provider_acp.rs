@@ -48,12 +48,26 @@ pub async fn cancel(home: &Path, stored: &str) {
     }
 }
 
+/// Copilot runs with the base sandbox layer alone (credential files hidden,
+/// the Hexbot home read-only), which Windows does not have: an AppContainer
+/// has no network. It refuses there in every mode, before any path or
+/// executable is resolved.
+fn require_platform() -> Result<()> {
+    if cfg!(windows) {
+        return Err(Error::new(
+            4302,
+            "Copilot is not available on Windows: Hexbot cannot start it with the credential protection it has on macOS and Linux.",
+        ));
+    }
+    Ok(())
+}
+
 /// Copilot only produces text here. Hexbot actions come back as `<tool_call>` text and run
 /// through the section's own guarded tools, so Copilot's native tools are never granted and
 /// the child never receives daemon or provider secrets.
 /// Dropping this future also kills the child; cancellation explicitly sends ACP session/cancel.
 pub async fn complete(home: &Path, bot: &str, stored: &str, args: &Value) -> Result<Value> {
-    crate::credentials::require_supported_execution()?;
+    require_platform()?;
     let cwd = crate::native_tools::section_workdir(home, bot, stored)?;
     complete_in_dir(home, bot, stored, args, &cwd, false).await
 }
@@ -78,7 +92,7 @@ async fn complete_in_dir(
     cwd: &Path,
     reviewer: bool,
 ) -> Result<Value> {
-    crate::credentials::require_supported_execution()?;
+    require_platform()?;
     common::identifier(bot)?;
     common::identifier(stored)?;
     let mut env = common::env_values(home)?;

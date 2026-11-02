@@ -405,12 +405,25 @@ describe('settings', () => {
       sandbox: null,
       version: '0.1.5'
     } as DaemonInfo)
-    render(<ApprovalsSettings />)
+    const first = render(<ApprovalsSettings />)
     const notice = await screen.findByRole('status')
     expect(notice).toHaveTextContent(
-      'The Windows sandbox is unavailable, so Auto and Manual refuse local commands, code runs, and file tools, including approved full access, and scheduled scripts do not run. Bypass has no sandbox or credential protection.'
+      'The Windows sandbox could not start, so Auto and Manual refuse local commands and file tools, and scheduled scripts do not run. Bypass has no sandbox or credential protection.'
     )
     expect(notice).not.toHaveTextContent(/bubblewrap/i)
+    first.unmount()
+    // A Windows daemon whose AppContainer started has nothing to warn about.
+    vi.mocked(daemonInfo).mockResolvedValueOnce({
+      approvals: 'sandbox',
+      platform: 'windows',
+      sandbox: 'appcontainer',
+      version: '0.1.5'
+    } as DaemonInfo)
+    render(<ApprovalsSettings />)
+    await act(async () => {
+      await vi.mocked(daemonInfo).mock.results.at(-1)?.value
+    })
+    expect(screen.queryByRole('status')).toBeNull()
   })
 
   it('applies a selected theme to the document', () => {

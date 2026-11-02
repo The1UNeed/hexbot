@@ -335,14 +335,19 @@ existing `flock` holders on both platforms. Activation waits still retry interru
 calls, and inherited activation descriptors still require the same device/inode
 and lock checks. The daemon remains unsupported on Windows.
 
-Windows compile and installation work must preserve the fail-closed boundary
-in `credentials.rs` and `windows_sandbox.rs`. Auto and Manual local execution
-refuses before approval, scanning or process creation; Pi also refuses its file
-tools. Scheduled scripts require isolation in every mode. Bypass uses upstream
-Pi Bash and has no containment. The focused Windows workflow exercises the
-real Pi extension under a standard user. Its combined job runs the compiled
-`windows_security` integration test in an explicitly disposable source copy;
-the production platform guard stays intact. Neither check establishes sandbox support. See [Windows security](../../docs/windows-security.md).
+On Windows, Auto and Manual commands run in an AppContainer through the
+daemon's own `hexbot sandbox exec` (`windows_container.rs`), with a policy
+`credentials.rs` builds from the same workspace scan as the other sandboxes
+(`windows_policy`). `windows_sandbox.rs` finds the helper, Git Bash and the
+managed Python, reads Git metadata only from local disks, and names what
+still refuses: `full_access`, Copilot, Pi's write and edit, and the Python
+worker. When the startup probe fails, Auto and Manual refuse rather than
+ask, and scheduled scripts need the sandbox in every mode. Pi asks for a
+command's policy through `hexbot_sandbox_policy`. Bypass uses upstream Pi
+Bash and has no containment. The Windows workflows run the sandbox and the
+compiled `windows_security` probe under a standard user in an explicitly
+disposable source copy; the production platform guard stays intact. See
+[Windows security](../../docs/windows-security.md).
 
 ## Skills
 

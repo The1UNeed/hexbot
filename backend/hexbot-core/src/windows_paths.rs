@@ -79,6 +79,25 @@ pub mod sandbox {
         }
     }
 
+    /// Everything one contained command may reach. The daemon builds it and
+    /// `hexbot sandbox exec` applies it.
+    #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct Policy {
+        /// The Hexbot home: its journal, lock and the containers' private folders.
+        /// The helper never reads HEXBOT_HOME: callers clear the environment of
+        /// the commands they contain.
+        pub home: PathBuf,
+        pub access: Option<Access>,
+        /// Folders the command may write (Auto's workspace, approved outputs).
+        pub writable: Vec<PathBuf>,
+        /// Folders the command may read and run programs from.
+        pub readable: Vec<PathBuf>,
+        /// Git metadata: readable where granted, never written.
+        pub deny_write: Vec<PathBuf>,
+        /// Project secrets: never read or written.
+        pub deny_all: Vec<PathBuf>,
+    }
+
     /// Every profile Hexbot created and every root it changed, kept before each.
     #[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
     pub struct Journal {
@@ -186,12 +205,61 @@ pub mod sandbox {
         Ok(format!("{}\\{}", &rest[..2], components.join("\\")))
     }
 
+    pub const RESERVED: &str = "Paths cannot use a reserved Windows device name";
+    pub const TRAILING: &str = "Paths cannot have names that end in a dot or space";
+
+    /// A disk path in plain form whose names Windows opens as named: never a
+    /// reserved device name (CON, NUL, COM1, with any extension), which a
+    /// plain path opens as the device, and never a name ending in a dot or
+    /// space, which Windows strips and so opens another file.
+    pub fn local(path: &str) -> Result<String, &'static str> {
+        let plain = simplify(path)?;
+        for name in plain[3..].split('\\').filter(|name| !name.is_empty()) {
+            if name == "." || name == ".." {
+                continue;
+            }
+            if name.ends_with(['.', ' ']) {
+                return Err(TRAILING);
+            }
+            let stem = name.split('.').next().unwrap_or(name).trim_end_matches(' ');
+            let device = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
+                .iter()
+                .any(|device| stem.eq_ignore_ascii_case(device))
+                || ["COM", "LPT"].iter().any(|port| {
+                    stem.get(..3)
+                        .is_some_and(|start| start.eq_ignore_ascii_case(port))
+                        && matches!(
+                            &stem[3..],
+                            "0" | "1"
+                                | "2"
+                                | "3"
+                                | "4"
+                                | "5"
+                                | "6"
+                                | "7"
+                                | "8"
+                                | "9"
+                                | "¹"
+                                | "²"
+                                | "³"
+                        )
+                });
+            if device {
+                return Err(RESERVED);
+            }
+        }
+        Ok(plain)
+    }
+
     /// Whether `path` is `root` or inside it. Both are plain and folded.
     pub fn within(path: &str, root: &str) -> bool {
         path.strip_prefix(root)
             .is_some_and(|rest| rest.is_empty() || root.ends_with('\\') || rest.starts_with('\\'))
     }
 
+    /// An AppContainer has no network and reads only what it is granted, so a
+    /// command cannot leave the workspace sandbox for the base layer alone.
+    pub const FULL_ACCESS: &str = "On Windows, Auto and Manual run every command inside the sandbox, so full_access is not available. Bypass runs commands without a sandbox.";
     pub const HOME: &str =
         "Sandbox roots cannot be or contain the user's profile or the Hexbot home";
     pub const STORE: &str = "Sandbox roots cannot be, contain or sit inside a credential store";
@@ -456,6 +524,39 @@ pub mod sandbox {
         }
 
         #[test]
+        fn local_paths_refuse_device_names_and_names_windows_would_strip() {
+            for (input, expected) in [
+                (r"C:\work\app", r"C:\work\app"),
+                ("C:/work/con-tools", r"C:\work\con-tools"),
+                (r"C:\work\console", r"C:\work\console"),
+                (r"C:\work\COM10", r"C:\work\COM10"),
+                (r"C:\work\.git\config", r"C:\work\.git\config"),
+                (r"\\?\C:\work\notes.txt", r"C:\work\notes.txt"),
+                (r"C:\", r"C:\"),
+            ] {
+                assert_eq!(local(input), Ok(expected.to_owned()), "{input}");
+            }
+            for (input, reason) in [
+                (r"C:\work\CON", RESERVED),
+                (r"C:\work\nul.txt", RESERVED),
+                (r"C:\work\Aux\x", RESERVED),
+                (r"C:\work\COM1", RESERVED),
+                (r"C:\work\lpt9.log", RESERVED),
+                (r"C:\work\COM¹", RESERVED),
+                (r"C:\work\conin$", RESERVED),
+                (r"C:\work\NUL .txt", RESERVED),
+                (r"C:\work\app.", TRAILING),
+                (r"C:\work\app ", TRAILING),
+                (r"C:\work\file:stream", STREAM),
+                (r"\\server\share\work", NETWORK),
+                (r"\\.\pipe\work", DEVICE),
+                (r"work", RELATIVE),
+            ] {
+                assert_eq!(local(input), Err(reason), "{input}");
+            }
+        }
+
+        #[test]
         fn within_respects_component_boundaries() {
             assert!(within(r"c:\a\b", r"c:\a"));
             assert!(within(r"c:\a", r"c:\a"));
@@ -518,9 +619,17 @@ pub mod sandbox {
             for store in [
                 ".aws",
                 ".ssh",
+                ".kube",
                 ".config\\gh",
                 "Library\\Keychains",
                 ".codex\\auth.json",
+                "AppData\\Local\\Google",
+                "AppData\\Local\\Microsoft\\Edge",
+                "AppData\\Roaming\\Mozilla",
+                "AppData\\Roaming\\Microsoft\\Credentials",
+                "AppData\\Roaming\\Microsoft\\Protect",
+                "AppData\\Roaming\\gcloud",
+                "AppData\\Roaming\\GitHub CLI",
             ] {
                 assert!(stores.iter().any(|s| s == store), "{store}");
             }

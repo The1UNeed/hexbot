@@ -3487,10 +3487,15 @@ impl Runtime {
 
     fn session_settings(&self, s: &Live) -> Result<Value> {
         let (mut saved, settings, bot_workdir, own) = self.session_policy(s)?;
-        if saved["approvalMode"] != "off" {
-            crate::credentials::require_supported_execution()?;
-        }
         let db = db::open(&self.home)?;
+        // The working folder is checked before anything is created: on
+        // Windows a network or device path is refused by its text alone.
+        let configured = common::configured_workdir(
+            &[saved["workdirOverride"].as_str(), bot_workdir.as_deref()],
+            &settings,
+        )
+        .to_owned();
+        let cwd = common::resolve_workdir(&self.home, &configured)?;
         let output_dirs = [
             self.home.join("profiles").join(&s.bot).join("artifacts"),
             store::session_dir(&self.home, &s.stored)?.join("attachments"),
@@ -3504,15 +3509,13 @@ impl Runtime {
             .and_then(|s| s.split_once('/'))
             .map(|(p, m)| json!({"provider":crate::providers::pi_provider(p),"model":m}))
             .unwrap_or(Value::Null);
-        let configured = common::configured_workdir(
-            &[saved["workdirOverride"].as_str(), bot_workdir.as_deref()],
-            &settings,
-        );
-        let cwd = common::resolve_workdir(&self.home, configured)?;
         saved["fileWorkdir"] = json!(configured);
         saved["fileEpoch"] = json!(s.state.lock().unwrap().stop_epoch);
         saved["cwd"] = json!(cwd);
         saved["home"] = json!(self.home);
+        // On Windows, Pi runs the section's commands through this helper,
+        // with a policy from `hexbot_sandbox_policy`.
+        saved["sandbox"] = crate::credentials::sandbox_settings()?;
         // Hash expanded entries, not just YAML: credential edits revoke old clients too.
         if let Some(names) = own["mcpServers"].as_array() {
             let servers = crate::connectors::pi_mcp_servers(&self.home, &s.bot, names)?;
@@ -3534,6 +3537,34 @@ impl Runtime {
             params![s.stored,s.stored], |r| r.get::<_,bool>(0)
         )?);
         Ok(saved)
+    }
+
+    /// The helper and policy one of the section's commands runs with on
+    /// Windows, from the same live settings Pi checks: its working folder and
+    /// outputs and its approval mode. Pi names the level it runs at:
+    /// `confined` is the workspace sandbox, read-only in Manual; `base`, the
+    /// base layer alone for full_access, is refused there.
+    fn sandbox_policy(&self, s: &Live, args: &Value) -> Result<Value> {
+        use crate::credentials::Confine;
+        let live = self.session_settings(s)?;
+        let confine = match (live["approvalMode"].as_str(), args["level"].as_str()) {
+            (Some("off"), _) => {
+                return Err(Error::new(
+                    4302,
+                    "Bypass runs commands without the sandbox.",
+                ));
+            }
+            (_, Some("base")) => Confine::No,
+            (Some("manual"), Some("confined")) => Confine::ReadOnly,
+            (_, Some("confined")) => Confine::Workspace,
+            _ => return Err(Error::new(4202, "level must be confined or base")),
+        };
+        let roots: Vec<PathBuf> = std::iter::once(&live["cwd"])
+            .chain(live["outputDirs"].as_array().into_iter().flatten())
+            .filter_map(|root| root.as_str().map(PathBuf::from))
+            .collect();
+        let (helper, policy) = crate::credentials::sandbox_policy(&self.home, &roots, confine)?;
+        Ok(json!({"helper":helper,"policy":policy}))
     }
 
     /// Ask the section owner about a daemon tool action, unless the mode is Bypass.
@@ -3975,7 +4006,7 @@ impl Runtime {
         store::check_deleted(&store::open(&self.home)?, &s.stored)?;
         let (policy, settings, bot_workdir, own) = self.session_policy(s)?;
         require_builtin_capability(&own, "file", request.tool)?;
-        crate::credentials::require_supported_execution()?;
+        crate::credentials::require_file_bridge()?;
         let snapshot = &args["snapshot"];
         let configured = common::configured_workdir(
             &[policy["workdirOverride"].as_str(), bot_workdir.as_deref()],
@@ -4001,7 +4032,7 @@ impl Runtime {
         }
         // No resolve_workdir/session_settings here: neither an invalid request
         // nor a stale snapshot may create its workspace/output directories.
-        let cwd = fs::canonicalize(common::check_workdir(&self.home, configured)?)?;
+        let cwd = crate::credentials::canonical(&common::check_workdir(&self.home, configured)?)?;
         if snapshot["cwd"] != json!(cwd) {
             return Err(Error::new(
                 4302,
@@ -4090,7 +4121,7 @@ impl Runtime {
                         }
                         let policy = runtime.session_policy(&session)?.0;
                         if policy["approvalMode"] != "off" {
-                            crate::credentials::require_supported_execution()?;
+                            crate::credentials::require_native_worker()?;
                         }
                         let live = runtime.session_settings(&session)?;
                         let raw = PathBuf::from(required(&args, "path")?);
@@ -4235,12 +4266,12 @@ impl Runtime {
             crate::credentials::check_code(args["code"].as_str().unwrap_or(""))?;
             let policy = self.session_policy(s)?.0;
             if policy["approvalMode"] != "off" {
-                crate::credentials::require_supported_execution()?;
+                crate::credentials::require_native_worker()?;
             }
             let live = self.session_settings(s)?;
             let mode = live["approvalMode"].clone();
             if mode != "off" {
-                crate::credentials::require_supported_execution()?;
+                crate::credentials::require_native_worker()?;
             }
             let snapshot = live.clone();
             let runtime = self.weak.clone();
@@ -4254,7 +4285,7 @@ impl Runtime {
                     .ok_or_else(|| Error::new(5201, "session closed"))?;
                 let policy = runtime.session_policy(&session)?.0;
                 if policy["approvalMode"] != "off" {
-                    crate::credentials::require_supported_execution()?;
+                    crate::credentials::require_native_worker()?;
                 }
                 if !crate::connectors::toolsets(&runtime.home, &session.bot)?
                     .iter()
@@ -4598,6 +4629,7 @@ impl Runtime {
                 )?))
             }
             "hexbot_session_settings" => self.session_settings(s),
+            "hexbot_sandbox_policy" => self.sandbox_policy(s, args),
             // Threads started before chats replaced sections still offer it;
             // titles are no longer shown, so there is nothing to rename.
             "hexbot_rename_section" => Ok(json!({"ok":true})),

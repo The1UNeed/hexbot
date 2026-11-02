@@ -51,6 +51,8 @@ pub mod windows_container;
 #[cfg(windows)]
 mod windows_node_path;
 mod windows_paths;
+#[cfg(windows)]
+mod windows_sandbox;
 #[cfg(not(windows))]
 pub mod windows_service;
 mod windows_task;

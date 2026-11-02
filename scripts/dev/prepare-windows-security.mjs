@@ -20,7 +20,7 @@ export function validateCurrentTree(read) {
     ['backend/hexbot-core/src/native_selection.rs', /pub fn selected\(/],
     ['backend/hexbot-core/src/windows_node_path.rs', /pub fn node_path\(/],
     ['backend/hexbot-core/src/windows_sandbox.rs', /pub const UNAVAILABLE:/],
-    ['backend/hexbot-core/src/credentials.rs', /pub fn require_supported_execution\(/],
+    ['backend/hexbot-core/src/credentials.rs', /pub fn require_native_worker\(/],
   ]) assert.match(read(path), pattern, `Missing combined Windows interface: ${path}`);
 }
 function main() {

@@ -33,7 +33,7 @@ export function selectInputs(repo, sourceSHA, git = process.env.HEXBOT_CI_GIT ??
     return {buildSHA: sourceSHA, securitySHA: sourceSHA, guardedTree, currentTree: true};
   }
   assert.match(read(sourceSHA, 'backend/hexbot-core/src/windows_sandbox.rs'), /pub const UNAVAILABLE:/);
-  assert.match(read(sourceSHA, 'backend/hexbot-core/src/credentials.rs'), /pub fn require_supported_execution\(/);
+  assert.match(read(sourceSHA, 'backend/hexbot-core/src/credentials.rs'), /pub fn require_native_worker\(/);
   // Search immutable first-parent history only. The first recorded candidate
   // is authoritative: invalid syntax, objects or interfaces must fail closed.
   let buildSHA, metadataSHA;

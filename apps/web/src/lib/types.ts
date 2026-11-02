@@ -473,7 +473,7 @@ export interface DaemonInfo {
   lan_enabled: boolean
   platform: string
   /** The OS sandbox for shell and code tools, null when none; absent on older daemons. */
-  sandbox?: 'bubblewrap' | 'sandbox-exec' | null
+  sandbox?: 'appcontainer' | 'bubblewrap' | 'sandbox-exec' | null
   /** `sandbox` once the daemon has sandboxed approvals; absent on older daemons. */
   approvals?: 'sandbox'
   /**

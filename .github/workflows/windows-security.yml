@@ -1,4 +1,5 @@
-# Refusal tests only. This does not enable or publish Windows packages.
+# The Windows execution boundary under a standard user: what Auto and Manual
+# run in the AppContainer and what they refuse. This publishes nothing.
 name: Windows security boundary
 
 on:
@@ -78,7 +79,7 @@ jobs:
           # The checkout used for production is still guarded and unchanged.
           git diff --exit-code -- backend/hexbot-core/src/lib.rs
           if ($LASTEXITCODE -ne 0) { throw 'Production platform guard changed' }
-      - name: Compile the actual Rust runtime refusal probe, without other unit-test fixtures
+      - name: Compile the actual Rust runtime boundary probe and the daemon it runs as the sandbox helper
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -86,15 +87,18 @@ jobs:
           $messages = Join-Path $env:RUNNER_TEMP 'hexbot-native-refusal-compiler.jsonl'
           cargo test --locked --manifest-path $manifest --test windows_security --no-run --message-format=json | Out-File -FilePath $messages -Encoding utf8
           if ($LASTEXITCODE -ne 0) { throw 'Combined native Rust probe did not compile' }
-          $artifact = @(Get-Content $messages | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'windows_security' -and $_.executable })
-          if ($artifact.Count -ne 1) { throw 'Expected one native test executable' }
+          $artifacts = @(Get-Content $messages | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.reason -eq 'compiler-artifact' -and $_.executable })
+          $artifact = @($artifacts | Where-Object { $_.target.name -eq 'windows_security' })
+          $daemon = @($artifacts | Where-Object { $_.target.name -eq 'hexbot' -and $_.target.kind -contains 'bin' })
+          if ($artifact.Count -ne 1 -or $daemon.Count -ne 1) { throw 'Expected one native test executable and one daemon executable' }
           "HEXBOT_WINDOWS_PROBE=$($artifact[0].executable)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "HEXBOT_WINDOWS_DAEMON=$($daemon[0].executable)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Install the pinned production Pi runtime in the disposable source
         shell: pwsh
         run: npm ci --prefix "$env:HEXBOT_COMBINED_ROOT/backend/pi-runtime" --ignore-scripts --no-audit --no-fund
       - name: Exercise production runtime gates as a standard local user
         shell: pwsh
-        run: ./scripts/dev/windows-security-standard-user.ps1 -Runtime "$env:HEXBOT_COMBINED_ROOT/backend/pi-runtime" -Probe "$env:HEXBOT_WINDOWS_PROBE"
+        run: ./scripts/dev/windows-security-standard-user.ps1 -Runtime "$env:HEXBOT_COMBINED_ROOT/backend/pi-runtime" -Probe "$env:HEXBOT_WINDOWS_PROBE" -Hexbot "$env:HEXBOT_WINDOWS_DAEMON"
       - name: Remove the disposable source and all generated test executables
         if: always()
         shell: pwsh

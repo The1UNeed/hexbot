@@ -23,7 +23,7 @@ test('immutable routing supports metadata-only security, combined, and unrelated
   const write = (file, content) => writeFileSync(join(source, file), content);
   try {
     run(['init', '-q']); mkdirSync(source, {recursive: true});
-    write('windows_sandbox.rs', 'pub const UNAVAILABLE:'); write('credentials.rs', 'pub fn require_supported_execution(');
+    write('windows_sandbox.rs', 'pub const UNAVAILABLE:'); write('credentials.rs', 'pub fn require_native_worker(');
     const security = commit('security foundation');
     assert.throws(() => selectInputs(repo, security, git), /exactly one/);
     write('native_selection.rs', 'pub fn selected('); const partial = commit('partial');
@@ -64,7 +64,7 @@ test('source descendants inherit the nearest first-parent immutable pin without 
   try {
     run(['init','-q']); mkdirSync(source,{recursive:true});
     writeFileSync(join(source,'windows_sandbox.rs'),'pub const UNAVAILABLE:');
-    writeFileSync(join(source,'credentials.rs'),'pub fn require_supported_execution(');
+    writeFileSync(join(source,'credentials.rs'),'pub fn require_native_worker(');
     const root = commit('security source with no recorded pin');
     writeFileSync(join(source,'native_selection.rs'),'pub fn selected(');
     writeFileSync(join(source,'windows_node_path.rs'),'pub fn node_path(');
@@ -72,7 +72,7 @@ test('source descendants inherit the nearest first-parent immutable pin without 
     const nextBuild = mergeCommit(run(['rev-parse',`${build}^{tree}`]),[build],'another immutable build');
     checkout(root);
     const pin = commit(`record build\n\nHexbot-Windows-Build: ${build}`);
-    writeFileSync(join(source,'credentials.rs'),'pub fn require_supported_execution(\n// ordinary core edit');
+    writeFileSync(join(source,'credentials.rs'),'pub fn require_native_worker(\n// ordinary core edit');
     const child = commit('ordinary core edit without a trailer');
     assert.deepEqual(selectInputs(repo,child,git),{buildSHA:build,securitySHA:child,metadataSHA:pin,currentTree:false});
     // A second-parent pin must not replace the source's first-parent choice.

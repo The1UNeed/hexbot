@@ -86,7 +86,7 @@ tokio::task_local! { pub(crate) static CODE_REVALIDATE: CodeRevalidate; }
 fn revalidate_code() -> Result<()> {
     match CODE_REVALIDATE.try_with(|check| check()) {
         Ok(result) => result,
-        Err(_) => crate::credentials::require_supported_execution(),
+        Err(_) => crate::credentials::require_native_worker(),
     }
 }
 

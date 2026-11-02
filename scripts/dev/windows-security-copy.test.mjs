@@ -32,7 +32,7 @@ test('current-tree preserves a squash source exactly without historical dependen
     'native_selection.rs':'pub fn selected(',
     'windows_node_path.rs':'pub fn node_path(',
     'windows_sandbox.rs':'pub const UNAVAILABLE:',
-    'credentials.rs':'pub fn require_supported_execution(',
+    'credentials.rs':'pub fn require_native_worker(',
     'lib.rs':'//! preserve\n'+guard+'\nmod preserve;\n',
   })) writeFileSync(join(repo,'backend/hexbot-core/src',file),text);
   const git = process.env.HEXBOT_CI_GIT ?? '/usr/bin/git';

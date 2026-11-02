@@ -22,8 +22,7 @@
 //! the roots it names, then deletes the profiles. Other entries are never
 //! touched. One lock file serializes all changes across processes.
 use crate::windows_paths::sandbox::{self as rules, Protected};
-pub use crate::windows_paths::sandbox::{Access, GrantKind, Journal, JournalEntry};
-use serde::{Deserialize, Serialize};
+pub use crate::windows_paths::sandbox::{Access, GrantKind, Journal, JournalEntry, Policy};
 use std::{
     ffi::{OsStr, OsString, c_void},
     fs, io, mem,
@@ -1116,24 +1115,6 @@ pub fn reset(home: &Path) -> io::Result<Walk> {
     });
     write_journal(home, &journal)?;
     failure.map_or(Ok(total), Err)
-}
-
-/// Everything one contained command may reach.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct Policy {
-    /// The Hexbot home: its journal, lock and the containers' private folders.
-    /// The helper never reads HEXBOT_HOME: callers clear the environment of
-    /// the commands they contain.
-    pub home: PathBuf,
-    pub access: Option<Access>,
-    /// Folders the command may write (Auto's workspace, approved outputs).
-    pub writable: Vec<PathBuf>,
-    /// Folders the command may read and run programs from.
-    pub readable: Vec<PathBuf>,
-    /// Git metadata: readable where granted, never written.
-    pub deny_write: Vec<PathBuf>,
-    /// Project secrets: never read or written.
-    pub deny_all: Vec<PathBuf>,
 }
 
 /// A policy's container, granted and ready for commands.

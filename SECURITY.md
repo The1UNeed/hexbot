@@ -34,21 +34,28 @@ The operating-system sandbox is the containment boundary for untrusted shell
 commands and code execution. Prompt instructions, approval text, output
 redaction, and pattern checks do not provide equivalent containment.
 
-Windows remains unsupported. Its build work does not implement a sandbox.
-Auto and Manual refuse local shell commands, Python code, and Pi's file tools
-before approval or execution, including `full_access` and remembered grants.
-Windows metadata scanning and the Unix file-path walker also refuse to run;
-they do not open untrusted Windows files or discover Git through `PATH`.
-Scheduled scripts and monitors, their create/update validation, and ACP entry
-points refuse on Windows in every mode. Session settings also refuse before
-resolving workdirs or creating outputs in Auto and Manual. This blocks settings
-refresh, MCP/model changes, approvals and primary/memory/job tools using that
-bridge; Auto chat is not a supported Windows feature. Bypass retains Pi's Bash
-tool, requiring an installed Bash such as Git Bash, and removes containment and
-credential protection. It does not substitute `cmd.exe` for Bash or show a
-Linux bubblewrap approval. The native Windows security workflow tests refusal
-under a standard user; it does not prove confinement parity or authorize
-Windows releases. See [the remaining Windows requirements](docs/windows-security.md).
+Windows is not yet supported: the production daemon does not build for it.
+In the disposable builds CI tests, Auto and Manual run the daemon's local
+commands, such as scheduled scripts, in an AppContainer through its own
+`hexbot sandbox exec`: one container per policy, with no network and access
+only to the roots the policy grants. Those are the working folder and output
+folders (read-only in Manual), the managed Python and Git for Windows. The
+user's profile, the Hexbot home, credential
+stores and the managed runtime are never granted; project secrets and
+credential files under a granted root are denied, and Git metadata in a
+writable root stays read-only. Scheduled scripts run there: `.sh` and `.bash`
+in Git Bash, `.py` with the managed Python, and `.exe`. Network, device and
+stream paths are refused by their text before anything opens them, and the Git
+scan reads settings with its own parser rather than a Git found through `PATH`.
+If the startup probe cannot run a contained command, Auto and Manual refuse
+local commands and file tools, and scheduled scripts do not run; they never
+fall back to an approval. `full_access`, Copilot (ACP), Pi's write and edit
+tools and the daemon's Python worker still refuse in Auto and Manual, and Pi's
+own bash and read tools refuse until the extension runs them through the
+helper. Bypass retains Pi's Bash tool, requiring an installed Bash such as Git
+Bash, and removes containment and credential protection. It does not
+substitute `cmd.exe` for Bash. See [Windows security](docs/windows-security.md)
+for the guarantees, the residual risks and what remains before support.
 
 - Auto runs shell commands and Python code in a workspace sandbox. macOS uses
   `sandbox-exec` to deny inbound and outbound network access, writes outside

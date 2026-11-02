@@ -248,8 +248,9 @@ mutation methods check ownership.
   on that machine runs the daemon, `service` when launchd or systemd does,
   and `null` for a checkout or a hand-started daemon. `sandbox` is the OS
   sandbox shell and code tools run in: `sandbox-exec` on macOS, `bubblewrap`
-  on Linux after a successful probe, and `null` when there is none; Settings,
-  Approvals shows a notice then. The compatibility field
+  on Linux after a successful probe, `appcontainer` on Windows once its
+  startup probe ran a contained command, and `null` when there is none;
+  Settings, Approvals shows a notice then. The compatibility field
   `hermes_version` carries the pinned agent core version. `home` is the daemon
   state path. `auth_required`
   is always true and kept for older clients: every client presents a device

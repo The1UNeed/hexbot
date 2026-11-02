@@ -258,16 +258,16 @@ more freedom and more capability than a hosted product can offer.
   shell command and code run, including full-access commands, and scheduled
   scripts refuse to run. Model review cannot replace this user approval;
   an explicit Allow for now can cover later shell requests.
-- Windows remains unsupported while its build and installation ports are
-  developed. Auto and Manual refuse local shell, code and Pi file tools before
-  approval, including `full_access`; scheduled scripts refuse in every mode.
-  Bypass retains Pi's Bash dialect without containment, requiring Bash on the
-  host. It does not change the tool to `cmd.exe`. Native refusal tests are a
-  prerequisite for further work, not evidence of a working sandbox. Windows
-  support and publishing require the containment tests in
-  [the Windows security contract](docs/windows-security.md). Auto/Manual
-  session-settings refusal also prevents normal chat settings/tool refresh; this
-  foundation does not provide working Windows Auto chat.
+- Windows remains unsupported until its native tests pass and review signs
+  off. There, Auto and Manual run commands in an AppContainer through the
+  daemon's own `hexbot sandbox exec`, one per policy, with no network and
+  only the working folder, outputs and runtime programs granted (read-only in
+  Manual). If its startup probe fails they refuse rather than ask.
+  Scheduled scripts run in it; `full_access`, Copilot, Pi's write and edit
+  and the Python worker still refuse, and Pi's own tools refuse until the
+  extension runs them through the helper. Bypass retains Pi's Bash dialect
+  without containment, requiring Bash on the host. It does not change the
+  tool to `cmd.exe`. See [the Windows security contract](docs/windows-security.md).
 - Connected tools use Pi's built-in MCP through codemode. A section freezes
   server namespaces and tool declarations; a bot's chat takes changed ones at
   its next message, rebuilt once without the cache. Manual asks for every
