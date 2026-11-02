@@ -607,6 +607,7 @@ export class FaceMotion {
   private pose = 0
   private nextPose = 0
   private gazeTarget = { x: 0, y: 0 }
+  private followed: { x: number; y: number } | null = null
   private nextGlance = 0
   private blinkAt = -1
   private nextBlink = 0
@@ -716,6 +717,14 @@ export class FaceMotion {
 
         squash.sy.velocity -= 0.6
     }
+  }
+
+  /**
+   * Looks at a point, in the ball frame, instead of glancing around; `null`
+   * goes back to glancing. Moods that never glance keep their own gaze.
+   */
+  follow(point: { x: number; y: number } | null) {
+    this.followed = point
   }
 
   /** Draws into one more face too, from the next frame; see `joinFaceMotion`. */
@@ -833,7 +842,9 @@ export class FaceMotion {
       }
     }
 
-    if (glance && t >= this.nextGlance) {
+    if (glance && this.followed) {
+      this.gazeTarget = this.followed
+    } else if (glance && t >= this.nextGlance) {
       this.nextGlance = t + 0.8 + Math.random() * 2.4
       const angle = Math.random() * Math.PI * 2
       const reach = Math.random() < 0.3 ? 0 : glance * (0.5 + Math.random() / 2)

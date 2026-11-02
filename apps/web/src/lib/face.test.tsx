@@ -5,7 +5,7 @@ import { HexbotMark } from '../components/ui/wordmark'
 
 import { FACE_EMOTIONS, FACE_MOODS, moodForStatus } from './face'
 import { AVATAR_SHAPES, CAPSULE_EYE } from './face-geometry'
-import { MORPHS, restFrame } from './face-motion'
+import { FaceMotion, MORPHS, restFrame } from './face-motion'
 
 const observations: {
   callback: IntersectionObserverCallback
@@ -234,6 +234,26 @@ describe('original faces', () => {
     rerender(<LiveFace color="pink" eyes="white" look={null} still />)
     expect(container.querySelector('svg')).not.toHaveAttribute('data-look')
     expect(head).toHaveAttribute('transform', restFrame('idle').head)
+  })
+
+  it('looks at a point it follows, unless its mood never glances', () => {
+    const face = (mood: 'idle' | 'happy') => {
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+      const gaze = document.createElementNS('http://www.w3.org/2000/svg', 'g')
+      gaze.dataset.part = 'gaze'
+      svg.append(gaze)
+      const motion = new FaceMotion(svg, { mood })
+      motion.follow({ x: 8, y: -4 })
+
+      for (let step = 0; step < 60; step++) {
+        motion.advance(1 / 30)
+      }
+
+      return gaze.getAttribute('transform')
+    }
+
+    expect(face('idle')).toBe('translate(8 -4)')
+    expect(face('happy')).toBe('translate(0 0)')
   })
 
   it('moves every face of one bot as one, however late each appeared', () => {
