@@ -184,7 +184,7 @@ export function BubbleActions({
   actions: { icon: React.ReactNode; label: string; onClick: () => void }[]
 }) {
   return (
-    <span className="flex shrink-0 items-center gap-0.5 self-end pb-1.5 opacity-0 transition-opacity duration-[var(--hex-motion-fast)] group-hover:opacity-100 focus-within:opacity-100">
+    <span className="flex shrink-0 items-center gap-0.5 self-end pb-1.5 opacity-0 transition-opacity duration-[var(--hex-motion-fast)] group-hover:opacity-100 focus-within:opacity-100 touch:opacity-100">
       {actions.map(action => (
         <button
           aria-label={action.label}
@@ -274,7 +274,7 @@ function CodeBlock({ children, className }: { children?: React.ReactNode; classN
       ) : null}
       <button
         aria-label="Copy code"
-        className="hex-focus absolute top-1.5 right-1.5 grid size-6 place-items-center rounded-full text-muted opacity-0 transition-[opacity,background-color,color] duration-[var(--hex-motion-fast)] group-hover/code:opacity-100 hover:bg-surface-2 hover:text-foreground focus-visible:opacity-100"
+        className="hex-focus absolute top-1.5 right-1.5 grid size-6 place-items-center rounded-full text-muted opacity-0 transition-[opacity,background-color,color] duration-[var(--hex-motion-fast)] group-hover/code:opacity-100 hover:bg-surface-2 hover:text-foreground focus-visible:opacity-100 touch:opacity-100"
         onClick={() => void navigator.clipboard.writeText(text)}
         type="button"
       >
@@ -476,7 +476,7 @@ export function StoppedCard({
         {onDismiss ? (
           <button
             aria-label="Dismiss"
-            className="hex-focus grid size-4 place-items-center rounded-full text-muted opacity-0 transition-opacity duration-[var(--hex-motion-fast)] group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground"
+            className="hex-focus grid size-4 place-items-center rounded-full text-muted opacity-0 transition-opacity duration-[var(--hex-motion-fast)] group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground touch:opacity-100"
             onClick={onDismiss}
             title="Dismiss"
             type="button"
@@ -544,7 +544,7 @@ export function StoppedCard({
       {onDismiss ? (
         <button
           aria-label="Dismiss"
-          className="hex-focus grid size-6 place-items-center rounded-full text-muted opacity-0 transition-opacity duration-[var(--hex-motion-fast)] group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground"
+          className="hex-focus grid size-6 place-items-center rounded-full text-muted opacity-0 transition-opacity duration-[var(--hex-motion-fast)] group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground touch:opacity-100"
           onClick={onDismiss}
           title="Dismiss"
           type="button"
@@ -2722,11 +2722,11 @@ function BotConversation() {
           </button>
         }
       >
-        <div className="grid max-h-[85vh] place-items-center bg-black p-2">
+        <div className="grid max-h-[85dvh] place-items-center bg-black p-2">
           {lightbox ? (
             <img
               alt="Attachment preview"
-              className="max-h-[78vh] max-w-full object-contain"
+              className="max-h-[78dvh] max-w-full object-contain"
               src={lightbox}
             />
           ) : null}

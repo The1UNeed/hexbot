@@ -330,6 +330,11 @@ try {
   const shot = name => page.screenshot({ path: path.join(artifacts, `${name}.png`) })
   // Cards rise in; wait for them to settle before a picture.
   const settle = () => page.waitForTimeout(450)
+  // A bot's message in the open chat; the list under it shows the latest too.
+  const message = (text, options) =>
+    page.getByTestId(/^chat-message-/).getByText(text, options)
+  // The stack's own back button, named after the list it returns to.
+  const back = () => page.getByLabel('Chats, back', { exact: true }).click()
   page = await context.newPage()
   page.on('pageerror', e => errors.push(e.message))
   const sent = []
@@ -361,7 +366,7 @@ try {
   await shot('daemon-switcher')
   await page.getByTestId('daemon-switcher-close').click()
   await expect(page.getByTestId('daemon-switcher')).not.toBeVisible()
-  await page.getByRole('button', { name: 'Back', exact: true }).click()
+  await back()
   // The bot row opens its one chat.
   await page.getByTestId('bot-row-owl').click()
   await expect(page.getByTestId('chat-empty')).toBeVisible()
@@ -400,7 +405,7 @@ try {
   await page.getByTestId('chat-input').fill('Check the mobile connection')
   await page.getByTestId('chat-send').click()
   await expect(
-    page.getByText('Your daemon received this from mobile. The connection is working.', {
+    message('Your daemon received this from mobile. The connection is working.', {
       exact: true
     })
   ).toBeVisible({ timeout: 30000 })
@@ -429,7 +434,7 @@ try {
   await page.getByTestId('question-choice-Two').click()
   await page.screenshot({ path: path.join(artifacts, 'questions.png') })
   await page.getByTestId('question-sheet-action').click()
-  await expect(page.getByText('Questions answered on mobile.', { exact: true })).toBeVisible({
+  await expect(message('Questions answered on mobile.', { exact: true })).toBeVisible({
     timeout: 30000
   })
   const answerRequest = modelRequests.at(-1)
@@ -443,7 +448,7 @@ try {
   await expect(page.getByText('answer-notes.txt', { exact: true })).not.toBeVisible()
   await page.getByTestId('chat-input').fill('Show a visual')
   await page.getByTestId('chat-send').click()
-  await expect(page.getByText('The mobile visual is ready.', { exact: true })).toBeVisible({
+  await expect(message('The mobile visual is ready.', { exact: true })).toBeVisible({
     timeout: 30000
   })
   await page.locator('[data-testid^="visual-open-"]').first().click()
@@ -474,7 +479,7 @@ try {
   })
   retainedUploadPath = left.path
   await page.getByTestId('chat-send').click()
-  await expect(page.getByText('The mobile attachment reached Pi.', { exact: true })).toBeVisible({
+  await expect(message('The mobile attachment reached Pi.', { exact: true })).toBeVisible({
     timeout: 30000
   })
   assert.match(JSON.stringify(modelRequests.at(-1).messages), /brief\.txt/)
@@ -494,7 +499,7 @@ try {
   }
   // The same paired app that staged it submits the returned ID through real RPC.
   const otherAck = await rpc('prompt.submit', otherSubmit)
-  await expect(page.getByText('The other app attachment reached Pi.', { exact: true })).toBeVisible(
+  await expect(message('The other app attachment reached Pi.', { exact: true })).toBeVisible(
     {
       timeout: 30000
     }
@@ -537,7 +542,7 @@ try {
   await assert.rejects(access(path.join(workspace, 'mobile-approval.txt')))
   await page.screenshot({ path: path.join(artifacts, 'approval.png') })
   await allowOnce.click()
-  await expect(page.getByText('The mobile approval reached Pi.', { exact: true })).toBeVisible({
+  await expect(message('The mobile approval reached Pi.', { exact: true })).toBeVisible({
     timeout: 30000
   })
   assert.equal(await readFile(path.join(workspace, 'mobile-approval.txt'), 'utf8'), 'approved')
@@ -562,7 +567,7 @@ try {
   await signIn.fill('mobile-secret-42')
   await page.screenshot({ path: path.join(artifacts, 'sign-in-card.png') })
   await page.locator('[data-testid^="sign-in-"][data-testid$="-submit"]').click()
-  await expect(page.getByText('The school sign-in is saved.', { exact: true })).toBeVisible({
+  await expect(message('The school sign-in is saved.', { exact: true })).toBeVisible({
     timeout: 30000
   })
   const saved = (await rpc('hexbot.passwords.list')).logins
@@ -589,7 +594,7 @@ try {
   await page.locator('[data-testid^="plugin-"][data-testid$="-HASS_TOKEN"]').fill('mobile-ha-token-42')
   await page.screenshot({ path: path.join(artifacts, 'plugin-card-open.png') })
   await page.locator('[data-testid^="plugin-"][data-testid$="-submit"]').click()
-  await expect(page.getByText('Home Assistant has its token.', { exact: true })).toBeVisible({
+  await expect(message('Home Assistant has its token.', { exact: true })).toBeVisible({
     timeout: 30000
   })
   const connectors = (await rpc('hexbot.connectors.list')).connectors
@@ -651,9 +656,9 @@ try {
   await page.getByTestId('management-sheet-back').click()
   await page.getByTestId('management-sheet-close').click()
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
-  await expect(page.getByText('Flight BA 286 is two hours late.', { exact: true })).toBeVisible()
+  await expect(message('Flight BA 286 is two hours late.', { exact: true })).toBeVisible()
   await shot('heartbeat-chat')
-  await page.getByRole('button', { name: 'Back', exact: true }).click()
+  await back()
   // Rooms sit in the same list as chats and open like one.
   await expect(page.getByTestId(`room-row-${launch.id}`)).toBeVisible()
   await page.getByTestId(`room-row-${room.id}`).click()
@@ -661,7 +666,7 @@ try {
   await page.getByTestId('chat-input').fill('Check our team on mobile')
   await page.getByTestId('chat-send').click()
   await expect(
-    page.getByText('The mobile room is working. @user your team is ready.', { exact: true })
+    message('The mobile room is working. @user your team is ready.', { exact: true })
   ).toBeVisible({ timeout: 30000 })
   await page.screenshot({ path: path.join(artifacts, 'room.png') })
   await page.getByTestId('chat-settings').click()
@@ -685,7 +690,7 @@ try {
     .toBe(null)
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
   await expect(page.getByTestId('library-rooms')).not.toContainText('archived')
-  await page.getByRole('button', { name: 'Back', exact: true }).click()
+  await back()
   // A room archived elsewhere while open stays, and restoring it there keeps it open.
   await page.getByTestId(`room-row-${room.id}`).click()
   await expect(page.getByTestId('chat-title')).toContainText('Our team')
@@ -697,7 +702,7 @@ try {
   await expect(page.getByTestId('chat-archived')).not.toBeVisible()
   await expect(page.getByTestId('chat-title')).toContainText('Our team')
   await expect(page.getByTestId('chat-input')).toBeVisible()
-  await page.getByRole('button', { name: 'Back', exact: true }).click()
+  await back()
   await page.getByTestId('home-settings').click()
   await shot('settings')
   await page.getByTestId('daemon-about').click()
@@ -809,7 +814,7 @@ try {
     await page.getByTestId('management-sheet-close').click()
     await expect(page.getByTestId('management-sheet')).not.toBeVisible()
   }
-  await page.getByRole('button', { name: 'Back', exact: true }).click()
+  await back()
   await page.getByTestId('home-library').click()
   await settle()
   await shot('library')
@@ -849,7 +854,7 @@ try {
   await page.getByTestId('management-sheet-backdrop').click({ position: { x: 196, y: 20 } })
   await page.screenshot({ path: path.join(artifacts, 'daemons.png') })
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
-  await page.getByRole('button', { name: 'Back', exact: true }).click()
+  await back()
   await shot('home')
   await page.getByTestId('home-new').click()
   await expect(page.getByTestId('home-new-menu')).toBeVisible()
@@ -863,7 +868,7 @@ try {
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
   await page.getByTestId('bot-row-owl').click()
   await expect(
-    page.getByText('Your daemon received this from mobile. The connection is working.', {
+    message('Your daemon received this from mobile. The connection is working.', {
       exact: true
     })
   ).toBeVisible({ timeout: 30000 })
@@ -872,7 +877,7 @@ try {
   await page.getByTestId('visual-sheet-close').click()
   // A reload keeps metadata, but the browser preview intentionally has no persistent secrets.
   // Reconnect the same client by disconnecting and selecting its saved target.
-  await page.getByRole('button', { name: 'Back', exact: true }).click()
+  await back()
   await page.getByTestId('home-settings').click()
   await page.getByTestId('daemon-disconnect').click()
   await expect(page.getByTestId('connection-screen')).toBeVisible()
@@ -881,7 +886,7 @@ try {
   await expect(page.getByTestId('bot-row-owl')).toBeVisible({ timeout: 30000 })
   await page.getByTestId('bot-row-owl').click()
   await expect(
-    page.getByText('Your daemon received this from mobile. The connection is working.', {
+    message('Your daemon received this from mobile. The connection is working.', {
       exact: true
     })
   ).toBeVisible({ timeout: 30000 })

@@ -57,10 +57,10 @@ export function SettingsShell<Id extends string>({
   return (
     <Dialog
       className={cn(
-        'max-h-[92vh]',
+        'max-h-[92dvh]',
         width === 'wide'
-          ? 'h-[min(760px,92vh)] w-[min(1080px,94vw)]'
-          : 'h-[min(680px,92vh)] w-[min(600px,94vw)]'
+          ? 'h-[min(760px,92dvh)] w-[min(1080px,94vw)]'
+          : 'h-[min(680px,92dvh)] w-[min(600px,94vw)]'
       )}
       label={label}
       onOpenChange={open => !open && onClose()}
@@ -78,22 +78,22 @@ export function SettingsShell<Id extends string>({
           </button>
         </div>
         {tabs ? (
-          <div className="grid h-full grid-rows-[auto_1fr] sm:grid-cols-[220px_1fr] sm:grid-rows-1">
+          <div className="grid h-full grid-rows-[auto_1fr] @min-[600px]:grid-cols-[220px_1fr] @min-[600px]:grid-rows-1">
             <nav
               aria-label={navLabel}
-              className="mr-14 flex min-h-0 gap-1 overflow-x-auto px-3 pt-3 pb-1 sm:mr-0 sm:flex-col sm:gap-0 sm:overflow-y-auto sm:px-3 sm:py-4"
+              className="mr-14 flex min-h-0 gap-1 overflow-x-auto px-3 pt-3 pb-1 @min-[600px]:mr-0 @min-[600px]:flex-col @min-[600px]:gap-0 @min-[600px]:overflow-y-auto @min-[600px]:px-3 @min-[600px]:py-4"
             >
               {header}
               {tabs.map((group, index) => (
                 <div
                   className={cn(
-                    'flex shrink-0 gap-1 sm:flex-col sm:gap-px',
-                    index > 0 && 'sm:mt-4'
+                    'flex shrink-0 gap-1 @min-[600px]:flex-col @min-[600px]:gap-px',
+                    index > 0 && '@min-[600px]:mt-4'
                   )}
                   key={group.label ?? index}
                 >
                   {group.label ? (
-                    <p className="hidden px-3 pb-1.5 text-[length:var(--text-meta)] font-medium text-muted/80 sm:block">
+                    <p className="hidden px-3 pb-1.5 text-[length:var(--text-meta)] font-medium text-muted/80 @min-[600px]:block">
                       {group.label}
                     </p>
                   ) : null}
@@ -105,7 +105,7 @@ export function SettingsShell<Id extends string>({
                       <button
                         aria-current={active ? 'page' : undefined}
                         className={cn(
-                          'flex h-[32px] shrink-0 items-center gap-2.5 rounded-[10px] px-3 text-[length:var(--text-secondary)] whitespace-nowrap transition-colors duration-[var(--hex-motion-fast)] outline-none focus-visible:ring-2 focus-visible:ring-accent/50 sm:w-full',
+                          'flex h-[32px] shrink-0 items-center gap-2.5 rounded-[10px] px-3 text-[length:var(--text-secondary)] whitespace-nowrap transition-colors duration-[var(--hex-motion-fast)] outline-none focus-visible:ring-2 focus-visible:ring-accent/50 @min-[600px]:w-full',
                           active
                             ? 'bg-foreground/[0.07] font-medium text-foreground'
                             : 'text-muted hover:bg-foreground/[0.04] hover:text-foreground'
@@ -136,4 +136,4 @@ export function SettingsShell<Id extends string>({
 }
 
 /** Padding and measure for one settings page. */
-export const settingsPageClass = 'mx-auto w-full max-w-[640px] px-6 pt-8 pb-14 sm:px-10'
+export const settingsPageClass = 'mx-auto w-full max-w-[640px] px-6 pt-8 pb-14 @min-[600px]:px-10'

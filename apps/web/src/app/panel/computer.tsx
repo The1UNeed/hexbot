@@ -355,7 +355,7 @@ function ComputerWindow({ onClose, status }: { onClose: () => void; status: Comp
 
   return (
     <Dialog
-      className="max-h-[94vh] w-[min(72rem,94vw)]"
+      className="max-h-[94dvh] w-[min(72rem,94vw)]"
       description={caption(status, actor)}
       onOpenChange={open => !open && onClose()}
       open

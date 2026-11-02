@@ -2,14 +2,17 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import App from '../../App'
-import type { ChatScreenProps, HomeScreenProps } from '../screens'
+import App, { type AppScreens, useAppScreens } from '../../App'
+import { type ChatScreenProps, HomeScreen, type HomeScreenProps } from '../screens'
 import type { Bot, Room, Section } from './types'
 
 const state = vi.hoisted(() => ({
   request: vi.fn(),
   event: (_event: unknown) => {},
-  chat: null as ChatScreenProps | null
+  chat: null as ChatScreenProps | null,
+  navigate: vi.fn(),
+  platform: { OS: 'ios' },
+  screens: null as AppScreens | null
 }))
 
 // Render the production App and useMobile. Only native views, storage and the
@@ -20,7 +23,8 @@ vi.mock('react-native', async () => {
     View: ({ children }: { children?: ReactNode }) => createElement('div', null, children),
     ScrollView: ({ children }: { children?: ReactNode }) => createElement('div', null, children),
     ActivityIndicator: () => null,
-    Platform: { OS: 'ios' },
+    StyleSheet: { absoluteFill: {} },
+    Platform: state.platform,
     AppState: { addEventListener: () => ({ remove() {} }) },
     BackHandler: { addEventListener: () => ({ remove() {} }) }
   }
@@ -28,6 +32,8 @@ vi.mock('react-native', async () => {
 vi.mock('react-native-safe-area-context', () => ({ SafeAreaProvider: ({ children }: { children: ReactNode }) => children }))
 vi.mock('@expo/vector-icons', () => ({ Ionicons: () => null }))
 vi.mock('expo-status-bar', () => ({ StatusBar: () => null }))
+// The native navigator is Expo Router's; the app only asks it to show the chat route.
+vi.mock('expo-router', () => ({ router: { navigate: state.navigate } }))
 vi.mock('expo-linking', () => ({ useURL: () => null }))
 vi.mock('expo-web-browser', () => ({ maybeCompleteAuthSession() {} }))
 vi.mock('expo-crypto', () => ({ randomUUID: () => 'message' }))
@@ -114,6 +120,9 @@ beforeEach(() => {
   sections = [owner, thread]
   rooms = []
   state.chat = null
+  state.navigate.mockReset()
+  state.platform.OS = 'ios'
+  state.screens = null
   state.request.mockReset().mockImplementation(async (method: string, params: Record<string, unknown> = {}) => {
     if (method === 'hexbot.info') return { one_chat: true, install_id: 'first' }
     if (method === 'hexbot.bots.list') return { bots: [bot] }
@@ -133,8 +142,16 @@ beforeEach(() => {
 })
 afterEach(cleanup)
 
+// What app/ draws: the open chat over the list, as the stack does on a phone.
+function Routes() {
+  const screens = useAppScreens()
+  state.screens = screens
+  return screens.chat ?? createElement(HomeScreen, screens.homeProps)
+}
+const renderApp = () => render(createElement(App, null, createElement(Routes)))
+
 async function open(source = 'Pulse') {
-  render(createElement(App))
+  renderApp()
   fireEvent.click(await screen.findByRole('button', { name: `${source} Owl` }))
   await screen.findByTestId('chat')
 }
@@ -198,7 +215,7 @@ it.each(['archived', 'missing'] as const)('an unavailable %s room gives way to t
 it('lists Check-ins with the chats and opens that conversation, not the chat', async () => {
   sections = [owner, { ...owner, id: 'checkins', purpose: 'checkins', live_session_id: 'live-checkins' } as Section]
   bot = { ...bot, primary: true, status: 'idle', status_detail: null }
-  render(createElement(App))
+  renderApp()
   fireEvent.click(await screen.findByRole('button', { name: 'Open Check-ins' }))
   await screen.findByText('checkins history')
   expect(calls('hexbot.sections.create')).toHaveLength(0)
@@ -206,17 +223,113 @@ it('lists Check-ins with the chats and opens that conversation, not the chat', a
 
 it('lists rooms with the chats and opens one full screen', async () => {
   rooms = [room]
-  render(createElement(App))
+  renderApp()
   fireEvent.click(await screen.findByRole('button', { name: 'Open Garden' }))
   await screen.findByTestId('chat')
   await waitFor(() => expect(state.request).toHaveBeenCalledWith('hexbot.rooms.log', expect.objectContaining({ id: 'garden' })))
   expect(state.chat!.title).toBe('Garden')
 })
 
+it('on Android, shows an opened room on the chat route and closes it when that route is left', async () => {
+  state.platform.OS = 'android'
+  rooms = [room]
+  renderApp()
+  fireEvent.click(await screen.findByRole('button', { name: 'Open Garden' }))
+  await screen.findByTestId('chat')
+  expect(state.navigate).toHaveBeenCalledWith('/chat')
+  expect(state.screens!.uploading).toBe(false)
+  act(() => state.screens!.onChatClosed())
+  await screen.findByRole('button', { name: 'Open Garden' })
+  expect(screen.queryByTestId('chat')).toBeNull()
+})
+
+it('on iOS, shows an opened room beside the sidebar and closes it when the sidebar goes back', async () => {
+  rooms = [room]
+  renderApp()
+  fireEvent.click(await screen.findByRole('button', { name: 'Open Garden' }))
+  await screen.findByTestId('chat')
+  expect(state.navigate).not.toHaveBeenCalled()
+  expect(state.screens!.selected).toBe('room-garden')
+  act(() => state.screens!.select(null))
+  await screen.findByRole('button', { name: 'Open Garden' })
+  expect(screen.queryByTestId('chat')).toBeNull()
+  expect(state.screens!.selected).toBeNull()
+})
+
+it("on iOS, opens a bot's own chat from its row while a thread with another bot is open", async () => {
+  await open()
+  await screen.findByText('thread history')
+  // The thread sits beside the list with no row of its own highlighted.
+  expect(state.screens!.selected).toBe('chat')
+  expect(state.screens!.homeProps.selected).toBeNull()
+  act(() => state.screens!.select('bot-owl'))
+  await screen.findByText('owner history')
+  expect(state.screens!.homeProps.selected).toBe('bot-owl')
+})
+
+it('on iOS, going back while a chat still opens leaves it closed', async () => {
+  let release = () => {}
+  const opened = new Promise<void>(resolve => { release = resolve })
+  const answer = state.request.getMockImplementation()!
+  state.request.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+    if (method === 'hexbot.sections.open') await opened
+    return answer(method, params)
+  })
+  renderApp()
+  await screen.findByRole('button', { name: 'Bot Owl' })
+  act(() => state.screens!.select('bot-owl'))
+  expect(state.screens!.selected).toBe('chat')
+  act(() => state.screens!.select(null))
+  await act(async () => release())
+  await act(async () => {})
+  expect(state.screens!.selected).toBeNull()
+  expect(screen.queryByTestId('chat')).toBeNull()
+})
+
+it('on iOS, opens a chat, Settings and Bots & jobs from the sidebar', async () => {
+  rooms = [room]
+  renderApp()
+  await screen.findByRole('button', { name: 'Open Garden' })
+  act(() => state.screens!.select('room-garden'))
+  await screen.findByTestId('chat')
+  expect(state.chat!.title).toBe('Garden')
+  act(() => state.screens!.select('settings'))
+  await waitFor(() => expect(state.screens!.selected).toBe('settings'))
+  act(() => state.screens!.select('library'))
+  await waitFor(() => expect(state.screens!.selected).toBe('library'))
+})
+
+it('opens Settings and Bots & jobs from your initials and the grid button', async () => {
+  renderApp()
+  await screen.findByRole('button', { name: 'Bot Owl' })
+  act(() => state.screens!.homeProps.onOpenSettings!())
+  await waitFor(() => expect(state.screens!.selected).toBe('settings'))
+  act(() => state.screens!.homeProps.onOpenLibrary!())
+  await waitFor(() => expect(state.screens!.selected).toBe('library'))
+  expect(state.navigate).not.toHaveBeenCalled()
+})
+
+it('on Android, pushes Settings and Bots & jobs on the stack', async () => {
+  state.platform.OS = 'android'
+  renderApp()
+  await screen.findByRole('button', { name: 'Bot Owl' })
+  state.screens!.homeProps.onOpenSettings!()
+  expect(state.navigate).toHaveBeenCalledWith('/settings')
+  state.screens!.homeProps.onOpenLibrary!()
+  expect(state.navigate).toHaveBeenCalledWith('/bots')
+})
+
+it('offers a new bot and a new room from the bar', async () => {
+  renderApp()
+  await screen.findByRole('button', { name: 'Bot Owl' })
+  expect(state.screens!.homeProps.onNewBot).toBeTypeOf('function')
+  expect(state.screens!.homeProps.onNewRoom).toBeTypeOf('function')
+})
+
 it('leaves archived rooms and Check-ins of a bot that is not primary out of the list', async () => {
   rooms = [{ ...room, archived_at: 1 }]
   sections = [owner, { ...owner, id: 'checkins', purpose: 'checkins' } as Section]
-  render(createElement(App))
+  renderApp()
   await screen.findByRole('button', { name: 'Bot Owl' })
   expect(screen.queryByRole('button', { name: 'Open Garden' })).toBeNull()
   expect(screen.queryByRole('button', { name: 'Open Check-ins' })).toBeNull()

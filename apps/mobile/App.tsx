@@ -1,8 +1,18 @@
 import { Ionicons } from '@expo/vector-icons'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ActivityIndicator, AppState, BackHandler, Platform, View } from 'react-native'
+import {
+  createContext,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react'
+import { ActivityIndicator, AppState, BackHandler, Platform, StyleSheet, View } from 'react-native'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 import { StatusBar } from 'expo-status-bar'
+import { router } from 'expo-router'
 import * as ExpoLinking from 'expo-linking'
 import * as WebBrowser from 'expo-web-browser'
 import * as Crypto from 'expo-crypto'
@@ -19,7 +29,7 @@ import {
   ComputerSheet,
   ConnectionScreen,
   DaemonSwitcher,
-  HomeScreen,
+  type HomeScreenProps,
   LibraryScreen,
   ModelSummary,
   SearchSheet,
@@ -126,16 +136,50 @@ const DEMO_ITEMS: ChatItem[] = [
     text: 'Demo conversation. Connect a daemon to send messages and run tools.'
   }
 ]
-export default function App() {
+/** What the routes in `app/` draw, from the state the app keeps. */
+export interface AppScreens {
+  /** The list's data, for the iOS sidebar and the Android list alike. */
+  homeProps: HomeScreenProps
+  /** The open chat's props, for the title and buttons the route puts in the system's bar. */
+  chatProps: ChatScreenProps | null
+  /**
+   * What sits beside the iOS sidebar: `settings`, `library`, or the open
+   * chat's row (`${kind}-${id}`), or `chat` for one with no row, such as a
+   * thread between bots; null for nothing.
+   */
+  selected: string | null
+  /** Choose a sidebar row; null goes back to the list. */
+  select: (key: string | null) => void
+  /** The open chat or room, if any. */
+  chat: ReactNode | null
+  settings: ReactNode
+  library: ReactNode
+  /** The chat route was left, by its native back button or swipe. */
+  onChatClosed: () => void
+  /** Files are uploading: the chat stays open until they are sent. */
+  uploading: boolean
+}
+const Screens = createContext<AppScreens | null>(null)
+export function useAppScreens(): AppScreens {
+  const screens = useContext(Screens)
+  if (!screens) throw new Error('useAppScreens outside App')
+  return screens
+}
+/**
+ * The app's state and its cards, around the navigation in `children`: on
+ * iOS a SwiftUI split view (`app/_layout.ios.tsx`), on Android a native
+ * stack (`app/_layout.tsx`).
+ */
+export default function App({ children }: { children?: ReactNode }) {
   return (
     <SafeAreaProvider>
       <ThemeProvider>
-        <MobileApp />
+        <MobileApp>{children}</MobileApp>
       </ThemeProvider>
     </SafeAreaProvider>
   )
 }
-function MobileApp() {
+function MobileApp({ children }: { children?: ReactNode }) {
   const mobile = useMobile()
   const usage = useUsageData()
   // Counted once a day while the app is used, including after it comes back
@@ -149,8 +193,6 @@ function MobileApp() {
     return () => subscription.remove()
   }, [])
   const theme = useTheme()
-  // Pages pushed over the chat list; an open conversation shows above them.
-  const [page, setPage] = useState<'home' | 'library' | 'settings'>('home')
   const [botPage, setBotPage] = useState<string | null>(null)
   const [addDaemon, setAddDaemon] = useState(false)
   const [panels, setPanels] = useState<Panel[]>([])
@@ -307,6 +349,19 @@ function MobileApp() {
     route?.kind === 'section' ? route.section.id : route?.kind === 'room' ? route.room.id : null
   const openChat = useRef(chatKey)
   openChat.current = chatKey
+  // Opening a chat or a room, from the list, a link or Settings, shows it in
+  // the Chats tab's native stack; its back button closes it again.
+  const shownChat = useRef<string | null>(null)
+  const openKey = chatKey ?? (demo ? botPage : null)
+  const [selected, setSelected] = useState<'chat' | 'settings' | 'library' | null>(null)
+  useEffect(() => {
+    if (openKey && openKey !== shownChat.current) {
+      if (Platform.OS === 'ios') setSelected('chat')
+      else router.navigate('/chat')
+    }
+    if (!openKey) setSelected(current => (current === 'chat' ? null : current))
+    shownChat.current = openKey
+  }, [openKey])
   // Search belongs to the conversation it was opened in.
   useEffect(() => {
     setSearchOpen(false)
@@ -334,24 +389,11 @@ function MobileApp() {
     setPanels([])
     setSwitcherOpen(false)
     setBotPage(null)
-    setPage('home')
   }, [mobile.active?.id])
   useEffect(() => {
     if (Platform.OS !== 'android') return
     // Cards close themselves on back; this handles the screens under them.
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (mobile.route) {
-        mobile.back()
-        return true
-      }
-      if (botPage) {
-        setBotPage(null)
-        return true
-      }
-      if (page !== 'home') {
-        setPage('home')
-        return true
-      }
       if (addDaemon && mobile.active) {
         setAddDaemon(false)
         return true
@@ -363,7 +405,7 @@ function MobileApp() {
       return false
     })
     return () => subscription.remove()
-  }, [mobile, botPage, page, addDaemon, demo])
+  }, [mobile, addDaemon, demo])
   const signIn = async () => {
     setConnectPending(true)
     mobile.setError(null)
@@ -756,11 +798,6 @@ function MobileApp() {
       })
     )
   )
-  const back = () => {
-    if (uploading) return
-    mobile.back()
-    setPanels([])
-  }
   const send = (text: string) => {
     const pending = mobile.chat.questions[0]
     if (pending?.questions[0]) {
@@ -981,8 +1018,9 @@ function MobileApp() {
   const refresh = () => {
     if (demo) return
     setRefreshing(true)
-    void mobile
+    return mobile
       .refresh()
+      .then(() => {})
       .catch(e => mobile.setError(messageOf(e)))
       .finally(() => setRefreshing(false))
   }
@@ -1021,6 +1059,8 @@ function MobileApp() {
   }
   // Pulse opens where a busy bot works or waits; a bot tap opens its own chat.
   const openPulse = (id: string) => {
+    // The list stays beside the chat on iOS; while a file uploads, the chat stays.
+    if (uploading) return
     const b = botByName(id)
     if (!b) {
       setBotPage(id)
@@ -1032,7 +1072,7 @@ function MobileApp() {
     )
   }
   const demoBot = demo && botPage ? DEMO_BOTS.find(b => b.id === botPage) : undefined
-  const screen =
+  const connection =
     !demo && (!mobile.active || addDaemon) ? (
       <ConnectionScreen
         key={initialLink}
@@ -1074,485 +1114,547 @@ function MobileApp() {
         error={mobile.error}
         onDismissError={() => mobile.setError(null)}
       />
-    ) : demoBot ? (
-      <ChatScreen
-        title={demoBot.name}
-        face={{ name: demoBot.name }}
-        items={DEMO_ITEMS}
-        onBack={() => setBotPage(null)}
-        onSend={() => {}}
-        onApprove={() => {}}
-        sendDisabledReason="Connect a daemon to chat"
-      />
-    ) : route?.kind === 'section' && !demo ? (
-      <ChatScreen
-        {...conversation}
-        title={route.bot.display_name}
-        subtitle={
-          purposeOf(route.section, mobile.sections) === 'checkins'
-            ? 'Check-ins'
-            : route.section.peer_bot
-              ? `With ${botByName(route.section.peer_bot)?.display_name ?? route.section.peer_bot}`
-              : null
-        }
-        face={chatFace}
-        emotion={emotion}
-        status={route.bot.status}
-        opening={mobile.opening}
-        intro={
-          <View style={{ alignItems: 'center', gap: 4, maxWidth: 320 }}>
-            {route.bot.description ? (
-              <Text align="center" tone="muted" variant="callout">
-                {route.bot.description}
-              </Text>
-            ) : null}
-            <ModelSummary
-              models={mobile.models}
-              testID="chat-intro-model"
-              value={{
-                provider: route.bot.provider ?? '',
-                model: route.bot.model ?? '',
-                reasoning: route.bot.reasoning_effort ?? ''
-              }}
-            />
-          </View>
-        }
-        onBack={back}
-        onAttach={() => act(attach)}
-        onOpenComputer={
-          (route.bot.available_tools ?? route.bot.tools ?? []).includes('computer_use')
-            ? () => setComputerOpen(true)
-            : undefined
-        }
-        computerLive={!!mobile.computer?.actor || mobile.computer?.control === 'user'}
-        onOpenSettings={() => {
-          if (!uploading) setPanels([{ kind: 'bot', bot: route.bot }])
-        }}
-        archived={!!route.section.archived_at}
-      />
-    ) : route?.kind === 'room' && !demo ? (
-      <ChatScreen
-        {...conversation}
-        title={route.room.name}
-        subtitle={(() => {
-          const names = membersOf(route.room).map(m => m.name)
-          return names.length ? `${names.join(', ')} and you` : null
-        })()}
-        members={membersOf(route.room)}
-        archived={!!route.room.archived_at}
-        hasEarlier={mobile.hasEarlier}
-        loadingEarlier={mobile.loadingEarlier}
-        onLoadEarlier={() => act(mobile.loadEarlier)}
-        onBack={back}
-        onOpenSettings={() => {
-          if (!uploading) setPanels([{ kind: 'room', room: route.room }])
-        }}
-      />
-    ) : page === 'settings' ? (
-      <SettingsScreen
-        daemon={daemon}
-        error={mobile.error}
-        onDismissError={() => mobile.setError(null)}
-        user={mobile.user ? { name: mobile.user.display_name } : null}
-        onBack={() => setPage('home')}
-        onSwitchDaemon={() => setSwitcherOpen(true)}
-        busy={demo ? [] : busyBots}
-        onOpenPulse={openPulse}
-        groups={settingsGroups}
-        onOpenArea={key => setPanels([{ kind: key }])}
-        onReconnect={reconnect}
-        onPairAgain={() => setAddDaemon(true)}
-        onDisconnect={() => {
-          setDemo(false)
-          setBotPage(null)
-          setPage('home')
-          void mobile.disconnect()
-        }}
-        refreshing={refreshing}
-        onRefresh={demo ? undefined : refresh}
-        usageData={
-          usage.available
-            ? {
-                on: usage.on,
-                onChange: usage.setOn,
-                onOpenDocs: () => void WebBrowser.openBrowserAsync(USAGE_DOCS_URL)
-              }
-            : undefined
-        }
-      />
-    ) : page === 'library' ? (
-      <LibraryScreen
-        bots={demo ? DEMO_BOTS : bots}
-        onBack={() => setPage('home')}
-        onOpenBot={id => {
-          const b = botByName(id)
-          if (b && !demo) setPanels([{ kind: 'bot', bot: b }])
-        }}
-        onNewBot={demo ? undefined : () => setPanels([{ kind: 'bot-create' }])}
-        onOpenJobs={demo ? undefined : () => setPanels([{ kind: 'jobs' }])}
-        onOpenRooms={demo ? undefined : () => setPanels([{ kind: 'rooms' }])}
-        archivedRooms={mobile.rooms.filter(r => r.archived_at).length}
-      />
-    ) : (
-      <HomeScreen
-        error={mobile.error}
-        onDismissError={() => mobile.setError(null)}
-        conversations={conversations}
-        onOpen={openConversation}
-        onLongPress={demo ? undefined : openPanelFor}
-        waiting={demo ? [] : waitingElsewhere}
-        onOpenPulse={openPulse}
-        onNewBot={demo ? undefined : () => setPanels([{ kind: 'bot-create' }])}
-        onNewRoom={demo ? undefined : () => setPanels([{ kind: 'room-create' }])}
-        primaryChoice={
-          // A daemon from before the primary bot leaves `primary` out; an
-          // empty one is offered HexBot too, falling back on older daemons.
-          // Only a list loaded from the daemon counts: offline, it is just empty.
-          !demo &&
-          mobile.connection === 'connected' &&
-          mobile.info &&
-          mobile.bots.every(b => b.primary === false)
-            ? {
-                onAdd: mobile.bots.some(b => b.name === 'hexbot')
-                  ? undefined
-                  : () =>
-                      act(async () => {
-                        const result = await mobile
-                          .rpc<{ bot: Bot; section: Section }>('hexbot.bots.create_primary', {})
-                          .catch(error => {
-                            if (!/unknown method|method not found/i.test(String(error))) throw error
-                            return mobile.rpc<{ bot: Bot; section: Section }>(
-                              'hexbot.bots.create',
-                              { name: 'hexbot', display_name: 'HexBot' }
-                            )
-                          })
-                        await mobile.refresh()
-                        await mobile.openSection(result.bot, result.section)
-                        // HexBot greets the user and says what it does, as it does on the web.
-                        await mobile
-                          .rpc('hexbot.bots.introduce', {
-                            name: result.bot.name,
-                            section: result.section.id
-                          })
-                          .catch(() => undefined)
-                      })
-              }
+    ) : null
+  const chat = demoBot ? (
+    <ChatScreen
+      title={demoBot.name}
+      face={{ name: demoBot.name }}
+      items={DEMO_ITEMS}
+      onSend={() => {}}
+      onApprove={() => {}}
+      sendDisabledReason="Connect a daemon to chat"
+    />
+  ) : route?.kind === 'section' && !demo ? (
+    <ChatScreen
+      {...conversation}
+      title={route.bot.display_name}
+      subtitle={
+        purposeOf(route.section, mobile.sections) === 'checkins'
+          ? 'Check-ins'
+          : route.section.peer_bot
+            ? `With ${botByName(route.section.peer_bot)?.display_name ?? route.section.peer_bot}`
             : null
-        }
-        daemon={daemon}
-        user={mobile.user ? { name: mobile.user.display_name } : null}
-        onOpenSettings={() => setPage('settings')}
-        onOpenLibrary={() => setPage('library')}
-        onSwitchDaemon={saved.length > 1 ? () => setSwitcherOpen(true) : undefined}
-        onReconnect={reconnect}
-        refreshing={refreshing}
-        onRefresh={demo ? undefined : refresh}
-        loading={!demo && !mobile.info && mobile.connection === 'connecting'}
-      />
-    )
-  return (
-    <LayerRoot>
-      <View style={{ flex: 1, backgroundColor: theme.background }}>
-        {mobile.chat.questions.length && !question && route ? (
-          <Banner
-            message="A bot needs your answer"
-            actionLabel="Answer"
-            testID="pending-question"
-            onAction={() => {
-              const pending = mobile.chat.questions[0]
-              const q = pending.questions[0]
-              setQuestion({
-                requestId: pending.requestId,
-                questionId: q.id,
-                text: q.text,
-                choices: q.choices,
-                multiSelect: q.multiSelect
-              })
-              setQuestionAnswer('')
-              setQuestionChoices([])
+      }
+      face={chatFace}
+      emotion={emotion}
+      status={route.bot.status}
+      opening={mobile.opening}
+      intro={
+        <View style={{ alignItems: 'center', gap: 4, maxWidth: 320 }}>
+          {route.bot.description ? (
+            <Text align="center" tone="muted" variant="callout">
+              {route.bot.description}
+            </Text>
+          ) : null}
+          <ModelSummary
+            models={mobile.models}
+            testID="chat-intro-model"
+            value={{
+              provider: route.bot.provider ?? '',
+              model: route.bot.model ?? '',
+              reasoning: route.bot.reasoning_effort ?? ''
             }}
           />
-        ) : null}
-        {mobile.active && daemonBehind(appVersion, mobile.info?.version ?? null) ? (
-          <Banner
-            message="This daemon is older than this app. Update it on that computer."
-            testID="version-skew"
-            tone="warning"
-          />
-        ) : null}
-        <StatusBar style={theme.scheme === 'dark' ? 'light' : 'dark'} />
-        {screen}
-        {mobile.loading && mobile.active ? (
-          <View pointerEvents="none" style={{ position: 'absolute', top: 70, alignSelf: 'center' }}>
-            <ActivityIndicator />
-          </View>
-        ) : null}
-      </View>
-      <Layer
-        visible={!!visual}
-        onClose={() => setVisual(null)}
-        title={visual?.title || 'Visual'}
-        testID="visual-sheet"
-        scroll={false}
-      >
-        {visual ? (
-          <VisualFrame
-            title={visual.title}
-            document={visualDocument(visual.html, {
-              '--background': theme.background,
-              '--foreground': theme.text,
-              '--muted': theme.muted,
-              '--surface': theme.surface,
-              '--surface-2': theme.fill,
-              '--border': theme.hairline,
-              '--accent': theme.accent,
-              '--accent-foreground': theme.onAccent,
-              '--success': theme.success,
-              '--danger': theme.danger,
-              '--warning': theme.warning,
-              '--info': theme.info,
-              '--chart-1': theme.accent,
-              '--chart-2': theme.info,
-              '--chart-3': theme.success,
-              '--chart-4': theme.warning,
-              '--chart-5': theme.danger,
-              '--chart-6': theme.muted,
-              '--radius': '16px',
-              '--font-sans': 'system-ui',
-              '--font-mono': 'monospace'
-            })}
-          />
-        ) : null}
-      </Layer>
-      <SearchSheet
-        documents={searchDocuments}
-        entries={entries}
-        name={
-          route?.kind === 'room'
-            ? route.room.name
-            : `your chat with ${route?.kind === 'section' ? route.bot.display_name : 'this bot'}`
-        }
-        onClose={() => setSearchOpen(false)}
-        onDocument={file => {
-          if (route?.kind !== 'section') return
-          const bot = botByName(route.bot.name) ?? route.bot
-          setPanels([
-            { kind: 'bot', bot },
-            { kind: file, bot }
-          ])
-        }}
-        onMessage={id => setFocus(previous => ({ id, nonce: (previous?.nonce ?? 0) + 1 }))}
-        onVisual={openVisual}
-        visible={searchOpen && !!route}
-      />
-      <Layer
-        visible={computerOpen}
-        onClose={() => setComputerOpen(false)}
-        title="Your bots' computer"
-        testID="computer-sheet"
-      >
-        {computerOpen ? (
-          <ComputerSheet
-            bot={route?.kind === 'section' ? (botByName(route.bot.name) ?? route.bot) : undefined}
-            bots={mobile.bots}
-            call={mobile.computerCall}
-            connects={mobile.connects}
-            faceOf={faceOf}
-            onEnable={
-              route?.kind === 'section'
-                ? () =>
-                    act(async () => {
-                      const bot = botByName(route.bot.name) ?? route.bot
-                      await mobile.rpc('hexbot.bots.update', {
-                        name: bot.name,
-                        tools: [...(bot.tools ?? []), 'computer_use']
+        </View>
+      }
+      onAttach={() => act(attach)}
+      onOpenComputer={
+        (route.bot.available_tools ?? route.bot.tools ?? []).includes('computer_use')
+          ? () => setComputerOpen(true)
+          : undefined
+      }
+      computerLive={!!mobile.computer?.actor || mobile.computer?.control === 'user'}
+      onOpenSettings={() => {
+        if (!uploading) setPanels([{ kind: 'bot', bot: route.bot }])
+      }}
+      archived={!!route.section.archived_at}
+    />
+  ) : route?.kind === 'room' && !demo ? (
+    <ChatScreen
+      {...conversation}
+      title={route.room.name}
+      subtitle={(() => {
+        const names = membersOf(route.room).map(m => m.name)
+        return names.length ? `${names.join(', ')} and you` : null
+      })()}
+      members={membersOf(route.room)}
+      archived={!!route.room.archived_at}
+      hasEarlier={mobile.hasEarlier}
+      loadingEarlier={mobile.loadingEarlier}
+      onLoadEarlier={() => act(mobile.loadEarlier)}
+      onOpenSettings={() => {
+        if (!uploading) setPanels([{ kind: 'room', room: route.room }])
+      }}
+    />
+  ) : null
+  const settingsScreen = (
+    <SettingsScreen
+      daemon={daemon}
+      error={mobile.error}
+      onDismissError={() => mobile.setError(null)}
+      user={mobile.user ? { name: mobile.user.display_name } : null}
+      onSwitchDaemon={() => setSwitcherOpen(true)}
+      busy={demo ? [] : busyBots}
+      onOpenPulse={openPulse}
+      groups={settingsGroups}
+      onOpenArea={key => setPanels([{ kind: key }])}
+      onReconnect={reconnect}
+      onPairAgain={() => setAddDaemon(true)}
+      onDisconnect={() => {
+        setDemo(false)
+        setBotPage(null)
+        // The next daemon opens on its list, not on this one's Settings.
+        setSelected(null)
+        if (Platform.OS !== 'ios' && router.canDismiss()) router.dismissAll()
+        void mobile.disconnect()
+      }}
+      refreshing={refreshing}
+      onRefresh={demo ? undefined : refresh}
+      usageData={
+        usage.available
+          ? {
+              on: usage.on,
+              onChange: usage.setOn,
+              onOpenDocs: () => void WebBrowser.openBrowserAsync(USAGE_DOCS_URL)
+            }
+          : undefined
+      }
+    />
+  )
+  const libraryScreen = (
+    <LibraryScreen
+      bots={demo ? DEMO_BOTS : bots}
+      onOpenBot={id => {
+        const b = botByName(id)
+        if (b && !demo) setPanels([{ kind: 'bot', bot: b }])
+      }}
+      onNewBot={demo ? undefined : () => setPanels([{ kind: 'bot-create' }])}
+      onOpenJobs={demo ? undefined : () => setPanels([{ kind: 'jobs' }])}
+      onOpenRooms={demo ? undefined : () => setPanels([{ kind: 'rooms' }])}
+      archivedRooms={mobile.rooms.filter(r => r.archived_at).length}
+    />
+  )
+  // The sidebar row of the open chat or room.
+  const openChatRow = demo
+    ? botPage && `bot-${botPage}`
+    : route?.kind === 'room'
+      ? `room-${route.room.id}`
+      : route?.kind === 'section'
+        ? purposeOf(route.section, mobile.sections) === 'checkins'
+          ? `checkins-${route.section.id}`
+          : // A thread with another bot is not the bot's own chat.
+            route.section.peer_bot
+            ? null
+            : `bot-${route.bot.name}`
+        : null
+  // Also cancels a chat still opening, so it does not open after you left.
+  const closeChat = () => {
+    if (demo) setBotPage(null)
+    else {
+      mobileRef.current.back()
+      setPanels([])
+    }
+  }
+  /** Shows a chat's row, Settings or Bots & jobs beside the iOS sidebar; null goes back to it. */
+  const select = (key: string | null) => {
+    const row = conversations.find(c => `${c.kind}-${c.id}` === key)
+    if (key && key !== 'settings' && key !== 'library' && !row) return
+    if (selected === 'chat' && (key === null || key !== openChatRow)) {
+      // Leaving a chat closes it, as back does; while a file uploads, it
+      // stays. Another chat replaces it, so the column never empties.
+      if (uploading) return
+      if (row) setPanels([])
+      else closeChat()
+    }
+    setSelected(row ? 'chat' : (key as 'settings' | 'library' | null))
+    if (row && key !== openChatRow) openConversation(row)
+  }
+  const homeProps: HomeScreenProps = {
+    error: mobile.error,
+    onDismissError: () => mobile.setError(null),
+    conversations,
+    // Beside the sidebar on iOS; Android pushes the chat route when one opens.
+    onOpen: Platform.OS === 'ios' ? c => select(`${c.kind}-${c.id}`) : openConversation,
+    onLongPress: demo ? undefined : openPanelFor,
+    waiting: demo ? [] : waitingElsewhere,
+    onOpenPulse: openPulse,
+    onNewBot: demo ? undefined : () => setPanels([{ kind: 'bot-create' }]),
+    onNewRoom: demo ? undefined : () => setPanels([{ kind: 'room-create' }]),
+    primaryChoice:
+      // A daemon from before the primary bot leaves `primary` out; an
+      // empty one is offered HexBot too, falling back on older daemons.
+      // Only a list loaded from the daemon counts: offline, it is just empty.
+      !demo &&
+      mobile.connection === 'connected' &&
+      mobile.info &&
+      mobile.bots.every(b => b.primary === false)
+        ? {
+            onAdd: mobile.bots.some(b => b.name === 'hexbot')
+              ? undefined
+              : () =>
+                  act(async () => {
+                    const result = await mobile
+                      .rpc<{ bot: Bot; section: Section }>('hexbot.bots.create_primary', {})
+                      .catch(error => {
+                        if (!/unknown method|method not found/i.test(String(error))) throw error
+                        return mobile.rpc<{ bot: Bot; section: Section }>('hexbot.bots.create', {
+                          name: 'hexbot',
+                          display_name: 'HexBot'
+                        })
                       })
-                      await mobile.refresh()
-                    })
-                : undefined
-            }
-            origin={mobile.active?.origin ?? null}
-            status={mobile.computer}
-            view={mobile.computerView}
-          />
-        ) : null}
-      </Layer>
-      <Management
-        panel={panel}
-        onClose={() => setPanels([])}
-        onBack={panels.length > 1 ? () => setPanels(stack => stack.slice(0, -1)) : undefined}
-        onNavigate={navigate}
-        mobile={mobile}
-        onOpenRoom={room => {
-          setPanels([])
-          setBotPage(null)
-          act(() => mobile.openRoom(room))
-        }}
-      />
-      <ChatChooser
-        choices={mobile.choosing?.choices ?? []}
-        name={mobile.choosing ? mobile.choosing.bot.display_name || mobile.choosing.bot.name : null}
-        onChoose={mobile.choose}
-      />
-      <DaemonSwitcher
-        visible={switcherOpen}
-        onClose={() => setSwitcherOpen(false)}
-        daemons={saved}
-        botCount={mobile.bots.length}
-        switching={switching}
-        onSwitch={id =>
-          act(async () => {
-            const d = mobile.saved.find(d => d.id === id)
-            if (!d) return
-            setSwitching(id)
-            try {
-              setDemo(false)
-              await mobile.activate(d)
-              setSwitcherOpen(false)
-            } finally {
-              setSwitching(null)
-            }
-          })
-        }
-        onAdd={() => {
-          setSwitcherOpen(false)
-          setDemo(false)
-          setAddDaemon(true)
-        }}
-        onForget={id => act(() => mobile.remove(id))}
-      />
-      <Layer
-        visible={connectDaemons !== null}
-        onClose={() => setConnectDaemons(null)}
-        title="Hex Connect"
-        testID="connect-picker"
-      >
-        <Form>
-          {mobile.error ? <Banner message={mobile.error} testID="connect-error" /> : null}
-          {connectPending ? <ActivityIndicator /> : null}
-          {connectDaemons?.length ? (
-            <Group>
-              {connectDaemons.map(d => (
-                <Row
-                  key={d.id}
-                  title={d.name || d.daemon_name || d.tunnel_hostname}
-                  subtitle={
-                    d.status === 'unreachable'
-                      ? 'Running, address unavailable'
-                      : d.online
-                        ? d.tunnel_hostname
-                        : 'Offline'
-                  }
-                  testID={`connect-daemon-${d.id}`}
-                  disabled={connectPending || !d.online}
-                  onPress={() => act(() => selectConnect(d))}
-                  chevron
-                />
-              ))}
-            </Group>
-          ) : (
-            <Text tone="muted">
-              No daemons yet. Register a daemon from its Settings, Hex Connect, or run hexbot
-              connect on its computer.
-            </Text>
-          )}
-          <Button
-            label="Refresh daemons"
-            testID="connect-refresh"
-            variant="secondary"
-            onPress={() =>
-              act(async () => {
-                if (connectSession) await listConnect(connectSession)
-              })
-            }
-          />
-          <Button
-            label="Sign out of Hex Connect"
-            testID="connect-sign-out"
-            variant="plain"
-            onPress={() =>
-              act(async () => {
-                await clearConnectSession()
-                setConnectSession(null)
-                setConnectDaemons(null)
-              })
-            }
-          />
-        </Form>
-      </Layer>
-      <Layer
-        visible={!!question}
-        onClose={() => setQuestion(null)}
-        title="Answer bot"
-        testID="question-sheet"
-        action={{
-          label: 'Send',
-          disabled: !questionAnswer.trim() && !questionChoices.length,
-          onPress: () => {
-            if (question)
-              act(async () => {
-                await mobile.answer(
-                  question.requestId,
-                  question.questionId,
-                  encodeAnswer(question.multiSelect, questionChoices, questionAnswer)
-                )
-                if (draft.trim() === questionAnswer.trim()) setDraft('')
-                setQuestion(null)
+                    await mobile.refresh()
+                    await mobile.openSection(result.bot, result.section)
+                    // HexBot greets the user and says what it does, as it does on the web.
+                    await mobile
+                      .rpc('hexbot.bots.introduce', {
+                        name: result.bot.name,
+                        section: result.section.id
+                      })
+                      .catch(() => undefined)
+                  })
+          }
+        : null,
+    daemon,
+    user: mobile.user ? { name: mobile.user.display_name } : null,
+    // Beside the sidebar on iOS; pushed on the stack on Android.
+    onOpenSettings: () =>
+      Platform.OS === 'ios' ? select('settings') : router.navigate('/settings'),
+    onOpenLibrary: () => (Platform.OS === 'ios' ? select('library') : router.navigate('/bots')),
+    onSwitchDaemon: saved.length > 1 ? () => setSwitcherOpen(true) : undefined,
+    selected: selected === 'chat' ? openChatRow || null : selected,
+    onReconnect: reconnect,
+    refreshing,
+    onRefresh: demo ? undefined : refresh,
+    loading: !demo && !mobile.info && mobile.connection === 'connecting'
+  }
+  const screens: AppScreens = {
+    homeProps,
+    chatProps: chat?.props ?? null,
+    selected: selected === 'chat' ? openChatRow || 'chat' : selected,
+    select,
+    chat: demoBot ? chat : route && !demo ? chat : null,
+    settings: settingsScreen,
+    library: libraryScreen,
+    onChatClosed: closeChat,
+    uploading: !!uploading
+  }
+  return (
+    <Screens.Provider value={screens}>
+      <LayerRoot>
+        <View style={{ flex: 1, backgroundColor: theme.background }}>
+          {mobile.chat.questions.length && !question && route ? (
+            <Banner
+              message="A bot needs your answer"
+              actionLabel="Answer"
+              testID="pending-question"
+              onAction={() => {
+                const pending = mobile.chat.questions[0]
+                const q = pending.questions[0]
+                setQuestion({
+                  requestId: pending.requestId,
+                  questionId: q.id,
+                  text: q.text,
+                  choices: q.choices,
+                  multiSelect: q.multiSelect
+                })
                 setQuestionAnswer('')
                 setQuestionChoices([])
-              })
-          }
-        }}
-      >
-        <Form>
-          {question ? (
-            <>
-              <Text>{question.text}</Text>
-              {attachments.length ? (
-                <Text tone="muted">Your attached files will stay here for the next message.</Text>
-              ) : null}
-              <Group>
-                {question.choices.map(choice => {
-                  const selected = question.multiSelect
-                    ? questionChoices.includes(choice)
-                    : questionAnswer === choice
-                  return (
-                    <Row
-                      key={choice}
-                      title={choice}
-                      testID={`question-choice-${choice}`}
-                      selected={selected}
-                      trailing={
-                        selected ? (
-                          <Ionicons color={theme.accent} name="checkmark" size={22} />
-                        ) : null
-                      }
-                      onPress={() =>
-                        question.multiSelect
-                          ? setQuestionChoices(list =>
-                              list.includes(choice)
-                                ? list.filter(c => c !== choice)
-                                : [...list, choice]
-                            )
-                          : setQuestionAnswer(choice)
-                      }
-                    />
-                  )
-                })}
-              </Group>
-              <Field
-                label={
-                  question.multiSelect && question.choices.length ? 'Another answer' : 'Answer'
-                }
-                testID="question-answer"
-                value={questionAnswer}
-                onChangeText={setQuestionAnswer}
-                multiline
-              />
-            </>
+              }}
+            />
           ) : null}
-        </Form>
-      </Layer>
-    </LayerRoot>
+          {mobile.active && daemonBehind(appVersion, mobile.info?.version ?? null) ? (
+            <Banner
+              message="This daemon is older than this app. Update it on that computer."
+              testID="version-skew"
+              tone="warning"
+            />
+          ) : null}
+          <StatusBar style={theme.scheme === 'dark' ? 'light' : 'dark'} />
+          <View
+            accessibilityElementsHidden={!!connection}
+            importantForAccessibility={connection ? 'no-hide-descendants' : 'auto'}
+            style={{ flex: 1 }}
+          >
+            {children}
+          </View>
+          {connection ? <View style={StyleSheet.absoluteFill}>{connection}</View> : null}
+          {mobile.loading && mobile.active ? (
+            <View
+              pointerEvents="none"
+              style={{ position: 'absolute', top: 70, alignSelf: 'center' }}
+            >
+              <ActivityIndicator />
+            </View>
+          ) : null}
+        </View>
+        <Layer
+          visible={!!visual}
+          onClose={() => setVisual(null)}
+          title={visual?.title || 'Visual'}
+          testID="visual-sheet"
+          scroll={false}
+        >
+          {visual ? (
+            <VisualFrame
+              title={visual.title}
+              document={visualDocument(visual.html, {
+                '--background': theme.background,
+                '--foreground': theme.text,
+                '--muted': theme.muted,
+                '--surface': theme.surface,
+                '--surface-2': theme.fill,
+                '--border': theme.hairline,
+                '--accent': theme.accent,
+                '--accent-foreground': theme.onAccent,
+                '--success': theme.success,
+                '--danger': theme.danger,
+                '--warning': theme.warning,
+                '--info': theme.info,
+                '--chart-1': theme.accent,
+                '--chart-2': theme.info,
+                '--chart-3': theme.success,
+                '--chart-4': theme.warning,
+                '--chart-5': theme.danger,
+                '--chart-6': theme.muted,
+                '--radius': '16px',
+                '--font-sans': 'system-ui',
+                '--font-mono': 'monospace'
+              })}
+            />
+          ) : null}
+        </Layer>
+        <SearchSheet
+          documents={searchDocuments}
+          entries={entries}
+          name={
+            route?.kind === 'room'
+              ? route.room.name
+              : `your chat with ${route?.kind === 'section' ? route.bot.display_name : 'this bot'}`
+          }
+          onClose={() => setSearchOpen(false)}
+          onDocument={file => {
+            if (route?.kind !== 'section') return
+            const bot = botByName(route.bot.name) ?? route.bot
+            setPanels([
+              { kind: 'bot', bot },
+              { kind: file, bot }
+            ])
+          }}
+          onMessage={id => setFocus(previous => ({ id, nonce: (previous?.nonce ?? 0) + 1 }))}
+          onVisual={openVisual}
+          visible={searchOpen && !!route}
+        />
+        <Layer
+          visible={computerOpen}
+          onClose={() => setComputerOpen(false)}
+          title="Your bots' computer"
+          testID="computer-sheet"
+        >
+          {computerOpen ? (
+            <ComputerSheet
+              bot={route?.kind === 'section' ? (botByName(route.bot.name) ?? route.bot) : undefined}
+              bots={mobile.bots}
+              call={mobile.computerCall}
+              connects={mobile.connects}
+              faceOf={faceOf}
+              onEnable={
+                route?.kind === 'section'
+                  ? () =>
+                      act(async () => {
+                        const bot = botByName(route.bot.name) ?? route.bot
+                        await mobile.rpc('hexbot.bots.update', {
+                          name: bot.name,
+                          tools: [...(bot.tools ?? []), 'computer_use']
+                        })
+                        await mobile.refresh()
+                      })
+                  : undefined
+              }
+              origin={mobile.active?.origin ?? null}
+              status={mobile.computer}
+              view={mobile.computerView}
+            />
+          ) : null}
+        </Layer>
+        <Management
+          panel={panel}
+          onClose={() => setPanels([])}
+          onBack={panels.length > 1 ? () => setPanels(stack => stack.slice(0, -1)) : undefined}
+          onNavigate={navigate}
+          mobile={mobile}
+          onOpenRoom={room => {
+            setPanels([])
+            setBotPage(null)
+            act(() => mobile.openRoom(room))
+          }}
+        />
+        <ChatChooser
+          choices={mobile.choosing?.choices ?? []}
+          name={
+            mobile.choosing ? mobile.choosing.bot.display_name || mobile.choosing.bot.name : null
+          }
+          onChoose={mobile.choose}
+        />
+        <DaemonSwitcher
+          visible={switcherOpen}
+          onClose={() => setSwitcherOpen(false)}
+          daemons={saved}
+          botCount={mobile.bots.length}
+          switching={switching}
+          onSwitch={id =>
+            act(async () => {
+              const d = mobile.saved.find(d => d.id === id)
+              if (!d) return
+              setSwitching(id)
+              try {
+                setDemo(false)
+                await mobile.activate(d)
+                setSwitcherOpen(false)
+              } finally {
+                setSwitching(null)
+              }
+            })
+          }
+          onAdd={() => {
+            setSwitcherOpen(false)
+            setDemo(false)
+            setAddDaemon(true)
+          }}
+          onForget={id => act(() => mobile.remove(id))}
+        />
+        <Layer
+          visible={connectDaemons !== null}
+          onClose={() => setConnectDaemons(null)}
+          title="Hex Connect"
+          testID="connect-picker"
+        >
+          <Form>
+            {mobile.error ? <Banner message={mobile.error} testID="connect-error" /> : null}
+            {connectPending ? <ActivityIndicator /> : null}
+            {connectDaemons?.length ? (
+              <Group>
+                {connectDaemons.map(d => (
+                  <Row
+                    key={d.id}
+                    title={d.name || d.daemon_name || d.tunnel_hostname}
+                    subtitle={
+                      d.status === 'unreachable'
+                        ? 'Running, address unavailable'
+                        : d.online
+                          ? d.tunnel_hostname
+                          : 'Offline'
+                    }
+                    testID={`connect-daemon-${d.id}`}
+                    disabled={connectPending || !d.online}
+                    onPress={() => act(() => selectConnect(d))}
+                    chevron
+                  />
+                ))}
+              </Group>
+            ) : (
+              <Text tone="muted">
+                No daemons yet. Register a daemon from its Settings, Hex Connect, or run hexbot
+                connect on its computer.
+              </Text>
+            )}
+            <Button
+              label="Refresh daemons"
+              testID="connect-refresh"
+              variant="secondary"
+              onPress={() =>
+                act(async () => {
+                  if (connectSession) await listConnect(connectSession)
+                })
+              }
+            />
+            <Button
+              label="Sign out of Hex Connect"
+              testID="connect-sign-out"
+              variant="plain"
+              onPress={() =>
+                act(async () => {
+                  await clearConnectSession()
+                  setConnectSession(null)
+                  setConnectDaemons(null)
+                })
+              }
+            />
+          </Form>
+        </Layer>
+        <Layer
+          visible={!!question}
+          onClose={() => setQuestion(null)}
+          title="Answer bot"
+          testID="question-sheet"
+          action={{
+            label: 'Send',
+            disabled: !questionAnswer.trim() && !questionChoices.length,
+            onPress: () => {
+              if (question)
+                act(async () => {
+                  await mobile.answer(
+                    question.requestId,
+                    question.questionId,
+                    encodeAnswer(question.multiSelect, questionChoices, questionAnswer)
+                  )
+                  if (draft.trim() === questionAnswer.trim()) setDraft('')
+                  setQuestion(null)
+                  setQuestionAnswer('')
+                  setQuestionChoices([])
+                })
+            }
+          }}
+        >
+          <Form>
+            {question ? (
+              <>
+                <Text>{question.text}</Text>
+                {attachments.length ? (
+                  <Text tone="muted">Your attached files will stay here for the next message.</Text>
+                ) : null}
+                <Group>
+                  {question.choices.map(choice => {
+                    const selected = question.multiSelect
+                      ? questionChoices.includes(choice)
+                      : questionAnswer === choice
+                    return (
+                      <Row
+                        key={choice}
+                        title={choice}
+                        testID={`question-choice-${choice}`}
+                        selected={selected}
+                        trailing={
+                          selected ? (
+                            <Ionicons color={theme.accent} name="checkmark" size={22} />
+                          ) : null
+                        }
+                        onPress={() =>
+                          question.multiSelect
+                            ? setQuestionChoices(list =>
+                                list.includes(choice)
+                                  ? list.filter(c => c !== choice)
+                                  : [...list, choice]
+                              )
+                            : setQuestionAnswer(choice)
+                        }
+                      />
+                    )
+                  })}
+                </Group>
+                <Field
+                  label={
+                    question.multiSelect && question.choices.length ? 'Another answer' : 'Answer'
+                  }
+                  testID="question-answer"
+                  value={questionAnswer}
+                  onChangeText={setQuestionAnswer}
+                  multiline
+                />
+              </>
+            ) : null}
+          </Form>
+        </Layer>
+      </LayerRoot>
+    </Screens.Provider>
   )
 }

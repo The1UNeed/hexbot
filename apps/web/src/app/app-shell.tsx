@@ -16,6 +16,11 @@ import { ConversationColumn, ProfilePanel, RosterColumn } from './slots'
 const GUTTER = 8
 const PANEL_MOTION = 240
 
+// Panels float over the chat on narrow windows and on a half-open foldable,
+// where the fold rules in tokens.css hide the panel column.
+const COMPACT =
+  '(max-width: 1100px), (device-posture: folded) and (orientation: landscape), (horizontal-viewport-segments: 2)'
+
 export function AppShell({ children }: { children?: ReactNode }) {
   const [panelWidth, setPanelWidth] = useState(320)
   // Visuals beside the chat get a wider panel of their own: room for a chart.
@@ -28,7 +33,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
   const togglePanel = useUi(state => state.toggleRightPanel)
   const thread = useUi(state => state.thread)
   const closeThread = useUi(state => state.closeThread)
-  const [compact, setCompact] = useState(() => window.matchMedia('(max-width: 1100px)').matches)
+  const [compact, setCompact] = useState(() => window.matchMedia(COMPACT).matches)
   const params = useParams({ strict: false }) as { bot?: string; room?: string; section?: string }
   const roomMode = Boolean(params.room)
   // The thread panel takes the same slot as the profile, in rooms too, and goes first.
@@ -57,7 +62,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
   }, [showPanel])
 
   useEffect(() => {
-    const media = window.matchMedia('(max-width: 1100px)')
+    const media = window.matchMedia(COMPACT)
 
     const change = () => {
       setCompact(media.matches)
@@ -117,7 +122,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
   }
 
   // The handles sit in the gutters between the cards; a hairline shows on hover.
-  const handle = 'group relative -mx-[3px] w-[6px] cursor-col-resize hex-no-drag'
+  const handle = 'hex-shell-handle group relative -mx-[3px] w-[6px] cursor-col-resize hex-no-drag'
 
   const handleLine =
     'absolute inset-y-6 left-[2px] w-px rounded-full bg-transparent transition-colors group-hover:bg-foreground/20'
@@ -132,7 +137,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
 
   return (
     <main
-      className="relative grid h-screen overflow-hidden bg-canvas text-foreground [grid-template-columns:var(--hex-app-columns)] max-[700px]:grid-cols-1"
+      className="hex-shell relative grid h-dvh overflow-hidden bg-canvas text-foreground [grid-template-columns:var(--hex-app-columns)] max-[700px]:grid-cols-1"
       style={
         {
           '--hex-app-columns': `${sidebarWidth}px 0px minmax(0,1fr) ${panelTrack}px`,
@@ -145,7 +150,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
       <button
         aria-expanded={mobileRosterOpen}
         aria-label="Show roster"
-        className="hex-glass hex-glass-press hex-focus hex-no-drag absolute top-2.5 left-3 z-40 hidden size-9 place-items-center rounded-full text-foreground/70 hover:text-foreground max-[700px]:grid"
+        className="hex-shell-toggle hex-glass hex-glass-press hex-focus hex-no-drag absolute top-2.5 left-3 z-40 hidden size-9 place-items-center rounded-full text-foreground/70 hover:text-foreground max-[700px]:grid"
         onClick={() => setMobileRosterOpen(true)}
         type="button"
       >
@@ -154,14 +159,14 @@ export function AppShell({ children }: { children?: ReactNode }) {
       {mobileRosterOpen ? (
         <button
           aria-label="Hide roster"
-          className="hex-fade fixed inset-0 z-40 hidden bg-black/25 backdrop-blur-sm max-[700px]:block"
+          className="hex-shell-scrim hex-fade fixed inset-0 z-40 hidden bg-black/25 backdrop-blur-sm max-[700px]:block"
           onClick={() => setMobileRosterOpen(false)}
           type="button"
         />
       ) : null}
       <aside
         className={cn(
-          'min-w-0 overflow-hidden max-[700px]:fixed max-[700px]:inset-y-2 max-[700px]:left-2 max-[700px]:z-50 max-[700px]:w-[min(86vw,320px)] max-[700px]:rounded-[22px] max-[700px]:bg-canvas max-[700px]:shadow-popup max-[700px]:transition-transform max-[700px]:duration-[var(--hex-motion-panel)] max-[700px]:ease-[var(--hex-ease-out)]',
+          'hex-shell-roster min-w-0 overflow-hidden max-[700px]:fixed max-[700px]:inset-y-2 max-[700px]:left-2 max-[700px]:z-50 max-[700px]:w-[min(86vw,320px)] max-[700px]:rounded-[22px] max-[700px]:bg-canvas max-[700px]:shadow-popup max-[700px]:transition-transform max-[700px]:duration-[var(--hex-motion-panel)] max-[700px]:ease-[var(--hex-ease-out)]',
           mobileRosterOpen
             ? 'max-[700px]:translate-x-0'
             : 'max-[700px]:invisible max-[700px]:-translate-x-full'
@@ -178,10 +183,10 @@ export function AppShell({ children }: { children?: ReactNode }) {
       >
         <span className={handleLine} />
       </div>
-      <section className={cn(card, 'bg-background shadow-card')}>
+      <section className={cn(card, 'hex-shell-main bg-background shadow-card')}>
         {children ?? <ConversationColumn />}
       </section>
-      <div className="relative flex min-w-0 justify-end overflow-hidden max-[700px]:hidden">
+      <div className="hex-shell-track relative flex min-w-0 justify-end overflow-hidden max-[700px]:hidden">
         {panelMounted && !compact ? (
           <>
             <div
@@ -209,7 +214,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
         <aside
           className={cn(
             card,
-            'hex-glass-strong fixed inset-y-2 right-2 z-40 max-[700px]:inset-y-2 max-[700px]:rounded-[22px]',
+            'hex-shell-panel hex-glass-strong fixed inset-y-2 right-2 z-40 max-[700px]:inset-y-2 max-[700px]:rounded-[22px]',
             showVisuals ? 'w-[min(92vw,600px)]' : 'w-[min(92vw,360px)]',
             showPanel ? 'hex-slide-in' : 'hex-slide-out'
           )}

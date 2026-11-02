@@ -1689,7 +1689,7 @@ function ThirdPartyNotices() {
 
   return text ? (
     <pre
-      className="max-h-[60vh] overflow-auto whitespace-pre rounded-2xl bg-foreground/[0.04] p-4 font-mono text-[length:var(--text-meta)]"
+      className="max-h-[60dvh] overflow-auto whitespace-pre rounded-2xl bg-foreground/[0.04] p-4 font-mono text-[length:var(--text-meta)]"
       data-testid="third-party-notices"
     >
       {text}

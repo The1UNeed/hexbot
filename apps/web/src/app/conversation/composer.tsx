@@ -58,7 +58,7 @@ export function ComposerShell({
   const tone = TONES[status]
 
   return (
-    <div className={cn('relative shrink-0 px-4 pt-2 pb-4', className)}>
+    <div className={cn('hex-composer-dock relative shrink-0 px-4 pt-2 pb-4', className)}>
       {above}
       {notice ? (
         <p
@@ -125,4 +125,4 @@ export function ComposerShell({
 }
 
 export const composerFieldClass =
-  'block max-h-44 w-full resize-none border-0 bg-transparent px-1 py-1 text-[length:var(--text-body)] leading-[22px] text-foreground outline-none placeholder:text-muted disabled:opacity-50'
+  'block max-h-[min(--spacing(44),30dvh)] w-full resize-none border-0 bg-transparent px-1 py-1 text-[length:var(--text-body)] leading-[22px] text-foreground outline-none placeholder:text-muted disabled:opacity-50'

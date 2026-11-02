@@ -8,6 +8,7 @@ import {
   ScrollView,
   StyleSheet,
   TextInput,
+  useWindowDimensions,
   View
 } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
@@ -30,7 +31,6 @@ import {
   RoomFace,
   Screen,
   Text,
-  TopBar,
   useKeyboardVisible,
   useTheme,
   withAlpha
@@ -80,7 +80,6 @@ export interface ChatScreenProps {
   /** Turn off sending while offline; the composer says why. */
   sendDisabledReason?: string | null
 
-  onBack: () => void
   onOpenSettings?: () => void
 
   onApprove: (
@@ -127,27 +126,73 @@ type ListEntry = { id: string; entry: Entry; continued: boolean }
 const waitingEntry: Entry = { id: 'waiting', kind: 'waiting' }
 const entryKey = (item: ListEntry) => item.id
 
+/** One button in a chat's native bar. */
+export interface BarAction {
+  key: string
+  label: string
+  accessibilityLabel: string
+  /** An SF Symbol on iOS. */
+  systemImage:
+    | 'desktopcomputer'
+    | 'desktopcomputer.and.arrow.down'
+    | 'gearshape'
+    | 'magnifyingglass'
+    | 'person.crop.circle'
+  /** Drawn in the info colour, such as while a bot uses the computer. */
+  live?: boolean
+  onPress: () => void
+}
+
 /**
- * One conversation: a bot's chat or a room. Bot messages sit on soft grey
- * bubbles on the left, yours on ink bubbles on the right. Tool use folds into
- * one quiet line per run, and approvals stop the transcript with a card.
+ * The buttons a chat puts in the system's bar, in reading order: Search, the
+ * bots' computer, and the profile or room settings. iOS moves them into the
+ * side rail on the closed iPhone Duo, top to bottom in the same order. Each
+ * shows only when the screen offers it.
  */
-export function ChatScreen(props: ChatScreenProps) {
-  const {
-    computerLive,
-    face,
-    members,
-    onBack,
-    onOpenComputer,
-    onOpenSettings,
-    status,
-    subtitle,
-    title
-  } = props
-  const theme = useTheme()
+export function chatActions(props: ChatScreenProps): BarAction[] {
+  const room = !!props.members
+  const actions: BarAction[] = []
+
+  if (props.onOpenSearch) {
+    actions.push({
+      accessibilityLabel: room ? 'Search this room' : 'Search this chat',
+      key: 'search',
+      label: 'Search',
+      onPress: props.onOpenSearch,
+      systemImage: 'magnifyingglass'
+    })
+  }
+
+  if (props.onOpenComputer) {
+    actions.push({
+      accessibilityLabel: "Your bots' computer",
+      key: 'computer',
+      label: 'Computer',
+      live: props.computerLive,
+      onPress: props.onOpenComputer,
+      systemImage: props.computerLive ? 'desktopcomputer.and.arrow.down' : 'desktopcomputer'
+    })
+  }
+
+  if (props.onOpenSettings) {
+    actions.push({
+      accessibilityLabel: room ? 'Room settings' : `Edit ${props.title}`,
+      key: 'settings',
+      label: room ? 'Room settings' : 'Profile',
+      onPress: props.onOpenSettings,
+      systemImage: room ? 'gearshape' : 'person.crop.circle'
+    })
+  }
+
+  return actions
+}
+
+/** The chat's face and name for the system's bar; a press opens the profile or room settings. */
+export function ChatTitle(props: ChatScreenProps) {
+  const { face, members, onOpenSettings, status, subtitle, title } = props
   const room = !!members
 
-  const header = (
+  return (
     <Pressable
       accessibilityHint={
         onOpenSettings ? (room ? 'Opens the room settings' : 'Opens the profile') : undefined
@@ -184,59 +229,19 @@ export function ChatScreen(props: ChatScreenProps) {
       </Glass>
     </Pressable>
   )
+}
 
+/**
+ * One conversation: a bot's chat or a room. Bot messages sit on soft grey
+ * bubbles on the left, yours on ink bubbles on the right. Tool use folds into
+ * one quiet line per run, and approvals stop the transcript with a card.
+ *
+ * The screen is the transcript and the composer. Its bar belongs to the
+ * system: `ChatTitle` and `chatActions` give the route what to put there.
+ */
+export function ChatScreen(props: ChatScreenProps) {
   return (
-    <Screen avoidKeyboard testID="chat-screen">
-      <TopBar
-        center={header}
-        onBack={onBack}
-        testID="chat-bar"
-        trailing={
-          <>
-            {props.onOpenSearch ? (
-              <IconButton
-                accessibilityLabel={room ? 'Search this room' : 'Search this chat'}
-                icon="search"
-                iconSize={19}
-                onPress={props.onOpenSearch}
-                testID="chat-search"
-                variant="glass"
-              />
-            ) : null}
-            {onOpenComputer ? (
-              <View>
-                <IconButton
-                  accessibilityLabel="Your bots' computer"
-                  icon="desktop-outline"
-                  iconSize={20}
-                  onPress={onOpenComputer}
-                  testID="chat-computer"
-                  variant="glass"
-                />
-                {computerLive ? (
-                  <View
-                    pointerEvents="none"
-                    style={[
-                      styles.computerDot,
-                      { backgroundColor: theme.info, borderColor: theme.background }
-                    ]}
-                  />
-                ) : null}
-              </View>
-            ) : null}
-            {onOpenSettings ? (
-              <IconButton
-                accessibilityLabel={room ? 'Room settings' : `Edit ${title}`}
-                icon="ellipsis-horizontal"
-                iconSize={21}
-                onPress={onOpenSettings}
-                testID="chat-settings"
-                variant="glass"
-              />
-            ) : null}
-          </>
-        }
-      />
+    <Screen avoidKeyboard edges={['left', 'right']} testID="chat-screen">
       <ChatBody {...props} />
     </Screen>
   )
@@ -806,8 +811,10 @@ function Composer({
   sendDisabledReason,
   sendWhileBusy,
   title
-}: Omit<ChatScreenProps, 'onBack'> & { bottom: number }) {
+}: ChatScreenProps & { bottom: number }) {
   const theme = useTheme()
+  // A phone held sideways is short: the field grows to a third of it at most.
+  const { height } = useWindowDimensions()
   const [own, setOwn] = useState('')
   const text = draft ?? own
   const setText = onDraftChange ?? setOwn
@@ -883,7 +890,10 @@ function Composer({
             placeholder={`Message ${title}`}
             placeholderTextColor={theme.faint}
             selectionColor={theme.accent}
-            style={[styles.input, { color: theme.text }]}
+            style={[
+              styles.input,
+              { color: theme.text, maxHeight: Math.min(140, Math.round(height / 3)) }
+            ]}
             submitBehavior="newline"
             testID="chat-input"
             value={text}
@@ -1003,15 +1013,6 @@ const styles = StyleSheet.create({
   },
   titleText: { flexShrink: 1 },
   flash: { borderRadius: 16 },
-  computerDot: {
-    borderRadius: 5,
-    borderWidth: 1.5,
-    height: 10,
-    position: 'absolute',
-    right: 4,
-    top: 4,
-    width: 10
-  },
   transcript: { paddingBottom: 8, paddingHorizontal: 14, paddingTop: 12 },
   visual: {
     alignItems: 'center',
