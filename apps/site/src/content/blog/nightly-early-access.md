@@ -1,6 +1,6 @@
 ---
 title: Hexbot is open for nightly early access
-description: You can download Hexbot today as a nightly build for Mac and Linux. Here is what you get and what to expect.
+description: You can download Hexbot today as a nightly build for Mac, Linux, and 64-bit Windows. Here is what you get and what to expect.
 date: 2026-09-24
 image: /screens/room.webp
 ---
@@ -32,7 +32,7 @@ A few habits help:
 
 ## What doesn't, yet
 
-There is no Windows build. There is no stable release either, and until there is, nightly is the only way in.
+There is no stable release yet, and until there is, nightly is the only way in. Windows is 64-bit only, on Windows 10 or later. Linux ARM and Windows ARM are not provided.
 
 ## Get it
 

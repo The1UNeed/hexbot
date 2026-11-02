@@ -1,8 +1,9 @@
 # Windows build and install validation
 
-Windows is not a supported Hexbot release target. The website, release matrix,
-update publishing and installer bootstrap remain unchanged. This work prepares
-local packages and native CI probes. It does not provide Windows confinement.
+Windows packaging and publication are wired into the release workflow and the
+download page; native acceptance and the Auto/Manual execution boundary
+remain prerequisites before Windows is called supported. This document tracks
+that contract. It does not itself provide Windows confinement.
 The fail-closed execution boundary and independent GPT 6.1 and Opus 5.5 approval
 are required before merge or shipping, together with native validation.
 
@@ -271,10 +272,8 @@ Native updates use a ZIP whose entrypoint is `hexbot.exe`. The daemon verifies
 the release signature and archive digest, rejects unsafe ZIP paths, links,
 collisions and expansion limits, checks the embedded runtime hashes and probes
 the real EXE's version before selecting it. Windows electron-updater metadata
-is `latest.yml` or `nightly.yml`, with no `-win` suffix.
-`make-install-manifest --windows-probe --allow-missing` includes Windows only
-for local test trees and labels the result experimental. Normal release
-manifests continue to exclude Windows.
+is `latest.yml` or `nightly.yml`, with no `-win` suffix. Release manifests
+include `windows-x86_64` as a normal target.
 
 The per-user scheduled task uses the current user's SID in its name and
 principal. The registered task also records its canonical Hexbot home in the
@@ -595,10 +594,10 @@ The earlier stable-marker/nightly-ASAR fixtures modeled a mixed install, not a
 normal updater transition. Pinned electron-updater 6.8.9 only passes /D when
 installDirectory is configured; Hexbot does not set it.
 
-Windows packages are local and CI probe builds only. `release.yml` has no
-Windows job, and `updates.hexbot.app` has no Windows app feed or installer, so
-a probe build's update check finds nothing to install. Against a local probe
-feed, a Settings track switch runs the other track's NSIS, which has a distinct
+Windows packages publish to `full|client/win/x64` and
+`daemon/native/<V>/windows-x86_64` on `updates.hexbot.app`, so an installed
+build's update check finds its feed. Track switching is the remaining gate: a
+Settings track switch runs the other track's NSIS, which has a distinct
 GUID. It installs that app under LocalAppData/Programs, outside this
 installer's managed root and discovery, and leaves the original identity and
 its receipt in place. Repair does not migrate or remove it. Published macOS and

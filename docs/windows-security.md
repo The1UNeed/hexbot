@@ -1,8 +1,8 @@
 # Windows security status
 
 Windows is unsupported. The build and installation ports do not supply the
-containment that Auto and Manual promise on macOS and Linux. No Windows
-release or production publishing is enabled by this security foundation.
+containment that Auto and Manual promise on macOS and Linux. Release packaging
+is wired up, but this security foundation does not enable a support claim.
 
 Auto and Manual refuse local commands, Python code and Pi's read, write,
 edit, grep, find and ls tools. Refusal happens before approval, shell discovery,

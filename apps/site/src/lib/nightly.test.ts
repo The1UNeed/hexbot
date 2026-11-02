@@ -50,12 +50,22 @@ describe('nightlyDownloads', () => {
     })
   })
 
-  it('returns null when a feed is missing or the feeds disagree', async () => {
+  it('returns null when a required feed is missing or the feeds disagree', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     expect(await nightlyDownloads(async () => { throw new Error('404') })).toBeNull()
-    expect(await nightlyDownloads(async url => { if (url.includes('/win/')) throw new Error('404'); return server(url) })).toBeNull()
+    expect(await nightlyDownloads(async url => { if (url.includes('/mac/')) throw new Error('404'); return server(url) })).toBeNull()
     const skewed = async (url: string) =>
       (await server(url)).replace(/^version: .*$/m, url.includes('/client/') ? 'version: 0.1.5-nightly.20260912.1' : `version: ${version}`)
     expect(await nightlyDownloads(skewed)).toBeNull()
+  })
+
+  it('omits the Windows row for a nightly published before Windows builds existed', async () => {
+    const downloads = await nightlyDownloads(async url => {
+      if (url.includes('/win/')) throw new Error('404')
+      return server(url)
+    })
+    expect(downloads?.version).toBe(version)
+    expect(downloads?.full.some(b => b.url.includes('-win-x64.exe'))).toBe(false)
+    expect(downloads?.full.length).toBe(4)
   })
 })

@@ -399,7 +399,8 @@ jobs:
           security import "$certificate" -k "$keychain" -f pkcs12 -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
           security list-keychains -d user -s "$keychain" "$HOME/Library/Keychains/login.keychain-db"
-          identity=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application:.*\)".*/\1/p' | head -n 1)
+          identities=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application:.*\)".*/\1/p')
+          identity=${identities%%$'\n'*}
           if [ -z "$identity" ]; then echo '::error::No Developer ID Application identity in CSC_LINK'; exit 1; fi
           certificate_base64=$(base64 < "$certificate" | tr -d '\r\n')
           {

@@ -1,7 +1,7 @@
 ---
 layout: ../../layouts/Docs.astro
 title: Install
-description: Install Hexbot on macOS or Linux as Full, Client, or Headless.
+description: Install Hexbot on macOS, Linux, or Windows as Full, Client, or Headless.
 ---
 
 Hexbot has two parts: the **daemon**, which runs your bots, rooms, and memory, and the **app** you talk to them in. Install one of three options on each computer:
@@ -14,7 +14,7 @@ Full and Client install side by side and update independently. One daemon is eno
 
 Options and tracks are separate choices: Full, Client, and Headless describe what is installed; Stable and Nightly describe which builds you receive. Stable and Nightly share the same `~/.hexbot` data, so back it up before trying a nightly.
 
-Hexbot runs on macOS 12 or later (Apple Silicon or Intel) and on x86-64 Linux with glibc 2.35 or later, such as Ubuntu 22.04 or Debian 12. If the daemon cannot run on your system, the installer or first launch says so.
+Hexbot runs on macOS 12 or later (Apple Silicon or Intel), on x86-64 Linux with glibc 2.35 or later, such as Ubuntu 22.04 or Debian 12, and on Windows 10 or later, 64-bit only. If the daemon cannot run on your system, the installer or first launch says so.
 
 ## Two ways to install
 
@@ -22,9 +22,11 @@ Both ways offer the same three options and download only the files for the optio
 
 ### Hexbot Installer
 
-The [download page](/download/) offers the Hexbot Installer for your computer: a .dmg for macOS, an AppImage for Linux. Open it, choose Full, Client, or Headless, and install. On Linux, make the AppImage executable first (right-click it, or `chmod +x` it).
+The [download page](/download/) offers the Hexbot Installer for your computer: a .dmg for macOS, an AppImage for Linux. Open it, choose Full, Client, or Headless, and install. On Linux, make the AppImage executable first (right-click it, or `chmod +x` it). On Windows, the download page offers the installer (.exe) for the Full and Client apps, and the terminal installer below covers every option.
 
 ### Terminal
+
+On macOS or Linux:
 
 ```sh
 curl -fsSL https://hexbot.app/install.sh | sh
@@ -35,6 +37,14 @@ This works over SSH. The script picks the build for your computer, downloads the
 ```sh
 curl -fsSL https://hexbot.app/install.sh | sh -s -- --headless
 ```
+
+On Windows, download `hexbot-install-<version>-windows-x86_64.exe` from the [download page](/download/) and run it in PowerShell:
+
+```powershell
+.\hexbot-install-<version>-windows-x86_64.exe --headless
+```
+
+The same command installs `--full` or `--client`, and `--repair` fixes an existing install. The script asks which option to install when you name none.
 
 | Flag | What it does |
 | --- | --- |
@@ -79,8 +89,9 @@ The Full and Client packages are still on the [download page](/download/#all) un
 - Intel for older Macs
 - AppImage for a portable Linux app
 - deb for Debian, Ubuntu, and related distributions
+- the installer (.exe) for Windows 10 or later, 64-bit
 
-Windows and Linux ARM packages are not provided.
+Linux ARM and Windows ARM packages are not provided.
 
 ## First launch
 

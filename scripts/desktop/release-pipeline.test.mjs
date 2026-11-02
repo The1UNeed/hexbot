@@ -3,13 +3,15 @@ import { execFile } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { promisify } from 'node:util'
 
 const run = promisify(execFile)
-const source = await readFile('.github/workflows/release.yml', 'utf8')
-const desktop = createRequire(resolve('apps/desktop/package.json'))
+const here = dirname(fileURLToPath(import.meta.url))
+const source = await readFile(join(here, '../../.github/workflows/release.yml'), 'utf8')
+const desktop = createRequire(join(here, '../../apps/desktop/package.json'))
 const builder = createRequire(desktop.resolve('electron-builder'))
 const { load } = createRequire(builder.resolve('app-builder-lib/out/packager.js'))('js-yaml')
 const { jobs } = load(source)
