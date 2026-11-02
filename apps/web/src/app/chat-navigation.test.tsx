@@ -189,6 +189,42 @@ it.each(['room', 'back', 'search', 'unmount', 'daemon'] as const)(
   }
 )
 
+it('opens a chat the daemon named on this connection without waiting for it again', async () => {
+  const view = await mount()
+  fireEvent.click(screen.getByRole('button', { name: /Owl/ }))
+  await waitFor(() => expectLocation('/b/owl/s/healthy'))
+  await act(async () => {
+    void view.router.navigate({ to: '/r/$room', params: { room: 'garden' } })
+  })
+  call.mockImplementation((method: string) =>
+    method === 'hexbot.sections.create' ? deferred().promise : reply(method)
+  )
+  fireEvent.click(screen.getByRole('button', { name: /Owl/ }))
+  await waitFor(() => expectLocation('/b/owl/s/healthy'))
+  expect(methods().filter(method => method === 'hexbot.sections.create')).toHaveLength(1)
+})
+
+it('shows the clicked bot as chosen while its chat is asked for', async () => {
+  call.mockImplementation((method: string) =>
+    method === 'hexbot.sections.create' ? deferred().promise : reply(method)
+  )
+  await mount()
+  const row = screen.getByRole('button', { name: /Owl/ })
+  expect(row).not.toHaveClass('bg-background')
+  fireEvent.click(row)
+  await waitFor(() => expect(row).toHaveClass('bg-background'))
+  expectLocation('/')
+  // Going elsewhere drops the choice, though the lookup never answers,
+  // even to the place already shown.
+  fireEvent.click(screen.getByRole('button', { name: /Garden/ }))
+  await waitFor(() => expectLocation('/r/garden'))
+  expect(row).not.toHaveClass('bg-background')
+  fireEvent.click(row)
+  await waitFor(() => expect(row).toHaveClass('bg-background'))
+  fireEvent.click(screen.getByRole('button', { name: /Garden/ }))
+  await waitFor(() => expect(row).not.toHaveClass('bg-background'))
+})
+
 it.each(['list', 'chooser', 'write'] as const)(
   'older roster lookup yields at the %s boundary',
   async boundary => {

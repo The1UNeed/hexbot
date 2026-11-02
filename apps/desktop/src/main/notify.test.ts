@@ -46,7 +46,7 @@ describe('native reply notifications', () => {
     expect(native.show).toHaveBeenCalledOnce()
   })
 
-  it('keeps check-in and approval notifications independent of window visibility', () => {
+  it('keeps heartbeat and approval notifications independent of window visibility', () => {
     notify(
       { ...options, backgroundOnly: undefined },
       () => window(true, false) as unknown as BrowserWindow

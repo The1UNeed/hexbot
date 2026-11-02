@@ -23,3 +23,14 @@ if (!globalThis.localStorage) {
 
   Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage })
 }
+
+// A bot's feelings pass on a timer; a test that ends sooner must not hand
+// them to the next.
+afterEach(async () => {
+  const { useEmotions } = await import('../stores/emotions')
+  const { calm, feelings } = useEmotions.getState()
+
+  for (const bot of Object.keys(feelings)) {
+    calm(bot)
+  }
+})

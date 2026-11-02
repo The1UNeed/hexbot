@@ -38,6 +38,35 @@ describe('appResponseHeaders', () => {
 })
 
 describe('frameNavigationAllowed', () => {
+  const screen = `/hexbot/computer/${'a1'.repeat(32)}/viewer/`
+
+  it("lets a frame load a bot's computer screen from a daemon", () => {
+    expect(
+      frameNavigationAllowed(`http://127.0.0.1:9119${screen}`, 'hexbot-app://app/b/owl', '')
+    ).toBe(true)
+    expect(
+      frameNavigationAllowed(`https://abc.connect.hexbot.app${screen}`, 'hexbot-app://app/b/owl')
+    ).toBe(true)
+    expect(
+      frameNavigationAllowed('http://127.0.0.1:9119/hexbot/computer/x/viewer/', 'hexbot-app://app/')
+    ).toBe(false)
+    expect(
+      frameNavigationAllowed(
+        `http://127.0.0.1:9119${screen}?data=x`.replace('/viewer/', '/other/'),
+        'hexbot-app://app/'
+      )
+    ).toBe(false)
+  })
+  it('keeps a frame showing a visual on the visual frame page', () => {
+    expect(
+      frameNavigationAllowed(
+        `https://evil.example${screen}`,
+        'hexbot-app://app/b/owl',
+        'hexbot-app://app/visual-frame.html'
+      )
+    ).toBe(false)
+  })
+
   it('lets frames load only the visual frame from the app origin', () => {
     expect(
       frameNavigationAllowed('hexbot-app://app/visual-frame.html', 'hexbot-app://app/b/owl')

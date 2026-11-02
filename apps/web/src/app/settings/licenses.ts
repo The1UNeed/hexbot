@@ -52,9 +52,45 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
     projects: [
       {
         license: 'MIT',
+        name: 'architecture-diagram-generator',
+        repository: 'https://github.com/Cocoon-AI/architecture-diagram-generator',
+        skills: ['architecture-diagram']
+      },
+      {
+        license: 'MIT',
+        name: 'awesome-design-md',
+        repository: 'https://github.com/VoltAgent/awesome-design-md',
+        skills: ['popular-web-designs']
+      },
+      {
+        license: 'MIT',
+        name: 'baoyu-skills',
+        repository: 'https://github.com/JimLiu/baoyu-skills',
+        skills: ['baoyu-infographic']
+      },
+      {
+        license: 'MIT',
+        name: 'Get Shit Done',
+        repository: 'https://github.com/gsd-build/get-shit-done',
+        skills: ['spike']
+      },
+      {
+        license: 'MIT',
         name: 'Humanizer',
         repository: 'https://github.com/blader/humanizer',
         skills: ['humanizer']
+      },
+      {
+        license: 'MIT',
+        name: 'OpenClaw',
+        repository: 'https://github.com/openclaw/openclaw',
+        skills: ['xurl']
+      },
+      {
+        license: 'MIT',
+        name: 'Superpowers',
+        repository: 'https://github.com/obra/superpowers',
+        skills: ['requesting-code-review', 'systematic-debugging', 'test-driven-development']
       }
     ]
   },
@@ -129,9 +165,38 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
       },
       {
         license: 'MIT',
+        name: 'Tiptap',
+        packages: [
+          '@tiptap/extension-placeholder',
+          '@tiptap/markdown',
+          '@tiptap/pm',
+          '@tiptap/react',
+          '@tiptap/starter-kit'
+        ],
+        repository: 'https://github.com/ueberdosis/tiptap'
+      },
+      {
+        license: 'MIT',
+        name: 'ProseMirror',
+        repository: 'https://github.com/ProseMirror/prosemirror'
+      },
+      {
+        license: 'MIT',
         name: 'remark-gfm',
         packages: ['remark-gfm'],
         repository: 'https://github.com/remarkjs/remark-gfm'
+      },
+      {
+        license: 'MIT',
+        name: 'remark-math',
+        packages: ['remark-math', 'rehype-katex'],
+        repository: 'https://github.com/remarkjs/remark-math'
+      },
+      {
+        license: 'MIT',
+        name: 'KaTeX',
+        packages: ['katex'],
+        repository: 'https://github.com/KaTeX/KaTeX'
       },
       {
         license: 'ISC',
@@ -226,6 +291,12 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
         name: 'jsonschema',
         packages: ['jsonschema'],
         repository: 'https://github.com/Stranger6667/jsonschema'
+      },
+      {
+        license: 'MIT',
+        name: 'keepass-rs',
+        packages: ['keepass'],
+        repository: 'https://github.com/sseemayer/keepass-rs'
       },
       {
         license: 'MIT',

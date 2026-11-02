@@ -9,6 +9,13 @@ their chats, rooms, approvals, models, memory, scheduled jobs and paired
 devices.
 Bots run on your daemon's computer while your phone is asleep.
 
+## Get the iPhone beta
+
+Hexbot for iPhone is in beta on TestFlight. On your iPhone or iPad, open
+[the TestFlight invite](https://testflight.apple.com/join/byKAKWMW), install
+TestFlight if asked, then install Hexbot and pair it with your daemon as
+described in [Connect locally](#connect-locally).
+
 iOS 26 uses native Liquid Glass for floating controls. Older iOS uses system
 blur. Android and Reduce Transparency use solid controls. The app follows
 light and dark appearance and supports larger text.
@@ -78,7 +85,7 @@ and thinking level from the providers you have connected. A new model applies
 from the chat's next message.
 
 Rooms shows one room at a time, with a switcher when you have several. Daemon shows what your bots are doing now and
-opens settings, models, connectors, skills, jobs, About you, usage, bot
+opens settings, models, plugins (connectors, MCP servers, skills and built-in tools), jobs, About you, usage, bot
 activity, devices, network, Hex Connect and updates. Settings and
 editors open as cards over the screen you came from. One person owns the daemon; paired devices access that person’s bots and rooms.
 
@@ -94,10 +101,11 @@ message carries only the files picked for it, and files picked for a chat you
 leave without sending are removed from the daemon. Older
 daemons show an update notice for unavailable attachment or job controls.
 
-When your primary bot messages you from a [check-in](/docs/bots-and-sections#check-ins),
+When a bot's [heartbeat](/docs/bots-and-sections#heartbeat) writes to you,
 the phone gets a notification, if you allowed notifications and the daemon is
-on Hex Connect. The notification only says your primary bot has a message;
-the message stays on your daemon until you open it. Tap it to open the
-Check-ins thread, on the right daemon if you have several. The app does not
+on Hex Connect. The notification only says one of your bots has a message;
+the message stays on your daemon until you open it. Tap it to open that bot's
+chat, on the right daemon if you have several. Each bot's checklist is under
+Heartbeat in its profile. The app does not
 provide computer power controls. For development checks and native simulator flows,
 see `apps/mobile/README.md` and `docs/testing.md` in the repository.

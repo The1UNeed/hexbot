@@ -2812,39 +2812,14 @@ pub fn summarised_before(home: &Path, stored: &str) -> Result<Option<i64>> {
     let mut earlier = 0;
     let mut cutoff = None::<i64>;
     for entry in &entries {
-        let message = match entry["type"].as_str() {
-            Some("message") => entry["message"].clone(),
-            Some("custom_message") => {
-                json!({"role":"custom","content":entry["content"],"customType":entry["customType"],"display":entry["display"],"details":entry["details"],"timestamp":entry_timestamp(entry)*1000.0})
-            }
-            _ => continue,
+        let Some(message) = entry_message(entry) else {
+            continue;
         };
         let entry_id = common::required(entry, "id")?;
         let raw = message.to_string();
-        let existing: Option<(String, String)> = tx.query_row(
-            "SELECT journal_id,raw_json FROM native_pi_journal WHERE session_id=? AND entry_id=?",
-            params![stored, entry_id], |r| Ok((r.get(0)?, r.get(1)?)),
-        ).optional()?;
-        let journal = if let Some((journal, recorded)) = existing {
-            if recorded != raw {
-                return Err(uncertain());
-            }
-            Some(journal)
-        } else {
-            // Consume occurrences in append order, including abandoned branches.
-            // Equal text, timestamps, or tool arguments alone cannot identify an
-            // event; the entire raw message and its multiplicity must agree.
-            let waiting: Option<String> = tx.query_row(
-                "SELECT journal_id FROM native_pi_journal WHERE session_id=? AND entry_id IS NULL AND raw_json=? ORDER BY rowid LIMIT 1",
-                params![stored, raw], |r| r.get(0),
-            ).optional()?;
-            if let Some(journal) = &waiting {
-                tx.execute(
-                    "UPDATE native_pi_journal SET entry_id=? WHERE journal_id=?",
-                    params![entry_id, journal],
-                )?;
-            }
-            waiting
+        let journal = match bind_journal(&tx, stored, entry_id, &raw)? {
+            Some((_, recorded)) if recorded != raw => return Err(uncertain()),
+            bound => bound.map(|(journal, _)| journal),
         };
         let Some(journal) = journal else {
             // The durable append may have beaten native event projection. A
@@ -2899,6 +2874,158 @@ pub fn summarised_before(home: &Path, stored: &str) -> Result<Option<i64>> {
     }
     tx.commit()?;
     Ok(Some(cutoff))
+}
+/// The message a Pi entry journals while its section runs, if any.
+fn entry_message(entry: &Value) -> Option<Value> {
+    match entry["type"].as_str() {
+        Some("message") => Some(entry["message"].clone()),
+        Some("custom_message") => Some(
+            json!({"role":"custom","content":entry["content"],"customType":entry["customType"],"display":entry["display"],"details":entry["details"],"timestamp":entry_timestamp(entry)*1000.0}),
+        ),
+        _ => None,
+    }
+}
+/// The journal row for a Pi entry and the message it recorded: the row bound
+/// to the entry, else the oldest unbound row recording the same message,
+/// which this binds.
+fn bind_journal(
+    tx: &Connection,
+    stored: &str,
+    entry_id: &str,
+    raw: &str,
+) -> Result<Option<(String, String)>> {
+    let existing: Option<(String, String)> = tx
+        .query_row(
+            "SELECT journal_id,raw_json FROM native_pi_journal WHERE session_id=? AND entry_id=?",
+            params![stored, entry_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    if existing.is_some() {
+        return Ok(existing);
+    }
+    // Consume occurrences in append order, including abandoned branches.
+    // Equal text, timestamps, or tool arguments alone cannot identify an
+    // event; the entire raw message and its multiplicity must agree.
+    let waiting: Option<String> = tx
+        .query_row(
+            "SELECT journal_id FROM native_pi_journal WHERE session_id=? AND entry_id IS NULL AND raw_json=? ORDER BY rowid LIMIT 1",
+            params![stored, raw],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(journal) = &waiting {
+        tx.execute(
+            "UPDATE native_pi_journal SET entry_id=? WHERE journal_id=?",
+            params![entry_id, journal],
+        )?;
+    }
+    Ok(waiting.map(|journal| (journal, raw.to_owned())))
+}
+/// A running section's conversation, read without touching it.
+fn live_entries(home: &Path, stored: &str) -> Result<Vec<Value>> {
+    common::identifier(stored)?;
+    let path = home
+        .join("runtime/sessions")
+        .join(stored)
+        .join("conversation.jsonl");
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(error) => return Err(error.into()),
+    };
+    let (entries, _, torn) = parse_pi_entries(&bytes)?;
+    if torn {
+        return Err(crate::Error::new(
+            4002,
+            "The conversation is still being saved. Try again.",
+        ));
+    }
+    Ok(entries)
+}
+/// The owner's latest message on a running section's current branch: its Pi
+/// entry and the history row it shows as. None when the branch has none or
+/// its row is not saved yet.
+pub fn latest_input(home: &Path, stored: &str) -> Result<Option<(String, Value)>> {
+    let entries = live_entries(home, stored)?;
+    let active = active_ids(&entries)?;
+    // Ancestors come first in the file, so the last one on the branch is newest.
+    let Some(entry) = entries.iter().rev().find(|entry| {
+        entry["type"] == "message"
+            && entry["message"]["role"] == "user"
+            && entry["id"].as_str().is_some_and(|id| active.contains(id))
+    }) else {
+        return Ok(None);
+    };
+    let entry_id = common::required(entry, "id")?;
+    let raw = entry["message"].to_string();
+    let mut conn = open(home)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    check_deleted(&tx, stored)?;
+    let Some((journal, recorded)) = bind_journal(&tx, stored, entry_id, &raw)? else {
+        return Ok(None);
+    };
+    if recorded != raw {
+        return Err(crate::Error::new(
+            5200,
+            "The conversation log and its saved messages disagree",
+        ));
+    }
+    let row: Option<String> = tx
+        .query_row(
+            "SELECT m.message_json FROM native_pi_journal p JOIN native_messages m ON m.session_id=p.session_id AND m.seq=p.projection_seq WHERE p.journal_id=?",
+            [&journal],
+            |r| r.get(0),
+        )
+        .optional()?;
+    tx.commit()?;
+    row.map(|row| {
+        serde_json::from_str(&row)
+            .map(|row| (entry_id.to_owned(), row))
+            .map_err(|e| crate::Error::new(5200, e.to_string()))
+    })
+    .transpose()
+}
+/// The input a history row was sent as, when it was bound to one.
+pub fn row_input(home: &Path, stored: &str, row_id: &str) -> Result<Option<String>> {
+    Ok(open(home)?
+        .query_row(
+            "SELECT i.id FROM native_messages m
+             JOIN native_pi_journal p ON p.session_id=m.session_id AND p.projection_seq=m.seq
+             JOIN native_prompt_intents i ON i.session_id=p.session_id AND i.consumed_by=p.journal_id
+             WHERE m.session_id=? AND json_extract(m.message_json,'$.row_id')=?",
+            params![stored, row_id],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+/// Follow a running section to the branch Pi continues after it moved back
+/// to an earlier entry: rows on the abandoned branch leave the history.
+/// Changes nothing while `recalled` is still on the branch.
+pub fn follow_branch(home: &Path, stored: &str, recalled: &str) -> Result<()> {
+    let entries = live_entries(home, stored)?;
+    let active = active_ids(&entries)?;
+    if active.contains(recalled) {
+        return Err(crate::Error::new(5201, "The message could not be recalled"));
+    }
+    let mut conn = open(home)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    check_deleted(&tx, stored)?;
+    for entry in &entries {
+        let Some(message) = entry_message(entry) else {
+            continue;
+        };
+        let entry_id = common::required(entry, "id")?;
+        if let Some((journal, _)) = bind_journal(&tx, stored, entry_id, &message.to_string())? {
+            let is_active = active.contains(entry_id);
+            tx.execute(
+                "UPDATE native_pi_journal SET active=? WHERE journal_id=? AND active<>?",
+                params![is_active, journal, is_active],
+            )?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
 }
 /// Summaries Pi wrote when it compacted this section's current branch in
 /// `[since, until)`, oldest first, as `(timestamp, summary)`. Reads the

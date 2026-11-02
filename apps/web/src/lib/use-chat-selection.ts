@@ -1,16 +1,39 @@
 import { useRouter } from '@tanstack/react-router'
-import { useCallback, useLayoutEffect, useRef } from 'react'
+import { useCallback, useLayoutEffect, useRef, useState } from 'react'
 
 import { useConnection } from '../stores/connection'
 import { sectionsActions } from '../stores/sections'
 
 import type { DaemonInfo } from './types'
 
+/** How many bot chat lookups clicks have finished. */
+let settled = 0
+/** Whether the latest click found a chat its caller opens, once it finishes. */
+let latest: Promise<boolean> = Promise.resolve(false)
+
+export const selectionsSettled = () => settled
+
+/** Once no click waits for a bot's chat: whether one finished after `since` and found a chat to open. */
+export async function openedElsewhere(since: number) {
+  let found = false
+
+  for (let waited: unknown; waited !== latest; ) {
+    waited = latest
+    found = await latest
+  }
+
+  return settled !== since && found
+}
+
 /** A lookup belongs to this view until another selection, navigation, or daemon wins. */
 export function useChatSelection() {
   const router = useRouter()
   const generation = useRef(0)
   const selection = useRef<null | (() => boolean)>(null)
+  // Ends the pending lookup's wait: a cancelled one opens nothing.
+  const finish = useRef<null | ((found: boolean) => void)>(null)
+  // The bot whose chat is being asked for, until it opens or the lookup is cancelled.
+  const [asking, setAsking] = useState<null | string>(null)
 
   const hydration = useRef<null | {
     current: () => boolean
@@ -21,6 +44,8 @@ export function useChatSelection() {
     generation.current++
     selection.current = null
     hydration.current = null
+    finish.current?.(false)
+    setAsking(null)
     const choice = sectionsActions().choosing
 
     if (choice && !choice.current()) {
@@ -98,21 +123,54 @@ export function useChatSelection() {
   const selectChat = useCallback(
     async (bot: string) => {
       const current = startSelection()
+      setAsking(bot)
+      let found = false
+      let answer!: (found: boolean) => void
+      let done = false
+      latest = new Promise(resolve => (answer = resolve))
+
+      // Each lookup finishes once: when it answers, is cancelled, or a later one replaces it.
+      const settle = (outcome: boolean) => {
+        if (!done) {
+          done = true
+          settled++
+          answer(outcome)
+        }
+
+        if (finish.current === settle) {
+          finish.current = null
+        }
+      }
+
+      finish.current?.(false)
+      finish.current = settle
 
       try {
         const chat = await sectionsActions().chat(bot, current)
 
-        return current() ? chat : null
+        // A chat found stays chosen until the caller's navigation cancels it.
+        if (current() && chat) {
+          found = true
+
+          return chat
+        }
       } catch (error) {
         if (current()) {
+          setAsking(null)
           throw error
         }
-
-        return null
+      } finally {
+        settle(found)
       }
+
+      if (current()) {
+        setAsking(null)
+      }
+
+      return null
     },
     [startSelection]
   )
 
-  return { cancel, selectChat, startSelection }
+  return { asking, cancel, selectChat, startSelection }
 }

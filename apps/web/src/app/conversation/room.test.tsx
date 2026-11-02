@@ -4,7 +4,8 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import { routeEvent } from '../../lib/events'
 import { setActiveRpc } from '../../lib/rpc'
-import type { Bot, Room, RoomMember } from '../../lib/types'
+import * as sounds from '../../lib/sounds'
+import type { Bot, Room, RoomEvent, RoomMember } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useMe } from '../../stores/me'
 import { useRooms } from '../../stores/rooms'
@@ -16,12 +17,17 @@ import {
 import { useUi } from '../../stores/ui'
 
 import { RoomConversation, RoomEventRow, RoomMentionPopover } from './room'
+import { SEND_TIMEOUT_MS } from './unsent'
 
 const navigate = vi.fn()
+let roomId = 'r1'
+beforeEach(() => {
+  roomId = 'r1'
+})
 
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => navigate,
-  useParams: () => ({ room: 'r1' })
+  useParams: () => ({ room: roomId })
 }))
 
 describe('room composer mentions', () => {
@@ -170,6 +176,29 @@ describe('approvals and questions in a room', () => {
   })
   afterEach(resetTranscriptEffects)
 
+  it('includes live pending approvals and partially answered questions in sound cues', async () => {
+    const cues = vi.spyOn(sounds, 'useTurnCues')
+    render(<RoomConversation />)
+    act(() => routeEvent(approval('sound-approval')))
+    await waitFor(() =>
+      expect(cues).toHaveBeenLastCalledWith('r1', expect.objectContaining({ waiting: 1 }))
+    )
+    act(() =>
+      useTranscripts.getState().clarifyRequest('live-1', {
+        request_id: 'sound-question',
+        questions: [
+          { qid: 'one', question: 'First?', choices: ['Yes', 'No'] },
+          { qid: 'two', question: 'Second?', choices: ['Yes', 'No'] }
+        ],
+        answers: { one: 'Yes' }
+      })
+    )
+    expect(cues).toHaveBeenLastCalledWith('r1', expect.objectContaining({ waiting: 2 }))
+    act(() => useTranscripts.getState().clarifyExpire('live-1', 'sound-question'))
+    expect(cues).toHaveBeenLastCalledWith('r1', expect.objectContaining({ waiting: 1 }))
+    cues.mockRestore()
+  })
+
   it.each([
     ['Approve', 'once'],
     ['Allow for now', 'session'],
@@ -194,7 +223,7 @@ describe('approvals and questions in a room', () => {
     }
   )
 
-  it('keeps checking a step live after a card while another review still runs', async () => {
+  it('keeps the bot working after a card while another review still runs', async () => {
     const event = (type: string, payload: Record<string, unknown>) =>
       ({ payload, session_id: 'live-1', type }) as GatewayEvent
 
@@ -208,9 +237,25 @@ describe('approvals and questions in a room', () => {
     })
     expect(await screen.findByText('Approval needed')).toBeVisible()
     expect(useTranscripts.getState().bySession['live-1']?.streamingMessageId).toBeNull()
-    expect(screen.getByRole('status', { name: 'Checking this step' })).toBeVisible()
-    act(() => routeEvent(event('status.update', { kind: 'checking', text: '' })))
-    expect(screen.queryByRole('status', { name: 'Checking this step' })).toBeNull()
+    expect(screen.getByRole('status', { name: /is working$/ })).toBeVisible()
+    expect(screen.queryByText('Checking this step')).toBeNull()
+    act(() => {
+      routeEvent(event('status.update', { kind: 'checking', text: '' }))
+      routeEvent(event('tool.complete', { result: 'ok', tool_id: 'a' }))
+      routeEvent(event('tool.complete', { result: 'ok', tool_id: 'b' }))
+    })
+    expect(screen.queryByRole('status', { name: /is working$/ })).toBeNull()
+  })
+
+  it('cues a failed turn as failed, though its failure event comes after it ends', () => {
+    const cues = vi.spyOn(sounds, 'useTurnCues')
+    render(<RoomConversation />)
+    act(() => useRooms.getState().handleTurn({ ...turn, status: 'failed' }))
+    expect(cues).toHaveBeenLastCalledWith(
+      'r1',
+      expect.objectContaining({ failed: true, streaming: false })
+    )
+    cues.mockRestore()
   })
 
   it('drops an open card when the turn ends, so the next turn starts clean', async () => {
@@ -326,13 +371,28 @@ describe('approvals and questions in a room', () => {
 describe('room history', () => {
   it('prefers your renamed identity over stale room member names', () => {
     useMe.setState({ me: { display_name: 'Alex', id: 'local' } })
-    useRooms.setState({ byId: { r1: { id: 'r1', members: [
-      { member_kind: 'human', member_id: 'local', display_name: 'Admin' }
-    ] } as Room } })
-    render(<RoomEventRow event={{
-      actor_id: 'local', actor_kind: 'human', kind: 'member.added',
-      payload: { member_id: 'local', member_kind: 'human' }, room_id: 'r1', seq: 1
-    } as never} />)
+    useRooms.setState({
+      byId: {
+        r1: {
+          id: 'r1',
+          members: [{ member_kind: 'human', member_id: 'local', display_name: 'Admin' }]
+        } as Room
+      }
+    })
+    render(
+      <RoomEventRow
+        event={
+          {
+            actor_id: 'local',
+            actor_kind: 'human',
+            kind: 'member.added',
+            payload: { member_id: 'local', member_kind: 'human' },
+            room_id: 'r1',
+            seq: 1
+          } as never
+        }
+      />
+    )
     expect(screen.getByText(/Alex/)).toBeVisible()
     expect(screen.queryByText(/Admin/)).toBeNull()
   })
@@ -363,5 +423,305 @@ describe('room history', () => {
       screen.getByRole('button', { name: 'Open the conversation between Owl and Writer' })
     )
     expect(useUi.getState().thread).toEqual({ bot: 'writer', peer: 'owl', sectionId: 'th1' })
+  })
+})
+
+describe('room history window', () => {
+  it('starts with 60 events, anchors earlier history, keeps live events and resets on navigation', async () => {
+    const room = { id: 'r1', name: 'Lab', members: [] } as unknown as Room
+
+    const events = Array.from({ length: 1000 }, (_, i) => ({
+      room_id: 'r1',
+      seq: i + 1,
+      actor_kind: 'human',
+      kind: 'message.user',
+      created_at: 0,
+      payload: { text: `Event ${i + 1}` }
+    })) as RoomEvent[]
+
+    useRooms.setState({
+      byId: { r1: room, r2: { ...room, id: 'r2' } },
+      eventsByRoom: { r1: events, r2: events },
+      liveTurnsByRoom: {}
+    })
+    setActiveRpc({
+      call: vi.fn((method: string, input: { id: string }) =>
+        Promise.resolve(
+          method === 'hexbot.rooms.log' ? { events } : { room: { ...room, id: input.id } }
+        )
+      )
+    } as never)
+    const view = render(<RoomConversation />)
+    await waitFor(() => expect(screen.getAllByTestId('room-event')).toHaveLength(60))
+    const viewport = screen.getByText('Event 1000').closest('.overflow-y-auto') as HTMLDivElement
+    Object.defineProperty(viewport, 'scrollHeight', {
+      configurable: true,
+      get: () => screen.getAllByTestId('room-event').length * 20
+    })
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 400 })
+    viewport.scrollTop = 100
+    fireEvent.scroll(viewport)
+    const scroll = vi.spyOn(Element.prototype, 'scrollIntoView').mockClear()
+    fireEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }))
+    expect(screen.getAllByTestId('room-event')).toHaveLength(120)
+    expect(viewport.scrollTop).toBe(1300)
+    act(() =>
+      useRooms.setState({
+        eventsByRoom: {
+          r1: [...events, { ...events[999]!, seq: 1001, payload: { text: 'Live event' } }],
+          r2: events
+        }
+      })
+    )
+    expect(screen.getByText('Live event')).toBeVisible()
+    expect(screen.getByText('Event 881')).toBeVisible()
+    expect(viewport.scrollTop).toBe(1300)
+    expect(scroll).not.toHaveBeenCalled()
+    roomId = 'r2'
+    view.rerender(<RoomConversation />)
+    await waitFor(() => expect(screen.getAllByTestId('room-event')).toHaveLength(60))
+    scroll.mockRestore()
+  })
+})
+
+describe('room history window after a live event', () => {
+  it('keeps the first shown event once history arrives behind it', () => {
+    const room = { id: 'r1', name: 'Lab', members: [] } as unknown as Room
+
+    const event = (seq: number) =>
+      ({
+        room_id: 'r1',
+        seq,
+        actor_kind: 'human',
+        kind: 'message.user',
+        created_at: 0,
+        payload: { text: `Event ${seq}` }
+      }) as RoomEvent
+
+    const history = Array.from({ length: 1001 }, (_, i) => event(i + 1))
+    useRooms.setState({
+      byId: { r1: room },
+      eventsByRoom: { r1: [event(1001)] },
+      liveTurnsByRoom: {}
+    })
+    setActiveRpc({ call: vi.fn(() => new Promise(() => {})) } as never)
+    render(<RoomConversation />)
+    act(() => useRooms.setState({ eventsByRoom: { r1: history } }))
+    expect(screen.getAllByTestId('room-event')).toHaveLength(60)
+    act(() => useRooms.setState({ eventsByRoom: { r1: [...history, event(1002)] } }))
+    expect(screen.getAllByTestId('room-event')).toHaveLength(61)
+    expect(screen.getByText('Event 942')).toBeVisible()
+  })
+})
+
+describe('sending in a room', () => {
+  const room = { id: 'r1', members: [], name: 'Lab', owner_id: 'local' } as unknown as Room
+
+  const stored = (seq: number, text: string): RoomEvent => ({
+    actor_id: 'local',
+    actor_kind: 'human',
+    created_at: Date.now() / 1000,
+    kind: 'message.user',
+    payload: { text },
+    room_id: 'r1',
+    seq
+  })
+
+  async function mount(send: (text: string) => Promise<unknown>, history: RoomEvent[] = []) {
+    Element.prototype.scrollIntoView = vi.fn()
+    useMe.setState({ me: null })
+
+    useRooms.setState({
+      byId: { r1: room },
+      eventsByRoom: history.length ? { r1: history } : {},
+      liveTurnsByRoom: {},
+      order: ['r1']
+    })
+
+    const call = vi.fn((method: string, input: Record<string, unknown>) =>
+      method === 'hexbot.rooms.send'
+        ? send(String(input.text))
+        : Promise.resolve(
+            method === 'hexbot.rooms.log' ? { events: history } : { room: { ...room } }
+          )
+    )
+
+    setActiveRpc({ call } as never)
+    const view = render(<RoomConversation />)
+    const field = await screen.findByRole('textbox', { name: 'Message room' })
+    fireEvent.change(field, { target: { value: 'hi' } })
+    fireEvent.keyDown(field, { key: 'Enter' })
+
+    return { call, field, view }
+  }
+
+  const sends = (call: ReturnType<typeof vi.fn>) =>
+    call.mock.calls.filter(([method]) => method === 'hexbot.rooms.send').length
+
+  it('clears the field at once and greys the bubble until the room stores it', async () => {
+    let store!: () => void
+
+    const { field } = await mount(
+      text => new Promise(resolve => (store = () => resolve({ event: stored(1, text) })))
+    )
+
+    expect(field).toHaveValue('')
+    expect(screen.getByRole('status', { name: 'Sending' })).toBeInTheDocument()
+    expect(screen.getByText('hi').closest('.hex-pending')).not.toBeNull()
+    await act(async () => store())
+    await waitFor(() => expect(screen.queryByTestId('room-unsent')).toBeNull())
+    expect(screen.getByText('hi')).toBeVisible()
+  })
+
+  it('marks a refused message Not sent, and Retry sends it once', async () => {
+    let tries = 0
+
+    const { call } = await mount(text =>
+      ++tries === 1
+        ? Promise.reject(new JsonRpcGatewayError('room is busy', { code: 4002 }))
+        : Promise.resolve({ event: stored(1, text) })
+    )
+
+    expect(await screen.findByText('Not sent')).toHaveAttribute('title', 'room is busy')
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(screen.queryByTestId('room-unsent')).toBeNull())
+    expect(sends(call)).toBe(2)
+  })
+
+  it('does not post twice when the first try landed after all', async () => {
+    const { call } = await mount(() =>
+      Promise.reject(new JsonRpcGatewayError('connection closed', { code: 5200 }))
+    )
+
+    expect(await screen.findByText('Not sent')).toBeVisible()
+    // The broadcast shows the first try did reach the room.
+    act(() => useRooms.getState().handleEvent('r1', stored(7, 'hi')))
+    expect(screen.queryByTestId('room-unsent')).toBeNull()
+    expect(screen.getAllByText('hi')).toHaveLength(1)
+    expect(sends(call)).toBe(1)
+  })
+
+  it('keeps a second identical message that failed, and Retry sends it', async () => {
+    let tries = 0
+
+    const { call, field } = await mount(text =>
+      ++tries === 2
+        ? Promise.reject(new JsonRpcGatewayError('room is busy', { code: 4002 }))
+        : Promise.resolve({ event: stored(tries, text) })
+    )
+
+    await waitFor(() => expect(screen.queryByTestId('room-unsent')).toBeNull())
+    fireEvent.change(field, { target: { value: 'hi' } })
+    fireEvent.keyDown(field, { key: 'Enter' })
+    expect(await screen.findByText('Not sent')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    await waitFor(() => expect(screen.queryByTestId('room-unsent')).toBeNull())
+    expect(sends(call)).toBe(3)
+    expect(screen.getAllByText('hi')).toHaveLength(2)
+  })
+
+  it('matches a sent message only to events of its own room', async () => {
+    let tries = 0
+    let lose!: () => void
+
+    const { view } = await mount(text =>
+      ++tries === 1
+        ? Promise.resolve({ event: stored(1, text) })
+        : new Promise((_, reject) => (lose = () => reject(new Error('connection closed'))))
+    )
+
+    await waitFor(() => expect(screen.queryByTestId('room-unsent')).toBeNull())
+    // Another room numbers its events from 1 too.
+    roomId = 'r2'
+    act(() =>
+      useRooms.setState(state => ({
+        byId: { ...state.byId, r2: { ...room, id: 'r2' } },
+        order: ['r1', 'r2']
+      }))
+    )
+    view.rerender(<RoomConversation />)
+    const field = await screen.findByRole('textbox', { name: 'Message room' })
+    fireEvent.change(field, { target: { value: 'hi' } })
+    fireEvent.keyDown(field, { key: 'Enter' })
+    act(() => useRooms.getState().handleEvent('r2', { ...stored(1, 'hi'), room_id: 'r2' }))
+    await act(async () => lose())
+    expect(screen.queryByText('Not sent')).toBeNull()
+    expect(screen.queryByTestId('room-unsent')).toBeNull()
+  })
+
+  it('waits for a late first try before Retry posts again', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    let answer!: (ok: boolean) => void
+    let tries = 0
+
+    try {
+      const { call } = await mount(text =>
+        ++tries === 1
+          ? new Promise((resolve, reject) => {
+              answer = ok =>
+                ok ? resolve({ event: stored(1, text) }) : reject(new Error('timed out'))
+            })
+          : Promise.resolve({ event: stored(2, text) })
+      )
+
+      act(() => vi.advanceTimersByTime(SEND_TIMEOUT_MS))
+      fireEvent.click(await screen.findByRole('button', { name: 'Retry' }))
+      // The first try is still out: Retry waits for it instead of posting again.
+      expect(screen.getByRole('status', { name: 'Sending' })).toBeInTheDocument()
+      expect(sends(call)).toBe(1)
+      await act(async () => answer(true))
+      await waitFor(() => expect(screen.queryByTestId('room-unsent')).toBeNull())
+      expect(sends(call)).toBe(1)
+      expect(screen.getAllByText('hi')).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('sends again once a late first try fails', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    let answer!: (ok: boolean) => void
+    let tries = 0
+
+    try {
+      const { call } = await mount(text =>
+        ++tries === 1
+          ? new Promise((resolve, reject) => {
+              answer = ok =>
+                ok ? resolve({ event: stored(1, text) }) : reject(new Error('timed out'))
+            })
+          : Promise.resolve({ event: stored(2, text) })
+      )
+
+      act(() => vi.advanceTimersByTime(SEND_TIMEOUT_MS))
+      fireEvent.click(await screen.findByRole('button', { name: 'Retry' }))
+      await act(async () => answer(false))
+      await waitFor(() => expect(screen.queryByTestId('room-unsent')).toBeNull())
+      expect(sends(call)).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('never takes the same words already in the room for this send', async () => {
+    // Sent from another app a moment ago.
+    await mount(
+      () => Promise.reject(new JsonRpcGatewayError('room is busy', { code: 4002 })),
+      [stored(5, 'hi')]
+    )
+
+    expect(await screen.findByText('Not sent')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeVisible()
+  })
+
+  it('shows one bubble when the room broadcasts it before the send answers', async () => {
+    let store!: () => void
+
+    await mount(text => new Promise(resolve => (store = () => resolve({ event: stored(1, text) }))))
+    act(() => useRooms.getState().handleEvent('r1', stored(1, 'hi')))
+    expect(screen.queryByTestId('room-unsent')).toBeNull()
+    expect(screen.getAllByText('hi')).toHaveLength(1)
+    await act(async () => store())
+    expect(screen.getAllByText('hi')).toHaveLength(1)
   })
 })

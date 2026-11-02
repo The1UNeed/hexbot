@@ -502,6 +502,7 @@ impl Runtime {
         if text.len() > 1024 * 1024 {
             return Err(Error::new(4202, "prompt exceeds 1 MiB"));
         }
+        super::recall::refuse_typed(text)?;
         let mut s = s.clone();
         let _reservation = InputAdmission::start(&s);
         let _input = self.input_slot(&s).await?;

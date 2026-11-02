@@ -1,44 +1,37 @@
 # Hexbot mobile screenshots
 
-Captured from the Expo development app on 2026-10-08 with that revision’s JavaScript
-bundle. iOS uses an iPhone 17 Pro simulator running iOS 26.5. Android uses an
-arm64 emulator running Android 16, API 36. These are running app screens.
-The model menu image comes from the web integration check after aligning the
-app with the current daemon reasoning API.
+The app is laid out like a messaging app: one list of chats and rooms,
+Settings behind your initials, + for a new bot or room, and Bots &
+jobs behind the grid button next to Search.
 
-The app paired with a disposable Rust daemon and the pinned Pi runtime. A local
-streaming model fixture supplied replies. Native checks covered pairing, new
-threads, sending messages, the keyboard, nested cards, saved drafts, model
-menus, light and dark appearance, and device revocation on Android. The iOS
-checks also covered management panels and sandboxed visuals.
+Browser captures from the mobile smoke test on 2026-10-26, at iPhone size,
+paired with a disposable Rust daemon and the pinned Pi runtime. A local
+streaming model fixture supplied replies.
 
-| Connect | Bots | Threads |
+| Chats | New | Chat |
 | --- | --- | --- |
-| ![iOS connection](ios-connect.png) | ![iOS bot feed](ios-bots.png) | ![iOS threads](ios-threads.png) |
+| ![Chat list with bots and rooms](web-home.png) | ![New bot or room menu](web-home-new.png) | ![A bot's chat](web-chat.png) |
 
-| Chat | Rooms | Model menu |
+| Room | Settings | Bots & jobs |
 | --- | --- | --- |
-| ![iOS chat](ios-chat.png) | ![iOS room chat](ios-groups.png) | ![Web preview supported reasoning choices](web-model-menu.png) |
+| ![A room, full screen](web-room.png) | ![Settings](web-settings.png) | ![Bots and jobs](web-library.png) |
 
-| Daemon switcher | Profile in dark appearance |
-| --- | --- |
-| ![iOS daemon switcher](ios-daemon-switcher.png) | ![iOS profile card](ios-profile-dark.png) |
+Native captures from 2026-10-08, from the Expo development app. iOS used an
+iPhone 17 Pro simulator on iOS 26.5; Android an arm64 emulator on Android 16,
+API 36. They predate the chat list; the screens below are unchanged by it.
 
-| Android chat | Android revoked device |
-| --- | --- |
-| ![Android native message](android-chat.png) | ![Android returns to pairing after revocation](android-revoked-device-dark.png) |
+| Connect | Daemon switcher | Profile in dark appearance |
+| --- | --- | --- |
+| ![iOS connection](ios-connect.png) | ![iOS daemon switcher](ios-daemon-switcher.png) | ![iOS profile card](ios-profile-dark.png) |
+
+| Model menu | Android chat | Android revoked device |
+| --- | --- | --- |
+| ![Web preview supported reasoning choices](web-model-menu.png) | ![Android native message](android-chat.png) | ![Android returns to pairing after revocation](android-revoked-device-dark.png) |
+
+Retake the chat list, a chat and a room on an iOS simulator and an Android
+emulator; these have only browser captures so far.
 
 See [the mobile README](../../../apps/mobile/README.md) and
 [testing instructions](../../testing.md) to reproduce the checks. CI uploads
 the web integration screenshots and report as the `mobile-evidence` artifact.
 Physical devices and production Hex Connect sign-in remain manual checks.
-
-The original captures predate the Rooms label and removal of multi-user controls.
-Retake screens showing the bottom tab bar, the room view, and bot profile settings.
-Any earlier People, invite, role or room-people captures are obsolete.
-
-Browser captures from the revised smoke test on 2026-10-09, at iPhone size:
-
-| Rooms | Daemon controls |
-| --- | --- |
-| ![Rooms tab](web-rooms.png) | ![Daemon controls for one person](web-daemon.png) |

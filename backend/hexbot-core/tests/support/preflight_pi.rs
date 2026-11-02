@@ -105,7 +105,10 @@ export default function(pi) {{
     // Force Pi itself to reject normalization after the held preflight.
     if ({}) return {{action:'transform', text:null}};
   }});
-  pi.on('agent_start', async () => {{if (!{} && (++starts === {} || ({} && starts === 1))) await hold({});}});
+  pi.on('agent_start', async (_event, ctx) => {{if (!{} && (++starts === {} || ({} && starts === 1))) {{
+    ctx.ui.notify(`preflight start ${{starts}}`, 'info');
+    await hold({});
+  }}}});
 }}
 "#,
             json!(home.path().join("pi-pids")),
@@ -135,6 +138,7 @@ export default function(pi) {{
     fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
     let hub = EventHub::new();
     let mut events = hub.subscribe();
+    let mut starts = hub.subscribe();
     let runtime = Runtime::new(home.path().into(), hub.clone(), executable).unwrap();
     let opened = open(&runtime, "alice").await;
     let live = opened["section"]["live_session_id"]
@@ -321,6 +325,22 @@ export default function(pi) {{
     }
     if !options.reject {
         let mut started = held(&start).await;
+        // The extension's TCP marker can beat dispatch of Pi's stdout events.
+        // Observe the hook's ordered status marker before reading daemon state;
+        // leave `events` untouched for the warning and projection assertions.
+        bounded(async {
+            let marker = format!("preflight start {}", if old_run { 2 } else { 1 });
+            loop {
+                let event = starts.recv().await.unwrap().frame["params"].clone();
+                if event["session_id"] == live
+                    && event["type"] == "status.update"
+                    && event["payload"]["text"] == marker
+                {
+                    break;
+                }
+            }
+        })
+        .await;
         let before_projection = runtime
             .call("alice", "session.status", &json!({"session_id":live}))
             .await

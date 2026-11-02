@@ -40,6 +40,25 @@ const appearance = {
   },
 };
 
+// Codes and links from a new sender often land in junk, so every email step says where to look.
+// Clerk shows `subtitle` on code steps and `formSubtitle` on link steps.
+const junk = "If it is not in your inbox, check your junk folder.";
+const codeSent = `We emailed you a code. ${junk}`;
+const linkSent = `Use the link we emailed you. ${junk}`;
+const localization = {
+  signIn: {
+    emailCode: { subtitle: codeSent },
+    emailCodeMfa: { subtitle: codeSent },
+    forgotPassword: { subtitle_email: codeSent },
+    emailLink: { formSubtitle: linkSent },
+    emailLinkMfa: { formSubtitle: linkSent },
+  },
+  signUp: {
+    emailCode: { subtitle: codeSent },
+    emailLink: { formSubtitle: linkSent },
+  },
+};
+
 export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   const userId = await currentClerkUserId();
   const body = (
@@ -54,6 +73,6 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
     </html>
   );
   return authMode() === "clerk"
-    ? <ClerkProvider appearance={appearance} signInUrl="/sign-in" signUpUrl="/sign-up" signInFallbackRedirectUrl="/connect" signUpFallbackRedirectUrl="/connect" afterSignOutUrl="/">{body}</ClerkProvider>
+    ? <ClerkProvider appearance={appearance} localization={localization} signInUrl="/sign-in" signUpUrl="/sign-up" signInFallbackRedirectUrl="/connect" signUpFallbackRedirectUrl="/connect" afterSignOutUrl="/">{body}</ClerkProvider>
     : body;
 }

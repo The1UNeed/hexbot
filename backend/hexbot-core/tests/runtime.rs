@@ -1794,6 +1794,47 @@ async fn a_retry_clears_stopped_as_soon_as_its_turn_starts() {
     );
     runtime.shutdown().await;
 }
+/// Check-ins, jobs, dreams and delegates run where the user cannot see them,
+/// so they never make the bot look busy. A background run that asks the user
+/// still says so.
+#[tokio::test]
+async fn background_runs_do_not_mark_the_bot_working() {
+    let home = setup();
+    let hub = EventHub::new();
+    let mut events = hub.subscribe();
+    let runtime = Runtime::new(home.path().into(), hub, fake_pi(home.path())).unwrap();
+    let job = {
+        let runtime = runtime.clone();
+        tokio::spawn(async move {
+            runtime
+                .run_hidden_job("alice", "owl", "heartbeat-1", "waiting", &json!({}))
+                .await
+        })
+    };
+    next_kind(&mut events, "message.start").await;
+    assert!(
+        runtime
+            .busy_sections("owl")
+            .iter()
+            .any(|s| s["id"] == "heartbeat-1")
+    );
+    assert!(runtime.status_for_bot("alice", "owl").is_none());
+    let asking = {
+        let runtime = runtime.clone();
+        tokio::spawn(async move {
+            runtime
+                .run_hidden_job("alice", "owl", "cron-1", "approval", &json!({}))
+                .await
+        })
+    };
+    next_kind(&mut events, "approval.request").await;
+    assert_eq!(
+        runtime.status_for_bot("alice", "owl").unwrap()["status"],
+        "needs_you"
+    );
+    runtime.shutdown().await;
+    let _ = (job.await, asking.await);
+}
 /// Only a message from the owner answers a failed turn when it starts, and only
 /// that section's private failure. A hidden run (background results, rooms,
 /// check-ins) leaves it, and so do room, connector, other-section and other
@@ -2085,43 +2126,6 @@ async fn disabled_messaging_and_scheduling_are_not_advertised() {
     assert!(
         !names.contains(&"message_bot") && !names.contains(&"cronjob_manage"),
         "Disabled tools remain available: {names:?}"
-    );
-}
-
-#[tokio::test]
-async fn python_uses_the_section_working_directory() {
-    let home = setup();
-    fs::write(
-        home.path().join("profiles/owl/config.yaml"),
-        "tools:\n  enabled_toolsets: [code_execution]\n",
-    )
-    .unwrap();
-    let workspace = home.workspace();
-    fs::create_dir_all(&workspace).unwrap();
-    let executable = fake_pi(home.path());
-    let source = fs::read_to_string(&executable).unwrap().replace(
-        "const rl=",
-        "require('node:fs').writeFileSync('shared.txt', 'same directory');\nconst rl=",
-    );
-    fs::write(&executable, source).unwrap();
-    let runtime = Runtime::new(home.path().into(), EventHub::new(), executable).unwrap();
-    open(&runtime, "alice").await;
-    let options: Value = serde_json::from_slice(
-        &fs::read(home.path().join("runtime/sessions/section-a/config.json")).unwrap(),
-    )
-    .unwrap();
-    let pi_cwd = std::path::Path::new(options["cwd"].as_str().unwrap());
-    assert_eq!(
-        fs::read_to_string(pi_cwd.join("shared.txt")).unwrap(),
-        "same directory"
-    );
-    let result = hexbot_core::native_tools::call(home.path(), "alice", "owl", "section-a", "execute_code", &json!({"code":"import os\nassert open('shared.txt').read() == 'same directory'\nprint(os.getcwd())"})).await.unwrap();
-    runtime.shutdown().await;
-    hexbot_core::native_tools::close_session(home.path(), "section-a").await;
-    assert_eq!(
-        result["output"].as_str().unwrap().trim(),
-        workspace.canonicalize().unwrap().to_str().unwrap(),
-        "Python tools ignored the configured section workspace"
     );
 }
 

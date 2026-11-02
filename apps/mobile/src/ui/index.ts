@@ -6,6 +6,7 @@ export {
   type BotStatus,
   FaceDrawing,
   type FaceSource,
+  LoadingFace,
   moodForStatus,
   PersonFace,
   RoomFace,
@@ -19,6 +20,7 @@ export {
   type IconButtonProps,
   type IconName
 } from './Button'
+export { confirm } from './confirm'
 export { EmptyState, type EmptyStateProps } from './EmptyState'
 export { FacePicker } from './FacePicker'
 export {
@@ -32,7 +34,7 @@ export {
   resolveFace
 } from './faces'
 export { Field, type FieldProps, SearchField, type SearchFieldProps } from './Field'
-export { formatAgo, formatDayDivider, formatListTime, formatNextRun } from './format'
+export { dividesChat, formatAgo, formatDayDivider, formatListTime, formatNextRun } from './format'
 export { Glass, glassMaterial, type GlassProps } from './Glass'
 export {
   ChoiceRow,
@@ -47,7 +49,6 @@ export { Layer, LayerRoot, type LayerProps, PEEK } from './Layer'
 export { LargeHeader, Screen, type ScreenProps, TopBar, type TopBarProps } from './Screen'
 export { type SegmentOption, Segmented } from './Segmented'
 export { Form, ModalSheet, type ModalSheetProps, type SheetAction } from './Sheet'
-export { TabBar, type TabItem, useTabBarInset } from './TabBar'
 export { Text, type TextProps, type TextTone } from './Text'
 export {
   HIT,

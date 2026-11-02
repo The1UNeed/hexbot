@@ -323,7 +323,7 @@ fn linux_appimage_writes_a_desktop_entry_and_replaces_the_previous_app() {
 }
 
 #[test]
-fn license_prints_the_repository_files_before_home_network_or_writes() {
+fn license_prints_the_repository_files_and_third_party_notices_before_home_network_or_writes() {
     let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let expected = [
         fs::read(repository.join("LICENSE")).unwrap(),
@@ -350,7 +350,10 @@ fn license_prints_the_repository_files_before_home_network_or_writes() {
         };
         let output = command.output().unwrap();
         assert!(output.status.success(), "{output:?}");
-        assert_eq!(output.stdout, expected);
+        // Then the third-party notices build.rs embedded.
+        let (own, third_party) = output.stdout.split_at(expected.len());
+        assert_eq!(own, expected);
+        assert!(third_party.starts_with(b"\nTHIRD-PARTY NOTICES\n"));
         assert!(output.stderr.is_empty(), "{output:?}");
     }
     assert!(server.requests.lock().unwrap().is_empty());

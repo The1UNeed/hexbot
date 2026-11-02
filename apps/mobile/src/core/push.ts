@@ -4,12 +4,12 @@ import { Platform } from 'react-native'
 import type { Rpc } from './types'
 
 /**
- * Lets the daemon wake this phone when the primary bot messages from a
- * check-in. The push goes through Hex Connect and carries no message text,
- * only the bot's name and the section to open. Skipped without an EAS
- * project, where Expo cannot issue a token, and when the user says no.
+ * Lets the daemon wake this phone when a bot's heartbeat posts in its chat.
+ * The push goes through Hex Connect and carries no message text, only the
+ * chat to open. Skipped without an EAS project, where Expo cannot issue a
+ * token, and when the user says no.
  */
-/** The Android channel check-in pushes use; Connect names it in each push. */
+/** The Android channel bot messages use; Connect names it in each push. Kept from check-ins. */
 export const CHANNEL = 'checkins'
 /** Daemon device and token pairs already sent this run of the app. */
 const registered = new Set<string>()
@@ -21,7 +21,7 @@ export async function registerPush(rpc: Rpc, device = ''): Promise<void> {
   // Android 13 asks for permission only once a channel exists, and pushes name it.
   if (Platform.OS === 'android')
     await Notifications.setNotificationChannelAsync(CHANNEL, {
-      name: 'Check-ins',
+      name: 'Bot messages',
       importance: Notifications.AndroidImportance.HIGH
     })
   let { status } = await Notifications.getPermissionsAsync()
@@ -35,13 +35,13 @@ export async function registerPush(rpc: Rpc, device = ''): Promise<void> {
     await rpc('hexbot.devices.set_push', { token: data, platform: Platform.OS })
     registered.add(key)
   } catch (error) {
-    // A daemon from before check-ins has no such method; there is nothing to register with.
+    // A daemon from before phone pushes has no such method; there is nothing to register with.
     if (!/unknown method|method not found/i.test(String((error as Error)?.message ?? error)))
       throw error
   }
 }
 
-/** What a tapped check-in notification opens: a section, on the saved daemon this phone is `device` of. */
+/** What a tapped bot message notification opens: a section, on the saved daemon this phone is `device` of. */
 export interface PushTarget {
   section: string
   device: string | null

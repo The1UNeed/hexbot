@@ -13,6 +13,8 @@ const TARGET_KEY = 'hexbot.target'
 export interface ConnectionState {
   attempt: number
   clearTarget: () => void
+  /** Counts connections that got through; it moves on at every reconnect. */
+  connects: number
   daemon: DaemonInfo | null
   error: null | string
   proofError: DeviceProofError | null
@@ -115,6 +117,7 @@ export function writeStoredTarget(target: ConnectionTarget | null): void {
 
 export const useConnection = create<ConnectionState>(set => ({
   attempt: 0,
+  connects: 0,
   daemon: null,
   epoch: null,
   error: null,
@@ -125,6 +128,8 @@ export const useConnection = create<ConnectionState>(set => ({
   setStatus(status, options = {}) {
     set(state => ({
       attempt: options.attempt ?? state.attempt,
+      connects:
+        status === 'connected' && state.status !== 'connected' ? state.connects + 1 : state.connects,
       error:
         options.error === undefined ? (status === 'connected' ? null : state.error) : options.error,
       proofError: options.proofError ?? null,

@@ -32,8 +32,9 @@ import { notify } from './notify'
 import { pair, pairingReply, pairWithGrant, type GrantPairOptions, type PairOptions } from './pair'
 import { handoffWindowsService, installService, reconcileWindowsService, serviceStatus, uninstallService } from './service'
 import { createTray } from './tray'
-import { setCrashReports, startCrashReports } from './crash-reports'
+import { crashReportsAvailable, setCrashReports, startCrashReports } from './crash-reports'
 import { readDesktopState, updateDesktopState } from './desktop-state'
+import { readUsageData, setUsageData, startUsageData, usageAvailable } from './usage-data'
 import { errorMessage, log } from './log'
 import { WindowLifecycle } from './window-lifecycle'
 import { handleDaemonUpdateRequest } from './remote-update'
@@ -58,6 +59,7 @@ const devIcon = !app.isPackaged ? join(currentDirectory, '../../resources/icon-d
 // install is self-contained and tests with a temporary home start clean.
 app.setPath('userData', join(hexbotHome(), 'desktop-data'))
 await startCrashReports()
+startUsageData()
 registerAppScheme()
 let mainWindow: BrowserWindow | null = null
 let pendingLink = app.isPackaged ? process.argv.find(arg => parseDeepLink(arg) !== null) : undefined
@@ -161,9 +163,12 @@ async function buildWindow(): Promise<BrowserWindow> {
   window.on('closed', () => {
     mainWindow = null
   })
-  // Frames may only load the visual frame page; see frameNavigationAllowed.
+  // Frames may only load the visual frame page or a computer screen; see frameNavigationAllowed.
   window.webContents.on('will-frame-navigate', event => {
-    if (!event.isMainFrame && !frameNavigationAllowed(event.url, window.webContents.getURL()))
+    if (
+      !event.isMainFrame &&
+      !frameNavigationAllowed(event.url, window.webContents.getURL(), event.frame?.url ?? '')
+    )
       event.preventDefault()
   })
   window.on('resize', () => void saveBounds(window))
@@ -278,7 +283,10 @@ function registerIpc(): void {
   handle('hexbot:daemon:status', () => daemon.status())
   handle('hexbot:daemon:start', async () => {
     requireRuntime('Running a daemon on this machine')
-    return daemon.start(app.isPackaged ? () => bootstrap(sendProgress) : undefined, 'attach-or-start')
+    return daemon.start(
+      app.isPackaged ? () => bootstrap(sendProgress) : undefined,
+      'attach-or-start'
+    )
   })
   handle('hexbot:daemon:stop', () => daemon.stop())
   handle('hexbot:daemon:local-token', async () => {
@@ -328,6 +336,16 @@ function registerIpc(): void {
     if (typeof enabled !== 'boolean') throw new TypeError('Invalid crash report preference')
     return setCrashReports(enabled)
   })
+  handle('hexbot:usage-data:set', (_event, enabled: unknown) => {
+    if (typeof enabled !== 'boolean') throw new TypeError('Invalid usage data preference')
+    return setUsageData(enabled)
+  })
+  handle('hexbot:privacy:get', async () => ({
+    crashReports: (await readDesktopState()).crashReports === true,
+    crashReportsAvailable: crashReportsAvailable(),
+    usageData: await readUsageData(),
+    usageDataAvailable: usageAvailable()
+  }))
   handle('hexbot:service:install', () => {
     requireRuntime('Starting the daemon at login')
     return daemon.installService(installService)

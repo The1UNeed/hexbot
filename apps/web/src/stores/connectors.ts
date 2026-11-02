@@ -98,7 +98,7 @@ export const useConnectors = create<ConnectorsState>((set, get) => ({
   },
 
   async addMcp(bot, input) {
-    await connectorsAddMcp(input)
+    await connectorsAddMcp({ ...input, bot })
     await get().refresh(bot)
   },
 

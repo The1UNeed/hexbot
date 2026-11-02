@@ -277,6 +277,9 @@ route and composer checked before continuing.
 ## Mobile
 
 `pnpm mobile:check` runs the Expo app's TypeScript, lint, protocol and chat-state tests.
+It also fails when `apps/mobile/third-party-notices.json`, the licenses the app
+shows under Settings, Licenses, no longer matches the app's dependencies;
+`node scripts/desktop/third-party-notices.mjs mobile` rewrites it.
 Room regressions cover simultaneous turns, reconnect cleanup, failure and limit
 notices, and former members' names. File tests cover size checks before reads.
 `pnpm --filter @hexbot/mobile run export` bundles iOS, Android and web.
@@ -431,6 +434,18 @@ test uses a temporary home and checks the launcher, agent runtime, daemon HTTP
 listener, managed Python and voice executable. Desktop unit tests cover bad uv
 checksums, consecutive updates, failed activation, running-runtime retention and
 service migration. Rust tests cover update pruning and legacy listener refusal.
+
+### Bot faces
+
+`node apps/web/scripts/face-rest.mjs --check` checks that mobile uses the
+web's face geometry. `node apps/web/scripts/face-smoke.mjs` launches a
+temporary Vite entry and Chromium, then removes the entry and closes both.
+It checks all 264 PNG shape and colour roundtrips (current, older capsule, and flat
+eyes), every mood and emotion moving with no CSS animation, no writes from offscreen or
+held faces, reduced-motion rest poses and all acts, offscreen pause/resume,
+keyed reorder/unmount cleanup, and 24 working faces under 4× CPU throttling.
+`HEXBOT_FACE_ARTIFACTS` selects the screenshot directory. It uses the desktop
+workspace's Playwright installation and needs its Chromium browser.
 
 ### Connected tools through Pi
 

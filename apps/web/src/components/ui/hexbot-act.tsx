@@ -1,4 +1,5 @@
-import { type CSSProperties, type ReactNode, useEffect, useState } from 'react'
+import { type CSSProperties, type ReactNode, useEffect, useId } from 'react'
+import { create } from 'zustand'
 
 import type { FaceMood } from './avatar'
 
@@ -478,33 +479,56 @@ export const HEXBOT_ACT_NAMES = Object.keys(HEXBOT_ACTS) as HexbotActName[]
 /** How long a clicked face keeps up its act before going back to normal. */
 const CLICK_ACT_MS = 3200
 
+/** Clicked acts by face key, so every face with one key plays the same act. */
+const useClicked = create<Record<string, HexbotActName | undefined>>(() => ({}))
+const timers = new Map<string, ReturnType<typeof setTimeout>>()
+const faces = new Map<string, number>()
+
+function stopAct(key: string) {
+  clearTimeout(timers.get(key))
+  timers.delete(key)
+  useClicked.setState({ [key]: undefined })
+}
+
+function playAct(key: string) {
+  const others = HEXBOT_ACT_NAMES.filter(name => name !== useClicked.getState()[key])
+  clearTimeout(timers.get(key))
+  useClicked.setState({ [key]: others[Math.floor(Math.random() * others.length)] })
+  timers.set(
+    key,
+    setTimeout(() => stopAct(key), CLICK_ACT_MS)
+  )
+}
+
 /**
  * The act a face is playing: a random one for a moment after `play()` (wired
  * to a click, the way hover wires the wiggle), otherwise the one it was given.
+ * Faces given one `key`, such as a bot's face in the sidebar, the header and
+ * the chat, play a click together; a face without one plays alone.
  */
-export function useAct(given?: HexbotActName | null) {
-  const [clicked, setClicked] = useState<HexbotActName | null>(null)
+export function useAct(given?: HexbotActName | null, key?: string) {
+  const own = useId()
+  const id = key ?? own
+  const clicked = useClicked(state => state[id])
 
   useEffect(() => {
-    if (!clicked) {
-      return
+    faces.set(id, (faces.get(id) ?? 0) + 1)
+
+    return () => {
+      const left = (faces.get(id) ?? 1) - 1
+
+      if (left) {
+        faces.set(id, left)
+      } else {
+        faces.delete(id)
+        stopAct(id)
+      }
     }
-
-    const timer = setTimeout(() => setClicked(null), CLICK_ACT_MS)
-
-    return () => clearTimeout(timer)
-  }, [clicked])
-
-  const play = () =>
-    setClicked(current => {
-      const others = HEXBOT_ACT_NAMES.filter(name => name !== current)
-
-      return others[Math.floor(Math.random() * others.length)]!
-    })
+  }, [id])
 
   const name = clicked ?? given ?? null
 
-  return { act: name ? HEXBOT_ACTS[name] : null, name, play }
+  return { act: name ? HEXBOT_ACTS[name] : null, name, play: () => playAct(id) }
 }
 
 /**

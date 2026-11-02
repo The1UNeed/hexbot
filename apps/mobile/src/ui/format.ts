@@ -48,6 +48,19 @@ export function formatDayDivider(ms: number, now = Date.now()) {
   return `${new Date(ms).toLocaleDateString([], { day: 'numeric', month: 'short' })}, ${time}`
 }
 
+/**
+ * A divider before a message sent `at`: between days and after 20 quiet
+ * minutes. `before` is undefined for the first message; 0 is an unknown time,
+ * which never divides.
+ */
+export function dividesChat(before: number | undefined, at: number) {
+  return (
+    at > 0 &&
+    (before === undefined ||
+      (before > 0 && (startOfDay(before) !== startOfDay(at) || at - before > 20 * 60_000)))
+  )
+}
+
 /** "Seen 5 minutes ago" style text for devices and daemons. */
 export function formatAgo(ms: null | number | undefined, now = Date.now()) {
   if (!ms) {

@@ -8,10 +8,12 @@ pub mod auth;
 pub mod catalog;
 pub mod cli;
 pub mod common;
+pub mod computers;
 pub mod connectors;
 pub mod credentials;
 pub mod daemon_status;
 pub mod db;
+pub mod diagnostics;
 pub mod dpop;
 pub mod dreaming;
 pub mod events;
@@ -24,7 +26,9 @@ pub mod native_selection;
 pub mod native_tools;
 mod native_zip;
 pub mod osutil;
+pub mod passwords;
 pub mod pi;
+pub mod plugins;
 pub mod provider_acp;
 pub mod providers;
 pub mod rooms;
@@ -53,6 +57,7 @@ pub use system_service as windows_service;
 pub mod team;
 mod update_path;
 pub mod update_signature;
+pub mod usage;
 
 pub fn version() -> String {
     serde_json::from_str::<serde_json::Value>(include_str!("../../../apps/desktop/package.json"))

@@ -183,11 +183,12 @@ The native scheduler and digest builder live in
 - Dream rows in `hexbot.db` record `memory_before`, `memory_after`, status,
   and summary. The Memory tab shows the two versions side by side.
   `hexbot.dreaming.restore {id}` restores `memory_before`.
-- A completed summary is stored directly as an assistant message marked
-  `dream: true` in the bot's chat, made if it has none. It does not trigger
-  another agent turn, and it is shown, not said: the bot's Pi conversation
-  does not include it. Posting it never stops the chat's process: open
-  clients read the chat again at once or, while a turn runs, when it ends.
+- A dream is hidden. Its Pi session is never a section, and its summary is
+  stored only on the dream row; nothing is posted in the bot's chat, and a
+  dream never makes one. Earlier versions posted each summary in the chat as
+  an assistant message marked `dream: true`; those reports stay where they
+  are, shown but not said: the bot's Pi conversation does not include them,
+  and the digest leaves them out.
   On upgrade, a report-only old `Dreams` log gives way to a conversation.
   A mixed log competes by its non-report conversation activity. If old reports
   make a saved choice ambiguous, all competing histories stay. Kept logs have

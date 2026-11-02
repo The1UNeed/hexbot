@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { isDeepStrictEqual, promisify } from 'node:util'
 import { nativeBuildEnvironment } from './native-build.mjs'
 import { archiveProgram, downloadTool, extractWindowsArchive, installTool } from '../../apps/desktop/src/main/backend/tools.ts'
+import { runtimeNotices } from './third-party-notices.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const execute = promisify(execFile)
@@ -116,21 +117,36 @@ export async function extractStandaloneNode(directory, filename, member, windows
     await run('tar', ['-xzf', join(directory, filename), '-C', directory, member])
   }
 }
-export async function standaloneNode(directory, platform, arch, version = NODE_VERSION) {
+// nodejs.org and GitHub sometimes cut a release build's download short.
+// Each attempt starts over; a wrong checksum is never retried.
+export async function retryDownload(task, { attempts = 4, wait = ms => new Promise(done => setTimeout(done, ms)) } = {}) {
+  for (let attempt = 1; ; attempt++) {
+    try { return await task() } catch (error) {
+      if (attempt === attempts) throw error
+      console.warn(`Download failed (${error.cause?.message ?? error.message}); trying again (${attempt + 1}/${attempts})`)
+      await wait(attempt * 5_000)
+    }
+  }
+}
+export async function standaloneNode(directory, platform, arch, version = NODE_VERSION, retry = retryDownload) {
   const digest = NODE_SHA256[nativeTarget(platform, arch)]
   if (version !== NODE_VERSION || !digest) throw new Error('Standalone Node checksum is not pinned')
   const windows = platform === 'win32'
   const name = `node-v${version}-${windows ? 'win' : platform}-${arch}`
   const filename = `${name}.${windows ? 'zip' : 'tar.gz'}`
   const origin = `https://nodejs.org/dist/v${version}`
-  const response = await fetch(`${origin}/${filename}`)
-  if (!response.ok) throw new Error(`Cannot download standalone Node: ${response.status}`)
-  const archive = Buffer.from(await response.arrayBuffer())
+  const archive = await retry(async () => {
+    const response = await fetch(`${origin}/${filename}`, { signal: AbortSignal.timeout(300_000) })
+    if (!response.ok) throw new Error(`Cannot download standalone Node: ${response.status}`)
+    return Buffer.from(await response.arrayBuffer())
+  })
   if (createHash('sha256').update(archive).digest('hex') !== digest) throw new Error('Standalone Node checksum mismatch')
   const path = join(directory, filename)
   await writeFile(path, archive)
   const member = windows ? `${name}/node.exe` : `${name}/bin/node`
   await extractStandaloneNode(directory, filename, member, windows)
+  // Node's LICENSE also covers the libraries built into it (V8, OpenSSL, ICU, ...).
+  await extractStandaloneNode(directory, filename, `${name}/LICENSE`, windows)
   return join(directory, member)
 }
 
@@ -222,7 +238,8 @@ export async function stageNativeRuntime({
   platform = process.env.HEXBOT_BUILD_PLATFORM || process.platform,
   arch = process.env.HEXBOT_BUILD_ARCH || process.arch,
   nodeExecutable,
-  download = downloadTool,
+  notices = runtimeNotices,
+  download = (url, dest) => retryDownload(() => downloadTool(url, dest)),
   copy = copyNativeRuntime,
   run = (command, args, options) => execute(command, args, { ...options, maxBuffer: 32 * 1024 * 1024 })
 } = {}) {
@@ -247,7 +264,8 @@ export async function stageNativeRuntime({
   const staging = await mkdtemp(`${destination}.staging-`)
   let failure, cleanupStaging = true
   try {
-    // Hexbot's own license and notices ship in the app, Headless, and update archives.
+    // Hexbot's own license and notices ship in the app, Headless, and update
+    // archives; THIRD_PARTY_NOTICES below covers what the runtime includes.
     for (const file of ['LICENSE', 'NOTICE']) await cp(join(repository, file), join(staging, file))
     const pi = join(staging, 'pi')
     await mkdir(pi)
@@ -265,12 +283,23 @@ export async function stageNativeRuntime({
     console.log(`Runtime dependencies: ${beforeBytes} -> ${afterBytes} bytes`)
     await cp(join(repository, 'backend/hexbot-core/target', triple, windows ? 'release/hexbot.exe' : 'release/hexbot'), join(staging, daemonName))
     if (windows) await cp(join(repository, 'backend/hexbot-core/target', triple, 'release/hexbot-cli.exe'), join(staging, 'hexbot-cli.exe'))
-    if (nodeExecutable) await cp(nodeExecutable, join(staging, nodeName), { dereference: true })
-    else {
+    let license
+    if (nodeExecutable) {
+      // A local Node, for tests and development; release builds download theirs.
+      await cp(nodeExecutable, join(staging, nodeName), { dereference: true })
+      license = `Node.js ${nodeVersion}: https://github.com/nodejs/node/blob/v${nodeVersion}/LICENSE`
+    } else {
       const download = await mkdtemp(`${destination}.node-`)
-      try { await cp(await standaloneNode(download, platform, arch), join(staging, nodeName)) }
-      finally { await rm(download, { recursive: true, force: true }) }
+      try {
+        const node = await standaloneNode(download, platform, arch)
+        await cp(node, join(staging, nodeName))
+        license = await readFile(join(dirname(node), windows ? 'LICENSE' : '../LICENSE'), 'utf8')
+      } finally { await rm(download, { recursive: true, force: true }) }
     }
+    // Third-party licenses for everything above; web/ carries the web app's own.
+    await writeFile(join(staging, 'THIRD_PARTY_NOTICES'), await notices({
+      repository, nodeModules: join(pi, 'node_modules'), targets: [triple], node: { version: nodeVersion, license }
+    }))
     await cp(join(repository, 'apps/web/dist'), join(staging, 'web'), { recursive: true })
     await cp(join(repository, 'skills'), join(staging, 'skills'), { recursive: true, dereference: true })
     if (!windows) {

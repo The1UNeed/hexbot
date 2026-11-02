@@ -36,8 +36,8 @@ const PROPOSAL_RETENTION: f64 = 30.0 * 86_400.0;
 /// The newest day always goes in, cut to its newest part when it is over
 /// the cap on its own, as a day of long characters can be.
 const NOTES_CAP: usize = 16_000;
-#[path = "checkins.rs"]
-pub(crate) mod checkins;
+#[path = "heartbeat.rs"]
+pub(crate) mod heartbeat;
 pub struct Dreaming {
     home: PathBuf,
     runtime: Arc<Runtime>,
@@ -1268,7 +1268,7 @@ impl Dreaming {
             [common::now()],
         )?;
         self.import_jobs()?;
-        checkins::recover(&self.home)?;
+        heartbeat::recover(&self.home)?;
         let this = self.clone();
         let mut stop = self.stop.subscribe();
         *ticker = Some(tokio::spawn(async move {
@@ -1546,15 +1546,6 @@ impl Dreaming {
                     self.events
                         .emit(owner, None, "error", json!({"message":error.message}));
                 }
-                if room.is_none()
-                    && !record["summary"].as_str().unwrap_or("").is_empty()
-                    && let Err(error) = self
-                        .post_summary(owner, bot, record["summary"].as_str().unwrap_or(""))
-                        .await
-                {
-                    self.events
-                        .emit(owner, None, "error", json!({"message":error.message}));
-                }
                 self.running.lock().unwrap().remove(&format!("dream:{bot}"));
                 self.events.emit(
                     owner,
@@ -1569,28 +1560,6 @@ impl Dreaming {
                     .emit(owner, None, "error", json!({"message":error.message}));
             }
         }
-    }
-    /// The report goes into the bot's chat, marked so later dreams skip it.
-    /// It is shown, not said: the bot's conversation does not include it.
-    async fn post_summary(&self, owner: &str, bot: &str, output: &str) -> Result<()> {
-        let chat = crate::catalog::chat_section(&self.home, owner, bot)?;
-        let section = common::required(&chat, "id")?;
-        // Open clients read the chat again now, or when a running turn settles.
-        let reload = self.runtime.append_outside_turn(
-            section,
-            json!({"role":"assistant","text":output,"dream":true,"timestamp":common::now()}),
-        )?;
-        db::open(&self.home)?.execute(
-            "UPDATE sections SET updated_at=? WHERE id=?",
-            params![common::now(), section],
-        )?;
-        self.events.emit(
-            owner,
-            None,
-            "hexbot.sections.changed",
-            json!({"id":section,"bot":bot,"reload":reload}),
-        );
-        Ok(())
     }
     pub async fn tick_at(self: &Arc<Self>, now: f64) -> Result<()> {
         if *self.stop.borrow() {
@@ -1650,8 +1619,8 @@ impl Dreaming {
                 }
             }
         }
-        // A check-in problem must not hold up scheduled jobs.
-        if let Err(error) = self.tick_checkins(now) {
+        // A heartbeat problem must not hold up scheduled jobs.
+        if let Err(error) = self.tick_heartbeats(now) {
             self.events
                 .emit("local", None, "error", json!({"message":error.message}));
         }
@@ -1693,14 +1662,14 @@ impl Dreaming {
                 | "hexbot.jobs.resume"
                 | "hexbot.jobs.remove"
                 | "hexbot.jobs.run"
-                | "hexbot.checkins.status"
-                | "hexbot.checkins.run_now"
-                | "hexbot.checkins.cancel_wakeup"
+                | "hexbot.heartbeat.status"
+                | "hexbot.heartbeat.set"
+                | "hexbot.heartbeat.run_now"
         ) {
             return None;
         }
-        if method.starts_with("hexbot.checkins.") {
-            return Some(self.call_checkins(owner, method, p).await);
+        if method.starts_with("hexbot.heartbeat.") {
+            return Some(self.call_heartbeat(owner, method, p).await);
         }
         Some(self.call_inner(owner, method, p).await)
     }

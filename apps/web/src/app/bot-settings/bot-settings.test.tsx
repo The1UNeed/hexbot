@@ -18,6 +18,7 @@ import {
   NotesBlock
 } from './memory'
 import { ModelTab } from './model'
+import { requirementText, SkillsTab } from './skills'
 import { ToolsTab } from './tools'
 
 const router = vi.hoisted(() => ({
@@ -551,7 +552,7 @@ describe('tools tab', () => {
       />
     )
     expect(screen.getByRole('switch', { name: 'Files' })).toBeChecked()
-    expect(screen.queryByRole('switch', { name: 'Browser' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('switch', { name: 'Vision' })).not.toBeInTheDocument()
     expect(screen.queryByText('Senses')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('switch', { name: 'Terminal' }))
     expect(onSave).toHaveBeenCalledWith({ tools: ['files', 'terminal'] })
@@ -559,7 +560,15 @@ describe('tools tab', () => {
 
   it('shows every tool when the daemon does not say what is set up', () => {
     render(<ToolsTab bot={bot} onSave={vi.fn()} />)
-    expect(screen.getByRole('switch', { name: 'Browser' })).toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: 'Vision' })).toBeInTheDocument()
+  })
+
+  it('leaves Computer use, code and the browser to Settings, Manuals', () => {
+    render(<ToolsTab bot={bot} onSave={vi.fn()} />)
+    for (const name of ['Computer use', 'Code execution', 'Browser']) {
+      expect(screen.queryByRole('switch', { name })).not.toBeInTheDocument()
+    }
+    expect(screen.getByText('Working directory')).toBeInTheDocument()
   })
 })
 
@@ -579,5 +588,53 @@ describe('bot approvals on older daemons', () => {
     if (approval_mode === 'off') {
       expect(screen.getByRole('radio', { name: /^Bypass/ })).toBeChecked()
     }
+  })
+})
+
+describe('skills', () => {
+  it('shows what a skill waiting for setup needs and leaves it out of the saved list', async () => {
+    fakeRpc({
+      'hexbot.skills.list': () => ({
+        skills: [
+          {
+            category: 'apple',
+            description: 'Send texts.',
+            enabled: false,
+            enabled_for_bot: true,
+            missing: [{ kind: 'command', name: 'imsg' }],
+            name: 'imessage',
+            ready: false
+          },
+          {
+            category: 'apple',
+            description: 'Write notes.',
+            enabled: false,
+            enabled_for_bot: false,
+            missing: [],
+            name: 'notes',
+            ready: true
+          }
+        ]
+      })
+    })
+    const save = vi.fn().mockResolvedValue(undefined)
+    render(<SkillsTab bot={bot} onSave={save} />)
+
+    expect(await screen.findByText('Needs imsg installed')).toBeVisible()
+    const waiting = screen.getByRole('switch', { name: 'imessage' })
+    expect(waiting).toBeDisabled()
+    expect(waiting).not.toBeChecked()
+
+    fireEvent.click(screen.getByRole('switch', { name: 'notes' }))
+    expect(save).toHaveBeenCalledWith({ skills: ['notes'] })
+  })
+
+  it('names platforms and keys in plain words', () => {
+    expect(
+      requirementText([
+        { kind: 'platform', name: ['macos'] },
+        { kind: 'env', name: 'TENOR_API_KEY' }
+      ])
+    ).toBe('Only on macOS · Needs TENOR_API_KEY')
   })
 })

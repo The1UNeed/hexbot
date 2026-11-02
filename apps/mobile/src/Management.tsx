@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { Alert, Linking, Platform, StyleSheet, View } from 'react-native'
+import { Linking, StyleSheet, View } from 'react-native'
 import {
   Banner,
   BotFace,
   Button,
   ChoiceRow,
+  confirm,
   Field,
   Form,
   Group,
@@ -16,19 +17,28 @@ import {
   Text,
   useTheme
 } from './ui'
+import { Licenses } from './Licenses'
 import { ModelPill } from './screens/ModelMenu'
 import {
   type Bot,
   type Connector,
   type Device,
+  type PasswordLogin,
+  type Plugin,
+  type PluginsList,
   type Room,
   type Rpc,
-  type Section
+  type Section,
+  type SkillRequirement
 } from './core/types'
 import { botPhoto } from './core/avatar'
 import { scheduleChange } from './core/jobs'
+import { requirementText } from './core/skills'
+import { pluginRows } from '../../web/src/lib/plugin-rows'
+import { PluginIcon } from './ui/PluginIcon'
 import { isOpenRoom } from './core/routes'
 import { pickFile } from './core/pickFile'
+import { aboutFile, DocumentPanel, FingerprintCards } from './Fingerprint'
 import type { useMobile } from './core/useMobile'
 export type Panel = {
   kind:
@@ -41,12 +51,19 @@ export type Panel = {
     | 'connectors'
     | 'devices'
     | 'dreams'
+    | 'heartbeat'
     | 'job'
     | 'job-create'
     | 'jobs'
+    | 'licenses'
     | 'mcp'
     | 'memory'
     | 'network'
+    | 'password'
+    | 'password-create'
+    | 'passwords'
+    | 'plugin'
+    | 'plugins'
     | 'provider'
     | 'providers'
     | 'room'
@@ -56,6 +73,7 @@ export type Panel = {
     | 'skill'
     | 'skill-create'
     | 'skills'
+    | 'soul'
     | 'tools'
     | 'updates'
     | 'usage'
@@ -87,17 +105,6 @@ const TOOLS: { key: string; label: string; description: string }[] = [
     description: 'Run commands in a sandbox. Leaving it is checked first, except in Bypass.'
   },
   { key: 'files', label: 'Files', description: 'Read, write and search files in the workspace.' },
-  {
-    key: 'code_execution',
-    label: 'Code execution',
-    description: 'Run scripts in a sandbox for data work and quick checks.'
-  },
-  { key: 'browser', label: 'Browser', description: 'Drive a local Chrome window.' },
-  {
-    key: 'computer_use',
-    label: 'Computer use',
-    description: 'See the screen and click. Needs the cua driver on this computer.'
-  },
   { key: 'vision', label: 'Vision', description: 'Look at images you attach.' },
   {
     key: 'voice',
@@ -120,16 +127,65 @@ const num = (value: string | boolean | undefined) => {
   return parsed
 }
 const str = (v: unknown) => (v == null ? '' : String(v))
-function confirm(title: string, body: string, action: () => void) {
-  if (Platform.OS === 'web') {
-    // React Native Web has no Alert, so the browser preview asks with the browser's dialog.
-    if (globalThis.confirm?.(`${title}. ${body}`) ?? true) action()
-    return
-  }
-  Alert.alert(title, body, [
-    { text: 'Cancel', style: 'cancel' },
-    { text: title, style: 'destructive', onPress: action }
-  ])
+/** A bot as the Plugins cards name it. */
+type PluginBot = { name: string; display_name: string }
+const keyOf = (plugin: Plugin) => `${plugin.kind}:${plugin.id}`
+/** Who a plugin is on for, in a few words. */
+const pluginBots = (plugin: Plugin, bots: PluginBot[]) => {
+  const on = bots.filter(b => plugin.bots.includes(b.name))
+  if (!on.length) return 'Off'
+  if (on.length === bots.length) return bots.length === 1 ? 'On' : 'Every bot'
+  if (on.length <= 2) return on.map(b => b.display_name).join(' and ')
+  return `${on.length} bots`
+}
+/** Who may use a saved login, in a few words; null is every bot. */
+const passwordBots = (login: PasswordLogin, bots: PluginBot[]) => {
+  if (login.bots === null) return 'Every bot'
+  const on = bots.filter(b => login.bots?.includes(b.name))
+  if (!on.length) return 'No bots'
+  if (on.length <= 2) return on.map(b => b.display_name).join(' and ')
+  return `${on.length} bots`
+}
+const PASSWORD_STORE_TEXT: Record<string, string> = {
+  file: "The vault's key is in a file on the daemon's computer that only you can read.",
+  keychain: "The vault's key is in the keychain of the daemon's computer.",
+  locked: "Hexbot can't read the vault's key. Unlock the keychain on the daemon's computer.",
+  secret_service: "The vault's key is in the keyring of the daemon's computer."
+}
+/** How big the bots' computer is; a new size applies when it is reset. Every bot has it. */
+function ComputerSize({ mobile }: { mobile: ReturnType<typeof useMobile> }) {
+  const status = mobile.computer
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => {
+    void mobile.computerCall().catch((e: unknown) => setError(String(e)))
+  }, [])
+  if (!status?.sizes) return error ? <Text tone="danger">{error}</Text> : null
+  return (
+    <Group
+      title="Computer use"
+      footer={
+        status.state === 'absent'
+          ? 'Every bot runs code, browses and uses apps on it. Used when the computer is made.'
+          : "Every bot runs code, browses and uses apps on it. A new size applies after Reset, on the bots' computer card."
+      }
+    >
+      {status.sizes.map(size => (
+        <ChoiceRow
+          key={size.name}
+          title={`${size.name[0]!.toUpperCase()}${size.name.slice(1)}`}
+          subtitle={`${size.cpu} CPUs, ${size.memory_gb} GB`}
+          selected={status.size === size.name}
+          disabled={mobile.connection !== 'connected'}
+          testID={`computer-size-${size.name}`}
+          onPress={() =>
+            void mobile
+              .computerCall('hexbot.computer.configure', { size: size.name })
+              .catch((e: unknown) => setError(String(e)))
+          }
+        />
+      ))}
+    </Group>
+  )
 }
 export function Management({
   panel: requested,
@@ -168,12 +224,16 @@ export function Management({
   const bot = panel?.bot
     ? (mobile.bots.find(b => b.name === panel.bot!.name) ?? panel.bot)
     : undefined
-  // The primary bot's Check-ins conversation, which can be deleted, unlike its chat.
+  // A Check-ins conversation from before the heartbeat, which can be deleted, unlike its chat.
   const checkinsSection = mobile.sections.find(s => s.bot === bot?.name && s.purpose === 'checkins')
   const room = panel?.room
     ? (mobile.rooms.find(r => r.id === panel.room!.id) ?? panel.room)
     : undefined
   const kind = panel?.kind ?? ''
+  // The primary bot first, as on the web.
+  const pluginRoster: PluginBot[] = [...mobile.bots]
+    .sort((a, b) => Number(Boolean(b.primary)) - Number(Boolean(a.primary)))
+    .map(b => ({ name: b.name, display_name: b.display_name || b.name }))
   const run = async (action: () => Promise<unknown>, close = false) => {
     const current = epoch.current
     setBusy(true)
@@ -187,9 +247,20 @@ export function Management({
       onSaved?.()
       if (close) (onBack ?? onClose)()
       else if (
-        ['devices', 'skills', 'jobs', 'dreams', 'network', 'usage', 'updates'].includes(
-          kind
-        )
+        [
+          'devices',
+          'skills',
+          'jobs',
+          'dreams',
+          'heartbeat',
+          'network',
+          'usage',
+          'updates',
+          'plugins',
+          'plugin',
+          'passwords',
+          'password'
+        ].includes(kind)
       )
         await load()
     } catch (e) {
@@ -241,12 +312,20 @@ export function Management({
             dream_enabled: bot.dream_enabled,
             notify: bot.notify ?? true
           }
+        // The memory card shows the day it changed; the card opens without it if the read fails.
+        if (bot) detail = await rpc('hexbot.memory.bot.get', { bot: bot.name }).catch(() => ({}))
         break
       case 'memory': {
-        const result = await rpc('hexbot.memory.bot.get', { bot: bot?.name })
-        fields = { memory_md: str(result.memory_md) }
+        detail = await rpc('hexbot.memory.bot.get', { bot: bot?.name })
+        fields = { memory_md: str(detail.memory_md) }
         break
       }
+      case 'soul':
+        // The bot may have changed it since this card's bot was read.
+        fields = {
+          persona: (mobile.bots.find(b => b.name === bot?.name) ?? bot)?.persona ?? ''
+        }
+        break
       case 'about': {
         const result = await rpc('hexbot.memory.user.get')
         fields = { text: str(result.text) }
@@ -301,8 +380,55 @@ export function Management({
       case 'connector':
         fields = { provider: str(panel?.data?.provider) }
         break
+      case 'plugins':
+        data = pluginRows(await rpc<PluginsList>('hexbot.plugins.list')) as unknown as RowData[]
+        break
+      case 'passwords': {
+        const list = await rpc<{ logins: PasswordLogin[]; store: string | null }>(
+          'hexbot.passwords.list'
+        )
+        data = list.logins as unknown as RowData[]
+        detail = { store: list.store }
+        break
+      }
+      case 'password': {
+        // Fresh from the daemon, so a card returned to shows the current bots.
+        const opened = panel?.data as unknown as PasswordLogin | undefined
+        const { logins } = await rpc<{ logins: PasswordLogin[] }>('hexbot.passwords.list')
+        const login = logins.find(l => l.id === opened?.id) ?? opened
+        detail = { login }
+        fields = {
+          title: str(login?.title),
+          url: str(login?.url),
+          username: str(login?.username),
+          password: '',
+          code: '',
+          notes: str(login?.notes)
+        }
+        break
+      }
+      case 'password-create':
+        fields = { title: '', url: '', username: '', password: '', code: '', notes: '' }
+        break
+      case 'plugin': {
+        // Fresh from the daemon, so a card returned to shows the current bots.
+        const opened = panel?.data as unknown as Plugin | undefined
+        const plugins = pluginRows(await rpc<PluginsList>('hexbot.plugins.list'))
+        detail = {
+          plugin: plugins.find(p => opened && keyOf(p) === keyOf(opened)) ?? panel?.data
+        }
+        break
+      }
       case 'mcp':
-        fields = { name: '', transport: 'http', url: '', command: '', args: '' }
+        fields = {
+          name: '',
+          transport: 'http',
+          url: '',
+          command: '',
+          args: '',
+          description: '',
+          skill: ''
+        }
         break
       case 'skills':
         data = (
@@ -327,6 +453,11 @@ export function Management({
       case 'dreams':
         data = (await rpc<{ dreams: RowData[] }>('hexbot.dreaming.list', { bot: bot?.name })).dreams
         detail = await rpc('hexbot.dreaming.status', { bot: bot?.name })
+        break
+      case 'heartbeat':
+        detail = await rpc('hexbot.heartbeat.status', { bot: bot?.name })
+        data = (detail.recent as RowData[] | undefined) ?? []
+        fields = { text: str(detail.text) }
         break
       case 'connect':
         detail = await rpc('hexbot.connect.status')
@@ -382,7 +513,9 @@ export function Management({
       fields = { ...fields, ...(panel.data.draft as Values) }
     if (current === epoch.current) {
       setRows(data)
-      setValues(fields)
+      // A plugin card reloads after each action; keep values typed but not
+      // yet saved. It opens empty, and Save values clears them itself.
+      if (kind !== 'plugin') setValues(fields)
       setExtra(detail)
     }
   }
@@ -412,6 +545,26 @@ export function Management({
     }
     // A panel is a snapshot; changing it loads a fresh form.
   }, [requested])
+  // A heartbeat starts or ends, or the bot changes its checklist, while the card is open.
+  useEffect(() => {
+    if (kind !== 'heartbeat' || panelLoading) return
+    const current = epoch.current
+    const shown = str(extra.text)
+    // A newer change reads again; this answer may arrive after it.
+    let newer = false
+    void rpc<RowData>('hexbot.heartbeat.status', { bot: bot?.name })
+      .then(detail => {
+        if (newer || current !== epoch.current) return
+        setRows((detail.recent as RowData[] | undefined) ?? [])
+        setExtra(detail)
+        // Unsaved edits stay.
+        setValues(v => (v.text === shown ? { ...v, text: str(detail.text) } : v))
+      })
+      .catch(() => {})
+    return () => {
+      newer = true
+    }
+  }, [mobile.heartbeats])
   const set = (key: string, value: string | boolean) => setValues(v => ({ ...v, [key]: value }))
   const field = (
     key: string,
@@ -508,6 +661,14 @@ export function Management({
             workspace_dir: values.workspace_dir,
             dream_enabled: values.dream_enabled,
             dream_time: values.dream_time,
+            // A daemon from before the heartbeat has no such setting.
+            ...(typeof mobile.settings?.heartbeat_enabled === 'boolean'
+              ? { heartbeat_enabled: values.heartbeat_enabled }
+              : {}),
+            // Only a daemon that knows usage data can be asked about it.
+            ...(typeof mobile.settings?.usage_data === 'boolean'
+              ? { usage_data: values.usage_data }
+              : {}),
             default_model: values.default_model || null,
             fallback_model: values.fallback_model || null,
             bot_daily_token_budget: num(values.bot_daily_token_budget),
@@ -546,6 +707,23 @@ export function Management({
               )}
             </View>
           </Group>
+          {typeof mobile.settings?.heartbeat_enabled === 'boolean' ? (
+            <Group
+              title="Heartbeat"
+              footer="Every 30 minutes, day and night, each bot works through its checklist and writes in its chat only when something needs you."
+            >
+              {toggle('heartbeat_enabled', 'Heartbeat')}
+            </Group>
+          ) : null}
+          <ComputerSize mobile={mobile} />
+          {typeof mobile.settings?.usage_data === 'boolean' ? (
+            <Group
+              title="Privacy"
+              footer="The daemon's own anonymous usage data: counts of bots, rooms, chats, and messages, and error codes. Never what anyone writes. This phone has its own switch in Settings."
+            >
+              {toggle('usage_data', 'Share anonymous usage data')}
+            </Group>
+          ) : null}
         </>
       )
       break
@@ -557,7 +735,8 @@ export function Management({
           display_name: values.display_name,
           title: values.title,
           description: values.description,
-          persona: values.persona,
+          // A bot's soul is saved from its own card; only a new bot starts with one here.
+          ...(bot ? {} : { persona: values.persona }),
           // Without a model the daemon uses its default.
           ...(values.provider && values.model
             ? { provider: values.provider, model: values.model }
@@ -652,13 +831,23 @@ export function Management({
               400
             )}
           </View>
-          {field(
-            'persona',
-            'Soul',
-            true,
-            `${str(values.display_name) || 'The bot'} can edit its soul too and says when it does. Your chat takes changes after it summarises older messages.`,
-            false,
-            4000
+          {bot ? (
+            <FingerprintCards
+              disabled={busy || mobile.connection !== 'connected'}
+              memoryAt={extra.updated_at as null | number | undefined}
+              name={bot.display_name}
+              onOpen={file => navigate(file)}
+              soulAt={(mobile.bots.find(b => b.name === bot.name) ?? bot).persona_updated_at}
+            />
+          ) : (
+            field(
+              'persona',
+              'Soul',
+              true,
+              `${str(values.display_name) || 'The bot'} can edit its soul too and says when it does. Your chat takes changes after it summarises older messages.`,
+              false,
+              4000
+            )
           )}
           <Group title="Model" footer="Applies from the next message.">
             <View style={styles.inset}>
@@ -698,11 +887,13 @@ export function Management({
                 {row('Skills', 'skills', bot.skills.length ? `${bot.skills.length} on` : undefined)}
               </Group>
               <Group title="What it remembers">
-                {row('Memory', 'memory')}
                 {toggle('dream_enabled', 'Dreaming')}
                 {row('Dreaming history', 'dreams')}
                 {row('Scheduled jobs', 'jobs')}
               </Group>
+              {typeof mobile.settings?.heartbeat_enabled === 'boolean' ? (
+                <Group title="On its own">{row('Heartbeat', 'heartbeat')}</Group>
+              ) : null}
               <Group title="Notifications">{toggle('notify', 'Notify me')}</Group>
               <Group>
                 {action('Clear stopped status', () =>
@@ -724,13 +915,13 @@ export function Management({
                   : null}
                 {checkinsSection
                   ? action(
-                      'Delete Check-ins',
+                      'Delete earlier check-ins',
                       async () => {
                         await rpc('hexbot.sections.delete', { id: checkinsSection.id })
                         await mobile.refresh()
                       },
                       true,
-                      'This deletes what check-ins told you. The next check-in message starts it again.'
+                      'This deletes what check-ins told you before the heartbeat replaced them.'
                     )
                   : null}
                 {/* The primary bot stays; the daemon refuses to delete it too. */}
@@ -754,7 +945,29 @@ export function Management({
       break
     case 'memory':
       save = () => rpc('hexbot.memory.bot.set', { bot: bot?.name, memory_md: values.memory_md })
-      content = field('memory_md', 'Bot memory', true)
+      content = (
+        <DocumentPanel
+          about={aboutFile('memory', bot?.display_name ?? 'The bot')}
+          cap={Number(extra.cap) || undefined}
+          fileName="MEMORY.md"
+          onChange={text => set('memory_md', text)}
+          value={str(values.memory_md)}
+        />
+      )
+      break
+    case 'soul':
+      save = () => rpc('hexbot.bots.update', { name: bot?.name, persona: values.persona })
+      content = (
+        <DocumentPanel
+          about={aboutFile('soul', bot?.display_name ?? 'The bot')}
+          fileName="SOUL.md"
+          onChange={text => set('persona', text)}
+          value={str(values.persona)}
+        />
+      )
+      break
+    case 'licenses':
+      content = <Licenses />
       break
     case 'about':
       save = () => rpc('hexbot.memory.user.set', { text: values.text })
@@ -1172,14 +1385,40 @@ export function Management({
       break
     }
     case 'mcp':
-      save = () =>
-        rpc('hexbot.connectors.add_mcp', {
-          name: values.name,
-          transport: values.transport,
-          ...(values.transport === 'http'
+      save = () => {
+        const mcp =
+          values.transport === 'http'
             ? { url: values.url }
-            : { command: values.command, args: str(values.args).split('\n').filter(Boolean) })
+            : { command: values.command, args: str(values.args).split('\n').filter(Boolean) }
+        // Saved from a bot's settings, the server goes to that bot.
+        if (bot)
+          return rpc('hexbot.connectors.add_mcp', {
+            name: values.name,
+            transport: values.transport,
+            bot: bot.name,
+            ...mcp
+          })
+        const name = str(values.name).trim()
+        const about = str(values.description).trim()
+        const skill = str(values.skill).trim()
+        return rpc('hexbot.plugins.install', {
+          name,
+          description: about,
+          mcp,
+          // JSON strings are valid YAML, so any description survives the frontmatter.
+          ...(skill
+            ? {
+                skills: [
+                  {
+                    // Skill names stop at 64 characters, like plugin names.
+                    name: `${name.slice(0, 58)}-guide`,
+                    content: `---\ndescription: ${JSON.stringify(about || `How to use the ${name} MCP server.`)}\n---\n${skill}\n`
+                  }
+                ]
+              }
+            : {})
         })
+      }
       content = (
         <>
           {field('name', 'Server name')}
@@ -1202,39 +1441,439 @@ export function Management({
               {field('args', 'Arguments', true, 'One argument per line.')}
             </>
           )}
+          {bot ? null : (
+            <>
+              {field('description', 'What it is for')}
+              {field(
+                'skill',
+                'Skill for your bots',
+                true,
+                'Optional. How bots should use this server: which tools to call and what to avoid.'
+              )}
+              <Text tone="muted" variant="footnote">
+                On for every bot. Add tokens on the server's card once it is added.
+              </Text>
+            </>
+          )}
         </>
       )
       break
+    case 'plugins': {
+      const bots = pluginRoster
+      const plugins = rows as unknown as Plugin[]
+      const servers = plugins.filter(p => p.category === 'mcp')
+      const skills = plugins.filter(
+        p => p.kind === 'skill' || (p.kind === 'package' && p.category !== 'mcp')
+      )
+      const item = (p: Plugin) => (
+        <Row
+          key={keyOf(p)}
+          leading={<PluginIcon icon={p.icon} />}
+          title={p.name}
+          subtitle={`${p.state_text} · ${pluginBots(p, bots)}`}
+          testID={`plugin-${keyOf(p)}`}
+          chevron
+          onPress={() => navigate('plugin', p as unknown as RowData)}
+        />
+      )
+      content = (
+        <>
+          <Text tone="muted">
+            Everything your bots can use beyond their own tools. Open one to choose its bots.
+          </Text>
+          <Group
+            title="Connectors"
+            footer="Services Hexbot supports. Keys are stored once on this daemon."
+          >
+            {plugins.filter(p => p.kind === 'connector' && p.category !== 'mcp').map(item)}
+          </Group>
+          <Group
+            title="MCP servers"
+            footer="Servers you or your bots add. A bot that needs one asks you first."
+          >
+            {row('Add MCP server', 'mcp')}
+            {servers.map(item)}
+          </Group>
+          <Group title="Skills">
+            {row('Create skill', 'skill-create')}
+            {skills.map(item)}
+          </Group>
+        </>
+      )
+      break
+    }
+    case 'plugin': {
+      const bots = pluginRoster
+      const p = (extra.plugin ?? panel!.data) as unknown as Plugin
+      // A connector or skill can be ready for one bot through its own key, so
+      // only the daemon can tell whether a bot may have it.
+      const server = p.server
+      const values_ = server ? (server.transport === 'http' ? server.headers : server.env) : []
+      const valueKind = server?.transport === 'http' ? 'headers' : 'env'
+      // `run` reloads this card after each change. Only bots that still exist
+      // are sent: one deleted elsewhere while the card was open would make the
+      // daemon refuse the whole change.
+      const choose = (next: string[]) =>
+        void run(() =>
+          rpc('hexbot.plugins.set_bots', {
+            kind: p.kind,
+            id: p.id,
+            bots: next.filter(name => bots.some(b => b.name === name))
+          })
+        )
+      content = (
+        <>
+          <Text tone="muted">{p.description}</Text>
+          <Text tone={p.state === 'error' ? 'danger' : 'muted'} variant="footnote">
+            {p.state_text}
+          </Text>
+          <Group title="Bots">
+            {bots.map(b => (
+              <SwitchRow
+                key={b.name}
+                title={b.display_name}
+                testID={`plugin-bot-${b.name}`}
+                value={p.bots.includes(b.name)}
+                disabled={busy || mobile.connection !== 'connected'}
+                onValueChange={on =>
+                  choose(on ? [...p.bots, b.name] : p.bots.filter(name => name !== b.name))
+                }
+              />
+            ))}
+          </Group>
+          {server ? (
+            <Group
+              title={valueKind === 'headers' ? 'Headers' : 'Environment'}
+              footer={server.url ?? [server.command, ...(server.args ?? [])].join(' ')}
+            >
+              <View style={styles.inset}>
+                {values_.map(v =>
+                  field(
+                    `value:${v.key}`,
+                    v.key,
+                    false,
+                    v.set
+                      ? `Saved${v.hint ? ` ${v.hint}` : ''}. Leave empty to keep it.`
+                      : 'Not set',
+                    true
+                  )
+                )}
+                {field(
+                  'new_key',
+                  valueKind === 'headers' ? 'New header' : 'New environment value',
+                  false,
+                  valueKind === 'headers' ? 'Such as Authorization' : 'Such as API_TOKEN'
+                )}
+                {field('new_value', 'Value', false, undefined, true)}
+              </View>
+              {action('Save values', async () => {
+                const change: Record<string, string> = Object.fromEntries(
+                  values_
+                    .filter(v => str(values[`value:${v.key}`]).trim())
+                    .map(v => [v.key, str(values[`value:${v.key}`])])
+                )
+                const added = str(values.new_key).trim()
+                if (added) change[added] = str(values.new_value)
+                await rpc('hexbot.plugins.configure', {
+                  kind: p.kind,
+                  id: p.id,
+                  [valueKind]: change
+                })
+                setValues({})
+              })}
+              {values_.map(v =>
+                action(`Remove ${v.key}`, () =>
+                  rpc('hexbot.plugins.configure', {
+                    kind: p.kind,
+                    id: p.id,
+                    [valueKind]: { [v.key]: null }
+                  })
+                )
+              )}
+            </Group>
+          ) : null}
+          {p.skills?.length ? (
+            <Group title="Skills">
+              {p.skills.map(skill => (
+                <Row
+                  key={skill.name}
+                  title={skill.name}
+                  subtitle={skill.description}
+                  testID={`plugin-skill-${skill.name}`}
+                />
+              ))}
+            </Group>
+          ) : null}
+          <Group>
+            {p.kind === 'connector' && p.connector
+              ? row(
+                  p.state === 'not_set_up' ? 'Set up' : 'Keys and provider',
+                  'connector',
+                  undefined,
+                  p.connector as unknown as RowData
+                )
+              : null}
+            {p.kind === 'skill' && p.disabled_globally
+              ? action('Undo Off for every bot', () =>
+                  rpc('hexbot.skills.set_global', { name: p.id, enabled: true })
+                )
+              : null}
+            {p.kind === 'skill'
+              ? row('Skill instructions', 'skill', undefined, {
+                  name: p.name,
+                  category: p.category
+                })
+              : null}
+            {p.connector && (p.kind !== 'connector' || p.state !== 'not_set_up')
+              ? action('Test', async () => {
+                  const result = await rpc('hexbot.connectors.test', { id: p.connector!.id })
+                  setNotice(str(result.message))
+                })
+              : null}
+            {p.kind === 'package' || (p.kind === 'connector' && server)
+              ? action(
+                  `Remove ${p.name}`,
+                  async () => {
+                    // A package goes with its server and skills; a server added
+                    // on its own goes where it was added.
+                    await (p.kind === 'package'
+                      ? rpc('hexbot.plugins.remove', { kind: 'package', id: p.id })
+                      : rpc('hexbot.connectors.remove_mcp', { name: p.name }))
+                    ;(onBack ?? onClose)()
+                  },
+                  true,
+                  'It is removed for every bot.'
+                )
+              : null}
+          </Group>
+        </>
+      )
+      break
+    }
+    case 'passwords': {
+      const logins = rows as unknown as PasswordLogin[]
+      const store = str(extra.store)
+      content = (
+        <>
+          <Text tone="muted">
+            Sign-ins your bots use for you. A bot has Hexbot type them into a page and never sees
+            them.
+          </Text>
+          <Group footer={store ? PASSWORD_STORE_TEXT[store] : undefined}>
+            {row('Add password', 'password-create')}
+            {logins.map(login => (
+              <Row
+                key={login.id}
+                title={login.title}
+                subtitle={[login.site, login.username, passwordBots(login, pluginRoster)]
+                  .filter(Boolean)
+                  .join(' · ')}
+                testID={`password-${login.id}`}
+                chevron
+                onPress={() => navigate('password', login as unknown as RowData)}
+              />
+            ))}
+          </Group>
+          {logins.length ? null : (
+            <Text tone="muted" variant="footnote">
+              When a bot needs to sign in somewhere, it asks you in its chat.
+            </Text>
+          )}
+        </>
+      )
+      break
+    }
+    case 'password-create':
+    case 'password': {
+      const login = (extra.login ?? panel?.data) as unknown as PasswordLogin | undefined
+      const editing = kind === 'password' && login
+      save = () => {
+        const change: Record<string, unknown> = {
+          title: str(values.title),
+          url: str(values.url).trim(),
+          username: str(values.username),
+          notes: str(values.notes)
+        }
+        if (editing) change.id = login.id
+        if (str(values.password)) change.password = str(values.password)
+        if (str(values.code).trim()) change.code = str(values.code)
+        return rpc('hexbot.passwords.save', change)
+      }
+      const bots = pluginRoster
+      const every = editing ? login.bots === null : true
+      const on = (name: string) => every || Boolean(login?.bots?.includes(name))
+      // Not through `run`: reloading the card would drop unsaved edits. Busy
+      // holds the switches until the answer, which only this card may take.
+      const share = (next: string[] | null) => {
+        const current = epoch.current
+        setBusy(true)
+        setError(null)
+        void rpc<{ login: PasswordLogin }>('hexbot.passwords.set_bots', {
+          id: login!.id,
+          bots: next
+        })
+          .then(result => {
+            if (current === epoch.current)
+              setExtra(previous => ({ ...previous, login: result.login }))
+          })
+          .catch(e => {
+            if (current === epoch.current) setError(e instanceof Error ? e.message : String(e))
+          })
+          .finally(() => {
+            if (current === epoch.current) setBusy(false)
+          })
+      }
+      const revealed = extra.revealed as { password: string; code: string | null } | undefined
+      content = (
+        <>
+          {field('url', 'Site', false, 'Such as https://app.schoology.com')}
+          {field('title', 'Name')}
+          {field('username', 'Username or email')}
+          {field(
+            'password',
+            'Password',
+            false,
+            editing ? 'Leave empty to keep it.' : undefined,
+            true
+          )}
+          {field(
+            'code',
+            'One-time code key (optional)',
+            false,
+            editing && login.has_code
+              ? 'Leave empty to keep it.'
+              : 'The setup key or otpauth:// link',
+            true
+          )}
+          {field('notes', 'Notes', true)}
+          {editing ? (
+            <>
+              <Group title="Bots" footer={every ? 'Every bot, and bots you add later.' : undefined}>
+                <SwitchRow
+                  title="Every bot"
+                  testID="password-every-bot"
+                  value={every}
+                  disabled={busy || mobile.connection !== 'connected'}
+                  onValueChange={value => share(value ? null : [])}
+                />
+                {bots.map(b => (
+                  <SwitchRow
+                    key={b.name}
+                    title={b.display_name}
+                    testID={`password-bot-${b.name}`}
+                    value={on(b.name)}
+                    disabled={busy || mobile.connection !== 'connected'}
+                    onValueChange={value =>
+                      share(
+                        value
+                          ? [...(login.bots ?? []), b.name]
+                          : bots.map(x => x.name).filter(x => x !== b.name && on(x))
+                      )
+                    }
+                  />
+                ))}
+              </Group>
+              <Group>
+                {revealed ? (
+                  // All of it, selectable to copy: a row would cut a long one off.
+                  <View style={styles.inset} testID="password-revealed">
+                    <Text selectable variant="body">
+                      {revealed.password}
+                    </Text>
+                    <Text tone="muted" variant="footnote">
+                      {revealed.code ? `Password. One-time code ${revealed.code}` : 'Password'}
+                    </Text>
+                  </View>
+                ) : (
+                  <Row
+                    title="Show password"
+                    testID="action-show-password"
+                    disabled={busy || mobile.connection !== 'connected'}
+                    onPress={() => {
+                      // Not through `run`: reloading the card would hide it again.
+                      // Only this card takes the answer, and a one-time code
+                      // goes when it expires.
+                      const current = epoch.current
+                      void rpc<{
+                        password: string
+                        code: { code: string; valid_for: number } | null
+                      }>('hexbot.passwords.reveal', { id: login.id })
+                        .then(shown => {
+                          if (current !== epoch.current) return
+                          setExtra(previous => ({
+                            ...previous,
+                            revealed: { password: shown.password, code: shown.code?.code ?? null }
+                          }))
+                          if (shown.code)
+                            setTimeout(() => {
+                              if (current === epoch.current)
+                                setExtra(previous => ({ ...previous, revealed: undefined }))
+                            }, shown.code.valid_for * 1000)
+                        })
+                        .catch(e => {
+                          if (current === epoch.current)
+                            setError(e instanceof Error ? e.message : String(e))
+                        })
+                    }}
+                  />
+                )}
+                {login.has_code
+                  ? action('Remove one-time code', () =>
+                      rpc('hexbot.passwords.save', { id: login.id, code: '' })
+                    )
+                  : null}
+                {action(
+                  'Delete password',
+                  async () => {
+                    await rpc('hexbot.passwords.delete', { id: login.id })
+                    ;(onBack ?? onClose)()
+                  },
+                  true,
+                  'Your bots can no longer sign in with it.'
+                )}
+              </Group>
+            </>
+          ) : null}
+        </>
+      )
+      break
+    }
     case 'skills':
       content = (
         <Group>
           {row('Create skill', 'skill-create')}
-          {rows.map(s => (
-            <View key={str(s.name)}>
-              <Row
-                title={str(s.name)}
-                subtitle={str(s.description)}
-                testID={`skill-${s.name}`}
-                chevron
-                onPress={() => navigate('skill', s)}
-              />
-              <SwitchRow
-                title={`Enable ${s.name}`}
-                testID={`enable-skill-${s.name}`}
-                value={s.enabled === true}
-                disabled={busy || mobile.connection !== 'connected'}
-                onValueChange={enabled =>
-                  void run(() =>
-                    rpc(bot ? 'hexbot.skills.set_for_bot' : 'hexbot.skills.set_global', {
-                      name: s.name,
-                      ...(bot ? { bot: bot.name } : {}),
-                      enabled
-                    })
-                  )
-                }
-              />
-            </View>
-          ))}
+          {rows.map(s => {
+            // Waiting for setup: bots can't use it, so the switch can't give it.
+            const missing = s.ready === false ? ((s.missing as SkillRequirement[]) ?? []) : null
+
+            return (
+              <View key={str(s.name)}>
+                <Row
+                  title={str(s.name)}
+                  subtitle={str(s.description)}
+                  testID={`skill-${s.name}`}
+                  chevron
+                  onPress={() => navigate('skill', s)}
+                />
+                <SwitchRow
+                  title={`Enable ${s.name}`}
+                  subtitle={missing?.length ? requirementText(missing) : undefined}
+                  testID={`enable-skill-${s.name}`}
+                  value={s.enabled === true}
+                  disabled={busy || mobile.connection !== 'connected' || !!missing}
+                  onValueChange={enabled =>
+                    void run(() =>
+                      rpc(bot ? 'hexbot.skills.set_for_bot' : 'hexbot.skills.set_global', {
+                        name: s.name,
+                        ...(bot ? { bot: bot.name } : {}),
+                        enabled
+                      })
+                    )
+                  }
+                />
+              </View>
+            )
+          })}
         </Group>
       )
       break
@@ -1298,6 +1937,63 @@ export function Management({
         </>
       )
       break
+    case 'heartbeat': {
+      const name = bot?.display_name ?? 'The bot'
+      const enabled = extra.enabled !== false
+      const next = extra.running
+        ? 'Running now'
+        : !enabled
+          ? 'Off'
+          : extra.empty
+            ? 'Add a check to start'
+            : extra.next_run_at
+              ? new Date(str(extra.next_run_at)).toLocaleString()
+              : 'Not scheduled'
+      save = () => rpc('hexbot.heartbeat.set', { bot: bot?.name, text: values.text })
+      content = (
+        <>
+          {field(
+            'text',
+            'HEARTBEAT.md',
+            true,
+            `One check per line. Every ${str(extra.every_minutes || 30)} minutes, day and night, ${name} works through this list and writes in its chat only when something needs you. Ask it in its chat to keep an eye on something and it adds a line too.`,
+            false,
+            Number(extra.cap) || 4000
+          )}
+          <Group
+            footer={
+              enabled ? undefined : 'Heartbeats are off for every bot. Turn them on in Settings.'
+            }
+          >
+            <Row title="Next heartbeat" subtitle={next} testID="heartbeat-next" />
+            {action(
+              'Run now',
+              () => rpc('hexbot.heartbeat.run_now', { bot: bot?.name }),
+              false,
+              '',
+              extra.empty === true || extra.running === true || values.text !== extra.text
+            )}
+          </Group>
+          {rows.map(r => (
+            <Group
+              key={str(r.id)}
+              title={`${r.kind === 'manual' ? 'You asked' : 'Heartbeat'} · ${new Date(str(r.started_at)).toLocaleString()}`}
+            >
+              <View style={styles.inset}>
+                <Text selectable>
+                  {r.status === 'running'
+                    ? 'Running'
+                    : r.status === 'failed'
+                      ? `Failed: ${str(r.summary)}`
+                      : `${r.messaged ? 'Posted in your chat' : 'Nothing to tell you'}${r.summary ? `. ${str(r.summary)}` : ''}`}
+                </Text>
+              </View>
+            </Group>
+          ))}
+        </>
+      )
+      break
+    }
     case 'connect':
       content = (
         <>
@@ -1502,7 +2198,9 @@ export function Management({
     'bot-create': 'New bot',
     bot: bot ? `Edit ${bot.display_name}` : 'Edit bot',
     memory: 'Memory',
+    soul: 'Soul',
     about: 'About you',
+    licenses: 'Licenses',
     tools: 'Tools',
     rooms: 'All rooms',
     'room-create': 'New room',
@@ -1515,10 +2213,16 @@ export function Management({
     connectors: 'Connectors',
     connector: str(panel?.data?.name),
     mcp: 'Add MCP server',
+    plugins: 'Plugins',
+    plugin: str(panel?.data?.name),
+    passwords: 'Passwords',
+    password: str(panel?.data?.title),
+    'password-create': 'New password',
     skills: 'Skills',
     skill: str(panel?.data?.name),
     'skill-create': 'Create skill',
     dreams: 'Dreaming',
+    heartbeat: 'Heartbeat',
     connect: 'Hex Connect',
     updates: 'Daemon updates',
     jobs: 'Scheduled jobs',
@@ -1532,6 +2236,7 @@ export function Management({
     jobs: 'No scheduled jobs yet.',
     activity: 'No messages between bots yet.',
     dreams: 'No dreams yet.',
+    heartbeat: 'No heartbeats yet.',
     rooms: 'No rooms yet.'
   }
   return (

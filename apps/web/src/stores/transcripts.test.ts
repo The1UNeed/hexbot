@@ -1,3 +1,6 @@
+import type { DaemonInfo } from '../lib/types'
+
+import { useConnection } from './connection'
 import { resetTranscriptEffects, setTranscriptEffects, useTranscripts } from './transcripts'
 
 describe('transcript reducer', () => {
@@ -211,6 +214,86 @@ describe('transcript reducer', () => {
     expect(useTranscripts.getState().bySession.s!.messages[0]?.error).toBe('Still refused')
   })
 
+  it('shows a failure once when its incident lands before the failed reply', () => {
+    const actions = useTranscripts.getState()
+    actions.messageStart('s')
+    actions.incidentEvent('s', 'The requested model is not supported.', {
+      connector: null,
+      incidentId: 'inc-2'
+    })
+    actions.messageComplete('s', {
+      error: 'The requested model is not supported.',
+      status: 'error'
+    })
+    const { messages } = useTranscripts.getState().bySession.s!
+    expect(messages.filter(item => item.error)).toHaveLength(1)
+    expect(messages[0]).toMatchObject({
+      role: 'assistant',
+      error: 'The requested model is not supported.',
+      errorDetail: { incidentId: 'inc-2' }
+    })
+    // A later update to the same incident still finds that one card.
+    actions.incidentEvent('s', 'Still not supported.', { connector: null, incidentId: 'inc-2' })
+    expect(useTranscripts.getState().bySession.s!.messages).toHaveLength(1)
+  })
+
+  it('keeps a send accepted when another try under its key answers late with nothing', () => {
+    useConnection.setState({
+      target: { kind: 'local' },
+      epoch: 'first',
+      daemon: { transcript_identity: true, install_id: 'home' } as DaemonInfo
+    })
+    const actions = useTranscripts.getState()
+    const input = actions.appendUserMessage('s', 'hi')
+    actions.inputSubmitting('s', input.id, [])
+    actions.inputSettled('s', input.id, input.inputId, 'accepted', [])
+    actions.inputSettled('s', input.id, input.inputId, 'unknown', [], 'connection closed')
+    expect(useTranscripts.getState().bySession.s!.messages[0]!.submission?.status).toBe('accepted')
+  })
+
+  it('undoes an in-place resend without dropping what was sent since', () => {
+    const actions = useTranscripts.getState()
+    const input = actions.appendUserMessage('s', 'hi')
+    actions.errorEvent('s', 'Provider stopped')
+    const undo = actions.resendInPlace('s', input.id, 'second-key')
+    const newer = actions.appendUserMessage('s', 'and this')
+    undo()
+    const { messages } = useTranscripts.getState().bySession.s!
+    expect(messages.map(message => message.text || message.error)).toEqual([
+      'hi',
+      'Provider stopped',
+      'and this'
+    ])
+    expect(messages[0]!.inputId).toBe(input.inputId)
+    expect(messages[2]!.id).toBe(newer.id)
+  })
+
+  it('stops every running step when the turn ends', () => {
+    const actions = useTranscripts.getState()
+
+    const running = () =>
+      useTranscripts
+        .getState()
+        .bySession.s!.messages.flatMap(message => message.toolCalls)
+        .filter(call => call.status === 'running')
+
+    // A card closes the message while its step still runs, then the turn fails.
+    actions.messageStart('s')
+    actions.toolStart('s', { name: 'terminal', tool_id: 'a' })
+    actions.approvalRequest('s', { request_id: 'a' })
+    actions.messageStart('s')
+    actions.toolStart('s', { name: 'terminal', tool_id: 'b' })
+    actions.errorEvent('s', 'Pi stopped')
+    expect(running()).toEqual([])
+
+    // A turn that ends right after a card settles the closed message too.
+    actions.messageStart('s')
+    actions.messageDelta('s', 'Run it?')
+    actions.toolStart('s', { name: 'terminal', tool_id: 'c' })
+    actions.approvalRequest('s', { request_id: 'c' })
+    actions.messageComplete('s')
+    expect(running()).toEqual([])
+  })
   it('keeps the connector on an error row', () => {
     const actions = useTranscripts.getState()
     actions.messageDelta('s', 'working')

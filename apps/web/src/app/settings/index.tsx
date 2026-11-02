@@ -35,6 +35,7 @@ import { cn } from '../../lib/cn'
 import { connectStatusMessage } from '../../lib/connect-status'
 import { connectBaseUrl } from '../../lib/connect-url'
 import { pairWithDaemon, targetOrigin } from '../../lib/connection'
+import { primeSounds } from '../../lib/sounds'
 import type { DaemonInfo, ModelOption, PairingCode, Provider } from '../../lib/types'
 import { daemonBehind } from '../../lib/version-skew'
 import { useBots } from '../../stores/bots'
@@ -52,10 +53,18 @@ import { MemoryEditor } from '../bot-settings/memory'
 import { ChoiceRow, dividerClass, Group, Heading, Row } from '../bot-settings/shared'
 import { ConfirmUpdate, installTarget } from '../confirm-update'
 
+import { ComputerSettings } from './computer'
+import { DiagnosticsSettings } from './diagnostics'
 import { OPEN_SOURCE } from './licenses'
+import { PasswordsSettings } from './passwords'
+import { PluginsSettings } from './plugins'
+import { PrivacySettings } from './privacy'
 
 export const SETTINGS_TABS = [
   'providers',
+  'plugins',
+  'passwords',
+  'computer',
   'network',
   'connect',
   'memory',
@@ -63,7 +72,9 @@ export const SETTINGS_TABS = [
   'approvals',
   'appearance',
   'updates',
-  'about'
+  'privacy',
+  'about',
+  'diagnostics'
 ] as const
 
 export type SettingsTab = (typeof SETTINGS_TABS)[number]
@@ -104,8 +115,15 @@ function ErrorLine({ children }: { children: React.ReactNode }) {
 /** Complete settings body; the file route owns the surrounding window and navigation. */
 export function SettingsPanel({ tab }: { tab: string }): React.JSX.Element {
   return (
-    <section aria-label={`${tab} settings`} className={settingsPageClass}>
+    <section
+      aria-label={`${tab} settings`}
+      // Diagnostics holds tables and charts; it takes the column's full measure.
+      className={cn(settingsPageClass, tab === 'diagnostics' && 'max-w-[820px]')}
+    >
       {tab === 'providers' && <ProvidersSettings />}
+      {tab === 'plugins' && <PluginsSettings />}
+      {tab === 'passwords' && <PasswordsSettings />}
+      {tab === 'computer' && <ComputerSettings />}
       {tab === 'network' && <NetworkSettings />}
       {tab === 'connect' && <ConnectSettings />}
       {tab === 'memory' && <MemorySettings />}
@@ -113,7 +131,9 @@ export function SettingsPanel({ tab }: { tab: string }): React.JSX.Element {
       {tab === 'approvals' && <ApprovalsSettings />}
       {tab === 'appearance' && <AppearanceSettings />}
       {tab === 'updates' && <UpdatesSettings />}
+      {tab === 'privacy' && <PrivacySettings />}
       {tab === 'about' && <AboutSettings />}
+      {tab === 'diagnostics' && <DiagnosticsSettings />}
     </section>
   )
 }
@@ -509,6 +529,10 @@ export function UsageSettings() {
   )
 }
 
+type ProviderRowState = { busy: boolean; draft: string; open: boolean; result: null | string }
+
+const idleRow: ProviderRowState = { busy: false, draft: '', open: false, result: null }
+
 export function ProvidersSettings(): React.JSX.Element {
   const providers = useSettings(state => state.providers)
   const refresh = useSettings(state => state.refreshProviders)
@@ -525,33 +549,37 @@ export function ProvidersSettings(): React.JSX.Element {
     provider => !needle || `${provider.label} ${provider.id}`.toLowerCase().includes(needle)
   )
 
-  // The groups are fixed when the page opens: a row that gets its first key
-  // stays where it is, so its open editor and test result are not remounted.
-  const [connectedIds, setConnectedIds] = useState<null | Set<string>>(null)
-  useEffect(() => {
-    if (!connectedIds && providers.length) {
-      setConnectedIds(
-        new Set(providers.filter(item => item.configured === true).map(item => item.id))
-      )
-    }
-  }, [connectedIds, providers])
+  // A row moves to Connected as soon as it connects. Its open editor, typed key,
+  // pending request and last result live here, so they survive the move.
+  const [rows, setRows] = useState<Record<string, ProviderRowState>>({})
 
-  const isConnected = (provider: Provider) =>
-    connectedIds ? connectedIds.has(provider.id) : provider.configured === true
+  const rowState = (id: string) => rows[id] ?? idleRow
 
-  const connected = visible.filter(isConnected)
-  const rest = visible.filter(provider => !isConnected(provider))
+  const updateRow = (id: string, patch: Partial<ProviderRowState>) =>
+    setRows(current => ({ ...current, [id]: { ...(current[id] ?? idleRow), ...patch } }))
+
+  const connected = visible.filter(provider => provider.configured === true)
+  const rest = visible.filter(provider => provider.configured !== true)
 
   const row = (provider: Provider) =>
     isSubscription(provider) ? (
       <SubscriptionRow
         clearKey={clearKey}
         key={provider.id}
+        open={rowState(provider.id).open}
         provider={provider}
         refresh={refresh}
+        setOpen={open => updateRow(provider.id, { open })}
       />
     ) : (
-      <ProviderRow clearKey={clearKey} key={provider.id} provider={provider} setKey={setKey} />
+      <ProviderRow
+        clearKey={clearKey}
+        key={provider.id}
+        provider={provider}
+        setKey={setKey}
+        state={rowState(provider.id)}
+        update={patch => updateRow(provider.id, patch)}
+      />
     )
 
   return (
@@ -637,15 +665,17 @@ function ExpandableRow({
 
 function SubscriptionRow({
   clearKey,
+  open,
   provider,
-  refresh
+  refresh,
+  setOpen
 }: {
   clearKey: (provider: string) => Promise<void>
+  open: boolean
   provider: Provider
   refresh: () => Promise<void>
+  setOpen: (open: boolean) => void
 }) {
-  const [open, setOpen] = useState(false)
-
   return (
     <ExpandableRow
       control={
@@ -661,7 +691,7 @@ function SubscriptionRow({
         provider.configured ? 'Subscription' : 'Subscription, sign in through your browser'
       }
       expanded={open}
-      onToggle={() => setOpen(value => !value)}
+      onToggle={() => setOpen(!open)}
       title={provider.label}
     >
       {provider.configured ? (
@@ -750,16 +780,21 @@ function DefaultModels() {
 function ProviderRow({
   clearKey,
   provider,
-  setKey
+  setKey,
+  state,
+  update
 }: {
   clearKey: (provider: string) => Promise<void>
   provider: Provider
   setKey: (provider: string, key: string) => Promise<void>
+  state: ProviderRowState
+  update: (patch: Partial<ProviderRowState>) => void
 }) {
-  const [open, setOpen] = useState(false)
-  const [key, setDraft] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [result, setResult] = useState<string | null>(null)
+  const { busy, draft: key, open, result } = state
+  const setDraft = (value: string) => update({ draft: value })
+  const setBusy = (value: boolean) => update({ busy: value })
+  const setOpen = (value: boolean) => update({ open: value })
+  const setResult = (value: null | string) => update({ result: value })
 
   const save = async () => {
     setBusy(true)
@@ -800,7 +835,7 @@ function ProviderRow({
       <ExpandableRow
         description="Configured on the daemon"
         expanded={open}
-        onToggle={() => setOpen(value => !value)}
+        onToggle={() => setOpen(!open)}
         title={provider.label}
       >
         <ProviderPanel onConfigured={() => Promise.resolve()} provider={provider} />
@@ -821,7 +856,7 @@ function ProviderRow({
       }
       description={provider.configured ? 'API key saved' : 'Needs an API key'}
       expanded={open}
-      onToggle={() => setOpen(value => !value)}
+      onToggle={() => setOpen(!open)}
       title={provider.label}
     >
       <form
@@ -1208,10 +1243,12 @@ export function ApprovalsSettings(): React.JSX.Element {
 export function AppearanceSettings(): React.JSX.Element {
   const theme = useUi(state => state.theme)
   const setTheme = useUi(state => state.setTheme)
+  const sounds = useUi(state => state.sounds)
+  const setSounds = useUi(state => state.setSounds)
 
   return (
     <>
-      <Heading description="How this window looks.">Appearance</Heading>
+      <Heading description="How this window looks and sounds.">Appearance</Heading>
       <Group>
         <Row
           control={
@@ -1241,6 +1278,23 @@ export function AppearanceSettings(): React.JSX.Element {
           }
           description="System follows the computer's setting."
           title="Theme"
+        />
+        <Row
+          control={
+            <Switch
+              aria-label="Sounds"
+              checked={sounds}
+              onCheckedChange={on => {
+                setSounds(on)
+
+                if (on) {
+                  primeSounds()
+                }
+              }}
+            />
+          }
+          description="A soft tone when a bot starts, finishes, or needs you."
+          title="Sounds"
         />
       </Group>
     </>
@@ -1565,7 +1619,7 @@ function Licenses({ onBack }: { onBack: () => void }) {
       >
         About
       </Button>
-      <Heading description="Hexbot is Apache-2.0 software built with these open source projects. Each project's license is in its repository.">
+      <Heading description="Hexbot is Apache-2.0 software built with these open source projects. The license and notices of every package this app includes are under Third-party notices.">
         Licenses
       </Heading>
       <div className="space-y-8">
@@ -1597,7 +1651,52 @@ function Licenses({ onBack }: { onBack: () => void }) {
             ))}
           </Group>
         ))}
+        <Group title="Third-party notices">
+          <ThirdPartyNotices />
+        </Group>
       </div>
     </>
+  )
+}
+
+/** The licenses of the packages bundled into this app, which the build writes beside it. */
+function ThirdPartyNotices() {
+  const [text, setText] = useState<string | null>(null)
+
+  useEffect(() => {
+    let live = true
+    fetch('/third-party-notices.txt')
+      .then(async response =>
+        response.ok && response.headers.get('content-type')?.startsWith('text/plain')
+          ? response.text()
+          : ''
+      )
+      .catch(() => '')
+      .then(body => {
+        if (live) {
+          setText(body)
+        }
+      })
+
+    return () => {
+      live = false
+    }
+  }, [])
+
+  if (text === null) {
+    return <SkeletonLines label="Loading notices" />
+  }
+
+  return text ? (
+    <pre
+      className="max-h-[60vh] overflow-auto whitespace-pre rounded-2xl bg-foreground/[0.04] p-4 font-mono text-[length:var(--text-meta)]"
+      data-testid="third-party-notices"
+    >
+      {text}
+    </pre>
+  ) : (
+    <p className="px-1 text-[length:var(--text-secondary)] text-muted">
+      The build adds them. This copy of Hexbot runs from source.
+    </p>
   )
 }

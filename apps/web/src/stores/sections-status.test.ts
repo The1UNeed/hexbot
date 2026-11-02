@@ -25,6 +25,17 @@ describe('live section status', () => {
     expect(botStatusWithLive(stopped, sections, { s1: 'needs_you' })).toBe('stopped')
   })
 
+  it("puts a failure with nowhere else to show in the bot's chat only", () => {
+    const dreamt = {
+      name: 'b',
+      status: 'stopped',
+      status_detail: { in_chat: true, section_id: 'dream-1' }
+    } as unknown as Bot
+
+    expect(sectionStatusOf(dreamt, 'chat', {}, true)).toBe('stopped')
+    expect(sectionStatusOf(dreamt, 'thread', {}, false)).toBe('idle')
+  })
+
   it('reads a waiting card or a streaming reply off the open transcripts', () => {
     const asking = {
       ...emptyTranscript('l1', 's1'),

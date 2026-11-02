@@ -5,9 +5,10 @@ import {
   botChat,
   chatPreview,
   isOpenRoom,
+  pulseTarget,
+  stoppedIn,
   purposeOf,
   rebind,
-  shownRoom,
   type ChatRoute
 } from './routes'
 import type { Bot, Room, Rpc, Section } from './types'
@@ -179,16 +180,23 @@ describe('rooms', () => {
     const route: ChatRoute = { kind: 'room', room: rooms[2] }
     expect(rebind(route, { bots: [], rooms, sections: [] })).toEqual(route)
   })
-  it('shows the picked room, or the latest one that is not archived', () => {
-    expect(shownRoom(rooms, 'old', null)).toBe('old')
-    expect(shownRoom(rooms, null, null)).toBe('new')
-    expect(shownRoom(rooms, 'gone', null)).toBe('new')
-    // Archived here: Rooms moves on. Archived elsewhere while open: it stays to be restored.
-    expect(shownRoom(rooms, 'shelved', null)).toBe('new')
-    expect(shownRoom(rooms, 'shelved', 'shelved')).toBe('shelved')
-    expect(shownRoom([rooms[2]], 'shelved', null)).toBeNull()
-    // Opened before the lists reload, such as right after it is created.
-    expect(shownRoom([rooms[0]], 'made', 'made')).toBe('made')
+  it('Pulse opens the reported room, else the reported thread, else the chat', () => {
+    const thread = section('thread', { peer_bot: 'yak', live_session_id: 'live' })
+    const busy = (detail: Partial<NonNullable<Bot['status_detail']>>) =>
+      ({ ...bot, status: 'needs_you', status_detail: detail }) as Bot
+    expect(pulseTarget(busy({ room_id: 'old', section_id: 'thread' }), rooms, [thread])).toEqual({
+      room: rooms[0]
+    })
+    // An archived room gives way to the thread.
+    expect(pulseTarget(busy({ room_id: 'shelved', section_id: 'thread' }), rooms, [thread])).toEqual(
+      { section: thread }
+    )
+    expect(pulseTarget(busy({ section_id: 'thread', session_id: 'other' }), rooms, [thread])).toEqual(
+      { section: undefined }
+    )
+    expect(pulseTarget(busy({ section_id: 'chat' }), rooms, [section('chat')])).toEqual({
+      section: undefined
+    })
   })
   it('knows the open room', () => {
     const route: ChatRoute = { kind: 'room', room: rooms[0] }
@@ -213,5 +221,22 @@ describe('bot card preview', () => {
     expect(chatPreview('ada', [{ ...chat, preview: 'Latest message' }], [chat])).toBe('Latest message')
     expect(chatPreview('ada', [thread])).toBeNull()
     expect(chatPreview('ada', [])).toBeNull()
+  })
+})
+
+describe('stopped bot', () => {
+  const stopped = (detail: Record<string, unknown>) =>
+    ({ ...bot, status: 'stopped', status_detail: { since: 1, text: 'fetch failed', ...detail } }) as Bot
+  it("shows a failure with nowhere else to show, such as a dream's, in the bot's chat only", () => {
+    const dream = stopped({ section_id: 'dream-1', in_chat: true })
+    expect(stoppedIn(dream, section('chat'))).toBe(true)
+    expect(stoppedIn(dream, section('t', { peer_bot: 'grace' } as Partial<Section>))).toBe(false)
+    expect(stoppedIn(dream, section('c', { purpose: 'checkins' } as Partial<Section>))).toBe(false)
+  })
+  it('shows any other failure where it happened', () => {
+    const thread = stopped({ section_id: 't', in_chat: false })
+    expect(stoppedIn(thread, section('t', { peer_bot: 'grace' } as Partial<Section>))).toBe(true)
+    expect(stoppedIn(thread, section('chat'))).toBe(false)
+    expect(stoppedIn({ ...thread, status: 'idle' } as Bot, section('t'))).toBe(false)
   })
 })

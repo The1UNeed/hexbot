@@ -1,5 +1,6 @@
 import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
+import { moodForStatus } from '../../lib/face'
 import type { Bot, Room } from '../../lib/types'
 
 import { Avatar } from './avatar'
@@ -29,6 +30,7 @@ export function RoomCluster({
   status?: DotStatus
 }) {
   const members = activeBots(room)
+  const mood = moodForStatus(status)
   const box = size === 'sm' ? 'size-6' : size === 'xl' ? 'size-[72px]' : 'size-10'
   const cell = size === 'sm' ? 'size-[11px]' : size === 'xl' ? 'size-[34px]' : 'size-[19px]'
 
@@ -45,6 +47,7 @@ export function RoomCluster({
       {members.length <= 1 ? (
         <Avatar
           {...botFace(bots[members[0]?.member_id ?? ''])}
+          mood={mood}
           name={members[0] ? name(members[0].member_id) : room.name}
           size={size}
         />
@@ -55,6 +58,7 @@ export function RoomCluster({
               className={cell}
               {...botFace(bots[member.member_id])}
               key={member.member_id}
+              mood={mood}
               name={name(member.member_id)}
               size="xs"
             />

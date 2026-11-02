@@ -55,7 +55,9 @@ const APP_CSP = [
   "img-src 'self' data: blob: http: https:",
   "font-src 'self' data:",
   "connect-src 'self' http: https: ws: wss:",
-  "media-src 'self' blob:"
+  "media-src 'self' blob:",
+  // A bot's computer screen comes from its daemon; frameNavigationAllowed narrows it.
+  "frame-src 'self' http: https:"
 ].join('; ')
 
 /**
@@ -75,20 +77,35 @@ export function appResponseHeaders(
   return headers
 }
 
+/** A bot's computer screen, served by its daemon (`hexbot.computer.view`). */
+const COMPUTER_SCREEN = /^\/hexbot\/computer\/[0-9a-f]{64}\/viewer\/$/
+
 /**
- * A frame inside the app may only load the visual frame page from the app's
- * own origin. A visual's script that tries to navigate its frame elsewhere,
- * to carry data out in the URL, is stopped.
+ * A frame inside the app may load the visual frame page from the app's own
+ * origin, or a bot's computer screen from a daemon. A visual's script that
+ * tries to navigate its frame elsewhere, to carry data out in the URL, is
+ * stopped: a frame showing a visual may only show the visual frame page.
  */
-export function frameNavigationAllowed(url: string, pageUrl: string): boolean {
+export function frameNavigationAllowed(url: string, pageUrl: string, frameUrl = ''): boolean {
   try {
     const target = new URL(url)
     const page = new URL(pageUrl)
     // Compared part by part: URL.origin is "null" for the app's own scheme.
-    return (
+    const visual =
       target.protocol === page.protocol &&
       target.host === page.host &&
       target.pathname === VISUAL_FRAME_PATH
+
+    if (visual) {
+      return true
+    }
+
+    const showingVisual = frameUrl !== '' && new URL(frameUrl).pathname === VISUAL_FRAME_PATH
+
+    return (
+      !showingVisual &&
+      (target.protocol === 'http:' || target.protocol === 'https:') &&
+      COMPUTER_SCREEN.test(target.pathname)
     )
   } catch {
     return false

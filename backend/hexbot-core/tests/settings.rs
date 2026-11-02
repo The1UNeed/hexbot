@@ -573,3 +573,25 @@ fn yaml_deletion_and_type_changes_remain_semantically_exact() {
         json!({})
     );
 }
+
+#[test]
+fn yaml_lists_can_empty_and_refill_beside_other_lists() {
+    let home = setup();
+    let path = home.path().join("lists.yaml");
+    // serde_yaml writes block sequences unindented under their key.
+    fs::write(
+        &path,
+        "# servers\nserver:\n  args:\n  - a.js\n  bots:\n  - owl\n  command: node\n",
+    )
+    .unwrap();
+    for bots in [json!([]), json!(["owl"]), json!(["cat", "owl"]), json!([])] {
+        let desired = json!({"server":{"args":["a.js"],"bots":bots,"command":"node"}});
+        hexbot_core::common::write_yaml(&path, &desired).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# servers"));
+        assert_eq!(
+            serde_yaml::from_str::<serde_json::Value>(&text).unwrap(),
+            desired
+        );
+    }
+}

@@ -1,7 +1,7 @@
 import * as Notifications from 'expo-notifications'
 import { notificationTarget, type PushTarget } from './push'
 
-// A check-in that arrives while the app is open still shows its banner.
+// A bot message that arrives while the app is open still shows its banner.
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowBanner: true,
@@ -11,7 +11,7 @@ Notifications.setNotificationHandler({
   })
 })
 
-/** What the last tapped check-in notification opens, keyed by that notification. */
+/** What the last tapped bot message notification opens, keyed by that notification. */
 export function useTappedSection(): (PushTarget & { key: string }) | null {
   const response = Notifications.useLastNotificationResponse()
   const request = response?.notification.request

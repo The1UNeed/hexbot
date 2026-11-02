@@ -23,6 +23,8 @@ import {
 import { toHandle } from '../../lib/bot-handle'
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
+import { moodForStatus } from '../../lib/face'
+import { previewLine } from '../../lib/preview'
 import { reasoningOptions, runningLevel } from '../../lib/reasoning'
 import { toMillis } from '../../lib/time'
 import type { Bot, ModelOption, ReasoningEffort, Room, RoomEvent, Section } from '../../lib/types'
@@ -30,11 +32,14 @@ import { useChatSelection } from '../../lib/use-chat-selection'
 import { useBotList, useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { useDrafts } from '../../stores/drafts'
+import { useEmotion } from '../../stores/emotions'
 import { useMe } from '../../stores/me'
 import { roomStatus, roomUnread, useRoomList, useRooms } from '../../stores/rooms'
 import {
   botStatusWithLive,
   introduceBot,
+  knownChat,
+  legacyChat,
   type LiveSections,
   liveSectionsOf,
   sectionsActions,
@@ -43,6 +48,7 @@ import {
 import { useSettings } from '../../stores/settings'
 import { useTranscripts } from '../../stores/transcripts'
 import { rememberedTab } from '../bot-settings'
+import { type LiveMood, liveMoodsOf } from '../conversation/steps'
 import { UpdatePill } from '../update-pill'
 
 import { needsPrimary, PrimaryChoice } from './primary-choice'
@@ -181,6 +187,8 @@ interface BotRowProps {
   draft: boolean
   focused: string | null
   live: LiveSections
+  /** The live face of each section with a reply streaming. */
+  moods: Record<string, LiveMood>
   onOpen: (bot: string) => void
   onSettings: (bot: string) => void
   query: string
@@ -194,11 +202,14 @@ function BotRow({
   draft,
   focused,
   live,
+  moods,
   onOpen,
   onSettings,
   query,
   sections
 }: BotRowProps) {
+  const emotion = useEmotion(bot.name)
+
   if (query && !`${bot.display_name} ${bot.name}`.toLowerCase().includes(query)) {
     return null
   }
@@ -209,7 +220,10 @@ function BotRow({
     ...bot.sections_recent.filter(recent => !sections.some(section => section.id === recent.id))
   ]
 
-  const label = bot.title || bot.description
+  // The last thing either side said in the chat, as a messaging app lists it.
+  const chat = legacyChat(available, bot.name)
+  const preview = chat && 'section' in chat ? previewLine(chat.section.preview) : ''
+  const label = preview || bot.title || bot.description
   const status = botStatusWithLive(bot, available, live)
 
   // A turn finished in the chat that you have not seen on any device. Check-ins
@@ -234,7 +248,19 @@ function BotRow({
         type="button"
       >
         <span className="relative shrink-0">
-          <Avatar {...botFace(bot)} name={bot.display_name} size="lg" />
+          <Avatar
+            {...botFace(bot)}
+            mood={
+              emotion ??
+              moodForStatus(
+                dot,
+                moods[bot.status_detail?.section_id ?? ''] ??
+                  available.map(section => moods[section.id]).find(Boolean)
+              )
+            }
+            name={bot.display_name}
+            size="lg"
+          />
           <StatusDot status={dot} />
         </span>
         <span className="min-w-0 flex-1">
@@ -270,7 +296,7 @@ function BotRow({
 export function RosterColumn() {
   const params = useParams({ strict: false }) as { bot?: string; section?: string }
   const navigate = useNavigate()
-  const { cancel: cancelChat, selectChat } = useChatSelection()
+  const { asking, cancel: cancelChat, selectChat } = useChatSelection()
   const bots = useBotList()
   const rooms = useRoomList()
   const sectionMap = useSections(state => state.byId)
@@ -378,6 +404,7 @@ export function RosterColumn() {
   const streamingSessions = useTranscripts(state => state.bySession)
 
   const liveSections = useMemo(() => liveSectionsOf(streamingSessions), [streamingSessions])
+  const liveMoods = useMemo(() => liveMoodsOf(streamingSessions), [streamingSessions])
 
   const ordered = useMemo(() => orderedBots(bots), [bots])
   const roster = useMemo(() => orderedRosterItems(bots, rooms), [bots, rooms])
@@ -411,8 +438,18 @@ export function RosterColumn() {
   /**
    * The bot's one chat, as the daemon names it: this window's list cannot
    * tell one recovery set aside. An older daemon's may be picked by the user.
+   * One it named on this connection opens at once; the chat view asks again.
    */
   const openChat = async (bot: string) => {
+    const known = knownChat(bot)
+
+    if (known) {
+      cancelChat()
+      open(bot, known.id)
+
+      return
+    }
+
     const chat = await selectChat(bot)
 
     if (chat) {
@@ -566,7 +603,11 @@ export function RosterColumn() {
             />
           ) : (
             <BotRow
-              active={Boolean(params.section) && params.bot === (entry.item as Bot).name}
+              active={
+                asking
+                  ? asking === (entry.item as Bot).name
+                  : Boolean(params.section) && params.bot === (entry.item as Bot).name
+              }
               bot={entry.item as Bot}
               draft={Object.values(sectionMap).some(
                 section => section.bot === (entry.item as Bot).name && Boolean(drafts[section.id])
@@ -574,6 +615,7 @@ export function RosterColumn() {
               focused={focused}
               key={`bot:${(entry.item as Bot).name}`}
               live={liveSections}
+              moods={liveMoods}
               onOpen={name => void openChat(name)}
               onSettings={openBotSettings}
               query={query}

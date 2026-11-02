@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { promisify } from 'node:util'
 import { archiveProgram, extractWindowsArchive, installTool, toolAsset } from '../../apps/desktop/src/main/backend/tools.ts'
-import { inventoryNativeRuntime, copyNativeRuntime, publishWindowsRuntime, publishNativeRuntime, createNativeArchive, extractStandaloneNode, launchers, nativeTarget, stageNativeRuntime, rustTarget, pruneRuntimeDependencies, directoryBytes, standaloneNode, NODE_VERSION, NODE_SHA256 } from './native-runtime.mjs'
+import { inventoryNativeRuntime, copyNativeRuntime, publishWindowsRuntime, publishNativeRuntime, createNativeArchive, extractStandaloneNode, launchers, nativeTarget, stageNativeRuntime, rustTarget, pruneRuntimeDependencies, directoryBytes, standaloneNode, retryDownload, NODE_VERSION, NODE_SHA256 } from './native-runtime.mjs'
 const exec = promisify(execFile)
 async function captureArchiveCommand(program, argv, cwd) {
   const child = spawn(program, argv, { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -173,8 +173,9 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
     await writeFile(join(root, `backend/hexbot-core/target/${rustTarget(process.platform, process.arch)}/release/hexbot`), 'daemon')
     const node = join(root, 'node'); await writeFile(node, 'node')
     const calls = []
-    let failProbe = false
-    const options = { repository: root, nodeExecutable: node, download: async url => ['rg', 'fd'].map(tool => toolAsset(tool, process.platform, process.arch)).find(asset => asset.url === url).sha256, run: async (command, args, options) => {
+    let failProbe = false, noticed
+    const thirdParty = async options => { noticed = options; return 'third-party notices\n' }
+    const options = { repository: root, nodeExecutable: node, notices: thirdParty, download: async url => ['rg', 'fd'].map(tool => toolAsset(tool, process.platform, process.arch)).find(asset => asset.url === url).sha256, run: async (command, args, options) => {
       calls.push({ command, args, cwd: options?.cwd })
       if (failProbe && args.at(-1) === '--version') throw new Error('Deliberately failing staged Node/Pi probe')
       if (command === 'tar') {
@@ -207,12 +208,18 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
     assert.equal(probe.args[0], join(probe.cwd, 'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js'))
     assert(probe.cwd.startsWith(`${result.destination}.staging-`))
     for (const [file, bytes] of Object.entries(notices)) assert.deepEqual(await readFile(join(result.destination, file)), bytes)
+    // Third-party notices cover the Pi packages as installed and the target's crates.
+    assert.match(noticed.nodeModules, /\/pi\/node_modules$/)
+    assert.deepEqual(noticed.targets, [rustTarget(process.platform, process.arch)])
+    assert.equal(noticed.node.version, '22.20.0')
+    assert.equal(await readFile(join(result.destination, 'THIRD_PARTY_NOTICES'), 'utf8'), 'third-party notices\n')
     // Headless installs and daemon updates unpack this archive.
     const archive = join(root, 'native.tar.gz')
     await createNativeArchive(result.destination, archive)
     const unpacked = join(root, 'unpacked'); await mkdir(unpacked)
     await exec('tar', ['-xzf', archive, '-C', unpacked])
     for (const [file, bytes] of Object.entries(notices)) assert.deepEqual(await readFile(join(unpacked, file)), bytes)
+    assert.equal(await readFile(join(unpacked, 'THIRD_PARTY_NOTICES'), 'utf8'), 'third-party notices\n')
     const committed = await readFile(join(result.destination, 'manifest.json'), 'utf8')
     failProbe = true
     await assert.rejects(stageNativeRuntime(options), /Deliberately failing staged/)
@@ -428,6 +435,27 @@ test('standalone Node rejects unpinned versions and tampered archives without fe
   assert.ok(urls.every(url => url.endsWith('.tar.gz') && url.includes(`/v${NODE_VERSION}/`)))
   await assert.rejects(standaloneNode('/unused', 'darwin', 'arm64', '99.0.0'), /not pinned/)
   assert.equal(urls.length, 4)
+})
+
+test('standalone Node downloads again after a cut-short transfer', async t => {
+  let calls = 0
+  t.mock.method(globalThis, 'fetch', async () => {
+    if (++calls === 1) return new Response(new ReadableStream({ pull(controller) { controller.error(new TypeError('terminated')) } }))
+    return new Response('tampered archive')
+  })
+  const waits = []
+  const retry = task => retryDownload(task, { wait: async ms => { waits.push(ms) } })
+  await assert.rejects(standaloneNode('/unused', 'darwin', 'arm64', NODE_VERSION, retry), /checksum mismatch/)
+  assert.equal(calls, 2)
+  assert.deepEqual(waits, [5_000])
+})
+
+test('downloads give up after their last attempt', async () => {
+  let calls = 0
+  const waits = []
+  await assert.rejects(retryDownload(async () => { calls++; throw new TypeError('terminated') }, { wait: async ms => { waits.push(ms) } }), /terminated/)
+  assert.equal(calls, 4)
+  assert.deepEqual(waits, [5_000, 10_000, 15_000])
 })
 
 test('macOS update archives omit AppleDouble files and extended attributes', { skip: process.platform !== 'darwin' }, async () => {

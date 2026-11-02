@@ -29,9 +29,12 @@ import type {
   ClarifyRequestPayload,
   ContextUsage,
   Message,
+  PluginForm,
   SessionInfo,
+  SignInForm,
   StatusLine,
   ToolCall,
+  ToolCallStatus,
   Usage
 } from '../lib/types'
 
@@ -60,6 +63,10 @@ export type TranscriptMessage = Message & {
     status: 'sending' | 'accepted' | 'rejected' | 'unknown' | 'unavailable'
     uploads: string[] | null
     card?: string
+    /** When the latest attempt started: a bubble still sending 15 s later offers Retry. */
+    since?: number
+    /** Why the latest attempt failed, for the bubble's Not sent line. */
+    reason?: string
   }
   retryRow?: string
   /** A card for a request this client made, not for the bot's turn. */
@@ -154,6 +161,7 @@ export interface ApprovalRequestPayload {
   turn_id?: string
   choices?: ApprovalChoice[]
   command?: string
+  form?: PluginForm | SignInForm
   reason?: string
   request_id?: string
   tool?: string
@@ -214,13 +222,22 @@ export interface TranscriptsState {
    * whole notice: a turn already running keeps its stream, cards and Stop.
    */
   requestFailed: (sessionId: string, message: string) => void
+  /** The owner closed a Stopped card. */
+  dismiss: (sessionId: string, messageId: string) => void
+  /** The owner recalled this message: it and everything after it go. */
+  recallFrom: (sessionId: string, messageId: string) => void
+  /**
+   * Your message goes again where it is: what followed it goes, and it waits
+   * under `inputId`. Answers an undo for when the daemon keeps the first try.
+   */
+  resendInPlace: (sessionId: string, messageId: string, inputId: string) => () => void
   /**
    * A Stopped card from a daemon incident. Unlike `errorEvent` it leaves the
    * streaming message alone: the incident fires mid-turn (a tool refused) and
    * the reply keeps streaming after it.
    */
-  /** A message the primary bot sent here from a check-in, once by its history row id. */
-  checkinMessage: (sessionId: string, message: CheckinRow) => void
+  /** A message the bot's heartbeat posted in this chat, once by its history row id. */
+  heartbeatMessage: (sessionId: string, message: HeartbeatRow) => void
   incidentEvent: (sessionId: string, message: string, detail: ErrorDetail) => void
   messageComplete: (sessionId: string, payload?: MessageCompletePayload) => void
   messageDelta: (sessionId: string, text: string) => void
@@ -259,24 +276,24 @@ const defaultEffects: TranscriptEffects = {
 
 let effects: TranscriptEffects = defaultEffects
 
-/** A check-in message for a section whose transcript is still loading. */
-export interface CheckinRow {
+/** A heartbeat message for a chat whose transcript is still loading. */
+export interface HeartbeatRow {
   createdAt: number
   id: string
   text: string
 }
-const heldCheckins = new Map<string, CheckinRow[]>()
+const heldHeartbeats = new Map<string, HeartbeatRow[]>()
 
-/** Keeps a check-in message until its section's history is in; a few per section. */
-export function holdCheckinMessage(sectionId: string, row: CheckinRow): void {
-  heldCheckins.set(sectionId, [...(heldCheckins.get(sectionId) ?? []), row].slice(-20))
+/** Keeps a heartbeat message until its chat's history is in; a few per chat. */
+export function holdHeartbeatMessage(sectionId: string, row: HeartbeatRow): void {
+  heldHeartbeats.set(sectionId, [...(heldHeartbeats.get(sectionId) ?? []), row].slice(-20))
 }
 
-/** The check-in messages held for a section, now that its transcript exists. */
-export function releaseCheckinMessages(sectionId: string): CheckinRow[] {
-  const rows = heldCheckins.get(sectionId) ?? []
+/** The heartbeat messages held for a chat, now that its transcript exists. */
+export function releaseHeartbeatMessages(sectionId: string): HeartbeatRow[] {
+  const rows = heldHeartbeats.get(sectionId) ?? []
 
-  heldCheckins.delete(sectionId)
+  heldHeartbeats.delete(sectionId)
 
   return rows
 }
@@ -528,6 +545,22 @@ function closePart(message: Message): Message {
 }
 
 /**
+ * When the turn ends no step still runs, including one on a message an
+ * approval card closed. A step left running would keep its message working.
+ */
+const stopSteps = <T extends Message>(messages: T[], status: ToolCallStatus): T[] =>
+  messages.map(message =>
+    message.toolCalls.some(call => call.status === 'running')
+      ? {
+          ...message,
+          toolCalls: message.toolCalls.map(call =>
+            call.status === 'running' ? { ...call, status } : call
+          )
+        }
+      : message
+  )
+
+/**
  * A card that blocks the turn (a question, an approval) ends the bubble in
  * progress so the bot's next words start a new one under the card. The
  * closed bubble's text is remembered for `messageComplete`.
@@ -541,7 +574,10 @@ function closeForCard(transcript: Transcript): Transcript {
   }
 
   return {
-    ...replaceMessage(transcript, current.id, message => settle({ ...message, streaming: false })),
+    // Its words are done when the card arrives, so it was sent then.
+    ...replaceMessage(transcript, current.id, message =>
+      settle({ ...message, sentAt: Date.now(), streaming: false })
+    ),
     streamingMessageId: null,
     turnPrefix: (transcript.turnPrefix ?? '') + [...(current.parts ?? []), current.text].join('')
   }
@@ -1079,6 +1115,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           // The turn ended right after the card: the closed bubble already holds it all.
           return {
             ...transcript,
+            messages: stopSteps(transcript.messages, 'ok'),
             turnActive: false,
             turnPrefix: undefined,
             usage: payload.usage ?? transcript.usage
@@ -1093,6 +1130,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           activity: undefined,
           checking: undefined,
           error: payload.error ?? message.error,
+          sentAt: Date.now(),
           status: payload.status,
           streaming: false,
           toolCalls: message.toolCalls.map(call =>
@@ -1104,7 +1142,37 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
             : message.workUntil
         })
 
-        let next = withCurrentAssistant(transcript, finalize)
+        // The daemon's incident can land just before message.complete for the
+        // same failure. Its card and the failed reply are one failure: the
+        // reply keeps it, with the incident's detail, and the card goes.
+        const at = transcript.streamingMessageId
+          ? transcript.messages.findIndex(item => item.id === transcript.streamingMessageId)
+          : -1
+
+        const incident = payload.error && at > 0 ? transcript.messages[at - 1] : undefined
+
+        const merged =
+          incident?.role === 'system' &&
+          incident.errorDetail?.incidentId &&
+          !incident.request &&
+          !incident.retryRow &&
+          Date.now() - toMillis(incident.createdAt) < INCIDENT_MERGE_MS
+            ? incident
+            : undefined
+
+        let next = withCurrentAssistant(
+          merged
+            ? { ...transcript, messages: transcript.messages.filter(item => item !== merged) }
+            : transcript,
+          finalize
+        )
+
+        if (merged && next.streamingMessageId) {
+          next = replaceMessage(next, next.streamingMessageId, message => ({
+            ...message,
+            errorDetail: merged.errorDetail
+          }))
+        }
 
         if (payload.error && next.streamingMessageId) {
           next = withTerminalCard(next, next.streamingMessageId, transcript.identity?.turnId)
@@ -1114,6 +1182,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         return {
           ...next,
           checking: undefined,
+          messages: stopSteps(next.messages, 'ok'),
           turnPrefix: undefined,
           error: payload.error ?? null,
           status: null,
@@ -1136,6 +1205,9 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         turnId: payload.turn_id,
         choices: payload.choices ?? ['once', 'deny'],
         command: payload.command,
+        ...((payload.form?.kind === 'sign_in' || payload.form?.kind === 'plugin') && {
+          form: payload.form
+        }),
         reason: payload.reason,
         receivedAt: Date.now(),
         requestId,
@@ -1169,7 +1241,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       effects.notify({
         body: payload.command ?? payload.reason ?? 'A bot is asking for permission.',
         sectionId: transcript?.sectionId,
-        title: 'Approval needed'
+        title: payload.form?.kind === 'sign_in' ? 'Sign-in needed' : 'Approval needed'
       })
     },
 
@@ -1343,7 +1415,8 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
                 epoch,
                 installation: daemon?.install_id,
                 status: 'sending' as const,
-                uploads
+                uploads,
+                since: Date.now()
               }
             })
           }))
@@ -1370,15 +1443,21 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         return
       }
 
+      // Another try under this key was taken: a lost answer cannot undo it.
+      if (status === 'unknown' && source.status === 'accepted') {
+        return
+      }
+
       if (!input.createdAt && status === 'rejected') {
         status = 'accepted'
         uploads = []
       }
 
       update(sessionId, transcript => {
-        // A prompt refusal or unknown RPC outcome says nothing about the
-        // operation currently streaming. Its card belongs only to this request.
-        const card = error ? requestCard(error, row) : undefined
+        // A prompt refusal says nothing about the operation currently
+        // streaming. Its card belongs only to this request. An unknown outcome
+        // draws no card: the bubble itself says Not sent and offers Retry.
+        const card = error && status !== 'unknown' ? requestCard(error, row) : undefined
 
         const messages = transcript.messages.map(message =>
           message.submission?.row === row
@@ -1388,6 +1467,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
                   ...message.submission,
                   status,
                   uploads,
+                  reason: error,
                   card:
                     card?.id ??
                     message.submission.card ??
@@ -1411,7 +1491,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
             )
           : -1
 
-        const messages = transcript.messages.map(item =>
+        const messages = stopSteps(transcript.messages, 'error').map(item =>
           item.id === transcript.streamingMessageId ? { ...item, streaming: false } : item
         )
 
@@ -1453,7 +1533,79 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       }))
     },
 
-    checkinMessage(sessionId, message) {
+    dismiss(sessionId, messageId) {
+      update(sessionId, transcript => {
+        const messages = transcript.messages.filter(message => message.id !== messageId)
+
+        return {
+          ...transcript,
+          error: messages.some(message => message.error) ? transcript.error : null,
+          messages
+        }
+      })
+    },
+
+    recallFrom(sessionId, messageId) {
+      update(sessionId, transcript => {
+        const index = transcript.messages.findIndex(message => message.id === messageId)
+
+        return index < 0
+          ? transcript
+          : { ...transcript, error: null, messages: transcript.messages.slice(0, index) }
+      })
+    },
+
+    resendInPlace(sessionId, messageId, inputId) {
+      const before = get().bySession[sessionId]
+
+      update(sessionId, transcript => {
+        const index = transcript.messages.findIndex(message => message.id === messageId)
+        const input = transcript.messages[index]
+
+        // A row history holds has no time of its own; once taken back it is
+        // this client's again, and a read keeps it until the new row lands.
+        // The failed turn went with it: the next one binds it afresh.
+        return input
+          ? {
+              ...transcript,
+              error: null,
+              messages: [
+                ...transcript.messages.slice(0, index),
+                {
+                  ...input,
+                  createdAt: input.createdAt || Date.now(),
+                  inputId,
+                  turnId: undefined
+                }
+              ]
+            }
+          : transcript
+      })
+
+      // Puts back the message and what followed it then; anything newer stays.
+      return () =>
+        update(sessionId, transcript => {
+          const at = transcript.messages.findIndex(
+            message => message.id === messageId && message.inputId === inputId
+          )
+
+          const was = before?.messages.findIndex(message => message.id === messageId) ?? -1
+
+          return at < 0 || was < 0
+            ? transcript
+            : {
+                ...transcript,
+                error: before!.error,
+                messages: [
+                  ...transcript.messages.slice(0, at),
+                  ...before!.messages.slice(was),
+                  ...transcript.messages.slice(at + 1)
+                ]
+              }
+        })
+    },
+
+    heartbeatMessage(sessionId, message) {
       update(sessionId, transcript => {
         if (transcript.messages.some(item => item.id === message.id)) {
           return transcript

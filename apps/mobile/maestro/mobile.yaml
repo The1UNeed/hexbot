@@ -41,7 +41,7 @@ env:
     id: chat-settings
 - extendedWaitUntil:
     visible:
-      id: field-persona
+      id: fingerprint-soul
     timeout: 15000
 - takeScreenshot: settings
 - tapOn:

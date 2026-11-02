@@ -22,8 +22,8 @@ import {
 } from '@hermes/shared'
 
 import { botsActions } from '../stores/bots'
-import { useCheckins } from '../stores/checkins'
 import { connectionActions, invalidateConnectionReads } from '../stores/connection'
+import { useHeartbeat } from '../stores/heartbeat'
 import { useMe } from '../stores/me'
 import { useRooms } from '../stores/rooms'
 import { sectionsActions } from '../stores/sections'
@@ -617,7 +617,7 @@ export class ConnectionSupervisor {
         info,
         roster,
         settingsActions().refresh(),
-        useCheckins.getState().loaded ? useCheckins.getState().refresh() : Promise.resolve()
+        useHeartbeat.getState().refreshLoaded()
       ])
     } catch (error) {
       if (current()) {

@@ -45,7 +45,7 @@ Manual is for work you want to watch closely. Reads are free; every change asks.
 
 ## Bypass
 
-Bypass is plain Pi, the agent runtime: no prompts, no sandbox, no credential checks. Bots can read and change anything the daemon's user account can, including Hexbot's own credential files and provider keys. Scheduled jobs and their delegates run in Auto instead, including scheduled scripts. HexBot, your primary bot, still asks before it deletes a bot, room, or job, changes an approval mode or a working folder, changes a setting, skill, or connector, or cancels a check-in wake-up. Reserve it for a machine you can rebuild.
+Bypass is plain Pi, the agent runtime: no prompts, no sandbox, no credential checks. Bots can read and change anything the daemon's user account can, including Hexbot's own credential files and provider keys. Scheduled jobs and their delegates run in Auto instead, including scheduled scripts. HexBot, your primary bot, still asks before it deletes a bot, room, or job, changes an approval mode or a working folder, or changes a setting, skill, or connector. Reserve it for a machine you can rebuild.
 
 ## Connected tools
 

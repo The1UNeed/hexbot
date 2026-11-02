@@ -7,6 +7,11 @@ fn setup() -> tempfile::TempDir {
     db::open(home.path()).unwrap().execute_batch("INSERT INTO users(id,display_name,role,created_at) VALUES ('alice','Alice','member',0),('bob','Bob','member',0)").unwrap();
     home
 }
+/// Points Computer use at `command`, so a test doesn't depend on whether
+/// this machine has Cua: every bot has Computer use where it is set up.
+fn computer(home: &Path, command: &Path) {
+    hexbot_core::common::write_config(home, &json!({"computer_use":{"command":command}})).unwrap();
+}
 fn call(home: &Path, user: &str, method: &str, p: Value) -> Value {
     catalog::call(home, user, method, &p).unwrap().unwrap()
 }
@@ -43,11 +48,13 @@ fn a_bot_can_be_created_with_a_reasoning_level() {
 fn lifecycle_preserves_memory_and_reopens_archived_sections() {
     let home = setup();
     let h = home.path();
+    computer(h, &h.join("absent-binary"));
     let created = create(h);
     let bot = &created["bot"];
     assert_eq!(bot["display_name"], "Research Owl");
     assert_eq!(bot["sections_total"], 1);
     assert!(bot["persona"].as_str().unwrap().contains("Research Owl"));
+    assert!(bot["persona_updated_at"].as_f64().unwrap() > 0.0);
     assert_eq!(bot["model"], "model-a");
     let id = created["section"]["id"].as_str().unwrap();
     assert_eq!(
@@ -812,6 +819,7 @@ fn section_deletion_preserves_owned_room_mappings_even_when_ambiguous() {
 #[test]
 fn create_accepts_explicit_empty_tool_selection_before_registry_insert() {
     let home = setup();
+    computer(home.path(), &home.path().join("absent-binary"));
     let created = call(
         home.path(),
         "alice",
@@ -819,6 +827,31 @@ fn create_accepts_explicit_empty_tool_selection_before_registry_insert() {
         json!({"name":"no-tools","tools":[]}),
     );
     assert_eq!(created["bot"]["tools"], json!([]));
+}
+
+#[test]
+fn every_bot_has_computer_use_once_it_is_set_up_and_never_the_daemons_code_or_browser() {
+    let home = setup();
+    computer(home.path(), Path::new("/bin/sh"));
+    let created = call(
+        home.path(),
+        "alice",
+        "hexbot.bots.create",
+        json!({"name":"no-tools","tools":[]}),
+    );
+    assert_eq!(created["bot"]["tools"], json!(["computer_use"]));
+    // Older clients still send the tools Computer use replaced; they are dropped.
+    let bot = call(
+        home.path(),
+        "alice",
+        "hexbot.bots.update",
+        json!({"name":"no-tools","tools":["files","code_execution","browser"]}),
+    )["bot"]
+        .clone();
+    assert_eq!(bot["tools"], json!(["files", "computer_use"]));
+    let available = bot["available_tools"].as_array().unwrap();
+    assert!(!available.contains(&json!("code_execution")));
+    assert!(!available.contains(&json!("browser")));
 }
 
 #[test]
@@ -848,6 +881,7 @@ fn tools_not_set_up_are_hidden_and_dropped_on_save() {
 #[test]
 fn combined_model_and_tool_edits_use_the_pending_provider() {
     let home = setup();
+    computer(home.path(), &home.path().join("absent-binary"));
     create(home.path());
     // No provider key is needed by Ollama. The original provider cannot run Vision.
     let changed = call(
@@ -992,6 +1026,7 @@ fn bot_and_workspace_dirs_never_open_the_hexbot_home() {
 #[test]
 fn create_persists_every_accepted_field() {
     let home = setup();
+    computer(home.path(), &home.path().join("absent-binary"));
     let workdir = tempfile::tempdir().unwrap();
     let created = call(
         home.path(),
@@ -1165,7 +1200,7 @@ fn threads_are_hidden_from_lists_and_counts_but_readable_by_the_owner() {
     );
 }
 #[test]
-fn deleting_a_bot_takes_what_check_ins_said_in_its_sections() {
+fn deleting_a_bot_takes_what_its_heartbeat_said() {
     let home = setup();
     let h = home.path();
     create(h);
@@ -1178,7 +1213,7 @@ fn deleting_a_bot_takes_what_check_ins_said_in_its_sections() {
     let section = sections["sections"][0]["id"].as_str().unwrap();
     let conn = db::open(h).unwrap();
     conn.execute(
-        "INSERT INTO checkin_messages(id,owner_id,bot,section_id,text,created_at,push_due_at) VALUES ('m','alice','research-owl',?,'Due tonight.',1,1)",
+        "INSERT INTO heartbeat_messages(id,owner_id,bot,section_id,text,created_at,push_due_at) VALUES ('m','alice','research-owl',?,'Due tonight.',1,1)",
         [section],
     )
     .unwrap();
@@ -1188,11 +1223,8 @@ fn deleting_a_bot_takes_what_check_ins_said_in_its_sections() {
         "hexbot.bots.delete",
         json!({"name":"research-owl"}),
     );
-    let (text, due): (String, Option<f64>) = conn
-        .query_row("SELECT text,push_due_at FROM checkin_messages", [], |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })
+    let left: i64 = conn
+        .query_row("SELECT COUNT(*) FROM heartbeat_messages", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(text, "");
-    assert!(due.is_none());
+    assert_eq!(left, 0);
 }

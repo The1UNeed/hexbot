@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { ArrowRight, ArrowUp, Plus } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { UsageDataSummary } from '../app/settings/privacy'
 import { ConnectorFields, connectorValues } from '../components/connector-fields'
 import { isSubscription, ProviderPanel, supportsApiKey } from '../components/provider-panel'
 import { Avatar } from '../components/ui/avatar'
@@ -11,6 +12,7 @@ import { ConnectorIcon } from '../components/ui/connector-icon'
 import type { HexbotActName } from '../components/ui/hexbot-act'
 import { Input } from '../components/ui/input'
 import { Select } from '../components/ui/select'
+import { Switch } from '../components/ui/switch'
 import { Textarea } from '../components/ui/textarea'
 import { HexbotMark, Wordmark } from '../components/ui/wordmark'
 import {
@@ -60,6 +62,7 @@ type OnboardingStep =
   | 'meet'
   | 'providers'
   | 'tools'
+  | 'usage'
   | 'welcome'
 
 export function initialOnboardingStep(input: {
@@ -814,7 +817,7 @@ export function AboutStep({
           data-testid="onboarding-about-name"
           maxLength={NAME_CAP}
           onChange={patch('name')}
-          placeholder="Alex"
+          placeholder="First and last name"
           value={about.name}
         />
       </label>
@@ -823,30 +826,24 @@ export function AboutStep({
         <Input
           data-testid="onboarding-about-work"
           onChange={patch('work')}
-          placeholder="I run a small design studio."
+          placeholder="Your job, or what you study"
           value={about.work}
         />
       </label>
       <label className="block space-y-2">
         <span className="font-medium">How your bots should talk to you</span>
-        <span className="block text-secondary text-muted">
-          Tone, length, language, anything a bot should keep in mind. You can change all of this
-          later in Settings, Memory.
-        </span>
         <Textarea
           data-testid="onboarding-about-preferences"
           onChange={patch('preferences')}
-          placeholder="Short, direct answers. Casual tone. Metric units."
+          placeholder="Tone, length, language, anything a bot should keep in mind"
           rows={3}
           value={about.preferences}
         />
-        <span
-          className={cn(
-            'block text-right text-[length:var(--text-meta)]',
-            text.length > ABOUT_CAP ? 'text-danger' : 'text-muted'
-          )}
-        >
-          {text.length} / {ABOUT_CAP}
+        <span className="flex justify-between gap-3 text-[length:var(--text-meta)] text-muted">
+          <span>You can change all of this later in Settings, Memory.</span>
+          <span className={cn('shrink-0', text.length > ABOUT_CAP && 'text-danger')}>
+            {text.length} / {ABOUT_CAP}
+          </span>
         </span>
       </label>
       <SetupActions className="pt-3">
@@ -961,6 +958,107 @@ function DefaultsStep({
           variant="secondary"
         >
           Skip
+        </Button>
+      </SetupActions>
+    </div>
+  )
+}
+
+/**
+ * Anonymous usage data, asked once before anything is sent. Off until the
+ * switch is turned on; each flip is saved at once, so Continue never decides
+ * for the user. In the app it covers the app and its daemon; in a browser,
+ * the daemon. Skipped when neither can send it (an older daemon in a browser).
+ */
+export function UsageStep({
+  onContinue,
+  onError
+}: {
+  onContinue: () => void
+  onError: (message: string) => void
+}) {
+  const bridge = getBridge()
+  const app = Boolean(bridge?.setUsageData)
+  const [daemon, setDaemon] = useState<boolean | null>(null)
+  const [on, setOn] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const skipped = useRef(false)
+
+  // A choice saved earlier in setup shows as it is. If the app and the daemon
+  // differ, the switch shows on, because something is still being shared.
+  useEffect(() => {
+    void Promise.all([
+      settingsGet().then(
+        settings => settings.usage_data,
+        () => undefined
+      ),
+      bridge?.privacy?.().then(
+        privacy => privacy.usageData,
+        () => false
+      )
+    ]).then(([daemonOn, appOn]) => {
+      setOn(daemonOn === true || appOn === true)
+      setDaemon(daemonOn !== undefined)
+    })
+  }, [bridge])
+
+  useEffect(() => {
+    if (daemon === false && !app && !skipped.current) {
+      skipped.current = true
+      onContinue()
+    }
+  }, [app, daemon, onContinue])
+
+  const toggle = async (checked: boolean) => {
+    setBusy(true)
+
+    try {
+      if (daemon) {
+        await settingsSet({ usage_data: checked })
+      }
+
+      await bridge?.setUsageData?.(checked)
+      setOn(checked)
+    } catch (reason) {
+      onError(String(reason))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="w-full space-y-5 py-8">
+      <div className="flex items-center gap-4 rounded-[14px] border border-border bg-surface px-4 py-3">
+        <div className="min-w-0 flex-1">
+          <p className="font-medium">Share anonymous usage data</p>
+          <p className="text-secondary text-muted">
+            {app && daemon
+              ? 'From this app and its daemon.'
+              : app
+                ? 'From this app.'
+                : 'From this daemon.'}
+          </p>
+        </div>
+        <Switch
+          aria-label="Share anonymous usage data"
+          checked={on}
+          disabled={busy || daemon === null}
+          onCheckedChange={checked => void toggle(checked)}
+        />
+      </div>
+      <UsageDataSummary />
+      <p className="text-secondary text-muted">
+        You can change this any time in Settings, Privacy.
+      </p>
+      <SetupActions className="pt-3">
+        <Button
+          className={PILL}
+          data-testid="onboarding-usage-continue"
+          disabled={busy}
+          onClick={onContinue}
+          variant="primary"
+        >
+          Continue
         </Button>
       </SetupActions>
     </div>
@@ -1395,7 +1493,8 @@ function OnboardingPage() {
         'The model new bots start with, and where to go when it fails.'
       ],
       providers: ['Connect a provider', 'Sign in with a subscription or paste an API key.'],
-      tools: ['Set up tools', 'Web search and the other tools that need their own account.']
+      tools: ['Set up tools', 'Web search and the other tools that need their own account.'],
+      usage: ['Help improve Hexbot', 'Nothing is sent unless you turn this on.']
     } as const
   )[step]
 
@@ -1424,8 +1523,12 @@ function OnboardingPage() {
         />
       ) : null}
 
+      {step === 'usage' ? (
+        <UsageStep onContinue={() => void createPrimary()} onError={onError} />
+      ) : null}
+
       {step === 'tools' ? (
-        <ToolsStep onContinue={() => void createPrimary()} onError={onError} />
+        <ToolsStep onContinue={() => setStep('usage')} onError={onError} />
       ) : null}
 
       {error ? (

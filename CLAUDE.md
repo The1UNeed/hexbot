@@ -17,5 +17,8 @@
 - Never push a `v*` tag or dispatch the Release workflow unless asked; both
   publish real builds.
 - Run only the suites that cover the files you changed (see "Verifying").
+- A change in `apps/web` is not done until the mobile app has it too (see
+  "Hit every surface", Clients). Check `apps/mobile` before you finish, and
+  say in the PR when something is desktop-only.
 - Commit only when asked. Use the commit and PR attribution given by the
   session.

@@ -19,7 +19,6 @@ what you are running.
 | --- | --- | --- | --- |
 | **Stable** | `Hexbot [alpha]` | [GitHub releases](https://github.com/The1UNeed/hexbot/releases) and, once published, [hexbot.app](https://hexbot.app/download/) | Users. Tagged, signed, notarized when the keys are in place, updates itself. Still alpha while the version is `0.x`. |
 | **Nightly** | `Hexbot Nightly` | [hexbot.app](https://hexbot.app/download/) until the first stable release, and [nightly prereleases on GitHub](https://github.com/The1UNeed/hexbot/releases?q=nightly) | Testers who want yesterday's fixes. Installs next to the stable app, updates itself to the next nightly. |
-| **Dev** | `Hexbot (dev)` / source | This repository, see [Develop](#develop) | Contributors and coding agents. |
 
 Install with the Hexbot Installer from
 [hexbot.app/download](https://hexbot.app/download/), or from a terminal,
@@ -43,19 +42,42 @@ Run the installer again to update or repair, change options, or uninstall;
 direct downloads for macOS (Apple Silicon and Intel) and Linux (AppImage and
 deb). [Install](https://hexbot.app/docs/install/) has the details.
 
+**Hexbot for iPhone** is in beta on
+[TestFlight](https://testflight.apple.com/join/byKAKWMW). Like Client, it
+runs no bots itself: pair it with a daemon (Full or Headless) over LAN,
+Tailscale, or Hex Connect.
+
 Stable and Nightly share `~/.hexbot`. Back it up before opening a nightly.
 The app follows the track it was installed from; switch in Settings, Updates.
 `docs/channels.md` has the full matrix.
 
 ## What it does
 
-- **Bots with memory.** Each bot has a soul, its own memory, and a searchable
-  history of its conversations. A daily **dreaming** pass tidies the memory.
-  One **About you** text, written by you, reaches every bot you own.
+- **A primary bot.** Setup creates **HexBot**, which creates, changes, and
+  deletes your other bots, builds rooms, schedules jobs, and changes settings
+  from its chat. Deleting anything or changing settings always asks, even in
+  Bypass.
+- **Bots with memory.** Each bot has a soul, its own memory, daily notes, and
+  a searchable history of its one ongoing **chat**. A daily **dreaming** pass
+  folds the notes into memory. One **About you** text, written by you,
+  reaches every bot you own. Recall your latest message and the bot forgets
+  it.
+- **Heartbeat.** Every 30 minutes each bot works through its own checklist,
+  `HEARTBEAT.md`, and writes to you only when something needs you.
+- **The bots' computer.** Every bot runs code, browses, and clicks and types
+  on one Linux desktop of their own (a [Cua](https://cua.ai) sandbox in
+  Docker) that you can watch live and take over.
+- **Visuals.** In its chat a bot can show a chart, table, diagram, or mockup
+  as a live, sandboxed page above its reply.
+- **Faces.** Each bot's face moves with what it does and reacts to what
+  happens, with optional sound cues.
 - **Rooms.** Group chats with any number of bots and people. A **main bot**
   answers when nobody is @-mentioned; bots can address each other.
 - **Any model.** Bring keys for OpenAI, Anthropic, Google, OpenRouter, local
-  servers, and more. Pick a model per bot.
+  servers, and more. Pick a model and a reasoning level per bot.
+- **Plugins.** Connectors, MCP servers, skills, and plugin packages, set up
+  once in Settings, Plugins and given to the bots you choose. A bot can ask to
+  install one; that always asks you.
 - **Tools with approvals.** Bots can run commands, browse, and edit files.
   In **Auto mode**, the default, they work freely inside the workspace
   behind an OS sandbox; steps outside it get a check by the bot's model, and
@@ -72,9 +94,10 @@ The app follows the track it was installed from; switch in Settings, Updates.
   scan is incomplete.
   Repositories created during a command are not protected on Linux. macOS
   filename rules also cover new `.git` metadata directories.
-- **Your hardware.** The daemon runs where you install it. Pair devices over
-  LAN or Tailscale, revoke them from settings, and delete conversations
-  together with the memory they produced.
+- **Your hardware.** The daemon runs where you install it and keeps working
+  when the window closes. Pair the desktop app, a browser, or the iPhone and
+  Android app over LAN or Tailscale, and revoke them from settings.
+  Settings, Advanced, Diagnostics shows what the daemon is doing.
 - **Hex Connect.** Sign in once, reach your daemon from outside the LAN in the app or a browser.
   Connect brokers identity and a hostname; chat traffic never passes through
   it.
@@ -181,7 +204,9 @@ the current nightly and says stable is coming soon.
 ## License
 
 Hexbot's own source code is Apache-2.0, except where a file or directory
-states otherwise. See `LICENSE` and `NOTICE`. Hermes Agent is MIT licensed;
-its license is in `docs/upstream/HERMES_LICENSE.txt`. The bundled skills in
-`skills/` are MIT, as each one's `SKILL.md` states. Earlier releases keep
-the license they shipped with.
+states otherwise. See `LICENSE` and `NOTICE`.
+The licenses of the third-party software each package includes are written by
+`scripts/desktop/third-party-notices.mjs`: `THIRD_PARTY_NOTICES` beside
+`LICENSE` in the app, the daemon runtime and the windowed installer,
+`hexbot-install --license`, Settings, About, Licenses in the app, and
+Settings, Licenses on mobile. 

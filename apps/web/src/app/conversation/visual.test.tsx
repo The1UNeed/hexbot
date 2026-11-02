@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ToolCall } from '../../lib/types'
 import { useVisuals, visualsActions } from '../../stores/visuals'
 
-import { readVisualTheme, visualDocument, visualsOf } from './visual'
+import { readVisualTheme, themeOnSurface, visualDocument, visualsOf } from './visual'
 import { VisualBubble, VisualPanel } from './visual-frame'
 
 const call = (partial: Partial<ToolCall>): ToolCall => ({
@@ -76,6 +76,45 @@ describe('readVisualTheme', () => {
   })
 })
 
+describe('themeOnSurface', () => {
+  it('steps the surfaces and border over a bubble the way the app steps them over its background', () => {
+    const dark = {
+      appearance: 'dark' as const,
+      variables: {
+        '--background': '#0e0e0e',
+        '--border': '#2a2a2a',
+        '--foreground': '#f4f4f4',
+        '--surface': '#171717',
+        '--surface-2': '#262626'
+      }
+    }
+
+    // Over the app background the steps land on the app's own tokens, give or take one.
+    expect(themeOnSurface(dark, '#0e0e0e').variables).toMatchObject({
+      '--border': '#2a2a2a',
+      '--surface': '#171717',
+      '--surface-2': '#252525'
+    })
+    // Over the dark bubble every step is lighter than the bubble, none darker.
+    expect(themeOnSurface(dark, '#232326').variables).toEqual({
+      '--background': '#232326',
+      '--border': '#3c3c3f',
+      '--foreground': '#f4f4f4',
+      '--surface': '#2b2b2e',
+      '--surface-2': '#38383b'
+    })
+  })
+
+  it('only swaps the background when a colour is not plain hex', () => {
+    const variables = { '--foreground': 'rgb(0 0 0)', '--surface': '#f5f5f5' }
+
+    expect(themeOnSurface({ appearance: 'light', variables }, '#f0f0f2').variables).toEqual({
+      ...variables,
+      '--background': '#f0f0f2'
+    })
+  })
+})
+
 const costs = { html: '<p>chart</p>', title: 'Costs', toolId: 't1' }
 const map = { html: '<svg></svg>', title: 'Map', toolId: 't2' }
 
@@ -135,6 +174,32 @@ describe('VisualBubble', () => {
       window
     )
     expect(frame.style.height).toBe('2000px')
+  })
+
+  it("is washed with the bot's face colour, and so is the page inside it", () => {
+    const root = document.documentElement.style
+    root.setProperty('--hex-bubble', '#232326')
+    root.setProperty('--hex-bot-wash', '20%')
+    root.setProperty('--hex-bot-muted', '#bebebe')
+    render(<VisualBubble color="#ef4444" visual={costs} />)
+    const frame = screen.getByTitle('Costs') as HTMLIFrameElement
+    const post = vi.spyOn(frame.contentWindow!, 'postMessage').mockImplementation(() => {})
+
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { jsonrpc: '2.0', method: 'hexbot/visual/ready' },
+          source: frame.contentWindow
+        })
+      )
+    })
+
+    expect(screen.getByTestId('visual-bubble').style.backgroundColor).toContain('#ef4444')
+    // 20% of the way from the bubble to the face colour, as CSS color-mix draws the bubble.
+    const page = post.mock.calls[0]?.[0] as { params: { document: string } }
+    expect(page.params.document).toContain('"--background":"#4c2a2c"')
+    expect(page.params.document).toContain('"--muted":"#bebebe"')
+    root.cssText = ''
   })
 
   it('stays live in the chat and expands beside it as a tab', () => {

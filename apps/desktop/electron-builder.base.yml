@@ -12,13 +12,17 @@ files:
   - '!resources/hexbot-native/**'
   - '!resources/hexbot-native.tar.gz*'
   - '!resources/hexbot-native.staging-*/**'
+  - '!resources/THIRD_PARTY_NOTICES'
   - package.json
-# Hexbot's own license and notices, beside Electron's and Chromium's.
+# Hexbot's own license and notices, beside Electron's and Chromium's, and the
+# licenses of the packages the app includes (written by the build).
 extraResources:
   - from: ../../LICENSE
     to: LICENSE
   - from: ../../NOTICE
     to: NOTICE
+  - from: resources/THIRD_PARTY_NOTICES
+    to: THIRD_PARTY_NOTICES
 asar: true
 protocols:
   - name: Hexbot
