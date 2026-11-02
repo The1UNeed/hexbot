@@ -1247,9 +1247,10 @@ function MobileApp({ children }: { children?: ReactNode }) {
             ? null
             : `bot-${route.bot.name}`
         : null
+  // Also cancels a chat still opening, so it does not open after you left.
   const closeChat = () => {
     if (demo) setBotPage(null)
-    else if (mobileRef.current.route) {
+    else {
       mobileRef.current.back()
       setPanels([])
     }
@@ -1258,7 +1259,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
   const select = (key: string | null) => {
     const row = conversations.find(c => `${c.kind}-${c.id}` === key)
     if (key && key !== 'settings' && key !== 'library' && !row) return
-    if (selected === 'chat' && key !== openChatRow) {
+    if (selected === 'chat' && (key === null || key !== openChatRow)) {
       // Leaving a chat closes it, as back does; while a file uploads, it
       // stays. Another chat replaces it, so the column never empties.
       if (uploading) return

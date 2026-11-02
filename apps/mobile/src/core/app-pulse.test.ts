@@ -267,6 +267,25 @@ it("on iOS, opens a bot's own chat from its row while a thread with another bot 
   expect(state.screens!.homeProps.selected).toBe('bot-owl')
 })
 
+it('on iOS, going back while a chat still opens leaves it closed', async () => {
+  let release = () => {}
+  const opened = new Promise<void>(resolve => { release = resolve })
+  const answer = state.request.getMockImplementation()!
+  state.request.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+    if (method === 'hexbot.sections.open') await opened
+    return answer(method, params)
+  })
+  renderApp()
+  await screen.findByRole('button', { name: 'Bot Owl' })
+  act(() => state.screens!.select('bot-owl'))
+  expect(state.screens!.selected).toBe('chat')
+  act(() => state.screens!.select(null))
+  await act(async () => release())
+  await act(async () => {})
+  expect(state.screens!.selected).toBeNull()
+  expect(screen.queryByTestId('chat')).toBeNull()
+})
+
 it('on iOS, opens a chat, Settings and Bots & jobs from the sidebar', async () => {
   rooms = [room]
   renderApp()
