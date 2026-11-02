@@ -877,6 +877,9 @@ impl Mutation<'_> {
                 args.extend(
                     [
                         "--reinstall",
+                        // uv checks hashes on download but trusts its unpacked
+                        // cache, so a changed cache file would be reinstalled.
+                        "--no-cache",
                         "--require-hashes",
                         "--no-deps",
                         "--no-build",

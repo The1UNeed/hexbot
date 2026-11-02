@@ -370,7 +370,7 @@ async fn installed() -> (tempfile::TempDir, Layout) {
                 layout.venv.display()
             ),
             format!(
-                "pip install --python {} --reinstall --require-hashes --no-deps --no-build -r {}",
+                "pip install --python {} --reinstall --no-cache --require-hashes --no-deps --no-build -r {}",
                 layout.venv_python.display(),
                 layout.requirements.display()
             ),
@@ -461,7 +461,7 @@ fn uv_mutation_forms_are_closed_to_four() {
                 python,
                 requirements,
             },
-            "--no-config pip install --python /h/runtime/tools/code-python/Scripts/python.exe --reinstall --require-hashes --no-deps --no-build -r /h/runtime/tools/code-python/requirements.txt",
+            "--no-config pip install --python /h/runtime/tools/code-python/Scripts/python.exe --reinstall --no-cache --require-hashes --no-deps --no-build -r /h/runtime/tools/code-python/requirements.txt",
         ),
     ];
     for (mutation, expected) in forms {

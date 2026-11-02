@@ -75,6 +75,9 @@ SHA-256; `--check` audits the committed lock. The Windows wheel audit is in
 `2efbdb87e79d596325c4eefaef0f4495d701145e882351310ebc538e854dc7a3`.
 The yarl pin is 1.25.1 to satisfy aiohttp 3.14.4's declared minimum. Native CI
 installs with `--require-hashes`, then imports all 13 pinned dependencies.
+Windows voice installs and repairs also pass `--no-cache`: uv checks hashes
+when it downloads a wheel but trusts its unpacked cache afterwards, so every
+repair downloads and verifies the pinned wheels again and needs the network.
 
 Both native and Electron provisioners explicitly set `UV_LINK_MODE=copy`, so
 new package installs do not share uv cache inodes. This does not establish a
