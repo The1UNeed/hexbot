@@ -69,10 +69,10 @@ test('Windows CI keeps the production guard and never publishes disposable probe
   const boundaries = [...ci.matchAll(/^  ([a-z][a-z0-9-]*):\r?$/gm)]
   const jobs = Object.fromEntries(boundaries.map((match, index) =>
     [match[1], ci.slice(match.index, boundaries[index + 1]?.index ?? ci.length)]))
-  assert.deepEqual(Object.keys(jobs), ['client-and-installer', 'native-runtime', 'client-nightly', 'full-nightly'])
+  assert.deepEqual(Object.keys(jobs), ['client-and-installer', 'sandbox', 'native-runtime', 'client-nightly', 'full-nightly'])
   assert.equal(ci.match(/uses: actions\/upload-artifact@/g)?.length, 1)
   assert.deepEqual(Object.keys(jobs).filter(name => jobs[name].includes('prepare-windows-security.mjs')),
-    ['native-runtime', 'full-nightly'])
+    ['sandbox', 'native-runtime', 'full-nightly'])
   for (const [name, job] of Object.entries(jobs)) {
     assert.equal(job.includes('upload-artifact'), name === 'client-and-installer', `${name}: artifact boundary`)
     assert.match(job, /runs-on: windows-latest/)

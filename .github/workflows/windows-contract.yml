@@ -61,8 +61,10 @@ jobs:
           retention-days: 3
   sandbox:
     name: Windows sandbox under a standard user
+    env:
+      HEXBOT_WINDOWS_NSIS_PROBE: '1'
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -71,6 +73,8 @@ jobs:
         with:
           node-version: 26.5.0
       - run: rustup show active-toolchain
+      - name: Native daemon compile gate expects only the production support guard
+        run: node scripts/dev/check-windows-unsupported.mjs "${{ github.workspace }}"
       - name: Prepare the disposable source without the platform guard
         shell: pwsh
         env:
@@ -80,7 +84,9 @@ jobs:
           $metadata = node scripts/dev/prepare-windows-security.mjs $source '${{ github.sha }}' '${{ github.sha }}' --current-tree
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $probe = $metadata | ConvertFrom-Json
-          if ($probe.sourceDir -ne $source -or $probe.appliedSecurityPatch) { throw 'Disposable source does not preserve exact current tree' }
+          $tree = git rev-parse '${{ github.sha }}^{tree}'
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve immutable source tree' }
+          if ($probe.sourceDir -ne $source -or $probe.buildSHA -ne '${{ github.sha }}' -or $probe.securitySHA -ne '${{ github.sha }}' -or $probe.appliedSecurityPatch -or $probe.guardedTree -ne $tree) { throw 'Disposable source does not preserve exact current tree' }
           "HEXBOT_WINDOWS_PROBE_SOURCE=$($probe.sourceDir)" >> $env:GITHUB_ENV
       - name: Build the sandbox tests and the daemon
         working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
