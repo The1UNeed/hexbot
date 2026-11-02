@@ -2252,26 +2252,11 @@ fn browsers() -> &'static Mutex<BrowserMap> {
     static BROWSERS: OnceLock<Mutex<BrowserMap>> = OnceLock::new();
     BROWSERS.get_or_init(Default::default)
 }
+/// A command on the daemon's PATH or in the user's own command folders
+/// (`common::command_roots`), found as `common::find_command` finds it.
 pub(crate) fn on_path(command: &str) -> Option<PathBuf> {
     let cwd = std::env::current_dir().ok()?;
-    if let Some(path) = common::command_path(command, &cwd) {
-        return Some(path);
-    }
-    let mut directories = vec![];
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = PathBuf::from(home);
-        directories.push(home.join(".local/bin"));
-        directories.push(home.join(".cargo/bin"));
-    }
-    directories.extend([
-        PathBuf::from("/opt/homebrew/bin"),
-        PathBuf::from("/usr/local/bin"),
-        PathBuf::from("/usr/bin"),
-    ]);
-    directories
-        .into_iter()
-        .map(|path| path.join(command))
-        .find(|p| common::executable_file(p))
+    common::find_command(command, &cwd, &common::command_roots())
 }
 fn browser_use_command(home: &Path, cfg: &Value) -> Option<Vec<String>> {
     if let Some(command) = cfg["browser"]["command"].as_str().filter(|s| !s.is_empty()) {

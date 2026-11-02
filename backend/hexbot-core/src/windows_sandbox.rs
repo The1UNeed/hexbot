@@ -67,7 +67,6 @@ unsafe extern "system" {
 #[allow(clashing_extern_declarations)]
 #[link(name = "kernel32", kind = "raw-dylib")]
 unsafe extern "system" {
-    fn GetFileType(handle: *mut std::ffi::c_void) -> u32;
     fn GetDriveTypeW(root: *const u16) -> u32;
 }
 const HKEY_CURRENT_USER: isize = 0x8000_0001_u32 as i32 as isize;
@@ -213,62 +212,43 @@ pub fn fixed_drive(plain: &str) -> Result<()> {
 
 /// Read a small regular file on a local disk. The path is checked by its text
 /// first, so a network, device or stream path is never opened; a final link
-/// is opened as itself and refused, never followed. Ok(None) means nothing is
-/// there or it is a folder.
+/// is opened as itself and refused, never followed (`common::open_disk_entry`,
+/// which `common::read_regular` shares). Ok(None) means nothing is there or
+/// it is a folder.
 pub fn regular_file(path: &Path, limit: u64) -> Result<Option<Vec<u8>>> {
+    use crate::common::DiskEntry;
     use std::io::Read;
-    use std::os::windows::{fs::MetadataExt, fs::OpenOptionsExt, io::AsRawHandle};
-    const SHARE_ALL: u32 = 0x7;
-    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
-    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-    const FILE_TYPE_DISK: u32 = 1;
-    const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-    let text = path.to_str().ok_or_else(|| {
-        Error::new(
-            5240,
-            format!("Git metadata paths must be Unicode: {}", path.display()),
-        )
-    })?;
-    rules::local(text)
-        .map_err(|reason| Error::new(5240, format!("{reason}: {}", path.display())))?;
-    let file = match std::fs::OpenOptions::new()
-        .read(true)
-        .share_mode(SHARE_ALL)
-        // Folders open too, so they read as "not a file" rather than failing.
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
-        .open(path)
-    {
-        Ok(file) => file,
+    let (file, length) = match crate::common::open_disk_entry(path) {
+        Ok(DiskEntry::File(file, length)) => (file, length),
+        // Folders read as "not a file" rather than failing.
+        Ok(DiskEntry::Directory) => return Ok(None),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
+        Ok(DiskEntry::Refused(reason)) => {
+            return Err(Error::new(5240, format!("{reason}: {}", path.display())));
+        }
+        Ok(DiskEntry::Device) => {
+            return Err(Error::new(
+                5240,
+                format!("Git metadata is not a disk file: {}", path.display()),
+            ));
+        }
+        Ok(DiskEntry::Link) => {
+            return Err(Error::new(
+                5240,
+                format!(
+                    "Git metadata is reached through a link, which the Windows scan does not follow: {}",
+                    path.display()
+                ),
+            ));
+        }
     };
-    // SAFETY: a valid handle owned by `file`.
-    if unsafe { GetFileType(file.as_raw_handle()) } != FILE_TYPE_DISK {
-        return Err(Error::new(
-            5240,
-            format!("Git metadata is not a disk file: {}", path.display()),
-        ));
-    }
-    let metadata = file.metadata()?;
-    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-        return Err(Error::new(
-            5240,
-            format!(
-                "Git metadata is reached through a link, which the Windows scan does not follow: {}",
-                path.display()
-            ),
-        ));
-    }
-    if metadata.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0 {
-        return Ok(None);
-    }
-    if metadata.len() > limit {
+    if length > limit {
         return Err(Error::new(5240, "Git metadata is too large to scan."));
     }
     let mut bytes = vec![];
-    file.take(metadata.len() + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > metadata.len() {
+    file.take(length + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > length {
         return Err(Error::new(
             5240,
             "Git metadata changed while it was scanned.",
