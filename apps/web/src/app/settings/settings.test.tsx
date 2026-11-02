@@ -532,7 +532,9 @@ describe('settings', () => {
       status: 'error'
     }
 
-    expect(updateLabel(failed)).toBe('No update is available for this channel yet.')
+    expect(updateLabel(failed)).toBe(
+      'Update check failed: No update is available for this channel yet.'
+    )
     expect(updateLabel({ ...failed, message: 'offline', rawError: undefined })).toBe(
       'Update check failed: offline'
     )

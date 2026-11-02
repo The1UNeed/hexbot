@@ -1629,8 +1629,13 @@ mod windows_collectors {
         ) -> i32;
     }
 
+    /// The sentinel `CreateToolhelp32Snapshot` returns instead of a handle.
+    const INVALID_HANDLE_VALUE: *mut c_void = -1isize as *mut c_void;
+    /// `HKEY_LOCAL_MACHINE` for `RegGetValueW`, sign-extended as the SDK does.
+    const HKEY_LOCAL_MACHINE: *mut c_void = 0x80000002u32 as i32 as isize as *mut c_void;
+
     fn handle(raw: *mut c_void) -> io::Result<OwnedHandle> {
-        if raw.is_null() || raw == -1isize as *mut c_void {
+        if raw.is_null() || raw == INVALID_HANDLE_VALUE {
             Err(io::Error::last_os_error())
         } else {
             // SAFETY: this is a valid, newly created handle, owned only here.
@@ -1662,19 +1667,13 @@ mod windows_collectors {
             // ERROR_NO_MORE_FILES
             return Err(format!("Process enumeration: {error}"));
         }
-        // Enumerate parents first, then open only this daemon and descendants.
-        // Like /proc sampling, processes that exit during a sample are skipped.
-        super::tree(&processes, std::process::id())
-            .into_iter()
-            .filter_map(|(process, _)| {
-                let result = sample_process(process);
-                if result.is_err() && process.pid != std::process::id() {
-                    None
-                } else {
-                    Some(result.map_err(|e| format!("Process {}: {e}", process.pid)))
-                }
-            })
-            .collect()
+        // Sample the whole table like /proc: the caller keeps the daemon
+        // subtree, and processes that cannot be opened, or exit during a
+        // sample, are skipped one by one.
+        Ok(processes
+            .iter()
+            .filter_map(|process| sample_process(process).ok())
+            .collect())
     }
 
     fn sample_process(process: &RawProcess) -> io::Result<RawProcess> {
@@ -1720,7 +1719,7 @@ mod windows_collectors {
             .then(|| windows_string(&buffer[..size as usize]))
     }
 
-    fn version() -> Option<String> {
+    fn version() -> Option<(u32, u32, u32)> {
         // RtlGetVersion reports the real build regardless of app manifests.
         let mut version = Version {
             size: std::mem::size_of::<Version>() as u32,
@@ -1730,23 +1729,33 @@ mod windows_collectors {
             platform: 0,
             service_pack: [0; 128],
         };
-        (unsafe { RtlGetVersion(&mut version) } == 0).then(|| {
-            format!(
-                "{}.{} (build {})",
-                version.major, version.minor, version.build
-            )
-        })
+        (unsafe { RtlGetVersion(&mut version) } == 0)
+            .then(|| (version.major, version.minor, version.build))
+    }
+
+    fn product(major: u32, minor: u32, build: u32) -> String {
+        // Windows 11 keeps the 10.0 version number; only the build differs.
+        if major == 10 {
+            let name = if build >= 22000 {
+                "Windows 11"
+            } else {
+                "Windows 10"
+            };
+            format!("{name} (build {build})")
+        } else {
+            format!("Windows {major}.{minor} (build {build})")
+        }
     }
 
     pub(super) fn uname() -> (Option<String>, Option<String>) {
         (
-            version().map(|v| format!("Windows NT {v}")),
+            version().map(|(_, _, build)| format!("build {build}")),
             Some(std::env::consts::ARCH.into()),
         )
     }
 
     pub(super) fn os_version() -> Option<String> {
-        version().map(|v| format!("Windows {v}"))
+        version().map(|(major, minor, build)| product(major, minor, build))
     }
 
     pub(super) fn cpu_model() -> Option<String> {
@@ -1759,7 +1768,7 @@ mod windows_collectors {
         // HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ. No expansion or shell parsing.
         (unsafe {
             RegGetValueW(
-                0x80000002u32 as i32 as isize as *mut c_void,
+                HKEY_LOCAL_MACHINE,
                 subkey.as_ptr(),
                 value.as_ptr(),
                 2,

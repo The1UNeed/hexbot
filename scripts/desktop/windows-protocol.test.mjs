@@ -66,6 +66,10 @@ test('pinned Electron registers at app startup and both editions supply guarded 
   const lengthCheck = cleanup.indexOf('$6 == $7')
   const deletion = cleanup.indexOf('advapi32::RegDeleteValueW')
   assert(compare >= 0 && typeCheck > compare && lengthCheck > typeCheck && deletion > lengthCheck)
+  // The deletion must sit inside the not-an-upgrade branch, not after it.
+  const notUpdate = cleanup.indexOf('${ifNot} ${isUpdated}')
+  const branchEnd = cleanup.indexOf('${endif}', deletion)
+  assert(notUpdate >= 0 && deletion > notUpdate && branchEnd > deletion)
   assert.match(cleanup, /CompareStringOrdinal/)
   assert.match(cleanup, /RegQueryValueExW/)
   assert.doesNotMatch(cleanup, /DeleteRegKey|RegDeleteTree|HKLM/)

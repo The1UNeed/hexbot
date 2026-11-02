@@ -7,6 +7,10 @@ import { appId } from '../../scripts/desktop/release-version.mjs'
 export default defineConfig(({ mode }) => ({
   main: {
     define: {
+      // The shortcut identity electron-builder writes comes from dist.mjs,
+      // which sets HEXBOT_CHANNEL and HEXBOT_EDITION. Package through
+      // `node scripts/desktop/dist.mjs`; a direct electron-builder run keeps
+      // the dev channel here and would not match the installed shortcuts.
       __HEXBOT_APP_ID__: JSON.stringify(
         appId(
           process.env.HEXBOT_CHANNEL ?? 'dev',

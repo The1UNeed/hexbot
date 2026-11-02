@@ -15,13 +15,16 @@
     ClearErrors
     ReadRegStr $0 HKCU "Software\Classes\hexbot\shell\open\command" ""
     ${ifNot} ${Errors}
+      # Ownership matches the command exactly as this install wrote it: the
+      # $INSTDIR spelling, quoted, with %1. Junction or 8.3 spellings written
+      # by other installs are left alone, like the outer installer's refusal
+      # to touch handlers it does not own.
       StrCpy $1 '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" "%1"'
       # OrdinalIgnoreCase matches the outer installer, including Unicode paths.
       # Full equality also rejects extra arguments, unquoted paths and %L.
       System::Call 'kernel32::CompareStringOrdinal(w r0, i -1, w r1, i -1, i 1) i .r2'
       StrCmp $2 2 0 hexbot_protocol_done # CSTR_EQUAL
       StrLen $2 $0
-      IntCmp $2 4200 0 0 hexbot_protocol_done
       # ReadRegStr accepts REG_EXPAND_SZ. Query the actual kind and byte length
       # so expansion, embedded NULs and truncated reads cannot confer ownership.
       System::Call 'advapi32::RegOpenKeyExW(p 0x80000001, w "Software\Classes\hexbot\shell\open\command", i 0, i 0x103, *p .r3) i .r4'
@@ -35,6 +38,10 @@
             # Delete only the command's default value; retain named values,
             # children and protocol metadata, as the outer installer does.
             System::Call 'advapi32::RegDeleteValueW(p r3, w "") i .r4'
+            ${if} $4 != 0
+              DetailPrint "hexbot protocol cleanup left the handler behind (error $4)"
+              SetErrors
+            ${endif}
           ${endif}
         ${endif}
         System::Call 'advapi32::RegCloseKey(p r3)'

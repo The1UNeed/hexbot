@@ -667,8 +667,9 @@ Unsupported path spellings are left alone. Cleanup does not run during Repair or
 before a failed/canceled uninstall. If it fails after NSIS, owned residual-file
 removal still runs and the installer reports the partial result.
 
-Empty registration keys and protocol marker values remain. Windows Settings or a
-direct NSIS uninstall does not invoke this outer-installer cleanup. Comparing and
+Empty registration keys and protocol marker values remain. A direct NSIS
+uninstall performs the same exact-ownership cleanup itself, skipped when the
+uninstaller runs for an upgrade-in-place. Comparing and
 deleting a command value is not atomic against an unrelated same-user registry
 writer. A handler replaced before cleanup is preserved; no race-free registry
 transaction is claimed. The command format follows [pinned Electron 42.11.3](https://github.com/electron/electron/blob/v42.11.3/shell/browser/browser_win.cc#L429-L535).

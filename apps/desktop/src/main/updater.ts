@@ -109,10 +109,12 @@ function configure(): Promise<void> {
       if (active === 'install') {
         active = null
         log.error(`update install failed: ${errorMessage(error)}`)
-        setState(onInstallError(state!, normalizeUpdateError(error, process.platform)))
+        setState(onInstallError(state!, normalizeUpdateError(error, process.platform, 'install')))
       } else if (!active) {
         log.error(`update check failed: ${errorMessage(error)}`)
-        setState(onCheckError(state!, normalizeUpdateError(error, process.platform), now()))
+        setState(
+          onCheckError(state!, normalizeUpdateError(error, process.platform, 'check'), now())
+        )
       }
     })
     setTimeout(() => void checkForUpdates('startup'), STARTUP_CHECK_DELAY_MS).unref()
@@ -144,7 +146,9 @@ export async function checkForUpdates(reason: string): Promise<UpdateState> {
       if (!result) setState(onUpToDate(state!, now()))
     } catch (error) {
       log.error(`update check failed: ${errorMessage(error)}`)
-      setState(onCheckError(state!, normalizeUpdateError(error, process.platform), now()))
+      setState(
+        onCheckError(state!, normalizeUpdateError(error, process.platform, 'check'), now())
+      )
     } finally {
       active = null
       pending = undefined
@@ -169,7 +173,7 @@ export async function downloadUpdate(): Promise<UpdateState> {
       await autoUpdater.downloadUpdate()
     } catch (error) {
       log.error(`update download failed: ${errorMessage(error)}`)
-      setState(onDownloadError(state!, normalizeUpdateError(error, process.platform)))
+      setState(onDownloadError(state!, normalizeUpdateError(error, process.platform, 'download')))
     } finally {
       active = null
       pending = undefined
@@ -194,7 +198,7 @@ export async function installUpdate(): Promise<UpdateState> {
   } catch (error) {
     active = null
     log.error(`update install failed: ${errorMessage(error)}`)
-    setState(onInstallError(state!, normalizeUpdateError(error, process.platform)))
+    setState(onInstallError(state!, normalizeUpdateError(error, process.platform, 'install')))
   }
   return state!
 }
