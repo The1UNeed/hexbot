@@ -318,7 +318,11 @@ try {
       try {
         await app.close(); app = undefined
         assert.deepEqual(await appExit, [0, null])
-      } catch (error) { quitError = error }
+      } catch (error) {
+        quitError = error
+        const desktopLog = await readFile(join(home, 'logs/desktop.log'), 'utf8').catch(error => `unreadable: ${error.code}`)
+        console.log(`Quit failed with missingScript=${missingScript}; desktop.log tail:\n${desktopLog.slice(-4000)}`)
+      }
       try { await completed() }
       catch (error) { if (quitError) throw new AggregateError([quitError, error], 'Quit and retained-handle check failed'); throw error }
       if (quitError) throw quitError

@@ -10,6 +10,7 @@ import { app } from 'electron'
 import { binDir, daemonDirectory, hexbotExecutable, hexbotHome, canonicalRuntimePath } from './paths'
 import { windowsDaemon } from './windows-readiness'
 import { nodePath } from './node-path'
+import { errorMessage, log } from '../log'
 
 // 'external': a service or another copy of the app runs the daemon for this
 // home. The app uses it and cannot stop it.
@@ -160,6 +161,7 @@ export class DaemonManager extends EventEmitter {
         () => app.exit(0),
         error => {
           console.error('Daemon shutdown failed:', error)
+          log.error(`daemon shutdown on quit failed: ${[error, ...(error instanceof AggregateError ? error.errors : [])].map(errorMessage).join('; ')}`)
           app.exit(1)
         }
       )
