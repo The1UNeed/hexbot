@@ -1,7 +1,8 @@
 // Every face on the page moves with the app's own face engine
 // (apps/web/src/lib/face-motion.ts), so it blinks, glances, bobs and changes
-// mood exactly as it does in Hexbot. A face moves only while it is on screen,
-// and not at all with reduced motion. The one motion the site allows itself.
+// mood exactly as it does in Hexbot, and its eyes turn toward the pointer.
+// A face moves only while it is on screen, and not at all with reduced
+// motion. The one motion the site allows itself.
 import type { FaceLook, FaceMood } from '../../../web/src/lib/face-geometry'
 import { FaceMotion } from '../../../web/src/lib/face-motion'
 
@@ -43,4 +44,29 @@ if (faces.length && !reduced) {
     }
   })
   for (const svg of faces) seen.observe(svg)
+
+  // The eyes slide toward the pointer and stay inside the face; a face looks
+  // straight at a pointer right on it, and further across the farther it is.
+  let frame = 0
+  const look = (x: number, y: number) => {
+    frame = 0
+    for (const svg of faces) {
+      const box = svg.getBoundingClientRect()
+      const dx = x - (box.left + box.width / 2)
+      const dy = y - (box.top + box.height / 2)
+      const distance = Math.hypot(dx, dy) || 1
+      const reach = 10 * Math.min(1, distance / 320)
+      motions.get(svg)?.follow({ x: (dx / distance) * reach, y: (dy / distance) * reach })
+    }
+  }
+  addEventListener('pointermove', event => {
+    if (frame) return
+    frame = requestAnimationFrame(() => look(event.clientX, event.clientY))
+  }, { passive: true })
+  // Without a pointer on the page, the faces glance around on their own again.
+  document.documentElement.addEventListener('pointerleave', () => {
+    cancelAnimationFrame(frame)
+    frame = 0
+    for (const motion of motions.values()) motion.follow(null)
+  })
 }

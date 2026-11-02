@@ -12,16 +12,12 @@ const github = 'https://github.com/The1UNeed/hexbot'
 const label = downloads?.channel === 'stable' ? '' : 'nightly'
 
 // The hero crowd: shapes and colours straight from the app's face builder.
-// Each face flies in, then moves and changes mood with the app's face engine;
+// Each face flies in, then drifts, blinks and looks at the pointer;
 // positions and timings are the hf-* classes in global.css, because the
 // site's CSP (style-src 'self') blocks style attributes.
 const crowd = [
-  ['squircle', '#f5a524', 'hf-1', ['idle', 'thinking', 'writing', 'happy']],
-  ['round', '#3b82f6', 'hf-2', ['searching', 'curious', 'idle']],
-  ['cloud', '#8b5cf6', 'hf-3', ['drowsy', 'sleeping', 'surprised', 'idle']],
-  ['hexagon', '#22a55b', 'hf-4', ['working', 'proud', 'celebrating', 'idle']],
-  ['drop', '#ec2f8a', 'hf-5', ['listening', 'shy', 'happy']],
-  ['triangle', '#14b8a6', 'hf-6', ['idle', 'loading', 'idle', 'happy']],
+  ['squircle', '#f5a524', 'hf-1'], ['round', '#3b82f6', 'hf-2'], ['cloud', '#8b5cf6', 'hf-3'],
+  ['hexagon', '#22a55b', 'hf-4'], ['drop', '#ec2f8a', 'hf-5'], ['triangle', '#f97316', 'hf-6'],
 ] as const
 
 // The faces section: every face goes through the moods it shows in the app.
@@ -89,8 +85,8 @@ const software = {
 <Base title="Hexbot: your team of AI agents works, remembers, and communicates" jsonLd={[software]}>
   <section class="hero relative mx-auto max-w-[1120px] px-5 pb-16 text-center sm:px-8">
     <div class="hero-crowd" aria-hidden="true">
-      {crowd.map(([shape, color, position, moods]) => (
-        <span class:list={['hero-face', position]}><span class="hero-face-in"><Face shape={shape} color={color} moods={[...moods]} /></span></span>
+      {crowd.map(([shape, color, position]) => (
+        <span class:list={['hero-face', position]}><span class="hero-face-in"><Face shape={shape} color={color} /></span></span>
       ))}
     </div>
     <a class="eyebrow rise relative" href="/faq/#alpha"><span class="nightly-dot" aria-hidden="true"></span>Alpha: very early development</a>
