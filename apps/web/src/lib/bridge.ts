@@ -127,6 +127,8 @@ export interface UpdateState {
   errorContext: 'check' | 'download' | 'install' | null
   /** Why updates are off, or the last error. */
   message: null | string
+  /** Original Windows updater error, retained for diagnostics. */
+  rawError?: null | string
   percent: null | number
   status:
     | 'available'

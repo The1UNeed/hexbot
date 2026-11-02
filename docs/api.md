@@ -1450,6 +1450,9 @@ span holds message text, only names, timings, token counts and error messages.
     supervisor (`desktop`, `service` or null) and home.
   - `host`: hostname, OS and kernel, architecture, processor and cores,
     memory total and available, load averages, and the disk holding the home.
+    On Windows the kernel is the OS build, and load averages are absent (they
+    are a Unix metric); the OS name, processor, memory and home disk are the
+    same fields.
   - `launch`: `total_ms` from `hexbot serve` to ready and its `phases`
     (`name`, `start_ms`, `duration_ms`).
   - `resources`: a sample of the daemon's process tree every 5 seconds for
