@@ -25,6 +25,12 @@ try {
   if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw 'Sandbox tests must run without an administrator token'
   }
+  # Start-Process -Credential passes on the administrator's environment; the
+  # profile folders come from this user's own token instead.
+  $env:USERPROFILE = [Environment]::GetFolderPath('UserProfile')
+  $env:HOME = $env:USERPROFILE
+  $env:APPDATA = [Environment]::GetFolderPath('ApplicationData')
+  $env:LOCALAPPDATA = [Environment]::GetFolderPath('LocalApplicationData')
   $env:TEMP = Join-Path $root 'temp'
   $env:TMP = $env:TEMP
   $env:HEXBOT_WINDOWS_HEXBOT = Join-Path $root 'hexbot.exe'
