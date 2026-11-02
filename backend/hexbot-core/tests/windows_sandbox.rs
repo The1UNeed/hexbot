@@ -47,8 +47,9 @@ fn fixture(name: &str) -> Fixture {
     fs::write(outside.join("id_ed25519"), "PRIVATE").unwrap();
     fs::hard_link(outside.join("id_ed25519"), workspace.join("linked")).unwrap();
     let status = Command::new(cmd())
-        .args(["/d", "/c", "mklink", "/J"])
-        .arg(workspace.join("junction"))
+        // cmd.exe splits quoted arguments; a relative name needs no quoting.
+        .current_dir(&workspace)
+        .args(["/d", "/c", "mklink", "/J", "junction"])
         .arg(&outside)
         .stdout(Stdio::null())
         .status()
