@@ -1341,6 +1341,10 @@ export function updateLabel(state: null | UpdateState): string {
       return `Installing version ${state.downloadedVersion}. Hexbot restarts when it is done.`
 
     case 'error':
+      if (state.rawError && state.message && state.message !== state.rawError) {
+        return state.message
+      }
+
       return `${state.errorContext === 'download' ? 'Download' : state.errorContext === 'install' ? 'Install' : 'Update check'} failed: ${state.message ?? 'unknown error'}`
 
     case 'up-to-date':

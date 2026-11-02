@@ -26,6 +26,7 @@ import {
   MemorySettings,
   NetworkSettings,
   ProvidersSettings,
+  updateLabel,
   UpdatesSettings
 } from './index'
 
@@ -515,6 +516,42 @@ describe('settings', () => {
     expect(await screen.findByRole('button', { name: 'Sign in and register' })).toBeVisible()
     expect(screen.getByText('Sign in to get an address for this daemon.')).toBeVisible()
     expect(screen.queryByText(/Removed in Hex Connect/)).toBeNull()
+  })
+
+  it('shows the friendly Windows updater error and retains existing labels elsewhere', () => {
+    const failed: UpdateState = {
+      availableVersion: null,
+      channel: 'stable',
+      checkedAt: null,
+      currentVersion: '1.0.0',
+      downloadedVersion: null,
+      errorContext: 'check',
+      message: 'No update is available for this channel yet.',
+      rawError: 'HTTP 404 https://updates.hexbot.app/full/win/x64/latest.yml',
+      percent: null,
+      status: 'error'
+    }
+
+    expect(updateLabel(failed)).toBe('No update is available for this channel yet.')
+    expect(updateLabel({ ...failed, message: 'offline', rawError: undefined })).toBe(
+      'Update check failed: offline'
+    )
+    expect(
+      updateLabel({
+        ...failed,
+        message: 'Signature mismatch',
+        rawError: 'Signature mismatch',
+        errorContext: 'install'
+      })
+    ).toBe('Install failed: Signature mismatch')
+    expect(
+      updateLabel({
+        ...failed,
+        message: 'disk full',
+        rawError: undefined,
+        errorContext: 'download'
+      })
+    ).toBe('Download failed: disk full')
   })
 
   it('walks an app update from check to restart', async () => {
