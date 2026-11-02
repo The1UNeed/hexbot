@@ -16,6 +16,11 @@ import { ConversationColumn, ProfilePanel, RosterColumn } from './slots'
 const GUTTER = 8
 const PANEL_MOTION = 240
 
+// Panels float over the chat on narrow windows and on a half-open foldable,
+// where the fold rules in tokens.css hide the panel column.
+const COMPACT =
+  '(max-width: 1100px), (device-posture: folded) and (orientation: landscape), (horizontal-viewport-segments: 2)'
+
 export function AppShell({ children }: { children?: ReactNode }) {
   const [panelWidth, setPanelWidth] = useState(320)
   // Visuals beside the chat get a wider panel of their own: room for a chart.
@@ -28,7 +33,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
   const togglePanel = useUi(state => state.toggleRightPanel)
   const thread = useUi(state => state.thread)
   const closeThread = useUi(state => state.closeThread)
-  const [compact, setCompact] = useState(() => window.matchMedia('(max-width: 1100px)').matches)
+  const [compact, setCompact] = useState(() => window.matchMedia(COMPACT).matches)
   const params = useParams({ strict: false }) as { bot?: string; room?: string; section?: string }
   const roomMode = Boolean(params.room)
   // The thread panel takes the same slot as the profile, in rooms too, and goes first.
@@ -57,7 +62,7 @@ export function AppShell({ children }: { children?: ReactNode }) {
   }, [showPanel])
 
   useEffect(() => {
-    const media = window.matchMedia('(max-width: 1100px)')
+    const media = window.matchMedia(COMPACT)
 
     const change = () => {
       setCompact(media.matches)

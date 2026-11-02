@@ -1,9 +1,20 @@
-import { Redirect, Stack, usePreventRemove } from 'expo-router'
+import { Redirect, router, Stack, usePreventRemove } from 'expo-router'
 import { useEffect, useRef } from 'react'
+import { View } from 'react-native'
 
 import { useAppScreens } from '../App'
-import { chatActions, ChatTitle } from '../src/screens'
-import { useTheme } from '../src/ui'
+import { type BarAction, chatActions, ChatTitle } from '../src/screens'
+import { IconButton, type IconName, useTheme } from '../src/ui'
+
+// Android's bar takes image icons, not SF Symbols, so the chat's buttons are
+// drawn here with the app's own icons.
+const ICONS: Record<BarAction['systemImage'], IconName> = {
+  desktopcomputer: 'desktop-outline',
+  'desktopcomputer.and.arrow.down': 'desktop',
+  gearshape: 'settings-outline',
+  magnifyingglass: 'search',
+  'person.crop.circle': 'person-circle-outline'
+}
 
 /**
  * The open chat or room on Android. The system draws its bar: native back,
@@ -17,9 +28,15 @@ export default function Chat() {
   closed.current = app.onChatClosed
   usePreventRemove(app.uploading, () => {})
   useEffect(() => () => closed.current(), [])
+  // The chat closed from inside, as when its room is archived: back to the
+  // list rather than a second list on top of it.
+  const gone = !app.chat || !app.chatProps
+  useEffect(() => {
+    if (gone && router.canGoBack()) router.back()
+  }, [gone])
 
   if (!app.chat || !app.chatProps) {
-    return <Redirect href="/" />
+    return router.canGoBack() ? null : <Redirect href="/" />
   }
 
   const props = app.chatProps
@@ -30,22 +47,23 @@ export default function Chat() {
         options={{
           headerBackButtonDisplayMode: 'minimal',
           headerTitle: () => <ChatTitle {...props} />,
-          headerTransparent: false
+          headerTransparent: false,
+          headerRight: () => (
+            <View style={{ flexDirection: 'row' }}>
+              {chatActions(props).map(action => (
+                <IconButton
+                  accessibilityLabel={action.accessibilityLabel}
+                  color={action.live ? theme.info : undefined}
+                  icon={ICONS[action.systemImage]}
+                  key={action.key}
+                  onPress={action.onPress}
+                  testID={`chat-${action.key}`}
+                />
+              ))}
+            </View>
+          )
         }}
       />
-      <Stack.Toolbar placement="right">
-        {chatActions(props).map(action => (
-          <Stack.Toolbar.Button
-            accessibilityLabel={action.accessibilityLabel}
-            icon={action.systemImage}
-            key={action.key}
-            onPress={action.onPress}
-            tintColor={action.live ? theme.info : undefined}
-          >
-            {action.label}
-          </Stack.Toolbar.Button>
-        ))}
-      </Stack.Toolbar>
       {app.chat}
     </>
   )

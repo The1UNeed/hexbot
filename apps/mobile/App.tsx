@@ -144,7 +144,8 @@ export interface AppScreens {
   chatProps: ChatScreenProps | null
   /**
    * What sits beside the iOS sidebar: `settings`, `library`, or the open
-   * chat's row (`${kind}-${id}`); null for nothing.
+   * chat's row (`${kind}-${id}`), or `chat` for one with no row, such as a
+   * thread between bots; null for nothing.
    */
   selected: string | null
   /** Choose a sidebar row; null goes back to the list. */
@@ -1058,6 +1059,8 @@ function MobileApp({ children }: { children?: ReactNode }) {
   }
   // Pulse opens where a busy bot works or waits; a bot tap opens its own chat.
   const openPulse = (id: string) => {
+    // The list stays beside the chat on iOS; while a file uploads, the chat stays.
+    if (uploading) return
     const b = botByName(id)
     if (!b) {
       setBotPage(id)
@@ -1200,6 +1203,9 @@ function MobileApp({ children }: { children?: ReactNode }) {
       onDisconnect={() => {
         setDemo(false)
         setBotPage(null)
+        // The next daemon opens on its list, not on this one's Settings.
+        setSelected(null)
+        if (Platform.OS !== 'ios' && router.canDismiss()) router.dismissAll()
         void mobile.disconnect()
       }}
       refreshing={refreshing}
@@ -1236,7 +1242,10 @@ function MobileApp({ children }: { children?: ReactNode }) {
       : route?.kind === 'section'
         ? purposeOf(route.section, mobile.sections) === 'checkins'
           ? `checkins-${route.section.id}`
-          : `bot-${route.bot.name}`
+          : // A thread with another bot is not the bot's own chat.
+            route.section.peer_bot
+            ? null
+            : `bot-${route.bot.name}`
         : null
   const closeChat = () => {
     if (demo) setBotPage(null)
@@ -1320,7 +1329,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
   const screens: AppScreens = {
     homeProps,
     chatProps: chat?.props ?? null,
-    selected: homeProps.selected ?? null,
+    selected: selected === 'chat' ? openChatRow || 'chat' : selected,
     select,
     chat: demoBot ? chat : route && !demo ? chat : null,
     settings: settingsScreen,

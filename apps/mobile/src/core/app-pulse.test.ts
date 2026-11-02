@@ -256,6 +256,17 @@ it('on iOS, shows an opened room beside the sidebar and closes it when the sideb
   expect(state.screens!.selected).toBeNull()
 })
 
+it("on iOS, opens a bot's own chat from its row while a thread with another bot is open", async () => {
+  await open()
+  await screen.findByText('thread history')
+  // The thread sits beside the list with no row of its own highlighted.
+  expect(state.screens!.selected).toBe('chat')
+  expect(state.screens!.homeProps.selected).toBeNull()
+  act(() => state.screens!.select('bot-owl'))
+  await screen.findByText('owner history')
+  expect(state.screens!.homeProps.selected).toBe('bot-owl')
+})
+
 it('on iOS, opens a chat, Settings and Bots & jobs from the sidebar', async () => {
   rooms = [room]
   renderApp()

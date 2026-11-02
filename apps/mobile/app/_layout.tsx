@@ -11,7 +11,7 @@ export default function RootLayout() {
   return (
     <App>
       <Stack screenOptions={{ headerBackButtonDisplayMode: 'minimal' }}>
-        <Stack.Screen name="index" options={{ headerShown: false }} />
+        <Stack.Screen name="index" options={{ headerShown: false, title: 'Chats' }} />
         <Stack.Screen name="settings" options={{ title: 'Settings' }} />
         <Stack.Screen name="bots" options={{ title: 'Bots & jobs' }} />
       </Stack>
