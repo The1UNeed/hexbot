@@ -172,6 +172,9 @@ export async function installedStartupFiles(home, bundle) {
     bootstrap: await read(home, 'logs/bootstrap.log'),
     daemon: await read(home, 'logs/daemon.log'),
     desktop: await read(home, 'logs/desktop.log'),
+    // The Windows task's own streams, when the task is what failed to start.
+    service: await read(home, 'logs/service.log'),
+    serviceError: await read(home, 'logs/service-error.log'),
     manifest: await read(bundle, 'manifest.json', [
       'version',
       'target',
