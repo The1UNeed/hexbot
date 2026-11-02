@@ -1,5 +1,5 @@
 use hexbot_core::{
-    Error, Result, auth, common, db,
+    Error, Result, auth, common, db, osutil,
     server::{self, App},
     services,
 };
@@ -94,15 +94,6 @@ fn finish_native_transition(home: &Path) -> Result<()> {
         && std::fs::symlink_metadata(venv.join("bin")).is_ok_and(|m| m.file_type().is_dir())
         && std::fs::read(venv.join("bin/hexbot"))
             .is_ok_and(|bytes| bytes.starts_with(b"#!/bin/sh\n"));
-    fn remove(path: &Path) -> Result<()> {
-        match std::fs::symlink_metadata(path) {
-            Ok(meta) if meta.file_type().is_dir() => std::fs::remove_dir_all(path)?,
-            Ok(_) => std::fs::remove_file(path)?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-        Ok(())
-    }
     if keep_shim {
         // Leave the old entrypoint continuously available, including if cleanup
         // is interrupted by a crash or the service manager restarting us.
@@ -112,17 +103,17 @@ fn finish_native_transition(home: &Path) -> Result<()> {
                 for binary in std::fs::read_dir(entry.path())? {
                     let binary = binary?;
                     if binary.file_name() != "hexbot" {
-                        remove(&binary.path())?;
+                        osutil::remove_entry(&binary.path())?;
                     }
                 }
             } else {
-                remove(&entry.path())?;
+                osutil::remove_entry(&entry.path())?;
             }
         }
     } else {
-        remove(&venv)?;
+        osutil::remove_entry(&venv)?;
     }
-    remove(&runtime.join("src"))?;
+    osutil::remove_entry(&runtime.join("src"))?;
     std::fs::remove_file(marker)?;
     Ok(())
 }
@@ -635,6 +626,22 @@ mod tests {
         std::os::unix::fs::symlink(outside.path(), home.path().join("runtime")).unwrap();
         assert!(finish_native_transition(home.path()).is_err());
         assert!(outside.path().join("src/data").is_file());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn transition_cleanup_removes_links_as_links() {
+        let home = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        common::atomic_write(&outside.path().join("keep"), b"keep").unwrap();
+        let runtime = home.path().join("runtime");
+        common::atomic_write(&runtime.join("native-transition-pending"), b"remove-shim").unwrap();
+        std::fs::create_dir_all(runtime.join("venv/lib")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), runtime.join("venv/lib/linked")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), runtime.join("src")).unwrap();
+        finish_native_transition(home.path()).unwrap();
+        assert!(!runtime.join("venv").exists());
+        assert!(std::fs::symlink_metadata(runtime.join("src")).is_err());
+        assert!(outside.path().join("keep").is_file());
     }
     #[test]
     fn transition_cleanup_removes_python_but_preserves_data_and_service_shim() {

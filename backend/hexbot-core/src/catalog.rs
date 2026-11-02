@@ -1198,18 +1198,20 @@ fn plan_one_chat_per_bot(
     Ok((doomed, renamed))
 }
 /// Copies the databases and conversation files the upgrade deletes from into
-/// `backups/one-chat-per-bot-<time>/`, whole or not at all.
+/// `backups/one-chat-per-bot-<time>/`, whole or not at all. A `backups` that
+/// is a link, a symbolic link or a Windows junction, is refused rather than
+/// followed, so neither the cleanup nor the copy leaves the home.
 fn back_up(home: &Path, bots: &BTreeSet<&str>) -> Result<PathBuf> {
     let backups = home.join("backups");
     // A copy that failed part way, on this start or an earlier one, only
     // takes space.
-    if backups.is_dir() {
+    if crate::osutil::directory_below(home, &backups)? {
         for entry in fs::read_dir(&backups)? {
             let entry = entry?;
             let name = entry.file_name();
             let name = name.to_string_lossy();
             if name.starts_with("one-chat-per-bot-") && name.ends_with(".partial") {
-                fs::remove_dir_all(entry.path())?;
+                crate::osutil::remove_entry(&entry.path())?;
             }
         }
     }
@@ -1220,7 +1222,7 @@ fn back_up(home: &Path, bots: &BTreeSet<&str>) -> Result<PathBuf> {
     let partial = dir.with_extension("partial");
     let copied = copy_backup(home, bots, &partial).and_then(|()| Ok(fs::rename(&partial, &dir)?));
     if let Err(error) = copied {
-        let _ = fs::remove_dir_all(&partial);
+        let _ = crate::osutil::remove_entry(&partial);
         return Err(error);
     }
     Ok(dir)
@@ -1245,12 +1247,16 @@ fn copy_backup(home: &Path, bots: &BTreeSet<&str>, to: &Path) -> Result<()> {
             )?;
         }
     }
+    // A linked runtime or sessions folder is refused, not followed.
     let sessions = home.join("runtime/sessions");
-    if sessions.try_exists()? {
+    if crate::osutil::directory_below(home, &sessions)? {
         copy_tree(&sessions, &to.join("runtime/sessions"))?;
     }
     Ok(())
 }
+/// Copies the folders and regular files below `from`. Links inside it,
+/// junctions on Windows included, and other special entries are skipped,
+/// never followed: a backup holds what the home holds, not what a link names.
 fn copy_tree(from: &Path, to: &Path) -> Result<()> {
     fs::create_dir_all(to)?;
     for entry in fs::read_dir(from)? {
@@ -4798,6 +4804,67 @@ mod parity_tests {
         drop(denied);
         let backup = back_up(home.path(), &BTreeSet::from(["owl"])).unwrap();
         assert!(backup.join("profiles/owl/state.db").is_file());
+    }
+    /// The backup's cleanup and copy stay in the home: a linked backups,
+    /// runtime or sessions folder is refused, and links inside the sessions
+    /// are skipped, never followed.
+    #[cfg(unix)]
+    #[test]
+    fn backups_refuse_linked_roots_and_skip_links_inside() {
+        use std::os::unix::fs::symlink;
+        let home = tempfile::tempdir().unwrap();
+        legacy_log(home.path(), "Night notes", true, true);
+        let bots = BTreeSet::from(["owl"]);
+        let outside = tempfile::tempdir().unwrap();
+        let stale = outside
+            .path()
+            .join("one-chat-per-bot-20260101-000000.partial");
+        fs::create_dir(&stale).unwrap();
+        fs::create_dir_all(outside.path().join("sessions/elsewhere")).unwrap();
+        let backups = home.path().join("backups");
+        let refused = |linked: &Path| {
+            assert_eq!(
+                back_up(home.path(), &bots).unwrap_err().message,
+                format!(
+                    "{} is a link, which Hexbot does not follow",
+                    linked.display()
+                )
+            );
+        };
+        symlink(outside.path(), &backups).unwrap();
+        refused(&backups);
+        // What the link names was neither cleaned up nor written to.
+        assert!(stale.is_dir());
+        assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 2);
+        fs::remove_file(&backups).unwrap();
+        let runtime = home.path().join("runtime");
+        let sessions = runtime.join("sessions");
+        let kept = sessions.join("kept");
+        fs::create_dir_all(&kept).unwrap();
+        fs::write(kept.join("conversation.jsonl"), "kept").unwrap();
+        // A linked sessions or runtime folder is refused, not copied through.
+        let aside = home.path().join("aside");
+        for (linked, target) in [
+            (&sessions, outside.path().join("sessions")),
+            (&runtime, outside.path().to_path_buf()),
+        ] {
+            fs::rename(linked, &aside).unwrap();
+            symlink(&target, linked).unwrap();
+            refused(linked);
+            assert_eq!(fs::read_dir(&backups).unwrap().count(), 0);
+            fs::remove_file(linked).unwrap();
+            fs::rename(&aside, linked).unwrap();
+        }
+        // A link inside the sessions is skipped.
+        symlink(outside.path().join("sessions"), kept.join("linked")).unwrap();
+        let backup = back_up(home.path(), &bots).unwrap();
+        let copied = backup.join("runtime/sessions/kept");
+        assert_eq!(
+            fs::read_to_string(copied.join("conversation.jsonl")).unwrap(),
+            "kept"
+        );
+        assert!(fs::symlink_metadata(copied.join("linked")).is_err());
+        assert!(stale.is_dir());
     }
     #[test]
     fn later_legacy_logs_are_classified_without_repeating_migration() {

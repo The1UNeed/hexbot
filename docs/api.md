@@ -733,9 +733,10 @@ The daemon has one computer that its bots share: a Cua sandbox, a Linux
 desktop made from the `linux` image the first time a bot or the user turns
 it on. Every bot with Computer use (`computer_use` in its tools) works on
 it. The daemon drives it with the `cua` CLI on its own computer
-(`computer_use.command` in config, `HEXBOT_CUA_CMD`, or `cua` on the path)
-and runs `cua mcp` for the bots' actions. It passes `CUA_TELEMETRY=0` unless
-`computer_use.telemetry` is true. The sandbox is named
+(`computer_use.command` in config, `HEXBOT_CUA_CMD`, or `cua` on the path
+or in `~/.local/bin`, where `uv tool install cua` puts it; `cua.exe` on
+Windows) and runs `cua mcp` for the bots' actions. It passes
+`CUA_TELEMETRY=0` unless `computer_use.telemetry` is true. The sandbox is named
 `hexbot-computer-<hash>`, unique per daemon home. Deleting a bot leaves the
 computer and removes only its cursor.
 
@@ -1052,8 +1053,10 @@ enabled: boolean}`. `path` points to `SKILL.md`.
 `enabled_for_bot` is the bot's own grant, independent of global disables.
 `ready` says the daemon's computer has everything the skill's frontmatter
 declares: `platforms`, `prerequisites.commands` (found on the daemon's
-`PATH`, `~/.local/bin`, `~/.cargo/bin`, `/opt/homebrew/bin` or
-`/usr/local/bin`) and `prerequisites.env_vars` (in the bot's or daemon's
+`PATH`, `~/.local/bin`, `~/.cargo/bin`, `/opt/homebrew/bin`,
+`/usr/local/bin` or `/usr/bin`; on Windows on the `PATH` or in the profile's
+`.local\bin` and `.cargo\bin`, a name without an extension taking each
+`PATHEXT` one in turn) and `prerequisites.env_vars` (in the bot's or daemon's
 `.env`, or the daemon's environment). `missing` lists what is not there, as
 `{kind: "platform", name: [string]}`, `{kind: "command", name}` or
 `{kind: "env", name}`. `enabled` is the effective value:
@@ -1222,8 +1225,9 @@ Each user has one KeePass (KDBX 4) vault, `<home>/users/<id>/passwords/passwords
 Its key, 256 random bits written as hex, is the vault's KeePass password. It
 lives in the macOS Keychain (service `hexbot-passwords`) or the Linux Secret
 Service, or, where neither works, in `<home>/users/<id>/passwords/passwords.key`
-(`0600`). `HEXBOT_PASSWORD_KEY_STORE=file` always uses the key file; `pnpm dev`
-and the mobile smoke test set it so temporary daemons leave nothing in the
+(`0600`; on Windows its folder's DACL grants SYSTEM and the user alone, and
+the key inherits it). `HEXBOT_PASSWORD_KEY_STORE=file` always uses the key
+file; `pnpm dev` and the mobile smoke test set it so temporary daemons leave nothing in the
 login keychain. Bots' shells and file tools can't read that folder, temporary files included. A vault
 whose key can't be read stays locked (5300); Hexbot never replaces it.
 

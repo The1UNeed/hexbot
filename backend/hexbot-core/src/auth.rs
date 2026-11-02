@@ -242,11 +242,7 @@ pub fn local_token(home: &Path) -> Result<String> {
             .optional()?
             .is_some();
         if valid {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
-            }
+            crate::osutil::private_file(&path)?;
             tx.commit()?;
             return Ok(token.to_owned());
         }
@@ -258,11 +254,7 @@ pub fn local_token(home: &Path) -> Result<String> {
     let device = mint(&tx, "This computer", "local", "local", None)?;
     let token = device["device_token"].as_str().expect("mint token");
     common::atomic_write(&path, format!("{token}\n").as_bytes())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
-    }
+    crate::osutil::private_file(&path)?;
     tx.commit()?;
     Ok(token.to_owned())
 }

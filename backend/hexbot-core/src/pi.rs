@@ -273,6 +273,48 @@ impl Drop for CancelRequest {
     }
 }
 
+/// Pi's own Bash on Windows is Git Bash, found as the sandbox finds it
+/// (`windows_sandbox::git_bash`, never through the PATH) and named in the
+/// bot's Pi settings, which Pi reads when it starts. Pi's environment has no
+/// ProgramFiles for its own lookup, which then searches the PATH, where
+/// `bash.exe` can be WSL's. Without Git for Windows the settings stay as they
+/// are. Pi's settings change under the lock its other config files do.
+#[cfg(windows)]
+fn pin_git_bash(agent_dir: &std::path::Path) -> Result<(), PiError> {
+    let Some(bash) = crate::windows_sandbox::git_bash() else {
+        return Ok(());
+    };
+    let _lock = crate::common::credentials_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let path = agent_dir.join("settings.json");
+    let mut settings = match std::fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice::<Value>(&bytes)
+            .ok()
+            .filter(Value::is_object)
+            .ok_or(PiError::Configuration("invalid Pi settings"))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+        Err(_) => return Err(PiError::Io("read Pi settings")),
+    };
+    if shell_setting(&mut settings, &bash) {
+        let bytes = serde_json::to_vec_pretty(&settings)
+            .map_err(|_| PiError::Configuration("invalid Pi settings"))?;
+        crate::common::atomic_write(&path, &bytes).map_err(|_| PiError::Io("write Pi settings"))?;
+    }
+    Ok(())
+}
+/// Name `bash` as Pi's shell in its `settings`, an object; whether they changed.
+/// Unchanged settings are not rewritten.
+#[cfg(any(windows, test))]
+fn shell_setting(settings: &mut Value, bash: &std::path::Path) -> bool {
+    let bash = Value::String(bash.to_string_lossy().into_owned());
+    if settings["shellPath"] == bash {
+        return false;
+    }
+    settings["shellPath"] = bash;
+    true
+}
+
 use crate::credentials::inherited_environment;
 pub fn provider_environment(name: &str, provider: &str) -> bool {
     inherited_environment(name)
@@ -330,6 +372,8 @@ impl PiProcess {
                     .insert(0, launcher.to_string_lossy().into_owned());
             }
         }
+        #[cfg(windows)]
+        pin_git_bash(&options.agent_dir)?;
         #[cfg(windows)]
         let job = windows_pi_job::PiJob::new().map_err(|_| PiError::Io("create Pi job"))?;
         let mut command = Command::new(&options.executable);
@@ -877,9 +921,23 @@ async fn supervise(
             }
         }
     };
-    // Keep stdin open throughout graceful shutdown. Closing it immediately
-    // after SIGTERM can race Pi's input-EOF handler against tool cleanup.
+    // Unix asks Pi to stop with SIGTERM and keeps stdin open throughout
+    // graceful shutdown: closing it immediately after SIGTERM can race Pi's
+    // input-EOF handler against tool cleanup.
+    #[cfg(not(windows))]
     let graceful = !exited && crate::osutil::signal_termination(&mut child);
+    // Windows has no SIGTERM, so there the end of input is the request: Pi
+    // shuts down when its stdin ends, and `terminate` ends it after the same
+    // grace. Nothing else signals it, so nothing races that handler.
+    #[cfg(windows)]
+    let graceful = !exited && {
+        if !writer_finished {
+            writer.abort();
+            let _ = (&mut writer).await;
+            writer_finished = true;
+        }
+        true
+    };
     let cleanup_failed = !exited
         && terminate(&mut child, graceful, options.stop_grace)
             .await
@@ -992,6 +1050,29 @@ mod environment_policy_tests {
             assert!(!provider_environment(name, "amazon-bedrock"));
             assert!(!inherited_environment(name));
         }
+    }
+
+    /// Pi never needs ProgramFiles or the PATH for its own Bash on Windows.
+    #[test]
+    fn git_bash_is_named_in_pi_settings_and_other_settings_stay() {
+        use serde_json::json;
+        for name in ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"] {
+            assert!(!inherited_environment(name), "{name}");
+        }
+        let bash = std::path::Path::new(r"C:\Program Files\Git\bin\bash.exe");
+        let mut settings = json!({"compaction":{"enabled":true}});
+        assert!(shell_setting(&mut settings, bash));
+        assert_eq!(
+            settings,
+            json!({"compaction":{"enabled":true},"shellPath":r"C:\Program Files\Git\bin\bash.exe"})
+        );
+        // Unchanged settings are left alone: a running Pi keeps what it loaded.
+        assert!(!shell_setting(&mut settings, bash));
+        // A Git moved since is followed.
+        let moved = std::path::Path::new(r"C:\Users\alex\AppData\Local\Programs\Git\bin\bash.exe");
+        assert!(shell_setting(&mut settings, moved));
+        assert_eq!(settings["shellPath"], moved.to_str().unwrap());
+        assert_eq!(settings["compaction"], json!({"enabled":true}));
     }
 }
 

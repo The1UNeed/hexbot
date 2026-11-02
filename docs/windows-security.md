@@ -82,9 +82,13 @@ Shell commands and `.sh` and `.bash` scheduled scripts run in Git Bash, found
 where the Git for Windows installer recorded it or in its default folders,
 never through the PATH. `.py` scripts run with the managed Python
 (`runtime/tools/code-python`), `.exe` scripts run as themselves, and any
-other script refuses. Bypass uses Pi's own Bash, such as Git Bash, with no
-sandbox and no credential protection. It does not substitute `cmd.exe` for
-Bash.
+other script refuses. Bypass uses Pi's own Bash with no sandbox and no
+credential protection: the same Git Bash, which the daemon names in each
+bot's Pi settings (`shellPath`) because Pi's environment has no
+`ProgramFiles` for its own search. Without Git for Windows, Pi searches the
+PATH as it would. It does not substitute `cmd.exe` for Bash. Pi stops when
+its input ends, the request Windows has instead of SIGTERM, and is ended
+with its job after the same grace.
 
 Pi asks the daemon for the policy of each of its commands through the
 private `hexbot_sandbox_policy` bridge, which builds it from the section's
@@ -121,6 +125,11 @@ scheduled scripts and the daemon's other paths already use the sandbox.
   outside the granted roots, such as a Python or Node.js in AppData, cannot
   be read, so commands cannot run them. Workspaces in OneDrive and other
   cloud-synced folders hold reparse points, which are never granted.
+- **Files older than their private folder.** Windows does not check the
+  folders on the way to a file, and a private folder's DACL is not
+  propagated, so a file that existed before its folder became private keeps
+  its own DACL. Hexbot makes its private folders private before it writes
+  into them.
 - **Named pipes and other objects.** A container can open named pipes and
   other kernel objects whose security admits every AppContainer.
 - **MSYS arguments.** Arguments are quoted so MSYS expands no glob or `~`,
@@ -182,6 +191,21 @@ with final reads and atomic replacements on directory handles opened without
 following symlinks. The bridge limits each encoded request and reply to
 1 MiB. Windows refuses that bridge before any of these operations, with no
 pathname fallback.
+
+The daemon's own files keep the Unix boundaries (`osutil`). Removals and the
+one-chat-per-bot backup never follow a link: a junction or directory link
+is removed as itself, a linked `backups`, `runtime` or `runtime/sessions`
+folder is refused, and links inside a copied tree are skipped. The home, the
+passwords folder, MCP working folders and the local device token are
+private: a protected DACL gives SYSTEM and the user the daemon runs as full
+control and nothing else, and what is written into those folders afterwards
+inherits it. The DACL is set on the folder alone, never propagated, so it
+cannot walk into the containers' folders in the home or through a link.
+Untrusted reads (`common::read_regular`) open only regular local disk files:
+the path is judged by its text first, then opened without following a final
+link, and pipes, devices and other reparse points are refused. Commands
+the daemon looks up take the `PATHEXT` extensions in turn and either
+separator, and the user's own folders are under the profile.
 
 The Windows CLI contract also installs a separate native argument forwarder at
 `<user-profile>/.local/bin/hexbot.exe`, with a `hexbot.json` home/hash ownership
