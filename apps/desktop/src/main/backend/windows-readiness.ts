@@ -58,7 +58,9 @@ try {
 } finally { if($null -ne $process) { $process.Dispose() } }
 `
 
-export async function windowsDaemon(home: string, signal?: AbortSignal): Promise<WindowsDaemon | undefined> {
+// `checkout` is the development app's configured daemon (pnpm dev builds it
+// outside the managed runtime). Packaged apps pass nothing.
+export async function windowsDaemon(home: string, signal?: AbortSignal, checkout?: string): Promise<WindowsDaemon | undefined> {
   signal?.throwIfAborted()
   let lock
   try { lock = await lstat(join(home, 'native-daemon.lock')) }
@@ -91,9 +93,12 @@ export async function windowsDaemon(home: string, signal?: AbortSignal): Promise
     throw new Error('Invalid daemon readiness result')
   const canonical = async (path: string): Promise<string> => toNamespacedPath(await realpath(path))
   const executable = await canonical(value.executable)
-  const root = await canonical(join(canonicalHome, 'runtime/native'))
-  const rel = relative(root, executable)
-  if (!rel || rel.startsWith('..') || isAbsolute(rel) || basename(executable) !== 'hexbot.exe' || executable !== await canonical(value.image))
+  const managed = async (): Promise<boolean> => {
+    const rel = relative(await canonical(join(canonicalHome, 'runtime/native')), executable)
+    return !!rel && !rel.startsWith('..') && !isAbsolute(rel)
+  }
+  const allowed = (checkout !== undefined && executable === await canonical(checkout).catch(() => '')) || await managed().catch(() => false)
+  if (!allowed || basename(executable) !== 'hexbot.exe' || executable !== await canonical(value.image))
     throw new Error('Running daemon is outside this managed runtime')
   signal?.throwIfAborted()
   return { pid: value.pid, port: value.port, executable }
