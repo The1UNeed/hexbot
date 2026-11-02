@@ -575,7 +575,7 @@ function DreamEntry({
             {open ? 'Hide what changed' : 'What changed'}
           </button>
           {open ? (
-            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            <div className="mt-2 grid gap-2 @min-[600px]:grid-cols-2">
               {(['Before', 'After'] as const).map(label => (
                 <div key={label}>
                   <span className="mb-1 block text-[length:var(--text-meta)] text-muted">
@@ -586,7 +586,7 @@ function DreamEntry({
                   </pre>
                 </div>
               ))}
-              <div className="sm:col-span-2">
+              <div className="@min-[600px]:col-span-2">
                 <Button
                   onClick={() =>
                     void confirm({

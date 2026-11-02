@@ -2,7 +2,7 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
-import { ChatScreen } from '../screens/ChatScreen'
+import { chatActions, ChatScreen } from '../screens/ChatScreen'
 import type { ChatScreenProps } from '../screens/ChatScreen'
 import type { ChatItem } from '../screens/types'
 import { formatDayDivider } from '../ui/format'
@@ -15,6 +15,7 @@ vi.mock('react-native', async () => {
     View: view, ScrollView: view, Pressable: view, Text: view,
     Image: () => null, TextInput: () => null,
     StyleSheet: { create: (styles: unknown) => styles },
+    useWindowDimensions: () => ({ width: 390, height: 844 }),
     FlatList: ({ data, renderItem }: { data: { id: string }[]; renderItem: (input: unknown) => ReactNode }) =>
       createElement('div', null, data.map((item, index) => createElement('div', { key: item.id }, renderItem({ item, index }))))
   }
@@ -46,7 +47,7 @@ it('renders only the streaming row per delta, and refreshes historical rows when
   const renderText = vi.fn((item: Extract<ChatItem, { kind: 'message' }>) => createElement('span', null, item.text))
   const props: ChatScreenProps = {
     title: 'Owl', face: { name: 'Owl' }, items: history,
-    onSend: vi.fn(), onBack: vi.fn(), onApprove: vi.fn(), renderMessageText: renderText
+    onSend: vi.fn(), onApprove: vi.fn(), renderMessageText: renderText
   }
   const view = render(createElement(ChatScreen, props))
   expect(renderText).toHaveBeenCalledTimes(60)
@@ -80,7 +81,7 @@ it('divides the chat between days and after quiet spells, not between quick mess
     { kind: 'message', id: 'live', role: 'bot', text: 'Writing', streaming: true } as ChatItem
   ]
   render(createElement(ChatScreen, {
-    title: 'Owl', face: { name: 'Owl' }, items, onSend: vi.fn(), onBack: vi.fn(), onApprove: vi.fn()
+    title: 'Owl', face: { name: 'Owl' }, items, onSend: vi.fn(), onApprove: vi.fn()
   }))
   expect([0, 180, 24 * 60].map(minutes => screen.getByText(formatDayDivider(at(minutes))))).toHaveLength(3)
   for (const minutes of [2, 12, 30]) expect(screen.queryByText(formatDayDivider(at(minutes)))).toBeNull()
@@ -102,7 +103,7 @@ it('shows a plugin card and a sign-in card in the chat, folded until opened', ()
       }),
       approval('ap-3', { kind: 'sign_in', site: 'app.schoology.com', title: 'Schoology' })
     ],
-    onSend: vi.fn(), onBack: vi.fn(), onApprove: vi.fn()
+    onSend: vi.fn(), onApprove: vi.fn()
   }))
   expect(screen.getByText('Notion')).toBeTruthy()
   expect(screen.getByText('Read and write pages and databases in your workspace.')).toBeTruthy()
@@ -111,4 +112,19 @@ it('shows a plugin card and a sign-in card in the chat, folded until opened', ()
   expect(screen.getByText('For Researcher')).toBeTruthy()
   expect(screen.getByText('Schoology')).toBeTruthy()
   expect(screen.getByText('app.schoology.com')).toBeTruthy()
+})
+
+it("puts a chat's bar buttons in reading order, with a profile or settings icon", () => {
+  const base = { items: [], onSend() {}, onApprove() {}, title: 'Owl' }
+  const bot = chatActions({ ...base, onOpenSearch() {}, onOpenComputer() {}, onOpenSettings() {} })
+  expect(bot.map(a => [a.key, a.systemImage])).toEqual([
+    ['search', 'magnifyingglass'],
+    ['computer', 'desktopcomputer'],
+    ['settings', 'person.crop.circle']
+  ])
+  const room = chatActions({ ...base, members: [], onOpenSearch() {}, onOpenSettings() {} })
+  expect(room.map(a => [a.key, a.systemImage, a.label])).toEqual([
+    ['search', 'magnifyingglass', 'Search'],
+    ['settings', 'gearshape', 'Room settings']
+  ])
 })

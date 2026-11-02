@@ -1,13 +1,11 @@
 import { Ionicons } from '@expo/vector-icons'
 import { ScrollView, StyleSheet } from 'react-native'
-import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
-import { BotFace, Group, Row, Screen, Text, TopBar, useTheme } from '../ui'
+import { BotFace, Group, Row, Screen, Text, useTheme } from '../ui'
 import type { BotSummary } from './types'
 
 export interface LibraryScreenProps {
   bots: BotSummary[]
-  onBack: () => void
   /** Opens the bot's profile: soul, model, tools, memory. */
   onOpenBot: (id: string) => void
   onNewBot?: () => void
@@ -24,23 +22,21 @@ export interface LibraryScreenProps {
 export function LibraryScreen({
   archivedRooms = 0,
   bots,
-  onBack,
   onNewBot,
   onOpenBot,
   onOpenJobs,
   onOpenRooms
 }: LibraryScreenProps) {
   const theme = useTheme()
-  const insets = useSafeAreaInsets()
   const sorted = [...bots].sort(
     (a, b) => Number(!!b.primary) - Number(!!a.primary) || a.name.localeCompare(b.name)
   )
 
   return (
-    <Screen background="grouped" testID="library-screen">
-      <TopBar onBack={onBack} testID="library-bar" title="Bots & jobs" />
+    <Screen background="grouped" edges={['left', 'right']} testID="library-screen">
       <ScrollView
-        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
+        contentContainerStyle={[styles.content, { paddingBottom: 24 }]}
+        contentInsetAdjustmentBehavior="automatic"
         testID="library-list"
       >
         <Group separatorInset={70} title="Bots">

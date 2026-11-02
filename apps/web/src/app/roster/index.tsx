@@ -716,7 +716,7 @@ export function RosterColumn() {
             />
           </Field>
           {showModel || !newBot.provider || !newBot.model ? (
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-4 @min-[460px]:grid-cols-2">
               <Field label="Provider">
                 <Select
                   label="Provider"

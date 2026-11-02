@@ -45,7 +45,7 @@ export function Dialog({
         <BaseDialog.Popup
           aria-label={title ? undefined : label}
           className={cn(
-            'hex-dialog-in fixed top-1/2 left-1/2 z-50 -translate-x-1/2 -translate-y-1/2 flex max-h-[85vh] w-[min(36rem,92vw)] flex-col text-foreground outline-none',
+            'hex-dialog hex-dialog-in @container fixed top-1/2 left-1/2 z-50 -translate-x-1/2 -translate-y-1/2 flex max-h-[85dvh] w-[min(36rem,92vw)] flex-col text-foreground outline-none',
             className
           )}
           // Questions focus the first (safe) answer. Other windows only focus

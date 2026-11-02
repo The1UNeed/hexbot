@@ -20,6 +20,13 @@ iOS 26 uses native Liquid Glass for floating controls. Older iOS uses system
 blur. Android and Reduce Transparency use solid controls. The app follows
 light and dark appearance and supports larger text.
 
+One list holds every bot and room. Your initials open Settings, + makes a bot
+or a room, and the grid button beside Search opens Bots & jobs. On iPhone Duo
+open and on iPad, the list sits beside the chat, like Messages. On iPhone and
+on iPhone Duo closed, a chat opens over the list with the system's back
+button, and on the closed Duo its buttons sit in the rail by the clock. It
+works in portrait and landscape.
+
 ## Build from source
 
 There is no App Store or Play Store release yet. From the repository root:

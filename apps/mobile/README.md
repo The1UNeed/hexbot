@@ -7,22 +7,35 @@ Transparency use solid controls. Lists and messages use solid backgrounds.
 
 ## Layout
 
-A messaging app with no tabs. One list holds every bot's chat and every room,
-newest first, with the primary bot pinned on top. A Check-ins conversation from
-before the heartbeat stays in it until you delete it.
-Each row shows the face, the name, the time and the last thing said, or what
-the bot is doing while it works. Search at the bottom filters the list. A row
-opens its conversation; a long press opens the bot's profile or the room's
-settings. Rooms open full screen like a bot's chat, and archiving the open
-room returns to the list. A bot waiting on you in a conversation with another
-bot gets a line at the top of the list that opens it.
+A messaging app. One list holds every bot's chat and every room, newest first,
+with the primary bot pinned on top. A Check-ins conversation from before the
+heartbeat stays in it until you delete it. Each row shows the face, the name,
+the time and the last thing said, or what the bot is doing while it works.
+Your initials at the top left open Settings, + makes a bot or a room, and the
+grid button beside Search at the bottom opens every bot's profile, scheduled
+jobs and all rooms. A row opens its conversation; a long press opens the
+bot's profile or the room's settings. Archiving the open room returns to the
+list. A bot waiting on you in a conversation with another bot gets a line at
+the top of the list that opens it.
 
-Your initials at the top left open Settings: the daemon, what bots are doing
-right now, About you, models, connectors, skills, usage, devices, pairing,
-Hex Connect and updates. + at the top right makes a new bot or room. The grid
-button next to Search opens Bots & jobs: every bot's profile, scheduled jobs,
-and all rooms, archived ones included. With more than one daemon saved, its
-name above the list switches daemons; otherwise Settings does.
+The screens are Hexbot's own; only what the system has to place is native.
+On iOS the app is SwiftUI's `NavigationSplitView`, from `@expo/ui`
+(`src/shell/SplitView.tsx`, mounted by `app/_layout.ios.tsx`). On iPhone Duo
+open and on iPad the list is its sidebar and what you choose opens beside
+it; on iPhone and on iPhone Duo closed it collapses to the list and pushes
+what you choose, with native back. Your initials, +, and a chat's title and
+buttons (Search, the bots' computer, the profile or room settings) are the
+system bars' items, so iOS places them: in the side rail by the clock on the
+closed Duo, against the fold when it is half open. On Android, an Expo Router
+`Stack` (`app/`) pushes a chat, Settings and Bots & jobs over the list. A
+chat's back closes it, except while files upload. The app turns with the
+phone and builds with the iOS 27 SDK, whose scene life cycle Expo SDK 58 sets
+up.
+
+Settings is the daemon, what bots are doing right now, About you, models,
+connectors, skills, usage, devices, pairing, Hex Connect and updates; it also
+switches daemons. + in the Chats bar makes a new bot or room. Bots & jobs is
+every bot's profile, scheduled jobs, and all rooms, archived ones included.
 
 Profiles, settings areas, tool steps, visuals and the bots' computer open as
 front cards (`src/ui/Layer.tsx`) that leave the screen below in view. The

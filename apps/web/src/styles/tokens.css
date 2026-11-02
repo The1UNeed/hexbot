@@ -1,5 +1,8 @@
 @import 'tailwindcss';
 
+/* Screens without hover, such as phones: `touch:` shows what hover reveals. */
+@custom-variant touch (@media (hover: none));
+
 /*
  * Hexbot design tokens. Every colour, radius, shadow and motion value the UI
  * uses lives here (docs/ui-design.md). Components reference the Tailwind
@@ -393,6 +396,113 @@ body {
 }
 .hex-no-drag {
   -webkit-app-region: no-drag;
+}
+
+/* Phones: no text inflation in landscape, and no zoom when a field takes focus
+   (Safari zooms into any field under 16px). */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+@media (pointer: coarse) {
+  input,
+  textarea,
+  select {
+    font-size: max(16px, 1em);
+  }
+}
+
+/*
+ * Foldables held half-open, such as iPhone Duo. Book pose: roster on the left
+ * half, chat on the right, and panels and windows on the right half. Laptop
+ * pose: messages above the fold, the composer below it, windows on the top
+ * half. These rules are unlayered, so they win over the Tailwind utilities
+ * they replace.
+ *
+ * Safari on iPhone Duo reports the pose (`device-posture`, a Safari feature
+ * flag) but not where the fold is. Held half-open and sideways, the fold runs
+ * down the middle of the page, so the book pose splits it in half. Viewport
+ * Segments, where a browser has them, give the exact halves and any hinge gap,
+ * and the rules after this one take over.
+ */
+@media (device-posture: folded) and (orientation: landscape) and (min-width: 600px) {
+  .hex-shell {
+    grid-template-columns: 50% 0 minmax(0, 1fr);
+  }
+  .hex-shell-roster {
+    position: static;
+    grid-area: 1 / 1;
+    width: auto;
+    visibility: visible;
+    translate: none;
+    box-shadow: none;
+  }
+  .hex-shell-main {
+    grid-area: 1 / 3;
+  }
+  .hex-shell-toggle,
+  .hex-shell-scrim,
+  .hex-shell-handle,
+  .hex-shell-track {
+    display: none;
+  }
+  .hex-shell-panel {
+    left: calc(50% + 0.5rem);
+    width: auto;
+  }
+  .hex-dialog {
+    left: 75%;
+    width: calc(50% - 1.5rem);
+  }
+}
+@media (horizontal-viewport-segments: 2) {
+  .hex-shell {
+    grid-template-columns:
+      env(viewport-segment-width 0 0)
+      calc(env(viewport-segment-left 1 0) - env(viewport-segment-right 0 0))
+      minmax(0, 1fr);
+  }
+  .hex-shell-roster {
+    position: static;
+    grid-area: 1 / 1;
+    width: auto;
+    visibility: visible;
+    translate: none;
+    box-shadow: none;
+  }
+  .hex-shell-main {
+    grid-area: 1 / 3;
+  }
+  .hex-shell-toggle,
+  .hex-shell-scrim,
+  .hex-shell-handle,
+  .hex-shell-track {
+    display: none;
+  }
+  .hex-shell-panel {
+    left: calc(env(viewport-segment-left 1 0) + 0.5rem);
+    width: auto;
+  }
+  .hex-dialog {
+    left: calc(env(viewport-segment-left 1 0) + env(viewport-segment-width 1 0) / 2);
+    width: calc(env(viewport-segment-width 1 0) - 1.5rem);
+  }
+}
+@media (vertical-viewport-segments: 2) {
+  .hex-composer-dock {
+    /* The chat card's bottom margin sits below the dock. */
+    min-height: calc(100dvh - env(viewport-segment-bottom 0 0) - 0.5rem);
+    padding-top: calc(env(viewport-segment-top 0 1) - env(viewport-segment-bottom 0 0) + 0.75rem);
+  }
+  .hex-dialog {
+    top: calc(env(viewport-segment-height 0 0) / 2);
+    max-height: calc(env(viewport-segment-height 0 0) - 1rem);
+  }
+}
+@media (vertical-viewport-segments: 2) and (max-width: 700px) {
+  .hex-composer-dock {
+    min-height: calc(100dvh - env(viewport-segment-bottom 0 0));
+  }
 }
 
 /* Typography inside message bubbles. */

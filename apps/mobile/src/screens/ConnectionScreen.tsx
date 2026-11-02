@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons'
-import { useRef, useState } from 'react'
+import { type ComponentRef, useRef, useState } from 'react'
 import { StatusBar } from 'expo-status-bar'
 import { Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
@@ -81,7 +81,7 @@ export function ConnectionScreen({
   const [address, setAddress] = useState(initialAddress)
   const [code, setCode] = useState('')
   const [link, setLink] = useState(initialLink)
-  const codeInput = useRef<TextInput>(null)
+  const codeInput = useRef<ComponentRef<typeof TextInput>>(null)
   const busy = pending !== null
   let host = ''
   try {

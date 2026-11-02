@@ -264,6 +264,12 @@ exercise the graph.
   and every bot's profile, scheduled jobs and all rooms behind the grid
   button next to Search. There are no tabs. A new feature finds its place
   in one of these; it does not add a tab or a home-screen section.
+- Native components only where the system has to place something. On iOS
+  that is SwiftUI's `NavigationSplitView` (`@expo/ui`,
+  `apps/mobile/src/shell/SplitView.tsx`), which puts the list beside the
+  chat on iPhone Duo open and iPad, and the top bars' items, which iOS moves
+  into iPhone Duo's side rail. Everything inside the columns, the list, its
+  grid button and Search, the chat and its composer, is Hexbot's own.
 
 ## Cursor Cloud specific instructions
 

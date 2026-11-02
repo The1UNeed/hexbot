@@ -11,7 +11,8 @@ const config: ExpoConfig = {
   },
   version: '0.1.0',
   scheme: 'hexbot',
-  orientation: 'portrait',
+  // Every orientation: phones turn sideways, and a foldable opens to a wide screen.
+  orientation: 'default',
   userInterfaceStyle: 'automatic',
   ios: {
     bundleIdentifier: 'app.hexbot.mobile',
@@ -28,6 +29,7 @@ const config: ExpoConfig = {
     permissions: ['INTERNET', 'ACCESS_NETWORK_STATE']
   },
   plugins: [
+    'expo-router',
     'expo-secure-store',
     'expo-font',
     'expo-web-browser',

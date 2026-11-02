@@ -149,7 +149,7 @@ export function ContinueStep({
       <div className="grid w-full flex-1 place-items-center py-8">
         <Avatar {...botFace(bot)} name={bot.display_name} size="xl" />
       </div>
-      <SetupActions className="pb-[12vh]">
+      <SetupActions className="pb-[12dvh]">
         <Button
           busy={busy}
           className={PILL}
@@ -253,10 +253,10 @@ function SetupFrame({
   title: string
 }) {
   return (
-    <main className="relative flex min-h-screen flex-col items-center bg-background px-6 text-foreground">
+    <main className="relative flex min-h-dvh flex-col items-center bg-background px-6 text-foreground">
       <div aria-hidden className="hex-drag absolute inset-x-0 top-0 h-11" />
       <div className="hex-rise flex w-full max-w-[520px] flex-1 flex-col items-center" key={title}>
-        <h1 className="pt-[13vh] text-center text-[22px] leading-snug font-medium">{title}</h1>
+        <h1 className="pt-[13dvh] text-center text-[22px] leading-snug font-medium">{title}</h1>
         {subtitle ? <p className="mt-1 text-center text-secondary text-muted">{subtitle}</p> : null}
         {children}
       </div>
@@ -286,7 +286,7 @@ function TourPage({
   return (
     <SetupFrame title={title}>
       <div className="grid w-full flex-1 place-items-center py-8">{children}</div>
-      <SetupActions className="pb-[12vh]">
+      <SetupActions className="pb-[12dvh]">
         <Button className={PILL} data-testid="onboarding-next" onClick={next} variant="primary">
           Next
         </Button>
@@ -549,7 +549,7 @@ export function ChoiceStep({
       <div className="grid w-full flex-1 place-items-center py-8">
         <HexbotMark size={64} />
       </div>
-      <SetupActions className="pb-[12vh]">
+      <SetupActions className="pb-[12dvh]">
         <Button
           autoFocus
           className={PILL}
@@ -621,7 +621,7 @@ function ProvidersStep({
         placeholder="Search providers"
         value={search}
       />
-      <ul className="max-h-[42vh] divide-y divide-border overflow-y-auto rounded-panel border border-border">
+      <ul className="max-h-[42dvh] divide-y divide-border overflow-y-auto rounded-panel border border-border">
         {filtered.map(item => {
           const open = selected === item.id
 
@@ -1130,7 +1130,7 @@ export function ToolsStep({
 
   return (
     <div className="w-full space-y-4 py-8">
-      <ul className="max-h-[52vh] divide-y divide-border overflow-y-auto rounded-panel border border-border">
+      <ul className="max-h-[52dvh] divide-y divide-border overflow-y-auto rounded-panel border border-border">
         {(tools ?? []).map(item => {
           const open = selected === item.id
 
@@ -1399,7 +1399,7 @@ function OnboardingPage() {
 
   if (creating) {
     return (
-      <main className="grid min-h-screen place-items-center bg-background text-foreground">
+      <main className="grid min-h-dvh place-items-center bg-background text-foreground">
         <div className="hex-rise">
           <div className="flex flex-col items-center gap-5">
             <HexbotMark act="type" className={ACT_ROOM} size={132} />
@@ -1412,7 +1412,7 @@ function OnboardingPage() {
 
   if (step === 'welcome') {
     return (
-      <main className="relative grid min-h-screen place-items-center bg-background px-6 text-foreground">
+      <main className="relative grid min-h-dvh place-items-center bg-background px-6 text-foreground">
         <div aria-hidden className="hex-drag absolute inset-x-0 top-0 h-11" />
         <WelcomeStep onStart={() => setStep('meet')} />
       </main>

@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { type ComponentRef, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Modal,
@@ -84,7 +84,7 @@ export function ModelPill({
   disabled?: boolean
 }) {
   const theme = useTheme()
-  const anchor = useRef<View>(null)
+  const anchor = useRef<ComponentRef<typeof View>>(null)
   const [frame, setFrame] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
   // The level the model runs at, which may differ from the one saved.
   const level = shownLevel(value.reasoning, useCurrentModel(models, value))

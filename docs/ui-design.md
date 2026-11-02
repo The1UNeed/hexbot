@@ -122,7 +122,20 @@ Three columns, resizable, min widths 240 / 480 / 300. The window is a grey
 canvas: the roster sits on it directly, and the conversation and the side
 panel are rounded cards (22 px) inset 8 px from its edges, with the resize
 handles in the gutters. Under 700 px the conversation fills the window and
-the roster slides in as a drawer.
+the roster slides in as a drawer. Heights use the visible viewport (`dvh`),
+so a phone browser's toolbar never covers the composer, which grows to at
+most 30 % of the height when the phone is held sideways.
+
+On touch screens (`touch:`, no hover) actions that hover reveals, such as a
+message's copy and retry, are always shown, and fields are at least 16 px so
+Safari does not zoom in on focus. A foldable held half-open gets a layout per
+pose (`tokens.css`): held like a book, the roster fills the left half and the
+conversation the right, and windows open on the right half; held like a
+laptop, messages sit above the fold, the composer below it, and windows open
+on the top half. Safari 27.2 on iPhone Duo reports the pose (`device-posture`,
+the Device Posture API feature flag) but not where the fold is, so there the
+book pose splits the page at its middle when it is wider than tall. Browsers
+with Viewport Segments place both poses on the exact halves.
 
 ### Left: roster
 
@@ -355,8 +368,9 @@ Settings, Bot settings and Room settings share one shell
 24 px radius) over the dimmed, blurred app, with a round glass close button
 floating in the top right corner and no title bar. Tabs run down the left
 (220 px, transparent over the glass) as icon-and-label rows under tiny muted
-group labels; the active tab is a soft filled pill. Under 640 px the tabs
-become one scrolling pill row on top. Room settings has no tabs and is a
+group labels; the active tab is a soft filled pill. When the window itself
+is under 600 px wide (a container query, so half of a folded screen counts)
+the tabs become one scrolling pill row on top. Room settings has no tabs and is a
 narrower, single-column window.
 
 A page is a 20 px title, one muted line, then grouped lists in the iOS and
