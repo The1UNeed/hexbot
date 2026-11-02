@@ -47,6 +47,8 @@ pub mod system_service;
 pub mod system_service;
 pub mod windows_cli;
 #[cfg(windows)]
+pub mod windows_container;
+#[cfg(windows)]
 mod windows_node_path;
 mod windows_paths;
 #[cfg(not(windows))]

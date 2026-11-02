@@ -59,6 +59,50 @@ jobs:
           name: windows-client-contract
           path: apps/desktop/release/HexbotClient-*-win-x64.exe
           retention-days: 3
+  sandbox:
+    name: Windows sandbox under a standard user
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 26.5.0
+      - run: rustup show active-toolchain
+      - name: Prepare the disposable source without the platform guard
+        shell: pwsh
+        env:
+          HEXBOT_CI_GIT: C:\Program Files\Git\cmd\git.exe
+        run: |
+          $source = Join-Path $env:RUNNER_TEMP 'hexbot-windows-sandbox-probe'
+          $metadata = node scripts/dev/prepare-windows-security.mjs $source '${{ github.sha }}' '${{ github.sha }}' --current-tree
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $probe = $metadata | ConvertFrom-Json
+          if ($probe.sourceDir -ne $source -or $probe.appliedSecurityPatch) { throw 'Disposable source does not preserve exact current tree' }
+          "HEXBOT_WINDOWS_PROBE_SOURCE=$($probe.sourceDir)" >> $env:GITHUB_ENV
+      - name: Build the sandbox tests and the daemon
+        working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
+        shell: pwsh
+        run: |
+          $messages = Join-Path $env:RUNNER_TEMP 'sandbox-compiler.jsonl'
+          cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test windows_sandbox --no-run --message-format=json | Out-File -FilePath $messages -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { throw 'The sandbox tests did not compile' }
+          $artifacts = @(Get-Content $messages | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.reason -eq 'compiler-artifact' -and $_.executable })
+          $probe = @($artifacts | Where-Object { $_.target.name -eq 'windows_sandbox' })
+          $daemon = @($artifacts | Where-Object { $_.target.name -eq 'hexbot' -and $_.target.kind -contains 'bin' })
+          if ($probe.Count -ne 1 -or $daemon.Count -ne 1) { throw 'Expected one sandbox test and one daemon executable' }
+          "HEXBOT_SANDBOX_PROBE=$($probe[0].executable)" >> $env:GITHUB_ENV
+          "HEXBOT_SANDBOX_DAEMON=$($daemon[0].executable)" >> $env:GITHUB_ENV
+      - name: Run the sandbox as a standard user
+        shell: pwsh
+        run: ./scripts/dev/windows-sandbox-standard-user.ps1 -Probe $env:HEXBOT_SANDBOX_PROBE -Hexbot $env:HEXBOT_SANDBOX_DAEMON
+      - name: Remove the disposable source
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:HEXBOT_WINDOWS_PROBE_SOURCE -and (Test-Path $env:HEXBOT_WINDOWS_PROBE_SOURCE)) { git worktree remove --force $env:HEXBOT_WINDOWS_PROBE_SOURCE }
   native-runtime:
     env:
       HEXBOT_CLI_NO_PATH: '1'
