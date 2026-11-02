@@ -13,8 +13,8 @@ try {
   Copy-Item -LiteralPath $Runtime -Destination (Join-Path $root 'runtime') -Recurse
   Copy-Item -LiteralPath (Get-Command node.exe).Source -Destination (Join-Path $root 'node.exe')
   if ($Probe) {
-    # The native bridge probe deliberately starts trusted Python in Bypass,
-    # then changes the live mode before it asks the daemon to touch a path.
+    # The probe names a trusted Python in the bot's config; Auto and Manual
+    # must refuse execute_code before it starts.
     (Get-Command python.exe).Source | Set-Content -LiteralPath (Join-Path $root 'python-path')
   }
   if ($Probe) { Copy-Item -LiteralPath $Probe -Destination (Join-Path $root 'native-test.exe') }
