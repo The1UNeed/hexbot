@@ -19,7 +19,6 @@ what you are running.
 | --- | --- | --- | --- |
 | **Stable** | `Hexbot [alpha]` | [GitHub releases](https://github.com/The1UNeed/hexbot/releases) and, once published, [hexbot.app](https://hexbot.app/download/) | Users. Tagged, signed, notarized when the keys are in place, updates itself. Still alpha while the version is `0.x`. |
 | **Nightly** | `Hexbot Nightly` | [hexbot.app](https://hexbot.app/download/) until the first stable release, and [nightly prereleases on GitHub](https://github.com/The1UNeed/hexbot/releases?q=nightly) | Testers who want yesterday's fixes. Installs next to the stable app, updates itself to the next nightly. |
-| **Dev** | `Hexbot (dev)` / source | This repository, see [Develop](#develop) | Contributors and coding agents. |
 
 Install with the Hexbot Installer from
 [hexbot.app/download](https://hexbot.app/download/), or from a terminal,
