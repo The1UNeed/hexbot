@@ -747,7 +747,10 @@ cursor there.
   activity, cursors: [{bot, x, y, action, at}], error, size, sizes: [{name,
   cpu, memory_gb}], image}`. `available` is false when the daemon's computer
   has no Cua. `state` is `absent`, `starting`, `running`, `stopping`,
-  `stopped`, `restarting`, `resetting` or `error`. `control` is `bot`, or
+  `stopped`, `restarting`, `resetting` or `error`. When Cua knows the
+  computer but finds no container for it, most often because Docker is not
+  running, `state` is `error` at once and the bots' actions fail with the
+  same `error`; the computer is kept, not made again. `control` is `bot`, or
   `user` while the user has taken over; the bots' actions are refused until
   it is `bot` again. `actor` and `activity` are the bot acting and its action,
   such as `click`. A cursor's `x` and `y` are fractions of the screen and
