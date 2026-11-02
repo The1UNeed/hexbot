@@ -188,6 +188,8 @@ async fn run() -> Result<()> {
         "setup" => return hexbot_core::setup::run(&home, &arguments[1..]).await,
         "service" => return hexbot_core::system_service::run(&home, &arguments[1..]).await,
         "status" => return hexbot_core::daemon_status::run(&home, &arguments[1..]).await,
+        #[cfg(windows)]
+        "sandbox" => return hexbot_core::windows_container::run(&home, &arguments[1..]),
         _ => {}
     }
 
