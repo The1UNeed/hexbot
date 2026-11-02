@@ -153,7 +153,9 @@ export function HomeScreen(props: HomeScreenProps) {
               daemon.state === 'unauthorized'
                 ? `${daemon.name} no longer accepts this device. Pair again in Settings.`
                 : daemon.state === 'offline'
-                  ? `Cannot reach ${daemon.name}. Showing what was loaded last.`
+                  ? conversations.length
+                    ? `Cannot reach ${daemon.name}. Showing what was loaded last.`
+                    : `Cannot reach ${daemon.name}. It may be asleep or off the network.`
                   : `Reconnecting to ${daemon.name}…`
             }
             onAction={props.onReconnect}
@@ -489,6 +491,7 @@ function WaitingStrip({ bots, onOpen }: { bots: BotSummary[]; onOpen?: (id: stri
 
 function Empty({
   conversations,
+  daemon,
   loading,
   onNewBot,
   primaryChoice,
@@ -508,8 +511,20 @@ function Empty({
     )
   }
 
-  if (conversations.length) {
+  if (conversations.length || daemon?.state === 'unauthorized') {
     return null
+  }
+
+  // Nothing has loaded from this daemon yet, so there is nothing to say about its bots.
+  if (daemon && daemon.state !== 'connected') {
+    return (
+      <EmptyState
+        face={{ name: 'Hexbot' }}
+        message={`Your chats and rooms show here once ${daemon.name} answers.`}
+        testID="home-waiting-daemon"
+        title="Nothing loaded yet"
+      />
+    )
   }
 
   return (
