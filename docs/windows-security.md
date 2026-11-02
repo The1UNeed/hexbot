@@ -177,9 +177,9 @@ and monitor paths before workspace revalidation or script access in every mode.
 It checks runtime/selection integrity and owned-fixture shutdown. The separate
 extension probes use the production Pi implementation. These are refusal tests,
 not successful sandbox execution or a complete daemon feature test.
-The native bridge probe starts trusted runner Python in Bypass, synchronizes over
-a socket, then changes the live mode to Auto or Manual. That same worker's
-read/write/patch callbacks must refuse before approval or path resolution.
+Code execution on the daemon's computer is retired (bots run code on their own
+computer through Computer use), so Bypass can no longer start a native Python
+worker and the probe that changed a running worker's mode is gone.
 The trusted fixture records command names, process exits and exception types
 without recording prompts, tool arguments or environment values. On failure the
 probe preserves the original error and reports cleanup separately. A bounded
