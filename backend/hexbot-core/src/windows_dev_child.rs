@@ -130,16 +130,17 @@ async fn host(args: &[String]) -> io::Result<i32> {
     }
     let mut parent_exit =
         tokio::task::spawn_blocking(move || identity::wait(parent.as_raw_handle(), u32::MAX));
-    let code = loop {
+    let (code, reason) = loop {
         tokio::select! {
             biased; // A ready root exit retains its own status when EOF races it.
-            status = child.wait() => break status.ok().and_then(|s| s.code()).unwrap_or(125),
-            _ = &mut eof => break 0,
-            status = &mut parent_exit => break if matches!(status, Ok(Ok(true))) { 0 } else { 125 },
-            event = ctrl_c.recv() => if event.is_none() { break 125; },
-            event = ctrl_break.recv() => if event.is_none() { break 125; },
+            status = child.wait() => break (status.as_ref().ok().and_then(|s| s.code()).unwrap_or(125), format!("child exited: {status:?}")),
+            _ = &mut eof => break (0, "input closed".to_owned()),
+            status = &mut parent_exit => break (if matches!(status, Ok(Ok(true))) { 0 } else { 125 }, format!("parent wait returned: {status:?}")),
+            event = ctrl_c.recv() => if event.is_none() { break (125, "Ctrl+C handler closed".to_owned()); },
+            event = ctrl_break.recv() => if event.is_none() { break (125, "Ctrl+Break handler closed".to_owned()); },
         }
     };
+    eprintln!("Dev host stopping, {reason}");
     // PiJob starts its single 15s budget at entry, before capture/termination.
     let deadline = Instant::now() + Duration::from_secs(15);
     let completed = tokio::task::spawn_blocking(move || job.terminate_and_wait()).await;
