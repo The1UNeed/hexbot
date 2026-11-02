@@ -55,10 +55,16 @@ export async function findFreePort(
   throw new Error(`No free port at or above ${start}`)
 }
 
+// The development app's own daemon build; packaged apps accept only the managed runtime.
+function checkoutExecutable(): string | undefined {
+  if (app.isPackaged) return undefined
+  try { return hexbotExecutable() } catch { return undefined }
+}
+
 // The PID in native-daemon.lock while that process is alive. A permission
 // error counts as alive: uncertain ownership must never look like a stopped daemon.
 export async function lockedDaemonPid(home = hexbotHome()): Promise<number | undefined> {
-  if (process.platform === 'win32') return (await windowsDaemon(home))?.pid
+  if (process.platform === 'win32') return (await windowsDaemon(home, undefined, checkoutExecutable()))?.pid
   const pid = Number(await readFile(join(home, 'native-daemon.lock'), 'utf8').catch(() => ''))
   if (!Number.isSafeInteger(pid) || pid <= 0) return undefined
   try {
@@ -73,7 +79,7 @@ export async function lockedDaemonPid(home = hexbotHome()): Promise<number | und
 // home; a second one would exit on the home lock. The running daemon holds that
 // lock and records its port in serve-state.json.
 export async function runningDaemonPort(home = hexbotHome(), signal?: AbortSignal): Promise<number | undefined> {
-  if (process.platform === 'win32') return (await windowsDaemon(home))?.port
+  if (process.platform === 'win32') return (await windowsDaemon(home, signal, checkoutExecutable()))?.port
   const pid = await lockedDaemonPid(home)
   if (!pid) return undefined
   try {
@@ -116,7 +122,7 @@ export function requestOwnedShutdown(child: Pick<ChildProcessWithoutNullStreams,
 // Readiness includes both the authenticated home identity and the selected
 // immutable executable. A stale serve-state or old PID cannot satisfy restart.
 export async function runningDaemon(home = hexbotHome(), signal?: AbortSignal): Promise<{ pid: number; port: number; executable: string } | undefined> {
-  if (process.platform === 'win32') return windowsDaemon(home)
+  if (process.platform === 'win32') return windowsDaemon(home, signal, checkoutExecutable())
   const port = await runningDaemonPort(home, signal)
   if (!port) return undefined
   const record = JSON.parse(await readFile(join(home, 'runtime/native-running.json'), 'utf8')) as { pid?: number; executable?: string }

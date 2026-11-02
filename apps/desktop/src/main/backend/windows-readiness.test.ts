@@ -173,3 +173,34 @@ it.skipIf(process.platform !== 'win32' || !process.env.HEXBOT_NATIVE_TEST_BUNDLE
     }
   }
 }, 300_000)
+
+it.skipIf(process.platform !== 'win32' || !process.env.HEXBOT_NATIVE_TEST_BUNDLE)('accepts the development app\'s checkout daemon outside the managed runtime, only when named', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hexbot checkout readiness '))
+  const home = join(root, 'home')
+  const checkout = join(process.env.HEXBOT_NATIVE_TEST_BUNDLE!, 'hexbot.exe')
+  await mkdir(home)
+  const child = spawn(checkout, ['serve', '--host', '127.0.0.1', '--port', '0'], {
+    env: { ...process.env, HEXBOT_HOME: home, HEXBOT_CLI_NO_PATH: '1', HEXBOT_SUPERVISOR: 'desktop', HEXBOT_DESKTOP_CONTROL: 'stdin-v1' },
+    windowsHide: true, stdio: ['pipe', 'pipe', 'pipe']
+  })
+  const exit = once(child, 'exit')
+  try {
+    let output = '', stderr = ''
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`Checkout fixture deadline; stderr=${stderr}`)), 30_000)
+      child.stderr!.on('data', chunk => { stderr = (stderr + chunk).slice(-2048) })
+      child.stdout!.on('data', chunk => {
+        output += chunk
+        if (/HERMES_BACKEND_READY port=\d+/.test(output)) { clearTimeout(timer); resolve() }
+      })
+      child.once('exit', (code, signal) => { clearTimeout(timer); reject(new Error(`Checkout fixture exited ${code}/${signal}; stderr=${stderr}`)) })
+    })
+    expect((await windowsDaemon(home, undefined, checkout))?.pid).toBe(child.pid)
+    await expect(windowsDaemon(home)).rejects.toThrow('outside this managed runtime')
+    await expect(windowsDaemon(home, undefined, join(root, 'other', 'hexbot.exe'))).rejects.toThrow('outside this managed runtime')
+  } finally {
+    child.stdin!.end('HEXBOT_SHUTDOWN_V1\n')
+    await exit
+    await rm(root, { recursive: true, force: true })
+  }
+})

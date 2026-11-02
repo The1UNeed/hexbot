@@ -5,6 +5,9 @@ use std::{
     path::PathBuf,
 };
 
+/// Far more than the 100 lines a follow starts with, and bounded.
+const TAIL_WINDOW: u64 = 1 << 20;
+
 pub(super) struct Log {
     path: PathBuf,
     identity: Option<(u64, u64)>,
@@ -44,6 +47,21 @@ impl Log {
                 self.offset = 2;
             }
         }
+        // The first read of a follow shows only the last lines. Start a bounded
+        // window before the end instead of reading a large log whole, and drop
+        // the partial line the window starts in.
+        let mut partial = false;
+        if reset && tail {
+            let length = file.metadata()?.len();
+            if length > self.offset + TAIL_WINDOW {
+                let mut start = length - TAIL_WINDOW;
+                if self.utf16 && (start - self.offset) % 2 == 1 {
+                    start += 1;
+                }
+                self.offset = start;
+                partial = true;
+            }
+        }
         file.seek(SeekFrom::Start(self.offset))?;
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
@@ -75,6 +93,10 @@ impl Log {
         };
         self.pending.drain(..used);
         if reset && tail {
+            let text = match (partial, text.find('\n')) {
+                (true, Some(end)) => &text[end + 1..],
+                _ => text.as_str(),
+            };
             let lines = text.split_inclusive('\n').collect::<Vec<_>>();
             Ok(lines[lines.len().saturating_sub(100)..].concat())
         } else {
@@ -169,5 +191,32 @@ mod tests {
         .concat();
         fs::write(&path, bytes).unwrap();
         assert_eq!(log.read(true).unwrap(), "Jos\u{e9}\n");
+    }
+    #[test]
+    fn a_large_log_starts_with_its_last_lines() {
+        let root = tempfile::tempdir().unwrap();
+        let lines: String = (0..200_000).map(|n| format!("line {n} \u{e9}\n")).collect();
+        let expected: String = (199_900..200_000)
+            .map(|n| format!("line {n} \u{e9}\n"))
+            .collect();
+        let utf8 = root.path().join("service.log");
+        fs::write(&utf8, &lines).unwrap();
+        let mut log = Log::new(utf8.clone());
+        assert_eq!(log.read(true).unwrap(), expected);
+        File::options()
+            .append(true)
+            .open(&utf8)
+            .unwrap()
+            .write_all(b"next\n")
+            .unwrap();
+        assert_eq!(log.read(true).unwrap(), "next\n");
+        let utf16 = root.path().join("service-error.log");
+        let bytes: Vec<u8> = [0xff, 0xfe]
+            .into_iter()
+            .chain(lines.encode_utf16().flat_map(u16::to_le_bytes))
+            .collect();
+        assert!(bytes.len() as u64 > 2 * TAIL_WINDOW);
+        fs::write(&utf16, bytes).unwrap();
+        assert_eq!(Log::new(utf16).read(true).unwrap(), expected);
     }
 }
