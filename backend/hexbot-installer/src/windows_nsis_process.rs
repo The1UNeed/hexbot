@@ -303,8 +303,9 @@ fn output(mut command: std::process::Command) -> crate::Result<std::process::Out
             command_schema(&command)
         );
     })?;
-    // Bounded event wait on this exact child, not polling or a PID lookup.
-    if unsafe { WaitForSingleObject(child.as_raw_handle(), 30_000) } != 0 {
+    // Bounded event wait on this exact child, not polling or a PID lookup. A
+    // cold 32-bit PowerShell listing processes on a busy PC can take over 30s.
+    if unsafe { WaitForSingleObject(child.as_raw_handle(), 120_000) } != 0 {
         let _ = child.kill();
         let _ = child.wait();
         return crate::fail(
