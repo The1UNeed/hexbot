@@ -45,15 +45,16 @@ export function useBotMemory(
   return [memory?.bot === bot ? memory.value : null, value => setMemory({ bot, value })]
 }
 
-/** 10.25.26, in the reader's own order of day and month. */
+/** 25/10/2026: day, month, year, whatever the reader's locale. */
 export function cardDate(seconds: null | number | undefined): string {
   if (!seconds) {
     return 'Not written yet'
   }
 
-  return new Date(seconds * 1000)
-    .toLocaleDateString(undefined, { day: '2-digit', month: '2-digit', year: '2-digit' })
-    .replace(/[/-]/g, '.')
+  const date = new Date(seconds * 1000)
+  const pad = (value: number) => String(value).padStart(2, '0')
+
+  return `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear()}`
 }
 
 /** A grain over the card's colour, drawn once: no motion, no repaint. */
