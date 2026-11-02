@@ -1,21 +1,28 @@
 //! Windows tool isolation: AppContainers, file grants and contained processes.
 //!
-//! One AppContainer per Hexbot home and access level (Auto writes the
-//! workspace, Manual only reads it). A container has no capabilities, so it has
-//! no network, not even loopback, and reaches no file the user owns unless
-//! Hexbot granted it. Grants are allow entries for the container's SID only:
-//! the workspace and output folders, a private home and temp folder, and the
-//! runtime programs a command may run. Git metadata gets a write deny and
-//! project secrets a full deny for the same SIDs.
+//! One AppContainer per policy: its Hexbot home, its access level (Auto writes
+//! the workspace, Manual only reads it) and the roots it is granted. Grants are
+//! lasting ACL entries, so a container never reaches a root that only another
+//! policy was granted. A container has no capabilities, so it has no network,
+//! not even loopback, and reaches no file the user owns unless Hexbot granted
+//! it. Grants are allow entries for the container's SID only: the workspace and
+//! output folders, its own private home and temp folder, and the runtime
+//! programs a command may run. Git metadata gets a write deny and project
+//! secrets a full deny for the same SID; a deny that misses an entry stops the
+//! command. A root that is or holds the user's profile, the Hexbot home, a
+//! credential store or the managed runtime is refused before anything changes.
 //!
 //! Grants are applied by walking each tree through handles. Every entry is
 //! opened relative to its parent's handle without following reparse points, so
 //! swapping a folder for a junction during the walk cannot redirect it. Reparse
 //! points are never changed or entered, and a file with more than one hard link
 //! is never granted: its DACL is shared with names outside the tree. A journal
-//! names every root before it changes, and `hexbot sandbox reset` removes
-//! every entry for Hexbot's SIDs from the roots it names. Other entries are
-//! never touched. One lock file serializes all changes across processes.
+//! names every profile before it is created and every root before it changes,
+//! and `hexbot sandbox reset` removes every entry for those profiles' SIDs from
+//! the roots it names, then deletes the profiles. Other entries are never
+//! touched. One lock file serializes all changes across processes.
+use crate::windows_paths::sandbox::{self as rules, Protected};
+pub use crate::windows_paths::sandbox::{Access, GrantKind, Journal, JournalEntry};
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::{OsStr, OsString, c_void},
@@ -26,6 +33,7 @@ use std::{
     },
     path::{Path, PathBuf},
     ptr,
+    sync::OnceLock,
 };
 
 type Handle = *mut c_void;
@@ -154,6 +162,7 @@ unsafe extern "system" {
     ) -> i32;
     fn DeriveAppContainerSidFromAppContainerName(name: *const u16, sid: *mut Sid) -> i32;
     fn DeleteAppContainerProfile(name: *const u16) -> i32;
+    fn GetUserProfileDirectoryW(token: Handle, directory: *mut u16, size: *mut u32) -> i32;
 }
 // Other modules declare some of these with their own struct types.
 #[allow(clashing_extern_declarations)]
@@ -213,6 +222,7 @@ unsafe extern "system" {
         sid: Sid,
     ) -> i32;
     fn ConvertSidToStringSidW(sid: Sid, text: *mut *mut u16) -> i32;
+    fn OpenProcessToken(process: Handle, access: u32, token: *mut Handle) -> i32;
 }
 // Other modules declare some of these with their own struct types.
 #[allow(clashing_extern_declarations)]
@@ -354,9 +364,17 @@ const KILL_ON_JOB_CLOSE: u32 = 0x2000;
 const DIE_ON_UNHANDLED_EXCEPTION: u32 = 0x400;
 const ACTIVE_PROCESS: u32 = 0x8;
 const INFINITE: u32 = 0xFFFF_FFFF;
+const WAIT_OBJECT_0: u32 = 0;
+const WAIT_TIMEOUT: u32 = 0x102;
 const DUPLICATE_SAME_ACCESS: u32 = 2;
+const TOKEN_QUERY: u32 = 0x8;
+const GENERIC_READ: u32 = 0x8000_0000;
+const GENERIC_WRITE: u32 = 0x4000_0000;
 /// A job's limit counts one command's tree, so it is the Unix headroom alone.
 const PROCESS_LIMIT: u32 = 512;
+/// The exit code when the program never ran, as a shell exits for a command it cannot run.
+const NOT_RUN: i32 = 126;
+const USAGE: &str = "sandbox expects exec <policy> -- <program> [arguments...] or reset";
 
 fn wide(value: &OsStr) -> Vec<u16> {
     value.encode_wide().chain(Some(0)).collect()
@@ -377,25 +395,8 @@ fn owned(handle: Handle) -> io::Result<OwnedHandle> {
     }
 }
 
-/// Which container a command runs in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Access {
-    /// Auto: the workspace and outputs are writable.
-    Workspace,
-    /// Manual: the workspace is only readable.
-    Read,
-}
-impl Access {
-    fn suffix(self) -> &'static str {
-        match self {
-            Self::Workspace => "write",
-            Self::Read => "read",
-        }
-    }
-    pub fn all() -> [Self; 2] {
-        [Self::Workspace, Self::Read]
-    }
+fn refused(message: String) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, message)
 }
 
 /// An AppContainer SID, freed on drop.
@@ -427,18 +428,13 @@ impl Drop for ContainerSid {
     }
 }
 
-/// The profile name: stable for one home, under the 64-character limit.
-pub fn profile_name(home: &Path, access: Access) -> String {
-    use sha2::{Digest, Sha256};
-    let canonical = home.to_string_lossy().to_lowercase();
-    let digest = Sha256::digest(canonical.as_bytes());
-    let hash: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
-    format!("Hexbot.Sandbox.{}.{hash}", access.suffix())
+fn hresult(result: i32) -> io::Error {
+    io::Error::from_raw_os_error(result & 0xFFFF)
 }
 
-/// Create the home's container for `access`, or return the existing one.
-pub fn container(home: &Path, access: Access) -> io::Result<ContainerSid> {
-    let name = wide(OsStr::new(&profile_name(home, access)));
+/// Create the profile `name`, or return the existing one's SID.
+fn create_profile(name: &str) -> io::Result<ContainerSid> {
+    let name = wide(OsStr::new(name));
     let display = wide(OsStr::new("Hexbot sandbox"));
     let mut sid = ptr::null_mut();
     // SAFETY: NUL-terminated names, no capabilities, an out pointer.
@@ -456,23 +452,33 @@ pub fn container(home: &Path, access: Access) -> io::Result<ContainerSid> {
         // SAFETY: as above.
         let result = unsafe { DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut sid) };
         if result < 0 {
-            return Err(io::Error::from_raw_os_error(result & 0xFFFF));
+            return Err(hresult(result));
         }
     } else if result < 0 {
-        return Err(io::Error::from_raw_os_error(result & 0xFFFF));
+        return Err(hresult(result));
     }
     Ok(ContainerSid(sid))
 }
 
-/// Remove the home's containers. Missing profiles are fine.
-pub fn delete_containers(home: &Path) -> io::Result<()> {
-    for access in Access::all() {
-        let name = wide(OsStr::new(&profile_name(home, access)));
-        // SAFETY: a NUL-terminated name.
-        let result = unsafe { DeleteAppContainerProfile(name.as_ptr()) };
-        if result < 0 && result & 0xFFFF != 2 {
-            return Err(io::Error::from_raw_os_error(result & 0xFFFF));
-        }
+/// The SID of the profile `name`, which need not exist: it derives from the name.
+pub fn profile_sid(name: &str) -> io::Result<ContainerSid> {
+    let name = wide(OsStr::new(name));
+    let mut sid = ptr::null_mut();
+    // SAFETY: a NUL-terminated name and an out pointer.
+    let result = unsafe { DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut sid) };
+    if result < 0 {
+        return Err(hresult(result));
+    }
+    Ok(ContainerSid(sid))
+}
+
+/// Delete the profile `name`. A missing profile is fine.
+fn delete_profile(name: &str) -> io::Result<()> {
+    let name = wide(OsStr::new(name));
+    // SAFETY: a NUL-terminated name.
+    let result = unsafe { DeleteAppContainerProfile(name.as_ptr()) };
+    if result < 0 && result & 0xFFFF != 2 {
+        return Err(hresult(result));
     }
     Ok(())
 }
@@ -966,27 +972,6 @@ pub fn applied(root: &Path, change: Change, sid: &ContainerSid) -> io::Result<bo
         .any(|ace| ace.ours && ace.kind == kind && ace.mask == mask && ace.flags == flags))
 }
 
-/// Every root Hexbot has changed, kept before each change.
-#[derive(Default, Serialize, Deserialize)]
-pub struct Journal {
-    pub roots: Vec<JournalEntry>,
-}
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct JournalEntry {
-    pub path: PathBuf,
-    pub access: Access,
-    pub kind: GrantKind,
-    /// False until the walk finished; an unfinished grant is walked again.
-    pub complete: bool,
-}
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum GrantKind {
-    Read,
-    Modify,
-    DenyWrite,
-    DenyAll,
-}
 impl GrantKind {
     pub fn change(self) -> Change {
         match self {
@@ -1033,82 +1018,113 @@ pub fn lock(home: &Path) -> io::Result<fs::File> {
     Ok(file)
 }
 
-/// Make sure `path` carries `kind` for `access`, walking it only when the
-/// journal has no finished grant or the root lost its entry.
-pub fn ensure(
+/// Make sure `path` carries `kind` for `profile`, walking it only when the
+/// journal has no finished grant or the root lost its entry. A deny walk that
+/// misses an entry fails: that entry keeps the allow it inherited from above,
+/// so the command must not start.
+fn ensure(
     home: &Path,
+    journal: &mut Journal,
     path: &Path,
-    access: Access,
+    profile: &str,
     kind: GrantKind,
     sid: &ContainerSid,
 ) -> io::Result<()> {
-    let mut journal = read_journal(home)?;
-    let entry = JournalEntry {
-        path: path.to_owned(),
-        access,
-        kind,
-        complete: true,
-    };
-    if journal.roots.contains(&entry) && applied(path, kind.change(), sid)? {
+    let index = journal
+        .roots
+        .iter()
+        .position(|root| root.path == path && root.profile == profile && root.kind == kind);
+    if let Some(index) = index
+        && journal.roots[index].complete
+        && applied(path, kind.change(), sid)?
+    {
         return Ok(());
     }
-    journal
-        .roots
-        .retain(|root| !(root.path == path && root.access == access && root.kind == kind));
-    journal.roots.push(JournalEntry {
-        complete: false,
-        ..entry.clone()
+    let index = index.unwrap_or_else(|| {
+        journal.roots.push(JournalEntry {
+            path: path.to_owned(),
+            profile: profile.to_owned(),
+            kind,
+            complete: false,
+        });
+        journal.roots.len() - 1
     });
-    write_journal(home, &journal)?;
-    walk(path, kind.change(), &[sid])?;
-    if let Some(root) = journal
-        .roots
-        .iter_mut()
-        .find(|root| root.path == path && root.access == access && root.kind == kind)
-    {
-        root.complete = true;
+    journal.roots[index].complete = false;
+    write_journal(home, journal)?;
+    let walk = walk(path, kind.change(), &[sid])?;
+    if kind.denies() && walk.failed > 0 {
+        // Left unfinished: the next command walks it again, and reset revokes it.
+        return Err(io::Error::other(format!(
+            "Could not protect {} entries under {}",
+            walk.failed,
+            path.display()
+        )));
     }
-    write_journal(home, &journal)
+    journal.roots[index].complete = true;
+    write_journal(home, journal)
 }
 
-/// Remove every entry for the home's containers from every journaled root,
-/// then delete the containers. Roots that no longer exist are dropped.
+/// Remove every entry for the journaled profiles' SIDs from every journaled
+/// root, then delete each profile no remaining root names: once every root
+/// is revoked, every profile. Roots that no longer exist are dropped.
 pub fn reset(home: &Path) -> io::Result<Walk> {
     let _lock = lock(home)?;
     let mut journal = read_journal(home)?;
-    let sids = Access::all()
-        .map(|access| container(home, access))
-        .into_iter()
-        .collect::<io::Result<Vec<_>>>()?;
-    let sids: Vec<&ContainerSid> = sids.iter().collect();
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for root in &journal.roots {
+        if !paths.contains(&root.path) {
+            paths.push(root.path.clone());
+        }
+    }
     let mut total = Walk::default();
     let mut left = Vec::new();
-    for root in journal.roots.drain(..) {
-        match walk(&root.path, Change::Revoke, &sids) {
+    for path in paths {
+        // One walk per root, for every profile it was granted to.
+        let granted: Vec<JournalEntry> = journal
+            .roots
+            .iter()
+            .filter(|root| root.path == path)
+            .cloned()
+            .collect();
+        let revoked = granted
+            .iter()
+            .map(|root| profile_sid(&root.profile))
+            .collect::<io::Result<Vec<_>>>()
+            .and_then(|sids| walk(&path, Change::Revoke, &sids.iter().collect::<Vec<_>>()));
+        match revoked {
             Ok(walk) => {
                 total.changed += walk.changed;
                 total.unchanged += walk.unchanged;
                 total.skipped_links += walk.skipped_links;
                 total.failed += walk.failed;
                 if walk.failed > 0 {
-                    left.push(root);
+                    left.extend(granted);
                 }
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(_) => left.push(root),
+            Err(_) => left.extend(granted),
         }
     }
     journal.roots = left;
+    let roots = &journal.roots;
+    let mut failure = None;
+    journal.profiles.retain(|profile| {
+        roots.iter().any(|root| &root.profile == profile)
+            || delete_profile(profile)
+                .map_err(|error| failure.get_or_insert(error))
+                .is_err()
+    });
     write_journal(home, &journal)?;
-    if journal.roots.is_empty() {
-        delete_containers(home)?;
-    }
-    Ok(total)
+    failure.map_or(Ok(total), Err)
 }
 
 /// Everything one contained command may reach.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Policy {
+    /// The Hexbot home: its journal, lock and the containers' private folders.
+    /// The helper never reads HEXBOT_HOME: callers clear the environment of
+    /// the commands they contain.
+    pub home: PathBuf,
     pub access: Option<Access>,
     /// Folders the command may write (Auto's workspace, approved outputs).
     pub writable: Vec<PathBuf>,
@@ -1120,54 +1136,231 @@ pub struct Policy {
     pub deny_all: Vec<PathBuf>,
 }
 
-/// The container's private home and temp folder.
-pub fn private_dirs(home: &Path, access: Access) -> PathBuf {
-    sandbox_dir(home).join(access.suffix())
+/// A policy's container, granted and ready for commands.
+pub struct Container {
+    pub sid: ContainerSid,
+    /// The profile reset deletes.
+    pub profile: String,
+    /// Its private home and temp folder, in the plain form programs are given.
+    pub private: PathBuf,
 }
 
-/// Grant `policy` to its container and return the container's SID.
-pub fn prepare(home: &Path, policy: &Policy) -> io::Result<ContainerSid> {
+/// Folders of the user's profile that hold its credential stores. A root may
+/// sit inside them, never be or contain them.
+const PROFILE_FOLDERS: [&str; 4] = [
+    "AppData",
+    r"AppData\Roaming",
+    r"AppData\Local",
+    r"AppData\LocalLow",
+];
+
+/// `path` in plain form. Network, device and stream paths are refused.
+fn plain(path: &Path) -> io::Result<String> {
+    let text = path.to_str().ok_or_else(|| {
+        refused(format!(
+            "Sandbox paths must be valid Unicode: {}",
+            path.display()
+        ))
+    })?;
+    rules::simplify(text).map_err(|reason| refused(format!("{reason}: {}", path.display())))
+}
+
+/// Plain, folded forms of `path`, as given and resolved, each once. A path
+/// that is not a plain disk path has none and is never opened.
+fn forms(path: &Path) -> Vec<String> {
+    let Ok(given) = plain(path) else {
+        return Vec::new();
+    };
+    let mut forms = vec![rules::fold(&given)];
+    if let Ok(real) = fs::canonicalize(path).and_then(|real| plain(&real)) {
+        let real = rules::fold(&real);
+        if !forms.contains(&real) {
+            forms.push(real);
+        }
+    }
+    forms
+}
+fn add_forms(list: &mut Vec<String>, path: &Path) {
+    for form in forms(path) {
+        if !list.contains(&form) {
+            list.push(form);
+        }
+    }
+}
+
+/// The user's profile folder, from the OS rather than the environment.
+fn profile_directory() -> io::Result<PathBuf> {
+    let mut token = ptr::null_mut();
+    // SAFETY: this process's pseudo-handle and an out pointer; the token is owned below.
+    check(unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) })?;
+    let token = owned(token)?;
+    let mut size = 0;
+    // SAFETY: a size query.
+    unsafe { GetUserProfileDirectoryW(token.as_raw_handle(), ptr::null_mut(), &mut size) };
+    if size == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut buffer = vec![0u16; size as usize];
+    // SAFETY: a buffer of the queried size.
+    check(unsafe {
+        GetUserProfileDirectoryW(token.as_raw_handle(), buffer.as_mut_ptr(), &mut size)
+    })?;
+    let length = buffer
+        .iter()
+        .position(|&unit| unit == 0)
+        .unwrap_or(buffer.len());
+    Ok(path_from_wide(&buffer[..length]))
+}
+
+/// What no root may reach. The user's profile comes from the OS and from every
+/// variable that names it, so a cleared or changed environment only adds to it.
+fn protected(home: &Path) -> io::Result<Protected> {
+    let (stores, runtime) = rules::policy_paths();
+    let variable = |name| {
+        std::env::var_os(name)
+            .filter(|value: &OsString| !value.is_empty())
+            .map(PathBuf::from)
+    };
+    let users: Vec<PathBuf> = std::iter::once(profile_directory()?)
+        .chain(["USERPROFILE", "HOME"].into_iter().filter_map(variable))
+        .collect();
+    let mut protected = Protected::default();
+    for folder in ["APPDATA", "LOCALAPPDATA"].into_iter().filter_map(variable) {
+        add_forms(&mut protected.homes, &folder);
+    }
+    for user in &users {
+        add_forms(&mut protected.homes, user);
+        for folder in PROFILE_FOLDERS {
+            add_forms(&mut protected.homes, &user.join(folder));
+        }
+        for store in &stores {
+            add_forms(&mut protected.stores, &user.join(store));
+        }
+    }
+    add_forms(&mut protected.homes, home);
+    add_forms(&mut protected.stores, &sandbox_dir(home));
+    for local in &runtime {
+        add_forms(&mut protected.runtime, &home.join(local));
+    }
+    Ok(protected)
+}
+
+/// A policy root as walks open it (canonical) and checks compare it (plain
+/// and folded).
+struct Root {
+    canonical: PathBuf,
+    folded: String,
+}
+
+/// `path` as a root, or None when it does not exist. Its form is checked
+/// before any file system call, so a network root is never opened.
+fn root(path: &Path) -> io::Result<Option<Root>> {
+    plain(path)?;
+    let canonical = match fs::canonicalize(path) {
+        Ok(canonical) => canonical,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let folded = rules::fold(&plain(&canonical)?);
+    Ok(Some(Root { canonical, folded }))
+}
+
+/// The policy's Hexbot home in plain form. It must exist, so a mistyped home
+/// never gains a journal of its own.
+fn hexbot_home(policy: &Policy) -> io::Result<PathBuf> {
+    if policy.home.as_os_str().is_empty() {
+        return Err(refused("The sandbox policy names no Hexbot home".into()));
+    }
+    plain(&policy.home)?;
+    Ok(PathBuf::from(plain(&fs::canonicalize(&policy.home)?)?))
+}
+
+/// Grant `policy` to its own container, created if need be. Every root is
+/// checked before a profile, journal entry or ACL changes.
+pub fn prepare(policy: &Policy) -> io::Result<Container> {
+    let home = hexbot_home(policy)?;
     let access = policy.access.unwrap_or(Access::Workspace);
-    let sid = container(home, access)?;
-    let _lock = lock(home)?;
-    let private = private_dirs(home, access);
+    let protected = protected(&home)?;
+    let allowed = |path: &Path, writable: bool| -> io::Result<Option<Root>> {
+        let Some(root) = root(path)? else {
+            return Ok(None);
+        };
+        match protected.refusal(&root.folded, writable) {
+            Some(reason) => Err(refused(format!("{reason}: {}", path.display()))),
+            None => Ok(Some(root)),
+        }
+    };
+    let mut writable = Vec::new();
+    for path in &policy.writable {
+        writable.push(allowed(path, true)?.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("A writable sandbox root is missing: {}", path.display()),
+            )
+        })?);
+    }
+    // A runtime folder that is not installed is simply not granted.
+    let mut readable = Vec::new();
+    for path in &policy.readable {
+        readable.extend(allowed(path, false)?);
+    }
+    let denied = |paths: &[PathBuf]| -> io::Result<Vec<Root>> {
+        paths
+            .iter()
+            .filter_map(|path| root(path).transpose())
+            .collect()
+    };
+    let (deny_write, deny_all) = (denied(&policy.deny_write)?, denied(&policy.deny_all)?);
+    let folded = |roots: &[Root]| {
+        roots
+            .iter()
+            .map(|root| root.folded.clone())
+            .collect::<Vec<_>>()
+    };
+    let digest = rules::roots_digest(&folded(&writable), &folded(&readable));
+    let profile = rules::profile_name(&home.to_string_lossy(), access, &digest);
+    let private = sandbox_dir(&home).join(format!("{}-{digest}", access.suffix()));
+    let _lock = lock(&home)?;
+    let mut journal = read_journal(&home)?;
+    if !journal.profiles.contains(&profile) {
+        journal.profiles.push(profile.clone());
+        write_journal(&home, &journal)?;
+    }
+    let sid = create_profile(&profile)?;
     for folder in ["home", "tmp", "appdata/roaming", "appdata/local"] {
         fs::create_dir_all(private.join(folder))?;
     }
-    let canonical = |path: &PathBuf| fs::canonicalize(path);
-    ensure(home, &canonical(&private)?, access, GrantKind::Modify, &sid)?;
+    let mut grant = |path: &Path, kind| ensure(&home, &mut journal, path, &profile, kind, &sid);
+    grant(&fs::canonicalize(&private)?, GrantKind::Modify)?;
     // Manual callers pass the workspace as readable and only approved outputs
     // as writable; the access level picks the container, not the grants.
-    for path in &policy.readable {
-        if let Ok(path) = canonical(path) {
-            ensure(home, &path, access, GrantKind::Read, &sid)?;
-        }
+    for root in &readable {
+        grant(&root.canonical, GrantKind::Read)?;
     }
-    for path in &policy.writable {
-        let path = canonical(path)?;
-        ensure(home, &path, access, GrantKind::Modify, &sid)?;
+    for root in &writable {
+        grant(&root.canonical, GrantKind::Modify)?;
     }
-    for path in &policy.deny_write {
-        if let Ok(path) = canonical(path) {
-            ensure(home, &path, access, GrantKind::DenyWrite, &sid)?;
-        }
+    for root in &deny_write {
+        grant(&root.canonical, GrantKind::DenyWrite)?;
     }
-    for path in &policy.deny_all {
-        if let Ok(path) = canonical(path) {
-            ensure(home, &path, access, GrantKind::DenyAll, &sid)?;
-        }
+    for root in &deny_all {
+        grant(&root.canonical, GrantKind::DenyAll)?;
     }
-    Ok(sid)
+    Ok(Container {
+        sid,
+        profile,
+        private,
+    })
 }
 
 /// The environment a contained command sees: the caller's, with its home,
-/// profile and temp folders moved into the container's private folders.
+/// profile and temp folders moved into the container's private folders, and
+/// without the Hexbot home.
 pub fn environment(
-    home: &Path,
-    access: Access,
+    container: &Container,
     inherited: impl IntoIterator<Item = (OsString, OsString)>,
 ) -> Vec<(OsString, OsString)> {
-    let private = private_dirs(home, access);
+    let private = &container.private;
     let moved = [
         ("HOME", private.join("home")),
         ("USERPROFILE", private.join("home")),
@@ -1176,12 +1369,16 @@ pub fn environment(
         ("APPDATA", private.join("appdata").join("roaming")),
         ("LOCALAPPDATA", private.join("appdata").join("local")),
     ];
+    let removed = ["HEXBOT_HOME", "HERMES_HOME"];
     let mut env: Vec<(OsString, OsString)> = inherited
         .into_iter()
         .filter(|(name, _)| {
+            let name = name.to_string_lossy();
             !moved
                 .iter()
-                .any(|(moved, _)| name.to_string_lossy().eq_ignore_ascii_case(moved))
+                .map(|(moved, _)| *moved)
+                .chain(removed)
+                .any(|known| name.eq_ignore_ascii_case(known))
         })
         .collect();
     env.extend(
@@ -1192,34 +1389,10 @@ pub fn environment(
     env
 }
 
-/// Quote one argument as the Microsoft C runtime parses it.
+/// Quote one argument as the Microsoft C runtime parses it, so that MSYS
+/// programs such as Git Bash expand none of it either.
 pub fn quote(argument: &OsStr) -> Vec<u16> {
-    let units: Vec<u16> = argument.encode_wide().collect();
-    let plain = !units.is_empty()
-        && !units
-            .iter()
-            .any(|&c| c == b' ' as u16 || c == b'\t' as u16 || c == b'"' as u16);
-    if plain {
-        return units;
-    }
-    let mut quoted = vec![b'"' as u16];
-    let mut backslashes = 0;
-    for &unit in &units {
-        if unit == b'\\' as u16 {
-            backslashes += 1;
-            continue;
-        }
-        if unit == b'"' as u16 {
-            quoted.extend(std::iter::repeat_n(b'\\' as u16, backslashes * 2 + 1));
-        } else {
-            quoted.extend(std::iter::repeat_n(b'\\' as u16, backslashes));
-        }
-        backslashes = 0;
-        quoted.push(unit);
-    }
-    quoted.extend(std::iter::repeat_n(b'\\' as u16, backslashes * 2));
-    quoted.push(b'"' as u16);
-    quoted
+    rules::quote(&argument.encode_wide().collect::<Vec<_>>())
 }
 
 /// A contained process tree. Dropping it closes the job, which ends the tree.
@@ -1232,13 +1405,46 @@ impl Contained {
     /// Wait for the first process and return its exit code. Its descendants end
     /// with the job when this value drops.
     pub fn wait(&self) -> io::Result<u32> {
+        self.wait_for(INFINITE)?
+            .ok_or_else(|| io::Error::other("The wait for the sandboxed program ended early"))
+    }
+    /// As `wait`, or None after `milliseconds`.
+    fn wait_for(&self, milliseconds: u32) -> io::Result<Option<u32>> {
         // SAFETY: a valid process handle.
-        unsafe { WaitForSingleObject(self.process.as_raw_handle(), INFINITE) };
+        match unsafe { WaitForSingleObject(self.process.as_raw_handle(), milliseconds) } {
+            WAIT_OBJECT_0 => {}
+            WAIT_TIMEOUT => return Ok(None),
+            _ => return Err(io::Error::last_os_error()),
+        }
         let mut code = 0;
         // SAFETY: as above.
         check(unsafe { GetExitCodeProcess(self.process.as_raw_handle(), &mut code) })?;
-        Ok(code)
+        Ok(Some(code))
     }
+}
+
+/// This process's standard handle `which`, inheritable, or NUL when it has
+/// none, as a process without a console does.
+fn standard_handle(which: u32) -> io::Result<OwnedHandle> {
+    // SAFETY: GetStdHandle does not transfer ownership.
+    let handle = unsafe { GetStdHandle(which) };
+    if !handle.is_null() && handle as isize != -1 {
+        return inheritable(handle);
+    }
+    let name = wide(OsStr::new(r"\\.\NUL"));
+    // SAFETY: a NUL-terminated device name; the handle is owned below.
+    let null = owned(unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            SHARE_ALL,
+            ptr::null_mut(),
+            OPEN_EXISTING,
+            0,
+            ptr::null_mut(),
+        )
+    })?;
+    inheritable(null.as_raw_handle())
 }
 
 fn inheritable(handle: Handle) -> io::Result<OwnedHandle> {
@@ -1267,10 +1473,9 @@ pub fn spawn(
     environment: &[(OsString, OsString)],
     process_limit: Option<u32>,
 ) -> io::Result<Contained> {
-    // SAFETY: standard handles of this process; GetStdHandle does not transfer ownership.
     let standard: Vec<OwnedHandle> = [0xFFFF_FFF6u32, 0xFFFF_FFF5, 0xFFFF_FFF4]
         .into_iter()
-        .map(|which| inheritable(unsafe { GetStdHandle(which) }))
+        .map(standard_handle)
         .collect::<io::Result<_>>()?;
     let mut handles: Vec<Handle> = standard.iter().map(|h| h.as_raw_handle()).collect();
     let mut size = 0;
@@ -1423,75 +1628,130 @@ pub fn path_from_wide(units: &[u16]) -> PathBuf {
     PathBuf::from(OsString::from_wide(units))
 }
 
+/// The profile the startup probe creates and deletes. One name per user, so a
+/// probe that crashed leaves nothing the next probe does not delete.
+pub const PROBE_PROFILE: &str = "Hexbot.Sandbox.probe";
+/// A hung probe must not hold the daemon; the bubblewrap probe waits as long.
+const PROBE_MILLIS: u32 = 5000;
+
+/// Whether contained commands can run here, probed once per process: the
+/// counterpart of the bubblewrap probe on Linux.
+pub fn probe_available() -> bool {
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| probe().is_ok())
+}
+
+/// Run `cmd /c exit 0` in a throwaway profile with no grants, then delete it.
+pub fn probe() -> io::Result<()> {
+    let sid = create_profile(PROBE_PROFILE)?;
+    let ran = (|| {
+        let cmd = crate::windows_paths::system_program("cmd.exe")?;
+        let system = cmd.parent().unwrap_or(&cmd);
+        let windows = system.parent().unwrap_or(system);
+        let environment = [(OsString::from("SystemRoot"), windows.as_os_str().to_owned())];
+        let arguments = ["/d", "/c", "exit", "0"].map(OsString::from);
+        // System32 is readable to every AppContainer, so it needs no grant.
+        let child = spawn(
+            &sid,
+            &cmd,
+            &arguments,
+            Some(system),
+            &environment,
+            Some(PROCESS_LIMIT),
+        )?;
+        match child.wait_for(PROBE_MILLIS)? {
+            Some(0) => Ok(()),
+            Some(code) => Err(io::Error::other(format!(
+                "The sandbox probe exited with {code}"
+            ))),
+            None => Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "The sandbox probe did not finish",
+            )),
+        }
+    })();
+    drop(sid);
+    ran.and(delete_profile(PROBE_PROFILE))
+}
+
 /// `hexbot sandbox exec <policy> -- <program> [arguments...]` runs one program
 /// in the container `policy` names and exits with its code. `<policy>` is the
-/// base64 JSON of a [`Policy`]. `hexbot sandbox reset` removes every grant.
-pub fn run(home: &Path, arguments: &[String]) -> crate::Result<()> {
+/// base64 JSON of a [`Policy`], which names the Hexbot home. When the program
+/// cannot run, because the policy is invalid, a root is refused or the
+/// container cannot be made, the helper writes one line to stderr and exits
+/// with 126, as a shell does for a command it cannot run.
+pub fn exec(arguments: &[String]) -> ! {
+    let code = match start(arguments) {
+        // The job ends the program's descendants when `child` drops.
+        Ok(child) => child
+            .wait()
+            .map(|code| code as i32)
+            .unwrap_or_else(|error| not_run(&error.to_string())),
+        Err(message) => not_run(&message),
+    };
+    std::process::exit(code)
+}
+
+fn not_run(message: &str) -> i32 {
+    eprintln!("{}", message.replace(['\r', '\n'], " "));
+    NOT_RUN
+}
+
+fn start(arguments: &[String]) -> Result<Contained, String> {
     use base64::Engine;
-    let invalid = |message: &str| crate::Error::new(4200, message.to_owned());
+    let [policy, separator, program, rest @ ..] = arguments else {
+        return Err(USAGE.to_owned());
+    };
+    if separator != "--" {
+        return Err(USAGE.to_owned());
+    }
+    let policy: Policy = base64::engine::general_purpose::STANDARD
+        .decode(policy)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .ok_or("sandbox exec needs a base64 JSON policy")?;
+    let program = Path::new(program);
+    if !program.is_absolute() {
+        return Err("sandbox exec needs an absolute program path".to_owned());
+    }
+    let container = prepare(&policy)
+        .map_err(|error| format!("Could not prepare the Windows sandbox: {error}"))?;
+    let environment = environment(&container, std::env::vars_os());
+    let directory = std::env::current_dir().ok();
+    let arguments: Vec<OsString> = rest.iter().map(OsString::from).collect();
+    spawn(
+        &container.sid,
+        program,
+        &arguments,
+        directory.as_deref(),
+        &environment,
+        Some(PROCESS_LIMIT),
+    )
+    .map_err(|error| {
+        format!(
+            "Could not start {} in the Windows sandbox: {error}",
+            program.display()
+        )
+    })
+}
+
+/// `hexbot sandbox reset` removes every grant and profile in the home. The
+/// daemon runs `exec` before it reads the home, through [`exec`].
+pub fn run(home: &Path, arguments: &[String]) -> crate::Result<()> {
     match arguments {
-        [reset] if reset == "reset" => {
-            let walk = reset_home(home)?;
+        [command] if command == "reset" => {
+            let walk = reset(home).map_err(|error| {
+                crate::Error::new(
+                    5240,
+                    format!("Could not remove the Windows sandbox grants: {error}"),
+                )
+            })?;
             println!(
                 "Removed {} sandbox entries; {} left unchanged.",
                 walk.changed, walk.failed
             );
             Ok(())
         }
-        [exec, policy, separator, program, rest @ ..] if exec == "exec" && separator == "--" => {
-            let policy: Policy = base64::engine::general_purpose::STANDARD
-                .decode(policy)
-                .ok()
-                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-                .ok_or_else(|| invalid("sandbox exec needs a base64 JSON policy"))?;
-            let program = Path::new(program);
-            if !program.is_absolute() {
-                return Err(invalid("sandbox exec needs an absolute program path"));
-            }
-            let access = policy.access.unwrap_or(Access::Workspace);
-            let sid = prepare(home, &policy).map_err(|error| {
-                crate::Error::new(
-                    5240,
-                    format!("Could not prepare the Windows sandbox: {error}"),
-                )
-            })?;
-            let env = environment(home, access, std::env::vars_os());
-            let directory = std::env::current_dir().ok();
-            let arguments: Vec<OsString> = rest.iter().map(OsString::from).collect();
-            let child = spawn(
-                &sid,
-                program,
-                &arguments,
-                directory.as_deref(),
-                &env,
-                Some(PROCESS_LIMIT),
-            )
-            .map_err(|error| {
-                crate::Error::new(
-                    5240,
-                    format!(
-                        "Could not start {} in the Windows sandbox: {error}",
-                        program.display()
-                    ),
-                )
-            })?;
-            let code = child
-                .wait()
-                .map_err(|error| crate::Error::new(5240, error.to_string()))?;
-            drop(child);
-            std::process::exit(code as i32)
-        }
-        _ => Err(invalid(
-            "sandbox expects exec <policy> -- <program> [arguments...] or reset",
-        )),
+        _ => Err(crate::Error::new(4200, USAGE.to_owned())),
     }
-}
-
-fn reset_home(home: &Path) -> crate::Result<Walk> {
-    reset(home).map_err(|error| {
-        crate::Error::new(
-            5240,
-            format!("Could not remove the Windows sandbox grants: {error}"),
-        )
-    })
 }

@@ -178,6 +178,12 @@ async fn run() -> Result<()> {
     if command == "__dev-child" {
         std::process::exit(hexbot_core::pi::dev_child::run(&arguments[1..]).await);
     }
+    // A contained command's policy names its home. Callers clear the
+    // environment, so `sandbox exec` never reads HEXBOT_HOME.
+    #[cfg(windows)]
+    if command == "sandbox" && arguments.get(1).is_some_and(|arg| arg == "exec") {
+        hexbot_core::windows_container::exec(&arguments[2..]);
+    }
     let home = home()?;
 
     if let Some(result) = hexbot_core::cli::dispatch(&home, &arguments).await {

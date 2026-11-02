@@ -10,12 +10,12 @@ use std::{
     io::Read,
     net::TcpListener,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Command, Output, Stdio},
     time::{Duration, Instant},
 };
 
 struct Fixture {
-    _root: tempfile::TempDir,
+    root: tempfile::TempDir,
     home: PathBuf,
     workspace: PathBuf,
     /// In the user's profile, where ~/.ssh and ~/.hexbot are.
@@ -56,21 +56,26 @@ fn fixture(name: &str) -> Fixture {
         .unwrap();
     assert!(status.success(), "cannot create the junction fixture");
     Fixture {
-        _root: root,
+        root,
         home,
         workspace,
         outside,
     }
 }
 
-fn cmd() -> PathBuf {
+fn system(program: &str) -> PathBuf {
     PathBuf::from(std::env::var_os("SystemRoot").unwrap())
         .join("System32")
-        .join("cmd.exe")
+        .join(program)
+}
+
+fn cmd() -> PathBuf {
+    system("cmd.exe")
 }
 
 fn auto(f: &Fixture) -> Policy {
     Policy {
+        home: f.home.clone(),
         access: Some(Access::Workspace),
         writable: vec![f.workspace.clone()],
         deny_write: vec![f.workspace.join(".git")],
@@ -79,21 +84,24 @@ fn auto(f: &Fixture) -> Policy {
     }
 }
 
-fn run(f: &Fixture, policy: &Policy, program: &Path, arguments: &[&str]) -> u32 {
-    let access = policy.access.unwrap();
-    let sid = sandbox::prepare(&f.home, policy).unwrap();
-    let env = sandbox::environment(&f.home, access, std::env::vars_os());
+fn run_in(policy: &Policy, directory: &Path, program: &Path, arguments: &[&str]) -> u32 {
+    let container = sandbox::prepare(policy).unwrap();
+    let env = sandbox::environment(&container, std::env::vars_os());
     let arguments: Vec<OsString> = arguments.iter().map(OsString::from).collect();
     let child = sandbox::spawn(
-        &sid,
+        &container.sid,
         program,
         &arguments,
-        Some(&f.workspace),
+        Some(directory),
         &env,
         Some(64),
     )
     .unwrap();
     child.wait().unwrap()
+}
+
+fn run(f: &Fixture, policy: &Policy, program: &Path, arguments: &[&str]) -> u32 {
+    run_in(policy, &f.workspace, program, arguments)
 }
 
 /// cmd.exe parses its own command line, so scripts avoid quotes and use paths
@@ -113,6 +121,22 @@ fn icacls(path: &Path) -> String {
     .unwrap();
     assert!(output.status.success());
     String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// Whether the AppContainer profile behind `sid` is registered for this user.
+fn registered(sid: &str) -> bool {
+    Command::new(system("reg.exe"))
+        .args([
+            "query",
+            &format!(
+                r"HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppContainer\Mappings\{sid}"
+            ),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap()
+        .success()
 }
 
 #[test]
@@ -184,6 +208,7 @@ fn auto_writes_only_the_workspace_and_never_git_or_secrets() {
 fn manual_reads_the_workspace_and_writes_nothing() {
     let f = fixture("manual");
     let policy = Policy {
+        home: f.home.clone(),
         access: Some(Access::Read),
         readable: vec![f.workspace.clone()],
         deny_all: vec![f.workspace.join(".env")],
@@ -293,17 +318,21 @@ fn hexbot() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_hexbot")))
 }
 
-fn helper(f: &Fixture, policy: &Policy, script: &str) -> Command {
+/// `hexbot sandbox exec`, which finds the home in the policy alone.
+fn helper_with(f: &Fixture, policy: &Policy, program: &Path, arguments: &[&str]) -> Command {
     let encoded =
         base64::engine::general_purpose::STANDARD.encode(serde_json::to_vec(policy).unwrap());
     let mut command = Command::new(hexbot());
     command
-        .env("HEXBOT_HOME", &f.home)
         .current_dir(&f.workspace)
         .args(["sandbox", "exec", &encoded, "--"])
-        .arg(cmd())
-        .args(["/d", "/c", script]);
+        .arg(program)
+        .args(arguments);
     command
+}
+
+fn helper(f: &Fixture, policy: &Policy, script: &str) -> Command {
+    helper_with(f, policy, &cmd(), &["/d", "/c", script])
 }
 
 #[test]
@@ -370,7 +399,10 @@ fn reset_removes_hexbot_entries_and_keeps_every_other_one() {
     let after: Vec<String> = watched.iter().map(|p| icacls(p)).collect();
     assert_eq!(after, before);
     let journal = fs::read_to_string(f.home.join("runtime/sandbox/grants.json")).unwrap();
-    assert!(journal.contains("\"roots\": []"), "{journal}");
+    assert!(
+        journal.contains("\"roots\": []") && journal.contains("\"profiles\": []"),
+        "{journal}"
+    );
 }
 
 #[test]
@@ -381,9 +413,373 @@ fn quoting_matches_the_c_runtime() {
         ("", "\"\""),
         ("a\"b", "\"a\\\"b\""),
         ("trailing\\ space\\", "\"trailing\\ space\\\\\""),
+        ("*.txt", "\"*.txt\""),
+        ("a?b", "\"a?b\""),
+        ("[ab]", "\"[ab]\""),
+        ("{a,b}", "\"{a,b}\""),
+        ("ünïcødé", "ünïcødé"),
     ];
     for (input, expected) in cases {
         let quoted = String::from_utf16(&sandbox::quote(input.as_ref())).unwrap();
         assert_eq!(quoted, expected, "{input:?}");
+    }
+}
+
+/// The command never ran: 126 and one line on stderr.
+fn assert_not_run(output: &Output) {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(126), "{stderr}");
+    assert_eq!(stderr.lines().count(), 1, "{stderr}");
+    assert!(!stderr.trim().is_empty());
+}
+
+#[test]
+fn each_policy_gets_its_own_container() {
+    let f = fixture("isolation");
+    let other = f.root.path().join("other");
+    fs::create_dir_all(&other).unwrap();
+    fs::write(other.join("b.txt"), "b").unwrap();
+    let a = auto(&f);
+    let b = Policy {
+        writable: vec![other.clone()],
+        deny_write: vec![],
+        deny_all: vec![],
+        ..auto(&f)
+    };
+    let first = sandbox::prepare(&a).unwrap();
+    let second = sandbox::prepare(&b).unwrap();
+    assert_ne!(first.profile, second.profile);
+    assert_ne!(first.sid.text().unwrap(), second.sid.text().unwrap());
+    assert_ne!(first.private, second.private);
+    assert_eq!(
+        sandbox::prepare(&a).unwrap().profile,
+        first.profile,
+        "a policy keeps its container"
+    );
+    // B's container writes B. A's, granted the workspace alone, never reaches
+    // B or B's private folders, though B's grants are still in place.
+    let planted = other.join("planted");
+    assert_eq!(
+        run_in(&b, &other, &cmd(), &["/d", "/c", "echo x> planted"]),
+        0
+    );
+    fs::remove_file(&planted).unwrap();
+    assert_ne!(script(&f, &a, &format!("echo x> {}", planted.display())), 0);
+    assert!(!planted.exists());
+    assert_ne!(
+        script(&f, &a, &format!("type {}", other.join("b.txt").display())),
+        0
+    );
+    assert_ne!(
+        script(&f, &a, &format!("dir {}", second.private.display())),
+        0
+    );
+}
+
+#[test]
+fn a_deny_walk_that_misses_an_entry_stops_the_command() {
+    let f = fixture("deny-walk");
+    let locked = f.workspace.join(".git").join("locked");
+    fs::write(&locked, "x").unwrap();
+    // OWNER RIGHTS replaces the owner's implicit rights: Hexbot cannot change
+    // this DACL, but the user can still delete the file.
+    let status = Command::new(system("icacls.exe"))
+        .arg(&locked)
+        .args(["/inheritance:r", "/grant:r", "*S-1-3-4:(R,D)"])
+        .stdout(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "cannot lock the fixture");
+    let policy = auto(&f);
+    let error = sandbox::prepare(&policy)
+        .err()
+        .expect("the deny walk missed an entry");
+    assert!(error.to_string().contains("Could not protect"), "{error}");
+    assert_not_run(&helper(&f, &policy, "echo x> ran.txt").output().unwrap());
+    assert!(!f.workspace.join("ran.txt").exists());
+    // With the entry gone, reset revokes everything when the fixture drops.
+    fs::remove_file(&locked).unwrap();
+}
+
+#[test]
+fn the_helper_takes_its_home_from_the_policy() {
+    let f = fixture("home");
+    let policy = auto(&f);
+    let check = "if defined HEXBOT_HOME (exit 3) else if defined HERMES_HOME (exit 4) else (echo x> home.txt)";
+    // Callers clear the environment; the helper still finds the home.
+    let output = helper(&f, &policy, check).env_clear().output().unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(f.workspace.join("home.txt").is_file());
+    assert!(f.home.join("runtime/sandbox/grants.json").is_file());
+    // Another home in the environment is neither used nor passed on.
+    fs::remove_file(f.workspace.join("home.txt")).unwrap();
+    let decoy = tempfile::tempdir().unwrap();
+    let output = helper(&f, &policy, check)
+        .env("HEXBOT_HOME", decoy.path())
+        .env("HERMES_HOME", decoy.path())
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(f.workspace.join("home.txt").is_file());
+    assert!(!decoy.path().join("runtime").exists());
+}
+
+#[test]
+fn roots_that_reach_the_profile_the_home_or_a_store_are_refused_before_any_change() {
+    let f = fixture("refusals");
+    let profile = PathBuf::from(std::env::var_os("USERPROFILE").unwrap());
+    let journal = f.home.join("runtime/sandbox/grants.json");
+    for folder in [
+        f.home.join("runtime/native/test"),
+        f.home.join("runtime/sandbox"),
+        profile.join(".aws/sub"),
+        profile.join(".ssh"),
+    ] {
+        fs::create_dir_all(folder).unwrap();
+    }
+    let status = Command::new(cmd())
+        .current_dir(&f.workspace)
+        .args(["/d", "/c", "mklink", "/J", "profile-link"])
+        .arg(&profile)
+        .stdout(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "cannot create the junction fixture");
+    let base = Policy {
+        home: f.home.clone(),
+        access: Some(Access::Workspace),
+        ..Policy::default()
+    };
+    let writable = |path: PathBuf| Policy {
+        writable: vec![path],
+        ..base.clone()
+    };
+    let readable = |path: PathBuf| Policy {
+        readable: vec![path],
+        ..base.clone()
+    };
+    for policy in [
+        writable(profile.clone()),
+        readable(profile.parent().unwrap().to_owned()),
+        readable(f.workspace.join("profile-link")),
+        readable(profile.join("AppData")),
+        writable(f.home.clone()),
+        readable(f.root.path().to_owned()),
+        readable(f.home.join("runtime")),
+        readable(f.home.join("runtime/native")),
+        writable(f.home.join("runtime/native/test")),
+        readable(f.home.join("runtime/sandbox")),
+        readable(profile.join(".ssh")),
+        writable(profile.join(".aws/sub")),
+        writable(PathBuf::from(r"\\localhost\C$\Windows")),
+        readable(PathBuf::from(r"\\.\C:\Windows")),
+        writable(f.workspace.join("src").join("a.txt:hidden")),
+        writable(PathBuf::from("relative")),
+        Policy {
+            home: PathBuf::new(),
+            ..writable(f.workspace.clone())
+        },
+    ] {
+        let error = sandbox::prepare(&policy)
+            .err()
+            .unwrap_or_else(|| panic!("{policy:?} was granted"));
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::InvalidInput,
+            "{policy:?}: {error}"
+        );
+        assert!(!journal.exists(), "{policy:?} changed the journal");
+    }
+    // A program folder inside the runtime may still be read.
+    sandbox::prepare(&Policy {
+        readable: vec![f.home.join("runtime/native/test")],
+        ..auto(&f)
+    })
+    .unwrap();
+}
+
+#[test]
+fn a_command_that_cannot_run_exits_126_with_one_line() {
+    let f = fixture("not-run");
+    assert_not_run(
+        &Command::new(hexbot())
+            .args(["sandbox", "exec"])
+            .output()
+            .unwrap(),
+    );
+    assert_not_run(
+        &Command::new(hexbot())
+            .current_dir(&f.workspace)
+            .args(["sandbox", "exec", "not a policy", "--"])
+            .arg(cmd())
+            .args(["/d", "/c", "echo x> ran.txt"])
+            .output()
+            .unwrap(),
+    );
+    let refused = Policy {
+        writable: vec![PathBuf::from(std::env::var_os("USERPROFILE").unwrap())],
+        ..auto(&f)
+    };
+    assert_not_run(&helper(&f, &refused, "echo x> ran.txt").output().unwrap());
+    assert_not_run(
+        &helper_with(
+            &f,
+            &auto(&f),
+            Path::new("cmd.exe"),
+            &["/d", "/c", "echo x> ran.txt"],
+        )
+        .output()
+        .unwrap(),
+    );
+    assert_not_run(
+        &helper_with(&f, &auto(&f), &f.workspace.join("missing.exe"), &[])
+            .output()
+            .unwrap(),
+    );
+    assert!(!f.workspace.join("ran.txt").exists());
+}
+
+#[test]
+fn reset_deletes_every_profile_it_made() {
+    let f = fixture("profiles");
+    let other = f.root.path().join("other");
+    fs::create_dir_all(&other).unwrap();
+    let first = sandbox::prepare(&auto(&f)).unwrap();
+    let second = sandbox::prepare(&Policy {
+        access: Some(Access::Read),
+        writable: vec![],
+        readable: vec![other],
+        ..auto(&f)
+    })
+    .unwrap();
+    let sids = [first.sid.text().unwrap(), second.sid.text().unwrap()];
+    assert!(
+        sids.iter().all(|sid| registered(sid)),
+        "the profiles were never registered"
+    );
+    let journal: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.home.join("runtime/sandbox/grants.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        journal["profiles"],
+        serde_json::json!([first.profile, second.profile])
+    );
+    assert!(journal["roots"].as_array().unwrap().iter().all(|root| {
+        root["profile"] == first.profile.as_str() || root["profile"] == second.profile.as_str()
+    }));
+    drop((first, second));
+    sandbox::reset(&f.home).unwrap();
+    assert!(
+        sids.iter().all(|sid| !registered(sid)),
+        "reset left a profile"
+    );
+    let journal = fs::read_to_string(f.home.join("runtime/sandbox/grants.json")).unwrap();
+    assert!(
+        journal.contains("\"roots\": []") && journal.contains("\"profiles\": []"),
+        "{journal}"
+    );
+}
+
+#[test]
+fn the_probe_runs_a_contained_command_and_leaves_no_profile() {
+    sandbox::probe().unwrap();
+    assert!(sandbox::probe_available());
+    let sid = sandbox::profile_sid(sandbox::PROBE_PROFILE)
+        .unwrap()
+        .text()
+        .unwrap();
+    assert!(!registered(&sid), "the probe left its profile");
+}
+
+#[test]
+fn arguments_reach_programs_unchanged() {
+    let f = fixture("arguments");
+    let cases = [
+        "plain",
+        "with space",
+        "",
+        "a\"b",
+        "back\\slash\\",
+        "\\\"",
+        "ünïcødé 名前",
+        "*",
+        "*.txt",
+        "a?b",
+        "[ab]",
+        "{a,b}",
+        "~",
+        "it's",
+        "tab\there",
+    ];
+    if let Some(node) = std::env::var_os("HEXBOT_WINDOWS_NODE") {
+        let tools = f.home.join("runtime/native/test");
+        fs::create_dir_all(&tools).unwrap();
+        fs::copy(&node, tools.join("node.exe")).unwrap();
+        let policy = Policy {
+            readable: vec![tools.clone()],
+            ..auto(&f)
+        };
+        let mut arguments = vec![
+            "-e",
+            "process.stdout.write(JSON.stringify(process.argv.slice(1)))",
+        ];
+        arguments.extend(cases);
+        let output = helper_with(&f, &policy, &tools.join("node.exe"), &arguments)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let seen: Vec<String> = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(seen, cases);
+    }
+    let bash = PathBuf::from(r"C:\Program Files\Git\usr\bin\bash.exe");
+    if bash.is_file() {
+        // MSYS expands none of these once quoted. It reads backslashes inside
+        // quotes its own way, so these cases have none.
+        let msys = [
+            "with space",
+            "*",
+            "*.txt",
+            "a?b",
+            "[ab]",
+            "{a,b}",
+            "~",
+            "it's",
+            "a\"b",
+            "tab\there",
+        ];
+        let mut arguments = vec![
+            "--noprofile",
+            "--norc",
+            "-c",
+            "printf '<%s>\\n' \"$@\"",
+            "bash",
+        ];
+        arguments.extend(msys);
+        let output = helper_with(&f, &auto(&f), &bash, &arguments)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let expected: String = msys.iter().map(|case| format!("<{case}>\n")).collect();
+        assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
     }
 }

@@ -37,6 +37,16 @@ try {
   $env:HEXBOT_WINDOWS_NODE = Join-Path $root 'node.exe'
   & (Join-Path $root 'sandbox-test.exe') --test-threads=1 --nocapture
   $result = $LASTEXITCODE
+  # Every test resets its home and the probe deletes its profile, so a Hexbot
+  # profile still registered for this user is a leak.
+  $mappings = 'HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppContainer\Mappings'
+  $left = @(Get-ChildItem -LiteralPath $mappings -ErrorAction SilentlyContinue |
+    ForEach-Object { Get-ItemProperty -LiteralPath $_.PSPath } |
+    Where-Object { $_.DisplayName -eq 'Hexbot sandbox' -or $_.Moniker -like 'hexbot.sandbox.*' })
+  if ($left.Count -gt 0) {
+    Write-Error ('Leaked sandbox profiles: ' + (($left | ForEach-Object { $_.Moniker }) -join ', ')) -ErrorAction Continue
+    $result = 1
+  }
 } catch {
   Write-Error $_ -ErrorAction Continue
   $result = 1
