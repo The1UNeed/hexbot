@@ -7,6 +7,7 @@ const base = `https://updates.hexbot.app/install/${version}`
 const manifest = (channel: string, targets: Record<string, unknown> = {
   'macos-aarch64': { full: {}, installerApp: { url: `${base}/HexbotInstaller-${version}-mac-arm64.dmg`, sha256: 'a', size: 9 } },
   'macos-x86_64': { full: {}, installerApp: { url: `${base}/HexbotInstaller-${version}-mac-x64.dmg`, sha256: 'b', size: 9 } },
+  'windows-x86_64': { full: {}, installer: { url: `${base}/hexbot-install-${version}-windows-x86_64.exe`, sha256: 'd', size: 9 } },
   'linux-x86_64': { full: {}, installerApp: { url: `${base}/HexbotInstaller-${version}-linux-x86_64.AppImage`, sha256: 'c', size: 9 } },
 }) => ({ schema: 1, channel, version, minInstaller: version, targets })
 
@@ -18,6 +19,7 @@ describe('readManifest', () => {
       ['mac-arm64', `${base}/HexbotInstaller-${version}-mac-arm64.dmg`],
       ['mac-x64', `${base}/HexbotInstaller-${version}-mac-x64.dmg`],
       ['linux', `${base}/HexbotInstaller-${version}-linux-x86_64.AppImage`],
+      ['win-x64', `${base}/hexbot-install-${version}-windows-x86_64.exe`],
     ])
   })
 
@@ -49,4 +51,9 @@ it('resolves relative installer paths against the update server', () => {
   const result = readManifest(manifest('stable', { 'linux-x86_64': { installerApp: { url: 'install/1.2.3/installer.AppImage' } } }), 'stable')
   expect(result?.builds[0].url).toBe('https://updates.hexbot.app/install/1.2.3/installer.AppImage')
   expect(readManifest(manifest('stable', { 'linux-x86_64': { installerApp: { url: '//attacker.example/installer.AppImage' } } }), 'stable')).toBeNull()
+})
+
+it('uses the CLI engine for Windows and rejects an external Windows URL', () => {
+  expect(readManifest(manifest('stable', { 'windows-x86_64': { installerApp: { url: `${base}/deferred.exe` } } }), 'stable')).toBeNull()
+  expect(readManifest(manifest('stable', { 'windows-x86_64': { installer: { url: 'https://attacker.example/installer.exe' } } }), 'stable')).toBeNull()
 })

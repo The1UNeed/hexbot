@@ -13,7 +13,8 @@ const targets = [
   ['macOS, Apple Silicon', 'mac/arm64', 'nightly-mac.yml', /\.dmg$/],
   ['macOS, Intel', 'mac/x64', 'nightly-mac.yml', /\.dmg$/],
   ['Linux AppImage', 'linux/x64', 'nightly-linux.yml', /\.AppImage$/],
-  ['Linux deb', 'linux/x64', 'nightly-linux.yml', /\.deb$/]
+  ['Linux deb', 'linux/x64', 'nightly-linux.yml', /\.deb$/],
+  ['Windows, x64', 'win/x64', 'nightly.yml', /\.exe$/]
 ] as const
 
 export type FeedFile = { url: string; size?: number }
@@ -65,7 +66,7 @@ export async function nightlyDownloads(load = fetchText): Promise<Downloads | nu
       return rows
     }
     const [full, client] = [await edition('full'), await edition('client')]
-    // Six feed files, one version. Anything else is a half-uploaded nightly.
+    // Eight feed files, one version. Anything else is a half-uploaded nightly.
     if (versions.size !== 1) throw new Error(`Nightly feeds disagree: ${[...versions].join(', ')}`)
     return { version: [...versions][0], full, client }
   } catch (error) {

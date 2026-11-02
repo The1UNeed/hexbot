@@ -269,9 +269,16 @@ route and composer checked before continuing.
   `desktop-lifecycle-*`. Linux needs `dbus-run-session -- xvfb-run -a` and a
   window manager. This does not perform actual logoff, shutdown, or update
   installation, and does not validate GNOME or Wayland integration. Windows
-  remains a lifecycle test target, not a distributed package.
+  lifecycle tests run separately from the Windows x64 release packaging jobs.
 - Packaging and release scripts: `node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs && node scripts/desktop/release-smoke.mjs`.
-- Site: `pnpm --filter ./apps/site run check`.
+  Synthetic releases cover both channels and editions for macOS arm64/x64,
+  Linux x64 and Windows x64, including EXE/blockmap feeds, native ZIPs,
+  required install options and signed manifests. Workflow fixtures check the
+  packaged Windows runtime path, `.exe` CLI copy and Windows Tauri exclusion.
+  Linux needs `libarchive-tools` for the Windows ZIP fixtures; CI installs it.
+- Site: `pnpm --filter ./apps/site run check`. Download tests cover stable
+  Windows filenames, `win/x64/nightly.yml`, the CLI installer and Windows
+  x64 detection, including rejection of ARM.
 - Connect: `pnpm --filter ./apps/connect run typecheck && pnpm --filter ./apps/connect run test --run && pnpm --filter ./apps/connect run lint`.
 
 ## Mobile
@@ -464,7 +471,9 @@ credential changes in an open section, Manual approval for read-only tools, and
 nested steps before and after reload in light and dark themes.
 
 Windows build/install probes live in `.github/workflows/windows-contract.yml`.
-They do not publish packages or establish Windows support. See
+These probes do not publish packages or establish Windows support. The
+release workflow separately includes Windows x64 packaging and installer jobs;
+portable release fixtures verify that plumbing, not native Windows acceptance. See
 [the build contract](windows-build-contract.md) for the runtime layout,
 security dependency and native validation still required.
 

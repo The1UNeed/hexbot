@@ -45,3 +45,34 @@ it('starts the installer and copies the terminal command without DownloadList', 
   expect(writeText).toHaveBeenCalledWith(command)
   expect(copied.textContent).toBe('Copied')
 })
+
+it.each(['x86', 'arm'])('uses Windows CPU hints before starting a download: %s', async architecture => {
+  vi.useFakeTimers()
+  const url = 'https://updates.hexbot.app/install/1.2.3/hexbot-install-1.2.3-windows-x86_64.exe'
+  const primary = { href: '', hidden: false, dataset: { builds: JSON.stringify([
+    { key: 'win-x64', name: 'Windows (x64)', kind: 'installer', url },
+  ]) }, click: vi.fn() }
+  const windows = { hidden: true, dataset: { os: 'win', for: 'installer' } }
+  const mac = { hidden: false, dataset: { os: 'mac', for: 'installer' } }
+  const sub = { textContent: '' }
+  const elements: Record<string, unknown> = { '#dl-primary': primary, '#dl-title': {}, '#dl-sub': sub, '#dl-primary-label': {} }
+  vi.stubGlobal('document', {
+    querySelector: (selector: string) => elements[selector] ?? null,
+    querySelectorAll: (selector: string) => selector === '[data-os], [data-for]' ? [windows, mac] : [],
+    createElement: () => ({ getContext: () => null }),
+  })
+  vi.stubGlobal('navigator', {
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+    userAgentData: { getHighEntropyValues: async () => ({ architecture, bitness: '64' }) },
+  })
+  await import('./downloadPage')
+  await vi.advanceTimersByTimeAsync(600)
+  expect(primary.hidden).toBe(architecture === 'arm')
+  expect(primary.click).toHaveBeenCalledTimes(architecture === 'arm' ? 0 : 1)
+  if (architecture === 'x86') {
+    expect(primary.href).toBe(url)
+    expect(windows.hidden).toBe(false)
+    expect(mac.hidden).toBe(true)
+    expect(sub.textContent).toContain('Windows (x64)')
+  }
+})

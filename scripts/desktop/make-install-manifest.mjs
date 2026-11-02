@@ -15,7 +15,8 @@ export const MIN_INSTALLER = '0.1.5-0'
 const targets = [
   ['macos-aarch64', 'mac', 'arm64'],
   ['macos-x86_64', 'mac', 'x64'],
-  ['linux-x86_64', 'linux', 'x64']
+  ['linux-x86_64', 'linux', 'x64'],
+  ['windows-x86_64', 'win', 'x64']
 ]
 
 async function exists(path) {
@@ -53,7 +54,7 @@ function readFeed(source) {
   }
 }
 
-export async function makeInstallManifest(root, { channel, version, baseUrl = 'https://updates.hexbot.app', allowMissing = false, windowsProbe = false }) {
+export async function makeInstallManifest(root, { channel, version, baseUrl = 'https://updates.hexbot.app', allowMissing = false }) {
   feedMetadataName(channel, 'mac')
   if (!/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(version)) throw new Error('Invalid install version')
   const base = new URL(`${baseUrl.replace(/\/+$/, '')}/`)
@@ -74,7 +75,7 @@ export async function makeInstallManifest(root, { channel, version, baseUrl = 'h
       throw new Error(`Invalid artifact size: ${path}`)
     if (await digest(file, algorithm, encoding) !== hash) throw new Error(`Artifact checksum mismatch: ${path}`)
   }
-  for (const [target, os, arch] of [...targets, ...(windowsProbe ? [['windows-x86_64', 'win', 'x64']] : [])]) {
+  for (const [target, os, arch] of targets) {
     const options = {}
     for (const edition of ['full', 'client']) {
       const directory = `${edition}/${os}/${arch}`
@@ -116,13 +117,14 @@ export async function makeInstallManifest(root, { channel, version, baseUrl = 'h
       ['installerApp', `HexbotInstaller-${version}-${appName}`]
     ]) {
       const path = `install/${version}/${filename}`
+      // Windows uses the CLI engine until the Tauri installer is released there.
+      if (option === 'installerApp' && os === 'win' && !(await exists(join(root, path)))) continue
       if (!(await optional(path))) continue
       options[option] = { url: url(path), path, sha256: await digest(join(root, path), 'sha256', 'hex'), size: (await stat(join(root, path))).size }
       if (option === 'installer') lines.push(`${target} ${options[option].sha256} ${url(path)}`)
     }
     if (Object.keys(options).length) manifest.targets[target] = options
   }
-  if (windowsProbe) manifest.experimental = 'Windows build/install probe only; not a public release'
   await mkdir(join(root, 'install'), { recursive: true })
   await writeFile(join(root, 'install', `${channel}.json`), `${JSON.stringify(manifest, null, 2)}\n`)
   await writeFile(join(root, 'install', `${channel}.txt`), lines.length ? `${lines.join('\n')}\n` : '')
@@ -135,8 +137,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   let root
   for (let i = 0; i < args.length; i++) {
     const argument = args[i]
-    if (argument === '--windows-probe') options.windowsProbe = true
-    else if (argument === '--allow-missing') options.allowMissing = true
+    if (argument === '--allow-missing') options.allowMissing = true
     else if (['--channel', '--version', '--base-url'].includes(argument)) {
       const value = args[++i]
       if (!value || value.startsWith('--')) throw new Error(`Missing value for ${argument}`)

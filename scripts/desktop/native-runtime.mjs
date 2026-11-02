@@ -104,7 +104,8 @@ export const NODE_SHA256 = Object.freeze({
   'win32-x64': '2b0ff57b049cda1bbcea2240eec20467018713c1efe1f7360c2681859b90ed71'
 })
 async function archiveTool() {
-  if (process.platform !== 'win32') return 'tar'
+  // GNU tar cannot write ZIPs. Linux release fixtures use libarchive too.
+  if (process.platform !== 'win32') return process.platform === 'linux' ? 'bsdtar' : 'tar'
   const program = await archiveProgram()
   const { stdout } = await execute(program, ['--version'], { windowsHide: true })
   console.log('Windows archive tool:', JSON.stringify({ program: await realpath(program), version: stdout.trim().slice(0, 1024) }))

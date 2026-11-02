@@ -25,7 +25,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const licenses = join(root, 'scripts/desktop/licenses')
 const maxBuffer = 256 * 1024 * 1024
 /** Every target a package is built for, including Linux arm64 Headless. */
-export const RUST_TARGETS = ['aarch64-apple-darwin', 'x86_64-apple-darwin', 'x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu']
+export const RUST_TARGETS = ['aarch64-apple-darwin', 'x86_64-apple-darwin', 'x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu', 'x86_64-pc-windows-msvc']
 export const MOBILE_NOTICES = join(root, 'apps/mobile/third-party-notices.json')
 const LICENSE_FILE = /^(?:licen[cs]e|copying|notice|unlicense|copyright)(?:[-._].*)?$/i
 /** Standard texts kept in scripts/desktop/licenses/spdx, for packages that ship no license file. */

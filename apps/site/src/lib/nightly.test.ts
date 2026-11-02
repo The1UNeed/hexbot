@@ -2,14 +2,15 @@ import { describe, expect, it, vi } from 'vitest'
 import { nightlyDate, nightlyDownloads, parseFeed } from './nightly'
 
 const version = '0.1.5-nightly.20260913.2'
-const feed = (prefix: string, os: 'mac' | 'linux', arch: string) =>
+const feed = (prefix: string, os: 'mac' | 'linux' | 'win', arch: string) =>
   os === 'mac'
     ? `version: ${version}\nfiles:\n  - url: ${prefix}-${version}-mac-${arch}.zip\n    sha512: a\n    size: 1\n  - url: ${prefix}-${version}-mac-${arch}.dmg\n    sha512: b\n    size: 1\npath: ${prefix}-${version}-mac-${arch}.zip\n`
+    : os === 'win' ? `version: ${version}\nfiles:\n  - url: ${prefix}-${version}-win-x64.exe\n    sha512: a\n    size: 2\npath: ${prefix}-${version}-win-x64.exe\n`
     : `version: ${version}\nfiles:\n  - url: ${prefix}-${version}-linux-x86_64.AppImage\n    sha512: a\n    size: 1\n  - url: ${prefix}-${version}-linux-amd64.deb\n    sha512: b\n    size: 1\npath: ${prefix}-${version}-linux-x86_64.AppImage\n`
 const server = async (url: string) => {
-  const m = url.match(/^https:\/\/updates\.hexbot\.app\/(full|client)\/(mac|linux)\/(\w+)\/nightly-\w+\.yml$/)
+  const m = url.match(/^https:\/\/updates\.hexbot\.app\/(full|client)\/(mac|linux|win)\/(\w+)\/nightly(?:-\w+)?\.yml$/)
   if (!m) throw new Error(`404 ${url}`)
-  return feed(m[1] === 'full' ? 'Hexbot' : 'HexbotClient', m[2] as 'mac' | 'linux', m[3])
+  return feed(m[1] === 'full' ? 'Hexbot' : 'HexbotClient', m[2] as 'mac' | 'linux' | 'win', m[3])
 }
 
 describe('parseFeed', () => {
@@ -31,15 +32,17 @@ describe('parseFeed', () => {
 })
 
 describe('nightlyDownloads', () => {
-  it('links the dmg, AppImage, and deb of both editions from the feed', async () => {
+  it('links the dmg, AppImage, deb and exe of both editions from the feed', async () => {
     const downloads = await nightlyDownloads(server)
     expect(downloads?.version).toBe(version)
     expect(downloads?.full.map(b => b.url)).toEqual([
       `https://updates.hexbot.app/full/mac/arm64/Hexbot-${version}-mac-arm64.dmg`,
       `https://updates.hexbot.app/full/mac/x64/Hexbot-${version}-mac-x64.dmg`,
       `https://updates.hexbot.app/full/linux/x64/Hexbot-${version}-linux-x86_64.AppImage`,
-      `https://updates.hexbot.app/full/linux/x64/Hexbot-${version}-linux-amd64.deb`
+      `https://updates.hexbot.app/full/linux/x64/Hexbot-${version}-linux-amd64.deb`,
+      `https://updates.hexbot.app/full/win/x64/Hexbot-${version}-win-x64.exe`
     ])
+    expect(downloads?.client.at(-1)?.url).toBe(`https://updates.hexbot.app/client/win/x64/HexbotClient-${version}-win-x64.exe`)
     expect(downloads?.client[0]).toEqual({
       label: 'macOS, Apple Silicon',
       url: `https://updates.hexbot.app/client/mac/arm64/HexbotClient-${version}-mac-arm64.dmg`,
@@ -50,6 +53,7 @@ describe('nightlyDownloads', () => {
   it('returns null when a feed is missing or the feeds disagree', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     expect(await nightlyDownloads(async () => { throw new Error('404') })).toBeNull()
+    expect(await nightlyDownloads(async url => { if (url.includes('/win/')) throw new Error('404'); return server(url) })).toBeNull()
     const skewed = async (url: string) =>
       (await server(url)).replace(/^version: .*$/m, url.includes('/client/') ? 'version: 0.1.5-nightly.20260912.1' : `version: ${version}`)
     expect(await nightlyDownloads(skewed)).toBeNull()

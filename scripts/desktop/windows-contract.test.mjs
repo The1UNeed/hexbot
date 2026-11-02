@@ -11,7 +11,7 @@ import { feedMetadataName } from './update-feed-utils.mjs'
 import { makeInstallManifest } from './make-install-manifest.mjs'
 const exec = promisify(execFile)
 
-test('Windows uses updater wire filenames and distinct NSIS editions without public manifest targets', async t => {
+test('Windows uses updater wire filenames and distinct NSIS editions in public manifests', async t => {
   assert.equal(feedMetadataName('stable', 'win'), 'latest.yml')
   assert.equal(feedMetadataName('nightly', 'win'), 'nightly.yml')
   const root = await mkdtemp(join(tmpdir(), 'hexbot windows feed '))
@@ -28,10 +28,9 @@ test('Windows uses updater wire filenames and distinct NSIS editions without pub
   }
   const options = { channel: 'nightly', version, allowMissing: true }
   const publicManifest = await makeInstallManifest(join(root, 'updates'), options)
-  assert(!publicManifest.targets['windows-x86_64'])
-  const probe = await makeInstallManifest(join(root, 'updates'), { ...options, windowsProbe: true })
-  assert.equal(probe.targets['windows-x86_64'].client.format, 'exe')
-  assert.match(probe.experimental, /probe only/)
+  assert.equal(publicManifest.targets['windows-x86_64'].full.format, 'exe')
+  assert.equal(publicManifest.targets['windows-x86_64'].client.format, 'exe')
+  assert.equal(publicManifest.experimental, undefined)
 })
 
 test('Windows tool archives have pinned digests and the actual executable members', () => {
@@ -108,7 +107,9 @@ test('Windows CI keeps the production guard and never publishes disposable probe
   for (const name of ['client-and-installer', 'native-runtime'])
     assert(!jobs[name].includes('windows-nightly-nsis-probe.mjs'))
   const release = await readFile('.github/workflows/release.yml', 'utf8')
-  assert(!release.includes('windows-latest'))
+  assert(release.includes('runner: windows-latest'))
+  assert(release.includes('target: --win --x64'))
+  assert(release.includes('build: [mac-arm64, mac-x64, linux-x64, win-x64]'))
 })
 
 test('Tauri Windows resource icon reproduces the existing installer art', async () => {
