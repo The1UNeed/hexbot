@@ -48,7 +48,7 @@ What is guaranteed:
   output folders are, must not be, hold or sit inside one of the home's
   stores: its `.env` files, `users/<id>/passwords` and `approvals`,
   `runtime/provider-auth`, `desktop-data` or `connect.json`. Project secrets
-  (`.env`, `.envrc`) and credential file names under a granted root are
+  (`.env`, `.envrc`) and the home's own credential paths are
   denied outright.
 - **Git metadata stays read-only.** `.git`, linked `gitdir` and `commondir`
   targets, bare repositories and configured hooks folders inside a writable

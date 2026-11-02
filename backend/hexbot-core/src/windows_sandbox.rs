@@ -14,7 +14,7 @@ use std::{
 
 /// Why Auto and Manual refuse local commands: the startup probe could not run
 /// a contained command.
-pub const UNAVAILABLE: &str = "The Windows sandbox could not start, so Auto and Manual refuse local commands and file tools, and scheduled scripts do not run. Bypass has no sandbox or credential protection.";
+pub const UNAVAILABLE: &str = "The Windows sandbox could not start, so Auto and Manual refuse local commands and file tools, and scheduled scripts do not run. Bypass has no sandbox or credential protection. Restart Hexbot to try again.";
 /// Code runs on the bot's own computer; the daemon's Python worker is retired
 /// and never starts on Windows.
 pub const NATIVE_WORKER: &str = "On Windows, code runs on the bot's own computer (Computer use), not on the computer running Hexbot.";
@@ -131,6 +131,12 @@ pub fn git_install() -> Option<PathBuf> {
     recorded
         .chain(defaults)
         .filter_map(|folder| real(&folder))
+        .filter(|folder| {
+            folder
+                .to_str()
+                .map(|plain| fixed_drive(plain).is_ok())
+                .unwrap_or(false)
+        })
         .find(|folder| folder.join(r"bin\bash.exe").is_file())
 }
 

@@ -1840,17 +1840,6 @@ impl Dreaming {
         // workspace, artifacts or database. Approval modes cannot override it.
         crate::credentials::require_supported_execution()?;
         let supplied = PathBuf::from(script);
-        // On Windows a script path is judged by its text and drive first, so a
-        // network share or device is never opened.
-        #[cfg(windows)]
-        if supplied.is_absolute() {
-            let plain = supplied
-                .to_str()
-                .ok_or(crate::windows_paths::sandbox::RELATIVE)
-                .and_then(crate::windows_paths::sandbox::local)
-                .map_err(|reason| Error::new(4302, format!("{reason}: {script}")))?;
-            crate::windows_sandbox::fixed_drive(&plain)?;
-        }
         if !supplied.is_absolute()
             && supplied
                 .components()
@@ -1870,6 +1859,18 @@ impl Dreaming {
                 .join("scripts")
                 .join(supplied)
         };
+        // On Windows the script path is judged by its text and drive first,
+        // after joining a relative name, so a network share, device, stream
+        // or reserved name is never opened.
+        #[cfg(windows)]
+        {
+            let plain = path
+                .to_str()
+                .ok_or(crate::windows_paths::sandbox::RELATIVE)
+                .and_then(crate::windows_paths::sandbox::local)
+                .map_err(|reason| Error::new(4302, format!("{reason}: {script}")))?;
+            crate::windows_sandbox::fixed_drive(&plain)?;
+        }
         let path = crate::credentials::canonical(&path)?;
         let workspace = match workdir {
             Some(dir) => common::resolve_workdir(&self.home, dir)?,

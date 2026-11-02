@@ -107,12 +107,14 @@ test('the sandbox keeps the parent of a nested store in place but lets siblings 
   assert.equal(output.stdout, 'done\n', output.stderr);
   assert.equal(readFileSync(join(user, '.config/gh/hosts.yml'), 'utf8'), 'keep');
   // Only the directories between the home and a store are pinned, each once:
-  // ~/.config for ~/.config/gh, and the AppData folders for Windows stores.
+  // ~/.config for ~/.config/gh. The Windows stores live in windowsWriteDeny
+  // and never pin anything here.
   const profile = execFileSync(process.execPath, ['--input-type=module', '-e', `const {sandboxProfile} = await import(${JSON.stringify(new URL('./isolation.ts', import.meta.url).href)}); process.stdout.write(sandboxProfile(${JSON.stringify(home)}));`], {env:{...process.env, HOME:user}, encoding:'utf8'});
   const policy = JSON.parse(readFileSync(new URL('./credential-policy.json', import.meta.url), 'utf8'));
   const ancestors = [];
   for (const store of policy.write.deny) for (let dir = dirname(join(user, store)); dir !== user; dir = dirname(dir)) if (!ancestors.includes(dir)) ancestors.push(dir);
-  assert.ok(ancestors.includes(join(user, '.config')) && ancestors.includes(join(user, 'AppData/Roaming')));
+  assert.ok(ancestors.includes(join(user, '.config')));
+  assert.ok(!ancestors.includes(join(user, 'AppData/Roaming')));
   assert.ok(profile.includes(`(deny file-write-unlink ${ancestors.map(dir => `(literal ${JSON.stringify(dir)})`).join(' ')})`), profile);
   assert.ok(!profile.includes(`(literal ${JSON.stringify(user)})`));
 });

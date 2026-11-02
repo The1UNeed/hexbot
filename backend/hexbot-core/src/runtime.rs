@@ -3559,11 +3559,18 @@ impl Runtime {
             (_, Some("confined")) => Confine::Workspace,
             _ => return Err(Error::new(4202, "level must be confined or base")),
         };
-        let roots: Vec<PathBuf> = std::iter::once(&live["cwd"])
-            .chain(live["outputDirs"].as_array().into_iter().flatten())
+        let cwd = live["cwd"]
+            .as_str()
+            .map(PathBuf::from)
+            .ok_or_else(|| Error::new(4202, "The section has no working folder."))?;
+        let outputs: Vec<PathBuf> = live["outputDirs"]
+            .as_array()
+            .into_iter()
+            .flatten()
             .filter_map(|root| root.as_str().map(PathBuf::from))
             .collect();
-        let (helper, policy) = crate::credentials::sandbox_policy(&self.home, &roots, confine)?;
+        let (helper, policy) =
+            crate::credentials::sandbox_policy(&self.home, &cwd, &outputs, confine)?;
         Ok(json!({"helper":helper,"policy":policy}))
     }
 

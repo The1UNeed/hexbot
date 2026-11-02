@@ -302,6 +302,10 @@ pub mod sandbox {
     struct CredentialPolicy {
         #[serde(rename = "readDeny")]
         read_deny: Vec<String>,
+        #[serde(rename = "windowsReadDeny", default)]
+        windows_read_deny: Vec<String>,
+        #[serde(rename = "windowsWriteDeny", default)]
+        windows_write_deny: Vec<String>,
         write: WritePolicy,
         user: Vec<String>,
         #[serde(rename = "managedRuntime")]
@@ -323,7 +327,9 @@ pub mod sandbox {
         let mut stores: Vec<String> = policy
             .read_deny
             .iter()
+            .chain(&policy.windows_read_deny)
             .chain(&policy.write.deny)
+            .chain(&policy.windows_write_deny)
             .chain(&policy.user)
             .map(native)
             .collect();

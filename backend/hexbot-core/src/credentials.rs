@@ -28,6 +28,13 @@ struct Policy {
     skip: Vec<String>,
     #[serde(rename = "readDeny")]
     read_deny: Vec<String>,
+    /// Windows-only credential stores, applied on Windows alone.
+    #[cfg(windows)]
+    #[serde(rename = "windowsReadDeny", default)]
+    windows_read_deny: Vec<String>,
+    #[cfg(windows)]
+    #[serde(rename = "windowsWriteDeny", default)]
+    windows_write_deny: Vec<String>,
     write: WritePolicy,
     environment: Vec<String>,
     #[cfg(windows)]
@@ -43,6 +50,30 @@ struct WritePolicy {
     /// System configuration: the file tools never write it; shell commands ask.
     #[serde(rename = "fileDeny")]
     file_deny: Vec<String>,
+}
+/// The Windows-only read-denied stores, empty on other platforms.
+fn windows_read() -> std::slice::Iter<'static, String> {
+    #[cfg(windows)]
+    {
+        policy().windows_read_deny.iter()
+    }
+    #[cfg(not(windows))]
+    {
+        let empty: &[String] = &[];
+        empty.iter()
+    }
+}
+/// The Windows-only write-denied stores, empty on other platforms.
+fn windows_write() -> std::slice::Iter<'static, String> {
+    #[cfg(windows)]
+    {
+        policy().windows_write_deny.iter()
+    }
+    #[cfg(not(windows))]
+    {
+        let empty: &[String] = &[];
+        empty.iter()
+    }
 }
 fn policy() -> &'static Policy {
     static POLICY: OnceLock<Policy> = OnceLock::new();
@@ -91,11 +122,12 @@ pub(crate) fn under(path: &Path, root: &Path) -> bool {
 pub(crate) fn canonical(path: &Path) -> std::io::Result<PathBuf> {
     let real = std::fs::canonicalize(path)?;
     #[cfg(windows)]
-    if let Some(plain) = real
-        .to_str()
-        .and_then(|text| crate::windows_paths::sandbox::simplify(text).ok())
-    {
-        return Ok(PathBuf::from(plain));
+    if let Some(text) = real.to_str() {
+        return crate::windows_paths::sandbox::simplify(text)
+            .map(PathBuf::from)
+            .map_err(|reason| {
+                std::io::Error::new(std::io::ErrorKind::Unsupported, format!("{text}: {reason}"))
+            });
     }
     Ok(real)
 }
@@ -167,6 +199,7 @@ fn store_credential_name(path: &Path) -> bool {
         .write
         .deny
         .iter()
+        .chain(windows_write())
         .flat_map(|entry| policy_roots(entry))
         .any(|store| under(path, &store) || canonical(&store).is_ok_and(|p| under(path, &p)))
 }
@@ -262,8 +295,9 @@ pub(crate) fn managed_runtime_path(home: &Path, path: &Path) -> Result<bool> {
 /// The file tools' tier for a host path.
 pub fn host_write_tier(path: &Path) -> Option<WriteTier> {
     let write = &policy().write;
+    let denied: Vec<String> = write.deny.iter().chain(windows_write()).cloned().collect();
     let tiers = [
-        (WriteTier::Deny, &write.deny),
+        (WriteTier::Deny, &denied),
         (WriteTier::Deny, &write.file_deny),
         (WriteTier::Ask, &write.ask),
     ];
@@ -637,6 +671,7 @@ fn read_denied() -> Vec<PathBuf> {
     for root in policy()
         .read_deny
         .iter()
+        .chain(windows_read())
         .flat_map(|entry| policy_roots(entry))
     {
         let real = real_root(&root).unwrap_or_else(|_| root.clone());
@@ -1237,6 +1272,11 @@ fn linked(
         match part.components().next() {
             Some(Component::Prefix(prefix)) => match prefix.kind() {
                 Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => {
+                    // A mapped network drive is not local, whatever its
+                    // letter says; the scan follows links only on fixed
+                    // drives.
+                    #[cfg(windows)]
+                    crate::windows_sandbox::fixed_drive(&format!("{}:\\", drive as char))?;
                     dir = PathBuf::from(format!("{}:", drive as char))
                 }
                 _ => {
@@ -1531,9 +1571,19 @@ fn workspace_protected(roots: &[PathBuf], limit: usize) -> Result<WorkspaceProte
         for entry in list {
             let path = entry.path();
             #[cfg(windows)]
-            if entry.file_type().is_ok_and(|kind| kind.is_symlink()) && !local_link(&path) {
-                protected.failure = true;
-                continue;
+            {
+                // Every reparse point, not only symlinks: a directory
+                // junction is not is_symlink(), and the scan must never
+                // follow one to a network share. Unreadable metadata fails
+                // the scan rather than risk opening the entry.
+                let reparse = entry.metadata().is_ok_and(|meta| {
+                    use std::os::windows::fs::MetadataExt;
+                    meta.file_attributes() & 0x400 != 0
+                });
+                if reparse && !local_link(&path) {
+                    protected.failure = true;
+                    continue;
+                }
             }
             let name = entry.file_name();
             let name = name.to_string_lossy();
@@ -2257,18 +2307,24 @@ pub(crate) fn script_command(
     }
 }
 /// The helper and policy Pi runs one of a section's commands with on Windows.
-/// `roots` are the section's working folder and output folders.
+/// `cwd` is the section's working folder and `outputs` its output folders;
+/// in Manual the outputs are the approved writable folders.
 pub fn sandbox_policy(
     home: &Path,
-    roots: &[PathBuf],
+    cwd: &Path,
+    outputs: &[PathBuf],
     confine: Confine,
 ) -> Result<(PathBuf, String)> {
     #[cfg(windows)]
-    return windows_command_policy(home, roots, confine, &[], &[])
-        .and_then(|policy| Ok((crate::windows_sandbox::helper()?, policy)));
+    {
+        let mut roots = vec![cwd.to_path_buf()];
+        roots.extend(outputs.iter().cloned());
+        return windows_command_policy(home, &roots, confine, outputs, &[])
+            .map(|policy| (crate::windows_sandbox::helper()?, policy));
+    }
     #[cfg(not(windows))]
     {
-        let _ = (home, roots, confine);
+        let _ = (home, cwd, outputs, confine);
         Err(Error::new(
             4302,
             "Only the Windows sandbox runs commands through a policy helper.",
@@ -3418,6 +3474,7 @@ mod tests {
 
     /// What Git prints for the settings the scan follows, or None when Git
     /// refuses the text. HOME is /h, as the reader is given below.
+    #[cfg(unix)]
     fn git_settings(text: &[u8]) -> Option<Vec<(String, String)>> {
         use std::io::Write;
         let mut child = std::process::Command::new("/usr/bin/git")
@@ -3457,6 +3514,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn the_windows_git_config_reader_reads_what_git_reads() {
         let cases: &[&[u8]] = &[
             b"[core]\n\thooksPath = .githooks\n",
@@ -4729,9 +4787,6 @@ mod tests {
                 ".azure",
                 ".config/gh",
                 ".config/gcloud",
-                "AppData/Roaming/gnupg",
-                "AppData/Roaming/gcloud",
-                "AppData/Roaming/GitHub CLI",
             ]
             .contains(&local.as_str())
             {

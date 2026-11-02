@@ -84,10 +84,14 @@ function realRoot(path: string, hops = 0): string {
 }
 // The write policy's deny tier (credential stores such as ~/.aws and ~/.netrc):
 // the OS sandbox makes "never written in any mode" hold for every program a
-// command runs, not only for the guarded tools.
+// command runs, not only for the guarded tools. The Windows stores join only
+// on Windows, so Unix sandboxes do not deny or pin AppData folders.
 function deniedWrites(): string[] {
   const denied: string[] = [];
-  for (const entry of credentialPolicy.write.deny as string[]) {
+  const entries = (credentialPolicy.write.deny as string[]).concat(
+    process.platform === 'win32' ? ((credentialPolicy as any).windowsWriteDeny as string[] ?? []) : []
+  );
+  for (const entry of entries) {
     const root = policyRoot(entry);
     const real = realRoot(root);
     for (const path of [root, real]) if (!denied.includes(path)) denied.push(path);
@@ -103,7 +107,10 @@ export function readDenied(): string[] {
   const home = JSON.stringify(userHomes()), cached = readCache.get(home);
   if (cached && Date.now() - cached.at < 5000) return cached.paths;
   const denied: string[] = [];
-  for (const root of (credentialPolicy.readDeny as string[]).flatMap(policyRoots)) {
+  const roots = (credentialPolicy.readDeny as string[])
+    .concat(process.platform === 'win32' ? ((credentialPolicy as any).windowsReadDeny as string[] ?? []) : [])
+    .flatMap(policyRoots);
+  for (const root of roots) {
     // A profile path that cannot be resolved (unreadable, a loop) is denied as named.
     let real = root;
     try { real = realRoot(root); } catch { /* Keep the name. */ }

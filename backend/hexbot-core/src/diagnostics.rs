@@ -1729,8 +1729,11 @@ mod windows_collectors {
             platform: 0,
             service_pack: [0; 128],
         };
-        (unsafe { RtlGetVersion(&mut version) } == 0)
-            .then(|| (version.major, version.minor, version.build))
+        (unsafe { RtlGetVersion(&mut version) } == 0).then_some((
+            version.major,
+            version.minor,
+            version.build,
+        ))
     }
 
     fn product(major: u32, minor: u32, build: u32) -> String {

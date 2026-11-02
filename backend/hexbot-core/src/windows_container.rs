@@ -1051,11 +1051,14 @@ fn ensure(
     journal.roots[index].complete = false;
     write_journal(home, journal)?;
     let walk = walk(path, kind.change(), &[sid])?;
-    if kind.denies() && walk.failed > 0 {
+    if kind.denies() && (walk.failed > 0 || walk.skipped_links > 0) {
         // Left unfinished: the next command walks it again, and reset revokes it.
+        // A skipped link keeps the entry's inherited access, so a deny that
+        // could not reach every entry stops the command.
         return Err(io::Error::other(format!(
-            "Could not protect {} entries under {}",
+            "Could not protect {} entries ({} unlinks) under {}",
             walk.failed,
+            walk.skipped_links,
             path.display()
         )));
     }

@@ -140,6 +140,28 @@ async fn windows_security_auto_writes_manual_reads_and_full_access_refuses() {
         let output = command("type .env").output().await.unwrap();
         assert!(!output.status.success(), "{mode:?} read a project secret");
         assert!(!String::from_utf8_lossy(&output.stdout).contains("private"));
+        // The home's own stores are not granted at all: a contained command
+        // can neither read nor write them.
+        let store = home.join("connect.json");
+        let output = command(&format!("type {}", store.to_str().unwrap()))
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "{mode:?} read the home's connect file"
+        );
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("private"));
+        let profile_secret = home.join("profiles/owl/.env");
+        let output = command(&format!("type {}", profile_secret.to_str().unwrap()))
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "{mode:?} read a bot profile secret"
+        );
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("private"));
         let _ = fs::remove_file(work.join("written.txt"));
     }
     let started = Instant::now();
@@ -283,6 +305,7 @@ async fn windows_security_runtime_runs_sections_and_scripts_in_the_sandbox() {
     }
     fs::write(work.join(".env"), "private").unwrap();
     fs::write(home.join("connect.json"), "private").unwrap();
+    fs::write(home.join("profiles/owl/.env"), "private").unwrap();
     db::migrate(&home).unwrap();
     db::open(&home)
         .unwrap()
