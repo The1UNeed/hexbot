@@ -1207,7 +1207,11 @@ function MobileApp() {
         primaryChoice={
           // A daemon from before the primary bot leaves `primary` out; an
           // empty one is offered HexBot too, falling back on older daemons.
-          !demo && mobile.bots.every(b => b.primary === false)
+          // Only a list loaded from the daemon counts: offline, it is just empty.
+          !demo &&
+          mobile.connection === 'connected' &&
+          mobile.info &&
+          mobile.bots.every(b => b.primary === false)
             ? {
                 onAdd: mobile.bots.some(b => b.name === 'hexbot')
                   ? undefined

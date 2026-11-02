@@ -37,7 +37,8 @@ export function EmptyState({
           </Text>
         ) : null}
       </View>
-      {action}
+      {/* Buttons hug their label from the start edge; this keeps them centred. */}
+      {action ? <View>{action}</View> : null}
     </View>
   )
 }
