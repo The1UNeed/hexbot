@@ -999,7 +999,8 @@ impl GrantKind {
 }
 
 pub fn sandbox_dir(home: &Path) -> PathBuf {
-    home.join("runtime/sandbox")
+    // Native separators: programs such as cmd.exe parse the paths they are given.
+    home.join("runtime").join("sandbox")
 }
 fn journal_path(home: &Path) -> PathBuf {
     sandbox_dir(home).join("grants.json")
@@ -1172,8 +1173,8 @@ pub fn environment(
         ("USERPROFILE", private.join("home")),
         ("TEMP", private.join("tmp")),
         ("TMP", private.join("tmp")),
-        ("APPDATA", private.join("appdata/roaming")),
-        ("LOCALAPPDATA", private.join("appdata/local")),
+        ("APPDATA", private.join("appdata").join("roaming")),
+        ("LOCALAPPDATA", private.join("appdata").join("local")),
     ];
     let mut env: Vec<(OsString, OsString)> = inherited
         .into_iter()

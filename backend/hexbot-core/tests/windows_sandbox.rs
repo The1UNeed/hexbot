@@ -64,7 +64,9 @@ fn fixture(name: &str) -> Fixture {
 }
 
 fn cmd() -> PathBuf {
-    PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/cmd.exe")
+    PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+        .join("System32")
+        .join("cmd.exe")
 }
 
 fn auto(f: &Fixture) -> Policy {
@@ -102,7 +104,9 @@ fn script(f: &Fixture, policy: &Policy, script: &str) -> u32 {
 
 fn icacls(path: &Path) -> String {
     let output = Command::new(
-        PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/icacls.exe"),
+        PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join("System32")
+            .join("icacls.exe"),
     )
     .arg(path)
     .output()
@@ -203,7 +207,9 @@ fn no_network_and_no_loopback() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let port = listener.local_addr().unwrap().port();
-    let curl = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/curl.exe");
+    let curl = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+        .join("System32")
+        .join("curl.exe");
     let local = format!("http://127.0.0.1:{port}/");
     assert_ne!(run(&f, &policy, &curl, &["-s", "-m", "5", &local]), 0);
     assert!(
