@@ -228,6 +228,9 @@ fn saved(home: &Path) -> Value {
         .unwrap_or_else(|| json!({}))
 }
 fn save(home: &Path, changes: Value) -> Result<()> {
+    // One save at a time, or a Turn off and a size change overwrite each other.
+    static SAVING: Mutex<()> = Mutex::new(());
+    let _saving = SAVING.lock().unwrap_or_else(|e| e.into_inner());
     let mut current = saved(home);
     let before = current.clone();
     for (key, value) in changes.as_object().into_iter().flatten() {
@@ -799,11 +802,7 @@ pub fn watch(home: &Path) {
 /// lost with its engine, is repaired as Turn on would; when that fails, the
 /// primary bot tells the user once, and the watchdog tries again later.
 pub async fn check(home: &Path) {
-    if saved(home)["on"] != true
-        || with(home, |c| {
-            c.busy.is_some() || c.failed_at.is_some_and(|at| at.elapsed() < RETRY_AFTER)
-        })
-    {
+    if saved(home)["on"] != true || with(home, |c| c.busy.is_some()) {
         return;
     }
     let Ok((cfg, env)) = setup(home) else {
@@ -820,10 +819,16 @@ pub async fn check(home: &Path) {
         return;
     }
     match info(home, &cfg, &env).await.map(|i| state(i.as_ref())) {
-        Ok("running" | "starting") => {
-            let _ = save(home, json!({"told":false}));
+        // Back without the watchdog, as when the user starts Docker: open
+        // screens drop the outage too.
+        Ok("running") => {
+            if with(home, |c| c.state != Some("running") || c.error.is_some()) {
+                settle(home, &Ok("running"));
+            }
+            came_up(home);
             return;
         }
+        Ok("starting") => return,
         // Removed outside Hexbot: a new one waits until a bot or the user asks.
         Ok("absent") => {
             let _ = save(home, json!({"on":false}));
@@ -833,7 +838,12 @@ pub async fn check(home: &Path) {
         _ => {}
     }
     // The user may have turned it off, or begun a step, while Cua answered.
-    if saved(home)["on"] != true || with(home, |c| c.busy.is_some()) {
+    // After a failed repair the watchdog only looks, until it may try again.
+    if saved(home)["on"] != true
+        || with(home, |c| {
+            c.busy.is_some() || c.failed_at.is_some_and(|at| at.elapsed() < RETRY_AFTER)
+        })
+    {
         return;
     }
     if let Err(error) = ensure_locked(home, &cfg, &env, true).await {

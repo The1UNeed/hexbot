@@ -1000,6 +1000,35 @@ async fn a_computer_that_cannot_come_back_is_reported_once() {
         (json!(true), json!(false))
     );
 }
+/// A repair failed, then the user starts Docker themselves: the watchdog's
+/// next look clears the outage from open screens, without waiting to retry.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_watchdog_shows_a_computer_that_came_back_on_its_own() {
+    use hexbot_core::{computers, events::EventHub};
+    let h = running_computer().await;
+    let events = EventHub::new();
+    computers::attach(h.path(), events.clone());
+    std::fs::write(h.path().join("engine-down"), "").unwrap();
+    std::fs::write(h.path().join("engine-broken"), "").unwrap();
+    computers::check(h.path()).await;
+    std::fs::remove_file(h.path().join("engine-down")).unwrap();
+    std::fs::remove_file(h.path().join("engine-broken")).unwrap();
+    let mut changes = events.subscribe();
+    computers::check(h.path()).await;
+    let mut last = Value::Null;
+    while let Ok(event) = changes.try_recv() {
+        if event.frame["params"]["type"] == "hexbot.computer.changed" {
+            last = event.frame["params"]["payload"].clone();
+        }
+    }
+    assert_eq!(last["state"], "running");
+    assert!(last["error"].is_null(), "{last}");
+    assert_eq!(
+        cua_log(h.path()).matches(r#"{"engine":"start"}"#).count(),
+        1
+    );
+}
 /// A computer Cua reports failed is left as it is, files and all, and the
 /// primary bot says so once; with no one to tell, the outage stays untold.
 #[cfg(unix)]
