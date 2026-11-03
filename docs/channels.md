@@ -44,7 +44,7 @@ lives in a small set of files:
 
 | File | Channel | Role |
 | --- | --- | --- |
-| `.github/workflows/ci.yml` | all | Tests and builds on every push and pull request. Publishes nothing. Also called by `release.yml`. Ends with `release-smoke.mjs` |
+| `.github/workflows/ci.yml` | all | Tests and builds on every pull request and push to `main`; all macOS checks share one job. Publishes nothing. Also called by `release.yml`. Ends with `release-smoke.mjs` |
 | `.github/workflows/release.yml` | stable, nightly | One workflow for both channels: `preflight` picks the channel and version, `check` runs CI, `build` makes six packages, `installer` builds terminal and windowed installers, `publish` uploads the feeds and installers, creates the GitHub release, and after a nightly redeploys the site, `finalize` (stable only) commits the website manifest and casks |
 | `scripts/desktop/release-version.mjs` | stable, nightly | Channel and version rules: tag must match `package.json`, nightly version format, product names. Tested in `packaging.test.mjs` |
 | `scripts/desktop/set-version.mjs` | all | Writes one version into `apps/desktop/package.json`, which Rust reads at build time |
@@ -54,7 +54,7 @@ lives in a small set of files:
 | `install/<track>.json`, `install/<track>.txt` on the update server | stable, nightly | Current installer manifest and POSIX bootstrap index, rewritten with `no-cache` |
 | `install/<version>/` on the update server | stable, nightly | Immutable terminal installer binaries and Hexbot Installer DMG/AppImage files for each target |
 | `scripts/desktop/finalize-release.mjs` | stable | Rewrites `apps/site/public/downloads/manifest.json` and both Homebrew casks for a version |
-| `scripts/desktop/release-smoke.mjs` | stable, nightly | Runs the scripts above the way `release.yml` does, against synthetic packages. CI runs it on every push |
+| `scripts/desktop/release-smoke.mjs` | stable, nightly | Runs the scripts above the way `release.yml` does, against synthetic packages. CI runs it on every pull request and push to `main` |
 | `scripts/dev/run.mjs` | dev | `pnpm dev`: daemon and web bundle (or Electron) from the checkout with a per-checkout home and ports |
 | `.devcontainer/devcontainer.json` | dev | Rust from `rust-toolchain.toml`, Node 26 and locked agent dependencies; Python 3.11 and uv for handoff tests |
 | `apps/desktop/electron-builder.yml`, `electron-builder.client.yml` | all | Full and client-only package definitions and their feed URLs; channel flags override `productName` and `appId` |

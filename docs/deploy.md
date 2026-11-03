@@ -26,7 +26,7 @@ The desktop app, the daemon, and the phone app send anonymous usage data to the 
 
 ## Site
 
-The site has no secrets; the PostHog project key is public by design. `apps/site/vercel.json` sets the security headers and marks hashed assets immutable. CI runs `pnpm --filter ./apps/site run check` on every push, and Vercel builds the same commit.
+The site has no secrets; the PostHog project key is public by design. `apps/site/vercel.json` sets the security headers and marks hashed assets immutable. CI runs `pnpm --filter ./apps/site run check` on every pull request and push to `main`, and Vercel builds the same commit.
 
 Downloads: `apps/site/public/downloads/manifest.json` names the stable artifacts and has a `published` flag. While it is `false` the download page (`apps/site/src/pages/download.astro`) says stable is coming soon and offers the current nightly instead: `apps/site/src/lib/nightly.ts` reads the `nightly-*.yml` feed files on `updates.hexbot.app` during the build and links the files they name, or falls back to the GitHub nightly listing if the feed is unreachable. The same page lists earlier nightlies from `nightlies.json` in the bucket, written by the nightly workflow; until that file exists it lists the current build alone.
 
