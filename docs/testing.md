@@ -475,7 +475,9 @@ These probes do not publish packages or establish Windows support. The
 release workflow separately includes Windows x64 packaging and installer jobs;
 portable release fixtures verify that plumbing, not native Windows acceptance. See
 [the build contract](windows-build-contract.md) for the runtime layout,
-security dependency and native validation still required.
+security dependency and native validation still required. The native job also
+runs `windows_filesystem`, which exercises no-follow removal, linked-root
+refusals, disk-only reads, PATHEXT lookup and the private DACLs on Windows.
 
 The Windows `windows_launchers` debug suite also exercises the private Dev
 child host through its actual CLI router. It covers stdin EOF, a root exiting

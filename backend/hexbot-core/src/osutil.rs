@@ -157,7 +157,7 @@ pub fn create_private_dir_all(path: &Path) -> io::Result<()> {
 #[cfg(any(windows, test))]
 fn private_sddl(user: &str, directory: bool) -> String {
     let inherit = if directory { "OICI" } else { "" };
-    format!("D:PAI(A;{inherit};FA;;;SY)(A;{inherit};FA;;;{user})")
+    format!("D:P(A;{inherit};FA;;;SY)(A;{inherit};FA;;;{user})")
 }
 
 /// Private DACLs, set through a handle like the sandbox's grants
@@ -285,6 +285,20 @@ mod private_acl {
     /// already holds, so it never walks the sandbox's folders in the home or
     /// through a link inside.
     pub(super) fn restrict(path: &Path, directory: bool) -> io::Result<()> {
+        // Hot paths such as db::open call this on every use; the descriptor
+        // is built and set once per file per process, not each time.
+        static DONE: std::sync::OnceLock<
+            std::sync::Mutex<std::collections::HashSet<(std::path::PathBuf, bool)>>,
+        > = std::sync::OnceLock::new();
+        let done = DONE.get_or_init(Default::default);
+        let key = (path.to_path_buf(), directory);
+        if done
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains(&key)
+        {
+            return Ok(());
+        }
         let sddl: Vec<u16> = super::private_sddl(user()?, directory)
             .encode_utf16()
             .chain(Some(0))
@@ -312,7 +326,11 @@ mod private_acl {
                 DACL_SECURITY_INFORMATION,
                 descriptor.0,
             )
-        })
+        })?;
+        done.lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(key);
+        Ok(())
     }
 }
 

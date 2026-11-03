@@ -277,12 +277,14 @@ impl Drop for CancelRequest {
 /// (`windows_sandbox::git_bash`, never through the PATH) and named in the
 /// bot's Pi settings, which Pi reads when it starts. Pi's environment has no
 /// ProgramFiles for its own lookup, which then searches the PATH, where
-/// `bash.exe` can be WSL's. Without Git for Windows the settings stay as they
-/// are. Pi's settings change under the lock its other config files do.
+/// `bash.exe` can be WSL's. Without Git for Windows, a shell path the daemon
+/// wrote is removed so Pi searches as it would without one; anything else
+/// the user set stays. Pi's settings change under the lock its other config
+/// files do.
 #[cfg(windows)]
 fn pin_git_bash(agent_dir: &std::path::Path) -> Result<(), PiError> {
     let Some(bash) = crate::windows_sandbox::git_bash() else {
-        return Ok(());
+        return unpin_git_bash(agent_dir);
     };
     let _lock = crate::common::credentials_lock()
         .lock()
@@ -301,6 +303,40 @@ fn pin_git_bash(agent_dir: &std::path::Path) -> Result<(), PiError> {
             .map_err(|_| PiError::Configuration("invalid Pi settings"))?;
         crate::common::atomic_write(&path, &bytes).map_err(|_| PiError::Io("write Pi settings"))?;
     }
+    Ok(())
+}
+/// Git for Windows is gone: remove the shell path this daemon wrote, so Pi
+/// never runs a `bash.exe` that is no longer there and searches as it would
+/// without one. A path pointing anywhere else stays.
+#[cfg(windows)]
+fn unpin_git_bash(agent_dir: &std::path::Path) -> Result<(), PiError> {
+    let _lock = crate::common::credentials_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let path = agent_dir.join("settings.json");
+    let mut settings = match std::fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice::<Value>(&bytes)
+            .ok()
+            .filter(Value::is_object)
+            .ok_or(PiError::Configuration("invalid Pi settings"))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err(PiError::Io("read Pi settings")),
+    };
+    let pinned = settings["shellPath"].as_str().map(str::to_string);
+    let Some(pinned) = pinned else {
+        return Ok(());
+    };
+    let lower = pinned.to_ascii_lowercase();
+    if !(lower.contains(r"\git\") && lower.ends_with(r"\bin\bash.exe")) {
+        return Ok(());
+    }
+    settings
+        .as_object_mut()
+        .expect("checked above")
+        .remove("shellPath");
+    let bytes = serde_json::to_vec_pretty(&settings)
+        .map_err(|_| PiError::Configuration("invalid Pi settings"))?;
+    crate::common::atomic_write(&path, &bytes).map_err(|_| PiError::Io("write Pi settings"))?;
     Ok(())
 }
 /// Name `bash` as Pi's shell in its `settings`, an object; whether they changed.

@@ -203,7 +203,9 @@ inherits it. The DACL is set on the folder alone, never propagated, so it
 cannot walk into the containers' folders in the home or through a link.
 Untrusted reads (`common::read_regular`) open only regular local disk files:
 the path is judged by its text first, then opened without following a final
-link, and pipes, devices and other reparse points are refused. Commands
+link, and pipes, devices and other reparse points are refused — including
+files in OneDrive and other cloud-synced folders, even fully downloaded
+ones, which are reparse points. Commands
 the daemon looks up take the `PATHEXT` extensions in turn and either
 separator, and the user's own folders are under the profile.
 

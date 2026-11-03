@@ -231,7 +231,14 @@ pub fn regular_file(path: &Path, limit: u64) -> Result<Option<Vec<u8>>> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
         Ok(DiskEntry::Refused(reason)) => {
-            return Err(Error::new(5240, format!("{reason}: {}", path.display())));
+            // The Git reader keeps its own wording for the one refusal its
+            // callers have always seen.
+            let what = if reason == crate::common::NOT_UNICODE {
+                "Git metadata paths must be Unicode"
+            } else {
+                reason
+            };
+            return Err(Error::new(5240, format!("{what}: {}", path.display())));
         }
         Ok(DiskEntry::Device) => {
             return Err(Error::new(

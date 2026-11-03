@@ -1203,9 +1203,15 @@ fn plan_one_chat_per_bot(
 /// followed, so neither the cleanup nor the copy leaves the home.
 fn back_up(home: &Path, bots: &BTreeSet<&str>) -> Result<PathBuf> {
     let backups = home.join("backups");
+    // A linked root never clears, so its refusal is not transient: retrying
+    // cannot help, unlike the copies below.
+    let below = |root: &Path| {
+        crate::osutil::directory_below(home, root)
+            .map_err(|error| Error::new(4202, error.to_string()))
+    };
     // A copy that failed part way, on this start or an earlier one, only
     // takes space.
-    if crate::osutil::directory_below(home, &backups)? {
+    if below(&backups)? {
         for entry in fs::read_dir(&backups)? {
             let entry = entry?;
             let name = entry.file_name();
@@ -1249,7 +1255,9 @@ fn copy_backup(home: &Path, bots: &BTreeSet<&str>, to: &Path) -> Result<()> {
     }
     // A linked runtime or sessions folder is refused, not followed.
     let sessions = home.join("runtime/sessions");
-    if crate::osutil::directory_below(home, &sessions)? {
+    if crate::osutil::directory_below(home, &sessions)
+        .map_err(|error| Error::new(4202, error.to_string()))?
+    {
         copy_tree(&sessions, &to.join("runtime/sessions"))?;
     }
     Ok(())

@@ -486,7 +486,7 @@ pub(crate) enum DiskEntry {
     Refused(&'static str),
 }
 #[cfg(windows)]
-const NOT_UNICODE: &str = "Windows paths must be Unicode";
+pub(crate) const NOT_UNICODE: &str = "Windows paths must be Unicode";
 /// Open a path the way an untrusted one must be on Windows. Its text is
 /// judged first (`windows_paths::sandbox::local`), so a network, device or
 /// stream path is never opened; then one handle opens it without following a
@@ -1057,9 +1057,14 @@ fn names_path(program: &str) -> bool {
             Some(std::path::Component::Prefix(_))
         )
 }
-/// `path` when it is an executable file. On Windows, `path` itself only when
-/// it ends in a PATHEXT extension, else with each of them in turn.
+/// `path` when it is an executable file. On Windows, `path` itself first —
+/// the Windows shells try the literal name before its extensions — then
+/// each PATHEXT extension in turn.
 fn executable(path: &Path) -> Option<std::path::PathBuf> {
+    #[cfg(windows)]
+    if executable_file(path) {
+        return Some(path.to_path_buf());
+    }
     #[cfg(windows)]
     return windows_names(path, std::env::var_os("PATHEXT").as_deref())
         .into_iter()
