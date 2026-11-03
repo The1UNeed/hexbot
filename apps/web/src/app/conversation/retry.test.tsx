@@ -1041,8 +1041,8 @@ describe('Retry on a turn that failed on your latest message', () => {
     await screen.findByTestId('stopped-card')
   }
 
-  const mark = () =>
-    within(screen.getByTestId('user-message')).getByRole('button', { name: 'Retry sending' })
+  // The bot got the message: the Stopped card under it retries, not a mark on it.
+  const mark = () => screen.getByRole('button', { name: 'Retry' })
 
   it('takes the message back and sends the same bubble again, so one message stays', async () => {
     recalling()
@@ -1148,7 +1148,8 @@ describe('Retry on a turn that failed on your latest message', () => {
     await fail(view)
     fireEvent.click(mark())
     await waitFor(() => expect(call).toHaveBeenCalledWith('session.recall', expect.anything()))
-    await waitFor(() => expect(screen.getByText('Not sent')).toBeVisible())
+    await waitFor(() => expect(screen.getByText('Provider stopped')).toBeVisible())
+    expect(screen.queryByText('Not sent')).toBeNull()
     expect(submits()).toHaveLength(1)
     expect(screen.getAllByTestId('user-message')).toHaveLength(1)
     expect(mark()).toBeEnabled()

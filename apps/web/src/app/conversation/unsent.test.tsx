@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import type { Bot } from '../../lib/types'
 import type { TranscriptMessage } from '../../stores/transcripts'
 
 import { SEND_TIMEOUT_MS } from './unsent'
@@ -82,7 +83,7 @@ describe('a bubble before the daemon takes it', () => {
   })
 })
 
-describe('a turn that failed on your message', () => {
+describe('a failure right after your message', () => {
   const card: TranscriptMessage = {
     attachments: [],
     createdAt: Date.now(),
@@ -94,18 +95,44 @@ describe('a turn that failed on your message', () => {
     toolCalls: []
   }
 
-  it('marks your bubble and puts Not sent · Retry under it, the reason on hover', () => {
+  it('leaves your bubble as sent and shows a Stopped card with the reason and Retry', () => {
     const retry = vi.fn()
 
     const { container } = render(
       <>
-        <MessageRow failed lined message={sent('accepted')} onImage={() => {}} />
+        <MessageRow lined message={sent('accepted')} onImage={() => {}} />
         <MessageRow
+          bot={{ display_name: 'Owl' } as Bot}
           message={card}
           mine
           onImage={() => {}}
           onRetry={retry}
           retryMessage={sent('accepted')}
+        />
+      </>
+    )
+
+    expect(container.querySelector('[data-testid=user-message] .text-danger')).toBeNull()
+    const stopped = screen.getByTestId('stopped-card')
+    expect(stopped).toHaveTextContent('Owl stopped')
+    expect(stopped).toHaveTextContent('The requested model is not supported.')
+    expect(screen.queryByText('Not sent')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(retry).toHaveBeenCalledTimes(1)
+  })
+
+  it('marks your bubble Not sent when the request itself failed, the reason on hover', () => {
+    const retry = vi.fn()
+
+    const { container } = render(
+      <>
+        <MessageRow failed lined message={sent('rejected')} onImage={() => {}} />
+        <MessageRow
+          message={{ ...card, request: true }}
+          mine
+          onImage={() => {}}
+          onRetry={retry}
+          retryMessage={sent('rejected')}
         />
       </>
     )

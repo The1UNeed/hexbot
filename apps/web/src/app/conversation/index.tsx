@@ -493,14 +493,12 @@ export function humanConnector(id: null | string | undefined): string {
   return words.charAt(0).toUpperCase() + words.slice(1)
 }
 
-/** The small pill under a turn that did not finish. */
-const stoppedPill =
-  'hex-focus flex h-8 items-center rounded-full bg-bubble px-3.5 text-[length:var(--text-secondary)] transition-colors duration-[var(--hex-motion-fast)]'
-
 /**
- * A turn that did not finish, kept quiet. Right after your message it is that
- * message's "Not sent · Retry" line; anywhere else a red dot and a small Retry
- * bubble. Why it stopped is on hover and read out to screen readers.
+ * A failure in the chat. A request this app could not get to the daemon (a
+ * refused or failed send, an upload, a Recall) right after your message is
+ * that message's "Not sent · Retry" line, the reason on hover. A turn the bot
+ * started and could not finish, such as a provider error, did get your
+ * message: it is a "Stopped" card with the reason, Retry and close.
  */
 export function StoppedCard({
   message,
@@ -512,20 +510,20 @@ export function StoppedCard({
   quiet = false
 }: {
   message: TranscriptMessage
-  /** Follows your message: it reads as that message not sent. */
+  /** Follows your message: a failed request reads as that message not sent. */
   mine?: boolean
   name: string
   onDismiss?: () => void
   onFix?: (connector: string) => void
   onRetry?: () => void
-  /** A newer line replaces it: kept for screen readers only. */
+  /** A newer failure for the same message replaces it: kept for screen readers only. */
   quiet?: boolean
 }) {
   const connector = message.errorDetail?.connector ?? null
   const connectorName = message.errorDetail?.connectorName ?? humanConnector(connector)
   const reason = plainError(message.error ?? '')
 
-  // Replaced by a newer line under the same message: only screen readers hear it.
+  // Replaced by a newer failure under the same message: only screen readers hear it.
   if (mine && quiet) {
     return (
       <div className="sr-only" data-testid="stopped-card" role="alert">
@@ -534,7 +532,7 @@ export function StoppedCard({
     )
   }
 
-  if (mine) {
+  if (mine && message.request) {
     return (
       <div
         className="hex-fade group flex items-center justify-end gap-1.5 px-1 pt-1 text-[length:var(--text-meta)] text-danger"
@@ -586,42 +584,49 @@ export function StoppedCard({
 
   return (
     <div
-      className="hex-fade group flex items-center gap-2 pt-4"
+      className="hex-bubble hex-fade mt-4 flex max-w-[min(85%,40rem)] flex-col gap-2 rounded-[20px] border border-danger/15 bg-danger/[0.05] px-3.5 py-3"
       data-testid="stopped-card"
       role="alert"
-      title={reason}
     >
-      <span aria-hidden className="size-2 shrink-0 rounded-full bg-danger" />
-      <span className="sr-only">{name} stopped.</span>
-      <span className="sr-only">{reason}</span>
-      {onRetry ? (
-        <button className={cn(stoppedPill, 'hover:bg-bubble/70')} onClick={onRetry} type="button">
-          Retry
-        </button>
-      ) : (
-        <span aria-hidden className={cn(stoppedPill, 'text-muted')}>
-          Stopped
+      <div className="flex items-center gap-2">
+        <span aria-hidden className="size-2 shrink-0 rounded-full bg-danger" />
+        <span className="font-medium">{name} stopped</span>
+        <span className="ml-auto flex items-center gap-1">
+          {message.createdAt > 0 ? (
+            <time className="text-[length:var(--text-meta)] text-muted">
+              {new Date(toMillis(message.createdAt)).toLocaleTimeString([], {
+                hour: 'numeric',
+                minute: '2-digit'
+              })}
+            </time>
+          ) : null}
+          {onDismiss ? (
+            <button
+              aria-label="Dismiss"
+              className="hex-focus -my-1 -mr-1.5 grid size-6 place-items-center rounded-full text-muted transition-colors duration-[var(--hex-motion-fast)] hover:bg-foreground/[0.06] hover:text-foreground"
+              onClick={onDismiss}
+              title="Dismiss"
+              type="button"
+            >
+              <X size={14} />
+            </button>
+          ) : null}
         </span>
-      )}
-      {connector && onFix ? (
-        <button
-          className={cn(stoppedPill, 'hover:bg-bubble/70')}
-          onClick={() => onFix(connector)}
-          type="button"
-        >
-          Fix {connectorName}
-        </button>
-      ) : null}
-      {onDismiss ? (
-        <button
-          aria-label="Dismiss"
-          className="hex-focus grid size-6 place-items-center rounded-full text-muted opacity-0 transition-opacity duration-[var(--hex-motion-fast)] group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground touch:opacity-100"
-          onClick={onDismiss}
-          title="Dismiss"
-          type="button"
-        >
-          <X size={14} />
-        </button>
+      </div>
+      <p className="text-[length:var(--text-secondary)] break-words">{reason}</p>
+      {(connector && onFix) || onRetry ? (
+        <div className="flex gap-2">
+          {connector && onFix ? (
+            <Button onClick={() => onFix(connector)} size="sm" variant="primary">
+              Fix {connectorName}
+            </Button>
+          ) : null}
+          {onRetry ? (
+            <Button onClick={onRetry} size="sm">
+              Retry
+            </Button>
+          ) : null}
+        </div>
       ) : null}
     </div>
   )
@@ -647,12 +652,12 @@ export const MessageRow = memo(function MessageRow({
   showFace = false
 }: {
   bot?: Bot
-  /** Your message the bot failed on: the red mark beside it, its line under it. */
+  /** Your message that did not reach the bot: the red mark beside it, its line under it. */
   failed?: boolean
   /** A failure line already shows under your message: draw no second one. */
   lined?: boolean
   message: TranscriptMessage
-  /** An error row right after your message, drawn as its Not sent line. */
+  /** An error row right after your message: a failed request is its Not sent line. */
   mine?: boolean
   /** A failure line a newer one replaces: kept for screen readers only. */
   quiet?: boolean
@@ -875,7 +880,7 @@ export const MessageRow = memo(function MessageRow({
           )}
         >
           {column}
-          {/* A refused send or a failed turn has its own Not sent line under this. */}
+          {/* A refused send has its own Not sent line under this; a failed turn, its Stopped card. */}
           {delivery === 'failed' && resend && !lined ? (
             <NotSent
               label="Not sent"
@@ -2264,9 +2269,9 @@ function BotConversation() {
     }
   }
 
-  // The bot's stopped state is your last message not sent only when it is
-  // about this chat and that message came before it: a failed dream or a
-  // send since then keeps the plain card.
+  // The bot's stopped state is about your last message only when it is about
+  // this chat and that message came before it: its Retry sends that message
+  // again. A failed dream or a send since then retries nothing of yours.
   const stoppedOwner =
     follows &&
     stoppedHere &&
@@ -2296,6 +2301,11 @@ function BotConversation() {
 
     return Boolean(card) && !quietLine(card!)
   }
+
+  // Your message that never reached the bot: a red ! beside it. A turn that
+  // failed on it got the message, so its Stopped card says so instead.
+  const unsent = (input: TranscriptMessage) =>
+    lined(input) && Boolean(lineFor.get(input.id)?.request)
 
   const canPrompt = useCallback(
     () =>
@@ -2814,9 +2824,7 @@ function BotConversation() {
                 return (
                   <MessageRow
                     bot={bot}
-                    failed={
-                      lined(shownMessage) || (Boolean(stoppedHere) && stoppedOwner === shownMessage)
-                    }
+                    failed={unsent(shownMessage)}
                     fresh={toMillis(shownMessage.createdAt) > openedAt}
                     joined={shownMessage === message && joined}
                     key={shownMessage.id}

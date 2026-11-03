@@ -2185,7 +2185,7 @@ fn write_bot_columns(tx: &rusqlite::Transaction, name: &str, p: &Value) -> Resul
     Ok(())
 }
 /// The provider, model and thinking level a new section of this bot starts with.
-fn section_model(home: &Path, name: &str) -> Result<Value> {
+pub(crate) fn section_model(home: &Path, name: &str) -> Result<Value> {
     let mut model = config(home, name)?["model"].clone();
     if model.is_null() {
         model = common::read_config(home)?["model"].clone();

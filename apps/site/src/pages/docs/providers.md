@@ -28,7 +28,7 @@ Each bot has a provider and model. The picker lists only providers you have set 
 
 Each bot also has a reasoning level in its Model settings. The list shows only the levels the chosen model supports, for example Low, High and Max for GLM-5.3 Flash. Higher levels think longer before answering and use more tokens. The default is Medium, or the next level up the model supports. Choose it when you create a bot, so the bot's chat starts at that level.
 
-A new model or level applies from the next message, in the chat and in rooms still on the previous one. The first reply after a switch rereads the conversation without the provider's prompt cache, so it costs more than usual.
+A new model or level applies from the next message, in the chat and in rooms still on the previous one, or on no model of their own because the bot had none when they started. The first reply after a switch rereads the conversation without the provider's prompt cache, so it costs more than usual.
 
 LM Studio lists the models available at its local `/v1/models` endpoint when you open its model picker. Start LM Studio's server before choosing a model. If discovery fails, the daemon's current configured model stays in the list.
 
