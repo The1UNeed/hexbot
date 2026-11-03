@@ -117,6 +117,17 @@ fn readable(api: &Api, method: &str, path: &str) -> bool {
         }
 }
 
+/// The JSON a request carries: only POST, PATCH and PUT send one, since the
+/// APIs refuse a GET with a body.
+fn body(method: &str, args: &Value) -> Option<Value> {
+    matches!(method, "POST" | "PATCH" | "PUT").then(|| {
+        args.get("body")
+            .filter(|b| !b.is_null())
+            .cloned()
+            .unwrap_or_else(|| json!({}))
+    })
+}
+
 /// Sends one request for `bot`. `write` is the change tool, which the
 /// extension's gate approved; it refuses reads so they never wait on a review.
 pub(super) async fn request(home: &Path, bot: &str, args: &Value, write: bool) -> Result<Value> {
@@ -175,12 +186,8 @@ pub(super) async fn request(home: &Path, bot: &str, args: &Value, write: bool) -
     let verb = reqwest::Method::from_bytes(method.as_bytes())
         .map_err(|_| Error::new(4202, "unknown method"))?;
     let mut request = client.request(verb, &url).bearer_auth(key);
-    if method != "GET" && method != "DELETE" || args.get("body").is_some_and(|b| !b.is_null()) {
-        request = request.json(
-            args.get("body")
-                .filter(|b| !b.is_null())
-                .unwrap_or(&json!({})),
-        );
+    if let Some(body) = body(method, args) {
+        request = request.json(&body);
     }
     for (name, value) in api.headers {
         request = request.header(*name, *value);
@@ -228,6 +235,18 @@ mod tests {
         assert!(readable(airtable, "GET", "/v0/app1/Tasks?fields[]=Name"));
         assert!(!readable(airtable, "POST", "/v0/app1/Tasks"));
         assert!(!readable(airtable, "GET", "/v1/app1"));
+    }
+
+    #[test]
+    fn only_posts_patches_and_puts_carry_a_body() {
+        let args = json!({"body":{}});
+        assert_eq!(body("GET", &args), None);
+        assert_eq!(body("DELETE", &json!({"body":{"a":1}})), None);
+        assert_eq!(body("POST", &json!({})), Some(json!({})));
+        assert_eq!(
+            body("PATCH", &json!({"body":{"archived":true}})),
+            Some(json!({"archived":true}))
+        );
     }
 
     /// Both tools stay on the API's host, and each takes only its own kind
