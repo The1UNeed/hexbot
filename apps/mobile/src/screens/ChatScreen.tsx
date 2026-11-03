@@ -304,7 +304,7 @@ function ChatBody(props: ChatScreenProps) {
               previous.role === entry.role &&
               previous.author?.name === entry.author?.name)
       })
-      if (shown) botLast = entry.role !== 'user' && !entry.error
+      if (shown) botLast = entry.role === 'bot' && !entry.error
       else if (entry.kind !== 'message') botLast = entry.kind === 'approval'
     }
     list.reverse()

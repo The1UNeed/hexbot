@@ -90,7 +90,7 @@ import { PluginCard } from './plugin-card'
 import { RoomConversation } from './room'
 import { useSearchJump } from './search-jump'
 import { SignInCard } from './sign-in-card'
-import { liveMood, liveMoodsOf } from './steps'
+import { asks, liveMood, liveMoodsOf } from './steps'
 import { DeliveryMark, NotSent, useLate } from './unsent'
 import { visualsOf } from './visual'
 import { Visuals } from './visual-frame'
@@ -836,10 +836,10 @@ export const MessageRow = memo(function MessageRow({
   // padding would push the card after it away from the message before.
   if (
     !column.length &&
-    !(assistant && isWorking(message)) &&
+    !(assistant && (isWorking(message) || asks(message).length)) &&
     !(delivery === 'failed' && resend && !lined)
   ) {
-    return assistant ? <AskingRow message={message} sender={bot?.name ?? null} /> : null
+    return null
   }
 
   // The column reads in order: the bot's messages, then at the foot the live
