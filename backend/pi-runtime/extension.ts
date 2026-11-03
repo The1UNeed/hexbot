@@ -696,8 +696,10 @@ export function expandHome(path: string): string {
 }
 // Pi resolves a tool path again before it reads (resolveToCwd): odd spaces
 // become plain ones and, on Windows, Git Bash drive paths such as /c/x become
-// C:\x. Windows checks the path Pi will read, so a canonical path must hold no
-// odd space, which Pi would turn into another file's name.
+// C:\x. Every platform normalizes before resolving, because Pi normalizes
+// the same way before it reads: the gate must judge the file Pi opens. A
+// canonical Windows path must then hold no odd space at all, since Pi would
+// turn it into another file's name.
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 const ODD_SPACES = 'Paths cannot contain non-breaking or other special spaces.';
 function windowsInput(path: string): string {
@@ -715,7 +717,7 @@ export function canonicalPath(path: string, cwd: string, depth = 0): string {
     return real;
   }
   if (depth > 40) throw new Error("Too many symbolic links");
-  const expanded = expandHome(path);
+  const expanded = expandHome(path.replace(UNICODE_SPACES, ' '));
   // Resolve each component before '..', including a symlink followed by a parent.
   let current = expanded.startsWith(sep) ? sep : cwd;
   for (const part of expanded.split(sep)) {
@@ -733,7 +735,7 @@ export function canonicalPath(path: string, cwd: string, depth = 0): string {
 }
 const under = (path: string, root: string) => fold(path) === fold(root) || fold(path).startsWith(fold(root) + sep);
 export function credentialPath(path: string, home: string, denied = readDenied()): boolean {
-  const lexical = resolve(path);
+  const lexical = resolve(path.replace(UNICODE_SPACES, ' '));
   path = canonicalPath(path, process.cwd());
   if (lexical !== path && credentialName(lexical, home, denied)) return true;
   return credentialName(path, home, denied);

@@ -78,6 +78,9 @@ test('case cannot disguise credential or host configuration paths on case-insens
     await assert.rejects(f.swap('read', {path:join(f.home, 'safe.txt')}, {path:join(f.home, path)}), /Credential/, path);
   }
   assert.equal(credentialPath(join(homedir(), '.SSH/id_ed25519'), f.home), true);
+  // An odd space cannot rename a store that holds one: Pi normalizes it
+  // before it reads, so the gate judges the normalized name.
+  assert.equal(credentialPath(join(homedir(), 'Library/Application\u00A0Support/Google/Chrome'), f.home), true);
   assert.equal(credentialPath(join(homedir(), '.ssh/ID_ED25519.PUB'), f.home), false);
   assert.equal(hostWriteTier(join(homedir(), '.AWS/credentials'), '/tmp'), 'deny');
   assert.equal(hostWriteTier(join(homedir(), '.ZSHRC'), '/tmp'), 'ask');
