@@ -263,7 +263,9 @@ with Viewport Segments place both poses on the exact halves.
   keeps its error banner.
 - Errors: a turn the bot could not finish, on your message or not (a
   provider error, a dream), is a Stopped card: "{bot} stopped", the time,
-  the reason in plain words, and Retry or Fix {connector}; one card per
+  the reason in plain words, and Retry or Fix {connector}. A request of
+  this app's that failed with no message of its own, such as an upload or
+  a Recall, has the same card headed "Didn't go through". One card per
   failure, even when the gateway and the daemon both report it. Retry requires
   durable input ownership. Older daemons offer no Retry for failed sends or
   answers; failed sends retain their draft for manual resend.

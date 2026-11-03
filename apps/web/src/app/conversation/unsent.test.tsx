@@ -165,6 +165,21 @@ describe('a failure right after your message', () => {
     expect(retry).toHaveBeenCalledWith(input)
   })
 
+  it('does not head a failed request with no message of its own as the bot stopping', () => {
+    render(
+      <MessageRow
+        bot={{ display_name: 'Owl' } as Bot}
+        message={{ ...card, error: 'Upload failed', request: true }}
+        onImage={() => {}}
+      />
+    )
+
+    const failed = screen.getByTestId('stopped-card')
+    expect(failed).toHaveTextContent("Didn't go through")
+    expect(failed).toHaveTextContent('Upload failed')
+    expect(failed).not.toHaveTextContent('Owl stopped')
+  })
+
   it('keeps a replaced line for screen readers only', () => {
     render(<MessageRow message={card} mine onImage={() => {}} quiet />)
     expect(screen.getByTestId('stopped-card')).toHaveClass('sr-only')

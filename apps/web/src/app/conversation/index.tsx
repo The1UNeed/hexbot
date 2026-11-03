@@ -498,7 +498,9 @@ export function humanConnector(id: null | string | undefined): string {
  * refused or failed send, an upload, a Recall) right after your message is
  * that message's "Not sent · Retry" line, the reason on hover. A turn the bot
  * started and could not finish, such as a provider error, did get your
- * message: it is a "Stopped" card with the reason, Retry and close.
+ * message: it is a "Stopped" card with the reason, Retry and close. A failed
+ * request with no message of its own (an upload, a Recall) has the same card,
+ * headed "Didn't go through": no turn of the bot's stopped.
  */
 export function StoppedCard({
   message,
@@ -590,7 +592,9 @@ export function StoppedCard({
     >
       <div className="flex items-center gap-2">
         <span aria-hidden className="size-2 shrink-0 rounded-full bg-danger" />
-        <span className="font-medium">{name} stopped</span>
+        <span className="font-medium">
+          {message.request ? "Didn't go through" : `${name} stopped`}
+        </span>
         <span className="ml-auto flex items-center gap-1">
           {message.createdAt > 0 ? (
             <time className="text-[length:var(--text-meta)] text-muted">
@@ -824,7 +828,10 @@ export const MessageRow = memo(function MessageRow({
         {!bubbles.length && delivery ? (
           <DeliveryMark delivery={delivery} onRetry={retryMark} />
         ) : null}
-        {!bubbles.length && delivery !== 'sending' && recallOnly.length > 0 && !message.streaming ? (
+        {!bubbles.length &&
+        delivery !== 'sending' &&
+        recallOnly.length > 0 &&
+        !message.streaming ? (
           <BubbleActions actions={recallOnly} />
         ) : null}
       </div>
@@ -2151,8 +2158,10 @@ function BotConversation() {
       new Notification(
         approvals.at(-1)?.form?.kind === 'sign_in' ? 'Sign-in needed' : 'Approval needed',
         {
-        body:
-          approvals.at(-1)?.command ?? approvals.at(-1)?.reason ?? 'A bot is asking for permission.'
+          body:
+            approvals.at(-1)?.command ??
+            approvals.at(-1)?.reason ??
+            'A bot is asking for permission.'
         }
       )
     }
