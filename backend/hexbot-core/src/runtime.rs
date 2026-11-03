@@ -562,7 +562,10 @@ impl Runtime {
         self.events.forget(&s.owner, &s.id);
     }
     /// A section without a model of its own takes the bot's (`store::adopt_bot_model`).
+    /// Under the lock a bot update holds while it moves sections, so a model
+    /// read here is never saved after the bot changed it.
     fn adopt_bot_model(&self, bot: &str, stored: &str) -> Result<()> {
+        let _writer = common::config_writer()?;
         store::adopt_bot_model(
             &self.home,
             stored,
