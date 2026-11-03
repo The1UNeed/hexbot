@@ -5475,7 +5475,8 @@ Hexbot sets its theme as CSS variables on :root, following the user's light or d
 /// The prompt's fixed lines around the bot's own texts (`session_prompt`).
 const PROMPT_INTRO: &str = "You are {name}, one of the user's bots in Hexbot.\n\n# Soul\n";
 const PROMPT_MEMORY: &str = "\n\n# Memory\n";
-const PROMPT_FILES: &str = "\n\nYour files, where your notes go: {profile}\nWorking directory: {cwd}";
+const PROMPT_FILES: &str =
+    "\n\nYour files, where your notes go: {profile}\nWorking directory: {cwd}";
 const PROMPT_SKILLS: &str =
     "\n\n# Available skills\nLoad a skill with skill_view before using it.\n";
 const CONNECTED_TOOLS: &str = "\n\n# Connected tools\nThese servers are reachable from codemode scripts. Use searchTools() or describeNamespace(\"mcp__<name>\") to find their tools:\n";
