@@ -832,6 +832,16 @@ export const MessageRow = memo(function MessageRow({
     column.push(<WrittenFiles files={written} key="written" onFile={onFile} />)
   }
 
+  // A step that only used tools shows nothing, so it takes no room: its
+  // padding would push the card after it away from the message before.
+  if (
+    !column.length &&
+    !(assistant && isWorking(message)) &&
+    !(delivery === 'failed' && resend && !lined)
+  ) {
+    return assistant ? <AskingRow message={message} sender={bot?.name ?? null} /> : null
+  }
+
   // The column reads in order: the bot's messages, then at the foot the live
   // status while the turn runs. Nothing stays for how it got there. The bots
   // it asked get their own row under the turn, two faces turned toward each
@@ -930,10 +940,20 @@ export function CheckingRow({ bot, transcript }: { bot?: Bot; transcript?: Trans
 /**
  * A card the bot is waiting on, in the same row as its bubbles. Rooms pass the
  * bot so its face leads the card; a bot's own chat has no faces in the column.
+ * Like a bubble, it sits 4 px under the bot's bubble or card before it
+ * (`joined`) and a full step under yours.
  */
-export function CardRow({ bot, children }: { bot?: Bot; children: React.ReactNode }) {
+export function CardRow({
+  bot,
+  children,
+  joined = true
+}: {
+  bot?: Bot
+  children: React.ReactNode
+  joined?: boolean
+}) {
   return (
-    <div className="flex gap-2 pt-1">
+    <div className={cn('flex gap-2', joined ? 'pt-1' : 'pt-4')}>
       {bot ? <Avatar className="mt-1" {...botFace(bot)} name={bot.display_name} size="sm" /> : null}
       {children}
     </div>
@@ -1647,6 +1667,38 @@ const bubbleShown = (message: TranscriptMessage) =>
 /** Two bubbles from the same side, one after the other, read as one run. */
 const joins = (a: TranscriptMessage, b: TranscriptMessage) =>
   a.role === b.role && bubbleShown(a) && bubbleShown(b) && !a.streaming
+
+/**
+ * Whether the last thing drawn before `position` is the bot's own bubble or
+ * card, which a card or a bot bubble then joins. A step that only used
+ * tools draws nothing, so the search looks past it.
+ */
+const botBefore = (timeline: TimelineItem[], position: number) => {
+  for (let index = position - 1; index >= 0; index--) {
+    const item = timeline[index]!
+
+    if (item.kind !== 'message') {
+      return true
+    }
+
+    const { message } = item
+
+    if (message.role !== 'assistant' || message.error) {
+      return false
+    }
+
+    // Earlier words stay in parts when the last step only used a tool.
+    if (bubbleShown(message) || message.parts?.some(part => part.trim())) {
+      return !message.streaming
+    }
+
+    if (isWorking(message) || message.attachments.length) {
+      return false
+    }
+  }
+
+  return false
+}
 
 /** Tracks an element's height, for content that scrolls under floating glass. */
 function useHeight<T extends HTMLElement>(): [React.RefObject<T | null>, number] {
@@ -2705,7 +2757,7 @@ function BotConversation() {
             {timeline.map((item, position) => {
               if (item.kind === 'clarify') {
                 return (
-                  <CardRow key={item.clarify.requestId}>
+                  <CardRow joined={botBefore(timeline, position)} key={item.clarify.requestId}>
                     <ClarifyCard bot={bot} clarify={item.clarify} />
                   </CardRow>
                 )
@@ -2713,7 +2765,7 @@ function BotConversation() {
 
               if (item.kind === 'approval') {
                 return (
-                  <CardRow key={item.approval.requestId}>
+                  <CardRow joined={botBefore(timeline, position)} key={item.approval.requestId}>
                     <ApprovalCard approval={item.approval} />
                   </CardRow>
                 )
@@ -2724,8 +2776,15 @@ function BotConversation() {
               const separator = separatedFrom(previous, message)
               const before = timeline[position - 1]
 
+              // The bot's words after its card join the card, as they join a bubble.
               const joined =
-                !separator && before?.kind === 'message' && joins(before.message, message)
+                !separator &&
+                (before?.kind === 'message'
+                  ? joins(before.message, message)
+                  : before !== undefined &&
+                    message.role === 'assistant' &&
+                    bubbleShown(message) &&
+                    botBefore(timeline, position))
 
               // A failure that holds your message's Retry draws under it.
               if (

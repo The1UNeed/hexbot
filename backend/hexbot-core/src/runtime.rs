@@ -3593,6 +3593,8 @@ impl Runtime {
             if state.dialogs_cancelled() {
                 return Ok(None);
             }
+            // The card sits under the message whose tool asked, live and in history.
+            payload = with_fields(payload, &state.identity.fragment_fields());
             state.native_approvals.insert(id.clone(), sender);
             state.pending.insert(
                 id.clone(),
@@ -6814,6 +6816,68 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
                 .await
                 .unwrap()
         );
+        runtime.shutdown().await;
+    }
+    /// A daemon card (a plugin or sign-in card) names the message whose tool
+    /// asked, so clients keep it under that message once history is read.
+    #[tokio::test]
+    async fn native_cards_name_the_message_whose_tool_asked() {
+        let (home, runtime, hub) = setup();
+        let s = runtime.open_session("alice", "owl", "first").await.unwrap();
+        db::open(home.path())
+            .unwrap()
+            .execute_batch("UPDATE bots SET approval_mode='smart'")
+            .unwrap();
+        let mut events = hub.subscribe();
+        for event in [
+            json!({"type":"agent_start"}),
+            json!({"type":"message_start","message":{"role":"assistant"}}),
+            json!({"type":"message_update","message":{"role":"assistant"},"assistantMessageEvent":{"type":"text_delta","delta":"Checking."}}),
+            json!({"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Checking."},{"type":"toolCall","id":"t1","name":"hexbot_plugins"}]}}),
+            json!({"type":"tool_execution_start","toolCallId":"t1","toolName":"hexbot_plugins","args":{}}),
+        ] {
+            runtime.event(&s, event).unwrap();
+        }
+        let worker = {
+            let runtime = runtime.clone();
+            let s = s.clone();
+            tokio::spawn(async move {
+                runtime
+                    .ask_approval(
+                        &s,
+                        json!({"tool":"hexbot_plugins","toolCall":{"title":"Notion"}}),
+                        true,
+                    )
+                    .await
+                    .unwrap()
+            })
+        };
+        let (delta, card) = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut delta = Value::Null;
+            loop {
+                let params = events.recv().await.unwrap().frame["params"].clone();
+                match params["type"].as_str() {
+                    Some("message.delta") => delta = params["payload"].clone(),
+                    Some("approval.request") => break (delta, params["payload"].clone()),
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(card["message_id"].is_string());
+        assert_eq!(card["message_id"], delta["message_id"]);
+        assert_eq!(card["turn_id"], delta["turn_id"]);
+        runtime
+            .call(
+                "alice",
+                "approval.respond",
+                &json!({"session_id":s.id,"request_id":card["request_id"],"choice":"once"}),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(worker.await.unwrap());
         runtime.shutdown().await;
     }
     /// Stop wakes a daemon approval's waiter, which forgets its request while

@@ -276,6 +276,8 @@ function ChatBody(props: ChatScreenProps) {
     const list: ListEntry[] = []
     // The last message with something to show; a step with no words or files draws nothing.
     let said: MessageItem | undefined
+    // Whether the last thing drawn is the bot's own bubble or card, which a card joins.
+    let botLast = false
     for (const [index, entry] of items.entries()) {
       const previous = items[index - 1]
       const shown =
@@ -295,11 +297,15 @@ function ChatBody(props: ChatScreenProps) {
         entry,
         continued:
           !divided &&
-          entry.kind === 'message' &&
-          previous?.kind === 'message' &&
-          previous.role === entry.role &&
-          previous.author?.name === entry.author?.name
+          (entry.kind === 'approval'
+            ? botLast
+            : entry.kind === 'message' &&
+              previous?.kind === 'message' &&
+              previous.role === entry.role &&
+              previous.author?.name === entry.author?.name)
       })
+      if (shown) botLast = entry.role !== 'user' && !entry.error
+      else if (entry.kind !== 'message') botLast = entry.kind === 'approval'
     }
     list.reverse()
 
@@ -547,11 +553,21 @@ const TranscriptEntry = memo(function TranscriptEntry({
       )
     case 'approval':
       return entry.request.form?.kind === 'plugin' ? (
-        <PluginCard form={entry.request.form} onAnswer={onApprove!} request={entry.request} />
+        <PluginCard
+          form={entry.request.form}
+          joined={continued}
+          onAnswer={onApprove!}
+          request={entry.request}
+        />
       ) : entry.request.form ? (
-        <SignInCard form={entry.request.form} onAnswer={onApprove!} request={entry.request} />
+        <SignInCard
+          form={entry.request.form}
+          joined={continued}
+          onAnswer={onApprove!}
+          request={entry.request}
+        />
       ) : (
-        <ApprovalCard onAnswer={onApprove!} request={entry.request} />
+        <ApprovalCard joined={continued} onAnswer={onApprove!} request={entry.request} />
       )
     case 'message': {
       return (
@@ -728,9 +744,12 @@ const DECISION_LABELS: Record<ApprovalChoice, string> = {
 
 /** A bot asking before it acts: what it wants to run, why, and the answers. */
 export function ApprovalCard({
+  joined,
   onAnswer,
   request
 }: {
+  /** Right under the bot's own bubble or card: it sits 4 pt below, one stack. */
+  joined?: boolean
   request: ApprovalRequestView
   onAnswer: (requestId: string, choice: ApprovalChoice) => void
 }) {
@@ -741,7 +760,7 @@ export function ApprovalCard({
   return (
     <View
       accessibilityLabel={decided ? undefined : 'Approval needed'}
-      style={[styles.approval, { backgroundColor: theme.fill }]}
+      style={[styles.approval, joined && styles.joined, { backgroundColor: theme.fill }]}
       testID={`approval-${request.requestId}`}
     >
       <View style={styles.approvalHead}>
@@ -991,6 +1010,7 @@ const styles = StyleSheet.create({
     marginTop: 4,
     paddingHorizontal: 4
   },
+  joined: { marginTop: 4 },
   notice: { marginTop: 14, paddingHorizontal: 24 },
   pending: { gap: 8 },
   pendingFile: {
