@@ -49,11 +49,14 @@ stream paths are refused by their text before anything opens them, and the Git
 scan reads settings with its own parser rather than a Git found through `PATH`.
 If the startup probe cannot run a contained command, Auto and Manual refuse
 local commands and file tools, and scheduled scripts do not run; they never
-fall back to an approval. `full_access`, Copilot (ACP), Pi's write and edit
-tools and the daemon's Python worker still refuse in Auto and Manual, and Pi's
-own bash and read tools refuse until the extension runs them through the
-helper. Bypass retains Pi's Bash tool, requiring an installed Bash such as Git
-Bash, and removes containment and credential protection. It does not
+fall back to an approval. `full_access`, Copilot (ACP) and the daemon's
+Python worker still refuse in Auto and Manual. Pi's write and edit tools refuse
+there until the extension uses the daemon's Windows bridge, which reaches each
+file through handles that follow no link or junction, replaces it at once, and
+commits an edit only to the file it read. Pi's own bash and read tools refuse
+until the extension runs them through the helper. Bypass retains Pi's Bash
+tool, requiring an installed Bash such as Git Bash, and removes containment
+and credential protection. It does not
 substitute `cmd.exe` for Bash. See [Windows security](docs/windows-security.md)
 for the guarantees, the residual risks and what remains before support.
 

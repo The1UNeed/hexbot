@@ -7,8 +7,17 @@ use std::io::Read;
 #[allow(dead_code)] // This fixture exercises Pi, not the existing native callbacks.
 #[path = "../src/runtime_files.rs"]
 mod files;
+#[cfg(windows)]
+#[path = "../src/runtime_files_windows.rs"]
+mod files;
 #[path = "../src/runtime_pi_files.rs"]
 mod protocol;
+
+/// The Windows walk judges a path by the sandbox's text rules first.
+#[cfg(windows)]
+#[allow(dead_code)]
+#[path = "../src/windows_paths.rs"]
+mod windows_paths;
 fn main() {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input).unwrap();
@@ -23,14 +32,7 @@ fn main() {
     .unwrap();
     let result: Result<Value> = protocol::parse(&event, &request["args"]).and_then(|request| {
         let _ = request.tool;
-        #[cfg(unix)]
-        {
-            protocol::perform(&request, event["id"].as_str().unwrap())
-        }
-        #[cfg(not(unix))]
-        {
-            Err(Error::new(4302, "Unix file handles unavailable"))
-        }
+        protocol::perform(&request, event["id"].as_str().unwrap())
     });
     println!(
         "{}",

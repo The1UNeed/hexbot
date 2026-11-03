@@ -98,6 +98,58 @@ private extension runs its bash and read tools through that helper, Pi's
 own tools still refuse in Auto and Manual on Windows (`isolation.ts`);
 scheduled scripts and the daemon's other paths already use the sandbox.
 
+## Pi's write and edit
+
+In Auto and Manual, Pi's write and edit change files through a private
+bridge to the daemon (`hexbot_pi_file`), never by path from Pi. Each request
+carries the policy it was approved under, and the daemon checks the approval
+mode, working folder, output folders and running tool call again before
+anything is opened. It refuses credential files and stores, system
+configuration files, project secrets, `.git`, `node_modules` and `.ssh`
+anywhere on the path, the managed runtime, and the Hexbot home outside the
+bot's output folders. Bypass never uses the bridge. On Windows the bridge works through handles
+(`runtime_files_windows.rs`), as it does on macOS and Linux:
+
+- **Paths are judged first.** Network, device, NT object and stream paths,
+  reserved names, names ending in a dot or space, and paths on anything but
+  a local fixed drive are refused by their text and drive.
+- **No link is followed.** The walk opens the drive's root, then each folder
+  relative to the one before it. A link, junction or other reparse point on
+  the way or at the file is opened as itself and refused, so a folder
+  swapped for a junction cannot redirect a write. Cloud-synced folders such
+  as OneDrive's are reparse points too, so the tools do not change files
+  there. Missing folders a write needs are created through the same handles.
+- **Names are what the checks judged.** The folder and the file must be
+  named on disk as the path names them, so an 8.3 short name such as
+  `GIT~1` for `.git` refuses.
+- **Files are replaced at once.** A write fills a temporary file in the
+  target's folder, shared with no other handle, then renames it over the
+  target through the folder's handle. A folder in the target's place
+  refuses, as does a read-only file, and a failed write deletes the
+  temporary file through its own handle.
+- **An edit commits to the file it read.** The read returns the file's raw
+  bytes and its identity, the volume serial number and 128-bit file ID. The
+  commit refuses unless the name still has that file, so a file replaced,
+  deleted or moved in between is never overwritten.
+- **Limits and Stop.** Each encoded request and reply is at most 1 MiB,
+  about 767 KiB of file data. Stop waits for a running request to finish
+  before it acknowledges.
+
+Residual risks:
+
+- **Hard links.** A write or edit replaces the name it was given, so other
+  names of a hard-linked file keep the old content. The container's rule
+  that a file with several names is never granted does not apply here: a
+  file that also has a name outside the tree is read through the name an
+  edit was given, as on macOS and Linux.
+- **Check, then rename.** The bridge checks the file, then renames over it,
+  as on Unix: a file put at the name in between is replaced.
+- **Permissions.** A replaced file takes its folder's inherited permissions.
+  Explicit entries, attributes and alternate streams on the old file are not
+  carried over, where Unix keeps the old file's mode.
+- **Open files.** A file another program holds open without sharing deletion
+  cannot be replaced: the write fails and changes nothing.
+
 ## What still refuses
 
 - **`full_access`.** An AppContainer has no network and reads only what it
@@ -105,8 +157,9 @@ scheduled scripts and the daemon's other paths already use the sandbox.
   the base layer alone. Bypass runs commands without a sandbox.
 - **Copilot**, including its reviewer, in every mode. It runs with the base
   layer alone, which Windows does not have.
-- **Pi's write and edit tools** in Auto and Manual. They use a private bridge
-  on Unix directory handles, which Windows does not have yet.
+- **Pi's write and edit tools** in Auto and Manual, until the private
+  extension uses the daemon's bridge. The daemon's side is in place
+  ([Pi's write and edit](#pis-write-and-edit)).
 - **The daemon's Python worker** (`execute_code`) and the file callbacks it
   reaches. Code runs on the bot's own computer.
 
@@ -189,8 +242,9 @@ destination after an approval. On Unix, restricted Pi write and edit use
 Rust's directory-relative operations through the private extension UI bridge,
 with final reads and atomic replacements on directory handles opened without
 following symlinks. The bridge limits each encoded request and reply to
-1 MiB. Windows refuses that bridge before any of these operations, with no
-pathname fallback.
+1 MiB. On Windows it walks handles that follow no reparse point and renames
+over the target through its folder's handle
+([Pi's write and edit](#pis-write-and-edit)), with no pathname fallback.
 
 The daemon's own files keep the Unix boundaries (`osutil`). Removals and the
 one-chat-per-bot backup never follow a link: a junction or directory link
@@ -235,11 +289,22 @@ publish nothing:
   reserved paths refuse by their text before any access. Through the real
   Runtime and a trusted Pi transport fixture it checks that session settings
   name the sandbox, that `hexbot_sandbox_policy` gives Pi a policy that runs
-  in the container, that execute_code and the private write/edit bridge
-  refuse before approval, and that an Auto `.sh` scheduled script writes the
-  workspace while a Manual one writes nothing. Copilot refuses before path
-  or command resolution. Runtime and selection files stay byte-identical,
-  owned Pi processes stop, and no container profile is left registered.
+  in the container, that execute_code refuses before approval, that the
+  private write/edit bridge writes and edits the workspace with a live policy
+  snapshot, commits an edit only to the file it read, and refuses Bypass, a
+  stale snapshot, protected names and network, device, stream and
+  missing-drive paths by their text, and that an Auto `.sh` scheduled script
+  writes the workspace while a Manual one writes nothing. Copilot refuses
+  before path or command resolution. Runtime and selection files stay
+  byte-identical, owned Pi processes stop, and no container profile is left
+  registered.
+
+The `native-runtime` job of `windows-contract.yml` also runs
+`tests/windows_file_tools.rs`, which drives the bridge's handles directly:
+writes that create folders and replace files without following a junction or
+file link and leave other hard-link names alone, edits that refuse a
+replaced, deleted or moved file, a folder or read-only file at the target,
+oversized requests, and paths that reach an entry by an 8.3 short name.
 
 The extension probes start before import and tool registration, with hostile
 UNC `HOME` and `USERPROFILE` values. Only trusted module loading and the
@@ -297,6 +362,8 @@ security APIs, ACL behavior or native containment.
 - The private extension runs its bash, read, grep, find and ls tools through
   `hexbot_sandbox_policy` and the helper, and the extension probes prove it
   natively.
+- The private extension runs write and edit through the daemon's handle
+  bridge, and the extension probes prove it natively.
 - Both native jobs pass on the combined tree, then a separate change removes
   the guard in `lib.rs`.
 - GPT and Opus review approval and explicit parent approval, as for every

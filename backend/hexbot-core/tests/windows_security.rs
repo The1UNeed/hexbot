@@ -1,10 +1,10 @@
 //! The daemon's Windows execution boundary, run as a standard user against
 //! real AppContainers: Auto and Manual commands and scheduled scripts run
-//! through the sandbox helper; full_access, the Python worker, the private
-//! write/edit bridge and Copilot refuse; and network, device and stream paths
-//! are refused by their text before anything opens them. CI builds it from a
-//! disposable copy without the platform guard
-//! (`scripts/dev/windows-security-standard-user.ps1`).
+//! through the sandbox helper; Pi's write and edit go through the daemon's
+//! handle bridge with a live policy snapshot; full_access, the Python worker
+//! and Copilot refuse; and network, device and stream paths are refused by
+//! their text before anything opens them. CI builds it from a disposable copy
+//! without the platform guard (`scripts/dev/windows-security-standard-user.ps1`).
 #![cfg(windows)]
 
 use base64::Engine;
@@ -441,8 +441,16 @@ async fn windows_security_runtime_runs_sections_and_scripts_in_the_sandbox() {
                 "{reply}"
             );
         }
-        // Restricted write and edit refuse in every mode, before any path or
-        // output is touched.
+        // Pi's restricted write and edit run through the daemon's handle
+        // bridge with the live policy's snapshot. A path is judged by its
+        // text and drive before anything opens it, a stale snapshot or Bypass
+        // refuses before the path is resolved, and an edit commits only to
+        // the file it read.
+        let missing_drive = ('D'..='Z')
+            .rev()
+            .map(|drive| format!(r"{drive}:\hexbot\file.txt"))
+            .find(|path| !Path::new(&path[..3]).exists())
+            .expect("an unused drive letter");
         for mode in ["smart", "manual", "off"] {
             db::open(&home)
                 .unwrap()
@@ -471,21 +479,115 @@ async fn windows_security_runtime_runs_sections_and_scripts_in_the_sandbox() {
                     "{reply}"
                 );
             }
-            set_workdir(r"\\hexbot-hostile.invalid\share\private-file-workdir");
-            for operation in ["write", "edit_open", "edit_commit"] {
-                if absent_output.exists() {
-                    fs::remove_dir(&absent_output).unwrap();
-                }
-                let reply = ask(&live, Some(json!({"tool":"hexbot_pi_file","args":{"operation":operation,"path":r"\\.\pipe\hexbot-private-file","callId":"private-file","snapshot":{"approvalMode":mode,"fileEpoch":0},"content":"eA==","parent":["0","0"]}}))).await;
+            let settings =
+                ask(&live, Some(json!({"tool":"hexbot_session_settings"}))).await["result"].clone();
+            let snapshot = json!({"approvalMode":settings["approvalMode"],"cwd":settings["cwd"],"outputDirs":settings["outputDirs"],"fileWorkdir":settings["fileWorkdir"],"fileEpoch":settings["fileEpoch"]});
+            let encode = |text: String| base64::engine::general_purpose::STANDARD.encode(text);
+            let request = |operation: &str, path: &Path, parent: Value| {
+                Some(
+                    json!({"tool":"hexbot_pi_file","args":{"operation":operation,"path":path,"callId":"private-file","snapshot":snapshot,"content":encode(format!("{operation}-{mode}")),"parent":parent}}),
+                )
+            };
+            let target = work.join(format!("bridge-{mode}")).join("file.txt");
+            if mode == "off" {
+                // Bypass writes through Pi itself, never through the bridge.
+                let reply = ask(&live, request("write", &target, Value::Null)).await;
                 assert!(
                     reply["error"]
                         .as_str()
                         .unwrap()
-                        .contains("cannot use the write and edit tools yet"),
+                        .contains("File policy changed"),
                     "{reply}"
                 );
-                assert!(!absent_output.exists());
+                assert!(!target.parent().unwrap().exists());
+                continue;
             }
+            let stream = format!(r"{}\notes.txt:stream", work.display());
+            let reserved = format!(r"{}\nul.txt", work.display());
+            let secret = work.join(".env");
+            for (path, reason) in [
+                (r"\\hexbot-hostile.invalid\share\file.txt", "network paths"),
+                (r"\\.\pipe\hexbot-private-file", "device or NT object paths"),
+                (stream.as_str(), "alternate data stream"),
+                (reserved.as_str(), "reserved Windows device name"),
+                (missing_drive.as_str(), "not a local fixed drive"),
+                (secret.to_str().unwrap(), "protected"),
+            ] {
+                for operation in ["write", "edit_open", "edit_commit"] {
+                    let reply = ask(
+                        &live,
+                        request(operation, Path::new(path), json!(["0", "0"])),
+                    )
+                    .await;
+                    assert!(
+                        reply["error"].as_str().unwrap().contains(reason),
+                        "{operation} {path}: {reply}"
+                    );
+                }
+            }
+            assert!(!work.join("notes.txt").exists());
+            assert_eq!(fs::read_to_string(&secret).unwrap(), "private");
+            // A write creates its folder; an edit reads the file's bytes and
+            // commits only to the file it read.
+            let reply = ask(&live, request("write", &target, Value::Null)).await;
+            assert_eq!(reply["result"], json!({"success":true}), "{reply}");
+            assert_eq!(
+                fs::read_to_string(&target).unwrap(),
+                format!("write-{mode}")
+            );
+            let opened = ask(&live, request("edit_open", &target, Value::Null)).await;
+            assert_eq!(
+                opened["result"]["content"],
+                encode(format!("write-{mode}")),
+                "{opened}"
+            );
+            fs::remove_file(&target).unwrap();
+            fs::write(&target, "replacement").unwrap();
+            let reply = ask(
+                &live,
+                request("edit_commit", &target, opened["result"]["parent"].clone()),
+            )
+            .await;
+            assert!(
+                reply["error"].as_str().unwrap().contains("file changed"),
+                "{reply}"
+            );
+            assert_eq!(fs::read_to_string(&target).unwrap(), "replacement");
+            let opened = ask(&live, request("edit_open", &target, Value::Null)).await;
+            let reply = ask(
+                &live,
+                request("edit_commit", &target, opened["result"]["parent"].clone()),
+            )
+            .await;
+            assert_eq!(reply["result"], json!({"success":true}), "{reply}");
+            assert_eq!(
+                fs::read_to_string(&target).unwrap(),
+                format!("edit_commit-{mode}")
+            );
+            // A snapshot of another working folder refuses before the path is
+            // resolved or its folder created, and a working folder that moved
+            // to a network share is refused by its text.
+            let elsewhere = work.join(format!("stale-{mode}")).join("file.txt");
+            let mut stale = request("write", &elsewhere, Value::Null).unwrap();
+            stale["args"]["snapshot"]["fileWorkdir"] = json!("changed");
+            let reply = ask(&live, Some(stale)).await;
+            assert!(
+                reply["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("File policy changed"),
+                "{reply}"
+            );
+            let network = r"\\hexbot-hostile.invalid\share\private-file-workdir";
+            set_workdir(network);
+            let mut moved = request("write", &elsewhere, Value::Null).unwrap();
+            moved["args"]["snapshot"]["fileWorkdir"] = json!(network);
+            let reply = ask(&live, Some(moved)).await;
+            assert!(
+                reply["error"].as_str().unwrap().contains("network paths"),
+                "{reply}"
+            );
+            assert!(!elsewhere.parent().unwrap().exists());
             set_workdir(work.to_str().unwrap());
         }
         // Scheduled scripts: network and device paths refuse by their text;

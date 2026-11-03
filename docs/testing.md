@@ -477,7 +477,11 @@ portable release fixtures verify that plumbing, not native Windows acceptance. S
 [the build contract](windows-build-contract.md) for the runtime layout,
 security dependency and native validation still required. The native job also
 runs `windows_filesystem`, which exercises no-follow removal, linked-root
-refusals, disk-only reads, PATHEXT lookup and the private DACLs on Windows.
+refusals, disk-only reads, PATHEXT lookup and the private DACLs on Windows,
+and `windows_file_tools`, which drives Pi's write and edit through the
+daemon's handle bridge against real junctions, file links, hard links, 8.3
+short names, file IDs and renames. Other hosts run the bridge's portable
+rules with `cargo test --lib windows_file_policy`.
 
 The Windows `windows_launchers` debug suite also exercises the private Dev
 child host through its actual CLI router. It covers stdin EOF, a root exiting

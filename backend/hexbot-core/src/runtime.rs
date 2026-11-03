@@ -47,8 +47,16 @@ use identity::with_fields;
 #[cfg(unix)]
 #[path = "runtime_files.rs"]
 mod files;
+#[cfg(windows)]
+#[path = "runtime_files_windows.rs"]
+mod files;
 #[path = "runtime_pi_files.rs"]
 mod pi_files;
+
+// The Windows file bridge's portable rules run in every host's tests.
+#[cfg(all(test, not(windows)))]
+#[path = "runtime_files_windows_policy.rs"]
+mod windows_file_policy;
 
 #[cfg(test)]
 #[path = "runtime_lifecycle_tests.rs"]
@@ -4013,7 +4021,6 @@ impl Runtime {
         store::check_deleted(&store::open(&self.home)?, &s.stored)?;
         let (policy, settings, bot_workdir, own) = self.session_policy(s)?;
         require_builtin_capability(&own, "file", request.tool)?;
-        crate::credentials::require_file_bridge()?;
         let snapshot = &args["snapshot"];
         let configured = common::configured_workdir(
             &[policy["workdirOverride"].as_str(), bot_workdir.as_deref()],
@@ -4046,49 +4053,70 @@ impl Runtime {
                 "File policy changed before this action ran. Try again.",
             ));
         }
-        #[cfg(unix)]
-        {
-            let path = &request.path;
-            let home = fs::canonicalize(&self.home)?;
-            let output = outputs
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter_map(|v| v.as_str())
-                .map(|path| crate::credentials::real_root(Path::new(path)).map_err(Error::from))
-                .collect::<Result<Vec<_>>>()?;
-            if crate::credentials::managed_runtime_path(&self.home, path)?
-                || crate::credentials::credential_name(&self.home, path)
-                || matches!(
-                    crate::credentials::host_write_tier(path),
-                    Some(crate::credentials::WriteTier::Deny)
-                )
-                || (crate::credentials::under(path, &home)
-                    && !output
-                        .iter()
-                        .any(|root| crate::credentials::under(path, root)))
-                || path.components().any(|c| {
-                    c.as_os_str().to_str().is_some_and(|name| {
-                        crate::credentials::secret_file_name(name)
-                            || [".git", "node_modules", ".ssh"].contains(
-                                &if crate::credentials::FOLD_CASE {
-                                    name.to_lowercase()
-                                } else {
-                                    name.to_owned()
-                                }
-                                .as_str(),
-                            )
-                    })
-                })
-            {
-                return Err(Error::new(4302, "This file path is protected."));
+        // On Windows the path is judged by its text and drive before anything
+        // opens it, so no network, device or stream path is ever opened, and
+        // the checks below and the walk see its plain form.
+        #[cfg(windows)]
+        let request = {
+            let text = request
+                .path
+                .to_str()
+                .ok_or_else(|| Error::new(4202, "file path must be Unicode"))?;
+            let plain = crate::windows_paths::sandbox::local(text)
+                .map_err(|reason| Error::new(4202, format!("{reason}: {text}")))?;
+            crate::windows_sandbox::fixed_drive(&plain)?;
+            pi_files::Request {
+                path: PathBuf::from(plain),
+                ..request
             }
-            // Synchronous through rename: cancel_dialogs aborts and joins this
-            // request task before acknowledging Stop. No detached write exists.
-            pi_files::perform(&request, event["id"].as_str().unwrap_or(""))
+        };
+        let path = &request.path;
+        let protected_name = |path: &Path| {
+            path.components().any(|c| {
+                c.as_os_str().to_str().is_some_and(|name| {
+                    crate::credentials::secret_file_name(name)
+                        || [".git", "node_modules", ".ssh"].contains(
+                            &if crate::credentials::FOLD_CASE {
+                                name.to_lowercase()
+                            } else {
+                                name.to_owned()
+                            }
+                            .as_str(),
+                        )
+                })
+            })
+        };
+        // Names first on Windows: the credential check below looks at a
+        // project secret on disk, where it may be a link to a network share.
+        #[cfg(windows)]
+        if protected_name(path) {
+            return Err(Error::new(4302, "This file path is protected."));
         }
-        #[cfg(not(unix))]
-        Err(Error::new(4302, "Unix file handles are unavailable"))
+        let home = crate::credentials::canonical(&self.home)?;
+        let output = outputs
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .map(|path| crate::credentials::real_root(Path::new(path)).map_err(Error::from))
+            .collect::<Result<Vec<_>>>()?;
+        if crate::credentials::managed_runtime_path(&self.home, path)?
+            || crate::credentials::credential_name(&self.home, path)
+            || matches!(
+                crate::credentials::host_write_tier(path),
+                Some(crate::credentials::WriteTier::Deny)
+            )
+            || (crate::credentials::under(path, &home)
+                && !output
+                    .iter()
+                    .any(|root| crate::credentials::under(path, root)))
+            || protected_name(path)
+        {
+            return Err(Error::new(4302, "This file path is protected."));
+        }
+        // Synchronous through rename: cancel_dialogs aborts and joins this
+        // request task before acknowledging Stop. No detached write exists.
+        pi_files::perform(&request, event["id"].as_str().unwrap_or(""))
     }
     fn register_worker_bridge(&self, s: &Arc<Live>) {
         let runtime = self.weak.clone();
