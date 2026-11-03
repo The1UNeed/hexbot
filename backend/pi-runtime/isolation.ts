@@ -3,7 +3,7 @@
 // a parity test there compares the two outputs.
 import {readFileSync, readdirSync, readlinkSync, realpathSync, existsSync, statSync, lstatSync, openSync, opendirSync, fstatSync, readSync, closeSync, constants, type Dirent} from 'node:fs';
 import {createHash} from 'node:crypto';
-import {join, relative, resolve, dirname, basename, isAbsolute} from 'node:path';
+import {join, relative, resolve, dirname, basename, isAbsolute, parse} from 'node:path';
 import {homedir, tmpdir} from 'node:os';
 import {spawnSync} from 'node:child_process';
 export const credentialPolicy = JSON.parse(readFileSync(new URL('./credential-policy.json', import.meta.url), 'utf8'));
@@ -15,15 +15,71 @@ const regexEscape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 export const foldCase = process.platform === 'darwin' || process.platform === 'win32';
 export const fold = (s: string) => foldCase ? s.toLowerCase() : s;
 export const policyRegex = (source: string) => new RegExp(source, foldCase ? 'i' : '');
-// Write policy entries are absolute or relative to the user's home.
-export const userHomes = () => [...new Set(process.platform === 'win32'
-  ? [process.env.USERPROFILE, process.env.HOME, homedir()].filter((path): path is string => !!path)
-  : [homedir()])];
+// A refusal whose message the approval gate passes on as its reason.
+export const refusal = (message: string) => Object.assign(new Error(message), {refused: true});
+// The forms of a Windows path that reach something other than a plain disk
+// path: network (\\server, \\?\UNC), device (\\.\, \\?\), NT object (\??\),
+// drive-relative (C:x), an alternate data stream (x:stream), a reserved device
+// name (NUL, COM1) and a name ending in a dot or space, which Windows trims and
+// so opens another file. The daemon's sandbox refuses the same forms
+// (windows_paths.rs). Paths relative to a folder or its drive pass.
+export const WINDOWS_PATHS = {
+  network: 'On Windows the file tools use local disk paths only, not network paths.',
+  device: 'On Windows the file tools use plain disk paths only, not device or NT object paths.',
+  relative: 'A drive-relative path such as C:file depends on another folder. Use a full path such as C:\\folder\\file, or a path relative to the working folder.',
+  stream: 'Paths cannot name an alternate data stream.',
+  reserved: 'Paths cannot use a reserved Windows device name such as NUL or COM1.',
+  trailing: 'Paths cannot have names that end in a dot or space.',
+};
+export function windowsPathRefusal(path: string): string | undefined {
+  if (/^\\\\\?\\unc\\/i.test(path)) return WINDOWS_PATHS.network;
+  if (/^[\\/]{2}/.test(path)) return /^[\\/]{2}[.?]/.test(path) ? WINDOWS_PATHS.device : WINDOWS_PATHS.network;
+  if (/^[\\/]\?\?[\\/]/.test(path)) return WINDOWS_PATHS.device;
+  const drive = /^[a-z]:/i.test(path);
+  if (drive && !/^[a-z]:[\\/]/i.test(path)) return WINDOWS_PATHS.relative;
+  const rest = drive ? path.slice(2) : path;
+  if (rest.includes(':')) return WINDOWS_PATHS.stream;
+  for (const name of rest.split(/[\\/]/)) {
+    if (!name || name === '.' || name === '..') continue;
+    if (/[. ]$/.test(name)) return WINDOWS_PATHS.trailing;
+    if (/^(con|prn|aux|nul|conin\$|conout\$|(com|lpt)[0-9¹²³])$/i.test(name.split('.')[0].replace(/ +$/, ''))) return WINDOWS_PATHS.reserved;
+  }
+}
+// Write policy entries are absolute or relative to the user's home. On Windows
+// that is the profile and HOME when it names another folder, and only as local
+// paths: resolving a network or device home would reach it, and the file tools
+// refuse every path under one anyway. Without a local profile they cannot tell
+// which files are private.
+export const WINDOWS_PROFILE = 'The Windows profile folder is not a local disk path, so the file tools cannot tell which files are private.';
+const localHome = (path?: string): path is string => !!path && isAbsolute(path) && !windowsPathRefusal(path);
+export const userHomes = () => {
+  if (process.platform !== 'win32') return [homedir()];
+  if (!localHome(homedir())) throw refusal(WINDOWS_PROFILE);
+  return [...new Set([process.env.USERPROFILE, process.env.HOME, homedir()].filter(localHome))];
+};
 export const policyRoots = (entry: string) => isAbsolute(entry) ? [entry] : userHomes().map(home => join(home, entry));
 export const policyRoot = (entry: string) => policyRoots(entry)[0];
-export const WINDOWS_ISOLATION_UNAVAILABLE = 'Windows tool isolation is not implemented. Auto and Manual cannot run local commands, code, or file tools on Windows, including approved full_access requests. Windows remains unsupported. Bypass has no sandbox or credential protection.';
-export function requireSupportedExecution(): void {
-  if (process.platform === 'win32') throw new Error(WINDOWS_ISOLATION_UNAVAILABLE);
+// Credential stores no tool writes, and the file tools never read.
+export const storeEntries = () => (credentialPolicy.write.deny as string[]).concat(
+  process.platform === 'win32' ? ((credentialPolicy as any).windowsWriteDeny as string[] ?? []) : []
+);
+// The sandbox session settings name. On Windows only an AppContainer the
+// daemon's startup probe ran contains a command, so Auto and Manual refuse
+// without one and never turn the gap into an approval that runs with the
+// user's own permissions, including an approved full_access request.
+export type Sandbox = {kind?: string, helper?: string, bash?: string | null} | null | undefined;
+export const WINDOWS_ISOLATION_UNAVAILABLE = 'The Windows sandbox could not start, so Auto and Manual refuse local commands and file tools, and scheduled scripts do not run. Bypass has no sandbox or credential protection. Restart Hexbot to try again.';
+export const WINDOWS_FULL_ACCESS = 'On Windows, Auto and Manual run every command inside the sandbox, so full_access is not available. Bypass runs commands without a sandbox.';
+export const WINDOWS_FILE_CHANGES = 'The write and edit tools are not available on Windows in Auto and Manual yet. In Auto, change files in the workspace with a bash command.';
+export const NO_GIT_BASH = 'Shell commands and scripts on Windows run in Git Bash, which is not installed. Install Git for Windows, then try again.';
+export function requireSupportedExecution(sandbox?: Sandbox): void {
+  if (process.platform === 'win32' && sandbox?.kind !== 'appcontainer') throw new Error(WINDOWS_ISOLATION_UNAVAILABLE);
+}
+// Seatbelt and bubblewrap layouts and the workspace scan behind them are for
+// macOS and Linux. On Windows the daemon scans the workspace and builds the
+// policy its helper applies, so these never run there.
+function requireUnix(): void {
+  if (process.platform === 'win32') throw new Error('This sandbox step runs only on macOS and Linux.');
 }
 // Seatbelt regexes use character pairs rather than JavaScript's i flag.
 const sandboxRegex = (source: string) => foldCase ? source.replace(/[a-z]/gi, c => `[${c.toLowerCase()}${c.toUpperCase()}]`) : source;
@@ -67,12 +123,14 @@ export function probeIsolation(): string | null {
   }
   return bwrap;
 }
-// macOS always sandboxes (sandbox-exec fails closed). Elsewhere only bubblewrap does.
-export const isolationAvailable = () => process.platform === 'darwin' || !!probeIsolation();
+// macOS always sandboxes (sandbox-exec fails closed), Linux when bubblewrap
+// passes its probe, and Windows when session settings name the AppContainer.
+export const isolationAvailable = (sandbox?: Sandbox) => process.platform === 'win32' ? sandbox?.kind === 'appcontainer' : process.platform === 'darwin' || !!probeIsolation();
 // A path that does not exist yet resolves through its existing parent, and a
 // dangling link to where its target would be.
 const LINK_HOPS = 40;
 function realRoot(path: string, hops = 0): string {
+  if (process.platform === 'win32') return windowsRealPath(path, process.cwd());
   try { return realpathSync.native(path); }
   catch (error: any) {
     if (error.code !== 'ENOENT' || dirname(path) === path) throw error;
@@ -82,15 +140,46 @@ function realRoot(path: string, hops = 0): string {
     return join(realRoot(dirname(path)), basename(path));
   }
 }
+// Windows resolves a path one name at a time, like the Unix walker, but never
+// follows a link to a form windowsPathRefusal refuses, so it reaches no network
+// share or device on the way; a drive that resolves to one (a mapped network
+// drive) is refused as it resolves. Junctions are links here, as Node reports
+// them. `..` applies to the text, as Windows applies it. A name that does not
+// exist stays as written.
+export function windowsRealPath(path: string, cwd: string, hops = 0): string {
+  if (hops > LINK_HOPS) throw new Error('Too many symbolic links');
+  const reason = windowsPathRefusal(path);
+  if (reason) throw refusal(reason);
+  // What a name resolves to must be a plain disk path too.
+  const real = (name: string) => {
+    const resolved = realpathSync.native(name);
+    if (!isAbsolute(resolved) || windowsPathRefusal(resolved)) throw refusal(windowsPathRefusal(resolved) ?? WINDOWS_PATHS.device);
+    return resolved;
+  };
+  const absolute = resolve(cwd, path), root = parse(absolute).root;
+  let current = root;
+  try { current = real(root); } catch (error: any) { if (error.code !== 'ENOENT') throw error; }
+  for (const part of absolute.slice(root.length).split(/[\\/]/)) {
+    if (!part) continue;
+    const next = join(current, part);
+    let link: string | undefined;
+    try { if (lstatSync(next).isSymbolicLink()) link = readlinkSync(next); }
+    catch (error: any) {
+      if (error.code !== 'ENOENT') throw error;
+      current = next;
+      continue;
+    }
+    current = link !== undefined ? windowsRealPath(link, current, hops + 1) : real(next);
+  }
+  return current;
+}
 // The write policy's deny tier (credential stores such as ~/.aws and ~/.netrc):
 // the OS sandbox makes "never written in any mode" hold for every program a
 // command runs, not only for the guarded tools. The Windows stores join only
 // on Windows, so Unix sandboxes do not deny or pin AppData folders.
 function deniedWrites(): string[] {
   const denied: string[] = [];
-  const entries = (credentialPolicy.write.deny as string[]).concat(
-    process.platform === 'win32' ? ((credentialPolicy as any).windowsWriteDeny as string[] ?? []) : []
-  );
+  const entries = storeEntries();
   for (const entry of entries) {
     const root = policyRoot(entry);
     const real = realRoot(root);
@@ -100,10 +189,9 @@ function deniedWrites(): string[] {
 }
 // Keychains and browser profiles (cookies, saved passwords). Unreadable in
 // Manual and Auto and to the file tools; an approved full_access command may
-// read them.
+// read them. On Windows only local homes are resolved (userHomes).
 const readCache = new Map<string, {at: number, paths: string[]}>();
 export function readDenied(): string[] {
-  requireSupportedExecution();
   const home = JSON.stringify(userHomes()), cached = readCache.get(home);
   if (cached && Date.now() - cached.at < 5000) return cached.paths;
   const denied: string[] = [];
@@ -150,8 +238,8 @@ export const within = (path: string, roots: string[]) => roots.some(root => fold
 const GIT_FILE_BYTES = 1 << 20, GIT_TIMEOUT = 5000, GIT_INCLUDE_DEPTH = 10, GIT_INCLUDES = 64, GIT_SCAN_INCLUDES = 256, GIT_CONFIG_STEPS = 10000;
 function regularFile(path: string): Buffer | undefined {
   // Do not open Windows pipes/devices and then try to classify the handle.
-  // No Windows metadata scan is supported yet.
-  requireSupportedExecution();
+  // The daemon scans Windows workspaces itself.
+  requireUnix();
   let fd: number;
   try { fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK); }
   catch (error: any) { if (['ENOENT', 'ENOTDIR', 'ENXIO'].includes(error.code)) return undefined; throw error; }
@@ -172,9 +260,9 @@ function regularFile(path: string): Buffer | undefined {
 const GIT_CACHE = 2048;
 const configCache = new Map<string, [string, string][]>();
 function configEntries(text: Buffer): [string, string][] {
-  // Windows has no managed trusted Git yet. In particular, do not substitute
-  // `git` and search the workspace-controlled PATH outside the sandbox.
-  requireSupportedExecution();
+  // Windows has no trusted Git here. In particular, do not substitute `git` and
+  // search the workspace-controlled PATH outside the sandbox.
+  requireUnix();
   const key = createHash('sha256').update(text).digest('hex'), cached = configCache.get(key);
   if (cached) {
     configCache.delete(key);
@@ -220,7 +308,7 @@ export function globalGitConfigs(env: NodeJS.ProcessEnv = process.env): string[]
 // when a limit stopped it.
 export type WorkspaceScan = {git: string[], secrets: string[], worktrees: string[], files: string[], links: string[], exhausted: boolean, failure?: string, cause?: string};
 export function workspaceProtected(roots: string[], limit = WORKSPACE_DIRS): WorkspaceScan {
-  requireSupportedExecution();
+  requireUnix();
   let exhausted = false, failure: string | undefined, cause: string | undefined;
   const git = new Set<string>(), secrets = new Set<string>(), worktrees = new Set<string>(), files = new Set<string>(), links = new Set<string>();
   const add = (set: Set<string>, path: string) => { set.add(path); set.add(realRoot(path)); };
@@ -447,7 +535,7 @@ function storeAncestors(denied: string[]): string[] {
 // Reject mutable aliases of managed roots. Resolving only the candidate path
 // misses a runtime root that itself points into a writable artifact directory.
 export function managedRuntimeRoots(home: string): string[] {
-  requireSupportedExecution();
+  requireUnix();
   const root = resolve(home), realHome = realRoot(root);
   return [...new Set((credentialPolicy.managedRuntime as string[]).flatMap(local => {
     const path = join(root, local), real = realRoot(path);
@@ -549,8 +637,9 @@ export function processLimit(): number | undefined {
   return listed.status === 0 ? listed.stdout.split('\n').filter(Boolean).length + PROCESS_HEADROOM : undefined;
 }
 export function isolatedCommand(command: string, home: string, outputs: string[] = [], workspace?: string[], searchRoots: string[] = workspace ?? []): string {
-  // Approval/full_access cannot turn missing Windows containment into execution.
-  requireSupportedExecution();
+  // Windows contains commands with the daemon's helper instead (extension.ts),
+  // so an approval never turns this into an uncontained Windows command.
+  requireUnix();
   // A command that cannot be capped does not run.
   if (workspace) {
     const limit = processLimit();

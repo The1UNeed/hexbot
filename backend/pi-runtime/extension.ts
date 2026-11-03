@@ -1,10 +1,11 @@
 /** Hexbot's frozen session tools and approval bridge. Pi owns the agent loop. */
 import { createHash, randomUUID } from 'node:crypto';
-import { readFileSync, realpathSync, lstatSync, readlinkSync, statSync, existsSync } from 'node:fs';
-import { resolve, dirname, basename, relative, sep, join } from 'node:path';
-import { homedir, tmpdir } from 'node:os';
+import { readFileSync, readdirSync, realpathSync, lstatSync, readlinkSync, statSync, existsSync } from 'node:fs';
+import { resolve, dirname, basename, relative, sep, join, isAbsolute } from 'node:path';
+import { homedir, tmpdir, constants as osConstants } from 'node:os';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { createBashTool, createReadTool, createWriteTool, createEditTool, createGrepTool, createFindTool, createLsTool } from '@earendil-works/pi-coding-agent';
-import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoots, userHomes, managedRuntimeRoots, requireSupportedExecution, WINDOWS_ISOLATION_UNAVAILABLE, privateKeyName, probeIsolation, readDenied, secretFileName, gitDirectory, SCAN_REASON, SCAN_FILE_REASON, within, workspaceProtected, lockedGit, scanFailureReason} from './isolation.ts';
+import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoots, userHomes, managedRuntimeRoots, requireSupportedExecution, WINDOWS_ISOLATION_UNAVAILABLE, WINDOWS_FULL_ACCESS, WINDOWS_FILE_CHANGES, NO_GIT_BASH, refusal, storeEntries, windowsRealPath, privateKeyName, probeIsolation, readDenied, secretFileName, gitDirectory, SCAN_REASON, SCAN_FILE_REASON, within, workspaceProtected, lockedGit, scanFailureReason} from './isolation.ts';
 import { registerAcp } from './acp.ts';
 import { lazyStream } from '@earendil-works/pi-ai';
 import { builtinProviders } from '@earendil-works/pi-ai/providers/all';
@@ -57,6 +58,46 @@ function fileOperations(ctx: any, callId: string, tool: string, target: string, 
       if (result.success !== true) throw new Error('Invalid private file reply');
     },
   };
+}
+
+// Pi's local tools: Auto and Manual guard them and the OS sandbox contains them.
+const LOCAL_TOOLS = ['bash', 'read', 'grep', 'find', 'ls', 'write', 'edit'];
+// Pi's ls stats every entry, following links. On Windows a link resolves
+// through windowsRealPath first, so a link to a network share is skipped, not
+// reached. (Pi's grep and find do not follow links.)
+const windowsStat = (path: string) => {
+  const entry = lstatSync(path);
+  return entry.isSymbolicLink() ? statSync(windowsRealPath(readlinkSync(path), dirname(path))) : entry;
+};
+// As Pi's shell operations: a timeout in seconds, at most what a timer holds.
+const MAX_TIMEOUT_MS = 2_147_483_647;
+function timeoutMs(timeout: number): number {
+  if (!Number.isFinite(timeout) || timeout <= 0) throw new Error('Invalid timeout: must be a finite number of seconds');
+  if (timeout * 1000 > MAX_TIMEOUT_MS) throw new Error(`Invalid timeout: maximum is ${MAX_TIMEOUT_MS / 1000} seconds`);
+  return timeout * 1000;
+}
+// As Pi's waitForChildProcess: the exit code once the output closes, or once it
+// falls quiet after the exit, so a handle another process kept open cannot hold
+// the call.
+const EXIT_GRACE_MS = 100;
+function exitCode(child: ChildProcess): Promise<number | null> {
+  return new Promise((settle, fail) => {
+    let done = false, exited = false, code: number | null = null, quiet: NodeJS.Timeout | undefined;
+    const finish = (value: number | null) => {
+      if (done) return;
+      done = true;
+      clearTimeout(quiet);
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      settle(value);
+    };
+    const wait = () => { clearTimeout(quiet); quiet = setTimeout(() => finish(code), EXIT_GRACE_MS); };
+    child.stdout?.on('data', () => { if (exited) wait(); });
+    child.stderr?.on('data', () => { if (exited) wait(); });
+    child.once('error', error => { if (done) return; done = true; clearTimeout(quiet); fail(error); });
+    child.once('exit', value => { exited = true; code = value; wait(); });
+    child.once('close', value => finish(value));
+  });
 }
 
 export default function hexbot(pi: any) {
@@ -194,6 +235,20 @@ export default function hexbot(pi: any) {
   type Level = 'none' | 'base' | 'confined';
   type AllowedCall = {mode: string, cwd: string, level: Level, target?: string, overwrites?: boolean};
   const levelFor = (input: any): Level => live.approvalMode === 'off' ? 'none' : input?.full_access === true ? 'base' : 'confined';
+  // Git Bash, which session settings name on Windows.
+  const gitBash = (): string | undefined => typeof live.sandbox?.bash === 'string' && isAbsolute(live.sandbox.bash) ? live.sandbox.bash : undefined;
+  // What Windows refuses outside Bypass before a path resolves or a command
+  // starts: every local tool without the sandbox, then write and edit (their
+  // handle bridge is Unix-only), full_access (a container has no base layer to
+  // leave to), commands without Git Bash, and file tools without a local
+  // profile to protect.
+  const windowsRefusal = (tool: string, fullAccess: boolean): string | undefined => {
+    if (process.platform !== 'win32' || !LOCAL_TOOLS.includes(tool)) return;
+    if (!isolationAvailable(live.sandbox)) return WINDOWS_ISOLATION_UNAVAILABLE;
+    if (tool === 'write' || tool === 'edit') return WINDOWS_FILE_CHANGES;
+    if (tool === 'bash') return fullAccess ? WINDOWS_FULL_ACCESS : gitBash() ? undefined : NO_GIT_BASH;
+    try { userHomes(); } catch (error: any) { return error.message; }
+  };
   // What the gate allowed for each call: the mode it decided under, how bash
   // runs, and the file it checked. Pi may gate several calls before running
   // them, so execution refuses a call whose mode or target has changed since.
@@ -211,7 +266,7 @@ export default function hexbot(pi: any) {
     const mcp = event.toolName.startsWith('mcp__');
     const resource = ['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource'].includes(event.toolName);
     const script = event.toolName === 'codemode' && typeof event.input?.code === 'string' && config.mcpServers?.length;
-    if (!['bash', 'read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName) && !browser && !mcp && !resource && !script) return;
+    if (!LOCAL_TOOLS.includes(event.toolName) && !browser && !mcp && !resource && !script) return;
     try {
       await refresh(ctx);
       // Retain what this check saw, even if another gate refreshes live settings.
@@ -235,10 +290,9 @@ export default function hexbot(pi: any) {
         if (reason) return {block: true, reason};
       }
       if (live.approvalMode === 'off') return;
-      if (process.platform === 'win32' && ['bash', 'read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName)) {
-        // No approvals or remembered grants can bypass an unavailable boundary.
-        return {block: true, reason: WINDOWS_ISOLATION_UNAVAILABLE};
-      }
+      // No approval or remembered grant stands in for what Windows refuses.
+      const refused = windowsRefusal(event.toolName, event.input?.full_access === true);
+      if (refused) return {block: true, reason: refused};
       const cwd = live.cwd ?? config.cwd;
       // `once` approvals cannot be remembered for the section.
       let ask: {key: string, command: string, reason: string, once?: boolean} | undefined;
@@ -272,7 +326,7 @@ export default function hexbot(pi: any) {
         }
       }
       if (event.toolName === 'bash') {
-        if (!isolationAvailable()) {
+        if (!isolationAvailable(live.sandbox)) {
           // Requesting full access cannot bypass the missing-sandbox user card.
           ask = {key: 'shell:unsandboxed', command: event.input.command, reason: 'Hexbot has no OS sandbox on this system, so this command can read and change any file you can. Install bubblewrap and restart the daemon to restore isolation.'};
         } else if (event.input.full_access === true) {
@@ -280,7 +334,7 @@ export default function hexbot(pi: any) {
           ask = {key: 'shell:full-access', command: event.input.command, reason: 'Run outside the sandbox, with internet access and writes outside the workspace. ' + why};
         }
       }
-      if (process.platform === 'linux' && event.toolName === 'bash' && levelFor(event.input) === 'confined' && isolationAvailable()) {
+      if (process.platform === 'linux' && event.toolName === 'bash' && levelFor(event.input) === 'confined' && isolationAvailable(live.sandbox)) {
         try {
           const scan = workspaceProtected([cwd, ...live.outputDirs ?? []]);
           if (scan.exhausted || scan.failure) return {block: true, reason: scan.exhausted ? SCAN_REASON : scanFailureReason(scan)};
@@ -319,16 +373,75 @@ export default function hexbot(pi: any) {
       }
       if (choice === 'session' && !ask.once && !review) sessionAllowed.add(ask.key);
       else if (choice !== 'once' && choice !== 'session') return {block: true, reason: 'The user denied this action.'};
-    } catch {
-      return {block: true, reason: 'The approval settings could not be checked. Try again.'};
+    } catch (error: any) {
+      // A path Windows refuses says why.
+      return {block: true, reason: error?.refused ? error.message : 'The approval settings could not be checked. Try again.'};
     }
   };
   // The user's own commands and the code runtime's terminal have no full_access.
   const spawnFor = (level: Level, command: string) => level === 'none' ? command :
     isolatedCommand(command, live.home, live.outputDirs, level === 'confined' ? workspace() : undefined, [live.cwd ?? config.cwd, ...live.outputDirs ?? []]);
-  const sandboxNote = () => live.approvalMode === 'manual'
+  // On Windows Manual writes the output folders too, and no command leaves the sandbox.
+  const sandboxNote = () => process.platform === 'win32'
+    ? `[The command ran in the sandbox, without internet access and with writes only in ${live.approvalMode === 'manual' ? 'its output folders' : `${live.cwd ?? config.cwd}, its output folders,`} and temporary folders. full_access is not available on Windows.]`
+    : live.approvalMode === 'manual'
     ? '[The command ran in the read-only sandbox, without internet access. If it failed for that reason, run it again with full_access and a reason.]'
     : `[The command ran in the sandbox, without internet access and with writes only in ${live.cwd ?? config.cwd}, its output folders, and temporary folders. If it failed for that reason, run it again with full_access and a reason.]`;
+  // Windows contains a command with the daemon's helper and the policy
+  // hexbot_sandbox_policy gives this section at this level:
+  // `<helper> sandbox exec <policy> -- <Git Bash> --noprofile --norc -c <command>`.
+  // Node starts the helper itself, never through a shell, so no MSYS path
+  // conversion touches the policy or the command. The helper's job ends every
+  // process the command started once the helper ends, so a timeout or Stop
+  // kills the helper alone. The rest follows Pi's local shell operations.
+  const containedExec = async (ctx: any, level: Level, command: string, cwd: string, {onData, signal, timeout, env}: any) => {
+    const limit = timeout === undefined ? undefined : timeoutMs(timeout);
+    if (signal?.aborted) throw new Error('aborted');
+    if (level !== 'confined') throw new Error(WINDOWS_FULL_ACCESS);
+    const bash = gitBash();
+    if (!bash) throw new Error(NO_GIT_BASH);
+    let reply: any;
+    try { reply = await bridge(ctx ?? currentContext, 'hexbot_sandbox_policy', {level}); }
+    catch (error: any) { throw signal?.aborted || error?.interrupted ? new Error('aborted') : error; }
+    if (signal?.aborted) throw new Error('aborted');
+    const {helper, policy} = reply ?? {};
+    if (typeof helper !== 'string' || !isAbsolute(helper) || typeof policy !== 'string' || !policy) throw new Error('The sandbox policy is unavailable.');
+    if (!existsSync(cwd)) throw new Error(`Working directory does not exist: ${cwd}\nCannot execute bash commands.`);
+    let child: ChildProcess;
+    try {
+      child = spawn(helper, ['sandbox', 'exec', policy, '--', bash, '--noprofile', '--norc', '-c', command], {cwd, env: shellEnvironment(env ?? process.env), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true});
+    } catch (error: any) {
+      // A Windows command line holds 32,767 characters, the policy included.
+      if (error?.code === 'E2BIG' || error?.code === 'ENAMETOOLONG') throw new Error('This command is longer than Windows allows. Put it in a script file and run that.');
+      throw error;
+    }
+    let timedOut = false, timer: NodeJS.Timeout | undefined;
+    const stop = () => { child.kill(); };
+    try {
+      if (limit !== undefined) timer = setTimeout(() => { timedOut = true; stop(); }, limit);
+      child.stdout?.on('data', onData);
+      child.stderr?.on('data', onData);
+      if (signal) { if (signal.aborted) stop(); else signal.addEventListener('abort', stop, {once: true}); }
+      const code = await exitCode(child);
+      if (signal?.aborted) throw new Error('aborted');
+      if (timedOut) throw new Error(`timeout:${timeout}`);
+      // A process ended by a signal has no exit code; shells report 128 + its number.
+      return {exitCode: code ?? (child.signalCode ? 128 + ((osConstants.signals as any)[child.signalCode] ?? 0) : 1)};
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', stop);
+    }
+  };
+  // Bypass runs Pi's own Bash. Pi's bash tool takes it from Pi's settings, where
+  // the daemon names Git Bash on Windows; this tool replaces Pi's.
+  const piShellPath = (): string | undefined => {
+    try { return pi.getSettings?.()?.shellPath || undefined; } catch { return undefined; }
+  };
+  // How the bash tool runs a command: Pi's own Bash in Bypass, Bash inside the
+  // OS sandbox on macOS and Linux, and the daemon's helper on Windows.
+  const shell = (level: Level, ctx?: any) => level === 'none' ? {shellPath: piShellPath()}
+    : process.platform === 'win32' ? {operations: {exec: (command: string, cwd: string, options: any) => containedExec(ctx, level, command, cwd, options)}}
+    : {spawnHook: (c: any) => ({...c, command: spawnFor(level, c.command), env: shellEnvironment(c.env)})};
 
   // Keep the built-in schemas and select tools only from the frozen configuration.
   // Refresh cwd at execution time without rewriting the cached prompt or history.
@@ -343,12 +456,13 @@ export default function hexbot(pi: any) {
     if (!enabled(name)) continue;
     wrapped.add(name);
     const bypass = () => live.approvalMode === 'off';
-    const options = (level: Level = 'confined', denied?: string[]) => name === 'bash' ? {spawnHook: (c: any) => level === 'none' ? c : {...c, command: spawnFor(level, c.command), env: shellEnvironment(c.env)}} :
-      name === 'grep' && !bypass() ? {operations: {isDirectory: (path: string) => statSync(path).isDirectory(), readFile: (path: string) => credentialPath(path, live.home, denied) ? '' : readFileSync(path, 'utf8')}} : {};
+    const options = (level: Level = 'confined', denied?: string[], ctx?: any) => name === 'bash' ? shell(level, ctx) :
+      name === 'grep' && !bypass() ? {operations: {isDirectory: (path: string) => statSync(path).isDirectory(), readFile: (path: string) => credentialPath(path, live.home, denied) ? '' : readFileSync(path, 'utf8')}} :
+      name === 'ls' && !bypass() && process.platform === 'win32' ? {operations: {exists: existsSync, readdir: readdirSync, stat: windowsStat}} : {};
     const tool = factory(config.cwd, options());
     const definition = name === 'bash' ? {
       description: tool.description + (process.platform === 'win32'
-        ? ' Windows is unsupported: Auto and Manual refuse local tools, including full_access. In Bypass this is Pi\'s Bash shell, such as Git Bash, with no sandbox. Use Bash syntax, not cmd.exe or PowerShell syntax.'
+        ? ' On Windows commands run in Git Bash: use Bash syntax, not cmd.exe or PowerShell syntax. In Auto and Manual they run in a sandbox without internet access that writes only to the workspace, or in Manual only to output folders. full_access and the write and edit tools are not available on Windows yet. In Bypass commands run without a sandbox.'
         : ' Commands may run in a sandbox that blocks internet access and writes outside the workspace. When a command needs either, set full_access and give a reason.'),
       parameters: {type: 'object', properties: {
         command: {type: 'string', description: 'Shell command to execute'},
@@ -361,16 +475,19 @@ export default function hexbot(pi: any) {
       const allowed = allowedCalls.get(id);
       allowedCalls.delete(id);
       if (ctx) await refresh(ctx);
-      if (!bypass()) requireSupportedExecution();
+      // The live settings decide, whatever the gate saw: a grant made before
+      // the Windows sandbox went away, or for full access, never runs.
+      const refused = bypass() ? undefined : windowsRefusal(name, args?.full_access === true || allowed?.level === 'base');
+      if (refused) throw new Error(refused);
       if (!allowed || allowed.mode !== live.approvalMode) throw new Error('The approval mode changed before this ran. Try again.');
       if (allowed.cwd !== (live.cwd ?? config.cwd)) throw new Error('The working directory changed before this ran. Try again.');
       const cwd = live.cwd ?? config.cwd;
       // Recheck at execution too, before a factory can touch files or launch.
-      if (!bypass()) requireSupportedExecution();
+      if (!bypass()) requireSupportedExecution(live.sandbox);
       if (name === 'bash') {
         const level = allowed.level;
         try {
-          const result = await factory(cwd, options(level)).execute(id, {command: args.command, timeout: args.timeout}, signal, update);
+          const result = await factory(cwd, options(level, undefined, ctx)).execute(id, {command: args.command, timeout: args.timeout}, signal, update);
           if (level === 'confined' && result.isError) result.content.push({type: 'text', text: sandboxNote()});
           return result;
         } catch (error: any) {
@@ -413,10 +530,12 @@ export default function hexbot(pi: any) {
     return {operations: {exec: async (command: string, cwd: string, opts: any) => {
       await refresh(ctx);
       if (level !== levelFor({}) || approvedCwd !== (live.cwd ?? config.cwd)) throw new Error('The approval mode or working directory changed before this ran. Try again.');
-      if (level !== 'none') requireSupportedExecution();
+      if (level !== 'none') requireSupportedExecution(live.sandbox);
       const {createLocalBashOperations} = await import('@earendil-works/pi-coding-agent');
-      if (level === 'none') return createLocalBashOperations().exec(command, live.cwd ?? cwd, opts);
-      return createLocalBashOperations().exec(spawnFor(level, command), live.cwd ?? cwd, {...opts, env: shellEnvironment(opts.env ?? process.env)});
+      if (level === 'none') return createLocalBashOperations({shellPath: piShellPath()}).exec(command, live.cwd ?? cwd, opts);
+      const env = shellEnvironment(opts.env ?? process.env);
+      if (process.platform === 'win32') return containedExec(ctx, level, command, live.cwd ?? cwd, {...opts, env});
+      return createLocalBashOperations().exec(spawnFor(level, command), live.cwd ?? cwd, {...opts, env});
     }}};
   });
 
@@ -552,26 +671,49 @@ export default function hexbot(pi: any) {
 // Filenames can contain grep's line delimiters too (for example owl-2-beta).
 // Check every possible path prefix, including text nested in truncation details.
 export function sanitizeSearchResult(value: any, name: string, base: string, home: string, denied = readDenied()): any {
+  const credential = (path: string) => credentialPath(resolve(base, path), home, denied) || credentialPath(canonicalPath(path, base), home, denied);
+  // A Windows name never holds ':', so a prefix with one past its drive is
+  // match text, not a path. Any other form Windows refuses hides the line.
+  const windowsCredential = (path: string) => {
+    if (resolve(base, path).slice(2).includes(':')) return false;
+    try { return credential(path); } catch (error: any) { if (error?.refused) return true; throw error; }
+  };
   if (typeof value === 'string') return value.split('\n').filter(line => {
     const paths = name === 'grep' ? [...line.matchAll(/(:\d+:|-\d+-)/g)].map(match => line.slice(0, match.index)) : [line.replace(/\/$/, '')];
-    return !paths.some(path => credentialPath(resolve(base, path), home, denied) || credentialPath(canonicalPath(path, base), home, denied));
+    return !paths.some(process.platform === 'win32' ? windowsCredential : credential);
   }).join('\n');
   if (Array.isArray(value)) return value.map(part => sanitizeSearchResult(part, name, base, home, denied));
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, part]) => [key, sanitizeSearchResult(part, name, base, home, denied)]));
   return value;
 }
 
-// Shell spellings of the user's home: ~, ~/x, ~user/x, $HOME and ${HOME}.
+// Shell spellings of the user's home: ~, ~/x, ~user/x, $HOME and ${HOME}. On
+// Windows a backslash may follow too.
 export function expandHome(path: string): string {
   const user = process.env.USER ?? basename(homedir());
   return path.replace(/\$\{HOME\}|\$HOME\b/g, homedir())
-    .replace(/^~([^/]*)/, (_match, name) => !name || name === user ? homedir() : join(dirname(homedir()), name));
+    .replace(process.platform === 'win32' ? /^~([^/\\]*)/ : /^~([^/]*)/, (_match, name) => !name || name === user ? homedir() : join(dirname(homedir()), name));
+}
+// Pi resolves a tool path again before it reads (resolveToCwd): odd spaces
+// become plain ones and, on Windows, Git Bash drive paths such as /c/x become
+// C:\x. Windows checks the path Pi will read, so a canonical path must hold no
+// odd space, which Pi would turn into another file's name.
+const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
+const ODD_SPACES = 'Paths cannot contain non-breaking or other special spaces.';
+function windowsInput(path: string): string {
+  const spaced = path.replace(UNICODE_SPACES, ' ');
+  const drive = !spaced.includes('\\') && spaced.match(/^\/(?:mnt\/|cygdrive\/)?([a-z])(?:\/(.*))?$/i);
+  return expandHome(drive ? `${drive[1].toUpperCase()}:\\${drive[2]?.replaceAll('/', '\\') ?? ''}` : spaced);
 }
 // realpathSync.native returns the on-disk case; comparisons fold it (isolation.ts).
 export function canonicalPath(path: string, cwd: string, depth = 0): string {
-  // The Unix component walker is not a Windows handle-based file boundary.
-  // Refuse drive-relative, UNC, device, ADS and reparse paths alike until one exists.
-  requireSupportedExecution();
+  // Windows refuses network, device, stream and drive-relative paths by their
+  // text and never follows a link to one (windowsRealPath).
+  if (process.platform === 'win32') {
+    const real = windowsRealPath(windowsInput(path), cwd, depth);
+    if (real.search(UNICODE_SPACES) >= 0) throw refusal(ODD_SPACES);
+    return real;
+  }
   if (depth > 40) throw new Error("Too many symbolic links");
   const expanded = expandHome(path);
   // Resolve each component before '..', including a symlink followed by a parent.
@@ -605,7 +747,7 @@ function credentialName(path: string, home: string, denied: string[]): boolean {
     return under(path, secret) || under(path, canonicalPath(secret, process.cwd()));
   }))) return true;
   // Credential stores such as ~/.aws and ~/.netrc are private to reads too.
-  if ((credentialPolicy.write.deny as string[]).flatMap(policyRoots).some(store => {
+  if (storeEntries().flatMap(policyRoots).some(store => {
     return under(path, store) || under(path, canonicalPath(store, process.cwd()));
   })) return true;
   if (denied.some(store => under(path, store))) return true;
@@ -616,8 +758,9 @@ function credentialName(path: string, home: string, denied: string[]): boolean {
 
   if (!home) throw new Error('Hexbot home is unavailable');
   const root = under(path, resolve(home)) ? resolve(home) : canonicalPath(home, process.cwd());
+  // Policy patterns use '/'. relative() names a path on another Windows drive in full.
   const local = relative(fold(root), fold(path)).split(sep).join('/');
-  return !local.startsWith('../') && (policyRegex(credentialPolicy.basename).test(name) || policyRegex(credentialPolicy.home).test(local));
+  return !local.startsWith('../') && !isAbsolute(local) && (policyRegex(credentialPolicy.basename).test(name) || policyRegex(credentialPolicy.home).test(local));
 }
 // Steps outside the sandbox that Auto's reviewer may let through; connected tools too.
 const REVIEWED = ['shell:full-access', 'file:outside', 'browser_console'];

@@ -9,6 +9,7 @@ import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {fileBridgeReply} from './fixtures/pi-files.mjs';
 import hexbot, {canonicalPath, credentialPath, protectedPath, shellEnvironment, sanitizeSearchResult, hostWriteTier, escapeMcpValues, fileRequestTitle, FILE_TRANSPORT_LIMIT} from './extension.ts';
+import {isolationAvailable, requireSupportedExecution, windowsPathRefusal, WINDOWS_PATHS} from './isolation.ts';
 
 // Scans read the user's own Git configuration. These tests use none, so the
 // developer's ~/.gitconfig and system config cannot change their results.
@@ -53,7 +54,7 @@ function fixture(t, mode = 'manual', enabledToolsets = [], extra = {}) {
     notify:(message, type)=>notices.push({message,type}),
     async select(title, options) {choices.push({...JSON.parse(title.slice('__HEXBOT_APPROVAL__'.length)), options}); return ctx.choice ?? 'deny';}
   }};
-  const pi = {setActiveTools:names=>activeTools.push(names), getAllTools:()=>Object.values(tools), unregisterMcpServer:()=>{}, registerMcpServer:(name, config)=>registrations.push({name,config}), on:(name,handler)=>handlers[name]=handler, registerTool:tool=>tools[tool.name]=tool, registerProvider(){}, async setModel(model){models.push(model);ctx.model=model;return true;}, sendMessage(message){sent.push(message);}, getThinkingLevel(){}};
+  const pi = {setActiveTools:names=>activeTools.push(names), getAllTools:()=>Object.values(tools), unregisterMcpServer:()=>{}, registerMcpServer:(name, config)=>registrations.push({name,config}), on:(name,handler)=>handlers[name]=handler, registerTool:tool=>tools[tool.name]=tool, registerProvider(){}, async setModel(model){models.push(model);ctx.model=model;return true;}, sendMessage(message){sent.push(message);}, getThinkingLevel(){}, getSettings:()=>ctx.piSettings ?? {}};
   hexbot(pi);
   let calls = 0;
   const gate = (toolName, input, toolCallId = `call-${++calls}`) => handlers.tool_call({toolName, input, toolCallId}, ctx);
@@ -933,6 +934,47 @@ test('user bash runs in the sandbox with a sanitized environment outside Bypass'
   let output = '';
   const result = await permitted.operations.exec('env', f.home, {env:{PATH:process.env.PATH, OPENAI_API_KEY:'secret'}, onData:data => output += data});
   assert.equal(result.exitCode, 0); assert.doesNotMatch(output, /OPENAI_API_KEY|secret/);
+});
+
+// Pi's own bash tool takes its shell from Pi's settings, where the daemon names
+// Git Bash on Windows; the extension's tool replaces Pi's, so Bypass reads it too.
+test('Bypass runs Pi\'s own Bash from its settings, and sandboxed commands never do', {skip: process.platform === 'win32'}, async t => {
+  const f = fixture(t, 'off', ['terminal']);
+  const ran = join(f.home, 'pi-shell-ran'), shell = join(f.home, 'pi-shell');
+  writeFileSync(shell, `#!/bin/sh\necho ran >> '${ran}'\nexec /bin/bash "$@"\n`, {mode:0o755});
+  f.ctx.piSettings = {shellPath:shell};
+  assert.equal((await f.run('bash', {command:'printf bypass'})).structuredContent.output, 'bypass');
+  let output = '';
+  await (await f.handlers.user_bash({command:'printf user'}, f.ctx)).operations.exec('printf user', f.home, {onData:data => output += data});
+  assert.equal(output, 'user');
+  assert.equal(readFileSync(ran, 'utf8'), 'ran\nran\n');
+  f.settings.approvalMode = 'smart';
+  assert.equal((await f.run('bash', {command:'printf sandboxed'})).structuredContent.output, 'sandboxed');
+  await (await f.handlers.user_bash({command:'printf user'}, f.ctx)).operations.exec('printf user', f.home, {onData() {}});
+  assert.equal(readFileSync(ran, 'utf8'), 'ran\nran\n');
+});
+
+test('macOS and Linux sandboxes ignore the session sandbox setting', {skip: process.platform === 'win32'}, () => {
+  for (const sandbox of [undefined, null, {kind:'appcontainer'}, {kind:'sandbox-exec'}]) {
+    assert.equal(isolationAvailable(sandbox), isolationAvailable());
+    assert.doesNotThrow(() => requireSupportedExecution(sandbox));
+  }
+});
+
+// The daemon's Windows sandbox refuses the same forms (windows_paths.rs).
+test('Windows path forms refuse by their text alone', () => {
+  for (const [path, reason] of [
+    [String.raw`\\server\share\file`, 'network'], ['//server/share', 'network'], [String.raw`\\?\UNC\server\share`, 'network'],
+    [String.raw`\\?\C:\x`, 'device'], [String.raw`\\.\pipe\x`, 'device'], ['//./COM1', 'device'], [String.raw`\??\C:\x`, 'device'],
+    ['C:', 'relative'], ['C:file', 'relative'],
+    ['file:stream', 'stream'], [String.raw`C:\x\file.txt:secret:$DATA`, 'stream'],
+    [String.raw`C:\x\NUL`, 'reserved'], [String.raw`C:\x\nul.txt`, 'reserved'], [String.raw`C:\x\Com1`, 'reserved'], [String.raw`C:\x\LPT9.log`, 'reserved'],
+    [String.raw`C:\x\conin$`, 'reserved'], [String.raw`C:\x\aux .txt`, 'reserved'], [String.raw`C:\x\COM¹`, 'reserved'],
+    [String.raw`C:\x\name.`, 'trailing'], [String.raw`C:\x\name `, 'trailing'], [String.raw`C:\x\dir.\file`, 'trailing'],
+  ]) assert.equal(windowsPathRefusal(path), WINDOWS_PATHS[reason], path);
+  for (const path of [String.raw`C:\Users\x\file.txt`, 'C:/Users/x', String.raw`relative\file`, String.raw`..\up`, String.raw`\rooted`, '/c/Users/x', 'notes.txt', 'console.log', 'com10', 'lpt', 'nul-device', '.env', '..', '.', '']) {
+    assert.equal(windowsPathRefusal(path), undefined, path);
+  }
 });
 
 test('execution refuses a call whose mode or file changed after the gate allowed it', async t => {
