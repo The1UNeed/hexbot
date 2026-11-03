@@ -1,11 +1,11 @@
 /** Hexbot's frozen session tools and approval bridge. Pi owns the agent loop. */
 import { createHash, randomUUID } from 'node:crypto';
-import { readFileSync, readdirSync, realpathSync, lstatSync, readlinkSync, statSync, existsSync } from 'node:fs';
+import { accessSync, readFileSync, readdirSync, realpathSync, lstatSync, readlinkSync, statSync, existsSync } from 'node:fs';
 import { resolve, dirname, basename, relative, sep, join, isAbsolute } from 'node:path';
 import { homedir, tmpdir, constants as osConstants } from 'node:os';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createBashTool, createReadTool, createWriteTool, createEditTool, createGrepTool, createFindTool, createLsTool } from '@earendil-works/pi-coding-agent';
-import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoots, userHomes, managedRuntimeRoots, requireSupportedExecution, WINDOWS_ISOLATION_UNAVAILABLE, WINDOWS_FULL_ACCESS, WINDOWS_FILE_CHANGES, NO_GIT_BASH, refusal, storeEntries, windowsRealPath, privateKeyName, probeIsolation, readDenied, secretFileName, gitDirectory, SCAN_REASON, SCAN_FILE_REASON, within, workspaceProtected, lockedGit, scanFailureReason} from './isolation.ts';
+import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoots, userHomes, managedRuntimeRoots, requireSupportedExecution, WINDOWS_ISOLATION_UNAVAILABLE, WINDOWS_FULL_ACCESS, WINDOWS_FILE_CHANGES, NO_GIT_BASH, refusal, storeEntries, windowsRealPath, linkTarget, privateKeyName, probeIsolation, readDenied, secretFileName, gitDirectory, SCAN_REASON, SCAN_FILE_REASON, within, workspaceProtected, lockedGit, scanFailureReason} from './isolation.ts';
 import { registerAcp } from './acp.ts';
 import { lazyStream } from '@earendil-works/pi-ai';
 import { builtinProviders } from '@earendil-works/pi-ai/providers/all';
@@ -67,7 +67,7 @@ const LOCAL_TOOLS = ['bash', 'read', 'grep', 'find', 'ls', 'write', 'edit'];
 // reached. (Pi's grep and find do not follow links.)
 const windowsStat = (path: string) => {
   const entry = lstatSync(path);
-  return entry.isSymbolicLink() ? statSync(windowsRealPath(readlinkSync(path), dirname(path))) : entry;
+  return entry.isSymbolicLink() ? statSync(windowsRealPath(linkTarget(readlinkSync(path)), dirname(path))) : entry;
 };
 // As Pi's shell operations: a timeout in seconds, at most what a timer holds.
 const MAX_TIMEOUT_MS = 2_147_483_647;
@@ -407,6 +407,8 @@ export default function hexbot(pi: any) {
     const {helper, policy} = reply ?? {};
     if (typeof helper !== 'string' || !isAbsolute(helper) || typeof policy !== 'string' || !policy) throw new Error('The sandbox policy is unavailable.');
     if (!existsSync(cwd)) throw new Error(`Working directory does not exist: ${cwd}\nCannot execute bash commands.`);
+    // A Windows command line holds 32,767 characters, the policy included.
+    if (policy.length + command.length + 200 > 32767) throw new Error('This command is longer than Windows allows. Put it in a script file and run that.');
     let child: ChildProcess;
     try {
       child = spawn(helper, ['sandbox', 'exec', policy, '--', bash, '--noprofile', '--norc', '-c', command], {cwd, env: shellEnvironment(env ?? process.env), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true});
@@ -435,7 +437,12 @@ export default function hexbot(pi: any) {
   // Bypass runs Pi's own Bash. Pi's bash tool takes it from Pi's settings, where
   // the daemon names Git Bash on Windows; this tool replaces Pi's.
   const piShellPath = (): string | undefined => {
-    try { return pi.getSettings?.()?.shellPath || undefined; } catch { return undefined; }
+    try {
+      const shell = pi.getSettings?.()?.shellPath;
+      // A Git uninstalled mid-run leaves a pinned path behind; let Pi search
+      // and say what it found instead of failing on the stale name.
+      return shell && existsSync(shell) ? shell : undefined;
+    } catch { return undefined; }
   };
   // How the bash tool runs a command: Pi's own Bash in Bypass, Bash inside the
   // OS sandbox on macOS and Linux, and the daemon's helper on Windows.
@@ -458,6 +465,16 @@ export default function hexbot(pi: any) {
     const bypass = () => live.approvalMode === 'off';
     const options = (level: Level = 'confined', denied?: string[], ctx?: any) => name === 'bash' ? shell(level, ctx) :
       name === 'grep' && !bypass() ? {operations: {isDirectory: (path: string) => statSync(path).isDirectory(), readFile: (path: string) => credentialPath(path, live.home, denied) ? '' : readFileSync(path, 'utf8')}} :
+      // Pi re-resolves a missing read path through variant names (curly
+      // quotes, NFD, odd spaces), so the final name needs the same check
+      // the input path had.
+      name === 'read' && !bypass() ? {operations: {readFile: (path: string) => {
+        if (credentialPath(path, live.home, denied)) throw new Error('Credential files are private.');
+        return readFileSync(path);
+      }, access: (path: string) => {
+        if (credentialPath(path, live.home, denied)) throw new Error('Credential files are private.');
+        return accessSync(path);
+      }}} :
       name === 'ls' && !bypass() && process.platform === 'win32' ? {operations: {exists: existsSync, readdir: readdirSync, stat: windowsStat}} : {};
     const tool = factory(config.cwd, options());
     const definition = name === 'bash' ? {

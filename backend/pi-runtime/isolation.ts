@@ -67,7 +67,7 @@ export const storeEntries = () => (credentialPolicy.write.deny as string[]).conc
 // daemon's startup probe ran contains a command, so Auto and Manual refuse
 // without one and never turn the gap into an approval that runs with the
 // user's own permissions, including an approved full_access request.
-export type Sandbox = {kind?: string, helper?: string, bash?: string | null} | null | undefined;
+export type Sandbox = {kind?: string, bash?: string | null} | null | undefined;
 export const WINDOWS_ISOLATION_UNAVAILABLE = 'The Windows sandbox could not start, so Auto and Manual refuse local commands and file tools, and scheduled scripts do not run. Bypass has no sandbox or credential protection. Restart Hexbot to try again.';
 export const WINDOWS_FULL_ACCESS = 'On Windows, Auto and Manual run every command inside the sandbox, so full_access is not available. Bypass runs commands without a sandbox.';
 export const WINDOWS_FILE_CHANGES = 'The write and edit tools are not available on Windows in Auto and Manual yet. In Auto, change files in the workspace with a bash command.';
@@ -169,10 +169,15 @@ export function windowsRealPath(path: string, cwd: string, hops = 0): string {
       current = next;
       continue;
     }
-    current = link !== undefined ? windowsRealPath(link, current, hops + 1) : real(next);
+    current = link !== undefined ? windowsRealPath(linkTarget(link), current, hops + 1) : real(next);
   }
   return current;
 }
+// readlinkSync can hand back a verbatim target (\\?\C:\…). The daemon's
+// simplify accepts that form for a disk path, so a link is followed to what
+// it names; every other verbatim form (UNC, device) refuses above.
+export const linkTarget = (link: string) =>
+  link.replace(/^\\\\\?\\([a-zA-Z]:)/, '$1').replace(/^\\\?\?\\([a-zA-Z]:)/, '$1');
 // The write policy's deny tier (credential stores such as ~/.aws and ~/.netrc):
 // the OS sandbox makes "never written in any mode" hold for every program a
 // command runs, not only for the guarded tools. The Windows stores join only
