@@ -3,6 +3,7 @@ import { KeyboardAvoidingView, StyleSheet, View } from 'react-native'
 import { type Edge, SafeAreaView } from 'react-native-safe-area-context'
 
 import { IconButton } from './Button'
+import { useCovered } from './Layer'
 import { Text } from './Text'
 import { HIT, useTheme } from './theme'
 
@@ -36,14 +37,18 @@ export function Screen({
 }: ScreenProps) {
   const theme = useTheme()
   const system = useContext(SystemAvoidsKeyboard)
-  const body = avoidKeyboard && !system ? (
-    // Expo apps draw edge to edge on Android too, so padding works on both platforms.
-    <KeyboardAvoidingView behavior="padding" style={styles.fill}>
-      {children}
-    </KeyboardAvoidingView>
-  ) : (
-    children
-  )
+  const covered = useCovered()
+  const body =
+    avoidKeyboard && !system ? (
+      // Expo apps draw edge to edge on Android too, so padding works on both platforms.
+      // A card or sheet on top owns the keyboard: the screen under it holds still.
+      // Turned off rather than removed, so the screen keeps its state.
+      <KeyboardAvoidingView behavior="padding" enabled={!covered} style={styles.fill}>
+        {children}
+      </KeyboardAvoidingView>
+    ) : (
+      children
+    )
 
   return (
     <SafeAreaView

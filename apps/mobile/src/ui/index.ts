@@ -45,7 +45,7 @@ export {
   SwitchRow,
   type SwitchRowProps
 } from './Row'
-export { Layer, LayerRoot, type LayerProps, PEEK } from './Layer'
+export { Layer, LayerRoot, type LayerProps, PEEK, useCover, useCovered } from './Layer'
 export {
   LargeHeader,
   Screen,
