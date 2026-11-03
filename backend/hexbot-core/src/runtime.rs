@@ -25,6 +25,8 @@ use tokio::sync::{Mutex as AsyncMutex, watch};
 
 #[path = "runtime_attachments.rs"]
 mod attachments;
+#[path = "runtime_connectors.rs"]
+mod connector_tool;
 #[path = "runtime_delegation.rs"]
 mod delegation;
 #[path = "runtime_identity.rs"]
@@ -1414,10 +1416,17 @@ impl Runtime {
         // its own over connector content and the web, so nothing it holds acts
         // on the world (heartbeat.rs); connectors still ask before changing
         // anything, and nobody can answer.
-        if overrides.is_some_and(|o| o["heartbeat"].is_string()) {
+        let heartbeat_run = overrides.is_some_and(|o| o["heartbeat"].is_string());
+        // Notion and Airtable: the daemon sends their requests with the key,
+        // which no shell has (runtime_connectors.rs).
+        if !heartbeat_run && connector_tool::offered(&self.home, bot)? {
+            tools.push(connector_tool::read_descriptor());
+            tools.push(connector_tool::write_descriptor());
+        }
+        if heartbeat_run {
             tools.push(heartbeat::notify_descriptor());
             tools.push(heartbeat::file_descriptor());
-            tools.push(heartbeat::connector_read_descriptor());
+            tools.push(connector_tool::read_descriptor());
             tools.retain(|t| {
                 t["name"]
                     .as_str()
@@ -4185,6 +4194,13 @@ impl Runtime {
                             _ => unreachable!(),
                         };
                     }
+                    // Connector changes pass the extension's gate, which code skips.
+                    if name == connector_tool::WRITE {
+                        return Err(Error::new(
+                            4302,
+                            "Send connector changes with the hexbot_connector_write tool, not from code.",
+                        ));
+                    }
                     if !session.tools.iter().any(|t| t["name"] == name) {
                         return Err(Error::new(4210, "tool is disabled for this session"));
                     }
@@ -4310,8 +4326,15 @@ impl Runtime {
                 Ok(heartbeat::take_context(&self.home, &s.owner, &s.stored)?
                     .unwrap_or_else(|| json!({"text":null,"ids":[]})))
             }
-            "hexbot_notify" | "hexbot_heartbeat" | "hexbot_connector_read" => {
+            "hexbot_notify" | "hexbot_heartbeat" => {
                 self.heartbeat_tool(s, &bot_owner, name, args).await
+            }
+            connector_tool::READ | connector_tool::WRITE => {
+                if !s.tools.iter().any(|t| t["name"] == name) {
+                    return Err(Error::new(4210, "This tool is disabled for this section."));
+                }
+                connector_tool::request(&self.home, &s.bot, args, name == connector_tool::WRITE)
+                    .await
             }
             "hexbot_todo_context" => {
                 Ok(json!({"text":crate::native_product_tools::todo_context(&self.home,&s.stored)?}))
@@ -5765,7 +5788,7 @@ fn tool_context(name: &str, args: &Value) -> String {
         "hexbot_bots" | "hexbot_rooms" | "hexbot_jobs" | "hexbot_settings" | "hexbot_heartbeat"
         | "hexbot_plugins" | "hexbot_passwords" | "computer_use" => "action",
         "hexbot_notify" => "message",
-        "hexbot_connector_read" => "path",
+        "hexbot_connector_read" | "hexbot_connector_write" => "path",
         name if name.starts_with("mcp__") => args
             .as_object()
             .and_then(|args| {

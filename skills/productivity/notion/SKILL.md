@@ -15,6 +15,10 @@ metadata:
 
 # Notion
 
+## In Hexbot
+
+The user saves the Notion key in Settings, Plugins. Your shell never has it, so the token, install and `curl` steps below do not apply. Send each request in this skill with `hexbot_connector_read` (reads) or `hexbot_connector_write` (changes): the method, the path such as `/v1/search`, and the JSON body. Hexbot adds the host, the key and the `Notion-Version` header. Never ask the user for their Notion password or key, and do not sign in with a browser.
+
 ## Workspace and user setup
 
 Write generated files and nonsecret configuration drafts under `./hexbot-setup/` in the section working directory. Home paths below are final installation locations, including paths used by helper scripts and references. The user must run installation, migration, sign-in, and credential/configuration writes outside the bot shell. Do not write to `~/.hexbot` or `$HEXBOT_HOME` from a tool, and do not copy credentials into workspace drafts.

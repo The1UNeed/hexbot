@@ -390,6 +390,7 @@ async fn every_bots_chat_keeps_its_checklist_but_only_a_heartbeat_messages_the_u
     // Only a heartbeat speaks out of turn.
     let reply = call_tool(&app, &live, "hexbot_notify", json!({"message":"hi"})).await;
     assert!(reply.contains("disabled"), "{reply}");
+    // Connectors read from the chat too, with the key from Settings.
     let reply = call_tool(
         &app,
         &live,
@@ -397,7 +398,7 @@ async fn every_bots_chat_keeps_its_checklist_but_only_a_heartbeat_messages_the_u
         json!({"connector":"notion","method":"GET","path":"/v1/users"}),
     )
     .await;
-    assert!(reply.contains("disabled"), "{reply}");
+    assert!(reply.contains("Settings, Plugins"), "{reply}");
     // Too long is refused, from the chat and from the app.
     let reply = call_tool(
         &app,

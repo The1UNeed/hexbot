@@ -204,9 +204,8 @@ fn compact_bot(bot: &Value, soul: bool) -> Value {
 }
 
 impl Runtime {
-    /// `hexbot_notify` and `hexbot_connector_read` in a heartbeat;
-    /// `hexbot_heartbeat` there and in the bot's own chat. Each is frozen only
-    /// into those.
+    /// `hexbot_notify` in a heartbeat; `hexbot_heartbeat` there and in the
+    /// bot's own chat. Each is frozen only into those.
     pub(super) async fn heartbeat_tool(
         &self,
         s: &Live,
@@ -234,9 +233,6 @@ impl Runtime {
                 run,
                 required(args, "message")?,
             ),
-            ("hexbot_connector_read", _) => {
-                heartbeat::connector_read(&self.home, &s.bot, args).await
-            }
             _ => match args["action"].as_str().unwrap_or("read") {
                 "read" => Ok(json!({
                     "text": heartbeat::read(&self.home, &s.bot)?,
