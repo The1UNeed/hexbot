@@ -238,10 +238,9 @@ export default function hexbot(pi: any) {
   // Git Bash, which session settings name on Windows.
   const gitBash = (): string | undefined => typeof live.sandbox?.bash === 'string' && isAbsolute(live.sandbox.bash) ? live.sandbox.bash : undefined;
   // What Windows refuses outside Bypass before a path resolves or a command
-  // starts: every local tool without the sandbox, then write and edit (their
-  // handle bridge is Unix-only), full_access (a container has no base layer to
-  // leave to), commands without Git Bash, and file tools without a local
-  // profile to protect.
+  // starts: every local tool without the sandbox, full_access (a container has
+  // no base layer to leave to), commands without Git Bash, and file tools
+  // without a local profile to protect.
   const windowsRefusal = (tool: string, fullAccess: boolean): string | undefined => {
     if (process.platform !== 'win32' || !LOCAL_TOOLS.includes(tool)) return;
     if (!isolationAvailable(live.sandbox)) return WINDOWS_ISOLATION_UNAVAILABLE;

@@ -68,9 +68,10 @@ same files and receipts. An existing installation can run `hexbot setup` to repa
 its code tools and CLI wrapper without replacing the daemon bundle. On Windows
 that repair is bounded to the owned states listed in
 `docs/windows-build-contract.md` (Owned Python repair); other states refuse
-with the layer and cause, and Windows remains unsupported.
+with the layer and cause.
 
-`hexbot service install` installs and starts a per-user launchd or systemd service.
+`hexbot service install` installs and starts a per-user launchd or systemd service,
+or a per-user logon task on Windows.
 Use `uninstall`, `start`, `stop`, or `restart` to manage it, `status --json` to inspect
 it, and `logs [-f]` to read its logs. Linux installation also tries to enable
 lingering so the daemon can stay up after logout. `HEXBOT_SERVICE_ROOT` replaces
@@ -329,26 +330,25 @@ clear, close and deletion cleanup apply to retained uploads.
 | `services` | Connect registration, grants, tunnel lifecycle, native updates |
 | `osutil` | Home, hostname, file errors, process probes and owned-child signals; interrupted lock waits |
 
-`osutil` keeps the existing macOS and Linux behavior behind small helpers.
-Nonblocking file locks use `std::fs::File::try_lock`, which interoperates with
-existing `flock` holders on both platforms. Activation waits still retry interrupted
-calls, and inherited activation descriptors still require the same device/inode
-and lock checks. The daemon remains unsupported on Windows.
+`osutil` keeps the platform behavior behind small helpers, with the same
+boundaries through handles on Windows. Nonblocking file locks use
+`std::fs::File::try_lock`, which interoperates with existing `flock` holders on
+macOS and Linux. Activation waits still retry interrupted calls, and inherited
+activation descriptors still require the same device/inode and lock checks.
 
 On Windows, Auto and Manual commands run in an AppContainer through the
 daemon's own `hexbot sandbox exec` (`windows_container.rs`), with a policy
 `credentials.rs` builds from the same workspace scan as the other sandboxes
 (`windows_policy`). `windows_sandbox.rs` finds the helper, Git Bash and the
 managed Python, reads Git metadata only from local disks, and names what
-still refuses: `full_access`, Copilot and the Python worker. Pi's write and
-edit reach files through handles on Windows too (`runtime_files_windows.rs`),
-once the extension uses them. When the startup probe fails, Auto and Manual
-refuse rather than ask, and scheduled scripts need the sandbox in every mode.
-Pi asks for a command's policy through `hexbot_sandbox_policy`. Bypass uses
-upstream Pi Bash and has no containment. The Windows workflows run the
-sandbox and the compiled `windows_security` probe under a standard user in an
-explicitly disposable source copy; the production platform guard stays
-intact. See
+still refuses: `full_access`, Copilot and the retired Python worker. Pi's
+bash runs through the helper, and Pi's write and edit reach files through
+handles (`runtime_files_windows.rs`). When the startup probe fails, Auto and
+Manual refuse rather than ask, and scheduled scripts need the sandbox in every
+mode. Pi asks for a command's policy through `hexbot_sandbox_policy`. Bypass
+uses upstream Pi Bash and has no containment. The Windows workflows build
+this crate natively and run the sandbox and the compiled `windows_security`
+probe under a standard user. See
 [Windows security](../../docs/windows-security.md).
 
 ## Skills
@@ -699,8 +699,10 @@ Prefer `HEXBOT_MANAGED_DIR`, `HEXBOT_MAX_TURNS`,
 `HERMES_*` names remain fallbacks. Managed config defaults to `/etc/hexbot`,
 with `/etc/hermes` as the fallback when the new directory is absent.
 
-Windows build/install preparation is documented in
+The Windows build and install contract is documented in
 [`docs/windows-build-contract.md`](../../docs/windows-build-contract.md).
 It uses an immutable `hexbot.exe` runtime selected by `native-current.json`.
-Windows remains unsupported until the separate fail-closed execution work and
-native validation pass. The public release matrix is unchanged.
+Windows x64 is in the public release matrix. On macOS or Linux, check that
+the crate still compiles for Windows with
+`cargo check --locked --manifest-path backend/hexbot-core/Cargo.toml --target x86_64-pc-windows-gnu --lib --bins`
+([Testing](../../docs/testing.md#windows)).

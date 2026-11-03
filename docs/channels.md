@@ -195,8 +195,8 @@ A nightly install ignores a stable version in the bucket and the other way
 round; switching tracks in Settings runs a check on the new track at once,
 with downgrades allowed. Windows release feeds use `full/win/x64/` and
 `client/win/x64/`, with
-`latest.yml` for Stable and `nightly.yml` for Nightly. Native Windows
-acceptance remains covered by `docs/windows-build-contract.md`.
+`latest.yml` for Stable and `nightly.yml` for Nightly. The native Windows
+checks are in `docs/windows-build-contract.md`.
 
 ### Updating a daemon from a client
 
@@ -214,10 +214,13 @@ its machine. The daemon says how, through `update_capability` in
   `<home>/runtime/update-status.json` for `hexbot.update.status`, then
   relaunches and starts the new daemon. The app's track decides what is
   installed, so an app on the stable track cannot be pushed a nightly.
-- `service`: launchd or systemd runs the daemon. It downloads the manifest at
+- `service`: launchd, systemd or, on Windows, a per-user logon task runs the
+  daemon. It downloads the manifest at
   `daemon/native/<v>/<target>/manifest.json`, verifies its release signature,
   then downloads the matching archive and checks its SHA-256 and reported
-  version. It switches `runtime/native-executable` and restarts. Targets are `macos-aarch64`, `macos-x86_64` and `linux-x86_64`.
+  version. It switches `runtime/native-executable` (on Windows,
+  `runtime/native-current.json`) and restarts. Targets are `macos-aarch64`,
+  `macos-x86_64`, `linux-x86_64` and `windows-x86_64`.
   It retains the active runtime and its predecessor, protecting any older
   runtime still used by a running daemon. `HEXBOT_UPDATE_URL` selects an HTTPS
   mirror. Signed manifests retain an absolute `url` for older clients and add

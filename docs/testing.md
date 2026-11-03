@@ -270,6 +270,7 @@ route and composer checked before continuing.
   window manager. This does not perform actual logoff, shutdown, or update
   installation, and does not validate GNOME or Wayland integration. Windows
   lifecycle tests run separately from the Windows x64 release packaging jobs.
+- Windows: native CI and the cross-compile check are under [Windows](#windows).
 - Packaging and release scripts: `node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs && node scripts/desktop/release-smoke.mjs`.
   Synthetic releases cover both channels and editions for macOS arm64/x64,
   Linux x64 and Windows x64, including EXE/blockmap feeds, native ZIPs,
@@ -470,18 +471,41 @@ files go. It checks daemon-owned cwd, revocation after removal and disable,
 credential changes in an open section, Manual approval for read-only tools, and
 nested steps before and after reload in light and dark themes.
 
-Windows build/install probes live in `.github/workflows/windows-contract.yml`.
-These probes do not publish packages or establish Windows support. The
-release workflow separately includes Windows x64 packaging and installer jobs;
-portable release fixtures verify that plumbing, not native Windows acceptance. See
-[the build contract](windows-build-contract.md) for the runtime layout,
-security dependency and native validation still required. The native job also
-runs `windows_filesystem`, which exercises no-follow removal, linked-root
-refusals, disk-only reads, PATHEXT lookup and the private DACLs on Windows,
-and `windows_file_tools`, which drives Pi's write and edit through the
-daemon's handle bridge against real junctions, file links, hard links, 8.3
-short names, file IDs and renames. Other hosts run the bridge's portable
-rules with `cargo test --lib windows_file_policy`.
+### Windows
+
+Windows x64 is a release target, and CI tests it natively on `windows-latest`,
+building the checked-out production source. Neither workflow publishes
+anything. `.github/workflows/windows-contract.yml` installs, repairs and
+uninstalls the real Client and Full NSIS packages, runs the AppContainer tests
+in `tests/windows_sandbox.rs` as a new standard user, and probes the native
+runtime, bootstrap, scheduled task, signed update and both Nightly
+identities. `.github/workflows/windows-security.yml` runs the Pi extension
+probes and the Rust `windows_security` boundary probe as a new standard user;
+[Windows security](windows-security.md#verification) lists what they prove.
+The release workflow separately includes Windows x64 packaging and installer
+jobs; portable release fixtures verify that plumbing. See
+[the build contract](windows-build-contract.md) for the runtime layout and
+the native controls.
+
+On macOS or Linux, check that the daemon still compiles for Windows:
+
+```sh
+cargo check --locked --manifest-path backend/hexbot-core/Cargo.toml --target x86_64-pc-windows-gnu --lib --bins
+cargo clippy --locked --manifest-path backend/hexbot-core/Cargo.toml --target x86_64-pc-windows-gnu --lib --bins -- -D warnings
+```
+
+They need `rustup target add x86_64-pc-windows-gnu` and MinGW-w64 for the C
+dependencies, and they check source only. The library's unit tests and the
+`bot_retained_delete`, `deletion_admission`, `room_send_admission` and
+`runtime` test targets use Unix-only fixtures, so they compile only on macOS
+and Linux.
+
+The `native-runtime` job also runs `windows_filesystem`, which exercises
+no-follow removal, linked-root refusals, disk-only reads, PATHEXT lookup and
+the private DACLs on Windows, and `windows_file_tools`, which drives Pi's
+write and edit through the daemon's handle bridge against real junctions,
+file links, hard links, 8.3 short names, file IDs and renames. Other hosts
+run the bridge's portable rules with `cargo test --lib windows_file_policy`.
 
 The Windows `windows_launchers` debug suite also exercises the private Dev
 child host through its actual CLI router. It covers stdin EOF, a root exiting
@@ -520,10 +544,9 @@ The remaining owned-Python native controls are included by the existing
 `backend/hexbot-core/tests/windows_contract/python_acceptance.rs`. They use
 nine fresh installation homes across independent test functions, one empty
 boundary-refusal home, and the existing Full fixture. Module-only repair and
-combined damaged-DLL gates remain unignored. Native execution and independent
-source review are required before Windows distribution. See the Windows build
-contract for the exact final-probe event blocker and the process-start
-interruption limit.
+combined damaged-DLL gates remain unignored. See the Windows build contract
+for the exact final-probe event blocker and the process-start interruption
+limit.
 
 The Python observability controls also exercise strict schema-2 DLL digests,
 limited schema-1 enrichment, exact tagged launcher exceptions, empty fully

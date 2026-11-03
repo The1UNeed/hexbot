@@ -1,24 +1,28 @@
-# Windows security status
+# Windows security
 
-The production daemon still does not build for Windows: `lib.rs` keeps its
-unsupported-platform guard until native CI passes and review signs off. CI
-builds a disposable copy without the guard to test what this document
-describes. Release packaging is wired up, but this is not a support claim.
+Windows 10 or later, 64-bit, is a supported platform. In Auto and Manual the
+daemon confines every local command and file tool, and refuses what it
+cannot confine instead of asking. This document describes the guarantees,
+what still refuses and the residual risks. CI builds and tests the
+production source natively ([Verification](#verification)).
 
 ## What Auto and Manual run on Windows
 
-In Auto and Manual the daemon runs local commands, such as scheduled scripts
-and monitors, in an AppContainer, through its own executable: `hexbot
-sandbox exec <policy> -- <program> [arguments]` (`windows_container.rs`).
-Pi's own tools still refuse until the extension uses the same helper (see
-[Shells and scripts](#shells-and-scripts)). The daemon builds the policy from the same
-workspace scan the macOS and Linux sandboxes use (`windows_policy` in
-`credentials.rs`). At startup it runs `cmd /c exit 0` in a throwaway
-container. When that works, `hexbot.info` reports `sandbox: "appcontainer"`
-and `hexbot status` reports the sandbox as available. When it does not, Auto
-and Manual refuse local commands and file tools, scheduled scripts do not
-run, and Settings, Approvals says so. They never fall back to an approval
-that would run with the user's own permissions.
+In Auto and Manual every local command runs in an AppContainer, through the
+daemon's own executable: `hexbot sandbox exec <policy> -- <program>
+[arguments]` (`windows_container.rs`). That covers Pi's bash tool, the
+user's own commands, scheduled scripts and monitors
+([Shells and scripts](#shells-and-scripts)). Pi's read, grep, find and ls
+judge each path before they open it ([Pi's read tools](#pis-read-tools)),
+and its write and edit change files through the daemon's handle bridge
+([Pi's write and edit](#pis-write-and-edit)). The daemon builds the policy
+from the same workspace scan the macOS and Linux sandboxes use
+(`windows_policy` in `credentials.rs`). At startup it runs `cmd /c exit 0`
+in a throwaway container. When that works, `hexbot.info` reports `sandbox:
+"appcontainer"` and `hexbot status` reports the sandbox as available. When it
+does not, Auto and Manual refuse local commands and file tools, scheduled
+scripts do not run, and Settings, Approvals says so. They never fall back to
+an approval that would run with the user's own permissions.
 
 What is guaranteed:
 
@@ -93,10 +97,40 @@ with its job after the same grace.
 Pi asks the daemon for the policy of each of its commands through the
 private `hexbot_sandbox_policy` bridge, which builds it from the section's
 live working folder, outputs and approval mode, checked as session settings
-are. Session settings name the sandbox, its helper and Git Bash. Until the
-private extension runs its bash and read tools through that helper, Pi's
-own tools still refuse in Auto and Manual on Windows (`isolation.ts`);
-scheduled scripts and the daemon's other paths already use the sandbox.
+are. Session settings name the sandbox, its helper and Git Bash. The private
+extension then starts the helper itself, never through a shell: `<helper>
+sandbox exec <policy> -- <Git Bash> --noprofile --norc -c <command>`, with
+the sanitized environment, stdin ignored and no window. The user's own
+commands and the terminal tool take the same path. Execution rechecks the
+live settings, so a command whose approval mode or working folder changed
+after it was allowed starts nothing. A timeout or Stop kills the helper,
+whose job ends the command's processes. A Windows command line holds at most
+32,767 characters, policy included, so a longer command refuses and says to
+run it from a script file. Without the sandbox every local tool refuses before it reads
+a file, looks for a shell or asks for approval (`isolation.ts`).
+
+## Pi's read tools
+
+In Auto and Manual, Pi's read, grep, find and ls run in Pi itself, as on
+macOS and Linux, and keep credential files private: the stores in
+`credential-policy.json`, the Windows ones included, project secrets, SSH
+private keys and the Hexbot home's own credential paths. On Windows they
+also judge each path first:
+
+- **Paths are judged by their text.** Network, device, NT object,
+  drive-relative and stream paths, reserved names and names ending in a dot
+  or space refuse before anything opens them.
+- **Links resolve before they are checked.** A path resolves one name at a
+  time, and a link is never followed to a form that refuses, so a junction
+  to a network share is refused before it is followed. A mapped network
+  drive refuses as it resolves.
+- **Paths resolve as Pi reads them.** Git Bash drive paths such as `/c/x`
+  and odd spaces resolve as Pi resolves them before it reads, so the check
+  and the read name the same file.
+- **A local profile is required.** With a profile folder on a network share
+  the tools cannot tell which files are private, so they refuse.
+- **Listings and searches stay quiet.** ls skips a link it cannot resolve,
+  and grep hides the lines of a credential file.
 
 ## Pi's write and edit
 
@@ -157,8 +191,8 @@ Residual risks:
   the base layer alone. Bypass runs commands without a sandbox.
 - **Copilot**, including its reviewer, in every mode. It runs with the base
   layer alone, which Windows does not have.
-- **The daemon's Python worker** (`execute_code`) and the file callbacks it
-  reaches. Code runs on the bot's own computer.
+- **The daemon's retired Python worker** (`execute_code`) and the file
+  callbacks it reaches. Code runs on the bot's own computer (Computer use).
 
 ## Residual risks
 
@@ -268,9 +302,8 @@ no container is granted.
 
 ## Verification
 
-Two native jobs run as a newly created local standard user on
-`windows-latest`, each in a disposable copy without the platform guard, and
-publish nothing:
+Two native jobs build the production source on `windows-latest`, run its
+probes as a newly created local standard user, and publish nothing:
 
 - `.github/workflows/windows-contract.yml`, job `sandbox`, runs
   `tests/windows_sandbox.rs` against real AppContainers, ACLs, sockets and
@@ -308,39 +341,18 @@ UNC `HOME` and `USERPROFILE` values. Only trusted module loading and the
 explicit session config may access the filesystem. They cover Auto, Manual,
 unknown modes, approved `full_access` attempts, parallel calls, direct
 execution without a gate grant, the user-command hook, and a Bypass grant
-invalidated by a mode change; the extension still refuses its own tools on
-Windows. A second pass uses real OS entry points with a malicious `git.exe` on
-`PATH` and verifies no marker or workspace file was written and runtime
-selection was unchanged.
+invalidated by a mode change. Without the sandbox every local tool refuses
+before file access, shell discovery, approval or spawn; with it, the probes
+check the helper's command line and environment, the rechecks, timeouts and
+Stop, path refusals by text, reads through junctions and credential files
+kept private, and that write and edit reach the daemon's bridge. A second
+pass uses real OS entry points with a malicious `git.exe` on `PATH` and
+verifies no marker or workspace file was written and runtime selection was
+unchanged.
 
-The combined job reads immutable inputs from the event commit. A complete
-combined tree uses that exact commit for both inputs. A security-only commit
-requires an immutable recorded pin. It uses the nearest recorded trailer along
-the source commit's first-parent history, including the current commit. The
-trailer is exactly `Hexbot-Windows-Build: <40 lowercase full SHA>` and identifies
-the build commit.
-A malformed/duplicate first recorded trailer, missing pin object or invalid
-build interface refuses; routing never searches past bad metadata or follows a
-second parent. Without any recorded first-parent pin, a security-only source
-refuses. Routing logs the exact pin metadata commit SHA separately from the
-source/build SHAs. The same validated trailer must survive a security squash
-merge so ordinary subsequent core/Pi commits can inherit it. Combined build
-markers still select the exact current tree without a historical pin; the
-security markers are `pub const UNAVAILABLE:` in `windows_sandbox.rs` and
-`pub fn require_native_worker(` in `credentials.rs`. A shared preparation
-helper creates a detached worktree, applies the security diff, and records
-both inputs and the combined Git tree. If the build already contains the
-security commit, or the security delta is exactly empty because only commit
-metadata changed, it keeps the build tree unchanged. It requires exactly one
-occurrence of the exact unsupported-platform guard bytes, and removes only
-those bytes in the disposable source. It logs the guard diff and before/after
-hashes. Production source retains its guard, with no feature or compile option
-that bypasses it. The workflow uploads no executable or artifact.
-Explicit `--current-tree` mode verifies both build and security interfaces and
-preserves the exact pinned source tree. It records original dependency ancestry
-without requiring history removed by squash merges. Two-source preparation uses
-one verified merge base and a shared reviewed dependency ancestor, either the
-original #132 commit or its main squash. Conflicting patches abort.
+Both jobs build the checked-out commit itself: the daemon has no platform
+guard, so the probes test the source that ships. They upload no executable
+or artifact.
 
 The trusted fixture records command names, process exits and exception types
 without recording prompts, tool arguments or environment values. On failure the
@@ -353,15 +365,3 @@ which checks gate logic only, and the portable tests of the Windows rules:
 path forms, root refusals, policies built from injected scans, and the Git
 settings parser compared with `/usr/bin/git`. They cannot validate Windows
 security APIs, ACL behavior or native containment.
-
-## Before Windows is supported
-
-- The private extension runs its bash, read, grep, find and ls tools through
-  `hexbot_sandbox_policy` and the helper, and the extension probes prove it
-  natively.
-- The private extension runs write and edit through the daemon's handle
-  bridge, and the extension probes prove it natively.
-- Both native jobs pass on the combined tree, then a separate change removes
-  the guard in `lib.rs`.
-- GPT and Opus review approval and explicit parent approval, as for every
-  shipping or production publishing decision.

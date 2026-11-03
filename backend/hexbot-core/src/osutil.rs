@@ -1,6 +1,6 @@
-//! Process, home and filesystem boundary utilities. Windows helpers prepare
-//! build/install boundaries; they do not provide confinement or enable a
-//! supported Windows product.
+//! Process, home and filesystem boundary utilities. On Windows they keep the
+//! same boundaries through handles; they do not confine commands, which is
+//! the AppContainer's job (`windows_container.rs`).
 //!
 //! The filesystem boundaries every caller shares: removing an entry and
 //! judging a root never follow a link (a symbolic link, or a junction on

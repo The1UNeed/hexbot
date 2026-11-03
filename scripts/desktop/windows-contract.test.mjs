@@ -43,19 +43,22 @@ test('Windows tool archives have pinned digests and the actual executable member
   assert.equal(toolAsset('uv', 'win32', 'x64').member, 'uv.exe')
 })
 
-test('Windows CI keeps the production guard and never publishes disposable probes', async () => {
+test('Windows CI builds the production source and never publishes its probes', async () => {
   const ci = await readFile('.github/workflows/windows-contract.yml', 'utf8')
   for (const line of ci.split('\n').filter(line => line.includes('uses:')))
     assert.match(line, /@[a-f0-9]{40}(?:\s|$)/)
   assert(!/secrets\.|contents:\s*write|release.yml|--publish\s+always/.test(ci.replace(/^#.*$/gm, '')))
-  assert(ci.includes('check-windows-unsupported.mjs'))
-  assert(ci.includes('prepare-windows-security.mjs'))
+  // The daemon builds for Windows, so every job builds and tests the checkout
+  // itself, with no copy that edits the source first.
+  assert(!(await readFile('backend/hexbot-core/src/lib.rs', 'utf8')).includes('compile_error!'))
+  assert(!/check-windows-unsupported|prepare-windows-security|HEXBOT_WINDOWS_PROBE_SOURCE|working-directory:|worktree/.test(ci))
   assert.equal(ci.split('windows_contract real_nsis_install_repair_and_uninstall').length - 1, 2)
   assert(ci.includes('backend/hexbot-core/Cargo.toml windows_contract signed_zip_update_and_connect_executable'))
   assert(ci.includes('windows_contract interrupted_cli_install_and_uninstall_clean_only_owned_metadata_and_path'))
   assert(ci.includes('--test windows_launchers --test windows_contract --test windows_shutdown'))
   assert(ci.includes('--test windows_security --no-run --message-format=json'))
   assert(ci.includes('windows-security-standard-user.ps1'))
+  assert(ci.includes('-Probe $artifact[0].executable -Hexbot $daemon[0].executable'))
   assert(!ci.includes('--example windows_contract'))
   assert(ci.includes('windows-update-restart.mjs'))
   assert(ci.includes('node --test scripts/desktop/runtime-file.test.mjs'))
@@ -70,39 +73,25 @@ test('Windows CI keeps the production guard and never publishes disposable probe
     [match[1], ci.slice(match.index, boundaries[index + 1]?.index ?? ci.length)]))
   assert.deepEqual(Object.keys(jobs), ['client-and-installer', 'sandbox', 'native-runtime', 'client-nightly', 'full-nightly'])
   assert.equal(ci.match(/uses: actions\/upload-artifact@/g)?.length, 1)
-  assert.deepEqual(Object.keys(jobs).filter(name => jobs[name].includes('prepare-windows-security.mjs')),
-    ['sandbox', 'native-runtime', 'full-nightly'])
+  for (const name of ['sandbox', 'native-runtime'])
+    assert(jobs[name].includes('cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test '), `${name}: native daemon tests`)
   for (const [name, job] of Object.entries(jobs)) {
     assert.equal(job.includes('upload-artifact'), name === 'client-and-installer', `${name}: artifact boundary`)
     assert.match(job, /runs-on: windows-latest/)
     assert.match(job, new RegExp(`timeout-minutes: ${name.startsWith('client-') ? 45 : 60}\\b`))
     assert(!/^    needs:/m.test(job), `${name}: independent VM`)
     assert.match(job, /HEXBOT_WINDOWS_NSIS_PROBE: '1'/)
-    if (job.includes('prepare-windows-security.mjs')) {
-      assert(job.includes('check-windows-unsupported.mjs'))
-      assert(job.indexOf('check-windows-unsupported.mjs') < job.indexOf('prepare-windows-security.mjs'))
-      assert(job.includes("$source '${{ github.sha }}' '${{ github.sha }}' --current-tree"))
-      assert(job.includes("$probe.buildSHA -ne '${{ github.sha }}' -or $probe.securitySHA -ne '${{ github.sha }}' -or $probe.appliedSecurityPatch -or $probe.guardedTree -ne $tree"))
-      assert(!job.includes('upload-artifact'))
-    }
   }
   const opening = job => job.slice(job.indexOf('      - uses:'), job.indexOf('      - run: pnpm install --frozen-lockfile') + '      - run: pnpm install --frozen-lockfile\n'.length)
   assert.equal(opening(jobs['client-nightly']), opening(jobs['client-and-installer']))
   assert.equal(opening(jobs['full-nightly']), opening(jobs['native-runtime']))
-  const nativePreparation = job => job.slice(job.indexOf('      - name: Native daemon compile gate'),
-    job.indexOf('      - name:', job.indexOf('working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}')))
-  assert.equal(nativePreparation(jobs['full-nightly']), nativePreparation(jobs['native-runtime']))
   assert.equal(ci.match(/run: node scripts\/desktop\/windows-nightly-nsis-probe.mjs /g)?.length, 2)
   for (const edition of ['client', 'full']) {
     const job = jobs[`${edition}-nightly`]
     assert.equal(job.match(new RegExp(`run: node scripts/desktop/windows-nightly-nsis-probe.mjs ${edition}\\b`, 'g'))?.length, 1)
     assert(!job.includes('corepack'))
-    if (edition === 'client') {
-      assert(!/HEXBOT_CLI_NO_PATH|check-windows-unsupported|prepare-windows-security|working-directory:/.test(job))
-    } else {
-      assert.match(job, /HEXBOT_CLI_NO_PATH: '1'/)
-      assert(job.includes('working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}\n        run: node scripts/desktop/windows-nightly-nsis-probe.mjs full'))
-    }
+    if (edition === 'client') assert(!job.includes('HEXBOT_CLI_NO_PATH'))
+    else assert.match(job, /HEXBOT_CLI_NO_PATH: '1'/)
   }
   for (const name of ['client-and-installer', 'native-runtime'])
     assert(!jobs[name].includes('windows-nightly-nsis-probe.mjs'))

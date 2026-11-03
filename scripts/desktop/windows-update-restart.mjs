@@ -16,8 +16,9 @@ import { signature, testKey } from './update-signing.mjs'
 import { waitForRuntimeJson as waitJson } from './runtime-file.mjs'
 const exec = promisify(execFile)
 assert.equal(process.platform, 'win32')
-assert.equal(resolve(process.env.HEXBOT_WINDOWS_PROBE_SOURCE ?? ''), process.cwd(), 'Only run in the helper-created disposable worktree')
-assert(!(await readFile('backend/hexbot-core/src/lib.rs', 'utf8')).includes('compile_error!("The Hexbot daemon supports macOS and Linux only");'))
+// It rewrites the checkout's version while it builds the second daemon, so it
+// runs only on the disposable Windows CI machines that opt in, as the NSIS probes do.
+assert.equal(process.env.HEXBOT_WINDOWS_NSIS_PROBE, '1', 'Only run in the nonpublishing Windows CI job')
 const root = await mkdtemp(join(tmpdir(), 'hexbot signed Windows restart '))
 const user = join(root, 'Jos\u00e9 user'); await mkdir(user)
 const home = join(user, 'state'); await mkdir(home)
@@ -53,7 +54,7 @@ try {
   const firstManifest = { ...originalManifest, files: { ...originalManifest.files, 'hexbot.exe': createHash('sha256').update(await readFile(debugExe)).digest('hex') } }
   await writeFile(join(initial, 'manifest.json'), JSON.stringify(firstManifest))
   // Generate a second real daemon version using the repository's version tool,
-  // only in this disposable fixture source, then restore exact original bytes.
+  // then restore the exact original bytes.
   try {
     await setVersion(nextVersion)
     await exec('cargo', ['build', '--locked', '--manifest-path', 'backend/hexbot-core/Cargo.toml', '--bin', 'hexbot'], { timeout: 600_000, maxBuffer: 16 * 1024 * 1024, windowsHide: true })

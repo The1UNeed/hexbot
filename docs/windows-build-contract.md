@@ -1,12 +1,10 @@
 # Windows build and install validation
 
-Windows packaging and publication are wired into the release workflow and the
-download page; native acceptance and the Auto/Manual execution boundary
-remain prerequisites before Windows is called supported. This document tracks
-that contract. Windows confinement, the AppContainer sandbox that Auto and
+Windows x64 is a supported release target. Packaging and publication are
+wired into the release workflow and the download page, and CI builds and
+tests the production source natively. This document describes that build and
+install contract. Windows confinement, the AppContainer sandbox that Auto and
 Manual run commands in, is described in [Windows security](windows-security.md).
-Native validation of that boundary and independent GPT 6.1 and Opus 5.5
-approval are required before merge or shipping.
 
 The installed Full app probe explicitly requests its first start through the
 normal renderer bridge. A fresh profile opens onboarding and does not start a
@@ -19,18 +17,20 @@ stop/restart and retained-handle service handoff checks are unchanged.
 
 ## CI budgets
 
-`Windows build and install contract` runs four independent jobs on separate
-Windows VMs, with no dependencies or shared binaries:
+`Windows build and install contract` runs five independent jobs on separate
+Windows VMs, with no dependencies or shared binaries. Each builds the
+checked-out source itself:
 
 - `client-and-installer`, 45 minutes, retains all Stable installer, repair,
   Tauri, contract and real Client NSIS controls. Only this job uploads the
   Client artifact.
+- `sandbox`, 60 minutes, runs the AppContainer tests as a new standard user
+  ([Windows security](windows-security.md#verification)).
 - `native-runtime`, 60 minutes, retains all native, Pi, bootstrap, Stable Full
   NSIS, signed ZIP/Connect and refusal controls.
 - `client-nightly`, 45 minutes, runs the unchanged Client Nightly NSIS probe.
-- `full-nightly`, 60 minutes, prepares its own exact-current-tree disposable
-  source after the production unsupported guard check, then runs the unchanged
-  Full Nightly NSIS probe. It builds its own Full and Client Nightly packages.
+- `full-nightly`, 60 minutes, runs the unchanged Full Nightly NSIS probe. It
+  builds its own Full and Client Nightly packages.
 
 The old combined 45-minute Client job would have needed an estimated 59 minutes.
 Its complete Stable NSIS test passed in 1298.53 seconds before Nightly was
@@ -38,7 +38,8 @@ cancelled at the job deadline. The split's runtime estimates remain unverified. 
 NSIS duration and the complete native-runtime total remain unknown; no other
 controls move. Separate VMs isolate registry, protocol and sibling-prefix
 fixtures. Nightly probes run on VMs without a Stable install, so they do not prove
-coinstalled-track behavior. No disposable binary is uploaded or published.
+coinstalled-track behavior. Nothing is published, and only the Client artifact
+is uploaded.
 
 ## Runtime layout
 
@@ -192,9 +193,9 @@ ignores the record, so it may mutate the environment. Returning to schema-2-awar
 code can then refuse changed bytes or identity. This is not a general backward
 compatibility or downgrade-refusal guarantee.
 
-Windows remains unsupported. Refused Python identity or code verification can
-prevent the Full daemon from starting. This scope provides no automatic recovery
-or Full option to skip code tools. Native runtime activation may already have
+Refused Python identity or code verification can prevent the Full daemon from
+starting. This scope provides no automatic recovery or Full option to skip code
+tools. Native runtime activation may already have
 completed. CLI/log errors name the layer and available original cause; logging
 requires an available safe log path. No renderer repair UI is promised.
 
@@ -381,31 +382,10 @@ and raw workspace-command output, resolves hooks within the desktop project
 and executes the Windows ownership hook. Source hooks live inside that project;
 they do not depend on the builder discovering the monorepo root. The startup
 probe deliberately stops before packaging. The job then builds real NSIS and tests installation, repair and uninstall with
-a signed local manifest. The native job checks unchanged production source
-and requires Cargo's only error to be the exact unsupported-platform guard.
-Any other compiler error fails the job. The security stage's shared helper
-then prepares a disposable worktree from explicit immutable build and security
-SHAs, records both source trees and guard hashes, and removes only the exact
-guard there. No disposable binary is uploaded. The production guard remains.
-Complete build/security trees select the exact event commit twice with
-`--current-tree`, and the helper must preserve its exact guarded tree. A
-standalone security commit or intermediate security squash instead records
-exactly one trailer in its immutable commit message:
-
-```text
-Hexbot-Windows-Build: <full lowercase 40-character build commit SHA>
-```
-
-The recorded build must contain the build and security interfaces: the
-build markers, and `pub const UNAVAILABLE:` in `windows_sandbox.rs` with
-`pub fn require_native_worker(` in `credentials.rs`. Historical
-combination also requires the reviewed dependency ancestry and a unique merge
-base; any patch conflict fails. The workflow contains no particular build pin.
-After that build exists, a metadata-only security commit can carry the trailer
-without changing the security source tree. The same validated trailer must be
-preserved in the security squash message. This avoids replaying full build
-diffs onto stale source and avoids a self-referential workflow pin.
-The disposable steps stage real Node/Pi, run Full bootstrap and Headless setup in temporary state, exercise
+a signed local manifest. The native jobs build and test the checked-out commit
+itself: the daemon has no platform guard, so no step edits the source first,
+and these jobs upload nothing.
+The native steps stage real Node/Pi, run Full bootstrap and Headless setup in temporary state, exercise
 Pi RPC, Python, web serving and task lifecycle, install Full NSIS, and validate
 a signed native ZIP update plus the pinned cloudflared executable. Exact ignored
 NSIS and ZIP/Connect selections require one executed, passed test; zero matches
@@ -460,7 +440,7 @@ reports that case as unproved.
 
 A cross-compile on macOS is only a compile check. It cannot establish native
 NSIS, task, Electron GUI, job lifetime, console or standard-user behavior.
-Windows CI must pass on the combined implementation and security changes.
+Windows CI must pass natively.
 The native matrix includes actual installed Client/Full GUI activation. Its
 Rust probe requires the GUI harness, validates absolute regular files, and logs
 bounded program/argv diagnostics. The harness passes its own running Node
@@ -479,8 +459,9 @@ handoff; another unchanged launch must retain that PID. Separate native
 installer probes cover config-only CLI cleanup and PATH retention for foreign
 or malformed sidecars. The existing public test key
 stays confined to debug builds; fixture versions use the version tool only in
-the disposable source and restore the original bytes. These checks and the
-security stage's standard-user probes must pass before any availability claim.
+a CI checkout that opts in with `HEXBOT_WINDOWS_NSIS_PROBE`, and restore the
+original bytes. The security workflow's standard-user probes run beside these
+checks.
 
 ## Upstream tool pins
 
@@ -654,8 +635,8 @@ CI failure's cause remains unproved; its migration assertions/source are unchang
 
 The dev runner also uses real Node plus an owned JavaScript launcher on Windows,
 with the locked Pi CLI and verified search tools. It does not execute npm or pnpm
-command shims. The production daemon support guard still applies to source builds;
-the nonpublishing native probe uses the existing disposable source preparation.
+command shims. The daemon builds from source on Windows, so the dev runner and
+the native probes use the checkout directly.
 Native installer tests retain both file locks while checking Windows delete sharing,
 then exercise terminal Uninstall with and without data removal and a live foreign
 lock. These tests do not relax daemon exclusion to remove data.
@@ -784,8 +765,7 @@ removal checks also protect Change before replacing another app. Concurrent
 same-user process or policy changes between that check and NSIS remain outside
 a compare-and-swap guarantee. There is no registry cleanup or identity migration
 in this recovery path. Settings can still install another track under Programs,
-outside this installer's discovery, as described above. Windows remains
-unsupported and publishing stays disabled.
+outside this installer's discovery, as described above.
 
 Windows task Stop now shares one completion boundary between the daemon CLI
 and installer removal. Before asking the verified scheduler to stop, it captures

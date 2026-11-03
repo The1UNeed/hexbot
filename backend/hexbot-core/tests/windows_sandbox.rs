@@ -1,5 +1,5 @@
 //! The Windows sandbox, run as a standard user against real files, processes
-//! and sockets. CI builds it from a disposable copy without the platform guard
+//! and sockets. CI runs it as a new local standard user
 //! (`scripts/dev/windows-sandbox-standard-user.ps1`).
 #![cfg(windows)]
 use base64::Engine;

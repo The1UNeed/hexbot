@@ -36,4 +36,4 @@ There is no stable release yet, and until there is, nightly is the only way in. 
 
 ## Get it
 
-[Download the nightly](/download/) for Mac or Linux. It's free and open source under Apache-2.0. If something breaks, [open an issue on GitHub](https://github.com/The1UNeed/hexbot/issues).
+[Download the nightly](/download/) for Mac, Linux, or 64-bit Windows. It's free and open source under Apache-2.0. If something breaks, [open an issue on GitHub](https://github.com/The1UNeed/hexbot/issues).

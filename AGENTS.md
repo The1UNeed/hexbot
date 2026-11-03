@@ -48,8 +48,8 @@ Use these words consistently in code, UI copy, docs, and commit messages.
 - **Daemon**: the Hexbot server process (`hexbot serve`) that runs bots, rooms, memory, tools, and serves the WebSocket API and the web UI. A daemon belongs to one person: no invites, roles, or other accounts. One person may run several daemons and switch between them; rooms with other people go through Hex Connect.
 - **App**: the Electron desktop shell in `apps/desktop/` hosting the React bundle from `apps/web/`. The same bundle is served by the daemon to LAN browsers.
 - **Full package**: the app with a local daemon. **Client-only**: the same app connected to a daemon elsewhere. Together, the two **editions**. The installer and its UI call them **Full** and **Client**.
-- **Headless**: the install option for the daemon alone, without the app: the native runtime in `~/.hexbot/runtime`, a launchd or systemd user service (`hexbot service`), and the `hexbot` CLI in `~/.local/bin`. Used from another computer with Client or Full. Not an edition. Internal id `headless`.
-- **Installer**: the one installer for Headless, Client, and Full, with two ways in: the terminal installer (`curl -fsSL https://hexbot.app/install.sh | sh`, which runs `hexbot-install`) and the windowed **Hexbot Installer** (.dmg, AppImage). Both use the engine in `backend/hexbot-installer/`, read `install/<track>.json` on the update server, download only the chosen option, and on a second run offer Update or repair, Change, and Uninstall. `~/.hexbot` is kept unless the user asks to delete it.
+- **Headless**: the install option for the daemon alone, without the app: the native runtime in `~/.hexbot/runtime`, a launchd or systemd user service or, on Windows, a logon task (`hexbot service`), and the `hexbot` CLI in `~/.local/bin`. Used from another computer with Client or Full. Not an edition. Internal id `headless`.
+- **Installer**: the one installer for Headless, Client, and Full, with two ways in: the terminal installer (`curl -fsSL https://hexbot.app/install.sh | sh`, which runs `hexbot-install`; on Windows, `hexbot-install.exe` run directly) and the windowed **Hexbot Installer** (.dmg, AppImage; none on Windows). Both use the engine in `backend/hexbot-installer/`, read `install/<track>.json` on the update server, download only the chosen option, and on a second run offer Update or repair, Change, and Uninstall. `~/.hexbot` is kept unless the user asks to delete it.
 - **Channel**: how a build is named and published. **Stable** (tagged `v<version>`, updatable; named `Hexbot [alpha]` while the version is `0.x`), **Nightly** (`Hexbot Nightly`, daily from `main`, updatable on its own track), **Dev** (the source tree). See `docs/channels.md`.
 - **Track**: the channel an installed app takes updates from, Stable or Nightly. Defaults to the channel the build came from; the user switches it in Settings, Updates.
 - **Update server**: `updates.hexbot.app`, a Cloudflare R2 bucket holding every package, the electron-updater feed files, the native daemon archives, and the installers with their `install/<track>.json` manifests. Written only by `release.yml`.
@@ -192,6 +192,11 @@ A change is done when it works in every place the feature appears:
 - **Install options**: Full, Client, and Headless. A daemon feature that a
   user sets up in the app must also be reachable from a paired app or the
   `hexbot` CLI when no app runs on the daemon's computer.
+- **Platforms**: macOS, Linux x64, and Windows x64; no Linux or Windows ARM
+  packages. Daemon code that touches files, processes, services, or the
+  sandbox needs its Windows path too. On macOS or Linux,
+  `cargo check --target x86_64-pc-windows-gnu` shows it still compiles
+  (`docs/testing.md`, "Windows"); the Windows workflows run it natively.
 - **Clients**: the Electron app, the browser bundle served by the daemon,
   and the mobile app in `apps/mobile` (iOS and Android). A change a user can
   see or use in `apps/web` lands in `apps/mobile` in the same PR, or the PR

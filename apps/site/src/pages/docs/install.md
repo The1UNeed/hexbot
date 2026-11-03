@@ -77,6 +77,7 @@ One installer changes Hexbot at a time. A second one, terminal or windowed, wait
 
 - **macOS**: Full and Client go to `/Applications`, or to `~/Applications` when `/Applications` is not writable.
 - **Linux**: Full and Client are AppImages in `~/.local/share/hexbot`, with a desktop entry, an icon, and a handler for `hexbot://` pairing links. The installer never uses `sudo`. If you installed a deb package yourself, remove it with your package manager before you change or uninstall with the installer.
+- **Windows**: Full and Client install for your user only, in `%LOCALAPPDATA%\Hexbot\apps`, without administrator rights.
 - **Headless**: see [What Headless sets up](#what-headless-sets-up).
 
 The installer records what it installed in `~/.hexbot/install.json`.
@@ -124,7 +125,7 @@ Or open the Hexbot Installer and choose Headless. When it finishes, the installe
 
 - The daemon runtime in `~/.hexbot/runtime`, checked against its SHA-256 checksum.
 - Python 3.11 for code tools and the voice tools, inside `~/.hexbot`, each checked against a pinned checksum, as Full does on first launch.
-- A user service that starts the daemon at login and restarts it if it stops: `~/Library/LaunchAgents/app.hexbot.daemon.plist` on macOS, `~/.config/systemd/user/hexbot.service` on Linux. On Linux the installer also enables lingering (`loginctl enable-linger`), so the daemon keeps running after you log out and starts at boot; if that fails it says so.
+- A user service that starts the daemon at login and restarts it if it stops: `~/Library/LaunchAgents/app.hexbot.daemon.plist` on macOS, `~/.config/systemd/user/hexbot.service` on Linux, and a logon task in Task Scheduler on Windows, which runs while you are signed in. On Linux the installer also enables lingering (`loginctl enable-linger`), so the daemon keeps running after you log out and starts at boot; if that fails it says so.
 - The `hexbot` command in `~/.local/bin`. If that directory is not on your `PATH`, setup prints the line to add to your shell profile.
 
 On Linux, install bubblewrap for the sandbox; see [Linux](#linux). The installer reminds you when it is missing.

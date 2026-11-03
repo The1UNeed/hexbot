@@ -34,7 +34,7 @@ function show(target: Target) {
   if (!title || !sub || !primary || !label) return
   if (target === 'ios') {
     title.textContent = 'Hexbot for iPhone is in beta.'
-    sub.textContent = 'Join the beta on TestFlight, then pair the app with Hexbot on your Mac, Linux computer, or server.'
+    sub.textContent = 'Join the beta on TestFlight, then pair the app with Hexbot on your Mac, Linux or Windows computer, or server.'
     primary.href = testflightUrl
     primary.removeAttribute('download')
     label.textContent = 'Join the TestFlight beta'

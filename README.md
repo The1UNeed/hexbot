@@ -195,7 +195,7 @@ One workflow, `.github/workflows/release.yml`, modelled on
 ## Status
 
 Milestones 1 through 6 of `DESIGN.md` are implemented: daemon, pairing, the
-desktop app on macOS and Linux, sections and memory, Connect end to end,
+desktop app on macOS, Linux and Windows, sections and memory, Connect end to end,
 rooms and the turn engine, dreaming, and packaging. Milestone 5 now makes
 a daemon one person's; rooms with other people will go through Hex Connect. The first
 public alpha waits on Apple signing credentials and the Connect production

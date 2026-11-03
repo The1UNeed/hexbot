@@ -53,6 +53,9 @@ Do not retry an already accepted build. Full setup is in
   Linux, POSIX bootstrap syntax and ShellCheck, service handoff, web, desktop,
   site, Connect, and the desktop script tests. Windowed installer typecheck
   and tests run when its package exists. Nothing is built until CI passes.
+  The native Windows tests run in their own workflows on pull requests
+  (`windows-contract.yml`, `windows-security.yml`; see `docs/testing.md`),
+  not in the release run.
 - `testflight` (nightly only) starts the Expo iOS build and TestFlight upload
   for the release commit, using `EXPO_TOKEN`, and waits for the result.
 - `build` makes eight packages in parallel: full and client for macOS arm64,

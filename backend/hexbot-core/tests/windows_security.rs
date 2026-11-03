@@ -3,8 +3,8 @@
 //! through the sandbox helper; Pi's write and edit go through the daemon's
 //! handle bridge with a live policy snapshot; full_access, the Python worker
 //! and Copilot refuse; and network, device and stream paths are refused by
-//! their text before anything opens them. CI builds it from a disposable copy
-//! without the platform guard (`scripts/dev/windows-security-standard-user.ps1`).
+//! their text before anything opens them. CI runs it as a new local standard
+//! user (`scripts/dev/windows-security-standard-user.ps1`).
 #![cfg(windows)]
 
 use base64::Engine;
