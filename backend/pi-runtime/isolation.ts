@@ -70,7 +70,6 @@ export const storeEntries = () => (credentialPolicy.write.deny as string[]).conc
 export type Sandbox = {kind?: string, bash?: string | null} | null | undefined;
 export const WINDOWS_ISOLATION_UNAVAILABLE = 'The Windows sandbox could not start, so Auto and Manual refuse local commands and file tools, and scheduled scripts do not run. Bypass has no sandbox or credential protection. Restart Hexbot to try again.';
 export const WINDOWS_FULL_ACCESS = 'On Windows, Auto and Manual run every command inside the sandbox, so full_access is not available. Bypass runs commands without a sandbox.';
-export const WINDOWS_FILE_CHANGES = 'The write and edit tools are not available on Windows in Auto and Manual yet. In Auto, change files in the workspace with a bash command.';
 export const NO_GIT_BASH = 'Shell commands and scripts on Windows run in Git Bash, which is not installed. Install Git for Windows, then try again.';
 export function requireSupportedExecution(sandbox?: Sandbox): void {
   if (process.platform === 'win32' && sandbox?.kind !== 'appcontainer') throw new Error(WINDOWS_ISOLATION_UNAVAILABLE);

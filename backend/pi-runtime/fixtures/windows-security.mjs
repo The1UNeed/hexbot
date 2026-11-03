@@ -144,10 +144,10 @@ try {
     extension = await import('../extension.ts');
     assert.deepEqual(extension.shellEnvironment({SystemRoot:'os',windir:'os',UserProfile:'profile',appdata:'roaming',LocalAppData:'local',NODE_OPTIONS:'bad',PYTHONPATH:'bad',BASH_ENV:'bad',OPENAI_API_KEY:'secret',ARBITRARY_CONNECTOR:'secret',COMSPEC:'bad',PATHEXT:'bad'}), {SystemRoot:'os',windir:'os',UserProfile:'profile',appdata:'roaming',LocalAppData:'local'});
     isolation = await import('../isolation.ts');
-    const {WINDOWS_ISOLATION_UNAVAILABLE:UNAVAILABLE, WINDOWS_FULL_ACCESS, WINDOWS_FILE_CHANGES, NO_GIT_BASH, WINDOWS_PROFILE, WINDOWS_PATHS} = isolation;
+    const {WINDOWS_ISOLATION_UNAVAILABLE:UNAVAILABLE, WINDOWS_FULL_ACCESS, NO_GIT_BASH, WINDOWS_PROFILE, WINDOWS_PATHS} = isolation;
     extension.default({on:(name, handler) => handlers[name] = handler, registerTool:tool => tools[tool.name] = tool, registerProvider() {}, getSettings:() => piSettings});
     assert.match(tools.bash.description, /Git Bash: use Bash syntax, not cmd.exe or PowerShell/);
-    assert.match(tools.bash.description, /full_access and the write and edit tools are not available on Windows/);
+    assert.match(tools.bash.description, /full_access is not available on Windows/);
     assert.deepEqual(accesses,[], 'registration must not resolve hostile homes');
 
     // Without the AppContainer every local tool refuses in every mode but
@@ -162,10 +162,10 @@ try {
       assert.deepEqual((await handlers.user_bash({command:'echo bypass'},ctx)).result, {output:UNAVAILABLE, exitCode:1, cancelled:false, truncated:false});
     }
 
-    // With it, write and edit, full_access and file tools without a local
-    // profile still refuse, whatever the mode, before anything is resolved.
+    // With it, full_access and file tools without a local profile still
+    // refuse, whatever the mode, before anything is resolved.
     settings.sandbox = available;
-    const refusalFor = ([toolName, input]) => ['write','edit'].includes(toolName) ? WINDOWS_FILE_CHANGES : toolName !== 'bash' ? WINDOWS_PROFILE : input.full_access ? WINDOWS_FULL_ACCESS : undefined;
+    const refusalFor = ([toolName, input]) => toolName !== 'bash' ? WINDOWS_PROFILE : input.full_access ? WINDOWS_FULL_ACCESS : undefined;
     for (const mode of ['smart','manual']) {
       settings.approvalMode = mode;
       for (const [index, call] of calls.entries()) {
@@ -373,7 +373,10 @@ try {
     // its line.
     const found = ['notes.txt:1:time 10:30:45 needle', '.env:1:private', 'notes.txt-2-a -1- b'].join('\n');
     assert.equal(extension.sanitizeSearchResult(found, 'grep', cwd, home), 'notes.txt:1:time 10:30:45 needle');
-    for (const tool of ['write', 'edit']) assert.deepEqual(await gate(tool, {path:join(cwd, 'ordinary.txt'), content:'changed'}, tool), {block:true, reason:WINDOWS_FILE_CHANGES});
+    // The write and edit tools now reach the daemon's handle bridge: the
+    // gate lets an ordinary file through, and the extension itself writes
+    // nothing on disk.
+    for (const tool of ['write', 'edit']) assert.equal(await gate(tool, {path:join(cwd, 'ordinary.txt'), content:'changed'}, tool), undefined, tool);
     assert.equal(fs.existsSync(join(cwd, 'ordinary.txt')), false);
     assert.deepEqual(approvals, []);
     assert.deepEqual(hostile, []);

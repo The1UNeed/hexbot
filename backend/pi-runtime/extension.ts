@@ -5,7 +5,7 @@ import { resolve, dirname, basename, relative, sep, join, isAbsolute } from 'nod
 import { homedir, tmpdir, constants as osConstants } from 'node:os';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createBashTool, createReadTool, createWriteTool, createEditTool, createGrepTool, createFindTool, createLsTool } from '@earendil-works/pi-coding-agent';
-import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoots, userHomes, managedRuntimeRoots, requireSupportedExecution, WINDOWS_ISOLATION_UNAVAILABLE, WINDOWS_FULL_ACCESS, WINDOWS_FILE_CHANGES, NO_GIT_BASH, refusal, storeEntries, windowsRealPath, linkTarget, privateKeyName, probeIsolation, readDenied, secretFileName, gitDirectory, SCAN_REASON, SCAN_FILE_REASON, within, workspaceProtected, lockedGit, scanFailureReason} from './isolation.ts';
+import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoots, userHomes, managedRuntimeRoots, requireSupportedExecution, WINDOWS_ISOLATION_UNAVAILABLE, WINDOWS_FULL_ACCESS, NO_GIT_BASH, refusal, storeEntries, windowsRealPath, linkTarget, privateKeyName, probeIsolation, readDenied, secretFileName, gitDirectory, SCAN_REASON, SCAN_FILE_REASON, within, workspaceProtected, lockedGit, scanFailureReason} from './isolation.ts';
 import { registerAcp } from './acp.ts';
 import { lazyStream } from '@earendil-works/pi-ai';
 import { builtinProviders } from '@earendil-works/pi-ai/providers/all';
@@ -245,7 +245,6 @@ export default function hexbot(pi: any) {
   const windowsRefusal = (tool: string, fullAccess: boolean): string | undefined => {
     if (process.platform !== 'win32' || !LOCAL_TOOLS.includes(tool)) return;
     if (!isolationAvailable(live.sandbox)) return WINDOWS_ISOLATION_UNAVAILABLE;
-    if (tool === 'write' || tool === 'edit') return WINDOWS_FILE_CHANGES;
     if (tool === 'bash') return fullAccess ? WINDOWS_FULL_ACCESS : gitBash() ? undefined : NO_GIT_BASH;
     try { userHomes(); } catch (error: any) { return error.message; }
   };
@@ -313,16 +312,27 @@ export default function hexbot(pi: any) {
         checked({target: path});
         if (credentialPath(resolve(cwd, input), live.home) || credentialPath(path, live.home)) return {block: true, reason: 'Credential files are private.'};
         if (['write', 'edit'].includes(event.toolName)) {
-          const scan = workspaceProtected([cwd, ...live.outputDirs ?? []]);
-          const denial = writeDenial(input, cwd, live.home, live.outputDirs, scan);
-          if (denial) return {block: true, reason: denial};
-          if (live.approvalMode === 'manual') ask = {key: 'file', command: path, reason: 'Manual mode asks before every file change.'};
-          else if (hostWriteTier(input, cwd) === 'ask') ask = {key: 'file:host-config', command: path, reason: 'This changes a shell profile, login item or other host configuration file.'};
-          else if (!inWorkspace(path)) ask = {key: 'file:outside', command: path, reason: 'This changes a file outside the workspace.'};
-          // An incomplete scan is about this destination alone, so it asks every
-          // time and never widens what the section already allows.
-          const uncertain = scan.failure ?? (scan.exhausted ? SCAN_FILE_REASON : undefined);
-          if (uncertain) ask = {key: ask?.key ?? 'file:scan', command: path, reason: ask ? `${ask.reason} ${uncertain}` : uncertain, once: true};
+          const askFor = (): typeof ask => {
+            if (live.approvalMode === 'manual') return {key: 'file', command: path, reason: 'Manual mode asks before every file change.'};
+            if (hostWriteTier(input, cwd) === 'ask') return {key: 'file:host-config', command: path, reason: 'This changes a shell profile, login item or other host configuration file.'};
+            if (!inWorkspace(path)) return {key: 'file:outside', command: path, reason: 'This changes a file outside the workspace.'};
+            return undefined;
+          };
+          if (process.platform === 'win32') {
+            // The daemon's bridge scans and locks on Windows: it judges every
+            // path and enforces the policy at the handles it opens. The gate
+            // asks only for what it can judge here.
+            ask = askFor();
+          } else {
+            const scan = workspaceProtected([cwd, ...live.outputDirs ?? []]);
+            const denial = writeDenial(input, cwd, live.home, live.outputDirs, scan);
+            if (denial) return {block: true, reason: denial};
+            ask = askFor();
+            // An incomplete scan is about this destination alone, so it asks every
+            // time and never widens what the section already allows.
+            const uncertain = scan.failure ?? (scan.exhausted ? SCAN_FILE_REASON : undefined);
+            if (uncertain) ask = {key: ask?.key ?? 'file:scan', command: path, reason: ask ? `${ask.reason} ${uncertain}` : uncertain, once: true};
+          }
         }
       }
       if (event.toolName === 'bash') {
@@ -479,7 +489,7 @@ export default function hexbot(pi: any) {
     const tool = factory(config.cwd, options());
     const definition = name === 'bash' ? {
       description: tool.description + (process.platform === 'win32'
-        ? ' On Windows commands run in Git Bash: use Bash syntax, not cmd.exe or PowerShell syntax. In Auto and Manual they run in a sandbox without internet access that writes only to the workspace, or in Manual only to output folders. full_access and the write and edit tools are not available on Windows yet. In Bypass commands run without a sandbox.'
+        ? ' On Windows commands run in Git Bash: use Bash syntax, not cmd.exe or PowerShell syntax. In Auto and Manual they run in a sandbox without internet access that writes only to the workspace, or in Manual only to output folders. full_access is not available on Windows. In Bypass commands run without a sandbox.'
         : ' Commands may run in a sandbox that blocks internet access and writes outside the workspace. When a command needs either, set full_access and give a reason.'),
       parameters: {type: 'object', properties: {
         command: {type: 'string', description: 'Shell command to execute'},

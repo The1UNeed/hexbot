@@ -157,9 +157,6 @@ Residual risks:
   the base layer alone. Bypass runs commands without a sandbox.
 - **Copilot**, including its reviewer, in every mode. It runs with the base
   layer alone, which Windows does not have.
-- **Pi's write and edit tools** in Auto and Manual, until the private
-  extension uses the daemon's bridge. The daemon's side is in place
-  ([Pi's write and edit](#pis-write-and-edit)).
 - **The daemon's Python worker** (`execute_code`) and the file callbacks it
   reaches. Code runs on the bot's own computer.
 
