@@ -28,7 +28,7 @@ import {
   DaemonSwitch,
   HomeScreen
 } from '../screens'
-import { EmptyState, type Theme, useTheme } from '../ui'
+import { EmptyState, SystemAvoidsKeyboard, type Theme, useTheme } from '../ui'
 
 /**
  * The app on iOS: SwiftUI's split view, like Messages on iPad. The sidebar is
@@ -70,13 +70,16 @@ export function SplitView() {
 
 /**
  * React Native content in a column. SwiftUI keeps the column clear of the
- * bars and the side rail; a provider here measures from the column, so the
- * screen pads only for what is left, such as the home indicator.
+ * bars, the side rail and the keyboard; a provider here measures from the
+ * column, so the screen pads only for what is left, such as the home
+ * indicator, and does not lift itself above the keyboard again.
  */
 function Column({ children }: { children: ReactElement }) {
   return (
     <RNHostView>
-      <SafeAreaProvider style={styles.fill}>{children}</SafeAreaProvider>
+      <SafeAreaProvider style={styles.fill}>
+        <SystemAvoidsKeyboard.Provider value>{children}</SystemAvoidsKeyboard.Provider>
+      </SafeAreaProvider>
     </RNHostView>
   )
 }

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { createContext, type ReactNode, useContext } from 'react'
 import { KeyboardAvoidingView, StyleSheet, View } from 'react-native'
 import { type Edge, SafeAreaView } from 'react-native-safe-area-context'
 
@@ -18,6 +18,12 @@ export interface ScreenProps {
 }
 
 /**
+ * True inside a SwiftUI column on iOS, which already keeps its content clear
+ * of the keyboard. A screen there must not lift itself a second time.
+ */
+export const SystemAvoidsKeyboard = createContext(false)
+
+/**
  * A full screen: safe areas, background, and optional keyboard avoidance.
  * The app draws no status bar of its own; the system one shows through.
  */
@@ -29,7 +35,8 @@ export function Screen({
   testID
 }: ScreenProps) {
   const theme = useTheme()
-  const body = avoidKeyboard ? (
+  const system = useContext(SystemAvoidsKeyboard)
+  const body = avoidKeyboard && !system ? (
     // Expo apps draw edge to edge on Android too, so padding works on both platforms.
     <KeyboardAvoidingView behavior="padding" style={styles.fill}>
       {children}
