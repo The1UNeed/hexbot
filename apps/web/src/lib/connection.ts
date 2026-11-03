@@ -356,6 +356,8 @@ export class ConnectionSupervisor {
   private stopped = true
   private target: ConnectionTarget | null = null
   private starting: Promise<void> | null = null
+  /** The handshake in flight, so a second one cannot open another socket. */
+  private connecting: Promise<void> | null = null
 
   constructor(private readonly deps: ConnectionDeps = {}) {}
 
@@ -391,7 +393,7 @@ export class ConnectionSupervisor {
 
   /** Drop the backoff and try again now (the "Retry" button). */
   retryNow(): Promise<void> {
-    if (!this.target) {
+    if (!this.target || this.client) {
       return Promise.resolve()
     }
 
@@ -413,6 +415,7 @@ export class ConnectionSupervisor {
     this.generation += 1
     this.stopped = true
     this.starting = null
+    this.connecting = null
 
     if (this.retryTimer) {
       clearTimeout(this.retryTimer)
@@ -427,7 +430,28 @@ export class ConnectionSupervisor {
     connectionActions().setDaemon(null)
   }
 
-  private async attemptConnect(): Promise<void> {
+  /**
+   * One handshake at a time. Two would each open a socket and route its
+   * events, so the chat would get every event twice: Reconnect now during a
+   * slow Connect handshake showed a bot's visual twice until a restart.
+   */
+  private attemptConnect(): Promise<void> {
+    if (this.connecting) {
+      return this.connecting
+    }
+
+    const attempt = this.tryConnect().finally(() => {
+      if (this.connecting === attempt) {
+        this.connecting = null
+      }
+    })
+
+    this.connecting = attempt
+
+    return attempt
+  }
+
+  private async tryConnect(): Promise<void> {
     if (this.stopped || !this.target) {
       return
     }
