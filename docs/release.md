@@ -84,9 +84,9 @@ Do not retry an already accepted build. Full setup is in
   to `main` as `github-actions[bot]`. That push does not trigger CI, but it
   does trigger a production build of hexbot.app on Vercel (`docs/deploy.md`).
 
-`ci.yml` runs `scripts/desktop/release-smoke.mjs` on every push: the version
-resolution, feed, manifest, and cask scripts against synthetic packages, so
-a broken release script fails before tag day.
+`ci.yml` runs `scripts/desktop/release-smoke.mjs` on every pull request and
+push to `main`: the version resolution, feed, manifest, and cask scripts
+against synthetic packages, so a broken release script fails before tag day.
 
 Full packages bundle the native daemon, pinned Node and Pi, checksum-verified
 ripgrep and fd, web assets and skills. Targets are macOS arm64, macOS x64 and Linux x64. Both macOS jobs use

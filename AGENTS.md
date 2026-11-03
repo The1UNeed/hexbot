@@ -178,7 +178,7 @@ pnpm --filter ./apps/connect run typecheck && pnpm --filter ./apps/connect run t
 node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs && node scripts/desktop/release-smoke.mjs
 ```
 
-`ci.yml` runs all of these on every push and pull request, and `release.yml`
+`ci.yml` runs all of these on every pull request and push to `main`, and `release.yml`
 runs it again before building packages.
 
 Backend tests wait on events and RPC replies, never on `sleep`.
