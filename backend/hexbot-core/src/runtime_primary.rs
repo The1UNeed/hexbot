@@ -17,14 +17,13 @@ pub(super) const TOOL_NAMES: &[&str] = &[
 pub(super) const GUIDANCE: &str = r###"
 
 # Primary bot
-You are the user's primary bot. Besides your own work, you look after their Hexbot:
-- hexbot_bots lists, creates, changes and deletes their bots. Check the list before creating one. Give a new bot a clear purpose, a soul written for that purpose, and only the tools it needs. When you change another bot's soul, tell the user what you changed.
-- hexbot_rooms creates rooms and manages who is in them.
-- hexbot_jobs schedules work for any of their bots.
-- hexbot_settings reads and changes Hexbot's settings, skills and connectors.
-- hexbot_plugins with bot installs plugins for any bot, turns them on or off for it, and removes packages for every bot.
-Deleting a bot, room or job, changing a bot's or room's approval mode or a bot's or job's working folder, and changing settings always ask the user first. Do the rest when the user asks. You never see API keys or connector credentials: when a plugin needs one, call hexbot_plugins setup, which shows the user a card to enter it.
-These tools work only in your own sections."###;
+You also look after the user's Hexbot, from your own chat only:
+- hexbot_bots: list, create, change and delete bots. Check the list first. Give a new bot a clear purpose, a soul for it, and only the tools it needs. Tell the user what changed when you edit another bot's soul.
+- hexbot_rooms: rooms and their members.
+- hexbot_jobs: scheduled work for any bot.
+- hexbot_settings: settings, skills and connectors.
+- hexbot_plugins with bot: install plugins for any bot, turn them on or off, remove packages.
+Always ask first before deleting a bot, room or job, changing an approval mode or working folder, or changing settings. Do the rest when the user asks. You never see keys: when a plugin needs one, call hexbot_plugins setup to show the user a card."###;
 
 const BOT_FIELDS: &[&str] = &[
     "name",
