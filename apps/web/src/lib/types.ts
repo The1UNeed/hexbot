@@ -792,6 +792,35 @@ export interface DiagnosticsFailureGroup {
   last: number
 }
 
+/** One file in `<home>/logs` (`hexbot.diagnostics.logs`). */
+export interface DiagnosticsLogFile {
+  name: string
+  size: number
+  /** Unix milliseconds of the last change. */
+  modified: null | number
+}
+
+export interface DiagnosticsLogLine {
+  /** Byte offset of the line in its file. */
+  offset: number
+  text: string
+  /** The daemon's guess from the words in the line. */
+  level: 'error' | 'warning' | null
+}
+
+/** `hexbot.diagnostics.logs`: one page of a log file, read from the end. */
+export interface DiagnosticsLogs {
+  files: DiagnosticsLogFile[]
+  /** The file read, or null when the folder is empty. */
+  file: null | string
+  /** Oldest first. */
+  lines: DiagnosticsLogLine[]
+  size: number
+  /** Pass as `before` for the page before this one. */
+  before: number
+  more: boolean
+}
+
 /** `hexbot.diagnostics.get`: what the daemon measured since it started. */
 export interface DiagnosticsSnapshot {
   generated_at: number

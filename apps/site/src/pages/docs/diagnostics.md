@@ -1,7 +1,7 @@
 ---
 layout: ../../layouts/Docs.astro
 title: Diagnostics
-description: See how your Hexbot daemon launched, what it uses, how its runs went, and how well the prompt cache works.
+description: See how your Hexbot daemon launched, what it uses, how its runs went, how well the prompt cache works, and what its logs say.
 ---
 
 Diagnostics shows what the daemon has measured since it started. Use it when Hexbot feels slow, a bot keeps failing, or you want to know what a run cost in time. Open Settings, Advanced, **Diagnostics** in the desktop app or a browser. The page refreshes every 5 seconds while it is open. The mobile app has no Diagnostics.
@@ -36,6 +36,12 @@ CPU and memory over the last hour, one chart each, with a crosshair that reads o
 **Failures** shows the most common failures and the latest ones since the daemon started. **Caches** breaks prompt cache use down by bot and by model, and shows the local database's cache, file sizes, and slowest statements.
 
 A low prompt cache hit rate usually means conversations are being rebuilt, for example after tools or connectors change. [Bots and chats](/docs/bots-and-sections/#keep-the-chat-going) explains when that happens.
+
+## Logs
+
+**Logs** shows the files in `~/.hexbot/logs` line by line, newest at the bottom, so you can read the full text of an error and what happened around it. It opens the daemon's own output: `daemon.log` when the app runs the daemon, `service-error.log` when it runs as a service. Pick another file, such as `desktop.log` for the app's updates or `cloudflared.log` for Hex Connect, from the menu.
+
+Search finds lines that contain your words, and **Errors only** keeps the lines that report a failure, which are also shown in red. The view loads the last 1,000 lines; **Show older lines** loads the ones before them. **Copy lines** copies what is shown, or saves it as a file where the browser can't use the clipboard. A daemon started in a terminal prints its output there, not to a file.
 
 ## Share a report
 
