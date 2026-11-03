@@ -290,10 +290,24 @@ fn parse(stdout: &str) -> Result<Value> {
 async fn info(home: &Path, cfg: &Value, env: &BTreeMap<String, String>) -> Result<Option<Value>> {
     let out = cua(cfg, env, &["sb", "info", &sandbox(home), "--json"], 30).await?;
     match out.code {
-        0 => parse(&out.stdout).map(Some),
+        0 => parse(&out.stdout).and_then(|info| {
+            // Cua knows the computer but its container is gone, most often
+            // because Docker is not running. Waiting does not bring it back,
+            // and making it again would lose what is on it.
+            if info["state"] == "missing" || info["status"] == "missing" {
+                return Err(not_found());
+            }
+            Ok(Some(info))
+        }),
         3 => Ok(None),
         _ => Err(failure(&out.stderr, "Could not reach the computer.")),
     }
+}
+fn not_found() -> Error {
+    Error::new(
+        4211,
+        "Could not find the computer. Start Docker on the daemon's computer, then try again. If Docker is running, reset the computer in Settings, Manuals, Computer use.",
+    )
 }
 fn state(info: Option<&Value>) -> &'static str {
     let Some(info) = info else {
@@ -379,7 +393,14 @@ pub async fn status(home: &Path) -> Result<Value> {
     });
     if status["available"] == true && with(home, |c| c.busy.is_none()) {
         match info(home, &cfg, &env).await {
-            Ok(info) => with(home, |c| c.state = Some(state(info.as_ref()))),
+            Ok(info) => with(home, |c| {
+                let found = state(info.as_ref());
+                c.state = Some(found);
+                // A running computer is past any earlier failure.
+                if found == "running" {
+                    c.error = None;
+                }
+            }),
             Err(error) => with(home, |c| {
                 c.state = Some("error");
                 c.error = Some(error.message);
@@ -470,7 +491,9 @@ async fn ensure(home: &Path, cfg: &Value, env: &BTreeMap<String, String>) -> Res
     };
     let found = state(current.as_ref());
     if found == "running" {
-        if with(home, |c| c.busy.is_some() || c.state != Some("running")) {
+        if with(home, |c| {
+            c.busy.is_some() || c.state != Some("running") || c.error.is_some()
+        }) {
             settle(home, &Ok("running"));
         }
         return Ok(());

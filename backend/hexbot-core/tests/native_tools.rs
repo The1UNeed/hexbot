@@ -292,6 +292,8 @@ args=sys.argv[1:]
 log({'argv':args})
 if args[:2]==['sb','info']:
     if not state.exists(): print('cua: not found: sandbox',file=sys.stderr); sys.exit(3)
+    if (here/'docker-down').exists():
+        print(json.dumps({'name':json.loads(state.read_text())['name'],'state':'missing','status':'missing'})); sys.exit(0)
     print(state.read_text()); sys.exit(0)
 if args[:2]==['sb','create']:
     if (here/'slow').exists():
@@ -504,6 +506,72 @@ async fn bots_share_one_computer_and_take_turns() {
     native_tools::close_session(h.path(), "conversation").await;
     hexbot_core::connectors::close_bot(h.path(), "tester").await;
     hexbot_core::connectors::close_bot(h.path(), "helper").await;
+}
+#[cfg(unix)]
+#[tokio::test]
+async fn a_computer_docker_cannot_find_fails_at_once_and_is_kept() {
+    use hexbot_core::computers;
+    let h = home(json!({"tools":{"enabled_toolsets":["computer_use"]}}));
+    let cua = script(h.path(), "cua-test", FAKE_CUA);
+    std::fs::write(
+        h.path().join(".env"),
+        format!("HEXBOT_CUA_CMD={}\n", cua.display()),
+    )
+    .unwrap();
+    call(h.path(), "computer_use", json!({"action":"screenshot"}))
+        .await
+        .unwrap();
+    // Docker stops: Cua still knows the computer but finds no container.
+    std::fs::write(h.path().join("docker-down"), "1").unwrap();
+    let started = std::time::Instant::now();
+    let error = call(h.path(), "computer_use", json!({"action":"screenshot"}))
+        .await
+        .unwrap_err();
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    assert!(error.message.contains("Start Docker"), "{}", error.message);
+    let status = computers::call(h.path(), "hexbot.computer.status", &json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(status["state"], "error");
+    assert!(status["error"].as_str().unwrap().contains("Start Docker"));
+    // Nothing on it is lost: the computer is not made again.
+    let steps = std::fs::read_to_string(h.path().join("cua.log"))
+        .unwrap()
+        .lines()
+        .filter(|line| line.contains("\"create\"") || line.contains("\"rm\""))
+        .count();
+    assert_eq!(steps, 1);
+    // Docker is back, and so is the computer, without the old error, whether
+    // the user looks first or a bot acts first.
+    std::fs::remove_file(h.path().join("docker-down")).unwrap();
+    let status = computers::call(h.path(), "hexbot.computer.status", &json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(status["state"], "running");
+    assert!(status["error"].is_null());
+    std::fs::write(h.path().join("docker-down"), "1").unwrap();
+    call(h.path(), "computer_use", json!({"action":"screenshot"}))
+        .await
+        .unwrap_err();
+    std::fs::remove_file(h.path().join("docker-down")).unwrap();
+    let events = hexbot_core::events::EventHub::new();
+    computers::attach(h.path(), events.clone());
+    let mut changes = events.subscribe();
+    call(h.path(), "computer_use", json!({"action":"screenshot"}))
+        .await
+        .unwrap();
+    let mut last = Value::Null;
+    while let Ok(event) = changes.try_recv() {
+        if event.frame["params"]["type"] == "hexbot.computer.changed" {
+            last = event.frame["params"]["payload"].clone();
+        }
+    }
+    assert_eq!(last["state"], "running");
+    assert!(last["error"].is_null(), "{last}");
+    native_tools::close_session(h.path(), "conversation").await;
+    hexbot_core::connectors::close_bot(h.path(), "tester").await;
 }
 #[cfg(unix)]
 #[tokio::test]
