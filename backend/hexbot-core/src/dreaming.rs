@@ -1619,6 +1619,7 @@ impl Dreaming {
                 }
             }
         }
+        crate::computers::watch(&self.home);
         // A heartbeat problem must not hold up scheduled jobs.
         if let Err(error) = self.tick_heartbeats(now) {
             self.events

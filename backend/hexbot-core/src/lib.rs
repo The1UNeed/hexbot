@@ -16,6 +16,7 @@ pub mod db;
 pub mod diagnostics;
 pub mod dpop;
 pub mod dreaming;
+pub mod engines;
 pub mod events;
 pub mod http;
 mod install_ownership;

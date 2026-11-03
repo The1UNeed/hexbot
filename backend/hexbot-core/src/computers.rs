@@ -8,7 +8,7 @@
 //! bots' actions. The daemon serves the sandbox's viewer at
 //! `/hexbot/computer/<token>/`, so every client reaches it through the daemon:
 //! on this computer, over LAN or Tailscale, and through Hex Connect.
-use crate::{Error, Result, common, connectors, db, events::EventHub};
+use crate::{Error, Result, common, connectors, db, engines, events::EventHub};
 use axum::{
     body::Body,
     extract::{FromRequestParts, Request, WebSocketUpgrade, ws},
@@ -20,7 +20,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
     process::Stdio,
     sync::{Arc, Mutex, OnceLock},
@@ -37,6 +37,8 @@ const DEFAULT_IMAGE: &str = "linux";
 const SERVER: &str = "hexbot-computer";
 const VIEW_TTL: f64 = 3600.;
 const WS_LIMIT: usize = 64 * 1024 * 1024;
+/// How long the watchdog waits after a failed repair before it tries again.
+const RETRY_AFTER: Duration = Duration::from_secs(600);
 /// How long a bot waits for its turn before giving up.
 const TURN_WAIT: Duration = Duration::from_secs(120);
 /// Screenshots are scaled so the long edge is at most 1200 px: a 1280×800
@@ -106,7 +108,7 @@ struct Computer {
     /// The bot whose action is in progress, and the action, such as `click`.
     actor: Option<String>,
     activity: Option<String>,
-    /// A lifecycle step in progress: starting, stopping, restarting, resetting.
+    /// A lifecycle step in progress: starting, repairing, stopping, restarting, resetting.
     busy: Option<&'static str>,
     /// The last state `cua` reported, or `absent` before the first look.
     state: Option<&'static str>,
@@ -114,6 +116,8 @@ struct Computer {
     cursors: BTreeMap<String, Cursor>,
     /// The size of the bots' screenshots, the space their coordinates are in.
     screen: Option<(f64, f64)>,
+    /// When the watchdog last failed to bring the computer back.
+    failed_at: Option<Instant>,
 }
 fn computers() -> &'static Mutex<HashMap<PathBuf, Computer>> {
     static MAP: OnceLock<Mutex<HashMap<PathBuf, Computer>>> = OnceLock::new();
@@ -213,11 +217,38 @@ fn image(cfg: &Value) -> String {
         .unwrap_or(DEFAULT_IMAGE)
         .to_owned()
 }
-fn size(home: &Path) -> &'static str {
-    let chosen = std::fs::read_to_string(home.join("computer.json"))
+/// computer.json: the size the user chose; `on`, whether the computer should
+/// be running, so the watchdog brings it back; `engine`, the container engine
+/// it last ran in; `told`, whether the user heard it is down this time.
+fn saved(home: &Path) -> Value {
+    std::fs::read_to_string(home.join("computer.json"))
         .ok()
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .and_then(|v| v["size"].as_str().map(str::to_owned));
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}))
+}
+fn save(home: &Path, changes: Value) -> Result<()> {
+    let mut current = saved(home);
+    let before = current.clone();
+    for (key, value) in changes.as_object().into_iter().flatten() {
+        current[key] = value.clone();
+    }
+    if current == before {
+        return Ok(());
+    }
+    common::atomic_write(&home.join("computer.json"), current.to_string().as_bytes())
+}
+/// The computer runs: the watchdog keeps it so, and remembers its engine.
+fn came_up(home: &Path) {
+    let mut changes = json!({"on":true,"told":false});
+    if let Some(id) = engines::current().and_then(|engine| engine.id()) {
+        changes["engine"] = json!(id);
+    }
+    with(home, |c| c.failed_at = None);
+    let _ = save(home, changes);
+}
+fn size(home: &Path) -> &'static str {
+    let chosen = saved(home)["size"].as_str().map(str::to_owned);
     SIZES
         .iter()
         .map(|(name, ..)| *name)
@@ -286,28 +317,34 @@ fn parse(stdout: &str) -> Result<Value> {
         .or_else(|_| serde_json::from_str(stdout.lines().last().unwrap_or("")))
         .map_err(|_| Error::new(4211, "Cua returned an unreadable answer."))
 }
+/// Docker answers, but Cua has only the computer's record. Its files are
+/// gone, so only Reset, which the user chooses, makes a new one.
+fn removed() -> Error {
+    Error::new(
+        4211,
+        "The computer's container was removed. Reset makes a new computer.",
+    )
+}
+fn would_not_start(engine: Option<&engines::Engine>, why: &str) -> Error {
+    Error::new(
+        4211,
+        match engine {
+            Some(engine) => format!(
+                "Docker is not running on the daemon's computer, and {} would not start: {why}. Start it there, then turn the computer on.",
+                engine.name()
+            ),
+            None => "Docker is not running on the daemon's computer. Start Docker there, then turn the computer on.".into(),
+        },
+    )
+}
 /// What `cua sb info` says, or None when the computer was never created.
 async fn info(home: &Path, cfg: &Value, env: &BTreeMap<String, String>) -> Result<Option<Value>> {
     let out = cua(cfg, env, &["sb", "info", &sandbox(home), "--json"], 30).await?;
     match out.code {
-        0 => parse(&out.stdout).and_then(|info| {
-            // Cua knows the computer but its container is gone, most often
-            // because Docker is not running. Waiting does not bring it back,
-            // and making it again would lose what is on it.
-            if info["state"] == "missing" || info["status"] == "missing" {
-                return Err(not_found());
-            }
-            Ok(Some(info))
-        }),
+        0 => parse(&out.stdout).map(Some),
         3 => Ok(None),
         _ => Err(failure(&out.stderr, "Could not reach the computer.")),
     }
-}
-fn not_found() -> Error {
-    Error::new(
-        4211,
-        "Could not find the computer. Start Docker on the daemon's computer, then try again. If Docker is running, reset the computer in Settings, Manuals, Computer use.",
-    )
 }
 fn state(info: Option<&Value>) -> &'static str {
     let Some(info) = info else {
@@ -316,6 +353,8 @@ fn state(info: Option<&Value>) -> &'static str {
     match (info["state"].as_str(), info["status"].as_str()) {
         (Some("running"), Some("ready")) => "running",
         (Some("suspended" | "stopped" | "exited" | "paused"), _) => "stopped",
+        // The record without its container: Docker is down, or it was removed.
+        (Some("missing"), _) => "missing",
         (Some("failed" | "error"), _) | (_, Some("failed")) => "error",
         _ => "starting",
     }
@@ -393,11 +432,27 @@ pub async fn status(home: &Path) -> Result<Value> {
     });
     if status["available"] == true && with(home, |c| c.busy.is_none()) {
         match info(home, &cfg, &env).await {
+            Ok(info) if state(info.as_ref()) == "missing" => {
+                let reason = match engine_ready(&cfg, &env).await {
+                    Some(false) => match engines::find(&cfg, saved(home)["engine"].as_str()) {
+                        Some(engine) => format!(
+                            "Docker is not running on the daemon's computer. Turn the computer on to start {} and the computer.",
+                            engine.name()
+                        ),
+                        None => would_not_start(None, "").message,
+                    },
+                    _ => removed().message,
+                };
+                with(home, |c| {
+                    c.state = Some("error");
+                    // Why the last repair failed says more.
+                    c.error.get_or_insert(reason);
+                });
+            }
             Ok(info) => with(home, |c| {
-                let found = state(info.as_ref());
-                c.state = Some(found);
-                // A running computer is past any earlier failure.
-                if found == "running" {
+                c.state = Some(state(info.as_ref()));
+                // A computer found running again outlives why it last failed.
+                if c.state == Some("running") {
                     c.error = None;
                 }
             }),
@@ -411,6 +466,48 @@ pub async fn status(home: &Path) -> Result<Value> {
         status[key] = value.clone();
     }
     Ok(status)
+}
+
+/// Whether Docker answers, as Cua sees it; None when Cua cannot say.
+async fn engine_ready(cfg: &Value, env: &BTreeMap<String, String>) -> Option<bool> {
+    let out = cua(cfg, env, &["runtime", "doctor", "--json"], 60)
+        .await
+        .ok()?;
+    parse(&out.stdout).ok()?["backends"]
+        .as_array()?
+        .iter()
+        .find(|backend| backend["backend"] == "container")?["ready"]
+        .as_bool()
+}
+/// Starts the container engine when Docker does not answer, and waits for it.
+/// `required`: the computer is in that engine, so one that cannot start is the
+/// error. Otherwise Cua may make a new computer wherever it can.
+async fn wake(
+    home: &Path,
+    cfg: &Value,
+    env: &BTreeMap<String, String>,
+    required: bool,
+) -> Result<()> {
+    if engine_ready(cfg, env).await != Some(false) {
+        return Ok(());
+    }
+    let Some(engine) = engines::find(cfg, saved(home)["engine"].as_str()) else {
+        return if required {
+            Err(would_not_start(None, ""))
+        } else {
+            Ok(())
+        };
+    };
+    if let Err(error) = engines::start(&engine).await {
+        return Err(would_not_start(Some(&engine), &error.message));
+    }
+    for _ in 0..90 {
+        if engine_ready(cfg, env).await != Some(false) {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    Err(would_not_start(Some(&engine), "Docker did not answer"))
 }
 
 async fn create(home: &Path, cfg: &Value, env: &BTreeMap<String, String>) -> Result<()> {
@@ -482,6 +579,17 @@ async fn forget(home: &Path) {
 async fn ensure(home: &Path, cfg: &Value, env: &BTreeMap<String, String>) -> Result<()> {
     let lock = lifecycle(home);
     let _guard = lock.lock().await;
+    ensure_locked(home, cfg, env, false).await
+}
+/// `ensure` for a caller that holds the lifecycle lock.
+/// `unattended`: no one asked, so it only brings back the computer that is
+/// there; making a new one, which loses the old one's files, waits for someone.
+async fn ensure_locked(
+    home: &Path,
+    cfg: &Value,
+    env: &BTreeMap<String, String>,
+    unattended: bool,
+) -> Result<()> {
     let current = match info(home, cfg, env).await {
         Ok(current) => current,
         Err(error) => {
@@ -496,12 +604,62 @@ async fn ensure(home: &Path, cfg: &Value, env: &BTreeMap<String, String>) -> Res
         }) {
             settle(home, &Ok("running"));
         }
+        came_up(home);
         return Ok(());
     }
-    set_busy(home, Some("starting"));
+    set_busy(
+        home,
+        Some(if found == "missing" {
+            "repairing"
+        } else {
+            "starting"
+        }),
+    );
     let mut unfinished = Unfinished { home, armed: true };
-    let result = match found {
-        "absent" => create(home, cfg, env).await,
+    let result = bring_up(home, cfg, env, found, unattended).await;
+    forget(home).await;
+    if result.is_ok() {
+        came_up(home);
+    }
+    let result = result.map(|_| "running");
+    settle(home, &result);
+    unfinished.armed = false;
+    result.map(|_| ())
+}
+/// From what Cua said to a running computer.
+async fn bring_up(
+    home: &Path,
+    cfg: &Value,
+    env: &BTreeMap<String, String>,
+    found: &'static str,
+    unattended: bool,
+) -> Result<()> {
+    let found = match found {
+        // After a restart the engine may not be up yet: the computer is in it.
+        "missing" => {
+            wake(home, cfg, env, true).await?;
+            match state(info(home, cfg, env).await?.as_ref()) {
+                "missing" => return Err(removed()),
+                // Made again only when someone asks: it may hold files.
+                "error" => {
+                    return Err(Error::new(
+                        4211,
+                        "Docker is back, but the computer failed to start. Turn it on to make a new one.",
+                    ));
+                }
+                found => found,
+            }
+        }
+        // Made in the engine the user has, not wherever Cua finds room.
+        "absent" => {
+            wake(home, cfg, env, false).await?;
+            found
+        }
+        found => found,
+    };
+    match found {
+        "running" => Ok(()),
+        "absent" if !unattended => create(home, cfg, env).await,
         "stopped" => {
             async {
                 let out = cua(cfg, env, &["sb", "resume", &sandbox(home)], 120).await?;
@@ -513,20 +671,16 @@ async fn ensure(home: &Path, cfg: &Value, env: &BTreeMap<String, String>) -> Res
             .await
         }
         "starting" => ready(home, cfg, env).await,
+        "absent" | "error" if unattended => Err(Error::new(
+            4211,
+            "The computer failed to start. Turn it on to make a new one.",
+        )),
         // A computer that failed to start is made again.
         _ => {
-            async {
-                remove(home, cfg, env).await?;
-                create(home, cfg, env).await
-            }
-            .await
+            remove(home, cfg, env).await?;
+            create(home, cfg, env).await
         }
-    };
-    forget(home).await;
-    let result = result.map(|_| "running");
-    settle(home, &result);
-    unfinished.armed = false;
-    result.map(|_| ())
+    }
 }
 
 /// A bot stopped while its first action starts the computer: the start is
@@ -603,8 +757,124 @@ async fn lifecycle_step(home: &Path, step: &str) -> Result<()> {
     .await;
     forget(home).await;
     release(home);
+    match result {
+        Ok("running") => came_up(home),
+        // Turned off on purpose: the watchdog leaves it off.
+        Ok(_) => {
+            let _ = save(home, json!({"on":false}));
+        }
+        Err(_) => {}
+    }
     settle(home, &result);
     result.map(|_| ())
+}
+
+/// Called every minute from the daemon's tick, and so at its start: a
+/// computer that should be on and is not is brought back in the background.
+pub fn watch(home: &Path) {
+    static WATCHING: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    let watching = WATCHING.get_or_init(Default::default);
+    if !watching
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(home.to_owned())
+    {
+        return;
+    }
+    struct Done(&'static Mutex<HashSet<PathBuf>>, PathBuf);
+    impl Drop for Done {
+        fn drop(&mut self) {
+            self.0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&self.1);
+        }
+    }
+    let done = Done(watching, home.to_owned());
+    tokio::spawn(async move {
+        check(&done.1).await;
+    });
+}
+/// One look by the watchdog. A computer that should be on, and is stopped or
+/// lost with its engine, is repaired as Turn on would; when that fails, the
+/// primary bot tells the user once, and the watchdog tries again later.
+pub async fn check(home: &Path) {
+    if saved(home)["on"] != true
+        || with(home, |c| {
+            c.busy.is_some() || c.failed_at.is_some_and(|at| at.elapsed() < RETRY_AFTER)
+        })
+    {
+        return;
+    }
+    let Ok((cfg, env)) = setup(home) else {
+        return;
+    };
+    if command(&cfg, &env).is_none() {
+        return;
+    }
+    // Under the lock no step is half done: Reset, between removing the old
+    // computer and making the new one, does not read as removed.
+    let lock = lifecycle(home);
+    let _guard = lock.lock().await;
+    if saved(home)["on"] != true || with(home, |c| c.busy.is_some()) {
+        return;
+    }
+    match info(home, &cfg, &env).await.map(|i| state(i.as_ref())) {
+        Ok("running" | "starting") => {
+            let _ = save(home, json!({"told":false}));
+            return;
+        }
+        // Removed outside Hexbot: a new one waits until a bot or the user asks.
+        Ok("absent") => {
+            let _ = save(home, json!({"on":false}));
+            return;
+        }
+        // The rest is repaired unattended: resumed, or reported, never made anew.
+        _ => {}
+    }
+    // The user may have turned it off, or begun a step, while Cua answered.
+    if saved(home)["on"] != true || with(home, |c| c.busy.is_some()) {
+        return;
+    }
+    if let Err(error) = ensure_locked(home, &cfg, &env, true).await {
+        with(home, |c| c.failed_at = Some(Instant::now()));
+        if saved(home)["told"] != true && tell(home, &error.message) {
+            let _ = save(home, json!({"told":true}));
+        }
+    }
+}
+/// The primary bot says the computer is down, in its chat and on the user's
+/// devices. False when no one heard, so the next failure tries again.
+fn tell(home: &Path, why: &str) -> bool {
+    let Some(events) = hubs()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(home)
+        .cloned()
+    else {
+        return false;
+    };
+    let primaries = db::open(home)
+        .and_then(|conn| {
+            common::rows(
+                &conn,
+                "SELECT b.name,b.owner_id FROM bots b JOIN users u ON u.id=b.owner_id WHERE b.is_primary=1 AND u.disabled_at IS NULL",
+                &[],
+            )
+        })
+        .unwrap_or_default();
+    let message = format!("Your bots' computer is down, and I could not bring it back. {why}");
+    let mut told = false;
+    for row in primaries {
+        let (Some(bot), Some(owner)) = (row["name"].as_str(), row["owner_id"].as_str()) else {
+            continue;
+        };
+        match crate::dreaming::heartbeat::notice(home, &events, owner, bot, &message) {
+            Ok(()) => told = true,
+            Err(error) => eprintln!("Computer notice: {}", error.message),
+        }
+    }
+    told
 }
 
 /// A deleted bot leaves the computer; only its cursor goes.
@@ -682,10 +952,7 @@ pub async fn call(home: &Path, method: &str, p: &Value) -> Option<Result<Value>>
                     if !SIZES.iter().any(|(name, ..)| *name == chosen) {
                         return Err(Error::new(4202, "size must be small, medium or large"));
                     }
-                    common::atomic_write(
-                        &home.join("computer.json"),
-                        json!({"size":chosen}).to_string().as_bytes(),
-                    )?;
+                    save(home, json!({"size":chosen}))?;
                     status(home).await
                 }
                 _ => Err(Error::new(-32601, format!("unknown method: {method}"))),

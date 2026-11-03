@@ -19,6 +19,7 @@ import { Group, Heading, Row } from '../bot-settings/shared'
 const STATE_TEXT: Record<ComputerState, string> = {
   absent: 'Made the first time a bot needs it',
   error: 'Stopped with an error',
+  repairing: 'Repairing…',
   resetting: 'Resetting…',
   restarting: 'Restarting…',
   running: 'On',
@@ -27,7 +28,7 @@ const STATE_TEXT: Record<ComputerState, string> = {
   stopping: 'Turning off…'
 }
 
-const BUSY: ComputerState[] = ['resetting', 'restarting', 'starting', 'stopping']
+const BUSY: ComputerState[] = ['repairing', 'resetting', 'restarting', 'starting', 'stopping']
 
 /** What bots do on the computer. Each is room for its own controls later. */
 const USES: { description: string; icon: LucideIcon; title: string }[] = [

@@ -760,6 +760,20 @@ and runs `cua mcp` for the bots' actions. It passes `CUA_TELEMETRY=0` unless
 `hexbot-computer-<hash>`, unique per daemon home. Deleting a bot leaves the
 computer and removes only its cursor.
 
+The computer stays on once it runs, until the user turns it off; `on` in
+`computer.json` says so, beside the container engine it last ran in. Every
+minute, and when the daemon starts, a watchdog looks at it. One that should be
+on and is stopped, or that Cua reports `missing` because Docker does not
+answer, as after the daemon's computer restarts, is repaired as Turn on does:
+the daemon starts the engine (Colima, OrbStack, Docker Desktop, or Docker as a
+user service; `computer_use.engine_start` in config names a command for any
+other), waits for Docker, and resumes the computer with its files. When that
+fails, the primary bot posts the reason once in its chat, with the push a
+heartbeat message gets, and the watchdog tries again ten minutes later. The
+watchdog never makes a new computer: one Cua reports failed is reported the
+same way and left for Turn on or a bot to make again, and a container gone
+while Docker answers waits for Reset.
+
 The desktop has one pointer and one focused window, so bots take turns one
 action at a time; a bot that waits more than two minutes gets error 4209.
 The daemon records where each bot last acted so clients can draw its
@@ -768,17 +782,18 @@ cursor there.
 - `hexbot.computer.status {}` → `{available, state, control, actor,
   activity, cursors: [{bot, x, y, action, at}], error, size, sizes: [{name,
   cpu, memory_gb}], image}`. `available` is false when the daemon's computer
-  has no Cua. `state` is `absent`, `starting`, `running`, `stopping`,
-  `stopped`, `restarting`, `resetting` or `error`. When Cua knows the
-  computer but finds no container for it, most often because Docker is not
-  running, `state` is `error` at once and the bots' actions fail with the
-  same `error`; the computer is kept, not made again. `control` is `bot`, or
-  `user` while the user has taken over; the bots' actions are refused until
-  it is `bot` again. `actor` and `activity` are the bot acting and its action,
+  has no Cua. `state` is `absent`, `starting`, `repairing`, `running`,
+  `stopping`, `stopped`, `restarting`, `resetting` or `error`. When Cua
+  reports the computer `missing`, `state` is `error` at once with the reason,
+  and a bot's action repairs it as Turn on does or fails with that reason;
+  the computer is kept, not made again. `control` is `bot`, or `user` while
+  the user has taken over; the bots' actions are refused until it is `bot`
+  again. `actor` and `activity` are the bot acting and its action,
   such as `click`. A cursor's `x` and `y` are fractions of the screen and
   `at` is when it last acted, in seconds.
 - `hexbot.computer.start|stop|restart|reset {}` → the status. The step runs
-  on and reports by event; a first start downloads the image. Reset deletes
+  on and reports by event; a first start downloads the image, and a start
+  repairs a computer lost with its engine, as the watchdog does. Reset deletes
   the computer and makes a new one at the chosen size. Error 4209 while
   another step runs.
 - `hexbot.computer.control {holder: "user" | "bot"}` → the status.
