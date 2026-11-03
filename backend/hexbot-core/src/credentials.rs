@@ -481,14 +481,6 @@ pub fn require_native_worker() -> Result<()> {
     #[cfg(not(windows))]
     Ok(())
 }
-/// Pi's restricted write and edit go through a bridge on Unix directory
-/// handles, which Windows does not have yet.
-pub fn require_file_bridge() -> Result<()> {
-    #[cfg(windows)]
-    return Err(Error::new(4302, crate::windows_sandbox::FILE_BRIDGE));
-    #[cfg(not(windows))]
-    Ok(())
-}
 pub fn warn_unavailable_isolation() {
     if isolation_available() {
         return;
@@ -2319,8 +2311,8 @@ pub fn sandbox_policy(
     {
         let mut roots = vec![cwd.to_path_buf()];
         roots.extend(outputs.iter().cloned());
-        return windows_command_policy(home, &roots, confine, outputs, &[])
-            .map(|policy| (crate::windows_sandbox::helper()?, policy));
+        let policy = windows_command_policy(home, &roots, confine, outputs, &[])?;
+        Ok((crate::windows_sandbox::helper()?, policy))
     }
     #[cfg(not(windows))]
     {

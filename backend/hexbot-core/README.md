@@ -340,13 +340,15 @@ daemon's own `hexbot sandbox exec` (`windows_container.rs`), with a policy
 `credentials.rs` builds from the same workspace scan as the other sandboxes
 (`windows_policy`). `windows_sandbox.rs` finds the helper, Git Bash and the
 managed Python, reads Git metadata only from local disks, and names what
-still refuses: `full_access`, Copilot, Pi's write and edit, and the Python
-worker. When the startup probe fails, Auto and Manual refuse rather than
-ask, and scheduled scripts need the sandbox in every mode. Pi asks for a
-command's policy through `hexbot_sandbox_policy`. Bypass uses upstream Pi
-Bash and has no containment. The Windows workflows run the sandbox and the
-compiled `windows_security` probe under a standard user in an explicitly
-disposable source copy; the production platform guard stays intact. See
+still refuses: `full_access`, Copilot and the Python worker. Pi's write and
+edit reach files through handles on Windows too (`runtime_files_windows.rs`),
+once the extension uses them. When the startup probe fails, Auto and Manual
+refuse rather than ask, and scheduled scripts need the sandbox in every mode.
+Pi asks for a command's policy through `hexbot_sandbox_policy`. Bypass uses
+upstream Pi Bash and has no containment. The Windows workflows run the
+sandbox and the compiled `windows_security` probe under a standard user in an
+explicitly disposable source copy; the production platform guard stays
+intact. See
 [Windows security](../../docs/windows-security.md).
 
 ## Skills
@@ -434,7 +436,8 @@ node --test backend/pi-runtime/*.test.mjs
 ```
 
 The Pi file-tool tests build the test-only `pi_file_fixture` Cargo example and
-exercise the production directory-handle code through its private protocol.
+exercise the production directory-handle code through its private protocol,
+the Windows handle code on Windows.
 They require the pinned Rust toolchain as well as the locked Pi dependencies.
 
 Run real Pi against the local model fixture, including native memory tools and

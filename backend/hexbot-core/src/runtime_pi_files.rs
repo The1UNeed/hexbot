@@ -1,17 +1,13 @@
 //! Stateless private Pi filesystem protocol. No public tool or native-code route.
 use crate::{Error, Result, common::required};
 use base64::{Engine, engine::general_purpose::STANDARD};
-use serde_json::Value;
-#[cfg(unix)]
-use serde_json::json;
+use serde_json::{Value, json};
 use std::path::PathBuf;
 
 pub(super) const LIMIT: usize = 1024 * 1024;
-#[cfg(unix)]
 pub(super) const READ_LIMIT: usize = (LIMIT - 1024) / 4 * 3;
 pub(super) const SIZE_ERROR: &str = "Restricted write/edit exceeds the 1 MiB transport limit (about 767 KiB of file data). Use a command for larger files.";
 
-#[cfg_attr(not(unix), allow(dead_code))] // Unsupported platforms never operate on these fields.
 pub(super) struct Request {
     pub operation: String,
     pub tool: &'static str,
@@ -77,7 +73,6 @@ pub(super) fn parse(event: &Value, args: &Value) -> Result<Request> {
     })
 }
 /// The envelope actually sent by PiProcess::respond_extension, excluding LF.
-#[cfg(unix)]
 pub(super) fn reply(id: &str, result: &Value) -> Result<()> {
     let envelope = json!({"type":"extension_ui_response","id":id,"value":json!({"result":result}).to_string()});
     if serde_json::to_vec(&envelope)
@@ -89,7 +84,9 @@ pub(super) fn reply(id: &str, result: &Value) -> Result<()> {
     }
     Ok(())
 }
-#[cfg(unix)]
+/// The file layer anchors every operation to folder handles: `runtime_files.rs`
+/// on Unix, `runtime_files_windows.rs` on Windows, where an edit's identity is
+/// the file's own rather than its folder's.
 pub(super) fn perform(request: &Request, id: &str) -> Result<Value> {
     // Check every known reply before creating any missing parent directories.
     let success = json!({"success":true});

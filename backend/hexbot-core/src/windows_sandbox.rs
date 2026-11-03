@@ -18,8 +18,6 @@ pub const UNAVAILABLE: &str = "The Windows sandbox could not start, so Auto and 
 /// Code runs on the bot's own computer; the daemon's Python worker is retired
 /// and never starts on Windows.
 pub const NATIVE_WORKER: &str = "On Windows, code runs on the bot's own computer (Computer use), not on the computer running Hexbot.";
-/// Pi's restricted write and edit use a Unix handle bridge.
-pub const FILE_BRIDGE: &str = "On Windows, Auto and Manual cannot use the write and edit tools yet. Change files with a command, which runs in the sandbox.";
 pub const NO_GIT_BASH: &str = "Shell commands and scripts on Windows run in Git Bash, which is not installed. Install Git for Windows, then try again.";
 pub const TOO_LARGE: &str = "This workspace has too many protected files for the Windows sandbox to start a command. Choose a smaller workspace.";
 
