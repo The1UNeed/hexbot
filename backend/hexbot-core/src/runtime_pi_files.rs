@@ -11,6 +11,19 @@ pub(super) const LIMIT: usize = 1024 * 1024;
 pub(super) const READ_LIMIT: usize = (LIMIT - 1024) / 4 * 3;
 pub(super) const SIZE_ERROR: &str = "Restricted write/edit exceeds the 1 MiB transport limit (about 767 KiB of file data). Use a command for larger files.";
 
+/// One checked replace at a time: a side panel save or a bot's edit. Each
+/// checks the version it read and replaces the file under this lock, so neither
+/// can pass its check and then write over the other's change.
+#[cfg_attr(not(unix), allow(dead_code))] // The Pi fixture uses these only on unix.
+pub(super) static SAVES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// A file's version: the SHA-256 of its contents. Unlike a modification time
+/// it cannot repeat for a different file, however quickly the file is replaced.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(super) fn version_of(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(bytes))
+}
+
 #[cfg_attr(not(unix), allow(dead_code))] // Unsupported platforms never operate on these fields.
 pub(super) struct Request {
     pub operation: String,
@@ -18,6 +31,8 @@ pub(super) struct Request {
     pub path: PathBuf,
     pub bytes: Vec<u8>,
     pub parent: Option<[String; 2]>,
+    /// For an edit, the version `edit_open` returned with the bytes it opened.
+    pub opened: Option<String>,
 }
 pub(super) fn parse(event: &Value, args: &Value) -> Result<Request> {
     if event["type"] != "extension_ui_request" || event["method"] != "input" {
@@ -68,12 +83,22 @@ pub(super) fn parse(event: &Value, args: &Value) -> Result<Request> {
     } else {
         None
     };
+    let opened = if operation == "edit_commit" {
+        let opened = required(args, "opened")?;
+        if opened.len() != 64 || !opened.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(Error::new(4202, "Invalid opened file version"));
+        }
+        Some(opened.to_ascii_lowercase())
+    } else {
+        None
+    };
     Ok(Request {
         operation: operation.into(),
         tool,
         path,
         bytes,
         parent,
+        opened,
     })
 }
 /// The envelope actually sent by PiProcess::respond_extension, excluding LF.
@@ -107,9 +132,22 @@ pub(super) fn perform(request: &Request, id: &str) -> Result<Value> {
     }
     if request.operation == "edit_open" {
         let bytes = access.pi_read(READ_LIMIT)?;
-        let value = json!({"content":STANDARD.encode(bytes),"parent":access.parent_identity()?});
+        let value = json!({"content":STANDARD.encode(&bytes),"parent":access.parent_identity()?,"version":version_of(&bytes)});
         reply(id, &value)?;
         return Ok(value);
+    }
+    // An edit was computed from the bytes it opened. If the file changed since,
+    // such as the user saving it from the side panel, writing would undo that.
+    let _save = SAVES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(opened) = &request.opened
+        && version_of(&access.pi_read(READ_LIMIT)?) != *opened
+    {
+        return Err(Error::new(
+            4209,
+            "The file changed after it was read. Read it again and redo the edit.",
+        ));
     }
     access.pi_write(&request.bytes)?;
     Ok(success)
@@ -150,7 +188,7 @@ mod tests {
                 std::fs::write(&path, "replacement").unwrap();
             }
             let result = call(
-                json!({"operation":"edit_commit","path":path,"parent":opened["parent"],"content":STANDARD.encode("changed")}),
+                json!({"operation":"edit_commit","path":path,"parent":opened["parent"],"opened":opened["version"],"content":STANDARD.encode("changed")}),
             );
             assert!(result.unwrap_err().message.contains("folder changed"));
             assert_eq!(
@@ -165,6 +203,34 @@ mod tests {
                 assert_eq!(std::fs::read_to_string(path).unwrap(), "replacement");
             }
         }
+    }
+    #[test]
+    fn pi_edit_refuses_to_undo_a_change_made_after_it_opened_the_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().canonicalize().unwrap().join("plan.md");
+        std::fs::write(&path, "draft").unwrap();
+        let commit = |opened: &Value, content: &str| {
+            call(
+                json!({"operation":"edit_commit","path":path,"parent":opened["parent"],"opened":opened["version"],"content":STANDARD.encode(content)}),
+            )
+        };
+        let opened = call(json!({"operation":"edit_open","path":path})).unwrap();
+        // The user saves from the side panel while the bot works out its edit.
+        super::super::panel_files::write_text(&path, "user's save", None).unwrap();
+        let refused = commit(&opened, "bot's edit of the draft").unwrap_err();
+        assert_eq!(refused.code, 4209);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "user's save");
+        // Reopened, the edit goes through.
+        let opened = call(json!({"operation":"edit_open","path":path})).unwrap();
+        commit(&opened, "bot's edit of the save").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "bot's edit of the save"
+        );
+        let missing = call(
+            json!({"operation":"edit_commit","path":path,"parent":opened["parent"],"content":STANDARD.encode("x")}),
+        );
+        assert!(missing.is_err());
     }
     #[test]
     fn pi_invalid_or_oversized_requests_do_not_create_parents() {

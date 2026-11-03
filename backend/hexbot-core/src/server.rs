@@ -1998,14 +1998,15 @@ async fn computer_view(
 ) -> Response {
     crate::computers::proxy(token, request).await
 }
-/// Frames on a daemon page may only load from the daemon. A bot's visual runs
-/// in a sandboxed frame (`/visual-frame.html`); this keeps its script from
+/// Frames on a daemon page may only load from the daemon, or a `blob:` the
+/// page made itself (a PDF opened beside the chat). A bot's visual runs in a
+/// sandboxed frame (`/visual-frame.html`); this keeps its script from
 /// navigating that frame to another site with data in the URL.
 async fn frame_policy(mut response: Response) -> Response {
     response
         .headers_mut()
         .entry(axum::http::header::CONTENT_SECURITY_POLICY)
-        .or_insert(HeaderValue::from_static("frame-src 'self'"));
+        .or_insert(HeaderValue::from_static("frame-src 'self' blob:"));
     response
 }
 /// Vite names every file under `/assets/` by its content hash, so a browser

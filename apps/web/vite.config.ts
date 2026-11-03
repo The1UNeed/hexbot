@@ -53,7 +53,7 @@ export default defineConfig({
     // visual cannot navigate its frame to another site. The app in dev also
     // frames the bots' computer from the local daemon's own port.
     headers: {
-      'Content-Security-Policy': "frame-src 'self' http://127.0.0.1:* http://localhost:*"
+      'Content-Security-Policy': "frame-src 'self' blob: http://127.0.0.1:* http://localhost:*"
     },
     ...(daemon && {
       proxy: Object.fromEntries(

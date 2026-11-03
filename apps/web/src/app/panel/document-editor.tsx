@@ -39,13 +39,23 @@ export function loses(original: string, formatted: string): boolean {
 
 export interface DocumentEditorProps {
   /** What the file is, above it and not part of it. */
-  about: ReactNode
+  about?: ReactNode
   /** Characters the file may hold; the daemon refuses more. */
   cap?: number
   /** The file name, for downloads and the PDF title. */
   fileName: string
+  /** Shown under the file, inside the side panel: the quick tools. */
+  footer?: ReactNode
+  /** In the side panel beside the chat, instead of over the whole window. */
+  inline?: boolean
   onClose: () => void
+  /** Set to the editor's save, so a caller can flush a pending edit first. */
+  flushRef?: { current: (() => Promise<boolean>) | null }
+  /** The editor took on a new `value`: what it shows is that version now. */
+  onFollow?: () => void
   onSave: (text: string) => Promise<void>
+  /** Code and data: edited as plain text, with no formatted view. */
+  plain?: boolean
   title: string
   value: string
 }
@@ -211,8 +221,13 @@ export function DocumentEditor({
   about,
   cap,
   fileName,
+  flushRef,
+  footer,
+  inline = false,
   onClose,
+  onFollow,
   onSave,
+  plain = false,
   title,
   value
 }: DocumentEditorProps) {
@@ -227,10 +242,12 @@ export function DocumentEditor({
   const draft = useRef(value)
   const onSaveRef = useRef(onSave)
   onSaveRef.current = onSave
+  const onFollowRef = useRef(onFollow)
+  onFollowRef.current = onFollow
   const timer = useRef<number>(undefined)
 
   const editor = useEditor({
-    autofocus: 'end',
+    autofocus: inline ? false : 'end',
     content: value,
     contentType: 'markdown',
     editorProps: { attributes: { 'aria-label': title, class: 'hex-document outline-none' } },
@@ -254,7 +271,7 @@ export function DocumentEditor({
   })
 
   // Computed once, as the file opens: a file the formatted view would damage opens as source.
-  const [sourceOnly] = useState(() => loses(value, editor.getMarkdown()))
+  const [sourceOnly, setSourceOnly] = useState(() => plain || loses(value, editor.getMarkdown()))
   const [source, setSource] = useState<null | string>(sourceOnly ? value : null)
   // The source text as it was shown, to tell whether switching back needs to reload the editor.
   const shownSource = useRef(source)
@@ -305,26 +322,51 @@ export function DocumentEditor({
 
   const saveRef = useRef(save)
 
+  useEffect(() => {
+    if (!flushRef) {
+      return
+    }
+
+    flushRef.current = save
+
+    return () => {
+      flushRef.current = null
+    }
+  }, [flushRef, save])
+
   function schedule() {
     window.clearTimeout(timer.current)
     timer.current = window.setTimeout(() => void saveRef.current(), SAVE_DELAY)
   }
 
-  // The bot may change the file while it is open; an untouched editor follows.
+  // The bot may change the file while it is open; the editor follows unless
+  // it holds an edit not saved yet.
   useEffect(() => {
-    if (value === saved.current || edited.current) {
+    if (value === saved.current || (edited.current && draft.current !== saved.current)) {
       return
     }
 
-    if (source !== null) {
+    edited.current = false
+    draft.current = value
+
+    // Both views take the new text, so switching from source back to formatted
+    // shows it too. When the formatted view would drop part of it (the bot added
+    // a table), the file stays in source from now on, so a later edit cannot
+    // lose it.
+    editor.commands.setContent(value, { contentType: 'markdown', emitUpdate: false })
+
+    if (source !== null || loses(value, editor.getMarkdown())) {
+      if (loses(value, editor.getMarkdown())) {
+        setSourceOnly(true)
+      }
+
       setSource(value)
       shownSource.current = value
-    } else {
-      editor.commands.setContent(value, { contentType: 'markdown', emitUpdate: false })
     }
 
     saved.current = value
     setLength(value.length)
+    onFollowRef.current?.()
   }, [editor, source, value])
 
   const close = useCallback(async () => {
@@ -334,6 +376,11 @@ export function DocumentEditor({
   }, [onClose])
 
   useEffect(() => {
+    // In the side panel Escape belongs to the chat, and the file saves as it is typed.
+    if (inline) {
+      return
+    }
+
     const keys = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && !event.defaultPrevented) {
         event.preventDefault()
@@ -347,7 +394,7 @@ export function DocumentEditor({
     window.addEventListener('keydown', keys)
 
     return () => window.removeEventListener('keydown', keys)
-  }, [close])
+  }, [close, inline])
 
   // Leaving without closing (another bot's chat opened) still saves the draft, to
   // this file: the editor never outlives the file it was opened on.
@@ -402,6 +449,110 @@ export function DocumentEditor({
         ? 'Saved'
         : ''
 
+  const menu = (
+    <Menu
+      items={[
+        {
+          label: item(
+            source === null ? <Code size={14} /> : <FileText size={14} />,
+            source === null ? 'View source' : 'View formatted'
+          ),
+          disabled: sourceOnly,
+          onSelect: toggleSource
+        },
+        { label: '', separator: true },
+        { label: item(<Copy size={14} />, 'Copy'), onSelect: () => void copy() },
+        {
+          label: item(<Download size={14} />, 'Download'),
+          onSelect: () => download(fileName, current())
+        },
+        ...(plain
+          ? []
+          : [
+              {
+                label: item(<FileText size={14} />, 'Download as PDF'),
+                onSelect: () => {
+                  if (source !== null) {
+                    editor.commands.setContent(source, {
+                      contentType: 'markdown',
+                      emitUpdate: false
+                    })
+                  }
+
+                  printDocument(title, editor.getHTML())
+                }
+              }
+            ])
+      ]}
+      trigger={
+        <button aria-label="More" className={toolClass} type="button">
+          <MoreHorizontal size={16} />
+        </button>
+      }
+    />
+  )
+
+  const body = (
+    <>
+      {error ? (
+        <p
+          className="mb-5 rounded-[12px] bg-danger/10 px-3.5 py-2.5 text-[length:var(--text-secondary)] text-danger"
+          role="alert"
+        >
+          {error}
+        </p>
+      ) : null}
+      {sourceOnly && !plain ? (
+        <p className="mb-5 text-[length:var(--text-secondary)] text-muted">
+          This file has a table, image or HTML that the formatted view would drop, so it opens as
+          Markdown.
+        </p>
+      ) : null}
+      {source !== null ? (
+        <textarea
+          aria-label={`${title} source`}
+          className="min-h-[60vh] w-full resize-none bg-transparent font-mono text-[13px] leading-relaxed text-foreground outline-none"
+          onChange={event => {
+            edited.current = true
+            draft.current = event.target.value
+            setSource(event.target.value)
+            setLength(event.target.value.length)
+            schedule()
+          }}
+          spellCheck={false}
+          value={source}
+        />
+      ) : (
+        <EditorContent editor={editor} />
+      )}
+    </>
+  )
+
+  if (inline) {
+    return (
+      <div className="flex h-full min-h-0 flex-col" data-testid="document-editor">
+        <div className="flex h-11 shrink-0 items-center gap-1 border-b border-foreground/[0.07] px-2">
+          {plain ? (
+            <span className="truncate px-1.5 text-[length:var(--text-meta)] text-muted">
+              Plain text
+            </span>
+          ) : (
+            <Toolbar disabled={source !== null} editor={editor} />
+          )}
+          <span
+            aria-live="polite"
+            className="ml-auto pr-1 text-[length:var(--text-meta)] text-muted"
+          >
+            {status}
+          </span>
+          {menu}
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 pt-5 pb-8">{body}</div>
+        {footer}
+      </div>
+    )
+  }
+
   return createPortal(
     <div
       aria-label={title}
@@ -431,42 +582,7 @@ export function DocumentEditor({
           <span aria-live="polite" className="mr-1 text-[length:var(--text-meta)] text-muted">
             {status}
           </span>
-          <Menu
-            items={[
-              {
-                label: item(
-                  source === null ? <Code size={14} /> : <FileText size={14} />,
-                  source === null ? 'View source' : 'View formatted'
-                ),
-                disabled: sourceOnly,
-                onSelect: toggleSource
-              },
-              { label: '', separator: true },
-              { label: item(<Copy size={14} />, 'Copy'), onSelect: () => void copy() },
-              {
-                label: item(<Download size={14} />, 'Download'),
-                onSelect: () => download(fileName, current())
-              },
-              {
-                label: item(<FileText size={14} />, 'Download as PDF'),
-                onSelect: () => {
-                  if (source !== null) {
-                    editor.commands.setContent(source, {
-                      contentType: 'markdown',
-                      emitUpdate: false
-                    })
-                  }
-
-                  printDocument(title, editor.getHTML())
-                }
-              }
-            ]}
-            trigger={
-              <button aria-label="More" className={toolClass} type="button">
-                <MoreHorizontal size={16} />
-              </button>
-            }
-          />
+          {menu}
           <button
             aria-label="Close"
             className={toolClass}
@@ -482,37 +598,7 @@ export function DocumentEditor({
           <blockquote className="mb-9 border-l-2 border-foreground/15 pl-4 text-[length:var(--text-secondary)] leading-relaxed text-foreground/75 italic">
             {about}
           </blockquote>
-          {error ? (
-            <p
-              className="mb-5 rounded-[12px] bg-danger/10 px-3.5 py-2.5 text-[length:var(--text-secondary)] text-danger"
-              role="alert"
-            >
-              {error}
-            </p>
-          ) : null}
-          {sourceOnly ? (
-            <p className="mb-5 text-[length:var(--text-secondary)] text-muted">
-              This file has a table, image or HTML that the formatted view would drop, so it opens
-              as Markdown.
-            </p>
-          ) : null}
-          {source !== null ? (
-            <textarea
-              aria-label={`${title} source`}
-              className="min-h-[60vh] w-full resize-none bg-transparent font-mono text-[13px] leading-relaxed text-foreground outline-none"
-              onChange={event => {
-                edited.current = true
-                draft.current = event.target.value
-                setSource(event.target.value)
-                setLength(event.target.value.length)
-                schedule()
-              }}
-              spellCheck={false}
-              value={source}
-            />
-          ) : (
-            <EditorContent editor={editor} />
-          )}
+          {body}
         </div>
       </div>
     </div>,
