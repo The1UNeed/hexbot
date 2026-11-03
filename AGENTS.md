@@ -214,7 +214,7 @@ Code"): one `release.yml` for both channels, a stable tag, a scheduled
 nightly, and a finalize step that commits bookkeeping back to `main`.
 
 - `main` is always buildable. CI (`ci.yml`) runs tests and builds on every
-  push and pull request and publishes nothing.
+  pull request and push to `main` and publishes nothing.
 - A **stable** release is a `v<version>` tag on `main` where `<version>`
   equals `apps/desktop/package.json` (`preflight` refuses anything else).
   Push the tag, or dispatch `release.yml` on `main` with channel `stable`
