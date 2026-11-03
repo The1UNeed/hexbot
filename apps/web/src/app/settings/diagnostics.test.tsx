@@ -426,6 +426,22 @@ describe('diagnostics', () => {
     expect(diagnosticsLogs).not.toHaveBeenCalledWith(expect.objectContaining({ before: 1024 }))
   })
 
+  it('pages back with the filters of the lines shown when a new filter fails', async () => {
+    vi.mocked(diagnosticsLogs).mockResolvedValue(logs({ before: 1024, more: true }))
+    render(<DiagnosticsSettings />)
+    fireEvent.click(await screen.findByRole('tab', { name: 'Logs' }))
+    await screen.findByText('HERMES_BACKEND_READY port=9119')
+
+    vi.mocked(diagnosticsLogs).mockRejectedValueOnce(new Error('daemon restarting'))
+    fireEvent.click(screen.getByRole('switch', { name: 'Errors only' }))
+    expect(await screen.findByText('daemon restarting')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show older lines' }))
+    await waitFor(() =>
+      expect(diagnosticsLogs).toHaveBeenLastCalledWith({ before: 1024, file: 'daemon.log' })
+    )
+  })
+
   it('says when no log has been kept and when the daemon is too old for logs', async () => {
     vi.mocked(diagnosticsLogs).mockResolvedValue(logs({ file: null, files: [], lines: [] }))
     const { unmount } = render(<DiagnosticsSettings />)

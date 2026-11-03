@@ -1379,6 +1379,8 @@ function Logs() {
   // Distance from the bottom to keep when older lines arrive; null scrolls to the end.
   const keep = useRef<null | number>(null)
   const request = useRef(0)
+  // The filters the shown page was read with; older pages must match it.
+  const shown = useRef<{ errors?: boolean; query?: string }>({})
 
   useEffect(() => {
     const timer = setTimeout(() => setQuery(search.trim()), 300)
@@ -1386,23 +1388,16 @@ function Logs() {
     return () => clearTimeout(timer)
   }, [search])
 
-  const filters = {
-    errors: errorsOnly || undefined,
-    query: query || undefined
-  }
-
   useEffect(() => {
     const id = ++request.current
+    const filters = { errors: errorsOnly || undefined, query: query || undefined }
 
     setBusy('tail')
-    diagnosticsLogs({
-      errors: errorsOnly || undefined,
-      file: file || undefined,
-      query: query || undefined
-    }).then(
+    diagnosticsLogs({ ...filters, file: file || undefined }).then(
       next => {
         if (id === request.current) {
           keep.current = null
+          shown.current = filters
           setPage(next)
           setError(null)
           setBusy('')
@@ -1436,7 +1431,7 @@ function Logs() {
     setBusy('older')
 
     try {
-      const next = await diagnosticsLogs({ ...filters, before: page.before, file: page.file })
+      const next = await diagnosticsLogs({ ...shown.current, before: page.before, file: page.file })
 
       if (id === request.current) {
         const box = scroller.current
