@@ -102,11 +102,12 @@ Tabs, in order:
    memory is shared by all bots and moves out to Settings, Memory;
    this page links to it. Today the core editor appears inside every
    bot's Memory tab, which reads as if each bot had its own.
-5. **Tools.** Switches grouped as Computer (terminal, files, code
-   execution, browser, computer use, and with computer use on, the size
-   of the computer the bots share), Senses (vision, built-in voice),
-   Working with others (message other bots, delegate, scheduling), and
-   the Workspace working directory. A tool with a missing prerequisite
+5. **Tools.** Switches grouped as Workspace (terminal, files, and the
+   working directory), Senses (vision, built-in voice), and Working with
+   others (message other bots, delegate, scheduling). Computer use is not
+   here: every bot has it, and Settings, Manuals, Computer use holds the
+   computer's size and controls. Code execution and the browser are what
+   bots do on that computer, not tools of their own. A tool with a missing prerequisite
    shows what to install instead of a switch.
 6. **Connectors.** See below.
 7. **Skills.** Installed skills with switches, grouped by category,
@@ -149,7 +150,7 @@ The first catalog, by group:
 
 | Group | Connectors |
 | --- | --- |
-| Search and browsing | Web search (provider choice: Exa, Tavily, Brave, Firecrawl, Parallel, Keenable, SearXNG), Cloud browser (Browserbase, Browser Use) |
+| Search and browsing | Web search (provider choice: Exa, Tavily, Brave, Firecrawl, Parallel, Keenable, SearXNG) |
 | Images and voice | Image generation (FAL, Krea, OpenAI, xAI), Video generation, Premium voice (ElevenLabs, OpenAI, Mistral) |
 | Notes and work | Notion, Linear, Airtable |
 | Social and home | X search, Home Assistant, Spotify |
@@ -167,11 +168,13 @@ Slack, Home Assistant, Spotify, ElevenLabs, GitHub, and the other
 channels) use the Simple Icons glyphs (CC0), bundled as SVG under
 `apps/web/src/assets/connectors/` and drawn white on the brand colour
 in a 28 px rounded square. Capability rows that front several providers
-(web search, cloud browser, image and video generation) use a neutral
-Lucide glyph on a Hexbot colour, since no single brand owns them. MCP
-servers use the server glyph unless the catalog entry names a brand.
-Simple Icons has no glyph for Exa, FAL, Krea, Tavily, Firecrawl, or
-Browserbase; those providers appear as text in the row's status and
+(web search, image and video generation) use a neutral Lucide glyph on a
+Hexbot colour, since no single brand owns them. MCP servers take a brand
+glyph when their name, or else their URL or command, names one
+(`serverIcon` in `apps/web/src/lib/plugin-icons.ts`), and the server
+glyph otherwise. Skills that ship with Hexbot each have a brand or Lucide
+glyph (`skillIcon`); skills the user or a bot writes share the sparkles
+glyph. Simple Icons has no glyph for Exa, FAL, Krea, Tavily or Firecrawl; those providers appear as text in the row's status and
 never need an icon of their own.
 
 ### The page

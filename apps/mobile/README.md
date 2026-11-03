@@ -7,22 +7,35 @@ Transparency use solid controls. Lists and messages use solid backgrounds.
 
 ## Layout
 
-A messaging app with no tabs. One list holds every bot's chat and every room,
-newest first, with the primary bot pinned on top. A Check-ins conversation from
-before the heartbeat stays in it until you delete it.
-Each row shows the face, the name, the time and the last thing said, or what
-the bot is doing while it works. Search at the bottom filters the list. A row
-opens its conversation; a long press opens the bot's profile or the room's
-settings. Rooms open full screen like a bot's chat, and archiving the open
-room returns to the list. A bot waiting on you in a conversation with another
-bot gets a line at the top of the list that opens it.
+A messaging app. One list holds every bot's chat and every room, newest first,
+with the primary bot pinned on top. A Check-ins conversation from before the
+heartbeat stays in it until you delete it. Each row shows the face, the name,
+the time and the last thing said, or what the bot is doing while it works.
+Your initials at the top left open Settings, + makes a bot or a room, and the
+grid button beside Search at the bottom opens every bot's profile, scheduled
+jobs and all rooms. A row opens its conversation; a long press opens the
+bot's profile or the room's settings. Archiving the open room returns to the
+list. A bot waiting on you in a conversation with another bot gets a line at
+the top of the list that opens it.
 
-Your initials at the top left open Settings: the daemon, what bots are doing
-right now, About you, models, connectors, skills, usage, devices, pairing,
-Hex Connect and updates. + at the top right makes a new bot or room. The grid
-button next to Search opens Bots & jobs: every bot's profile, scheduled jobs,
-and all rooms, archived ones included. With more than one daemon saved, its
-name above the list switches daemons; otherwise Settings does.
+The screens are Hexbot's own; only what the system has to place is native.
+On iOS the app is SwiftUI's `NavigationSplitView`, from `@expo/ui`
+(`src/shell/SplitView.tsx`, mounted by `app/_layout.ios.tsx`). On iPhone Duo
+open and on iPad the list is its sidebar and what you choose opens beside
+it; on iPhone and on iPhone Duo closed it collapses to the list and pushes
+what you choose, with native back. Your initials, +, and a chat's title and
+buttons (Search, the bots' computer, the profile or room settings) are the
+system bars' items, so iOS places them: in the side rail by the clock on the
+closed Duo, against the fold when it is half open. On Android, an Expo Router
+`Stack` (`app/`) pushes a chat, Settings and Bots & jobs over the list. A
+chat's back closes it, except while files upload. The app turns with the
+phone and builds with the iOS 27 SDK, whose scene life cycle Expo SDK 58 sets
+up.
+
+Settings is the daemon, what bots are doing right now, About you, models,
+connectors, skills, usage, devices, pairing, Hex Connect and updates; it also
+switches daemons. + in the Chats bar makes a new bot or room. Bots & jobs is
+every bot's profile, scheduled jobs, and all rooms, archived ones included.
 
 Profiles, settings areas, tool steps, visuals and the bots' computer open as
 front cards (`src/ui/Layer.tsx`) that leave the screen below in view. The
@@ -209,6 +222,30 @@ Run `EXPO_NO_KEYCHAIN=1 pnpm exec eas credentials --platform ios`,
 choose production, then App Store Connect to assign a valid API key. Retry
 the existing build after fixing credentials. Do not revoke a shared key
 without checking its other uses.
+
+## Store privacy answers
+
+Keep the App Store Connect "App Privacy" answers and the Google Play "Data
+safety" form in step with `docs/usage-data.md` and hexbot.app/privacy. With
+usage data as it is now:
+
+- Privacy policy URL: `https://hexbot.app/privacy/`.
+- Tracking: none. Nothing is combined with other companies' data or used for
+  advertising, so the app shows no App Tracking Transparency prompt.
+- Usage Data, Product Interaction: collected, not linked to the user, used for
+  Analytics. Optional: only after the user turns on usage data.
+- Diagnostics, Other Diagnostic Data (`app_error`, the error type only):
+  collected, not linked to the user, used for Analytics. Optional, as above.
+- Identifiers, Device ID: the random usage data install ID and the Expo push
+  token. Not linked to the user. Used for Analytics (install ID) and App
+  Functionality (push token, which goes to the user's own daemon and through
+  Connect to Expo only to deliver notifications).
+- Everything is encrypted in transit. Turning usage data off deletes the
+  install ID, after which past events cannot be tied to the phone.
+
+The production build gets the project key from `EXPO_PUBLIC_POSTHOG_KEY` in
+`eas.json`; development and simulator builds have none and show no usage
+data switch.
 
 ## Verify
 

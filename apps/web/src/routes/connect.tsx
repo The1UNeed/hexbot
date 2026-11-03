@@ -275,7 +275,7 @@ function ConnectPage() {
   }
 
   return (
-    <main className="relative grid min-h-screen place-items-center bg-background p-6 text-foreground">
+    <main className="relative grid min-h-dvh place-items-center bg-background p-6 text-foreground">
       <div aria-hidden className="hex-drag absolute inset-x-0 top-0 h-11" />
       <form
         className="hex-rise w-full max-w-[520px] space-y-5 rounded-window border border-border bg-surface p-6"

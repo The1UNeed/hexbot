@@ -183,7 +183,9 @@ function LayerCard({
 }: Omit<LayerProps, 'visible'> & { offset: Animated.Value }) {
   const theme = useTheme()
   const insets = useSafeAreaInsets()
-  const { height } = useWindowDimensions()
+  const { height, width } = useWindowDimensions()
+  // On a wide screen the card keeps a readable width; sideways, it clears the side insets.
+  const side = Math.max(0, (width - CARD_MAX_WIDTH) / 2)
   const top = compact ? Math.max(insets.top + PEEK, height * 0.38) : insets.top + PEEK
   const close = useRef(onClose)
   close.current = onClose
@@ -231,6 +233,8 @@ function LayerCard({
           {
             backgroundColor: theme.grouped,
             borderColor: theme.chromeBorder,
+            left: Math.max(side, insets.left),
+            right: Math.max(side, insets.right),
             top,
             transform: [{ translateY: offset }]
           }
@@ -294,6 +298,8 @@ function LayerCard({
     </View>
   )
 }
+
+const CARD_MAX_WIDTH = 640
 
 const styles = StyleSheet.create({
   action: { minHeight: HIT, paddingHorizontal: 18 },

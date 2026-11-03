@@ -13,7 +13,7 @@ pub(super) fn descriptor() -> Value {
     json!({
         "name": NAME,
         "label": "Passwords",
-        "description": "Sign in to websites with the user's saved passwords. You never see a password: the daemon types it into the page. Never ask the user to type a password or code in the chat. list shows the logins you may use (id, title, site, username). When a site needs a sign-in and none fits, call ask straight away, without asking first: it shows the user a secure sign-in card in your chat, and what they type is saved for all their bots and never reaches you. Pass id to ask for a new password for a login that stopped working. fill types a login's username, password or one-time code into fields: in the browser give each field's ref from browser_snapshot, and the page must be on the login's site; on the computer give each field's coordinate, which asks the user first. After filling, press the sign-in button yourself. The primary bot, in its own chat, can also share (choose which bots get a login; bots null means every bot), update (title, url, username) and delete.",
+        "description": "Sign in to websites with the user's saved passwords. You never see a password: the daemon types it into the page. Never ask the user to type a password or code in the chat. list shows the logins you may use (id, title, site, username). When a site needs a sign-in and none fits, call ask straight away, without asking first: it shows the user a secure sign-in card in your chat, and what they type is saved for all their bots and never reaches you. Pass id to ask for a new password for a login that stopped working. fill types a login's username, password or one-time code into fields on the bots' computer: give each field's coordinate from the latest screenshot. It asks the user first, except in Bypass. After filling, press the sign-in button yourself. The primary bot, in its own chat, can also share (choose which bots get a login; bots null means every bot), update (title, url, username) and delete.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -29,10 +29,9 @@ pub(super) fn descriptor() -> Value {
                         "type": "object",
                         "properties": {
                             "field": { "type": "string", "enum": ["username", "password", "code"] },
-                            "ref": { "type": "string", "description": "The field's ref from browser_snapshot" },
                             "coordinate": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2, "description": "The field's point in the latest computer screenshot" }
                         },
-                        "required": ["field"]
+                        "required": ["field", "coordinate"]
                     }
                 },
                 "bots": {
@@ -227,12 +226,20 @@ impl Runtime {
                         .zip(secrets)
                         .map(|(f, secret)| (f["ref"].as_str().unwrap_or("").to_owned(), secret))
                         .collect::<Vec<_>>();
+                    // The bot knows usernames from list; only these are hidden after.
+                    let hidden = fields
+                        .iter()
+                        .zip(&fills)
+                        .filter(|(f, _)| f["field"] != "username")
+                        .map(|(_, (_, secret))| secret.clone())
+                        .collect::<Vec<_>>();
                     crate::native_tools::browser_fill(
                         &self.home,
                         &s.bot,
                         &s.stored,
                         |page| crate::passwords::same_site(&saved, page),
                         &fills,
+                        &hidden,
                     )
                     .await?;
                 } else {

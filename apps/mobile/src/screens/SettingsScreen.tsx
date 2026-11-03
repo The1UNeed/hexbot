@@ -1,6 +1,5 @@
 import { Ionicons } from '@expo/vector-icons'
 import { Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native'
-import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import {
   Banner,
@@ -13,8 +12,8 @@ import {
   Row,
   Screen,
   STATUS_LABELS,
+  SwitchRow,
   Text,
-  TopBar,
   useTheme,
   withAlpha
 } from '../ui'
@@ -28,6 +27,7 @@ export interface DaemonArea {
     | 'connect'
     | 'connectors'
     | 'devices'
+    | 'licenses'
     | 'network'
     | 'passwords'
     | 'plugins'
@@ -47,7 +47,6 @@ export interface SettingsScreenProps {
   onDismissError?: () => void
   /** Signed-in person on this daemon. */
   user?: { name: string } | null
-  onBack: () => void
   /** Opens the list of saved daemons to switch between. */
   onSwitchDaemon: () => void
   /** Bots that are working, stopped or waiting; each opens where it is. */
@@ -60,6 +59,8 @@ export interface SettingsScreenProps {
   onDisconnect?: () => void
   refreshing?: boolean
   onRefresh?: () => void
+  /** Anonymous usage data from this phone; leave out where it cannot be sent. */
+  usageData?: { on: boolean; onChange: (on: boolean) => void; onOpenDocs: () => void }
 }
 
 const STATE: Record<ConnectionState, string> = {
@@ -76,7 +77,6 @@ export function SettingsScreen({
   daemon,
   error,
   groups,
-  onBack,
   onDisconnect,
   onDismissError,
   onOpenArea,
@@ -86,10 +86,10 @@ export function SettingsScreen({
   onRefresh,
   onSwitchDaemon,
   refreshing,
+  usageData,
   user
 }: SettingsScreenProps) {
   const theme = useTheme()
-  const insets = useSafeAreaInsets()
   const via =
     daemon?.via === 'connect'
       ? 'through Hex Connect'
@@ -98,10 +98,10 @@ export function SettingsScreen({
         : 'on the local network'
 
   return (
-    <Screen background="grouped" testID="settings-screen">
-      <TopBar onBack={onBack} testID="settings-bar" title="Settings" />
+    <Screen background="grouped" edges={['left', 'right']} testID="settings-screen">
       <ScrollView
-        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
+        contentContainerStyle={[styles.content, { paddingBottom: 24 }]}
+        contentInsetAdjustmentBehavior="automatic"
         refreshControl={
           onRefresh ? <RefreshControl onRefresh={onRefresh} refreshing={!!refreshing} /> : undefined
         }
@@ -249,6 +249,26 @@ export function SettingsScreen({
             ))}
           </Group>
         ))}
+
+        {usageData ? (
+          <Group
+            footer="Once a day: that the app was opened, its version, and whether this is a phone or a tablet. Never what you write, names, or your location."
+            title="Privacy"
+          >
+            <SwitchRow
+              onValueChange={usageData.onChange}
+              testID="settings-usage-data"
+              title="Share anonymous usage data"
+              value={usageData.on}
+            />
+            <Row
+              chevron
+              onPress={usageData.onOpenDocs}
+              testID="settings-usage-docs"
+              title="Every event we collect"
+            />
+          </Group>
+        ) : null}
 
         {user || onDisconnect ? (
           <View style={styles.footer}>

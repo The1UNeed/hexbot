@@ -1,5 +1,5 @@
 import { useNavigate, useParams } from '@tanstack/react-router'
-import { Info } from 'lucide-react'
+import { Info, Search } from 'lucide-react'
 import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { Avatar, useFaceColor } from '../../components/ui/avatar'
@@ -10,6 +10,7 @@ import { Thinking } from '../../components/ui/thinking'
 import { roomsSend, roomsStop } from '../../lib/api'
 import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
+import { plainError } from '../../lib/plain-error'
 import { useRoomOrLeave } from '../../lib/room-or-leave'
 import { useTurnCues } from '../../lib/sounds'
 import { toMillis } from '../../lib/time'
@@ -19,12 +20,15 @@ import { connectorsActions } from '../../stores/connectors'
 import { useEmotion, useEmotions, useRoomFeelings } from '../../stores/emotions'
 import { useMe } from '../../stores/me'
 import { roomFailure, roomStatus, useRooms } from '../../stores/rooms'
+import { useSearch } from '../../stores/search'
 import { useTranscripts } from '../../stores/transcripts'
 
 import { AskingRow, AskRows } from './asking-row'
 import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
+import { useSearchJump } from './search-jump'
 import { type Ask, liveMood } from './steps'
+import { DeliveryMark, NotSent, SEND_TIMEOUT_MS } from './unsent'
 import { WaitingBanner } from './waiting-banner'
 import { WorkStatus } from './work-status'
 
@@ -41,6 +45,19 @@ import {
   transcriptClass,
   userBubbleClass
 } from './index'
+
+/** Your room message before the daemon stores it; it becomes a room event once it does. */
+interface Unsent {
+  /** The room's newest event when it was sent: its copy comes after. */
+  after: number
+  delivery: 'failed' | 'sending'
+  id: string
+  reason?: string
+  roomId: string
+  /** When it was first sent: a matching message of yours from then on is this one. */
+  sentAt: number
+  text: string
+}
 
 // Stable empty values: a fresh [] or {} per render re-renders forever.
 const NO_EVENTS: RoomEvent[] = []
@@ -95,7 +112,7 @@ export const RoomEventRow = memo(function RoomEventRow({
   }
 
   if (event.kind === 'turn.failed') {
-    const error = typeof event.payload.error === 'string' ? event.payload.error : ''
+    const error = typeof event.payload.error === 'string' ? plainError(event.payload.error) : ''
 
     return (
       <div
@@ -272,6 +289,8 @@ export function RoomMentionPopover({
 export function RoomConversation() {
   const { room: roomId } = useParams({ strict: false }) as { room: string }
   const navigate = useNavigate()
+  const searching = useSearch(state => state.open)
+  const setSearching = useSearch(state => state.setOpen)
   const room = useRoomOrLeave(roomId, 'open')
   const events = useRooms(state => state.eventsByRoom[roomId] ?? NO_EVENTS)
   const loaded = useRooms(state => roomId in state.eventsByRoom)
@@ -279,7 +298,14 @@ export function RoomConversation() {
   const transcripts = useTranscripts(state => state.bySession)
   const bots = useBots(state => state.byName)
   const [text, setText] = useState('')
-  const [sending, setSending] = useState(false)
+  const [unsent, setUnsent] = useState<Unsent[]>([])
+  const attempts = useRef(new Map<string, number>())
+  // Each send's request still out, answering whether it posted.
+  const inflight = useRef(new Map<string, Promise<boolean>>())
+  // Room events a send's reply named, by room and seq: they belong to that
+  // send, never another.
+  const answered = useRef(new Set<string>())
+  const me = useMe(state => state.me)
   const bottom = useRef<HTMLDivElement>(null)
   const viewport = useRef<HTMLDivElement>(null)
   const atBottom = useRef(true)
@@ -308,7 +334,16 @@ export function RoomConversation() {
     setWindow({ room: roomId, first: events[start].seq })
   }
 
+  // A search result older than the shown part widens the window to reach it.
+  const jump = useSearch(state => state.jump)
+  const jumpSeq = jump ? Number(jump.id) : NaN
+
+  if (jumpSeq < (events[start]?.seq ?? 0) && events.some(event => event.seq === jumpSeq)) {
+    setWindow({ room: roomId, first: jumpSeq })
+  }
+
   const shown = events.slice(start)
+  useSearchJump(viewport, start)
 
   const loadEarlier = () => {
     const node = viewport.current
@@ -356,7 +391,7 @@ export function RoomConversation() {
     if (atBottom.current) {
       void bottom.current?.scrollIntoView({ block: 'end' })
     }
-  }, [events, transcripts])
+  }, [events, transcripts, unsent])
 
   const members = useMemo(
     () => room?.members.filter(member => member.member_kind === 'bot' && !member.left_at) ?? [],
@@ -405,19 +440,132 @@ export function RoomConversation() {
     return latest
   }, [events])
 
-  const send = async () => {
+  // A room message carries no key the daemon could refuse twice. One of yours
+  // with the same text since it was sent is this one, each claimed once, oldest
+  // send first.
+  const landedIn = (list: RoomEvent[], items: Unsent[]) => {
+    const claimed = new Set(answered.current)
+
+    return new Set(
+      items.flatMap(item => {
+        const event = list.find(
+          event =>
+            !claimed.has(`${item.roomId}:${event.seq}`) &&
+            event.kind === 'message.user' &&
+            (!me || event.actor_id === me.id) &&
+            event.payload.text === item.text &&
+            event.seq > item.after &&
+            toMillis(event.created_at) >= item.sentAt - 1000
+        )
+
+        return event ? (claimed.add(`${item.roomId}:${event.seq}`), [item.id]) : []
+      })
+    )
+  }
+
+  // The room's copy can land before the send's reply: the bubble goes then.
+  const landedHere = landedIn(
+    events,
+    unsent.filter(item => item.roomId === roomId)
+  )
+
+  const unsentHere = unsent.filter(item => item.roomId === roomId && !landedHere.has(item.id))
+
+  const patch = (id: string, next: null | Partial<Unsent>) =>
+    setUnsent(list =>
+      next
+        ? list.map(item => (item.id === id ? { ...item, ...next } : item))
+        : list.filter(item => item.id !== id)
+    )
+
+  const deliver = async (item: Unsent) => {
+    const attempt = (attempts.current.get(item.id) ?? 0) + 1
+    const current = () => attempts.current.get(item.id) === attempt
+    attempts.current.set(item.id, attempt)
+
+    // A retry while an earlier try is still out waits for its answer: a
+    // second request could post the message twice.
+    const earlier = inflight.current.get(item.id)
+
+    if (earlier) {
+      patch(item.id, { delivery: 'sending', reason: undefined })
+
+      if ((await earlier) || !current()) {
+        return
+      }
+    }
+
+    // A retry first looks for the first try in the room, as the list does.
+    const landed = landedIn(
+      useRooms.getState().eventsByRoom[item.roomId] ?? [],
+      unsent.filter(other => other.roomId === item.roomId)
+    ).has(item.id)
+
+    if (attempt > 1 && landed) {
+      attempts.current.delete(item.id)
+      patch(item.id, null)
+
+      return
+    }
+
+    patch(item.id, { delivery: 'sending', reason: undefined })
+
+    const timer = setTimeout(() => {
+      if (current()) {
+        patch(item.id, { delivery: 'failed', reason: 'The daemon has not answered yet.' })
+      }
+    }, SEND_TIMEOUT_MS)
+
+    const request = roomsSend(item.roomId, item.text).then(
+      ({ event }) => {
+        answered.current.add(`${item.roomId}:${event.seq}`)
+        // Lands the event now, so the bubble never blinks out before the broadcast.
+        useRooms.getState().handleEvent(item.roomId, event)
+        attempts.current.delete(item.id)
+        patch(item.id, null)
+
+        return true
+      },
+      (error: unknown) => {
+        if (current()) {
+          patch(item.id, {
+            delivery: 'failed',
+            reason: plainError(error instanceof Error ? error.message : String(error))
+          })
+        }
+
+        return false
+      }
+    )
+
+    inflight.current.set(item.id, request)
+    await request
+    clearTimeout(timer)
+
+    if (inflight.current.get(item.id) === request) {
+      inflight.current.delete(item.id)
+    }
+  }
+
+  // The bubble holds the message now, greyed until the room takes it and with
+  // Retry if it does not, so the field clears at once.
+  const send = () => {
     if (!text.trim()) {
       return
     }
 
-    setSending(true)
-
-    try {
-      await roomsSend(roomId, text.trim())
-      setText('')
-    } finally {
-      setSending(false)
+    const item: Unsent = {
+      after: events.reduce((newest, event) => Math.max(newest, event.seq), 0),
+      delivery: 'sending',
+      id: crypto.randomUUID(),
+      roomId,
+      sentAt: Date.now(),
+      text: text.trim()
     }
+
+    setUnsent(list => [...list, item])
+    setText('')
+    void deliver(item)
   }
 
   if (!room) {
@@ -440,14 +588,27 @@ export function RoomConversation() {
             {members.length} bot{members.length === 1 ? '' : 's'}
           </span>
         </div>
-        <button
-          aria-label="Room settings"
-          className="hex-glass hex-glass-press hex-focus hex-no-drag absolute top-2.5 right-3 grid size-9 place-items-center rounded-full text-foreground/70 hover:text-foreground"
-          onClick={() => void navigate({ params: { room: roomId }, to: '/r/$room/settings' })}
-          type="button"
-        >
-          <Info size={16} />
-        </button>
+        <div className="hex-no-drag absolute top-2.5 right-3 flex items-center gap-1.5">
+          {searching ? null : (
+            <button
+              aria-label="Search this room"
+              className="hex-glass hex-glass-press hex-focus hex-fade grid size-9 place-items-center rounded-full text-foreground/70 hover:text-foreground"
+              onClick={() => setSearching(true)}
+              title="Search"
+              type="button"
+            >
+              <Search size={16} />
+            </button>
+          )}
+          <button
+            aria-label="Room settings"
+            className="hex-glass hex-glass-press hex-focus grid size-9 place-items-center rounded-full text-foreground/70 hover:text-foreground"
+            onClick={() => void navigate({ params: { room: roomId }, to: '/r/$room/settings' })}
+            type="button"
+          >
+            <Info size={16} />
+          </button>
+        </div>
       </header>
       <ConnectedToolsNotice sectionId={`room:${roomId}`} />
       {status === 'needs_you' ? (
@@ -476,14 +637,42 @@ export function RoomConversation() {
             return (
               <div key={event.seq}>
                 {separator ? <DaySeparator time={event.created_at} /> : null}
-                <RoomEventRow
-                  event={event}
-                  fresh={toMillis(event.created_at) > openedAt}
-                  latest={event.actor_id ? latestByBot[event.actor_id] === event.seq : false}
-                />
+                <div data-search-id={event.seq}>
+                  <RoomEventRow
+                    event={event}
+                    fresh={toMillis(event.created_at) > openedAt}
+                    latest={event.actor_id ? latestByBot[event.actor_id] === event.seq : false}
+                  />
+                </div>
               </div>
             )
           })}
+          {unsentHere.map(item => (
+            <article
+              className="flex flex-col items-end gap-1 py-1"
+              data-testid="room-unsent"
+              key={item.id}
+            >
+              <div className="flex max-w-[80%] flex-row-reverse gap-1">
+                <div
+                  className={cn('min-w-0 max-w-full', item.delivery === 'sending' && 'hex-pending')}
+                >
+                  <div className={cn(userBubbleClass, 'hex-message hex-message-mine')}>
+                    <div className="hex-prose">
+                      <Markdown text={item.text} />
+                    </div>
+                  </div>
+                </div>
+                <DeliveryMark
+                  delivery={item.delivery}
+                  onRetry={item.delivery === 'failed' ? () => void deliver(item) : undefined}
+                />
+              </div>
+              {item.delivery === 'failed' ? (
+                <NotSent label="Not sent" onRetry={() => void deliver(item)} reason={item.reason} />
+              ) : null}
+            </article>
+          ))}
           {Object.values(turns).map(turn => {
             const transcript = turn.live_session_id ? transcripts[turn.live_session_id] : undefined
             const message = transcript?.messages.at(-1)
@@ -571,10 +760,9 @@ export function RoomConversation() {
             )
           }
           canSend={Boolean(text.trim())}
-          notice={status === 'stopped' ? failure : null}
-          onSend={() => void send()}
+          notice={status === 'stopped' && failure ? plainError(failure) : null}
+          onSend={send}
           onStop={() => void roomsStop(roomId)}
-          sending={sending}
           status={status}
           streaming={streaming}
         >
@@ -585,7 +773,7 @@ export function RoomConversation() {
             onKeyDown={event => {
               if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault()
-                void send()
+                send()
               }
             }}
             placeholder={`Message ${room.name}`}

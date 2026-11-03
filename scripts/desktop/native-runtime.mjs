@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { nativeBuildEnvironment } from './native-build.mjs'
 import { downloadTool, installTool } from '../../apps/desktop/src/main/backend/tools.ts'
+import { runtimeNotices } from './third-party-notices.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const execute = promisify(execFile)
@@ -127,16 +128,19 @@ export async function standaloneNode(directory, platform, arch, version = NODE_V
   if (createHash('sha256').update(archive).digest('hex') !== digest) throw new Error('Standalone Node checksum mismatch')
   const path = join(directory, filename)
   await writeFile(path, archive)
+  // Node's LICENSE also covers the libraries built into it (V8, OpenSSL, ICU, ...).
   const member = windows ? `${name}/node.exe` : `${name}/bin/node`
-  await execute('tar', [windows ? '-xf' : '-xzf', path, '-C', directory, member])
+  await execute('tar', [windows ? '-xf' : '-xzf', path, '-C', directory, member, `${name}/LICENSE`])
   return join(directory, member)
 }
+
 export async function stageNativeRuntime({
   repository = root,
   destination = join(repository, 'apps/desktop/resources/hexbot-native'),
   platform = process.env.HEXBOT_BUILD_PLATFORM || process.platform,
   arch = process.env.HEXBOT_BUILD_ARCH || process.arch,
   nodeExecutable,
+  notices = runtimeNotices,
   download = (url, dest) => retryDownload(() => downloadTool(url, dest)),
   run = (command, args, options) => execute(command, args, { ...options, maxBuffer: 32 * 1024 * 1024 })
 } = {}) {
@@ -157,7 +161,8 @@ export async function stageNativeRuntime({
   await mkdir(dirname(destination), { recursive: true })
   const staging = await mkdtemp(`${destination}.staging-`)
   try {
-    // Hexbot's own license and notices ship in the app, Headless, and update archives.
+    // Hexbot's own license and notices ship in the app, Headless, and update
+    // archives; THIRD_PARTY_NOTICES below covers what the runtime includes.
     for (const file of ['LICENSE', 'NOTICE']) await cp(join(repository, file), join(staging, file))
     const pi = join(staging, 'pi')
     await mkdir(pi)
@@ -175,12 +180,23 @@ export async function stageNativeRuntime({
     console.log(`Runtime dependencies: ${beforeBytes} -> ${afterBytes} bytes`)
     await cp(join(repository, 'backend/hexbot-core/target', triple, windows ? 'release/hexbot.exe' : 'release/hexbot'), join(staging, daemonName))
     if (windows) await cp(join(repository, 'backend/hexbot-core/target', triple, 'release/hexbot-cli.exe'), join(staging, 'hexbot-cli.exe'))
-    if (nodeExecutable) await cp(nodeExecutable, join(staging, nodeName), { dereference: true })
-    else {
+    let license
+    if (nodeExecutable) {
+      // A local Node, for tests and development; release builds download theirs.
+      await cp(nodeExecutable, join(staging, nodeName), { dereference: true })
+      license = `Node.js ${nodeVersion}: https://github.com/nodejs/node/blob/v${nodeVersion}/LICENSE`
+    } else {
       const download = await mkdtemp(`${destination}.node-`)
-      try { await cp(await standaloneNode(download, platform, arch), join(staging, nodeName)) }
-      finally { await rm(download, { recursive: true, force: true }) }
+      try {
+        const node = await standaloneNode(download, platform, arch)
+        await cp(node, join(staging, nodeName))
+        license = await readFile(join(dirname(node), windows ? 'LICENSE' : '../LICENSE'), 'utf8')
+      } finally { await rm(download, { recursive: true, force: true }) }
     }
+    // Third-party licenses for everything above; web/ carries the web app's own.
+    await writeFile(join(staging, 'THIRD_PARTY_NOTICES'), await notices({
+      repository, nodeModules: join(pi, 'node_modules'), targets: [triple], node: { version: nodeVersion, license }
+    }))
     await cp(join(repository, 'apps/web/dist'), join(staging, 'web'), { recursive: true })
     await cp(join(repository, 'skills'), join(staging, 'skills'), { recursive: true, dereference: true })
     if (!windows) {

@@ -105,6 +105,49 @@ export function readVisualTheme(root: HTMLElement = document.documentElement): V
   return { appearance, variables }
 }
 
+/**
+ * The theme for a page drawn on `color` (a bubble) instead of the app
+ * background. The surface and border tokens are steps of text over the app
+ * background, so they are stepped again over `color`; otherwise a table
+ * striped with `--surface` shows dark slabs in a bubble.
+ */
+export function themeOnSurface(theme: VisualTheme, color: string): VisualTheme {
+  const text = theme.variables['--foreground'] ?? ''
+  const step = (amount: number) => mixHex(color, text, amount)
+  const [border, surface, surface2] = [step(0.12), step(0.04), step(0.1)]
+  const variables = { ...theme.variables, '--background': color }
+
+  if (border && surface && surface2) {
+    Object.assign(variables, { '--border': border, '--surface': surface, '--surface-2': surface2 })
+  }
+
+  return { ...theme, variables }
+}
+
+/** `from` moved `amount` (0 to 1) of the way to `to`, as CSS `color-mix(in srgb)` does; null unless both are #rrggbb. */
+export function mixHex(from: string, to: string, amount: number): null | string {
+  const a = rgb(from)
+  const b = rgb(to)
+
+  if (!a || !b) {
+    return null
+  }
+
+  return `#${a
+    .map((value, i) =>
+      Math.round(value + ((b[i] ?? value) - value) * amount)
+        .toString(16)
+        .padStart(2, '0')
+    )
+    .join('')}`
+}
+
+function rgb(hex: string): null | number[] {
+  const digits = /^#([0-9a-f]{6})$/i.exec(hex)?.[1]
+
+  return digits ? [0, 2, 4].map(i => parseInt(digits.slice(i, i + 2), 16)) : null
+}
+
 /** Page defaults, before the page's own CSS: theme background, text and font, no body margin. */
 const BASE_CSS =
   'html{background:var(--background);color:var(--foreground);font:14px/1.5 var(--font-sans);-webkit-font-smoothing:antialiased}body{margin:0}'

@@ -17,6 +17,7 @@ import {
   Text,
   useTheme
 } from './ui'
+import { Licenses } from './Licenses'
 import { ModelPill } from './screens/ModelMenu'
 import {
   type Bot,
@@ -34,8 +35,10 @@ import { botPhoto } from './core/avatar'
 import { scheduleChange } from './core/jobs'
 import { requirementText } from './core/skills'
 import { pluginRows } from '../../web/src/lib/plugin-rows'
+import { PluginIcon } from './ui/PluginIcon'
 import { isOpenRoom } from './core/routes'
 import { pickFile } from './core/pickFile'
+import { aboutFile, DocumentPanel, FingerprintCards } from './Fingerprint'
 import type { useMobile } from './core/useMobile'
 export type Panel = {
   kind:
@@ -52,6 +55,7 @@ export type Panel = {
     | 'job'
     | 'job-create'
     | 'jobs'
+    | 'licenses'
     | 'mcp'
     | 'memory'
     | 'network'
@@ -69,6 +73,7 @@ export type Panel = {
     | 'skill'
     | 'skill-create'
     | 'skills'
+    | 'soul'
     | 'tools'
     | 'updates'
     | 'usage'
@@ -100,18 +105,6 @@ const TOOLS: { key: string; label: string; description: string }[] = [
     description: 'Run commands in a sandbox. Leaving it is checked first, except in Bypass.'
   },
   { key: 'files', label: 'Files', description: 'Read, write and search files in the workspace.' },
-  {
-    key: 'code_execution',
-    label: 'Code execution',
-    description: 'Run scripts in a sandbox for data work and quick checks.'
-  },
-  { key: 'browser', label: 'Browser', description: 'Drive a local Chrome window.' },
-  {
-    key: 'computer_use',
-    label: 'Computer use',
-    description:
-      "Work on your bots' shared Linux desktop, which you can watch and take over. Uses Cua."
-  },
   { key: 'vision', label: 'Vision', description: 'Look at images you attach.' },
   {
     key: 'voice',
@@ -159,7 +152,7 @@ const PASSWORD_STORE_TEXT: Record<string, string> = {
   locked: "Hexbot can't read the vault's key. Unlock the keychain on the daemon's computer.",
   secret_service: "The vault's key is in the keyring of the daemon's computer."
 }
-/** How big the bots' shared computer is; a new size applies when it is reset. */
+/** How big the bots' computer is; a new size applies when it is reset. Every bot has it. */
 function ComputerSize({ mobile }: { mobile: ReturnType<typeof useMobile> }) {
   const status = mobile.computer
   const [error, setError] = useState<string | null>(null)
@@ -169,11 +162,11 @@ function ComputerSize({ mobile }: { mobile: ReturnType<typeof useMobile> }) {
   if (!status?.sizes) return error ? <Text tone="danger">{error}</Text> : null
   return (
     <Group
-      title="Computer size"
+      title="Computer use"
       footer={
         status.state === 'absent'
-          ? 'Shared by all your bots. Used when the computer is made.'
-          : "Shared by all your bots. A new size applies after Reset, on the bots' computer card."
+          ? 'Every bot runs code, browses and uses apps on it. Used when the computer is made.'
+          : "Every bot runs code, browses and uses apps on it. A new size applies after Reset, on the bots' computer card."
       }
     >
       {status.sizes.map(size => (
@@ -319,12 +312,20 @@ export function Management({
             dream_enabled: bot.dream_enabled,
             notify: bot.notify ?? true
           }
+        // The memory card shows the day it changed; the card opens without it if the read fails.
+        if (bot) detail = await rpc('hexbot.memory.bot.get', { bot: bot.name }).catch(() => ({}))
         break
       case 'memory': {
-        const result = await rpc('hexbot.memory.bot.get', { bot: bot?.name })
-        fields = { memory_md: str(result.memory_md) }
+        detail = await rpc('hexbot.memory.bot.get', { bot: bot?.name })
+        fields = { memory_md: str(detail.memory_md) }
         break
       }
+      case 'soul':
+        // The bot may have changed it since this card's bot was read.
+        fields = {
+          persona: (mobile.bots.find(b => b.name === bot?.name) ?? bot)?.persona ?? ''
+        }
+        break
       case 'about': {
         const result = await rpc('hexbot.memory.user.get')
         fields = { text: str(result.text) }
@@ -664,6 +665,10 @@ export function Management({
             ...(typeof mobile.settings?.heartbeat_enabled === 'boolean'
               ? { heartbeat_enabled: values.heartbeat_enabled }
               : {}),
+            // Only a daemon that knows usage data can be asked about it.
+            ...(typeof mobile.settings?.usage_data === 'boolean'
+              ? { usage_data: values.usage_data }
+              : {}),
             default_model: values.default_model || null,
             fallback_model: values.fallback_model || null,
             bot_daily_token_budget: num(values.bot_daily_token_budget),
@@ -710,6 +715,15 @@ export function Management({
               {toggle('heartbeat_enabled', 'Heartbeat')}
             </Group>
           ) : null}
+          <ComputerSize mobile={mobile} />
+          {typeof mobile.settings?.usage_data === 'boolean' ? (
+            <Group
+              title="Privacy"
+              footer="The daemon's own anonymous usage data: counts of bots, rooms, chats, and messages, and error codes. Never what anyone writes. This phone has its own switch in Settings."
+            >
+              {toggle('usage_data', 'Share anonymous usage data')}
+            </Group>
+          ) : null}
         </>
       )
       break
@@ -721,7 +735,8 @@ export function Management({
           display_name: values.display_name,
           title: values.title,
           description: values.description,
-          persona: values.persona,
+          // A bot's soul is saved from its own card; only a new bot starts with one here.
+          ...(bot ? {} : { persona: values.persona }),
           // Without a model the daemon uses its default.
           ...(values.provider && values.model
             ? { provider: values.provider, model: values.model }
@@ -816,13 +831,23 @@ export function Management({
               400
             )}
           </View>
-          {field(
-            'persona',
-            'Soul',
-            true,
-            `${str(values.display_name) || 'The bot'} can edit its soul too and says when it does. Your chat takes changes after it summarises older messages.`,
-            false,
-            4000
+          {bot ? (
+            <FingerprintCards
+              disabled={busy || mobile.connection !== 'connected'}
+              memoryAt={extra.updated_at as null | number | undefined}
+              name={bot.display_name}
+              onOpen={file => navigate(file)}
+              soulAt={(mobile.bots.find(b => b.name === bot.name) ?? bot).persona_updated_at}
+            />
+          ) : (
+            field(
+              'persona',
+              'Soul',
+              true,
+              `${str(values.display_name) || 'The bot'} can edit its soul too and says when it does. Your chat takes changes after it summarises older messages.`,
+              false,
+              4000
+            )
           )}
           <Group title="Model" footer="Applies from the next message.">
             <View style={styles.inset}>
@@ -862,7 +887,6 @@ export function Management({
                 {row('Skills', 'skills', bot.skills.length ? `${bot.skills.length} on` : undefined)}
               </Group>
               <Group title="What it remembers">
-                {row('Memory', 'memory')}
                 {toggle('dream_enabled', 'Dreaming')}
                 {row('Dreaming history', 'dreams')}
                 {row('Scheduled jobs', 'jobs')}
@@ -921,7 +945,29 @@ export function Management({
       break
     case 'memory':
       save = () => rpc('hexbot.memory.bot.set', { bot: bot?.name, memory_md: values.memory_md })
-      content = field('memory_md', 'Bot memory', true)
+      content = (
+        <DocumentPanel
+          about={aboutFile('memory', bot?.display_name ?? 'The bot')}
+          cap={Number(extra.cap) || undefined}
+          fileName="MEMORY.md"
+          onChange={text => set('memory_md', text)}
+          value={str(values.memory_md)}
+        />
+      )
+      break
+    case 'soul':
+      save = () => rpc('hexbot.bots.update', { name: bot?.name, persona: values.persona })
+      content = (
+        <DocumentPanel
+          about={aboutFile('soul', bot?.display_name ?? 'The bot')}
+          fileName="SOUL.md"
+          onChange={text => set('persona', text)}
+          value={str(values.persona)}
+        />
+      )
+      break
+    case 'licenses':
+      content = <Licenses />
       break
     case 'about':
       save = () => rpc('hexbot.memory.user.set', { text: values.text })
@@ -957,13 +1003,6 @@ export function Management({
           ))}
         </Group>
       )
-      if ((bot?.tools as string[] | undefined)?.includes('computer_use'))
-        content = (
-          <>
-            {content}
-            <ComputerSize mobile={mobile} />
-          </>
-        )
       break
     }
     case 'rooms':
@@ -1429,6 +1468,7 @@ export function Management({
       const item = (p: Plugin) => (
         <Row
           key={keyOf(p)}
+          leading={<PluginIcon icon={p.icon} />}
           title={p.name}
           subtitle={`${p.state_text} · ${pluginBots(p, bots)}`}
           testID={`plugin-${keyOf(p)}`}
@@ -1458,12 +1498,6 @@ export function Management({
             {row('Create skill', 'skill-create')}
             {skills.map(item)}
           </Group>
-          <Group
-            title="Built-in tools"
-            footer="Tools that need a program on the daemon's computer."
-          >
-            {plugins.filter(p => p.kind === 'capability').map(item)}
-          </Group>
         </>
       )
       break
@@ -1471,10 +1505,8 @@ export function Management({
     case 'plugin': {
       const bots = pluginRoster
       const p = (extra.plugin ?? panel!.data) as unknown as Plugin
-      // One that isn't set up can be taken away from bots, not given to them. A
-      // connector or skill can be ready for one bot through its own key, so
-      // only the daemon can tell; a built-in tool is the same for all.
-      const unready = !p.ready && p.kind === 'capability'
+      // A connector or skill can be ready for one bot through its own key, so
+      // only the daemon can tell whether a bot may have it.
       const server = p.server
       const values_ = server ? (server.transport === 'http' ? server.headers : server.env) : []
       const valueKind = server?.transport === 'http' ? 'headers' : 'env'
@@ -1495,19 +1527,14 @@ export function Management({
           <Text tone={p.state === 'error' ? 'danger' : 'muted'} variant="footnote">
             {p.state_text}
           </Text>
-          <Group
-            title="Bots"
-            footer={unready ? `Set it up before you give it to a bot. ${p.state_text}` : undefined}
-          >
+          <Group title="Bots">
             {bots.map(b => (
               <SwitchRow
                 key={b.name}
                 title={b.display_name}
                 testID={`plugin-bot-${b.name}`}
                 value={p.bots.includes(b.name)}
-                disabled={
-                  (unready && !p.bots.includes(b.name)) || busy || mobile.connection !== 'connected'
-                }
+                disabled={busy || mobile.connection !== 'connected'}
                 onValueChange={on =>
                   choose(on ? [...p.bots, b.name] : p.bots.filter(name => name !== b.name))
                 }
@@ -1762,20 +1789,32 @@ export function Management({
                     title="Show password"
                     testID="action-show-password"
                     disabled={busy || mobile.connection !== 'connected'}
-                    onPress={() =>
+                    onPress={() => {
                       // Not through `run`: reloading the card would hide it again.
-                      void rpc<{ password: string; code: { code: string } | null }>(
-                        'hexbot.passwords.reveal',
-                        { id: login.id }
-                      )
-                        .then(shown =>
+                      // Only this card takes the answer, and a one-time code
+                      // goes when it expires.
+                      const current = epoch.current
+                      void rpc<{
+                        password: string
+                        code: { code: string; valid_for: number } | null
+                      }>('hexbot.passwords.reveal', { id: login.id })
+                        .then(shown => {
+                          if (current !== epoch.current) return
                           setExtra(previous => ({
                             ...previous,
                             revealed: { password: shown.password, code: shown.code?.code ?? null }
                           }))
-                        )
-                        .catch(e => setError(e instanceof Error ? e.message : String(e)))
-                    }
+                          if (shown.code)
+                            setTimeout(() => {
+                              if (current === epoch.current)
+                                setExtra(previous => ({ ...previous, revealed: undefined }))
+                            }, shown.code.valid_for * 1000)
+                        })
+                        .catch(e => {
+                          if (current === epoch.current)
+                            setError(e instanceof Error ? e.message : String(e))
+                        })
+                    }}
                   />
                 )}
                 {login.has_code
@@ -2159,7 +2198,9 @@ export function Management({
     'bot-create': 'New bot',
     bot: bot ? `Edit ${bot.display_name}` : 'Edit bot',
     memory: 'Memory',
+    soul: 'Soul',
     about: 'About you',
+    licenses: 'Licenses',
     tools: 'Tools',
     rooms: 'All rooms',
     'room-create': 'New room',

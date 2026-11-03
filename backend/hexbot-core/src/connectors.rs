@@ -177,7 +177,21 @@ fn required_keys(home: &Path, spec: &Value) -> Result<Vec<String>> {
         &selected(home, spec)?.unwrap_or_else(|| spec.clone())["keys"],
     ))
 }
+/// Toolsets that ran on the daemon's computer. Bots now run code and browse
+/// on their own computer through Computer use, so these are never offered.
+const RETIRED_TOOLSETS: &[&str] = &["code_execution", "browser"];
+/// Every bot has Computer use; it works once the computer is set up.
+const BUILT_IN_TOOLSET: &str = "computer_use";
+
 pub fn toolsets(home: &Path, bot: &str) -> Result<Vec<String>> {
+    let mut sets = configured_toolsets(home, bot)?;
+    sets.retain(|set| !RETIRED_TOOLSETS.contains(&set.as_str()));
+    if !sets.iter().any(|set| set == BUILT_IN_TOOLSET) {
+        sets.push(BUILT_IN_TOOLSET.to_owned());
+    }
+    Ok(sets)
+}
+fn configured_toolsets(home: &Path, bot: &str) -> Result<Vec<String>> {
     let config = read_config(&profile(home, bot)?)?;
     for v in [
         &config["tools"]["enabled_toolsets"],
@@ -200,7 +214,6 @@ pub fn toolsets(home: &Path, bot: &str) -> Result<Vec<String>> {
         "terminal",
         "file",
         "web",
-        "browser",
         "vision",
         "image_gen",
         "tts",
@@ -415,9 +428,6 @@ pub(crate) fn enabled(home: &Path, bot: &str, id: &str) -> Result<bool> {
     if id == "web_search" {
         return Ok(tools.iter().any(|t| t == "web" || t == "search"));
     }
-    if id == "cloud_browser" && selected(home, &s)?.is_none() {
-        return Ok(false);
-    }
     Ok(strings(&s["toolsets"]).iter().all(|t| tools.contains(t)))
 }
 pub(crate) fn set_enabled(home: &Path, bot: &str, id: &str, on: bool) -> Result<()> {
@@ -427,12 +437,6 @@ pub(crate) fn set_enabled(home: &Path, bot: &str, id: &str, on: bool) -> Result<
             let _guard = crate::skills::read_lock()?;
             crate::skills::find_unlocked(home, Some(bot), skill)?;
             return crate::skills::set_enabled(home, Some(bot), skill, on);
-        }
-        if id == "cloud_browser" {
-            if !on {
-                write_all(home, "browser", "cloud_provider", Value::Null)?;
-            }
-            return Ok(());
         }
     }
     if let Some(server) = id.strip_prefix("mcp:") {
@@ -686,6 +690,27 @@ pub(crate) fn get(home: &Path, bot: Option<&str>, id: &str) -> Result<Value> {
         .cloned()
         .ok_or_else(|| Error::new(4213, format!("unknown connector: {id}")))
 }
+/// A server's error with its own environment and header values cut out:
+/// a server may quote the token it refused, and the message is saved and
+/// shown to bots.
+fn without_values(message: &str, entry: &Value, env: &BTreeMap<String, String>) -> String {
+    let resolved = expand_config(entry, env);
+    let mut secrets = [&resolved["env"], &resolved["headers"]]
+        .into_iter()
+        .flat_map(|v| v.as_object().into_iter().flatten())
+        .filter_map(|(_, v)| v.as_str().filter(|v| !v.is_empty()))
+        // A header such as `Bearer <token>` may be quoted by its token alone.
+        .flat_map(|v| {
+            std::iter::once(v).chain(v.split_whitespace().filter(|p| p.chars().count() >= 6))
+        })
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    // Longest first, so a whole value goes before a part of it.
+    secrets.sort_by_key(|v| std::cmp::Reverse(v.len()));
+    secrets.iter().fold(message.to_owned(), |text, secret| {
+        text.replace(secret.as_str(), "…")
+    })
+}
 async fn probe(home: &Path, id: &str, bot: Option<&str>) -> Result<Value> {
     if let Some(server) = id.strip_prefix("mcp:") {
         let root = read_config(home)?["mcp_servers"].clone();
@@ -738,7 +763,7 @@ async fn probe(home: &Path, id: &str, bot: Option<&str>) -> Result<Value> {
         .await;
         let result = match result {
             Ok(count) => json!({"ok":true,"message":"Connected.","tool_count":count}),
-            Err(e) => json!({"ok":false,"message":e.message}),
+            Err(e) => json!({"ok":false,"message":without_values(&e.message, entry, &env)}),
         };
         save_test(home, id, &result, true)?;
         return Ok(result);

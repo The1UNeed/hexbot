@@ -17,9 +17,14 @@ describe('detectTarget', () => {
     expect(detectTarget({ userAgent: mac })).toBe('mac-arm64')
   })
 
-  it('knows Linux, and that phones, tablets, and Windows have no build', () => {
+  it('sends iPhones and iPads to the iPhone app', () => {
+    expect(detectTarget({ userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1' })).toBe('ios')
+    expect(detectTarget({ userAgent: 'Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1' })).toBe('ios')
+    expect(detectTarget({ userAgent: mac, maxTouchPoints: 5 })).toBe('ios')
+  })
+
+  it('knows Linux, and that Android, Windows, and ChromeOS have no build', () => {
     expect(detectTarget({ userAgent: 'Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0' })).toBe('linux')
-    expect(detectTarget({ userAgent: mac, maxTouchPoints: 5 })).toBe('other')
     expect(detectTarget({ userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0' })).toBe('other')
     expect(detectTarget({ userAgent: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) Chrome/128.0 Mobile' })).toBe('other')
     expect(detectTarget({ userAgent: 'Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) Chrome/128.0' })).toBe('other')

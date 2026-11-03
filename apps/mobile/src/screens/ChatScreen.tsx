@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons'
-import { memo, type ReactNode, useCallback, useMemo, useState } from 'react'
+import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   FlatList,
   type ListRenderItemInfo,
@@ -8,6 +8,7 @@ import {
   ScrollView,
   StyleSheet,
   TextInput,
+  useWindowDimensions,
   View
 } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
@@ -30,18 +31,18 @@ import {
   RoomFace,
   Screen,
   Text,
-  TopBar,
   useKeyboardVisible,
   useTheme,
   withAlpha
 } from '../ui'
+import { PluginCard } from './PluginCard'
 import { SignInCard } from './SignInCard'
 import type {
   ApprovalChoice,
   ApprovalRequestView,
   AttachmentView,
-  ChatItem,
-  SignInAnswer
+  CardAnswer,
+  ChatItem
 } from './types'
 
 type MessageItem = Extract<ChatItem, { kind: 'message' }>
@@ -79,13 +80,12 @@ export interface ChatScreenProps {
   /** Turn off sending while offline; the composer says why. */
   sendDisabledReason?: string | null
 
-  onBack: () => void
   onOpenSettings?: () => void
 
   onApprove: (
     requestId: string,
     choice: ApprovalChoice,
-    signIn?: SignInAnswer
+    answer?: CardAnswer
   ) => Promise<unknown> | void
   onMessageLongPress?: (id: string) => void
   /** Your message Recall can take back; a long press on it recalls it. */
@@ -113,6 +113,10 @@ export interface ChatScreenProps {
   computerLive?: boolean
   /** Opens a visual item from the transcript. */
   onOpenVisual?: (id: string) => void
+  /** Opens search in this conversation; the button shows only with this. */
+  onOpenSearch?: () => void
+  /** A message search found: the transcript scrolls to it and marks it. A new nonce shows it again. */
+  focus?: { id: string; nonce: number } | null
   /** Under the empty state of a new chat, such as the model it will use. */
   intro?: ReactNode
 }
@@ -122,27 +126,73 @@ type ListEntry = { id: string; entry: Entry; continued: boolean }
 const waitingEntry: Entry = { id: 'waiting', kind: 'waiting' }
 const entryKey = (item: ListEntry) => item.id
 
+/** One button in a chat's native bar. */
+export interface BarAction {
+  key: string
+  label: string
+  accessibilityLabel: string
+  /** An SF Symbol on iOS. */
+  systemImage:
+    | 'desktopcomputer'
+    | 'desktopcomputer.and.arrow.down'
+    | 'gearshape'
+    | 'magnifyingglass'
+    | 'person.crop.circle'
+  /** Drawn in the info colour, such as while a bot uses the computer. */
+  live?: boolean
+  onPress: () => void
+}
+
 /**
- * One conversation: a bot's chat or a room. Bot messages sit on soft grey
- * bubbles on the left, yours on ink bubbles on the right. Tool use folds into
- * one quiet line per run, and approvals stop the transcript with a card.
+ * The buttons a chat puts in the system's bar, in reading order: Search, the
+ * bots' computer, and the profile or room settings. iOS moves them into the
+ * side rail on the closed iPhone Duo, top to bottom in the same order. Each
+ * shows only when the screen offers it.
  */
-export function ChatScreen(props: ChatScreenProps) {
-  const {
-    computerLive,
-    face,
-    members,
-    onBack,
-    onOpenComputer,
-    onOpenSettings,
-    status,
-    subtitle,
-    title
-  } = props
-  const theme = useTheme()
+export function chatActions(props: ChatScreenProps): BarAction[] {
+  const room = !!props.members
+  const actions: BarAction[] = []
+
+  if (props.onOpenSearch) {
+    actions.push({
+      accessibilityLabel: room ? 'Search this room' : 'Search this chat',
+      key: 'search',
+      label: 'Search',
+      onPress: props.onOpenSearch,
+      systemImage: 'magnifyingglass'
+    })
+  }
+
+  if (props.onOpenComputer) {
+    actions.push({
+      accessibilityLabel: "Your bots' computer",
+      key: 'computer',
+      label: 'Computer',
+      live: props.computerLive,
+      onPress: props.onOpenComputer,
+      systemImage: props.computerLive ? 'desktopcomputer.and.arrow.down' : 'desktopcomputer'
+    })
+  }
+
+  if (props.onOpenSettings) {
+    actions.push({
+      accessibilityLabel: room ? 'Room settings' : `Edit ${props.title}`,
+      key: 'settings',
+      label: room ? 'Room settings' : 'Profile',
+      onPress: props.onOpenSettings,
+      systemImage: room ? 'gearshape' : 'person.crop.circle'
+    })
+  }
+
+  return actions
+}
+
+/** The chat's face and name for the system's bar; a press opens the profile or room settings. */
+export function ChatTitle(props: ChatScreenProps) {
+  const { face, members, onOpenSettings, status, subtitle, title } = props
   const room = !!members
 
-  const header = (
+  return (
     <Pressable
       accessibilityHint={
         onOpenSettings ? (room ? 'Opens the room settings' : 'Opens the profile') : undefined
@@ -179,49 +229,19 @@ export function ChatScreen(props: ChatScreenProps) {
       </Glass>
     </Pressable>
   )
+}
 
+/**
+ * One conversation: a bot's chat or a room. Bot messages sit on soft grey
+ * bubbles on the left, yours on ink bubbles on the right. Tool use folds into
+ * one quiet line per run, and approvals stop the transcript with a card.
+ *
+ * The screen is the transcript and the composer. Its bar belongs to the
+ * system: `ChatTitle` and `chatActions` give the route what to put there.
+ */
+export function ChatScreen(props: ChatScreenProps) {
   return (
-    <Screen avoidKeyboard testID="chat-screen">
-      <TopBar
-        center={header}
-        onBack={onBack}
-        testID="chat-bar"
-        trailing={
-          <>
-            {onOpenComputer ? (
-              <View>
-                <IconButton
-                  accessibilityLabel="Your bots' computer"
-                  icon="desktop-outline"
-                  iconSize={20}
-                  onPress={onOpenComputer}
-                  testID="chat-computer"
-                  variant="glass"
-                />
-                {computerLive ? (
-                  <View
-                    pointerEvents="none"
-                    style={[
-                      styles.computerDot,
-                      { backgroundColor: theme.info, borderColor: theme.background }
-                    ]}
-                  />
-                ) : null}
-              </View>
-            ) : null}
-            {onOpenSettings ? (
-              <IconButton
-                accessibilityLabel={room ? 'Room settings' : `Edit ${title}`}
-                icon="ellipsis-horizontal"
-                iconSize={21}
-                onPress={onOpenSettings}
-                testID="chat-settings"
-                variant="glass"
-              />
-            ) : null}
-          </>
-        }
-      />
+    <Screen avoidKeyboard edges={['left', 'right']} testID="chat-screen">
       <ChatBody {...props} />
     </Screen>
   )
@@ -246,6 +266,7 @@ function ChatBody(props: ChatScreenProps) {
     waiting
   } = props
   const room = !!members
+  const theme = useTheme()
   const keyboard = useKeyboardVisible()
   const insets = useSafeAreaInsets()
   const bottom = keyboard ? 8 : Math.max(insets.bottom, 8)
@@ -285,6 +306,26 @@ function ChatBody(props: ChatScreenProps) {
     return waiting ? [{ id: 'waiting', entry: waitingEntry, continued: false }, ...list] : list
   }, [items, !!waiting])
   const fallbackFace = useMemo(() => face ?? { name: title }, [face, title])
+  const list = useRef<FlatList<ListEntry>>(null)
+  const [flash, setFlash] = useState<null | { id: string; nonce: number }>(null)
+  const { focus } = props
+  // The request itself, not its nonce: a new conversation starts nonces over.
+  const shown = useRef<typeof focus>(null)
+  // Scroll to what search found once per request, not on every new message.
+  useEffect(() => {
+    if (!focus || shown.current === focus) return
+    const index = entries.findIndex(item => item.id === focus.id)
+    if (index < 0) return
+    shown.current = focus
+    list.current?.scrollToIndex({ animated: true, index, viewPosition: 0.5 })
+    setFlash(focus)
+  }, [entries, focus])
+  // Its own timer, so new messages arriving meanwhile cannot leave the mark on.
+  useEffect(() => {
+    if (!flash) return
+    const timer = setTimeout(() => setFlash(null), 1600)
+    return () => clearTimeout(timer)
+  }, [flash])
   const {
     emotion,
     onApprove,
@@ -297,28 +338,39 @@ function ChatBody(props: ChatScreenProps) {
   const waitingLabel = waiting?.label
   const waitingWho = waiting?.who ?? (room ? null : fallbackFace)
   const renderItem = useCallback(
-    ({ item: { entry, continued } }: ListRenderItemInfo<ListEntry>) => (
-      <TranscriptEntry
-        entry={entry}
-        continued={continued}
-        face={entry.kind === 'message' && !room ? fallbackFace : undefined}
-        room={room}
-        onLongPress={
-          entry.kind === 'message'
-            ? entry.id === recallId && onRecall
-              ? onRecall
-              : onMessageLongPress
-            : undefined
-        }
-        renderText={entry.kind === 'message' ? renderMessageText : undefined}
-        onApprove={entry.kind === 'approval' ? onApprove : undefined}
-        onOpenVisual={entry.kind === 'visual' ? onOpenVisual : undefined}
-        waitingLabel={entry.kind === 'waiting' ? waitingLabel : undefined}
-        waitingWho={entry.kind === 'waiting' ? waitingWho : undefined}
-        mood={entry.kind === 'waiting' ? emotion : undefined}
-      />
-    ),
+    ({ item: { entry, continued } }: ListRenderItemInfo<ListEntry>) => {
+      const row = (
+        <TranscriptEntry
+          entry={entry}
+          continued={continued}
+          face={entry.kind === 'message' && !room ? fallbackFace : undefined}
+          room={room}
+          onLongPress={
+            entry.kind === 'message'
+              ? entry.id === recallId && onRecall
+                ? onRecall
+                : onMessageLongPress
+              : undefined
+          }
+          renderText={entry.kind === 'message' ? renderMessageText : undefined}
+          onApprove={entry.kind === 'approval' ? onApprove : undefined}
+          onOpenVisual={entry.kind === 'visual' ? onOpenVisual : undefined}
+          waitingLabel={entry.kind === 'waiting' ? waitingLabel : undefined}
+          waitingWho={entry.kind === 'waiting' ? waitingWho : undefined}
+          mood={entry.kind === 'waiting' ? emotion : undefined}
+        />
+      )
+      return entry.id === flash?.id ? (
+        <View style={[styles.flash, { backgroundColor: withAlpha(theme.accent, 0.12) }]}>
+          {row}
+        </View>
+      ) : (
+        row
+      )
+    },
     [
+      flash,
+      theme.accent,
       room,
       fallbackFace,
       recallId,
@@ -383,6 +435,23 @@ function ChatBody(props: ChatScreenProps) {
           keyExtractor={entryKey}
           keyboardDismissMode="interactive"
           keyboardShouldPersistTaps="handled"
+          onScrollToIndexFailed={info => {
+            // Rows far up are not measured yet: get near, then try again.
+            list.current?.scrollToOffset({
+              animated: false,
+              offset: info.averageItemLength * info.index
+            })
+            setTimeout(
+              () =>
+                list.current?.scrollToIndex({
+                  animated: true,
+                  index: info.index,
+                  viewPosition: 0.5
+                }),
+              100
+            )
+          }}
+          ref={list}
           renderItem={renderItem}
           testID="chat-transcript"
         />
@@ -477,7 +546,9 @@ const TranscriptEntry = memo(function TranscriptEntry({
         </View>
       )
     case 'approval':
-      return entry.request.form ? (
+      return entry.request.form?.kind === 'plugin' ? (
+        <PluginCard form={entry.request.form} onAnswer={onApprove!} request={entry.request} />
+      ) : entry.request.form ? (
         <SignInCard form={entry.request.form} onAnswer={onApprove!} request={entry.request} />
       ) : (
         <ApprovalCard onAnswer={onApprove!} request={entry.request} />
@@ -740,8 +811,10 @@ function Composer({
   sendDisabledReason,
   sendWhileBusy,
   title
-}: Omit<ChatScreenProps, 'onBack'> & { bottom: number }) {
+}: ChatScreenProps & { bottom: number }) {
   const theme = useTheme()
+  // A phone held sideways is short: the field grows to a third of it at most.
+  const { height } = useWindowDimensions()
   const [own, setOwn] = useState('')
   const text = draft ?? own
   const setText = onDraftChange ?? setOwn
@@ -817,7 +890,10 @@ function Composer({
             placeholder={`Message ${title}`}
             placeholderTextColor={theme.faint}
             selectionColor={theme.accent}
-            style={[styles.input, { color: theme.text }]}
+            style={[
+              styles.input,
+              { color: theme.text, maxHeight: Math.min(140, Math.round(height / 3)) }
+            ]}
             submitBehavior="newline"
             testID="chat-input"
             value={text}
@@ -936,15 +1012,7 @@ const styles = StyleSheet.create({
     paddingRight: 14
   },
   titleText: { flexShrink: 1 },
-  computerDot: {
-    borderRadius: 5,
-    borderWidth: 1.5,
-    height: 10,
-    position: 'absolute',
-    right: 4,
-    top: 4,
-    width: 10
-  },
+  flash: { borderRadius: 16 },
   transcript: { paddingBottom: 8, paddingHorizontal: 14, paddingTop: 12 },
   visual: {
     alignItems: 'center',

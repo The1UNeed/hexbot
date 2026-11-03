@@ -275,6 +275,8 @@ it('resends a refused message with only its own restored upload, on the same row
     input_id: second.input_id
   })
   expect(staged.has('phone-upload')).toBe(true)
+  // Sent now: the red mark goes with the failure.
+  expect(view.container.querySelector('[data-testid=user-message] .text-danger')).toBeNull()
 
   await reload()
   expect(await screen.findByText('Reply 1')).toBeVisible()
@@ -282,6 +284,26 @@ it('resends a refused message with only its own restored upload, on the same row
   expect(within(screen.getByTestId('user-message')).getByText('plan.txt')).toBeVisible()
   expect(userRows()).toHaveLength(1)
   expect(cards().some(item => retryOn(item))).toBe(false)
+})
+
+it('resends from the red mark beside the bubble, like its Retry', async () => {
+  answers = [refused()]
+  const view = await mount()
+  await send(view)
+  await screen.findByTestId('stopped-card')
+
+  const mark = within(screen.getByTestId('user-message')).getByRole('button', {
+    name: 'Retry sending'
+  })
+
+  fireEvent.click(mark)
+  await waitFor(() => expect(delivered).toHaveLength(1))
+  expect(submits()).toHaveLength(2)
+  expect(userRows()).toHaveLength(1)
+  // Retry moved to the new attempt: the old mark and line cannot send again.
+  expect(
+    within(screen.getByTestId('user-message')).queryByRole('button', { name: 'Retry sending' })
+  ).toBeNull()
 })
 
 it('binds the retry key to the refused row, so history shows the message once', async () => {
@@ -377,16 +399,40 @@ it('never lets a remote message that arrived after the refusal become the retry'
   expect(delivered[0]).toMatchObject({ text: 'Read my plan', files: ['plan.txt'] })
 })
 
-it('offers no Retry when acceptance is unknown, leaving the draft to send again', async () => {
+it('clears the field as the bubble appears, greyed with a spinner until the daemon takes it', async () => {
+  gate = deferred()
+  const view = await mount()
+  await send(view)
+  await waitFor(() => expect(submits()).toHaveLength(1))
+  expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('')
+  expect(screen.queryByRole('button', { name: 'Remove plan.txt' })).toBeNull()
+  expect(screen.getByRole('status', { name: 'Sending' })).toBeInTheDocument()
+  expect(screen.getByText('Read my plan').closest('.hex-pending')).not.toBeNull()
+  await act(async () => gate!.resolve())
+  await waitFor(() => expect(userRows()[0]!.submission?.status).toBe('accepted'))
+  expect(screen.queryByRole('status', { name: 'Sending' })).toBeNull()
+  expect(screen.getByText('Read my plan').closest('.hex-pending')).toBeNull()
+})
+
+it('offers Retry on the bubble when acceptance is unknown, under the same key and uploads', async () => {
   answers = [new Error('connection closed')]
   const view = await mount()
   await send(view)
-  const [card] = await screen.findAllByTestId('stopped-card')
-  expect(card).toHaveTextContent('connection closed')
-  expect(retries()).toHaveLength(0)
-  expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Read my plan')
-  expect(screen.getByRole('button', { name: 'Remove plan.txt' })).toBeVisible()
+  const line = await screen.findByText('Not sent')
+  expect(line).toHaveAttribute('title', 'connection closed')
+  expect(cards()).toHaveLength(0)
+  // The bubble holds the message now; the field cleared when it appeared.
+  expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('')
   expect(submits()).toHaveLength(1)
+  fireEvent.click(retries()[0]!)
+  await waitFor(() => expect(delivered).toHaveLength(1))
+  expect(submits()[1]).toMatchObject({
+    input_id: submits()[0]!.input_id,
+    attachments: submits()[0]!.attachments
+  })
+  expect(delivered[0]).toMatchObject({ text: 'Read my plan', files: ['plan.txt'] })
+  await waitFor(() => expect(screen.queryByText('Not sent')).toBeNull())
+  expect(userRows()).toHaveLength(1)
 })
 
 it('identity-equipped: retries an accepted turn without its consumed uploads or its row key', async () => {
@@ -478,7 +524,7 @@ it('applies a refusal that lands after leaving the chat without drawing a card t
   expect(delivered[0]!.files).toEqual(['plan.txt'])
 })
 
-it('keeps a retry whose answer arrives after a reconnect behind the draft', async () => {
+it('keeps a retry whose answer arrives after a reconnect on its bubble, not the draft', async () => {
   answers = [refused(), refused()]
   const view = await mount()
   await send(view)
@@ -492,7 +538,10 @@ it('keeps a retry whose answer arrives after a reconnect behind the draft', asyn
   expect(await screen.findByText('Earlier reply')).toBeVisible()
   expect(cards()).toHaveLength(1)
   expect(retries()).toHaveLength(0)
-  expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Read my plan')
+  // It may have landed, so it does not come back to send again: the bubble
+  // stays sending and offers Retry under its own key once late.
+  expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('')
+  expect(userRows()[0]!.submission?.status).toBe('sending')
   expect(submits()).toHaveLength(2)
 })
 
@@ -598,25 +647,85 @@ it.each([
   })
   const view = await mount()
   await send(view)
-  const card = await screen.findByTestId('stopped-card')
-  expect(card).toHaveTextContent('It may not have been sent')
-  expect(retries()).toHaveLength(0)
+  expect(await screen.findByText('Not sent')).toBeVisible()
+  expect(cards()).toHaveLength(0)
   expect(delivered[0]!.files).toEqual(['plan.txt'])
   expect(staged.size).toBe(0)
-  expect(screen.getByRole('button', { name: 'Remove plan.txt' })).toBeVisible()
   expect(userRows()[0]!.submission?.status).toBe('unknown')
+  // The first try landed: Retry under the same key is refused as reserved,
+  // so nothing is taken twice. Pi could still refuse a reserved input, so it
+  // stays unconfirmed until the stored row shows it.
+  fireEvent.click(retries()[0]!)
+  await waitFor(() => expect(submits()).toHaveLength(2))
+  expect(submits()[1]!.input_id).toBe(submits()[0]!.input_id)
+  await waitFor(() => expect(userRows()[0]!.submission?.status).toBe('unknown'))
+  expect(delivered).toHaveLength(1)
+  expect(cards()).toHaveLength(0)
   await reload()
   expect(await screen.findByText('Reply 1')).toBeVisible()
   expect(userRows()).toHaveLength(1)
+  expect(screen.queryByText('Not sent')).toBeNull()
   expect(retries()).toHaveLength(0)
+})
+
+it('keeps a same-key Retry refused as busy unconfirmed, under its first key', async () => {
+  answers = [
+    new Error('Connection lost'),
+    new JsonRpcGatewayError('session is already working', { code: 4002 })
+  ]
+  const view = await mount()
+  await send(view, [])
+  expect(await screen.findByText('Not sent')).toBeVisible()
+  const key = submits()[0]!.input_id
+  // The first try may still be waiting for Pi: only this retry was refused.
+  fireEvent.click(retries()[0]!)
+  await waitFor(() => expect(submits()).toHaveLength(2))
+  await waitFor(() => expect(userRows()[0]!.submission?.status).toBe('unknown'))
+  expect(cards()).toHaveLength(0)
+  expect(userRows()[0]!.inputId).toBe(key)
+  fireEvent.click(retries()[0]!)
+  await waitFor(() => expect(delivered).toHaveLength(1))
+  expect(submits().map(input => input.input_id)).toEqual([key, key, key])
+  expect(userRows()).toHaveLength(1)
+})
+
+it('keeps a delivered send unconfirmed when its same-key Retry finds the uploads used', async () => {
+  const original = call.getMockImplementation()!
+  let tries = 0
+  call.mockImplementation(async (method: string, input: Record<string, unknown>) => {
+    if (method !== 'prompt.submit') {
+      return original(method, input)
+    }
+
+    // The daemon checks uploads before the key: the first try took them.
+    if (++tries > 1) {
+      throw new JsonRpcGatewayError('attachment not found: srv-1; attach it again', { code: 4204 })
+    }
+
+    await original(method, input)
+    throw new Error('Reply lost after acceptance')
+  })
+  const view = await mount()
+  await send(view)
+  expect(await screen.findByText('Not sent')).toBeVisible()
+  fireEvent.click(retries()[0]!)
+  await waitFor(() => expect(submits()).toHaveLength(2))
+  await waitFor(() => expect(userRows()[0]!.submission?.status).toBe('unknown'))
+  // Nothing comes back to send again under a new key.
+  const field = screen.getByRole('textbox', { name: 'Message' })
+  expect(field).toHaveValue('')
+  expect(screen.queryByRole('button', { name: 'Remove plan.txt' })).toBeNull()
+  expect(delivered).toHaveLength(1)
 })
 
 it('does not trust a code property on an arbitrary transport error', async () => {
   answers = [Object.assign(new Error('Transport failed'), { code: 5201 })]
   const view = await mount()
   await send(view)
-  expect(await screen.findByTestId('stopped-card')).toHaveTextContent('It may not have been sent')
-  expect(retries()).toHaveLength(0)
+  // Not a refusal: the outcome stays unknown, with no refusal card.
+  expect(await screen.findByText('Not sent')).toBeVisible()
+  expect(cards()).toHaveLength(0)
+  expect(userRows()[0]!.submission?.status).toBe('unknown')
   expect(submits()).toHaveLength(1)
 })
 
@@ -650,9 +759,14 @@ it('does not submit text or retry a previous row when an initial upload fails pa
       ? Promise.reject(new JsonRpcGatewayError('Too large', { code: 4202 }))
       : original(method, input)
   )
-  // The refused draft already has plan.txt, adding notes.txt makes two uploads.
+  // A refused send with Retry leaves the field empty; two new files make two uploads.
   fireEvent.change(view.container.querySelector('input[type=file]')!, {
-    target: { files: [new File(['notes'], 'notes.txt', { type: 'text/plain' })] }
+    target: {
+      files: [
+        new File(['outline'], 'outline.txt', { type: 'text/plain' }),
+        new File(['notes'], 'notes.txt', { type: 'text/plain' })
+      ]
+    }
   })
   fireEvent.click(screen.getByRole('button', { name: 'Send' }))
   await waitFor(() => expect(cards()).toHaveLength(2))
@@ -876,3 +990,239 @@ it.each(['send', 'upload'] as const)(
     }
   }
 )
+
+describe('Retry on a turn that failed on your latest message', () => {
+  // The daemon's session.recall, as in runtime_recall.rs: the row and what
+  // followed it leave history, every view hears it, then it answers.
+  const recalling = (refusal?: Error, hold?: Promise<unknown>) => {
+    useConnection.setState({ daemon: { ...identity, recall: true } })
+    const original = call.getMockImplementation()!
+    call.mockImplementation(async (method: string, input: Record<string, unknown>) => {
+      if (method !== 'session.recall') {
+        return original(method, input)
+      }
+
+      await hold
+
+      if (refusal) {
+        throw refusal
+      }
+
+      const at = rows.findIndex(row => row.role === 'user' && row.input_id === input.input_id)
+      const [row] = rows.splice(at)
+      routeEvent(
+        {
+          type: 'hexbot.sections.changed',
+          payload: {
+            bot: 'owl',
+            id: 'chat',
+            reload: true,
+            recalled: { row_id: row!.row_id, input_id: row!.input_id }
+          }
+        } as GatewayEvent,
+        { refreshBots: () => undefined, refreshSections: () => undefined }
+      )
+
+      return { recalled: true, text: row!.text }
+    })
+  }
+
+  async function fail(view: Awaited<ReturnType<typeof mount>>) {
+    await send(view, [])
+    await waitFor(() => expect(delivered).toHaveLength(1))
+    await proveAccepted(userRows()[0]!.inputId!, 'terminal-own')
+    act(() =>
+      routeEvent({
+        type: 'message.complete',
+        session_id: 'chat',
+        payload: { turn_id: 'terminal-own', error: 'Provider stopped', status: 'error', text: '' }
+      } as GatewayEvent)
+    )
+    await screen.findByTestId('stopped-card')
+  }
+
+  const mark = () =>
+    within(screen.getByTestId('user-message')).getByRole('button', { name: 'Retry sending' })
+
+  it('takes the message back and sends the same bubble again, so one message stays', async () => {
+    recalling()
+    const view = await mount()
+    await fail(view)
+    const first = userRows()[0]!.inputId
+    fireEvent.click(mark())
+    await waitFor(() => expect(delivered).toHaveLength(2))
+    expect(call).toHaveBeenCalledWith(
+      'session.recall',
+      expect.objectContaining({ input_id: first })
+    )
+    expect(submits()[1]).toMatchObject({ text: 'Read my plan', attachments: [] })
+    expect(submits()[1]!.input_id).not.toBe(first)
+    expect(screen.getAllByTestId('user-message')).toHaveLength(1)
+    expect(cards()).toHaveLength(0)
+    await reload()
+    expect(await screen.findByText('Reply 2')).toBeVisible()
+    expect(screen.getAllByTestId('user-message')).toHaveLength(1)
+    expect(rows.filter(row => row.role === 'user')).toHaveLength(1)
+  })
+
+  it('offers Retry again when the second try fails too', async () => {
+    recalling()
+    const view = await mount()
+    await fail(view)
+    fireEvent.click(mark())
+    await waitFor(() => expect(delivered).toHaveLength(2))
+    // As the daemon does it: the failure lands first, the read that names the
+    // new row after it.
+    act(() =>
+      routeEvent({
+        type: 'message.complete',
+        session_id: 'chat',
+        payload: { turn_id: 'terminal-again', error: 'Provider stopped', status: 'error', text: '' }
+      } as GatewayEvent)
+    )
+    await proveAccepted(submits()[1]!.input_id as string, 'terminal-again')
+    await waitFor(() => expect(mark()).toBeEnabled())
+    expect(screen.getAllByTestId('user-message')).toHaveLength(1)
+    fireEvent.click(mark())
+    await waitFor(() => expect(delivered).toHaveLength(3))
+    expect(screen.getAllByTestId('user-message')).toHaveLength(1)
+  })
+
+  it('keeps the message in the draft when you leave before Recall answers', async () => {
+    const answer = deferred()
+    recalling(undefined, answer.promise)
+    const view = await mount()
+    await fail(view)
+    fireEvent.click(mark())
+    await act(async () => {
+      await view.router.navigate({ to: '/r/$room', params: { room: 'garden' } })
+    })
+    expect(await screen.findByText('Garden room')).toBeVisible()
+    await act(async () => answer.resolve())
+    await waitFor(() => expect(useDrafts.getState().byId.chat).toBe('Read my plan'))
+    expect(submits()).toHaveLength(1)
+  })
+
+  it('keeps the message in the saved draft until the resend is taken', async () => {
+    const answer = deferred()
+    recalling(undefined, answer.promise)
+    const view = await mount()
+    await fail(view)
+    fireEvent.click(mark())
+    // Recall is about to take the stored copy away.
+    expect(useDrafts.getState().byId.chat).toBe('Read my plan')
+    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('')
+    await act(async () => answer.resolve())
+    await waitFor(() => expect(delivered).toHaveLength(2))
+    await waitFor(() => expect(useDrafts.getState().byId.chat).toBeUndefined())
+  })
+
+  it('keeps the saved draft when the resend after Recall is refused', async () => {
+    recalling()
+    const view = await mount()
+    await fail(view)
+    answers = [refused()]
+    fireEvent.click(mark())
+    await waitFor(() => expect(submits()).toHaveLength(2))
+    await waitFor(() => expect(screen.getByText('Not sent')).toBeVisible())
+    expect(useDrafts.getState().byId.chat).toBe('Read my plan')
+    expect(rows.filter(row => row.role === 'user')).toHaveLength(0)
+  })
+
+  it("keeps the message in the draft, in view, when Recall's answer is lost", async () => {
+    recalling(new Error('Connection lost'))
+    const view = await mount()
+    await fail(view)
+    fireEvent.click(mark())
+    // Recall may have taken it back: the draft holds it.
+    await waitFor(() =>
+      expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Read my plan')
+    )
+    expect(useDrafts.getState().byId.chat).toBe('Read my plan')
+    expect(submits()).toHaveLength(1)
+  })
+
+  it('puts the failure back when the daemon keeps the first try', async () => {
+    recalling(new JsonRpcGatewayError('session is already working', { code: 4002 }))
+    const view = await mount()
+    await fail(view)
+    fireEvent.click(mark())
+    await waitFor(() => expect(call).toHaveBeenCalledWith('session.recall', expect.anything()))
+    await waitFor(() => expect(screen.getByText('Not sent')).toBeVisible())
+    expect(submits()).toHaveLength(1)
+    expect(screen.getAllByTestId('user-message')).toHaveLength(1)
+    expect(mark()).toBeEnabled()
+  })
+})
+
+it('restores a send nothing can retry only into an empty composer, files and text together', async () => {
+  gate = deferred()
+  answers = [new JsonRpcGatewayError('attachment not found', { code: 4204 })]
+  const view = await mount()
+  await send(view)
+  const field = screen.getByRole('textbox', { name: 'Message' })
+  await waitFor(() => expect(field).toHaveValue(''))
+  fireEvent.change(field, { target: { value: 'Something else' } })
+  await act(async () => gate!.resolve())
+  await waitFor(() => expect(userRows()[0]!.submission?.status).toBe('unavailable'))
+  // Typed since: the failed send's file stays out of it.
+  expect(field).toHaveValue('Something else')
+  expect(screen.queryByRole('button', { name: 'Remove plan.txt' })).toBeNull()
+  fireEvent.change(field, { target: { value: '' } })
+  await waitFor(() => expect(field).toHaveValue('Read my plan'))
+  expect(screen.getByRole('button', { name: 'Remove plan.txt' })).toBeVisible()
+})
+
+it('keeps a newer upload busy when an earlier send finishes', async () => {
+  gate = deferred()
+  const upload = deferred()
+  const original = call.getMockImplementation()!
+  let attaches = 0
+  call.mockImplementation(async (method: string, input: Record<string, unknown>) => {
+    if (method === 'file.attach' && ++attaches === 1) {
+      await upload.promise
+    }
+
+    return original(method, input)
+  })
+  const view = await mount()
+  await send(view, [])
+  const field = screen.getByRole('textbox', { name: 'Message' })
+  await waitFor(() => expect(field).toHaveValue(''))
+  // A second message with a file starts uploading while the first is still out.
+  fireEvent.change(view.container.querySelector('input[type=file]')!, {
+    target: { files: [new File(['notes'], 'notes.txt', { type: 'text/plain' })] }
+  })
+  fireEvent.change(field, { target: { value: 'And my notes' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await act(async () => gate!.resolve())
+  await waitFor(() => expect(delivered).toHaveLength(1))
+  fireEvent.keyDown(field, { key: 'Enter' })
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  expect(attaches).toBe(1)
+  await act(async () => upload.resolve())
+  await waitFor(() => expect(delivered).toHaveLength(2))
+  expect(userRows()).toHaveLength(2)
+})
+
+it('keeps the saved draft of a message that did not send until the bot takes it', async () => {
+  answers = [refused()]
+  const view = await mount()
+  await send(view)
+  const [card] = await screen.findAllByTestId('stopped-card')
+  // The field is empty, but a reload would still find the message.
+  expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('')
+  expect(useDrafts.getState().byId.chat).toBe('Read my plan')
+  fireEvent.click(retryOn(card!)!)
+  await waitFor(() => expect(delivered).toHaveLength(1))
+  await waitFor(() => expect(useDrafts.getState().byId.chat).toBeUndefined())
+})
+
+it('lets the saved draft go once a send that reopened the chat is taken', async () => {
+  answers = [new JsonRpcGatewayError('session not found', { code: 4001 })]
+  const view = await mount()
+  await send(view, [])
+  await waitFor(() => expect(delivered).toHaveLength(1))
+  expect(submits()[1]!.input_id).not.toBe(submits()[0]!.input_id)
+  await waitFor(() => expect(useDrafts.getState().byId.chat).toBeUndefined())
+})

@@ -2348,6 +2348,10 @@ impl Runtime {
             settled = json!({"choice":choice});
             if request["method"] == "confirm" {
                 json!({"confirmed":choice!="deny"})
+            } else if request["approval_payload"]["form"]["kind"] == "plugin" && choice != "deny" {
+                // The plugin card: the keys typed go to the waiting tool only.
+                let form = &request["approval_payload"]["form"];
+                json!({"value": plugin_tool::answer(form, p)?.to_string()})
             } else if request["approval_payload"]["form"].is_object() && choice != "deny" {
                 // The sign-in card: what was typed goes to the waiting tool
                 // only, never to an event, a log or the conversation.
@@ -3542,7 +3546,8 @@ impl Runtime {
     }
     /// Shows a daemon card and waits: None when the owner says no or the
     /// card goes, otherwise the answer. A card with a `form` (the sign-in
-    /// card) answers with what was typed, as JSON, and is never stored.
+    /// card, a plugin card) answers with what was typed, as JSON, and is
+    /// never stored.
     async fn ask_native(&self, s: &Live, params: Value, always: bool) -> Result<Option<String>> {
         let settings = self.session_settings(s)?;
         if settings["approvalMode"] == "off" && !always {
@@ -6911,48 +6916,6 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
         );
         assert!(s.tools.iter().any(|t| t["name"] == "hexbot_show_html"));
         runtime.shutdown().await;
-    }
-}
-
-#[cfg(test)]
-mod code_environment_tests {
-    use super::*;
-    #[tokio::test]
-    async fn python_child_does_not_receive_connector_credentials() {
-        let home = tempfile::tempdir().unwrap();
-        db::migrate(home.path()).unwrap();
-        db::open(home.path())
-            .unwrap()
-            .execute_batch(
-                "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);INSERT INTO bots(name,owner_id,workdir) VALUES('owl','alice','/tmp');INSERT INTO sections(id,bot,owner_id) VALUES('first','owl','alice');",
-            )
-            .unwrap();
-        common::atomic_write(
-            &home.path().join("profiles/owl/config.yaml"),
-            b"tools:\n  enabled_toolsets: [code_execution]\n",
-        )
-        .unwrap();
-        common::atomic_write(
-            &home.path().join(".env"),
-            b"OPENAI_API_KEY=provider-secret\nCUSTOM_CONNECTOR_VALUE=connector-secret\n",
-        )
-        .unwrap();
-        let result = crate::native_tools::call(
-            home.path(),
-            "alice",
-            "owl",
-            "first",
-            "execute_code",
-            &json!({
-                "code": "import os\nprint(os.environ.get('OPENAI_API_KEY'))\nprint(os.environ.get('CUSTOM_CONNECTOR_VALUE'))"
-            }),
-        )
-        .await
-        .unwrap();
-        crate::native_tools::close_session(home.path(), "first").await;
-        assert!(!result.to_string().contains("provider-secret"));
-        assert!(!result.to_string().contains("connector-secret"));
-        assert!(result["output"].as_str().unwrap().contains("None"));
     }
 }
 

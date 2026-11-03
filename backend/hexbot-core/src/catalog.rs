@@ -16,8 +16,6 @@ use std::{
 const TOOLS: &[(&str, &str)] = &[
     ("terminal", "terminal"),
     ("files", "file"),
-    ("code_execution", "code_execution"),
-    ("browser", "browser"),
     ("computer_use", "computer_use"),
     ("vision", "vision"),
     ("voice", "tts"),
@@ -25,6 +23,8 @@ const TOOLS: &[(&str, &str)] = &[
     ("delegate", "delegation"),
     ("scheduling", "cronjob"),
 ];
+/// Bot tools that ran on the daemon's computer; Computer use does their work.
+const RETIRED_TOOLS: &[&str] = &["code_execution", "browser"];
 /// The primary bot's handle. Only the primary bot may take it.
 pub const PRIMARY_NAME: &str = "hexbot";
 const PRIMARY_DISPLAY_NAME: &str = "HexBot";
@@ -1560,6 +1560,7 @@ fn shape_bot(
         "description": row["description"].as_str().unwrap_or(""),
         "primary": row["is_primary"].as_i64() == Some(1),
         "persona": read_text(home, &profile(home, name)?.join("SOUL.md"))?,
+        "persona_updated_at": crate::common::modified_at(&profile(home, name)?.join("SOUL.md"))?,
         "skills": skills.into_iter().filter(|s| s.enabled).map(|s| s.name).collect::<Vec<_>>(),
         "tools": tools,
         "available_tools": available.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
@@ -1634,7 +1635,11 @@ fn validate_patch(home: &Path, p: &Value) -> Result<()> {
                     let item = item
                         .as_str()
                         .ok_or_else(|| Error::new(4202, format!("{key} must contain strings")))?;
-                    if key == "tools" && !TOOLS.iter().any(|(k, _)| *k == item) {
+                    // Clients from before Computer use took them over still send these.
+                    if key == "tools"
+                        && !TOOLS.iter().any(|(k, _)| *k == item)
+                        && !RETIRED_TOOLS.contains(&item)
+                    {
                         return Err(Error::new(4202, format!("unknown tool: {item}")));
                     }
                 }
@@ -1836,7 +1841,6 @@ fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
                     "terminal",
                     "file",
                     "web",
-                    "browser",
                     "vision",
                     "image_gen",
                     "tts",
@@ -1857,7 +1861,9 @@ fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
         // never keeps one switched on that settings no longer shows.
         let effective = common::merged_config_with(home, &cfg)?;
         let missing = crate::native_tools::not_set_up_with_config(home, name, &effective)?;
-        enabled.retain(|v| !TOOLS.iter().any(|(_, t)| v == t));
+        enabled.retain(|v| {
+            !TOOLS.iter().any(|(_, t)| v == t) && !RETIRED_TOOLS.iter().any(|t| v == t)
+        });
         for item in tools {
             if let Some((_, t)) = TOOLS.iter().find(|(k, _)| item == k)
                 && !missing.contains(t)

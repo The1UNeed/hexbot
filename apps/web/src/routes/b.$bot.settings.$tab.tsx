@@ -159,13 +159,13 @@ function BotSettingsDialog() {
         closeLabel="Close bot settings"
         current={current}
         header={
-          <div className="mr-2 flex shrink-0 items-center gap-2.5 sm:mr-0 sm:mb-4 sm:px-3 sm:pt-2">
+          <div className="mr-2 flex shrink-0 items-center gap-2.5 @min-[600px]:mr-0 @min-[600px]:mb-4 @min-[600px]:px-3 @min-[600px]:pt-2">
             {bot ? <Avatar {...botFace(bot)} name={name} size="md" /> : null}
             <span className="min-w-0">
               <span className="block truncate text-[length:var(--text-body)] font-semibold">
                 {name}
               </span>
-              <span className="hidden text-[length:var(--text-meta)] text-muted sm:block">
+              <span className="hidden text-[length:var(--text-meta)] text-muted @min-[600px]:block">
                 Bot settings
               </span>
             </span>

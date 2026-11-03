@@ -1,4 +1,6 @@
 import type { GatewayEvent } from '@hermes/shared'
+import type { PluginForm } from '../../../web/src/lib/types'
+
 import type { ChatMessage, ChatState, ChatTool, SignInForm, TurnState } from './types'
 export const emptyTurn = (): TurnState => ({
   streaming: '',
@@ -37,6 +39,16 @@ const isSignIn = (value: unknown): value is SignInForm =>
   (value as SignInForm).kind === 'sign_in' &&
   typeof (value as SignInForm).site === 'string' &&
   typeof (value as SignInForm).title === 'string'
+
+/** A plugin card's fields, from an `approval.request`. */
+const isPlugin = (value: unknown): value is PluginForm =>
+  typeof value === 'object' &&
+  value !== null &&
+  (value as PluginForm).kind === 'plugin' &&
+  ['enable', 'install', 'setup'].includes((value as PluginForm).action) &&
+  typeof (value as PluginForm).id === 'string' &&
+  typeof (value as PluginForm).name === 'string' &&
+  Array.isArray((value as PluginForm).fields)
 
 const detailOf = (value: unknown) =>
   typeof value === 'string' ? value : value == null ? '' : JSON.stringify(value, null, 2)
@@ -194,7 +206,7 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
         command: String(p.command ?? p.tool_name ?? 'Approve this action'),
         reason: typeof p.reason === 'string' ? p.reason : undefined,
         choices: Array.isArray(p.choices) ? (p.choices as string[]) : ['once', 'deny'],
-        ...(isSignIn(p.form) && { form: p.form })
+        ...((isSignIn(p.form) || isPlugin(p.form)) && { form: p.form })
       }
       return {
         ...state,

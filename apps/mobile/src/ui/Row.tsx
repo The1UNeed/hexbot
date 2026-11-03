@@ -74,7 +74,7 @@ export function Row({
             {title}
           </Text>
           {meta ? (
-            <Text numberOfLines={1} tone="muted" variant="footnote">
+            <Text numberOfLines={1} style={styles.meta} tone="muted" variant="footnote">
               {meta}
             </Text>
           ) : null}
@@ -257,6 +257,8 @@ const styles = StyleSheet.create({
   group: { gap: 6 },
   groupTitle: { paddingHorizontal: 16 },
   leading: { alignItems: 'center', justifyContent: 'center' },
+  // The title keeps its room; the detail beside it gives way first, as in iOS Settings.
+  meta: { flexShrink: 3, textAlign: 'right' },
   panel: { borderRadius: radius.card, overflow: 'hidden' },
   row: {
     alignItems: 'center',

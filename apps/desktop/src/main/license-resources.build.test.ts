@@ -45,7 +45,9 @@ async function resources(configFile: string | null, platform: 'mac' | 'linux') {
 
 const notices = [
   ['LICENSE', 'LICENSE'],
-  ['NOTICE', 'NOTICE']
+  ['NOTICE', 'NOTICE'],
+  // Written by the app's build (scripts/desktop/third-party-notices.mjs app).
+  ['apps/desktop/resources/THIRD_PARTY_NOTICES', 'THIRD_PARTY_NOTICES']
 ]
 
 describe('license resources', () => {
@@ -54,7 +56,7 @@ describe('license resources', () => {
       ['full', null, [...notices, ['apps/desktop/resources/hexbot-native', 'hexbot-native']]],
       ['client', 'electron-builder.client.yml', notices]
     ] as const) {
-      it(`${edition} on ${platform} ships the repository's LICENSE and NOTICE`, async () => {
+      it(`${edition} on ${platform} ships the repository's LICENSE and NOTICE and the app's third-party notices`, async () => {
         const result = await resources(configFile, platform)
         expect(result.mapping).toEqual(mapping)
         for (const file of ['LICENSE', 'NOTICE'])

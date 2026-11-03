@@ -2,29 +2,33 @@ import { Ionicons } from '@expo/vector-icons'
 import { useState } from 'react'
 import { StyleSheet, View } from 'react-native'
 
-import { Button, Field, radius, Text, useTheme } from '../ui'
+import type { SignInForm } from '../../../web/src/lib/types'
+import { Button, useTheme } from '../ui'
 
-import type { ApprovalChoice, ApprovalRequestView, SignInAnswer } from './types'
+import { CardField, CardStatus, ConnectCard, cardStyles } from './ConnectCard'
+import type { ApprovalChoice, ApprovalRequestView, CardAnswer } from './types'
 
 /**
- * The secure sign-in card a bot shows with `hexbot_passwords`. What the user
- * types goes to the daemon with the answer, which saves it in Passwords for
- * every bot and types it into the page; the bot never sees it.
+ * The secure sign-in card a bot shows with `hexbot_passwords`. The form
+ * folds behind Sign in; what the user types goes to the daemon with the
+ * answer, which saves it in Passwords for every bot and types it into the
+ * page. The bot never sees it.
  */
 export function SignInCard({
   form,
   onAnswer,
   request
 }: {
-  form: NonNullable<ApprovalRequestView['form']>
+  form: SignInForm
   onAnswer: (
     requestId: string,
     choice: ApprovalChoice,
-    signIn?: SignInAnswer
+    answer?: CardAnswer
   ) => Promise<unknown> | void
   request: ApprovalRequestView
 }) {
   const theme = useTheme()
+  const [open, setOpen] = useState(false)
   const [username, setUsername] = useState(form.username ?? '')
   const [password, setPassword] = useState('')
   const [sent, setSent] = useState<ApprovalChoice | null>(null)
@@ -47,107 +51,79 @@ export function SignInCard({
   }
 
   return (
-    <View
+    <ConnectCard
       accessibilityLabel={decided ? undefined : `Sign in to ${form.title}`}
-      style={[styles.card, { borderColor: theme.hairline, backgroundColor: theme.background }]}
-      testID={`sign-in-${id}`}
-    >
-      <View style={styles.head}>
+      action={
+        open ? null : (
+          <Button
+            label="Sign in"
+            onPress={() => setOpen(true)}
+            style={cardStyles.headButton}
+            testID={`sign-in-${id}-open`}
+          />
+        )
+      }
+      icon={
         <View style={[styles.icon, { borderColor: theme.hairline }]}>
           <Ionicons color={theme.muted} name="key-outline" size={18} />
         </View>
-        <View style={styles.title}>
-          <Text numberOfLines={1} variant="subhead">
-            Sign in to {form.title}
-          </Text>
-          <Text tone="muted" variant="footnote">
-            Secure form
-          </Text>
-        </View>
-        {decided ? (
-          <View style={styles.decision}>
-            {decided === 'deny' ? null : (
-              <Ionicons color={theme.success} name="checkmark" size={14} />
-            )}
-            <Text
-              style={decided === 'deny' ? undefined : { color: theme.success }}
-              tone="muted"
-              variant="footnote"
-            >
-              {decided === 'deny' ? 'Cancelled' : 'Submitted'}
-            </Text>
-          </View>
-        ) : null}
-      </View>
-      {decided ? null : (
+      }
+      status={
+        decided ? (
+          <CardStatus done={decided !== 'deny'} label={decided === 'deny' ? 'Not now' : 'Saved'} />
+        ) : null
+      }
+      subtitle={form.update ? `The saved password for ${form.site} didn't work` : form.site}
+      testID={`sign-in-${id}`}
+      title={form.title}
+    >
+      {decided || !open ? null : (
         <>
-          {form.update ? (
-            <Text tone="muted" variant="footnote">
-              The saved password for {form.site} didn't work. Enter the current one.
-            </Text>
-          ) : null}
-          <Field
-            autoCapitalize="none"
+          <CardField
             autoComplete="username"
-            autoCorrect={false}
+            autoFocus={!form.username}
             label="Username or email"
             onChangeText={setUsername}
             testID={`sign-in-${id}-username`}
             textContentType="username"
             value={username}
           />
-          <Field
-            autoCapitalize="none"
+          <CardField
             autoComplete="current-password"
-            autoCorrect={false}
+            autoFocus={Boolean(form.username)}
             label="Password"
             onChangeText={setPassword}
             onSubmitEditing={() => password && !busy && void answer('once')}
-            secureTextEntry
+            secret
             testID={`sign-in-${id}-password`}
             textContentType="password"
             value={password}
           />
-          <Text tone="muted" variant="footnote">
-            Goes straight to {form.site} and into Passwords for your bots. The bot never sees it.
-          </Text>
-          <View style={styles.actions}>
+          <View style={cardStyles.actions}>
             <Button
               busy={busy}
               disabled={!password}
               label="Sign in"
               onPress={() => void answer('once')}
-              style={styles.button}
+              style={cardStyles.button}
               testID={`sign-in-${id}-submit`}
             />
             <Button
               disabled={busy}
-              label="Cancel"
+              label="Not now"
               onPress={() => void answer('deny')}
-              style={[styles.button, { backgroundColor: theme.inset }]}
+              style={[cardStyles.button, { backgroundColor: theme.inset }]}
               testID={`sign-in-${id}-cancel`}
               variant="secondary"
             />
           </View>
         </>
       )}
-    </View>
+    </ConnectCard>
   )
 }
 
 const styles = StyleSheet.create({
-  actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  button: { minHeight: 44, paddingHorizontal: 18 },
-  card: {
-    borderRadius: radius.bubble,
-    borderWidth: StyleSheet.hairlineWidth,
-    gap: 10,
-    marginTop: 14,
-    maxWidth: '92%',
-    padding: 14
-  },
-  decision: { alignItems: 'center', flexDirection: 'row', gap: 4 },
-  head: { alignItems: 'center', flexDirection: 'row', gap: 10 },
   icon: {
     alignItems: 'center',
     borderRadius: 10,
@@ -155,6 +131,5 @@ const styles = StyleSheet.create({
     height: 36,
     justifyContent: 'center',
     width: 36
-  },
-  title: { flex: 1, minWidth: 0 }
+  }
 })

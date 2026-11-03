@@ -24,6 +24,7 @@ import { toHandle } from '../../lib/bot-handle'
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
 import { moodForStatus } from '../../lib/face'
+import { previewLine } from '../../lib/preview'
 import { reasoningOptions, runningLevel } from '../../lib/reasoning'
 import { toMillis } from '../../lib/time'
 import type { Bot, ModelOption, ReasoningEffort, Room, RoomEvent, Section } from '../../lib/types'
@@ -38,6 +39,7 @@ import {
   botStatusWithLive,
   introduceBot,
   knownChat,
+  legacyChat,
   type LiveSections,
   liveSectionsOf,
   sectionsActions,
@@ -46,6 +48,7 @@ import {
 import { useSettings } from '../../stores/settings'
 import { useTranscripts } from '../../stores/transcripts'
 import { rememberedTab } from '../bot-settings'
+import { type LiveMood, liveMoodsOf } from '../conversation/steps'
 import { UpdatePill } from '../update-pill'
 
 import { needsPrimary, PrimaryChoice } from './primary-choice'
@@ -184,6 +187,8 @@ interface BotRowProps {
   draft: boolean
   focused: string | null
   live: LiveSections
+  /** The live face of each section with a reply streaming. */
+  moods: Record<string, LiveMood>
   onOpen: (bot: string) => void
   onSettings: (bot: string) => void
   query: string
@@ -197,6 +202,7 @@ function BotRow({
   draft,
   focused,
   live,
+  moods,
   onOpen,
   onSettings,
   query,
@@ -214,7 +220,10 @@ function BotRow({
     ...bot.sections_recent.filter(recent => !sections.some(section => section.id === recent.id))
   ]
 
-  const label = bot.title || bot.description
+  // The last thing either side said in the chat, as a messaging app lists it.
+  const chat = legacyChat(available, bot.name)
+  const preview = chat && 'section' in chat ? previewLine(chat.section.preview) : ''
+  const label = preview || bot.title || bot.description
   const status = botStatusWithLive(bot, available, live)
 
   // A turn finished in the chat that you have not seen on any device. Check-ins
@@ -241,7 +250,14 @@ function BotRow({
         <span className="relative shrink-0">
           <Avatar
             {...botFace(bot)}
-            mood={emotion ?? moodForStatus(dot)}
+            mood={
+              emotion ??
+              moodForStatus(
+                dot,
+                moods[bot.status_detail?.section_id ?? ''] ??
+                  available.map(section => moods[section.id]).find(Boolean)
+              )
+            }
             name={bot.display_name}
             size="lg"
           />
@@ -388,6 +404,7 @@ export function RosterColumn() {
   const streamingSessions = useTranscripts(state => state.bySession)
 
   const liveSections = useMemo(() => liveSectionsOf(streamingSessions), [streamingSessions])
+  const liveMoods = useMemo(() => liveMoodsOf(streamingSessions), [streamingSessions])
 
   const ordered = useMemo(() => orderedBots(bots), [bots])
   const roster = useMemo(() => orderedRosterItems(bots, rooms), [bots, rooms])
@@ -598,6 +615,7 @@ export function RosterColumn() {
               focused={focused}
               key={`bot:${(entry.item as Bot).name}`}
               live={liveSections}
+              moods={liveMoods}
               onOpen={name => void openChat(name)}
               onSettings={openBotSettings}
               query={query}
@@ -698,7 +716,7 @@ export function RosterColumn() {
             />
           </Field>
           {showModel || !newBot.provider || !newBot.model ? (
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-4 @min-[460px]:grid-cols-2">
               <Field label="Provider">
                 <Select
                   label="Provider"

@@ -275,12 +275,6 @@ pub(crate) fn not_set_up_with_config(
             .collect(),
     )
 }
-/// Whether a toolset's program or service is set up for the daemon as a
-/// whole, before any bot's own settings.
-pub(crate) fn set_up_on_daemon(home: &Path, toolset: &str) -> Result<bool> {
-    let env = connectors::profile_credentials(home, home)?;
-    Ok(set_up(home, &common::read_config(home)?, &env, toolset))
-}
 fn set_up(
     home: &Path,
     cfg: &Value,
@@ -2633,6 +2627,24 @@ fn blank(text: &str, secrets: &[String]) -> String {
             .replace(escaped, BLANKED)
     })
 }
+const PROTOCOL_KEYS: &[&str] = &[
+    "content",
+    "type",
+    "text",
+    "data",
+    "mimeType",
+    "success",
+    "error",
+    "result",
+    "screenshot_path",
+    "origin",
+    "refs",
+    "snapshot",
+    "url",
+    "title",
+    "name",
+    "role",
+];
 fn blank_value(value: &mut Value, secrets: &[String]) {
     match value {
         Value::String(text) => *text = blank(text, secrets),
@@ -2644,7 +2656,13 @@ fn blank_value(value: &mut Value, secrets: &[String]) {
                 .into_iter()
                 .map(|(key, mut v)| {
                     blank_value(&mut v, secrets);
-                    (blank(&key, secrets), v)
+                    // The tool's own keys stay, so its result keeps its shape.
+                    let key = if PROTOCOL_KEYS.contains(&key.as_str()) {
+                        key
+                    } else {
+                        blank(&key, secrets)
+                    };
+                    (key, v)
                 })
                 .collect();
         }
@@ -2681,13 +2699,15 @@ async fn scrub_filled(
 /// Types saved secrets into the section's open browser, `(ref, secret)` in
 /// order, once its page passes `allowed`. The secrets go to agent-browser on
 /// stdin, never its command line, and its output, which repeats them, is
-/// dropped. Returns the page's address.
+/// dropped. `hidden` (passwords and codes, not usernames the bot already
+/// knows) is blanked from later browser results. Returns the page's address.
 pub async fn browser_fill(
     home: &Path,
     bot: &str,
     stored: &str,
     allowed: impl Fn(&str) -> bool,
     fills: &[(String, String)],
+    hidden: &[String],
 ) -> Result<String> {
     if !enabled(home, bot, "browser")? {
         return Err(Error::new(4302, "tool is disabled: browser"));
@@ -2738,6 +2758,16 @@ pub async fn browser_fill(
             json!(["fill", reference, secret])
         })
         .collect::<Vec<_>>();
+    // Registered first: a batch that fails part way may still have typed some.
+    {
+        let mut filled = filled().lock().await;
+        let secrets = filled.entry(key).or_default();
+        for secret in hidden {
+            if !secrets.contains(secret) {
+                secrets.push(secret.clone());
+            }
+        }
+    }
     let result = run(
         agent_command(browser, "batch", &["--bail".into()]),
         json!(commands).to_string().as_bytes(),
@@ -2750,15 +2780,6 @@ pub async fn browser_fill(
         .as_array()
         .map(|steps| steps.len() < fills.len() || steps.iter().any(|s| s["success"] != true))
         .unwrap_or(true);
-    {
-        let mut filled = filled().lock().await;
-        let secrets = filled.entry(key).or_default();
-        for (_, secret) in fills {
-            if !secrets.contains(secret) {
-                secrets.push(secret.clone());
-            }
-        }
-    }
     if failed || result["success"] != true {
         // The step's error names the field, never what was typed.
         let reason = steps
@@ -2834,6 +2855,10 @@ mod blank_tests {
         let mut shot = images.clone();
         blank_value(&mut shot, &secrets);
         assert_eq!(shot, images, "a screenshot stays intact");
+        // A one-letter password leaves the result's own keys alone.
+        let mut short = json!({"success": true, "data": {"result": "t"}});
+        blank_value(&mut short, &["t".to_owned()]);
+        assert_eq!(short, json!({"success": true, "data": {"result": BLANKED}}));
     }
 }
 
@@ -3120,44 +3145,6 @@ mod safety_tests {
         close_session(home.path(), "section").await;
         assert_eq!(result["success"], true, "{result}");
         assert_eq!(result["output"], "ok\n");
-    }
-    #[tokio::test]
-    async fn kernel_uses_frozen_cwd_without_connector_secrets() {
-        let home = fixture();
-        fs::write(
-            home.path().join(".env"),
-            "OPENAI_API_KEY=secret\nAWS_SECRET_ACCESS_KEY=secret\nPYTHONPATH=/wrong\n",
-        )
-        .unwrap();
-        let cwd = home.workspace().with_file_name("scheduled-directory");
-        fs::create_dir(&cwd).unwrap();
-        fs::write(cwd.join("from-pi.txt"), "shared cwd").unwrap();
-        crate::runtime_store::open(home.path())
-            .unwrap()
-            .execute(
-                "INSERT INTO native_sessions(stored_id,owner,bot,prompt,options) VALUES('section','alice','owl','frozen',?)",
-                [json!({ "cwd": cwd }).to_string()],
-            )
-            .unwrap();
-        let result = call(
-            home.path(),
-            "alice",
-            "owl",
-            "section",
-            "execute_code",
-            &json!({
-                "code": "import os\nassert 'OPENAI_API_KEY' not in os.environ\nassert 'AWS_SECRET_ACCESS_KEY' not in os.environ\nassert 'PYTHONPATH' not in os.environ\nprint(open('from-pi.txt').read())"
-            }),
-        )
-        .await
-        .unwrap();
-        close_session(home.path(), "section").await;
-        assert_eq!(result["success"], true, "{result}");
-        assert_eq!(result["output"], "shared cwd\n");
-        assert_eq!(
-            workdir(home.path(), "owl").unwrap(),
-            home.workspace().canonicalize().unwrap()
-        );
     }
     #[tokio::test]
     async fn media_paths_reject_escapes_and_nonregular_files() {

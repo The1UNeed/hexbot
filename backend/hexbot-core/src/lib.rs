@@ -57,6 +57,7 @@ pub use system_service as windows_service;
 pub mod team;
 mod update_path;
 pub mod update_signature;
+pub mod usage;
 
 pub fn version() -> String {
     serde_json::from_str::<serde_json::Value>(include_str!("../../../apps/desktop/package.json"))

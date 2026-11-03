@@ -370,7 +370,7 @@ function Overview({
 
   return (
     <>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+      <div className="grid grid-cols-2 gap-3 @min-[600px]:grid-cols-3">
         <Tile label="Launch time" note="Start to ready" value={formatMs(launch.total_ms)} />
         <Tile
           label="Uptime"

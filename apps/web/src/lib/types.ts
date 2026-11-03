@@ -63,6 +63,57 @@ export interface SignInForm {
   username?: string
 }
 
+/** A key a plugin card asks for: never its value, only whether one is saved. */
+export interface PluginFormField {
+  help?: null | string
+  /** The end of a saved value, such as …a1b2, when there is one. */
+  hint?: null | string
+  key: string
+  label: string
+  /** Where an MCP server takes it. */
+  place?: 'env' | 'headers'
+  /** The provider it belongs to, for a connector with several. */
+  provider?: null | string
+  secret?: boolean
+  /** True when a value is saved; the field may then be left empty. */
+  set?: boolean
+  /** Where to get one. */
+  url?: null | string
+}
+
+/**
+ * The plugin card a bot shows with `hexbot_plugins`: install a package,
+ * turn a plugin on, or set it up. The keys typed on it go to the daemon with
+ * the answer and are saved as Settings, Plugins saves them.
+ */
+export interface PluginForm {
+  action: 'enable' | 'install' | 'setup'
+  /** The bot it is for, by name. */
+  bot: string
+  description?: string
+  /** What an install runs, in words. */
+  detail?: string
+  /** What an install runs: its command line or address, then each value it is given. */
+  run?: string[]
+  /** True when it is for another bot than the one asking. */
+  other?: boolean
+  fields: PluginFormField[]
+  /** A `BRAND_ICONS` key or `glyph:<name>`; skills and servers send none. */
+  icon?: null | string
+  /** The plugin's id, such as connector:notion or package:github. */
+  id: string
+  kind: 'plugin'
+  name: string
+  provider?: null | string
+  providers?: { id: string; label: string }[] | null
+}
+
+/** What a plugin card answers with. */
+export interface PluginAnswer {
+  provider?: null | string
+  values: Record<string, string>
+}
+
 /** A saved login in Settings, Passwords: never its password or code key. */
 export interface PasswordLogin {
   /** The bots that may use it; null means every bot, including new ones. */
@@ -89,7 +140,7 @@ export interface ApprovalRequest {
   decision?: ApprovalChoice
   /** The command or action, rendered in monospace. */
   command?: string
-  form?: SignInForm
+  form?: PluginForm | SignInForm
   reason?: string
   receivedAt: number
   requestId: string
@@ -151,6 +202,8 @@ export interface Bot {
   name: string
   owner_id: string
   persona: string
+  /** When SOUL.md last changed, in Unix seconds; null before it exists. Older daemons leave it out. */
+  persona_updated_at?: null | number
   /** The one bot that looks after the others; it can't be deleted. Older daemons leave it out. */
   primary?: boolean
   provider: null | string
@@ -212,8 +265,6 @@ export type ReasoningEffort = 'high' | 'low' | 'max' | 'medium' | 'minimal' | 'o
 
 /** Keys of `Bot.tools`; each maps to one Hexbot toolset on the daemon. */
 export type BotTool =
-  | 'browser'
-  | 'code_execution'
   | 'computer_use'
   | 'delegate'
   | 'files'
@@ -328,16 +379,6 @@ export interface PluginServer {
 
 /** `hexbot.plugins.list`: each kind with the bots it is given to. */
 export interface PluginsList {
-  capabilities: {
-    bots: string[]
-    description: string
-    id: string
-    kind: 'capability'
-    name: string
-    ready: boolean
-    /** What setting it up takes, when it isn't. */
-    setup: null | string
-  }[]
   /** Connectors and MCP servers; a server also carries `server`. */
   connectors: (Connector & {
     bots: string[]
@@ -370,7 +411,7 @@ export interface PluginsList {
   })[]
 }
 
-export type PluginKind = 'capability' | 'connector' | 'package' | 'skill'
+export type PluginKind = 'connector' | 'package' | 'skill'
 
 /** One row of Settings, Plugins, whatever its kind. */
 export interface Plugin {
@@ -639,6 +680,8 @@ export interface Settings {
   dream_time: string
   /** Every bot's heartbeat. Absent on daemons from before the heartbeat. */
   heartbeat_enabled?: boolean
+  /** Anonymous usage data from this daemon (docs/usage-data.md). Absent on older daemons. */
+  usage_data?: boolean
 }
 
 export interface HeartbeatRun {

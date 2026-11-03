@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { ArrowRight, ArrowUp, Plus } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { UsageDataSummary } from '../app/settings/privacy'
 import { ConnectorFields, connectorValues } from '../components/connector-fields'
 import { isSubscription, ProviderPanel, supportsApiKey } from '../components/provider-panel'
 import { Avatar } from '../components/ui/avatar'
@@ -11,6 +12,7 @@ import { ConnectorIcon } from '../components/ui/connector-icon'
 import type { HexbotActName } from '../components/ui/hexbot-act'
 import { Input } from '../components/ui/input'
 import { Select } from '../components/ui/select'
+import { Switch } from '../components/ui/switch'
 import { Textarea } from '../components/ui/textarea'
 import { HexbotMark, Wordmark } from '../components/ui/wordmark'
 import {
@@ -60,6 +62,7 @@ type OnboardingStep =
   | 'meet'
   | 'providers'
   | 'tools'
+  | 'usage'
   | 'welcome'
 
 export function initialOnboardingStep(input: {
@@ -146,7 +149,7 @@ export function ContinueStep({
       <div className="grid w-full flex-1 place-items-center py-8">
         <Avatar {...botFace(bot)} name={bot.display_name} size="xl" />
       </div>
-      <SetupActions className="pb-[12vh]">
+      <SetupActions className="pb-[12dvh]">
         <Button
           busy={busy}
           className={PILL}
@@ -250,10 +253,10 @@ function SetupFrame({
   title: string
 }) {
   return (
-    <main className="relative flex min-h-screen flex-col items-center bg-background px-6 text-foreground">
+    <main className="relative flex min-h-dvh flex-col items-center bg-background px-6 text-foreground">
       <div aria-hidden className="hex-drag absolute inset-x-0 top-0 h-11" />
       <div className="hex-rise flex w-full max-w-[520px] flex-1 flex-col items-center" key={title}>
-        <h1 className="pt-[13vh] text-center text-[22px] leading-snug font-medium">{title}</h1>
+        <h1 className="pt-[13dvh] text-center text-[22px] leading-snug font-medium">{title}</h1>
         {subtitle ? <p className="mt-1 text-center text-secondary text-muted">{subtitle}</p> : null}
         {children}
       </div>
@@ -283,7 +286,7 @@ function TourPage({
   return (
     <SetupFrame title={title}>
       <div className="grid w-full flex-1 place-items-center py-8">{children}</div>
-      <SetupActions className="pb-[12vh]">
+      <SetupActions className="pb-[12dvh]">
         <Button className={PILL} data-testid="onboarding-next" onClick={next} variant="primary">
           Next
         </Button>
@@ -546,7 +549,7 @@ export function ChoiceStep({
       <div className="grid w-full flex-1 place-items-center py-8">
         <HexbotMark size={64} />
       </div>
-      <SetupActions className="pb-[12vh]">
+      <SetupActions className="pb-[12dvh]">
         <Button
           autoFocus
           className={PILL}
@@ -618,7 +621,7 @@ function ProvidersStep({
         placeholder="Search providers"
         value={search}
       />
-      <ul className="max-h-[42vh] divide-y divide-border overflow-y-auto rounded-panel border border-border">
+      <ul className="max-h-[42dvh] divide-y divide-border overflow-y-auto rounded-panel border border-border">
         {filtered.map(item => {
           const open = selected === item.id
 
@@ -929,6 +932,107 @@ function DefaultsStep({
   )
 }
 
+/**
+ * Anonymous usage data, asked once before anything is sent. Off until the
+ * switch is turned on; each flip is saved at once, so Continue never decides
+ * for the user. In the app it covers the app and its daemon; in a browser,
+ * the daemon. Skipped when neither can send it (an older daemon in a browser).
+ */
+export function UsageStep({
+  onContinue,
+  onError
+}: {
+  onContinue: () => void
+  onError: (message: string) => void
+}) {
+  const bridge = getBridge()
+  const app = Boolean(bridge?.setUsageData)
+  const [daemon, setDaemon] = useState<boolean | null>(null)
+  const [on, setOn] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const skipped = useRef(false)
+
+  // A choice saved earlier in setup shows as it is. If the app and the daemon
+  // differ, the switch shows on, because something is still being shared.
+  useEffect(() => {
+    void Promise.all([
+      settingsGet().then(
+        settings => settings.usage_data,
+        () => undefined
+      ),
+      bridge?.privacy?.().then(
+        privacy => privacy.usageData,
+        () => false
+      )
+    ]).then(([daemonOn, appOn]) => {
+      setOn(daemonOn === true || appOn === true)
+      setDaemon(daemonOn !== undefined)
+    })
+  }, [bridge])
+
+  useEffect(() => {
+    if (daemon === false && !app && !skipped.current) {
+      skipped.current = true
+      onContinue()
+    }
+  }, [app, daemon, onContinue])
+
+  const toggle = async (checked: boolean) => {
+    setBusy(true)
+
+    try {
+      if (daemon) {
+        await settingsSet({ usage_data: checked })
+      }
+
+      await bridge?.setUsageData?.(checked)
+      setOn(checked)
+    } catch (reason) {
+      onError(String(reason))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="w-full space-y-5 py-8">
+      <div className="flex items-center gap-4 rounded-[14px] border border-border bg-surface px-4 py-3">
+        <div className="min-w-0 flex-1">
+          <p className="font-medium">Share anonymous usage data</p>
+          <p className="text-secondary text-muted">
+            {app && daemon
+              ? 'From this app and its daemon.'
+              : app
+                ? 'From this app.'
+                : 'From this daemon.'}
+          </p>
+        </div>
+        <Switch
+          aria-label="Share anonymous usage data"
+          checked={on}
+          disabled={busy || daemon === null}
+          onCheckedChange={checked => void toggle(checked)}
+        />
+      </div>
+      <UsageDataSummary />
+      <p className="text-secondary text-muted">
+        You can change this any time in Settings, Privacy.
+      </p>
+      <SetupActions className="pt-3">
+        <Button
+          className={PILL}
+          data-testid="onboarding-usage-continue"
+          disabled={busy}
+          onClick={onContinue}
+          variant="primary"
+        >
+          Continue
+        </Button>
+      </SetupActions>
+    </div>
+  )
+}
+
 /** Set up one tool: pick a provider, paste its key, save and test. */
 function ToolPanel({
   connector,
@@ -1026,7 +1130,7 @@ export function ToolsStep({
 
   return (
     <div className="w-full space-y-4 py-8">
-      <ul className="max-h-[52vh] divide-y divide-border overflow-y-auto rounded-panel border border-border">
+      <ul className="max-h-[52dvh] divide-y divide-border overflow-y-auto rounded-panel border border-border">
         {(tools ?? []).map(item => {
           const open = selected === item.id
 
@@ -1295,7 +1399,7 @@ function OnboardingPage() {
 
   if (creating) {
     return (
-      <main className="grid min-h-screen place-items-center bg-background text-foreground">
+      <main className="grid min-h-dvh place-items-center bg-background text-foreground">
         <div className="hex-rise">
           <div className="flex flex-col items-center gap-5">
             <HexbotMark act="type" className={ACT_ROOM} size={132} />
@@ -1308,7 +1412,7 @@ function OnboardingPage() {
 
   if (step === 'welcome') {
     return (
-      <main className="relative grid min-h-screen place-items-center bg-background px-6 text-foreground">
+      <main className="relative grid min-h-dvh place-items-center bg-background px-6 text-foreground">
         <div aria-hidden className="hex-drag absolute inset-x-0 top-0 h-11" />
         <WelcomeStep onStart={() => setStep('meet')} />
       </main>
@@ -1345,7 +1449,8 @@ function OnboardingPage() {
         'The model new bots start with, and where to go when it fails.'
       ],
       providers: ['Connect a provider', 'Sign in with a subscription or paste an API key.'],
-      tools: ['Set up tools', 'Web search and the other tools that need their own account.']
+      tools: ['Set up tools', 'Web search and the other tools that need their own account.'],
+      usage: ['Help improve Hexbot', 'Nothing is sent unless you turn this on.']
     } as const
   )[step]
 
@@ -1374,8 +1479,12 @@ function OnboardingPage() {
         />
       ) : null}
 
+      {step === 'usage' ? (
+        <UsageStep onContinue={() => void createPrimary()} onError={onError} />
+      ) : null}
+
       {step === 'tools' ? (
-        <ToolsStep onContinue={() => void createPrimary()} onError={onError} />
+        <ToolsStep onContinue={() => setStep('usage')} onError={onError} />
       ) : null}
 
       {error ? (

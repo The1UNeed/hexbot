@@ -2,10 +2,8 @@ import { useEffect, useState } from 'react'
 
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
-import { Select } from '../../components/ui/select'
 import { Switch } from '../../components/ui/switch'
-import type { Bot, BotTool, ComputerSize } from '../../lib/types'
-import { useComputer } from '../../stores/computer'
+import type { Bot, BotTool } from '../../lib/types'
 
 import { Group, Heading, Row, type SaveBot } from './shared'
 
@@ -29,21 +27,9 @@ export const TOOL_GROUPS: { rows: ToolRow[]; title: string }[] = [
         description: 'Read, write and search files in the workspace.',
         key: 'files',
         label: 'Files'
-      },
-      {
-        description: 'Run scripts in a sandbox for data work and quick checks.',
-        key: 'code_execution',
-        label: 'Code execution'
-      },
-      { description: 'Drive a local Chrome window.', key: 'browser', label: 'Browser' },
-      {
-        description:
-          "Work on your bots' shared Linux desktop, which you can watch and take over. Uses Cua.",
-        key: 'computer_use',
-        label: 'Computer use'
       }
     ],
-    title: 'Computer'
+    title: 'Workspace'
   },
   {
     rows: [
@@ -74,43 +60,6 @@ export const TOOL_GROUPS: { rows: ToolRow[]; title: string }[] = [
   }
 ]
 
-/** How big the bots' shared computer is; a new size applies when it is reset. */
-function ComputerSizeRow() {
-  const status = useComputer(state => state.status)
-  const refresh = useComputer(state => state.refresh)
-  const configure = useComputer(state => state.configure)
-
-  useEffect(() => {
-    void refresh()
-  }, [refresh])
-
-  if (!status?.sizes) {
-    return null
-  }
-
-  return (
-    <Row
-      control={
-        <Select
-          label="Computer size"
-          onValueChange={value => void configure(value as ComputerSize)}
-          options={status.sizes.map(size => ({
-            label: `${size.name[0]!.toUpperCase()}${size.name.slice(1)} · ${size.cpu} CPUs, ${size.memory_gb} GB`,
-            value: size.name
-          }))}
-          value={status.size}
-        />
-      }
-      description={
-        status.state === 'absent'
-          ? 'Shared by all your bots. Used when the computer is made.'
-          : 'Shared by all your bots. A new size applies after Reset, in the Computer tab.'
-      }
-      title="Computer size"
-    />
-  )
-}
-
 export function ToolsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   const tools = Array.isArray(bot.tools) ? bot.tools : []
   const available = bot.available_tools
@@ -118,18 +67,15 @@ export function ToolsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   const groups = TOOL_GROUPS.map(group => ({
     ...group,
     rows: available ? group.rows.filter(row => available.includes(row.key)) : group.rows
-  })).filter(group => group.rows.length > 0)
-
-  const [editingDir, setEditingDir] = useState(false)
-  const [dir, setDir] = useState(bot.workdir ?? '')
-  useEffect(() => setDir(bot.workdir ?? ''), [bot.workdir])
+    // The working directory stays even if neither tool is set up.
+  })).filter(group => group.rows.length > 0 || group.title === 'Workspace')
 
   const toggle = (key: BotTool, checked: boolean) =>
     void onSave({ tools: checked ? [...tools, key] : tools.filter(tool => tool !== key) })
 
   return (
     <div>
-      <Heading description="What this bot can do on this computer. Tools this computer isn't set up for don't appear.">
+      <Heading description="What this bot can do here and with your other bots. Every bot also has Computer use, in Settings, Manuals.">
         Tools
       </Heading>
       <div className="space-y-8">
@@ -156,63 +102,67 @@ export function ToolsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
                 }
               />
             ))}
-            {group.title === 'Computer' &&
-            tools.includes('computer_use') &&
-            group.rows.some(row => row.key === 'computer_use') ? (
-              <ComputerSizeRow />
-            ) : null}
+            {group.title === 'Workspace' ? <WorkdirRow bot={bot} onSave={onSave} /> : null}
           </Group>
         ))}
-        <Group title="Workspace">
-          <Row
-            control={
-              editingDir ? (
-                <>
-                  <Button
-                    onClick={() => {
-                      setEditingDir(false)
-                      void onSave({ workdir: dir.trim() || null })
-                    }}
-                    size="sm"
-                    variant="primary"
-                  >
-                    Save
-                  </Button>
-                  <Button
-                    onClick={() => {
-                      setDir(bot.workdir ?? '')
-                      setEditingDir(false)
-                    }}
-                    size="sm"
-                    variant="ghost"
-                  >
-                    Cancel
-                  </Button>
-                </>
-              ) : (
-                <Button onClick={() => setEditingDir(true)} size="sm">
-                  Change
-                </Button>
-              )
-            }
-            description={
-              editingDir ? (
-                <Input
-                  aria-label="Working directory"
-                  autoFocus
-                  className="mt-1.5 h-[32px] font-mono text-[length:var(--text-secondary)]"
-                  onChange={event => setDir(event.target.value)}
-                  placeholder="Deployment workspace"
-                  value={dir}
-                />
-              ) : (
-                <span className="font-mono">{bot.workdir || 'Deployment workspace'}</span>
-              )
-            }
-            title="Working directory"
-          />
-        </Group>
       </div>
     </div>
+  )
+}
+
+/** Where this bot's terminal and files start. */
+function WorkdirRow({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
+  const [editingDir, setEditingDir] = useState(false)
+  const [dir, setDir] = useState(bot.workdir ?? '')
+  useEffect(() => setDir(bot.workdir ?? ''), [bot.workdir])
+
+  return (
+    <Row
+      control={
+        editingDir ? (
+          <>
+            <Button
+              onClick={() => {
+                setEditingDir(false)
+                void onSave({ workdir: dir.trim() || null })
+              }}
+              size="sm"
+              variant="primary"
+            >
+              Save
+            </Button>
+            <Button
+              onClick={() => {
+                setDir(bot.workdir ?? '')
+                setEditingDir(false)
+              }}
+              size="sm"
+              variant="ghost"
+            >
+              Cancel
+            </Button>
+          </>
+        ) : (
+          <Button onClick={() => setEditingDir(true)} size="sm">
+            Change
+          </Button>
+        )
+      }
+      description={
+        editingDir ? (
+          <Input
+            aria-label="Working directory"
+            autoFocus
+            className="mt-1.5 h-[32px] font-mono text-[length:var(--text-secondary)]"
+            onChange={event => setDir(event.target.value)}
+            placeholder="Deployment workspace"
+            value={dir}
+          />
+        ) : (
+          <span className="font-mono">{bot.workdir || 'Deployment workspace'}</span>
+        )
+      }
+      title="Working directory"
+    />
   )
 }

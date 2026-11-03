@@ -58,6 +58,8 @@ own visual identity. Read `CLAUDE.md` for the words.
   search tool runs, writes while text streams, and works during other steps.
   Roster and header
   faces, including every face in a room's cluster, match their status dots;
+  while a reply streams, the roster and header wear the chat's live face, so
+  a thinking bot thinks in all three places;
   a cluster without a dot, as in room settings, stays idle. Faces in asks
   turn and look toward each other.
   Faces also show emotions (`lib/emotions.ts`), read from what happens in
@@ -75,10 +77,14 @@ own visual identity. Read `CLAUDE.md` for the words.
   sparks to celebrate. Mobile shows the same emotions, still, on a bot
   chat's header and waiting faces.
   One frame loop moves every visible face and stops when none moves.
+  Every face of one bot in one mood and look shares one motion, so the
+  sidebar, header and chat copies sway, blink and glance in step however
+  late each appeared.
   Reduced motion draws each mood's rest pose, morph included, and offscreen
   or hidden-page faces stop. Mobile draws the same settled expressions.
-  Click a face or the in-app mark for one of the existing 21 acts. Acts hold
-  the face at rest and clean up with their React subtree.
+  Click a face or the in-app mark for one of the existing 21 acts; a bot's
+  act plays on every face of that bot. Acts hold the face at rest and clean
+  up with their React subtree.
   The site's faces, logo, favicon, and package icons use the same capsule
   eyes.
 - Shadows only on floating layers (menus, dialogs, the glass chrome) and the
@@ -116,15 +122,29 @@ Three columns, resizable, min widths 240 / 480 / 300. The window is a grey
 canvas: the roster sits on it directly, and the conversation and the side
 panel are rounded cards (22 px) inset 8 px from its edges, with the resize
 handles in the gutters. Under 700 px the conversation fills the window and
-the roster slides in as a drawer.
+the roster slides in as a drawer. Heights use the visible viewport (`dvh`),
+so a phone browser's toolbar never covers the composer, which grows to at
+most 30 % of the height when the phone is held sideways.
+
+On touch screens (`touch:`, no hover) actions that hover reveals, such as a
+message's copy and retry, are always shown, and fields are at least 16 px so
+Safari does not zoom in on focus. A foldable held half-open gets a layout per
+pose (`tokens.css`): held like a book, the roster fills the left half and the
+conversation the right, and windows open on the right half; held like a
+laptop, messages sit above the fold, the composer below it, and windows open
+on the top half. Safari 27.2 on iPhone Duo reports the pose (`device-posture`,
+the Device Posture API feature flag) but not where the fold is, so there the
+book pose splits the page at its middle when it is wider than tall. Browsers
+with Viewport Segments place both poses on the exact halves.
 
 ### Left: roster
 
 - Header: a window-drag strip (padded for the macOS traffic lights) with one
   row: the search pill and a round glass "+" menu (New bot, New room). No app name. The selected row is a white card on the canvas.
 - List: bots and rooms in one list, ordered by last activity. A bot row is
-  its face (40px), name, optional label, and a status dot on the face (see
-  "Status colours"). No times and no message preview. A pencil replaces the
+  its face (40px), name, the latest message in its chat (yours or the bot's,
+  as one plain line; the bot's label until the chat has one), and a status dot
+  on the face (see "Status colours"). No times. A pencil replaces the
   status tag while the bot's chat holds an unsent draft. A room row is the room's cluster
   (one face, or up to four in a 2x2 grid), name, latest message, and the
   same status dot. Both rows end in a status tag while it applies: a purple
@@ -203,13 +223,25 @@ the roster slides in as a drawer.
   reload: the daemon replays a pending question when the section opens,
   and answered cards come back from the section's history, each under the
   message that asked it.
-- Errors: a Stopped card with the message and a retry action; one card per
+- Sending (web and desktop): the field clears at once and your bubble greys
+  with a small spinner beside it until the daemon takes it. After 15 s with
+  no answer, or when the send is refused or the bot's turn fails on it, the
+  bubble gets a red ! beside it and "Not sent · Retry" under it, the reason
+  on hover; the ! retries too. An unknown outcome retries under the same
+  input key, so a copy that did arrive is never taken twice, and stays Not
+  sent until the stored row shows it. A turn that failed on your latest
+  message in a bot's chat retries in place: Recall takes the message and the
+  failed turn back and the same bubble sends again, so one copy stays. Until
+  the bot takes a message its saved draft keeps it, so a reload never loses
+  one that did not send. Rooms show the same bubble for sends. The phone
+  keeps its error banner.
+- Errors: a failure that is not about your message, such as a dream's, is a
+  small Stopped card with a red dot and a retry action; one card per
   failure, even when the gateway and the daemon both report it. Retry requires
   durable input ownership. Older daemons offer no Retry for failed sends or
   answers; failed sends retain their draft for manual resend.
   A failed send or upload leaves any running answer, tools and Stop available,
-  including with an older daemon. An unknown send outcome offers no Retry;
-  the draft stays available while the user checks whether the message arrived.
+  including with an older daemon.
   Every Stopped card has a close button (×) in its header. Closing one built
   from the bot's Stopped state for this chat clears that state
   (`hexbot.bots.clear_status`), so it does not come back. The phone's error
@@ -257,13 +289,38 @@ notice. Working and idle draw the plain pill.
   label as bare fields saved on blur ("Add a label" when empty), and while
   the bot works, a blue status chip saying what it is doing in plain words
   that opens Computer.
-- Three tabs in a segmented control:
+- Top right, Search and Close. Close sits alone as the panel opens, then
+  splits once into the two (420 ms, `.hex-split`; none with reduced
+  motion). Search swaps the face and tabs for a search box and results
+  from the whole chat, grouped as Messages, Files (shared, or written by
+  the bot, with their path), Visuals, and Soul and memory. Every word must
+  match; case and accents do not matter; matches are marked. A message or
+  file scrolls the chat to its message and tints it for 1.6 s, widening
+  the shown history if it is older; under 1100 px the panel closes first.
+  A visual opens beside the chat; soul and memory open their editor.
+  Escape clears the box, then leaves search. Search belongs to the
+  conversation and resets when you leave it. A room has no profile panel:
+  a Search button beside Room settings opens the same search in the panel
+  slot, over the room's messages and files. The pure search is
+  `lib/search.ts`, which the mobile app shares.
+- Four tabs in a segmented control:
   - Details: the description, a card with Model (opens Bot settings, Model)
     and the "Notify me" switch (native notifications when this bot stops or
     needs you), a card of doors into Bot settings (Soul, Memory, Tools,
     Connectors, Skills), and "Bot settings" for the tab last used.
-  - Library: images (a three-column grid) and files shared in the section,
-    newest first.
+  - Library: the visuals the bot drew (each opens beside the chat), then
+    images (a three-column grid) and files shared in the section, newest
+    first.
+  - Fingerprint: the bot's soul and memory as two cards, red and blue,
+    each with the day the file last changed (`persona_updated_at` on the
+    bot, `updated_at` from `hexbot.memory.bot.get`), and a door to Notes
+    and dreaming. A card opens its file full window: an "About this file"
+    note that is not part of it, the file formatted and edited in place
+    (bold, italic, H1 to H3, bulleted and numbered lists), saved 0.8 s after
+    typing stops and on close, Escape, or Cmd+S; opening alone saves
+    nothing. Memory shows its length against its cap. The menu has View
+    source, Copy, Download (Markdown) and Download as PDF (the system print
+    dialog). An untouched editor follows the bot's own changes.
   - Computer: the bots' shared computer on top, when the bot has Computer
     use: its live screen, watch-only, with a still blue ring while a bot
     acts there or the user has it, and one line under it saying what is
@@ -311,8 +368,9 @@ Settings, Bot settings and Room settings share one shell
 24 px radius) over the dimmed, blurred app, with a round glass close button
 floating in the top right corner and no title bar. Tabs run down the left
 (220 px, transparent over the glass) as icon-and-label rows under tiny muted
-group labels; the active tab is a soft filled pill. Under 640 px the tabs
-become one scrolling pill row on top. Room settings has no tabs and is a
+group labels; the active tab is a soft filled pill. When the window itself
+is under 600 px wide (a container query, so half of a folded screen counts)
+the tabs become one scrolling pill row on top. Room settings has no tabs and is a
 narrower, single-column window.
 
 A page is a 20 px title, one muted line, then grouped lists in the iOS and

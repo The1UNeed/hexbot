@@ -33,6 +33,7 @@ import type {
   PairingCode,
   PasswordKeyStore,
   PasswordLogin,
+  PluginAnswer,
   PluginKind,
   PluginsList,
   Provider,
@@ -72,6 +73,8 @@ export interface HistoryRow {
 export interface BotMemory {
   cap: number
   memory_md: string
+  /** When MEMORY.md last changed, in Unix seconds; null before it exists. Older daemons leave it out. */
+  updated_at?: null | number
 }
 
 /** One day of a bot's notes: the local day it was filed under and its text. */
@@ -841,13 +844,13 @@ export function approvalRespond(
   sessionId: string,
   requestId: string,
   choice: ApprovalChoice,
-  signIn?: { password: string; username: string }
+  answer?: PluginAnswer | { password: string; username: string }
 ): Promise<{ resolved: boolean }> {
   return rpcCall<{ resolved: boolean }>('approval.respond', {
     choice,
     request_id: requestId,
     session_id: sessionId,
-    ...signIn
+    ...answer
   })
 }
 

@@ -37,11 +37,11 @@ env:
     visible: Your native message reached the daemon and Pi.
     timeout: 30000
 - takeScreenshot: chat
-- tapOn:
-    id: chat-settings
+# A native toolbar button: found by its accessibility label.
+- tapOn: "Edit Owl"
 - extendedWaitUntil:
     visible:
-      id: field-persona
+      id: fingerprint-soul
     timeout: 15000
 - takeScreenshot: settings
 - tapOn:

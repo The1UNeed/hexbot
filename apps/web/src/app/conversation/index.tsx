@@ -40,6 +40,7 @@ import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
 import { moodForStatus } from '../../lib/face'
 import { mathDelimiters } from '../../lib/math'
+import { plainError } from '../../lib/plain-error'
 import { NotConnectedError } from '../../lib/rpc'
 import { useTurnCues } from '../../lib/sounds'
 import { toMillis } from '../../lib/time'
@@ -57,6 +58,7 @@ import { useConnection } from '../../stores/connection'
 import { connectorsActions } from '../../stores/connectors'
 import { draftsActions } from '../../stores/drafts'
 import { useConversationFeelings, useEmotion } from '../../stores/emotions'
+import { useSearch } from '../../stores/search'
 import {
   knownChat,
   liveSectionsOf,
@@ -79,9 +81,12 @@ import { useUi } from '../../stores/ui'
 import { AskingRow } from './asking-row'
 import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
+import { PluginCard } from './plugin-card'
 import { RoomConversation } from './room'
+import { useSearchJump } from './search-jump'
 import { SignInCard } from './sign-in-card'
-import { liveMood } from './steps'
+import { liveMood, liveMoodsOf } from './steps'
+import { DeliveryMark, NotSent, useLate } from './unsent'
 import { visualsOf } from './visual'
 import { Visuals } from './visual-frame'
 import { WaitingBanner } from './waiting-banner'
@@ -179,7 +184,7 @@ export function BubbleActions({
   actions: { icon: React.ReactNode; label: string; onClick: () => void }[]
 }) {
   return (
-    <span className="flex shrink-0 items-center gap-0.5 self-end pb-0.5 opacity-0 transition-opacity duration-[var(--hex-motion-fast)] group-hover:opacity-100 focus-within:opacity-100">
+    <span className="flex shrink-0 items-center gap-0.5 self-end pb-1.5 opacity-0 transition-opacity duration-[var(--hex-motion-fast)] group-hover:opacity-100 focus-within:opacity-100 touch:opacity-100">
       {actions.map(action => (
         <button
           aria-label={action.label}
@@ -269,7 +274,7 @@ function CodeBlock({ children, className }: { children?: React.ReactNode; classN
       ) : null}
       <button
         aria-label="Copy code"
-        className="hex-focus absolute top-1.5 right-1.5 grid size-6 place-items-center rounded-full text-muted opacity-0 transition-[opacity,background-color,color] duration-[var(--hex-motion-fast)] group-hover/code:opacity-100 hover:bg-surface-2 hover:text-foreground focus-visible:opacity-100"
+        className="hex-focus absolute top-1.5 right-1.5 grid size-6 place-items-center rounded-full text-muted opacity-0 transition-[opacity,background-color,color] duration-[var(--hex-motion-fast)] group-hover/code:opacity-100 hover:bg-surface-2 hover:text-foreground focus-visible:opacity-100 touch:opacity-100"
         onClick={() => void navigator.clipboard.writeText(text)}
         type="button"
       >
@@ -303,8 +308,10 @@ const markdownComponents: Components = {
       <table className="my-3 w-full border-collapse" {...props} />
     </div>
   ),
-  td: props => <td className="border border-border p-2" {...props} />,
-  th: props => <th className="border border-border bg-surface-2 p-2 text-left" {...props} />
+  // Tints of the text colour, not surface greys, so a table sits on any bubble:
+  // a bot's wash or your own inverted one.
+  td: props => <td className="border border-current/15 p-2" {...props} />,
+  th: props => <th className="border border-current/15 bg-current/6 p-2 text-left" {...props} />
 }
 
 // A lone $ is too often money, so math needs $$ (or the \( \) and \[ \] mathDelimiters converts).
@@ -415,78 +422,152 @@ export function humanConnector(id: null | string | undefined): string {
   return words.charAt(0).toUpperCase() + words.slice(1)
 }
 
+/** The small pill under a turn that did not finish. */
+const stoppedPill =
+  'hex-focus flex h-8 items-center rounded-full bg-bubble px-3.5 text-[length:var(--text-secondary)] transition-colors duration-[var(--hex-motion-fast)]'
+
+/**
+ * A turn that did not finish, kept quiet. Right after your message it is that
+ * message's "Not sent · Retry" line; anywhere else a red dot and a small Retry
+ * bubble. Why it stopped is on hover and read out to screen readers.
+ */
 export function StoppedCard({
   message,
+  mine = false,
   name,
   onDismiss,
   onFix,
-  onRetry
+  onRetry,
+  quiet = false
 }: {
   message: TranscriptMessage
+  /** Follows your message: it reads as that message not sent. */
+  mine?: boolean
   name: string
   onDismiss?: () => void
   onFix?: (connector: string) => void
   onRetry?: () => void
+  /** A newer line replaces it: kept for screen readers only. */
+  quiet?: boolean
 }) {
   const connector = message.errorDetail?.connector ?? null
-
   const connectorName = message.errorDetail?.connectorName ?? humanConnector(connector)
+  const reason = plainError(message.error ?? '')
+
+  // Replaced by a newer line under the same message: only screen readers hear it.
+  if (mine && quiet) {
+    return (
+      <div className="sr-only" data-testid="stopped-card" role="alert">
+        <span>{name} stopped.</span> <span>{reason}</span>
+      </div>
+    )
+  }
+
+  if (mine) {
+    return (
+      <div
+        className="hex-fade group flex items-center justify-end gap-1.5 px-1 pt-1 text-[length:var(--text-meta)] text-danger"
+        data-testid="stopped-card"
+        role="alert"
+        title={reason}
+      >
+        <span className="sr-only">{name} stopped.</span>
+        <span className="sr-only">{reason}</span>
+        {onDismiss ? (
+          <button
+            aria-label="Dismiss"
+            className="hex-focus grid size-4 place-items-center rounded-full text-muted opacity-0 transition-opacity duration-[var(--hex-motion-fast)] group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground touch:opacity-100"
+            onClick={onDismiss}
+            title="Dismiss"
+            type="button"
+          >
+            <X size={12} />
+          </button>
+        ) : null}
+        <span aria-hidden>Not sent</span>
+        {connector && onFix ? (
+          <>
+            <span aria-hidden>·</span>
+            <button
+              className="hex-focus rounded font-medium underline-offset-2 hover:underline"
+              onClick={() => onFix(connector)}
+              type="button"
+            >
+              Fix {connectorName}
+            </button>
+          </>
+        ) : null}
+        {onRetry ? (
+          <>
+            <span aria-hidden>·</span>
+            <button
+              className="hex-focus rounded font-medium underline-offset-2 hover:underline"
+              onClick={onRetry}
+              type="button"
+            >
+              Retry
+            </button>
+          </>
+        ) : null}
+      </div>
+    )
+  }
 
   return (
     <div
-      className="hex-bubble mt-2 flex max-w-[min(85%,40rem)] flex-col gap-2 rounded-[20px] border border-danger/15 bg-danger/[0.05] px-3.5 py-3"
+      className="hex-fade group flex items-center gap-2 pt-4"
       data-testid="stopped-card"
       role="alert"
+      title={reason}
     >
-      <div className="flex items-center gap-2">
-        <span aria-hidden className="size-2 shrink-0 rounded-full bg-danger" />
-        <span className="font-medium">{name} stopped</span>
-        <span className="ml-auto flex items-center gap-1">
-          {message.createdAt > 0 ? (
-            <time className="text-[length:var(--text-meta)] text-muted">
-              {new Date(toMillis(message.createdAt)).toLocaleTimeString([], {
-                hour: 'numeric',
-                minute: '2-digit'
-              })}
-            </time>
-          ) : null}
-          {onDismiss ? (
-            <button
-              aria-label="Dismiss"
-              className="hex-focus -my-1 -mr-1.5 grid size-6 place-items-center rounded-full text-muted transition-colors duration-[var(--hex-motion-fast)] hover:bg-foreground/[0.06] hover:text-foreground"
-              onClick={onDismiss}
-              title="Dismiss"
-              type="button"
-            >
-              <X size={14} />
-            </button>
-          ) : null}
+      <span aria-hidden className="size-2 shrink-0 rounded-full bg-danger" />
+      <span className="sr-only">{name} stopped.</span>
+      <span className="sr-only">{reason}</span>
+      {onRetry ? (
+        <button className={cn(stoppedPill, 'hover:bg-bubble/70')} onClick={onRetry} type="button">
+          Retry
+        </button>
+      ) : (
+        <span aria-hidden className={cn(stoppedPill, 'text-muted')}>
+          Stopped
         </span>
-      </div>
-      <p className="text-[length:var(--text-secondary)]">{message.error}</p>
-      <div className="flex gap-2">
-        {connector && onFix ? (
-          <Button onClick={() => onFix(connector)} size="sm" variant="primary">
-            Fix {connectorName}
-          </Button>
-        ) : null}
-        {onRetry ? (
-          <Button onClick={onRetry} size="sm">
-            Retry
-          </Button>
-        ) : null}
-      </div>
+      )}
+      {connector && onFix ? (
+        <button
+          className={cn(stoppedPill, 'hover:bg-bubble/70')}
+          onClick={() => onFix(connector)}
+          type="button"
+        >
+          Fix {connectorName}
+        </button>
+      ) : null}
+      {onDismiss ? (
+        <button
+          aria-label="Dismiss"
+          className="hex-focus grid size-6 place-items-center rounded-full text-muted opacity-0 transition-opacity duration-[var(--hex-motion-fast)] group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground touch:opacity-100"
+          onClick={onDismiss}
+          title="Dismiss"
+          type="button"
+        >
+          <X size={14} />
+        </button>
+      ) : null}
     </div>
   )
 }
 
 export const MessageRow = memo(function MessageRow({
   bot,
+  failed = false,
+  lined = false,
   message,
+  mine = false,
+  quiet = false,
   onDismiss,
   onFix,
   onImage,
   onRecall,
+  onResend,
   onRetry,
   retryMessage,
   fresh = false,
@@ -494,12 +575,22 @@ export const MessageRow = memo(function MessageRow({
   showFace = false
 }: {
   bot?: Bot
+  /** Your message the bot failed on: the red mark beside it, its line under it. */
+  failed?: boolean
+  /** A failure line already shows under your message: draw no second one. */
+  lined?: boolean
   message: TranscriptMessage
+  /** An error row right after your message, drawn as its Not sent line. */
+  mine?: boolean
+  /** A failure line a newer one replaces: kept for screen readers only. */
+  quiet?: boolean
   onDismiss?: (message: TranscriptMessage) => void
   onFix?: (connector: string) => void
   onImage: (source: string) => void
   /** Your latest message, while the bot is on it or after its turn stopped. */
   onRecall?: (message: TranscriptMessage) => void
+  /** Sends your message again when it is late or its outcome is unknown. */
+  onResend?: (message: TranscriptMessage) => void
   onRetry?: (input: TranscriptMessage) => void
   retryMessage?: TranscriptMessage
   /** Arrived while this chat was open: each of its bubbles springs in as it appears. */
@@ -514,15 +605,40 @@ export const MessageRow = memo(function MessageRow({
   const color = useFaceColor(bot, bot ? bot.display_name : null)
   // A live face shows what the bot feels over what it is doing.
   const emotion = useEmotion(assistant && message.streaming ? bot?.name : undefined)
+  // Only a bubble sent from here carries its send; history is sent by definition.
+  const source = !assistant && message.createdAt ? message.submission : undefined
+  const late = useLate(source?.status === 'sending' ? source.since : undefined)
+
+  const delivery =
+    source?.status === 'sending'
+      ? late
+        ? 'failed'
+        : 'sending'
+      : (source && ['unknown', 'rejected', 'unavailable'].includes(source.status)) ||
+          (!assistant && failed)
+        ? 'failed'
+        : undefined
+
+  // A refused send has its card, with the reason and Retry; a late or unknown
+  // one gets Retry here.
+  const resend =
+    onResend && (source?.status === 'sending' || source?.status === 'unknown')
+      ? () => onResend(message)
+      : undefined
+
+  // The red mark retries whatever the Not sent line under it does.
+  const retryMark = resend ?? (onRetry && retryMessage ? () => onRetry(retryMessage) : undefined)
 
   if (message.error) {
     return (
       <StoppedCard
         message={message}
+        mine={mine}
         name={bot?.display_name ?? 'The bot'}
         onDismiss={onDismiss ? () => onDismiss(message) : undefined}
         onFix={onFix}
         onRetry={onRetry && retryMessage ? () => onRetry(retryMessage) : undefined}
+        quiet={quiet}
       />
     )
   }
@@ -577,24 +693,27 @@ export const MessageRow = memo(function MessageRow({
       )}
       key={index}
     >
-      <div
-        className={cn(
-          assistant ? bubbleClass : userBubbleClass,
-          index >= still && 'hex-message',
-          index >= still && !assistant && 'hex-message-mine'
-        )}
-        style={assistant ? botBubbleStyle(color) : undefined}
-      >
-        {text ? (
-          <div className="hex-prose">
-            <Markdown text={text} />
-          </div>
-        ) : null}
-        {index === last ? (
-          <Attachments attachments={message.attachments} onImage={onImage} />
-        ) : null}
+      <div className={cn('min-w-0 max-w-full', delivery === 'sending' && 'hex-pending')}>
+        <div
+          className={cn(
+            assistant ? bubbleClass : userBubbleClass,
+            index >= still && 'hex-message',
+            index >= still && !assistant && 'hex-message-mine'
+          )}
+          style={assistant ? botBubbleStyle(color) : undefined}
+        >
+          {text ? (
+            <div className="hex-prose">
+              <Markdown text={text} />
+            </div>
+          ) : null}
+          {index === last ? (
+            <Attachments attachments={message.attachments} onImage={onImage} />
+          ) : null}
+        </div>
       </div>
-      {index === last && actions.length > 0 && !message.streaming ? (
+      {index === last && delivery ? <DeliveryMark delivery={delivery} onRetry={retryMark} /> : null}
+      {index === last && delivery !== 'sending' && actions.length > 0 && !message.streaming ? (
         <BubbleActions actions={actions} />
       ) : null}
     </div>
@@ -606,7 +725,7 @@ export const MessageRow = memo(function MessageRow({
     column.splice(
       replied ? last : bubbles.length,
       0,
-      <Visuals fresh={fresh} key="visuals" visuals={visuals} />
+      <Visuals color={color} fresh={fresh} key="visuals" visuals={visuals} />
     )
   }
 
@@ -643,6 +762,18 @@ export const MessageRow = memo(function MessageRow({
           )}
         >
           {column}
+          {/* A refused send or a failed turn has its own Not sent line under this. */}
+          {delivery === 'failed' && resend && !lined ? (
+            <NotSent
+              label="Not sent"
+              onRetry={resend}
+              reason={
+                source?.status === 'sending'
+                  ? 'The daemon has not answered yet.'
+                  : source?.reason && plainError(source.reason)
+              }
+            />
+          ) : null}
           {assistant && isWorking(message) ? (
             <LiveStatus
               face={
@@ -721,6 +852,10 @@ const APPROVAL_CHOICES: Record<ApprovalChoice, string> = {
 }
 
 export function ApprovalCard({ approval }: { approval: ApprovalRequest }) {
+  if (approval.form?.kind === 'plugin') {
+    return <PluginCard approval={approval} form={approval.form} />
+  }
+
   if (approval.form) {
     return <SignInCard approval={approval} form={approval.form} />
   }
@@ -779,12 +914,24 @@ export function suggestedPrompts(description: string, name = 'this bot'): string
   ]
 }
 
-/** Reopen and resend once only after an explicit rejection before acceptance. */
+/**
+ * Reopen and resend once only after an explicit rejection before acceptance.
+ *
+ * `resend` tries an input whose outcome is unknown again under its own
+ * `input_id`. The daemon reserves that key on first sight, so a copy that did
+ * arrive answers "already reserved" and is never taken twice.
+ */
 async function submitOrReopen(
   sessionId: string,
   sectionId: string | null,
   text: string,
-  retry: { current: () => boolean; files: File[]; pending: TranscriptMessage; uploads: string[] }
+  retry: {
+    current: () => boolean
+    files: File[]
+    pending: TranscriptMessage
+    uploads: string[]
+    resend?: boolean
+  }
 ): Promise<boolean> {
   const { current, files, uploads } = retry
   let pending = retry.pending
@@ -806,6 +953,10 @@ async function submitOrReopen(
   }
 
   const accepted = () => {
+    if (pending.inputId) {
+      settleDraft(pending.inputId)
+    }
+
     if (identified) {
       transcriptActions().inputSettled(
         active,
@@ -889,6 +1040,7 @@ async function submitOrReopen(
           if (identified) {
             const inputId = newInputId()
             transcriptActions().setInputId(active, pending.id, inputId)
+            rekeyDraft(retry.pending.inputId, inputId)
             pending = { ...pending, inputId }
           }
 
@@ -918,16 +1070,32 @@ async function submitOrReopen(
     ) {
       const message = failure instanceof Error ? failure.message : String(failure)
 
+      // Another try under this key reached the daemon first, but Pi may
+      // still refuse it: the outcome stays unknown, with Retry, until the
+      // stored row or its turn shows it was taken.
+      const reserved =
+        failure instanceof JsonRpcGatewayError &&
+        failure.code === 4202 &&
+        /already reserved/i.test(failure.message)
+
+      // A refused resend under the same key proves nothing either: the daemon
+      // checks that it is free and has the uploads before it looks at the
+      // key, so the first try may still be waiting or already taken. It stays
+      // unknown, under its key, until history shows which.
+      const settles = !reserved && !retry.resend
+
       // 5201 is Pi's refusal. 5200 can be a bot lost before it answered or a
       // title-save error after acceptance. Transport failures and arbitrary
       // error objects also prove nothing about whether Pi took input.
       const rejected =
+        settles &&
         failure instanceof JsonRpcGatewayError &&
         [4002, 4200, 4202, 5201].includes(failure.code ?? 0)
 
       const unavailable =
-        staged === null ||
-        (failure instanceof JsonRpcGatewayError && [4001, 4204].includes(failure.code ?? 0))
+        settles &&
+        (staged === null ||
+          (failure instanceof JsonRpcGatewayError && [4001, 4204].includes(failure.code ?? 0)))
 
       const status = unavailable ? 'unavailable' : rejected ? 'rejected' : 'unknown'
 
@@ -935,19 +1103,19 @@ async function submitOrReopen(
       const retryable = !(failure instanceof JsonRpcGatewayError && failure.code === 4200 && !text)
 
       const detail =
-        status === 'unknown'
-          ? `${message}. It may not have been sent. Check the chat before sending again.`
-          : status === 'unavailable' && (files.length || uploads.length)
-            ? `${message}. Attach the files again before sending.`
-            : message
+        status === 'unavailable' && (files.length || uploads.length)
+          ? `${message}. Attach the files again before sending.`
+          : message
 
       if (identified) {
+        // An unknown outcome keeps its uploads: Retry sends them again under
+        // the same input_id, which the daemon refuses if the first try landed.
         transcriptActions().inputSettled(
           active,
           pending.submission?.row ?? pending.id,
           pending.inputId,
           status,
-          status === 'rejected' && retryable ? staged : null,
+          (status === 'rejected' && retryable) || status === 'unknown' ? staged : null,
           current() ? detail : undefined
         )
       } else if (current()) {
@@ -965,11 +1133,56 @@ interface DraftAttachment {
   preview?: string
 }
 
+/**
+ * What the composer held for each message it sent, by input key. The field
+ * clears when the bubble appears; a send that ends where neither its bubble
+ * nor its card can retry it comes back to edit from here. The saved draft
+ * stays until the bot takes the message, so a reload never loses one that did
+ * not send.
+ */
+const sentDrafts = new Map<
+  string,
+  { files: DraftAttachment[]; section: null | string; text: string }
+>()
+
+/** The bot took it: its saved draft goes, unless something new was typed since. */
+function settleDraft(key: string) {
+  const held = sentDrafts.get(key)
+
+  if (!held) {
+    return
+  }
+
+  sentDrafts.delete(key)
+
+  if (held.section && draftsActions().byId[held.section] === held.text) {
+    draftsActions().clear(held.section)
+  }
+}
+
+/** The same message sent under a new key keeps its saved draft. */
+function rekeyDraft(from: string | undefined, to: string) {
+  const held = from ? sentDrafts.get(from) : undefined
+
+  if (held && from !== to) {
+    sentDrafts.delete(from!)
+    sentDrafts.set(to, held)
+  }
+}
+
+/** A send that failed where neither its bubble nor its card can retry it. */
+function stranded(message: TranscriptMessage): boolean {
+  const source = message.submission
+
+  return (
+    source?.status === 'unavailable' || (source?.status === 'rejected' && source.uploads === null)
+  )
+}
+
 function Composer({
   accessory,
   bot,
   draftVersion,
-  notice,
   sectionId,
   sessionId,
   status,
@@ -979,15 +1192,31 @@ function Composer({
   bot?: Bot
   /** Changes when the draft was written outside the composer, as by Recall. */
   draftVersion?: number
-  notice?: React.ReactNode
   sectionId: string | null
   sessionId: string | null
   status?: BotStatus
   streaming: boolean
 }) {
-  const [text, setText] = useState(() => (sectionId ? draftsActions().byId[sectionId] : '') ?? '')
+  const [text, setText] = useState(() => {
+    const saved = (sectionId ? draftsActions().byId[sectionId] : '') ?? ''
+
+    const shown = (sessionId && useTranscripts.getState().bySession[sessionId]?.messages) || []
+
+    // A message still in its bubble shows there, not here as well.
+    return [...sentDrafts].some(
+      ([key, held]) =>
+        held.section === sectionId &&
+        held.text === saved &&
+        shown.some(message => message.inputId === key)
+    )
+      ? ''
+      : saved
+  })
+
   const [files, setFiles] = useState<DraftAttachment[]>([])
   const [sending, setSending] = useState(false)
+  // The newest send owns `sending`: an earlier one ending never unlocks it.
+  const sends = useRef(0)
   const picker = useRef<HTMLInputElement>(null)
 
   const addFiles = (incoming: File[]) =>
@@ -1005,6 +1234,7 @@ function Composer({
       return
     }
 
+    const own = ++sends.current
     setSending(true)
 
     // Capture the sender before uploading: a route or daemon can change
@@ -1057,6 +1287,25 @@ function Composer({
         sectionsActions().markTouched(sectionId, text)
       }
 
+      const clear = () => {
+        setText('')
+        setFiles([])
+
+        if (sectionId) {
+          draftsActions().clear(sectionId)
+        }
+      }
+
+      // The bubble holds the message now, greyed until the bot takes it and
+      // with Retry if it does not, so the field clears at once. Older daemons
+      // cannot say which send failed and keep the draft until one is taken.
+      if (identified) {
+        sentDrafts.set(pending.inputId!, { files, section: sectionId, text })
+        setText('')
+        setFiles([])
+        setSending(false)
+      }
+
       if (
         !(await submitOrReopen(sessionId, sectionId, text.trim(), {
           current,
@@ -1068,11 +1317,8 @@ function Composer({
         return
       }
 
-      setText('')
-      setFiles([])
-
-      if (sectionId) {
-        draftsActions().clear(sectionId)
+      if (!identified) {
+        clear()
       }
     } catch (error) {
       // An upload failed, so nothing was sent. The files stay in the composer,
@@ -1084,7 +1330,9 @@ function Composer({
         )
       }
     } finally {
-      setSending(false)
+      if (sends.current === own) {
+        setSending(false)
+      }
 
       if (sectionId && current()) {
         void sectionsActions().settleTitle(sectionId)
@@ -1100,6 +1348,53 @@ function Composer({
       node.style.height = `${Math.min(node.scrollHeight, 8 * 22)}px`
     }
   }, [text])
+
+  // A message sent from here that nothing can retry comes back to edit,
+  // whole, once the composer is empty: never mixed into a newer draft.
+  const strandedId = useTranscripts(state =>
+    sessionId
+      ? state.bySession[sessionId]?.messages.find(
+          message => message.inputId && sentDrafts.has(message.inputId) && stranded(message)
+        )?.inputId
+      : undefined
+  )
+
+  // One history now holds lets its saved draft go too.
+  const takenId = useTranscripts(state =>
+    sessionId
+      ? state.bySession[sessionId]?.messages.find(
+          message =>
+            message.role === 'user' &&
+            !message.createdAt &&
+            message.inputId &&
+            sentDrafts.has(message.inputId)
+        )?.inputId
+      : undefined
+  )
+
+  useEffect(() => {
+    if (takenId) {
+      settleDraft(takenId)
+    }
+  }, [takenId])
+
+  const empty = !text.trim() && !files.length
+
+  useEffect(() => {
+    const held = strandedId ? sentDrafts.get(strandedId) : undefined
+
+    if (!strandedId || !held || !empty) {
+      return
+    }
+
+    sentDrafts.delete(strandedId)
+    setText(held.text)
+    setFiles(held.files)
+
+    if (sectionId) {
+      draftsActions().set(sectionId, held.text)
+    }
+  }, [empty, sectionId, strandedId])
 
   useEffect(() => {
     if (draftVersion && sectionId) {
@@ -1136,7 +1431,6 @@ function Composer({
       }
       accessory={accessory}
       canSend={Boolean(sessionId) && (Boolean(text.trim()) || files.length > 0)}
-      notice={notice}
       onAttach={() => picker.current?.click()}
       onSend={() => void send()}
       onStop={() => sessionId && void sessionInterrupt(sessionId)}
@@ -1349,6 +1643,7 @@ function BotConversation() {
 
     earlierAnchor.current = null
   }, [visible, params.section])
+  useSearchJump(viewport, visible)
   const togglePanel = useUi(state => state.toggleRightPanel)
   const panelOpen = useUi(state => state.rightPanelOpen)
   const [composerBox, composerHeight] = useHeight<HTMLDivElement>()
@@ -1378,6 +1673,14 @@ function BotConversation() {
     [ready, kept, cached, transcript?.messages]
   )
 
+  // A search result older than the shown part widens the window to reach it.
+  const jump = useSearch(state => state.jump)
+  const jumpIndex = jump ? messages.findIndex(message => message.id === jump.id) : -1
+
+  if (jumpIndex >= 0 && messages.length - jumpIndex > visible) {
+    setWindow({ section: params.section, count: messages.length - jumpIndex + 20 })
+  }
+
   const approvals = useMemo(() => transcript?.approvals ?? [], [transcript?.approvals])
   const clarifies = useMemo(() => transcript?.clarifies ?? [], [transcript?.clarifies])
   const streaming = Boolean(transcript?.streamingMessageId)
@@ -1398,11 +1701,11 @@ function BotConversation() {
     chat
   )
 
-  // Waiting is the banner under the header; the composer notice is for errors only.
-  const notice =
-    status === 'stopped'
-      ? (bot?.status_detail?.text ?? messages.findLast(message => message.error)?.error)
-      : null
+  // The header wears the face the reply wears, as the sidebar does.
+  const liveFace =
+    transcript && liveId && params.section
+      ? liveMoodsOf({ [liveId]: transcript })[params.section]
+      : undefined
 
   useLayoutEffect(() => {
     let cancelled = false
@@ -1627,10 +1930,13 @@ function BotConversation() {
       'Notification' in window &&
       Notification.permission === 'granted'
     ) {
-      new Notification(approvals.at(-1)?.form ? 'Sign-in needed' : 'Approval needed', {
+      new Notification(
+        approvals.at(-1)?.form?.kind === 'sign_in' ? 'Sign-in needed' : 'Approval needed',
+        {
         body:
           approvals.at(-1)?.command ?? approvals.at(-1)?.reason ?? 'A bot is asking for permission.'
-      })
+        }
+      )
     }
 
     previousApprovalCount.current = approvals.length
@@ -1694,6 +2000,89 @@ function BotConversation() {
 
     return items
   }, [approvals, clarifies, shown])
+
+  // Where each failure shows. One that holds your message's Retry draws under
+  // that message even when history put something between them; any other
+  // under the message it follows. A message shows one line: the failure that
+  // holds its Retry, else the newest, and none older than its latest try.
+  const ownerOf = new Map<string, TranscriptMessage>()
+  const lineFor = new Map<string, TranscriptMessage>()
+  const moved = new Map<string, TranscriptMessage[]>()
+  let follows: TranscriptMessage | undefined
+
+  for (const item of timeline) {
+    if (item.kind !== 'message') {
+      follows = undefined
+
+      continue
+    }
+
+    const card = item.message
+
+    if (!card.error) {
+      follows = card.role === 'user' ? card : undefined
+
+      continue
+    }
+
+    const bound = messages.find(
+      input => input.role === 'user' && input.submission?.card === card.id
+    )
+
+    // A request that failed on its own (an upload, a Recall) is not the turn
+    // of the message before it: only its bound input owns it.
+    const owner = bound ?? (card.request ? undefined : follows)
+
+    if (!owner) {
+      continue
+    }
+
+    ownerOf.set(card.id, owner)
+
+    if (bound && bound !== follows) {
+      moved.set(owner.id, [...(moved.get(owner.id) ?? []), card])
+    }
+
+    // The failure that holds its Retry keeps the line; otherwise the newest.
+    const current = lineFor.get(owner.id)
+
+    if (bound || !current || current.id !== owner.submission?.card) {
+      lineFor.set(owner.id, card)
+    }
+  }
+
+  // The bot's stopped state is your last message not sent only when it is
+  // about this chat and that message came before it: a failed dream or a
+  // send since then keeps the plain card.
+  const stoppedOwner =
+    follows &&
+    stoppedHere &&
+    bot?.status_detail?.section_id === params.section &&
+    toMillis(follows.createdAt) <= toMillis(stoppedHere.createdAt)
+      ? follows
+      : undefined
+
+  const quietLine = (card: TranscriptMessage) => {
+    const owner = ownerOf.get(card.id)
+    const since = owner?.submission?.since
+
+    // A later try of the same message replaces what an earlier one said,
+    // unless this is the failure that holds its Retry or one history keeps.
+    const superseded =
+      since !== undefined &&
+      owner?.submission?.card !== card.id &&
+      card.createdAt > 0 &&
+      toMillis(card.createdAt) < since
+
+    return Boolean(owner) && (lineFor.get(owner!.id) !== card || superseded)
+  }
+
+  // Your message whose failure line shows already: the bubble draws no second one.
+  const lined = (input: TranscriptMessage) => {
+    const card = lineFor.get(input.id)
+
+    return Boolean(card) && !quietLine(card!)
+  }
 
   const canPrompt = useCallback(
     () =>
@@ -1865,6 +2254,7 @@ function BotConversation() {
 
       const inputId = newInputId()
       transcriptActions().setInputId(liveId, pending.id, inputId)
+      rekeyDraft(pending.inputId, inputId)
       void submitOrReopen(liveId, null, input.text, {
         current: canPrompt,
         files: [],
@@ -1874,6 +2264,155 @@ function BotConversation() {
     },
     [canPrompt, liveId]
   )
+
+  // A late or unknown send goes again under its own input_id and uploads, so a
+  // first try that did land is refused as already reserved, never doubled.
+  const resend = useCallback(
+    (input: TranscriptMessage) => {
+      const source = input.submission
+
+      if (
+        !source ||
+        !input.inputId ||
+        !['sending', 'unknown'].includes(source.status) ||
+        !canPrompt() ||
+        !liveId
+      ) {
+        return
+      }
+
+      void submitOrReopen(liveId, null, input.text, {
+        current: canPrompt,
+        files: [],
+        pending: input,
+        resend: true,
+        uploads: source.uploads ?? []
+      })
+    },
+    [canPrompt, liveId]
+  )
+
+  // A turn that failed on your latest message: Recall takes the message and
+  // the failed turn back, then the same bubble goes again. One message stays,
+  // here and in history.
+  const resendInPlace = useCallback(
+    (input: TranscriptMessage) => {
+      const source = input.submission
+      const sectionId = params.section
+
+      if (!canPrompt() || !liveId || !sectionId) {
+        return
+      }
+
+      // One sent from here and still as it was, or one history holds.
+      const held = useTranscripts
+        .getState()
+        .bySession[liveId]?.messages.find(message => message.id === input.id)
+
+      if (
+        !held ||
+        (source
+          ? source.status !== 'accepted' || held.submission !== source
+          : held.submission || held.createdAt)
+      ) {
+        return
+      }
+
+      const key = newInputId()
+      const undo = transcriptActions().resendInPlace(liveId, input.id, key)
+      transcriptActions().inputSubmitting(liveId, input.id, [])
+
+      // Recall takes the stored copy away: the saved draft holds the message
+      // until the bot takes it again, so a reload in between keeps it.
+      if (!draftsActions().byId[sectionId]?.trim()) {
+        sentDrafts.set(key, { files: [], section: sectionId, text: input.text })
+        draftsActions().set(sectionId, input.text)
+      }
+      void (async () => {
+        try {
+          await sessionRecall(liveId, {
+            inputId: input.inputId,
+            rowId: source ? undefined : input.id
+          })
+        } catch (error) {
+          if (error instanceof JsonRpcGatewayError) {
+            // Refused: history still has it.
+            settleDraft(key)
+          } else {
+            // It may have been taken back: the draft keeps it, in view.
+            sentDrafts.delete(key)
+            setDraftVersion(version => version + 1)
+          }
+
+          undo()
+          transcriptActions().requestFailed(
+            liveId,
+            error instanceof Error ? error.message : String(error)
+          )
+
+          return
+        }
+
+        const pending = useTranscripts
+          .getState()
+          .bySession[liveId]?.messages.find(message => message.id === input.id)
+
+        if (pending && canPrompt()) {
+          void submitOrReopen(liveId, sectionId, input.text, {
+            current: canPrompt,
+            files: [],
+            pending,
+            uploads: []
+          })
+
+          return
+        }
+
+        // Taken back, but you left the chat: it waits in the draft, as Recall
+        // leaves it, ahead of anything typed there since.
+        sentDrafts.delete(key)
+        transcriptActions().recallFrom(liveId, input.id)
+        const typed = (draftsActions().byId[sectionId] ?? '').trim()
+
+        draftsActions().set(
+          sectionId,
+          typed && typed !== input.text.trim() ? `${input.text}\n\n${typed}` : input.text
+        )
+      })()
+    },
+    [canPrompt, liveId, params.section]
+  )
+
+  // What a failure's Retry sends: its own input again, in place when it can be
+  // recalled, or, with no Retry of its own, your message whose outcome is
+  // unknown under the same key.
+  const retryFor = (
+    card: TranscriptMessage
+  ): [(input: TranscriptMessage) => void, TranscriptMessage] | undefined => {
+    const input = retryInput(card)
+
+    if (input) {
+      // Uploads the bot took are gone: one with files goes again as text.
+      return input.submission?.status === 'accepted' &&
+        !input.attachments.length &&
+        canRecall(input)
+        ? [resendInPlace, input]
+        : [retry, input]
+    }
+
+    const owner = ownerOf.get(card.id) ?? (card === stoppedHere ? stoppedOwner : undefined)
+
+    // After a reload history holds it: Recall still takes it back to go again.
+    if (owner && !owner.createdAt && !owner.submission) {
+      return !owner.attachments.length && canRecall(owner) ? [resendInPlace, owner] : undefined
+    }
+
+    return owner && ownerInput && owner.createdAt && owner.submission?.status === 'unknown'
+      ? [resend, owner]
+      : undefined
+  }
+
+  const stoppedRetry = stoppedHere ? retryFor(stoppedHere) : undefined
 
   const botName = bot?.name
 
@@ -2027,21 +2566,64 @@ function BotConversation() {
               const joined =
                 !separator && before?.kind === 'message' && joins(before.message, message)
 
+              // A failure that holds your message's Retry draws under it.
+              if (
+                message.error &&
+                moved.get(ownerOf.get(message.id)?.id ?? '')?.includes(message)
+              ) {
+                return null
+              }
+
+              const row = (shownMessage: TranscriptMessage) => {
+                const owner = ownerOf.get(shownMessage.id)
+                const lineCard = lineFor.get(shownMessage.id)
+
+                // Your message's red mark retries what its Not sent line does.
+                const failure = shownMessage.error
+                  ? shownMessage
+                  : shownMessage.role !== 'user'
+                    ? undefined
+                    : lineCard && !quietLine(lineCard)
+                      ? lineCard
+                      : stoppedOwner === shownMessage
+                        ? (stoppedHere ?? undefined)
+                        : undefined
+
+                const retryWith = failure ? retryFor(failure) : undefined
+
+                return (
+                  <MessageRow
+                    bot={bot}
+                    failed={
+                      lined(shownMessage) || (Boolean(stoppedHere) && stoppedOwner === shownMessage)
+                    }
+                    fresh={toMillis(shownMessage.createdAt) > openedAt}
+                    joined={shownMessage === message && joined}
+                    key={shownMessage.id}
+                    lined={shownMessage.role === 'user' && lined(shownMessage)}
+                    message={shownMessage}
+                    mine={Boolean(owner)}
+                    onDismiss={shownMessage.error ? dismiss : undefined}
+                    onFix={fixConnector}
+                    onImage={setLightbox}
+                    onRecall={canRecall(shownMessage) ? recall : undefined}
+                    onResend={shownMessage.role === 'user' && ownerInput ? resend : undefined}
+                    onRetry={retryWith?.[0]}
+                    quiet={shownMessage.error ? quietLine(shownMessage) : false}
+                    retryMessage={retryWith?.[1]}
+                  />
+                )
+              }
+
               return (
                 <div key={message.id}>
                   {separator ? <DaySeparator time={sentAt(message)} /> : null}
-                  <MessageRow
-                    bot={bot}
-                    fresh={toMillis(message.createdAt) > openedAt}
-                    joined={joined}
-                    message={message}
-                    onDismiss={message.error ? dismiss : undefined}
-                    onFix={fixConnector}
-                    onImage={setLightbox}
-                    onRecall={canRecall(message) ? recall : undefined}
-                    onRetry={message.error ? retry : undefined}
-                    retryMessage={message.error ? retryInput(message) : undefined}
-                  />
+                  {/* Search marks the message, not the day above it. */}
+                  {[message, ...(moved.get(message.id) ?? [])].map(shown => (
+                    <div data-search-id={shown.id} key={shown.id}>
+                      {row(shown)}
+                    </div>
+                  ))}
                 </div>
               )
             })}
@@ -2049,12 +2631,11 @@ function BotConversation() {
             {stoppedHere ? (
               <StoppedCard
                 message={stoppedHere}
+                mine={Boolean(stoppedOwner)}
                 name={bot?.display_name ?? 'Bot'}
                 onDismiss={() => dismiss(stoppedHere)}
                 onFix={fixConnector}
-                onRetry={
-                  retryInput(stoppedHere) ? () => retry(retryInput(stoppedHere)!) : undefined
-                }
+                onRetry={stoppedRetry ? () => stoppedRetry[0](stoppedRetry[1]) : undefined}
               />
             ) : null}
             <div className="h-2" />
@@ -2077,7 +2658,7 @@ function BotConversation() {
           <span className="relative shrink-0">
             <Avatar
               {...botFace(bot)}
-              mood={emotion ?? moodForStatus(status)}
+              mood={emotion ?? moodForStatus(status, liveFace)}
               name={name}
               size="sm"
             />
@@ -2123,10 +2704,10 @@ function BotConversation() {
               bot={bot}
               draftVersion={draftVersion}
               key={params.section}
-              notice={notice}
               sectionId={params.section ?? null}
               sessionId={liveId}
-              status={status}
+              // A stopped turn is the Retry pill under it; the field stays calm.
+              status={status === 'stopped' ? 'idle' : status}
               streaming={streaming}
             />
           </div>
@@ -2141,11 +2722,11 @@ function BotConversation() {
           </button>
         }
       >
-        <div className="grid max-h-[85vh] place-items-center bg-black p-2">
+        <div className="grid max-h-[85dvh] place-items-center bg-black p-2">
           {lightbox ? (
             <img
               alt="Attachment preview"
-              className="max-h-[78vh] max-w-full object-contain"
+              className="max-h-[78dvh] max-w-full object-contain"
               src={lightbox}
             />
           ) : null}

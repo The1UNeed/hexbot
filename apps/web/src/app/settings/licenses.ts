@@ -52,9 +52,45 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
     projects: [
       {
         license: 'MIT',
+        name: 'architecture-diagram-generator',
+        repository: 'https://github.com/Cocoon-AI/architecture-diagram-generator',
+        skills: ['architecture-diagram']
+      },
+      {
+        license: 'MIT',
+        name: 'awesome-design-md',
+        repository: 'https://github.com/VoltAgent/awesome-design-md',
+        skills: ['popular-web-designs']
+      },
+      {
+        license: 'MIT',
+        name: 'baoyu-skills',
+        repository: 'https://github.com/JimLiu/baoyu-skills',
+        skills: ['baoyu-infographic']
+      },
+      {
+        license: 'MIT',
+        name: 'Get Shit Done',
+        repository: 'https://github.com/gsd-build/get-shit-done',
+        skills: ['spike']
+      },
+      {
+        license: 'MIT',
         name: 'Humanizer',
         repository: 'https://github.com/blader/humanizer',
         skills: ['humanizer']
+      },
+      {
+        license: 'MIT',
+        name: 'OpenClaw',
+        repository: 'https://github.com/openclaw/openclaw',
+        skills: ['xurl']
+      },
+      {
+        license: 'MIT',
+        name: 'Superpowers',
+        repository: 'https://github.com/obra/superpowers',
+        skills: ['requesting-code-review', 'systematic-debugging', 'test-driven-development']
       }
     ]
   },
@@ -126,6 +162,23 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
         name: 'react-markdown',
         packages: ['react-markdown'],
         repository: 'https://github.com/remarkjs/react-markdown'
+      },
+      {
+        license: 'MIT',
+        name: 'Tiptap',
+        packages: [
+          '@tiptap/extension-placeholder',
+          '@tiptap/markdown',
+          '@tiptap/pm',
+          '@tiptap/react',
+          '@tiptap/starter-kit'
+        ],
+        repository: 'https://github.com/ueberdosis/tiptap'
+      },
+      {
+        license: 'MIT',
+        name: 'ProseMirror',
+        repository: 'https://github.com/ProseMirror/prosemirror'
       },
       {
         license: 'MIT',

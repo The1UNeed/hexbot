@@ -18,7 +18,7 @@ import { useConnection } from '../stores/connection'
 import { useSections } from '../stores/sections'
 import { useUi } from '../stores/ui'
 
-import { Route } from './onboarding'
+import { Route, UsageStep } from './onboarding'
 
 import { Route as HomeRoute } from './index'
 
@@ -60,7 +60,7 @@ const reply = (method: string) =>
         providers: [{ id: 'lmstudio', label: 'Local', configured: true }]
       },
       'hexbot.models.list': { all: [{ id: 'local-model', label: 'Local model' }], curated: [] },
-      'hexbot.settings.get': { default_model: 'lmstudio/local-model' },
+      'hexbot.settings.get': { default_model: 'lmstudio/local-model', usage_data: false },
       'hexbot.connectors.list': { connectors: [] },
       'hexbot.bots.create_primary': { bot, section: canonical }
     }[method] ?? {}
@@ -292,13 +292,14 @@ async function firstBot() {
   const defaults = await screen.findByTestId('onboarding-defaults-continue')
   await waitFor(() => expect(defaults).toBeEnabled())
   fireEvent.click(defaults)
-  await screen.findByTestId('onboarding-tools-continue')
+  fireEvent.click(await screen.findByTestId('onboarding-tools-continue'))
+  await screen.findByTestId('onboarding-usage-continue')
 
   return view
 }
 
-/** The tools step's Continue creates HexBot. */
-const createHexBot = () => fireEvent.click(screen.getByTestId('onboarding-tools-continue'))
+/** The usage data step's Continue creates HexBot. */
+const createHexBot = () => fireEvent.click(screen.getByTestId('onboarding-usage-continue'))
 
 it.each(['healthy', 'room', 'unmount', 'daemon', 'epoch', 'install', 'avatar'] as const)(
   'HexBot creation keeps its caller lifetime: %s',
@@ -417,7 +418,7 @@ it('duplicate HexBot clicks make one request, and a creation error permits a hea
   call.mockImplementation((method: string) =>
     method === 'hexbot.bots.create_primary' ? held.promise : reply(method)
   )
-  const button = screen.getByTestId('onboarding-tools-continue')
+  const button = screen.getByTestId('onboarding-usage-continue')
   await act(async () => {
     fireEvent.click(button)
     fireEvent.click(button)
@@ -644,4 +645,65 @@ it('a roster refresh during HexBot creation does not repeat the completed decisi
   await screen.findByText('Owner chat')
   expect(view.router.state.location.pathname).toBe('/b/owl/s/canonical')
   expect(call.mock.calls.filter(([name]) => name === 'hexbot.bots.introduce')).toHaveLength(1)
+})
+
+describe('usage data step', () => {
+  const settings = (usage_data: boolean) =>
+    call.mockImplementation((method: string) =>
+      method === 'hexbot.settings.get' ? Promise.resolve({ usage_data }) : reply(method)
+    )
+
+  const app = (usageData: boolean) => {
+    const setUsageData = vi.fn(async () => undefined)
+    window.hexbot = {
+      privacy: async () => ({
+        crashReports: false,
+        crashReportsAvailable: false,
+        usageData,
+        usageDataAvailable: true
+      }),
+      setUsageData
+    } as never
+
+    return setUsageData
+  }
+
+  const step = () => render(<UsageStep onContinue={vi.fn()} onError={vi.fn()} />)
+
+  const usageSwitch = async () => {
+    const control = await screen.findByRole('switch', { name: 'Share anonymous usage data' })
+    await waitFor(() => expect(control).toBeEnabled())
+
+    return control
+  }
+
+  afterEach(() => {
+    delete window.hexbot
+  })
+
+  it('starts off when nothing was turned on', async () => {
+    settings(false)
+    app(false)
+    step()
+    expect(await usageSwitch()).not.toBeChecked()
+  })
+
+  it('shows a choice saved earlier in setup', async () => {
+    settings(true)
+    app(true)
+    step()
+    expect(await usageSwitch()).toBeChecked()
+  })
+
+  it('shows on while either side still shares, and turning it off turns off both', async () => {
+    settings(false)
+    const setUsageData = app(true)
+    step()
+    const control = await usageSwitch()
+    expect(control).toBeChecked()
+    fireEvent.click(control)
+    await waitFor(() => expect(control).not.toBeChecked())
+    expect(call).toHaveBeenCalledWith('hexbot.settings.set', { patch: { usage_data: false } })
+    expect(setUsageData).toHaveBeenCalledWith(false)
+  })
 })

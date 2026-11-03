@@ -16,7 +16,7 @@ Use this when the user wants you to work with a service, such as GitHub, Linear 
 
 ## 1. Check what is already there
 
-Call `hexbot_plugins` with `action: "list"`. If a plugin for the service exists but is off for you, use `action: "enable"` with its `id`, such as `package:github` or `connector:mcp:linear`, instead of installing another one. If it is a connector that is not set up, ask the user to set it up in Settings, Plugins; you never handle its keys.
+Call `hexbot_plugins` with `action: "list"`. If a plugin for the service exists but is off for you, use `action: "enable"` with its `id`, such as `package:github` or `connector:mcp:linear`, instead of installing another one. If it is not set up, call `action: "setup"` with its `id`: the user enters its keys on a card in your chat. You never see them.
 
 ## 2. Find the server
 
@@ -55,14 +55,14 @@ Call `hexbot_plugins` with `action: "install"`:
 
 - `name`: lowercase letters, digits, `-` or `_`. The server's tools appear as `mcp__<name>__<tool>`.
 - For a URL server, give `"mcp": {"url": "https://…", "headers": {"Authorization": ""}}`.
-- **Leave secret values empty.** Never put a token you were not given in the plugin, and never ask the user to paste one in the chat. They fill empty values in Settings, Plugins.
+- **Leave secret values empty.** Never put a token you were not given in the plugin, and never ask the user to paste one in the chat. They fill empty values on the install card, or later on a setup card.
 - Add a skill when the server needs know-how: which tools to call, in what order, and what to avoid. Read the skill-create skill for how to write one. Keep it short.
 
-The user sees what the plugin runs and approves or declines it. If they decline, do not try again with another server unless they ask; ask what they would like instead.
+The user sees what the plugin runs on a card in your chat and installs or declines it. If they decline, do not try again with another server unless they ask; ask what they would like instead.
 
 ## 4. After installing
 
 - The plugin is on for you only. Its tools reach you from your next message, in your codemode scripts: use `searchTools()` or `describeNamespace("mcp__<name>")` to find them.
 - Read the plugin's skills with `skill_view` straight away.
-- If the reply says the plugin still needs values, tell the user exactly which ones and where: Settings, Plugins, then the plugin's name.
+- If the reply says the plugin still needs values, call `action: "setup"` with its `id` straight away, so the user can enter them on a card.
 - Tell the user what you installed, in one line.

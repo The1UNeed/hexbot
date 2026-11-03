@@ -19,7 +19,7 @@ export function ConsentNotice() {
       {choice ? <p className="meta" style={{ marginTop: ".5rem" }}>{choice === "granted" ? "You accepted." : "You declined."}</p> : null}
       <div className="row">
         <button className="button button-sm" type="button" onClick={() => answer("granted")}>Accept</button>
-        <button className="button button-sm button-quiet" type="button" onClick={() => answer("denied")}>Decline</button>
+        <button className="button button-sm" type="button" onClick={() => answer("denied")}>Decline</button>
       </div>
     </div>
   );

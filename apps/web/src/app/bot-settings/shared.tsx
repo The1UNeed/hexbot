@@ -299,7 +299,13 @@ export function AvatarPicker({
           onClick={() => setPicking(value => !value)}
           type="button"
         >
-          <Avatar image={shown.image} name={bot.display_name} size="xl" style={currentStyle} />
+          <Avatar
+            image={shown.image}
+            name={bot.display_name}
+            size="xl"
+            style={currentStyle}
+            sync={shown.sync}
+          />
         </button>
         {hint ? (
           <span className="text-[length:var(--text-meta)] text-muted">

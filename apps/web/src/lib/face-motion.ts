@@ -539,6 +539,12 @@ interface Parts {
   whirl: SVGElement[]
 }
 
+/** One face the motion draws into, with its own record of what it wrote. */
+interface View {
+  parts: Parts
+  writer: Writer
+}
+
 function parts(svg: SVGSVGElement): Parts {
   const one = <T extends Element>(name: string) => svg.querySelector<T>(`[data-part="${name}"]`)
 
@@ -587,8 +593,7 @@ function tick(now: number) {
 
 /** The motion of one face's elements; see the module comment. */
 export class FaceMotion {
-  private readonly parts: Parts
-  private readonly writer = new Writer()
+  private readonly views = new Map<SVGSVGElement, View>()
   private state: FaceState
   private t = 0
 
@@ -602,6 +607,7 @@ export class FaceMotion {
   private pose = 0
   private nextPose = 0
   private gazeTarget = { x: 0, y: 0 }
+  private followed: { x: number; y: number } | null = null
   private nextGlance = 0
   private blinkAt = -1
   private nextBlink = 0
@@ -615,7 +621,7 @@ export class FaceMotion {
   private morphAt = 0
 
   constructor(svg: SVGSVGElement, state: FaceState) {
-    this.parts = parts(svg)
+    this.attach(svg)
     this.state = state
     this.morph = MORPHS[state.mood] ?? null
     this.fold.value = this.fold.target = this.morph ? 0 : 1
@@ -627,7 +633,7 @@ export class FaceMotion {
   set(state: FaceState) {
     const before = this.state
     this.state = state
-    this.writer.forget()
+    this.forget()
 
     if (before.mood !== state.mood) {
       this.pose = 0
@@ -713,6 +719,33 @@ export class FaceMotion {
     }
   }
 
+  /**
+   * Looks at a point, in the ball frame, instead of glancing around; `null`
+   * goes back to glancing. Moods that never glance keep their own gaze.
+   */
+  follow(point: { x: number; y: number } | null) {
+    this.followed = point
+  }
+
+  /** Draws into one more face too, from the next frame; see `joinFaceMotion`. */
+  attach(svg: SVGSVGElement) {
+    const view = { parts: parts(svg), writer: new Writer() }
+    this.views.set(svg, view)
+
+    if (running.has(this)) {
+      this.drawView(view)
+    }
+  }
+
+  detach(svg: SVGSVGElement) {
+    this.views.delete(svg)
+  }
+
+  /** Something else drew over the faces; write everything again. */
+  private forget() {
+    this.views.forEach(view => view.writer.forget())
+  }
+
   start() {
     if (running.has(this)) {
       return
@@ -742,6 +775,7 @@ export class FaceMotion {
 
   /** Every spring at its target and nothing in flight, drawn. */
   settle() {
+    this.forget()
     this.wokeAt = -1
     this.sparkAt = -1
     this.spinAt = -1
@@ -808,7 +842,9 @@ export class FaceMotion {
       }
     }
 
-    if (glance && t >= this.nextGlance) {
+    if (glance && this.followed) {
+      this.gazeTarget = this.followed
+    } else if (glance && t >= this.nextGlance) {
       this.nextGlance = t + 0.8 + Math.random() * 2.4
       const angle = Math.random() * Math.PI * 2
       const reach = Math.random() < 0.3 ? 0 : glance * (0.5 + Math.random() / 2)
@@ -873,7 +909,10 @@ export class FaceMotion {
   }
 
   private draw() {
-    const { parts, writer } = this
+    this.views.forEach(view => this.drawView(view))
+  }
+
+  private drawView({ parts, writer }: View) {
     const t = this.t
     const head = read(this.head)
     const squash = read(this.squash)
@@ -919,7 +958,7 @@ export class FaceMotion {
       )
     })
 
-    this.drawTrail(spinning)
+    this.drawTrail({ parts, writer }, spinning)
 
     const fold = Math.max(0, this.fold.value)
     writer.set(parts.body, 'transform', coreTransform(fold), 'body')
@@ -960,12 +999,11 @@ export class FaceMotion {
       })
     }
 
-    this.drawSparks()
+    this.drawSparks({ parts, writer })
   }
 
   /** A sweep round the face while it turns, in tints of its colour. */
-  private drawTrail(spinning: number) {
-    const { parts, writer } = this
+  private drawTrail({ parts, writer }: View, spinning: number) {
     const shown = spinning >= 0 && spinning <= 1
     writer.set(parts.trail, 'display', shown ? 'inline' : 'none', 'trail')
 
@@ -985,8 +1023,7 @@ export class FaceMotion {
     })
   }
 
-  private drawSparks() {
-    const { parts, writer } = this
+  private drawSparks({ parts, writer }: View) {
     const age = this.sparkAt >= 0 ? this.t - this.sparkAt : SPARK_LIFE
     const shown = age < SPARK_LIFE
     writer.set(parts.sparksGroup, 'display', shown ? 'inline' : 'none', 'sparks')
@@ -1008,5 +1045,48 @@ export class FaceMotion {
         `spark${index}`
       )
     })
+  }
+}
+
+/** Moving faces that share a key, and the one motion they all wear. */
+const shared = new Map<string, { faces: number; motion: FaceMotion }>()
+
+/**
+ * Moves `svg` with every other face joined under `key`: one clock, one set
+ * of blinks, glances and poses, so one bot's face in the sidebar, the header
+ * and the chat moves as one. The first face to arrive starts the motion from
+ * `from`, so a change of mood still plays its transition; a face arriving
+ * later picks it up mid-step. Returns the leave function; the motion stops
+ * with its last face.
+ */
+export function joinFaceMotion(
+  key: string,
+  svg: SVGSVGElement,
+  state: FaceState,
+  from: FaceMood = state.mood
+): () => void {
+  let entry = shared.get(key)
+
+  if (entry) {
+    entry.motion.attach(svg)
+  } else {
+    const motion = new FaceMotion(svg, { ...state, mood: from })
+    motion.start()
+    motion.set(state)
+    entry = { faces: 0, motion }
+    shared.set(key, entry)
+  }
+
+  const joined = entry
+  joined.faces += 1
+
+  return () => {
+    joined.motion.detach(svg)
+    joined.faces -= 1
+
+    if (!joined.faces) {
+      joined.motion.stop()
+      shared.delete(key)
+    }
   }
 }
