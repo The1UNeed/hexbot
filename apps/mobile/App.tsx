@@ -1378,8 +1378,8 @@ function MobileApp({ children }: { children?: ReactNode }) {
             {children}
           </View>
           {connection ? <View style={StyleSheet.absoluteFill}>{connection}</View> : null}
-          {/* An open chat shows its own loading: the bot's face and "Opening conversation". */}
-          {mobile.loading && mobile.active && !route ? (
+          {/* A bot's chat shows its own loading: the bot's face and "Opening conversation". */}
+          {mobile.loading && mobile.active && route?.kind !== 'section' ? (
             <View
               pointerEvents="none"
               style={{ position: 'absolute', top: 70, alignSelf: 'center' }}
