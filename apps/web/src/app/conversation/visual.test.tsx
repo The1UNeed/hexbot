@@ -57,6 +57,14 @@ describe('visualDocument', () => {
 
     expect(document.match(/<\/script>/g)).toHaveLength(1)
   })
+
+  it('shows scrollbars inside the page, so a capped list cannot hide its overflow', () => {
+    const document = visualDocument('<ol style="max-height:480px;overflow:auto"></ol>', theme)
+    const base = document.indexOf(':not(:root)::-webkit-scrollbar{')
+
+    expect(base).toBeGreaterThan(-1)
+    expect(base).toBeLessThan(document.indexOf('<ol'))
+  })
 })
 
 describe('readVisualTheme', () => {
