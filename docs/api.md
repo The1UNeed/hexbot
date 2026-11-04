@@ -1512,8 +1512,20 @@ span holds message text, only names, timings, token counts and error messages.
     numbers, ids, quoted text and URLs are set aside.
 - `hexbot.diagnostics.trace {trace}` → `{trace, spans}`: one run's spans,
   the run first.
+- `hexbot.diagnostics.logs {file?, before?, query?, errors?}` → `{files, file,
+  lines, size, before, more}` (`backend/hexbot-core/src/log_files.rs`): the
+  plain files in `<home>/logs` (`name`, `size`, `modified` in Unix ms, newest
+  first) and one page of one of them, read from the end. Without `file` it
+  reads the daemon's own output: `daemon.log` under the app,
+  `service-error.log` under the service, otherwise the newest file; `file`
+  null means the folder is empty. A name not in `files` answers 4204.
+  `lines` are oldest first, at most 1000, each `{offset, text, level}` with
+  `level` `error`, `warning` or null guessed from its words; a line keeps
+  16,000 characters. `query` matches case-insensitively and `errors` keeps
+  only error lines. One page reads at most 16 MiB; while `more`, pass
+  `before` for the page before it.
 
-Polling `gateway.ping` and the two diagnostics methods are not recorded.
+Polling `gateway.ping` and the diagnostics methods are not recorded.
 
 ### Hex Connect
 

@@ -48,7 +48,13 @@ import type {
   SkillInfo,
   Usage
 } from './types'
-import type { CurrentUser, DiagnosticsSnapshot, DiagnosticsSpan, UsageSummary } from './types'
+import type {
+  CurrentUser,
+  DiagnosticsLogs,
+  DiagnosticsSnapshot,
+  DiagnosticsSpan,
+  UsageSummary
+} from './types'
 
 /** Raw history row as projected by Hexbot `session.history`. */
 export interface HistoryRow {
@@ -564,6 +570,17 @@ export const diagnosticsGet = (spanName?: string) =>
 /** Every span of one trace, the run first. */
 export const diagnosticsTrace = (trace: number) =>
   rpcCall<{ spans: DiagnosticsSpan[]; trace: number }>('hexbot.diagnostics.trace', { trace })
+
+/**
+ * One page of a file in `<home>/logs`, newest lines last. Without `file`, the
+ * daemon's own output; `before` continues with older lines.
+ */
+export const diagnosticsLogs = (params: {
+  before?: number
+  errors?: boolean
+  file?: string
+  query?: string
+}) => rpcCall<DiagnosticsLogs>('hexbot.diagnostics.logs', params)
 
 export const gatewayPing = () => rpcCall<{ pong: boolean }>('gateway.ping')
 

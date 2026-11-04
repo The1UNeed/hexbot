@@ -20,6 +20,7 @@ pub mod engines;
 pub mod events;
 pub mod http;
 mod install_ownership;
+pub mod log_files;
 pub mod memory;
 pub mod native_external_tools;
 pub mod native_product_tools;

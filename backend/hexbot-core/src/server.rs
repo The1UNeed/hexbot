@@ -444,6 +444,12 @@ impl App {
                 .await
                 .map_err(|error| Error::new(5200, error.to_string()))
             }
+            "hexbot.diagnostics.logs" => {
+                let (home, p) = (self.home.clone(), p.clone());
+                tokio::task::spawn_blocking(move || crate::log_files::read(&home, &p))
+                    .await
+                    .map_err(|error| Error::new(5200, error.to_string()))?
+            }
             "hexbot.diagnostics.trace" => Ok(crate::diagnostics::get().trace(
                 p["trace"]
                     .as_u64()
