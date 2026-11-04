@@ -265,6 +265,9 @@ impl Drop for Moving<'_> {
     }
 }
 const MAX_HOPS: usize = 8;
+/// Pi's write or edit when the workspace scan stopped early: the change was
+/// already approved, so it is refused rather than written unchecked.
+const GIT_SCAN_REFUSED: &str = "The workspace safety scan could not check Git metadata, so this file change is refused. Choose a smaller workspace or try again.";
 #[derive(Clone, Debug, Default)]
 struct Chain {
     /// Bot-to-bot messages sent since the turn that started the chain. Every
@@ -4113,6 +4116,25 @@ impl Runtime {
             || protected_name(path)
         {
             return Err(Error::new(4302, "This file path is protected."));
+        }
+        // The bridge writes as the daemon's user, so Git metadata a sandboxed
+        // command must leave alone (hooksPath targets, gitdir and commondir
+        // links, include targets) is refused here by the same workspace scan.
+        // Pi has already approved this change, so a scan that could not finish
+        // refuses it rather than asking.
+        let roots: Vec<PathBuf> = std::iter::once(cwd).chain(output).collect();
+        match crate::credentials::git_write_protected(path, &roots) {
+            Ok(false) => {}
+            Ok(true) => {
+                return Err(Error::new(
+                    4302,
+                    "Git metadata is read-only. Use an approved full_access command.",
+                ));
+            }
+            Err(error) if error.code == 5240 => {
+                return Err(Error::new(4302, GIT_SCAN_REFUSED));
+            }
+            Err(error) => return Err(error),
         }
         // Synchronous through rename: cancel_dialogs aborts and joins this
         // request task before acknowledging Stop. No detached write exists.
