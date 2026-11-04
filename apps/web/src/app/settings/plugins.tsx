@@ -16,6 +16,7 @@ import {
   skillsSetGlobal
 } from '../../lib/api'
 import { cn } from '../../lib/cn'
+import { canGive } from '../../lib/plugin-rows'
 import type { Plugin, PluginValue } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
@@ -345,22 +346,34 @@ function PluginRow({
   const setBots = usePlugins(state => state.setBots)
   const [error, setError] = useState<null | string>(null)
 
-  const choose = (next: string[]) => {
+  const choose = (next: string[], keepWaiting = true) => {
     setError(null)
-    void setBots(plugin, next).catch(cause => setError(errorText(cause)))
+    void setBots(plugin, next, keepWaiting).catch(cause => setError(errorText(cause)))
   }
 
   const toggle = (bot: string, on: boolean) =>
     choose(on ? [...plugin.bots, bot] : plugin.bots.filter(name => name !== bot))
 
-  // A connector or skill can be ready for one bot through a key in its own
-  // `.env`, so only the daemon can tell whether a bot may have it.
+  // Until it is set up, a plugin can be taken away from bots but not given,
+  // except to a bot whose own settings hold its key.
+  const setupFirst = !plugin.ready
+  const givable = (bot: string) => canGive(plugin, bot)
+  const canSetUp = Boolean(plugin.kind === 'connector' && plugin.connector?.fields.length)
+
   const control = focus ? (
-    <Switch
-      aria-label={`${plugin.name} for ${focus.display_name}`}
-      checked={plugin.bots.includes(focus.name)}
-      onCheckedChange={on => toggle(focus.name, on)}
-    />
+    !givable(focus.name) && !plugin.bots.includes(focus.name) ? (
+      plugin.kind === 'skill' ? null : (
+        <Button onClick={canSetUp ? onSetup : expanded ? undefined : onExpand} size="sm">
+          Set up
+        </Button>
+      )
+    ) : (
+      <Switch
+        aria-label={`${plugin.name} for ${focus.display_name}`}
+        checked={plugin.bots.includes(focus.name)}
+        onCheckedChange={on => toggle(focus.name, on)}
+      />
+    )
   ) : (
     <span className="shrink-0 text-[length:var(--text-secondary)] text-muted">
       {botsText(plugin, bots)}
@@ -417,8 +430,17 @@ function PluginRow({
       ) : null}
       {expanded ? (
         <div className="hex-fade grid gap-4 px-4 pt-1 pb-4 pl-[56px] text-[length:var(--text-secondary)]">
-          {bots.length ? (
-            <BotPicker bots={bots} chosen={plugin.bots} name={plugin.name} onChange={choose} />
+          {setupFirst ? (
+            <p className="text-muted">Set up {plugin.name} before giving it to a bot.</p>
+          ) : null}
+          {bots.length && (bots.some(bot => givable(bot.name)) || plugin.bots.length) ? (
+            <BotPicker
+              bots={bots}
+              canGive={givable}
+              chosen={plugin.bots}
+              name={plugin.name}
+              onChange={choose}
+            />
           ) : null}
           {error ? (
             <p className="text-danger" role="alert">
@@ -432,31 +454,37 @@ function PluginRow({
   )
 }
 
-/** One pill per bot; a filled pill is on. */
+/** One pill per bot; a filled pill is on. A bot it can't be given to can only be turned off. */
 function BotPicker({
   bots,
+  canGive,
   chosen,
   name,
   onChange
 }: {
   bots: PluginBot[]
+  canGive: (bot: string) => boolean
   chosen: string[]
   name: string
-  onChange: (bots: string[]) => void
+  onChange: (bots: string[], keepWaiting?: boolean) => void
 }) {
   const all = bots.every(bot => chosen.includes(bot.name))
+  const turnOn = !all && bots.every(bot => canGive(bot.name))
+  // Turning off is offered only once it is on for a bot.
+  const bulk = bots.length > 1 && (turnOn || chosen.length > 0)
 
   return (
     <div>
       <div className="mb-1.5 flex items-center gap-3">
         <span className="text-muted">Bots</span>
-        {bots.length > 1 ? (
+        {bulk ? (
           <button
             className="text-[length:var(--text-meta)] text-muted underline-offset-2 hover:text-foreground hover:underline disabled:pointer-events-none disabled:opacity-50"
-            onClick={() => onChange(all ? [] : bots.map(bot => bot.name))}
+            // Off for every bot means every grant, those waiting for setup too.
+            onClick={() => (turnOn ? onChange(bots.map(bot => bot.name)) : onChange([], false))}
             type="button"
           >
-            {all ? 'Turn off for every bot' : 'Turn on for every bot'}
+            {turnOn ? 'Turn on for every bot' : 'Turn off for every bot'}
           </button>
         ) : null}
       </div>
@@ -473,6 +501,7 @@ function BotPicker({
                   ? 'bg-accent text-accent-fg'
                   : 'bg-foreground/[0.07] text-foreground hover:bg-foreground/[0.11]'
               )}
+              disabled={!on && !canGive(bot.name)}
               key={bot.name}
               onClick={() =>
                 onChange(on ? chosen.filter(item => item !== bot.name) : [...chosen, bot.name])

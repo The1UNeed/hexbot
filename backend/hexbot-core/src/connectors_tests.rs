@@ -288,6 +288,26 @@ async fn skill_listing_reads_metadata_and_disabled_state() {
             .unwrap()["enabled"],
         false
     );
+    // Off can always be undone, but on waits for the connector's key.
+    if std::env::var_os("NOTION_API_KEY").is_none() {
+        assert_eq!(
+            call(
+                home.path(),
+                "alice",
+                "hexbot.connectors.set_for_bot",
+                json!({"bot":"owl","id":"notion","enabled":true}),
+            )
+            .await
+            .unwrap_err()
+            .code,
+            4209
+        );
+    }
+    fs::write(
+        home.path().join("profiles/owl/.env"),
+        "NOTION_API_KEY=secret\n",
+    )
+    .unwrap();
     rpc(
         home.path(),
         "hexbot.connectors.set_for_bot",

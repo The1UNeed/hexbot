@@ -34,7 +34,7 @@ import {
 import { botPhoto } from './core/avatar'
 import { scheduleChange } from './core/jobs'
 import { requirementText } from './core/skills'
-import { pluginRows } from '../../web/src/lib/plugin-rows'
+import { canGive, pluginRows, withWaiting } from '../../web/src/lib/plugin-rows'
 import { PluginIcon } from './ui/PluginIcon'
 import { isOpenRoom } from './core/routes'
 import { pickFile } from './core/pickFile'
@@ -1505,8 +1505,6 @@ export function Management({
     case 'plugin': {
       const bots = pluginRoster
       const p = (extra.plugin ?? panel!.data) as unknown as Plugin
-      // A connector or skill can be ready for one bot through its own key, so
-      // only the daemon can tell whether a bot may have it.
       const server = p.server
       const values_ = server ? (server.transport === 'http' ? server.headers : server.env) : []
       const valueKind = server?.transport === 'http' ? 'headers' : 'env'
@@ -1518,7 +1516,7 @@ export function Management({
           rpc('hexbot.plugins.set_bots', {
             kind: p.kind,
             id: p.id,
-            bots: next.filter(name => bots.some(b => b.name === name))
+            bots: withWaiting(p, next).filter(name => bots.some(b => b.name === name))
           })
         )
       content = (
@@ -1527,19 +1525,34 @@ export function Management({
           <Text tone={p.state === 'error' ? 'danger' : 'muted'} variant="footnote">
             {p.state_text}
           </Text>
-          <Group title="Bots">
+          {/* Until it is set up, a plugin can be taken away from bots but not given,
+              except to a bot whose own settings hold its key. */}
+          <Group
+            title="Bots"
+            footer={p.ready ? undefined : `Set up ${p.name} before giving it to a bot.`}
+          >
             {bots.map(b => (
               <SwitchRow
                 key={b.name}
                 title={b.display_name}
                 testID={`plugin-bot-${b.name}`}
                 value={p.bots.includes(b.name)}
-                disabled={busy || mobile.connection !== 'connected'}
+                disabled={
+                  busy ||
+                  mobile.connection !== 'connected' ||
+                  (!canGive(p, b.name) && !p.bots.includes(b.name))
+                }
                 onValueChange={on =>
                   choose(on ? [...p.bots, b.name] : p.bots.filter(name => name !== b.name))
                 }
               />
             ))}
+            {/* As on the web: off for every bot takes grants waiting for setup too. */}
+            {bots.length > 1 && p.bots.length
+              ? action('Turn off for every bot', () =>
+                  rpc('hexbot.plugins.set_bots', { kind: p.kind, id: p.id, bots: [] })
+                )
+              : null}
           </Group>
           {server ? (
             <Group

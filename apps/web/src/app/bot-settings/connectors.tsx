@@ -219,6 +219,8 @@ function ConnectorRow({
       <Switch
         aria-label={`${connector.name} for ${bot.display_name}`}
         checked={Boolean(connector.enabled_for_bot)}
+        // A server that still needs values can be turned off, not on.
+        disabled={connector.ready === false && !connector.enabled_for_bot}
         onCheckedChange={onToggle}
       />
     )

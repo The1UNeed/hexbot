@@ -182,13 +182,32 @@ async fn a_bot_asks_before_installing_a_plugin_for_itself() {
     assert!(!home.path().join("plugins/echo").exists());
     let (_, installed) = ask("once").await;
     let installed = installed.unwrap();
-    assert_eq!(installed["on"], true);
+    // Its token is empty, so it reaches no bot until the user fills it in.
+    assert_eq!(installed["on"], false);
     let note = installed["note"].as_str().unwrap();
     assert!(
-        note.contains("skill_view") && note.contains("Needs ECHO_TOKEN"),
+        note.contains("Needs ECHO_TOKEN") && !note.contains("skill_view"),
         "{note}"
     );
-    // On for the bot that asked, and only for it.
+    assert!(
+        crate::connectors::mcp_servers(home.path(), "owl")
+            .unwrap()
+            .get("echo")
+            .is_none()
+    );
+    assert!(
+        !crate::catalog::enabled_skills(home.path(), "owl")
+            .unwrap()
+            .iter()
+            .any(|s| s["name"] == "echo-usage")
+    );
+    crate::plugins::configure(
+        home.path(),
+        "echo",
+        &json!({"env": {"ECHO_TOKEN": "secret"}}),
+    )
+    .unwrap();
+    // Then on for the bot that asked, and only for it.
     assert!(
         crate::connectors::mcp_servers(home.path(), "owl")
             .unwrap()
@@ -6383,6 +6402,12 @@ async fn a_bot_with_notion_on_gets_the_connector_tools() {
     assert!(names(None).is_empty());
     runtime.open_session("alice", "owl", "first").await.unwrap();
     assert!(!runtime.tools_stale("alice", "owl", "first").unwrap());
+    // Notion is given only once it is set up.
+    std::fs::write(
+        home.path().join("profiles/owl/.env"),
+        "NOTION_API_KEY=test\n",
+    )
+    .unwrap();
     crate::connectors::set_enabled(home.path(), "owl", "notion", true).unwrap();
     assert_eq!(
         names(None),
@@ -6430,5 +6455,39 @@ async fn a_bot_with_notion_on_gets_the_connector_tools() {
             .await
             .is_err()
     );
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_package_of_skills_set_up_through_a_bots_own_key_reads_as_ready_to_that_bot() {
+    let (home, runtime, _hub) = setup();
+    crate::plugins::call(
+        home.path(),
+        "alice",
+        "hexbot.plugins.install",
+        &json!({"name":"notes","skills":[{"name":"notes-sync","content":
+            "---\ndescription: Sync notes.\nprerequisites:\n  env_vars: [HEXBOT_TEST_OWL_NOTES_KEY]\n---\nBody."}]}),
+    )
+    .unwrap()
+    .unwrap();
+    let notes = |runtime: &Runtime| {
+        runtime.plugin_list("alice", "owl", false).unwrap()["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == "package:notes")
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(notes(&runtime)["ready"], false);
+    fs::write(
+        home.path().join("profiles/owl/.env"),
+        "HEXBOT_TEST_OWL_NOTES_KEY=value\n",
+    )
+    .unwrap();
+    // Owl's own key sets it up for Owl, so it is not sent to setup.
+    let row = notes(&runtime);
+    assert_eq!(row["ready"], true, "{row}");
+    assert!(row.get("state").is_none(), "{row}");
     runtime.shutdown().await;
 }
