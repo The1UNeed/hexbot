@@ -16,6 +16,7 @@ import {
   dreamingRestore,
   dreamingRunNow,
   dreamingStatus,
+  MEMORY_RESTORED,
   NOTES_CHANGED
 } from '../../lib/api'
 import { cn } from '../../lib/cn'
@@ -203,7 +204,13 @@ function BotMemoryTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
             title="About you"
           />
         </Group>
-        <DreamingBlock bot={bot} onSave={onSave} />
+        <DreamingBlock
+          bot={bot}
+          onRestored={() =>
+            window.dispatchEvent(new CustomEvent(MEMORY_RESTORED, { detail: bot.name }))
+          }
+          onSave={onSave}
+        />
       </div>
     </div>
   )
