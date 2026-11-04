@@ -6402,6 +6402,12 @@ async fn a_bot_with_notion_on_gets_the_connector_tools() {
     assert!(names(None).is_empty());
     runtime.open_session("alice", "owl", "first").await.unwrap();
     assert!(!runtime.tools_stale("alice", "owl", "first").unwrap());
+    // Notion is given only once it is set up.
+    std::fs::write(
+        home.path().join("profiles/owl/.env"),
+        "NOTION_API_KEY=test\n",
+    )
+    .unwrap();
     crate::connectors::set_enabled(home.path(), "owl", "notion", true).unwrap();
     assert_eq!(
         names(None),
