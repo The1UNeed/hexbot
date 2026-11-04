@@ -1389,6 +1389,10 @@ RRt6ydivhAlY3kFw==
         assert!(
             err(json!({"kind":"api_key","title":"x","key":"sk-1","env":"d"})).contains("shell")
         );
+        assert!(
+            err(json!({"kind":"api_key","title":"x","key":"sk-1","env":"hexbot_agent"}))
+                .contains("shell")
+        );
         let key = save(
             h,
             "alice",
