@@ -40,6 +40,7 @@ const ARROW =
   'M4.5 3.2 20.4 10a.9.9 0 0 1-.1 1.7l-6.6 1.9-2 6.5a.9.9 0 0 1-1.7.1L3.2 4.5a.9.9 0 0 1 1.3-1.3Z'
 
 const BUSY: Partial<Record<ComputerStatus['state'], string>> = {
+  repairing: 'Repairing',
   resetting: 'Resetting',
   restarting: 'Restarting',
   starting: 'Starting',

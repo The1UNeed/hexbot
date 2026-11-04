@@ -18,6 +18,7 @@ import type { SaveBot } from '../bot-settings/shared'
 import { computerLabel } from '../conversation/steps'
 
 const BUSY: Partial<Record<ComputerStatus['state'], string>> = {
+  repairing: 'Repairing',
   resetting: 'Resetting',
   restarting: 'Restarting',
   starting: 'Starting',

@@ -280,7 +280,8 @@ fn script(home: &Path, name: &str, code: &str) -> std::path::PathBuf {
     path
 }
 /// A stand-in for the `cua` CLI: a sandbox recorded in a file, `cua mcp`
-/// answering the computer tools, and a viewer link to `upstream.txt`.
+/// answering the computer tools, and a viewer link to `upstream.txt`. While
+/// `engine-down` exists Docker does not answer: the sandbox reads as missing.
 #[cfg(unix)]
 const FAKE_CUA: &str = r#"import json,sys,pathlib,os,base64
 here=pathlib.Path(__file__).parent
@@ -290,11 +291,24 @@ def log(row):
     with (here/'cua.log').open('a') as f: f.write(json.dumps(row)+'\n')
 args=sys.argv[1:]
 log({'argv':args})
+down=(here/'engine-down').exists()
+if args[:2]==['runtime','doctor']:
+    print(json.dumps({'backends':[{'backend':'container','ready':not down}]})); sys.exit(0)
+if args[:2]==['sb','info'] and (here/'info-fails-once').exists():
+    (here/'info-fails-once').unlink(); print('cua: the daemon did not answer',file=sys.stderr); sys.exit(1)
+if args[:2]==['sb','info'] and (here/'turn-off-during-info').exists():
+    (here/'turn-off-during-info').unlink()
+    saved=json.loads((here/'computer.json').read_text()); saved['on']=False
+    (here/'computer.json').write_text(json.dumps(saved))
 if args[:2]==['sb','info']:
     if not state.exists(): print('cua: not found: sandbox',file=sys.stderr); sys.exit(3)
-    if (here/'docker-down').exists():
-        print(json.dumps({'name':json.loads(state.read_text())['name'],'state':'missing','status':'missing'})); sys.exit(0)
+    if down: print(json.dumps({'name':args[2],'state':'missing','status':'missing'})); sys.exit(0)
     print(state.read_text()); sys.exit(0)
+if args[:2]==['sb','resume']:
+    if down: print('cua: local runtime: instance not found',file=sys.stderr); sys.exit(1)
+    state.write_text(json.dumps({'name':args[2],'state':'running','status':'ready'})); sys.exit(0)
+if args[:2]==['sb','suspend']:
+    state.write_text(json.dumps({'name':args[2],'state':'stopped','status':'stopped'})); sys.exit(0)
 if args[:2]==['sb','create']:
     if (here/'slow').exists():
         (here/'creating').write_text('1'); import time; time.sleep(60)
@@ -507,55 +521,52 @@ async fn bots_share_one_computer_and_take_turns() {
     hexbot_core::connectors::close_bot(h.path(), "tester").await;
     hexbot_core::connectors::close_bot(h.path(), "helper").await;
 }
+/// Docker stops and its engine will not start: a bot's action fails at once
+/// and says why, the computer is kept, and the error clears once Docker is
+/// back, whether the user looks first or a bot acts first.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_computer_docker_cannot_find_fails_at_once_and_is_kept() {
     use hexbot_core::computers;
-    let h = home(json!({"tools":{"enabled_toolsets":["computer_use"]}}));
-    let cua = script(h.path(), "cua-test", FAKE_CUA);
-    std::fs::write(
-        h.path().join(".env"),
-        format!("HEXBOT_CUA_CMD={}\n", cua.display()),
-    )
-    .unwrap();
-    call(h.path(), "computer_use", json!({"action":"screenshot"}))
-        .await
-        .unwrap();
-    // Docker stops: Cua still knows the computer but finds no container.
-    std::fs::write(h.path().join("docker-down"), "1").unwrap();
+    let h = running_computer().await;
+    let down = |down: bool| {
+        for marker in ["engine-down", "engine-broken"] {
+            if down {
+                std::fs::write(h.path().join(marker), "").unwrap();
+            } else {
+                std::fs::remove_file(h.path().join(marker)).unwrap();
+            }
+        }
+    };
+    down(true);
     let started = std::time::Instant::now();
     let error = call(h.path(), "computer_use", json!({"action":"screenshot"}))
         .await
         .unwrap_err();
     assert!(started.elapsed() < std::time::Duration::from_secs(10));
-    assert!(error.message.contains("Start Docker"), "{}", error.message);
-    let status = computers::call(h.path(), "hexbot.computer.status", &json!({}))
-        .await
-        .unwrap()
-        .unwrap();
+    assert!(
+        error.message.starts_with("Docker is not running"),
+        "{}",
+        error.message
+    );
+    let status = computer_status(h.path()).await;
     assert_eq!(status["state"], "error");
-    assert!(status["error"].as_str().unwrap().contains("Start Docker"));
+    assert_eq!(status["error"], error.message.as_str());
     // Nothing on it is lost: the computer is not made again.
-    let steps = std::fs::read_to_string(h.path().join("cua.log"))
-        .unwrap()
+    let steps = cua_log(h.path())
         .lines()
         .filter(|line| line.contains("\"create\"") || line.contains("\"rm\""))
         .count();
     assert_eq!(steps, 1);
-    // Docker is back, and so is the computer, without the old error, whether
-    // the user looks first or a bot acts first.
-    std::fs::remove_file(h.path().join("docker-down")).unwrap();
-    let status = computers::call(h.path(), "hexbot.computer.status", &json!({}))
-        .await
-        .unwrap()
-        .unwrap();
+    down(false);
+    let status = computer_status(h.path()).await;
     assert_eq!(status["state"], "running");
     assert!(status["error"].is_null());
-    std::fs::write(h.path().join("docker-down"), "1").unwrap();
+    down(true);
     call(h.path(), "computer_use", json!({"action":"screenshot"}))
         .await
         .unwrap_err();
-    std::fs::remove_file(h.path().join("docker-down")).unwrap();
+    down(false);
     let events = hexbot_core::events::EventHub::new();
     computers::attach(h.path(), events.clone());
     let mut changes = events.subscribe();
@@ -822,6 +833,370 @@ async fn a_bot_stopped_while_the_computer_starts_leaves_it_free() {
         .await
         .unwrap();
     assert!(started.is_ok(), "the computer is no longer busy");
+}
+/// Starts the fake engine: Docker answers again, unless `engine-broken` exists.
+#[cfg(unix)]
+const FAKE_ENGINE: &str = r#"import sys,pathlib
+here=pathlib.Path(__file__).parent
+with (here/'cua.log').open('a') as f: f.write('{"engine":"start"}\n')
+if (here/'engine-broken').exists():
+    print('time="2026-10-30T10:09:00+08:00" level=fatal msg="vz: the virtual machine could not start"',file=sys.stderr); sys.exit(1)
+(here/'engine-down').unlink(missing_ok=True)
+"#;
+/// A home whose computer runs, made by a bot's first action, with a fake
+/// engine Hexbot starts when Docker does not answer.
+#[cfg(unix)]
+async fn running_computer() -> support::TestHome {
+    let h = home(json!({"tools":{"enabled_toolsets":["computer_use"]}}));
+    let engine = script(h.path(), "engine-start", FAKE_ENGINE);
+    let mut cfg = common::read_config(h.path()).unwrap();
+    cfg["computer_use"] = json!({"engine_start":[engine]});
+    common::write_config(h.path(), &cfg).unwrap();
+    let cua = script(h.path(), "cua-test", FAKE_CUA);
+    std::fs::write(
+        h.path().join(".env"),
+        format!("HEXBOT_CUA_CMD={}\n", cua.display()),
+    )
+    .unwrap();
+    call(h.path(), "computer_use", json!({"action":"screenshot"}))
+        .await
+        .unwrap();
+    h
+}
+#[cfg(unix)]
+async fn computer_status(home: &Path) -> Value {
+    hexbot_core::computers::call(home, "hexbot.computer.status", &json!({}))
+        .await
+        .unwrap()
+        .unwrap()
+}
+/// Runs a lifecycle step, which reports by event, and waits for it to end.
+#[cfg(unix)]
+async fn computer_step(home: &Path, step: &str) -> Value {
+    hexbot_core::computers::call(home, &format!("hexbot.computer.{step}"), &json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let status = computer_status(home).await;
+            if ![
+                "starting",
+                "repairing",
+                "stopping",
+                "restarting",
+                "resetting",
+            ]
+            .contains(&status["state"].as_str().unwrap_or(""))
+            {
+                return status;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap()
+}
+#[cfg(unix)]
+fn cua_log(home: &Path) -> String {
+    std::fs::read_to_string(home.join("cua.log")).unwrap()
+}
+/// The daemon's computer restarted, for an update: the engine and the
+/// computer are down, and the watchdog brings both back, files and all.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_computer_lost_with_its_engine_comes_back_by_itself() {
+    use hexbot_core::computers;
+    let h = running_computer().await;
+    let sandbox = h.path().join("sandbox.json");
+    std::fs::write(
+        &sandbox,
+        json!({"name":computers::sandbox(h.path()),"state":"stopped","status":"stopped"})
+            .to_string(),
+    )
+    .unwrap();
+    std::fs::write(h.path().join("engine-down"), "").unwrap();
+    let status = computer_status(h.path()).await;
+    assert_eq!(status["state"], "error");
+    assert_eq!(
+        status["error"],
+        "Docker is not running on the daemon's computer. Turn the computer on to start the container engine and the computer."
+    );
+    computers::check(h.path()).await;
+    let status = computer_status(h.path()).await;
+    assert_eq!(status["state"], "running");
+    assert!(status["error"].is_null());
+    let log = cua_log(h.path());
+    assert!(log.contains(r#"{"engine":"start"}"#));
+    assert!(log.contains(r#""resume""#));
+    // The same computer: not made again.
+    assert_eq!(log.matches(r#""create""#).count(), 1);
+    assert!(!log.contains(r#""rm""#));
+    // Turned off on purpose, it stays off.
+    assert_eq!(computer_step(h.path(), "stop").await["state"], "stopped");
+    std::fs::write(h.path().join("engine-down"), "").unwrap();
+    let before = cua_log(h.path()).len();
+    computers::check(h.path()).await;
+    assert_eq!(cua_log(h.path()).len(), before);
+}
+/// The engine will not start: the primary bot tells the user once, in its
+/// chat and on their devices, and Turn on repairs it once the engine can start.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_computer_that_cannot_come_back_is_reported_once() {
+    use hexbot_core::{computers, events::EventHub};
+    let h = running_computer().await;
+    db::open(h.path())
+        .unwrap()
+        .execute("UPDATE bots SET is_primary=1 WHERE name='tester'", [])
+        .unwrap();
+    let events = EventHub::new();
+    let mut heard = events.subscribe();
+    computers::attach(h.path(), events);
+    std::fs::write(h.path().join("engine-down"), "").unwrap();
+    std::fs::write(h.path().join("engine-broken"), "").unwrap();
+    computers::check(h.path()).await;
+    let reason = "Docker is not running on the daemon's computer, and the container engine would not start: vz: the virtual machine could not start. Start it there, then turn the computer on.";
+    assert_eq!(computer_status(h.path()).await["error"], reason);
+    let notices = || {
+        common::rows(
+            &db::open(h.path()).unwrap(),
+            "SELECT bot,text FROM heartbeat_messages WHERE heartbeat_id IS NULL",
+            &[],
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        notices(),
+        vec![
+            json!({"bot":"tester","text":format!("Your bots' computer is down, and I could not bring it back. {reason}")})
+        ]
+    );
+    let told = loop {
+        let event = heard.recv().await.unwrap();
+        if event.frame["params"]["type"] == "hexbot.heartbeat.message" {
+            break event;
+        }
+    };
+    assert_eq!(told.owner, "local");
+    assert!(
+        told.frame["params"]["payload"]["text"]
+            .as_str()
+            .unwrap()
+            .ends_with(reason)
+    );
+    // Still down a minute later: no second message.
+    computers::check(h.path()).await;
+    assert_eq!(notices().len(), 1);
+    std::fs::remove_file(h.path().join("engine-broken")).unwrap();
+    let status = computer_step(h.path(), "start").await;
+    assert_eq!(status["state"], "running");
+    assert!(status["error"].is_null());
+    let saved: Value =
+        serde_json::from_str(&std::fs::read_to_string(h.path().join("computer.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        (saved["on"].clone(), saved["told"].clone()),
+        (json!(true), json!(false))
+    );
+}
+/// A repair failed, then the user starts Docker themselves: the watchdog's
+/// next look clears the outage from open screens, without waiting to retry.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_watchdog_shows_a_computer_that_came_back_on_its_own() {
+    use hexbot_core::{computers, events::EventHub};
+    let h = running_computer().await;
+    let events = EventHub::new();
+    computers::attach(h.path(), events.clone());
+    std::fs::write(h.path().join("engine-down"), "").unwrap();
+    std::fs::write(h.path().join("engine-broken"), "").unwrap();
+    computers::check(h.path()).await;
+    std::fs::remove_file(h.path().join("engine-down")).unwrap();
+    std::fs::remove_file(h.path().join("engine-broken")).unwrap();
+    let mut changes = events.subscribe();
+    computers::check(h.path()).await;
+    let mut last = Value::Null;
+    while let Ok(event) = changes.try_recv() {
+        if event.frame["params"]["type"] == "hexbot.computer.changed" {
+            last = event.frame["params"]["payload"].clone();
+        }
+    }
+    assert_eq!(last["state"], "running");
+    assert!(last["error"].is_null(), "{last}");
+    assert_eq!(
+        cua_log(h.path()).matches(r#"{"engine":"start"}"#).count(),
+        1
+    );
+}
+/// A computer Cua reports failed is left as it is, files and all, and the
+/// primary bot says so once; with no one to tell, the outage stays untold.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_failed_computer_is_reported_once_and_never_remade_unattended() {
+    use hexbot_core::{computers, events::EventHub};
+    let failed = |h: &Path| {
+        std::fs::write(
+            h.join("sandbox.json"),
+            json!({"name":computers::sandbox(h),"state":"failed","status":"failed"}).to_string(),
+        )
+        .unwrap()
+    };
+    let told = |h: &Path| {
+        serde_json::from_str::<Value>(&std::fs::read_to_string(h.join("computer.json")).unwrap())
+            .unwrap()["told"]
+            .clone()
+    };
+    let h = running_computer().await;
+    db::open(h.path())
+        .unwrap()
+        .execute("UPDATE bots SET is_primary=1 WHERE name='tester'", [])
+        .unwrap();
+    computers::attach(h.path(), EventHub::new());
+    failed(h.path());
+    let before = cua_log(h.path()).len();
+    computers::check(h.path()).await;
+    let log = cua_log(h.path())[before..].to_owned();
+    assert!(!log.contains(r#""rm""#) && !log.contains(r#""create""#));
+    let notices = common::rows(
+        &db::open(h.path()).unwrap(),
+        "SELECT text FROM heartbeat_messages WHERE heartbeat_id IS NULL",
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        notices,
+        vec![
+            json!({"text":"Your bots' computer is down, and I could not bring it back. The computer failed to start. Turn it on to make a new one."})
+        ]
+    );
+    assert_eq!(told(h.path()), true);
+    // No primary bot to say it: not marked told, so a later failure tries again.
+    let quiet = running_computer().await;
+    failed(quiet.path());
+    computers::check(quiet.path()).await;
+    assert_eq!(computer_status(quiet.path()).await["state"], "error");
+    assert_ne!(told(quiet.path()), true);
+}
+/// Docker comes back and the computer turns out to have failed: the watchdog
+/// reports it and leaves it, files and all, for the user or a bot to remake.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_computer_failed_behind_a_stopped_engine_is_remade_only_when_asked() {
+    use hexbot_core::computers;
+    let h = running_computer().await;
+    std::fs::write(
+        h.path().join("sandbox.json"),
+        json!({"name":computers::sandbox(h.path()),"state":"failed","status":"failed"}).to_string(),
+    )
+    .unwrap();
+    std::fs::write(h.path().join("engine-down"), "").unwrap();
+    let events = hexbot_core::events::EventHub::new();
+    computers::attach(h.path(), events.clone());
+    let mut changes = events.subscribe();
+    let before = cua_log(h.path()).len();
+    computers::check(h.path()).await;
+    let log = cua_log(h.path())[before..].to_owned();
+    assert!(log.contains(r#"{"engine":"start"}"#));
+    assert!(!log.contains(r#""rm""#) && !log.contains(r#""create""#));
+    // Open screens show it down at once, not as it was before.
+    let mut last = Value::Null;
+    while let Ok(event) = changes.try_recv() {
+        if event.frame["params"]["type"] == "hexbot.computer.changed" {
+            last = event.frame["params"]["payload"].clone();
+        }
+    }
+    assert_eq!(last["state"], "error", "{last}");
+    assert_eq!(
+        last["error"],
+        "Docker is back, but the computer failed to start. Turn it on to make a new one."
+    );
+    // Turn on, asked for, makes a new one behind the same stopped engine.
+    std::fs::write(h.path().join("engine-down"), "").unwrap();
+    let before = cua_log(h.path()).len();
+    let status = computer_step(h.path(), "start").await;
+    assert_eq!(status["state"], "running", "{status}");
+    let log = cua_log(h.path())[before..].to_owned();
+    assert!(log.contains(r#"{"engine":"start"}"#));
+    assert!(log.contains(r#""rm""#) && log.contains(r#""create""#));
+}
+/// Cua's first answer fails and only the second says the computer failed:
+/// the watchdog still does not make a new one.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_watchdog_never_remakes_a_computer_found_failed_on_a_second_look() {
+    use hexbot_core::computers;
+    let h = running_computer().await;
+    std::fs::write(
+        h.path().join("sandbox.json"),
+        json!({"name":computers::sandbox(h.path()),"state":"failed","status":"failed"}).to_string(),
+    )
+    .unwrap();
+    std::fs::write(h.path().join("info-fails-once"), "").unwrap();
+    let before = cua_log(h.path()).len();
+    computers::check(h.path()).await;
+    let log = cua_log(h.path())[before..].to_owned();
+    assert!(log.matches(r#""info""#).count() >= 2);
+    assert!(!log.contains(r#""rm""#) && !log.contains(r#""create""#));
+    assert_eq!(
+        computer_status(h.path()).await["error"],
+        "The computer failed to start. Turn it on to make a new one."
+    );
+}
+/// Turned off while the watchdog waited on Cua: it does not turn the computer
+/// back on.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_watchdog_respects_a_turn_off_made_while_it_looked() {
+    use hexbot_core::computers;
+    let h = running_computer().await;
+    std::fs::write(
+        h.path().join("sandbox.json"),
+        json!({"name":computers::sandbox(h.path()),"state":"stopped","status":"stopped"})
+            .to_string(),
+    )
+    .unwrap();
+    std::fs::write(h.path().join("turn-off-during-info"), "").unwrap();
+    let before = cua_log(h.path()).len();
+    computers::check(h.path()).await;
+    assert!(!cua_log(h.path())[before..].contains(r#""resume""#));
+    let saved: Value =
+        serde_json::from_str(&std::fs::read_to_string(h.path().join("computer.json")).unwrap())
+            .unwrap();
+    assert_eq!(saved["on"], false);
+}
+/// Docker answers but the container is gone: its files are too, so only Reset,
+/// which the user chooses, makes a new computer.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_removed_container_is_not_made_again_without_reset() {
+    use hexbot_core::computers;
+    let h = running_computer().await;
+    std::fs::write(
+        h.path().join("sandbox.json"),
+        json!({"name":computers::sandbox(h.path()),"state":"missing","status":"missing"})
+            .to_string(),
+    )
+    .unwrap();
+    let action = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        call(h.path(), "computer_use", json!({"action":"screenshot"})),
+    )
+    .await
+    .expect("a removed computer fails at once instead of waiting for it");
+    let removed = "The computer's container was removed. Reset makes a new computer.";
+    assert_eq!(action.unwrap_err().message, removed);
+    let status = computer_status(h.path()).await;
+    assert_eq!(
+        (status["state"].clone(), status["error"].clone()),
+        (json!("error"), json!(removed))
+    );
+    let log = cua_log(h.path());
+    assert_eq!(log.matches(r#""create""#).count(), 1);
+    assert!(!log.contains(r#""rm""#) && !log.contains(r#"{"engine":"start"}"#));
+    let status = computer_step(h.path(), "reset").await;
+    assert_eq!(status["state"], "running");
+    assert!(status["error"].is_null());
 }
 #[cfg(unix)]
 #[tokio::test]
@@ -1126,4 +1501,32 @@ fn tools_are_offered_only_once_set_up() {
     let missing = native_tools::not_set_up(h.path(), "tester").unwrap();
     assert!(!missing.contains(&"tts") && !missing.contains(&"vision"));
     assert!(offered("text_to_speech") && offered("vision_analyze"));
+}
+/// A computer from before Hexbot kept whether it should be on: the watchdog
+/// takes a running one as on, so it comes back after the next restart, and a
+/// stopped one as turned off.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_watchdog_learns_whether_a_computer_from_before_should_be_on() {
+    use hexbot_core::computers;
+    let h = running_computer().await;
+    let saved = h.path().join("computer.json");
+    let on = || {
+        serde_json::from_str::<Value>(&std::fs::read_to_string(&saved).unwrap()).unwrap()["on"]
+            .clone()
+    };
+    std::fs::write(&saved, r#"{"size":"small"}"#).unwrap();
+    computers::check(h.path()).await;
+    assert_eq!(on(), true);
+    std::fs::write(h.path().join("engine-down"), "").unwrap();
+    computers::check(h.path()).await;
+    assert_eq!(computer_status(h.path()).await["state"], "running");
+    // Stopped before `on` was kept: left off, and not looked at again.
+    assert_eq!(computer_step(h.path(), "stop").await["state"], "stopped");
+    std::fs::write(&saved, r#"{"size":"small"}"#).unwrap();
+    computers::check(h.path()).await;
+    assert_eq!(on(), false);
+    let before = cua_log(h.path()).len();
+    computers::check(h.path()).await;
+    assert_eq!(cua_log(h.path()).len(), before);
 }

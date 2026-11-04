@@ -226,8 +226,17 @@ export interface Bot {
 }
 
 /** The bots' computer, one Cua sandbox per daemon (docs/api.md, "Computer"). */
+/** `repairing`: the daemon brings back a computer lost with its container engine. */
 export type ComputerState =
-  'absent' | 'error' | 'resetting' | 'restarting' | 'running' | 'starting' | 'stopped' | 'stopping'
+  | 'absent'
+  | 'error'
+  | 'repairing'
+  | 'resetting'
+  | 'restarting'
+  | 'running'
+  | 'starting'
+  | 'stopped'
+  | 'stopping'
 
 export type ComputerSize = 'large' | 'medium' | 'small'
 /**
