@@ -1259,3 +1259,48 @@ fn a_package_of_skills_waiting_for_a_key_is_given_to_nobody_until_set_up() {
     );
     skill(true).unwrap();
 }
+
+#[test]
+fn a_package_of_skills_set_up_through_a_bots_own_key_can_be_given_to_that_bot() {
+    let home = setup();
+    call(
+        home.path(),
+        "alice",
+        "hexbot.plugins.install",
+        json!({"name":"notes","skills":[{"name":"notes-sync","content":
+            "---\ndescription: Sync notes.\nprerequisites:\n  env_vars: [HEXBOT_TEST_OWL_NOTES_KEY]\n---\nBody."}]}),
+    )
+    .unwrap();
+    fs::write(
+        home.path().join("profiles/owl/.env"),
+        "HEXBOT_TEST_OWL_NOTES_KEY=value\n",
+    )
+    .unwrap();
+    let listed = call(home.path(), "alice", "hexbot.plugins.list", json!({})).unwrap();
+    let notes = row(&listed, "packages", "notes");
+    assert_eq!(notes["ready"], false);
+    assert_eq!(notes["ready_bots"], json!(["owl"]));
+    let give = |bots: Value| {
+        call(
+            home.path(),
+            "alice",
+            "hexbot.plugins.set_bots",
+            json!({"kind":"package","id":"notes","bots":bots}),
+        )
+    };
+    give(json!([])).unwrap();
+    assert_eq!(give(json!(["owl", "cat"])).unwrap_err().code, 4209);
+    assert_eq!(
+        give(json!(["owl"])).unwrap()["plugin"]["bots"],
+        json!(["owl"])
+    );
+    // A bot asking for itself is checked with its own keys too.
+    give(json!([])).unwrap();
+    plugins::set_for_bot(home.path(), "alice", "package", "notes", "owl", true).unwrap();
+    assert_eq!(
+        plugins::set_for_bot(home.path(), "alice", "package", "notes", "cat", true)
+            .unwrap_err()
+            .code,
+        4209
+    );
+}

@@ -411,6 +411,8 @@ export interface PluginsList {
     kind: 'package'
     name: string
     ready: boolean
+    /** A package of skills alone: the bots it is set up for, as through a key in a bot's own settings. */
+    ready_bots?: string[]
     server: null | PluginServer
     skills: { description: string; name: string }[]
     state: ConnectorState

@@ -58,6 +58,7 @@ export function pluginRows(list: PluginsList): Plugin[] {
       kind: 'package',
       name: row.name,
       ready: row.ready,
+      ready_bots: row.ready_bots,
       server: row.server,
       skills: row.skills,
       state: row.state,
