@@ -18,8 +18,12 @@ const window = (visible: boolean, minimized: boolean) => ({
   isDestroyed: () => false,
   isVisible: () => visible,
   isMinimized: () => minimized,
-  restore: vi.fn(),
-  show: vi.fn(),
+  restore: vi.fn(() => {
+    minimized = false
+  }),
+  show: vi.fn(() => {
+    visible = true
+  }),
   focus: vi.fn(),
   webContents: { send: vi.fn() }
 })
@@ -64,7 +68,7 @@ describe('native reply notifications', () => {
     expect(win.focus).toHaveBeenCalledOnce()
     expect(win.webContents.send).toHaveBeenCalledWith('hexbot:navigate', 'chat')
     // The app showed it, so it says so: macOS sends no show event for that.
-    expect(win.webContents.send).toHaveBeenCalledWith('hexbot:window-shown', expect.any(Boolean))
+    expect(win.webContents.send).toHaveBeenCalledWith('hexbot:window-shown', true)
   })
 
   it('shows a notification about no chat, and a click only brings the window back', () => {
