@@ -1075,7 +1075,11 @@ function ChoiceCard({ approval }: { approval: ApprovalRequest }) {
             size={12}
           />
         </button>
-        {open ? <div className="hex-unfold px-2">{details}</div> : null}
+        {open ? (
+          <div className="hex-unfold px-2">
+            <div>{details}</div>
+          </div>
+        ) : null}
       </div>
     )
   }
