@@ -15,6 +15,7 @@ vi.mock('electron', () => ({
 
 const options = { title: 'Owl', body: 'Reply', sectionId: 'chat', backgroundOnly: true }
 const window = (visible: boolean, minimized: boolean) => ({
+  isDestroyed: () => false,
   isVisible: () => visible,
   isMinimized: () => minimized,
   restore: vi.fn(),
@@ -62,6 +63,8 @@ describe('native reply notifications', () => {
     expect(win.show).toHaveBeenCalledOnce()
     expect(win.focus).toHaveBeenCalledOnce()
     expect(win.webContents.send).toHaveBeenCalledWith('hexbot:navigate', 'chat')
+    // The app showed it, so it says so: macOS sends no show event for that.
+    expect(win.webContents.send).toHaveBeenCalledWith('hexbot:window-shown', expect.any(Boolean))
   })
 
   it('shows a notification about no chat, and a click only brings the window back', () => {
@@ -70,7 +73,7 @@ describe('native reply notifications', () => {
     native.on.mock.calls.find(([event]) => event === 'click')![1]()
     expect(native.show).toHaveBeenCalledOnce()
     expect(win.show).toHaveBeenCalledOnce()
-    expect(win.webContents.send).not.toHaveBeenCalled()
+    expect(win.webContents.send).not.toHaveBeenCalledWith('hexbot:navigate', expect.anything())
   })
 
   it('tells the page when its window is closed, minimized or back', async () => {

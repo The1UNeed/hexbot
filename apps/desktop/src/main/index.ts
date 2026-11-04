@@ -28,7 +28,7 @@ import { hexbotHome } from './backend/paths'
 import { resolveWebDevUrl } from './dev-url'
 import { edition, hasRuntime, requireRuntime } from './edition'
 import { parseDeepLink } from './deep-link'
-import { notify, reportShown } from './notify'
+import { notify, reportShown, sendShown } from './notify'
 import { pair, pairingReply, pairWithGrant, type GrantPairOptions, type PairOptions } from './pair'
 import { installService, serviceStatus, uninstallService } from './service'
 import { createTray } from './tray'
@@ -216,6 +216,7 @@ async function showWindow(): Promise<void> {
   if (window.isMinimized()) window.restore()
   window.show()
   window.focus()
+  sendShown(window)
 }
 function navigate(url: string): void {
   if (lifecycle.exiting) return
