@@ -1082,7 +1082,7 @@ async fn a_failed_computer_is_reported_once_and_never_remade_unattended() {
 /// reports it and leaves it, files and all, for the user or a bot to remake.
 #[cfg(unix)]
 #[tokio::test]
-async fn a_computer_failed_behind_a_stopped_engine_is_not_remade_unattended() {
+async fn a_computer_failed_behind_a_stopped_engine_is_remade_only_when_asked() {
     use hexbot_core::computers;
     let h = running_computer().await;
     std::fs::write(
@@ -1091,15 +1091,34 @@ async fn a_computer_failed_behind_a_stopped_engine_is_not_remade_unattended() {
     )
     .unwrap();
     std::fs::write(h.path().join("engine-down"), "").unwrap();
+    let events = hexbot_core::events::EventHub::new();
+    computers::attach(h.path(), events.clone());
+    let mut changes = events.subscribe();
     let before = cua_log(h.path()).len();
     computers::check(h.path()).await;
     let log = cua_log(h.path())[before..].to_owned();
     assert!(log.contains(r#"{"engine":"start"}"#));
     assert!(!log.contains(r#""rm""#) && !log.contains(r#""create""#));
+    // Open screens show it down at once, not as it was before.
+    let mut last = Value::Null;
+    while let Ok(event) = changes.try_recv() {
+        if event.frame["params"]["type"] == "hexbot.computer.changed" {
+            last = event.frame["params"]["payload"].clone();
+        }
+    }
+    assert_eq!(last["state"], "error", "{last}");
     assert_eq!(
-        computer_status(h.path()).await["error"],
+        last["error"],
         "Docker is back, but the computer failed to start. Turn it on to make a new one."
     );
+    // Turn on, asked for, makes a new one behind the same stopped engine.
+    std::fs::write(h.path().join("engine-down"), "").unwrap();
+    let before = cua_log(h.path()).len();
+    let status = computer_step(h.path(), "start").await;
+    assert_eq!(status["state"], "running", "{status}");
+    let log = cua_log(h.path())[before..].to_owned();
+    assert!(log.contains(r#"{"engine":"start"}"#));
+    assert!(log.contains(r#""rm""#) && log.contains(r#""create""#));
 }
 /// Cua's first answer fails and only the second says the computer failed:
 /// the watchdog still does not make a new one.

@@ -596,6 +596,7 @@ async fn ensure_locked(
     let current = match info(home, cfg, env).await {
         Ok(current) => current,
         Err(error) => {
+            with(home, |c| c.state = Some("error"));
             settle(home, &Err(Error::new(error.code, error.message.clone())));
             return Err(error);
         }
@@ -621,8 +622,10 @@ async fn ensure_locked(
     let mut unfinished = Unfinished { home, armed: true };
     let result = bring_up(home, cfg, env, found, unattended).await;
     forget(home).await;
-    if result.is_ok() {
-        came_up(home);
+    match result {
+        Ok(()) => came_up(home),
+        // Open screens show the computer down, not as it was before.
+        Err(_) => with(home, |c| c.state = Some("error")),
     }
     let result = result.map(|_| "running");
     settle(home, &result);
@@ -644,7 +647,7 @@ async fn bring_up(
             match state(info(home, cfg, env).await?.as_ref()) {
                 "missing" => return Err(removed()),
                 // Made again only when someone asks: it may hold files.
-                "error" => {
+                "error" if unattended => {
                     return Err(Error::new(
                         4211,
                         "Docker is back, but the computer failed to start. Turn it on to make a new one.",
