@@ -1324,11 +1324,8 @@ fn store(home: &Path, owner: &str) -> Result<Value> {
 }
 
 /// Every item in the vault on this daemon, for Vaultwarden's connect to copy.
-pub(crate) fn local_items(home: &Path, owner: &str) -> Result<Vec<Record>> {
-    Ok(local_list(home, owner)?
-        .into_iter()
-        .map(|(_, item)| item)
-        .collect())
+pub(crate) fn local_items(home: &Path, owner: &str) -> Result<Vec<(String, Record)>> {
+    local_list(home, owner)
 }
 
 pub const CHANGES: &[&str] = &[

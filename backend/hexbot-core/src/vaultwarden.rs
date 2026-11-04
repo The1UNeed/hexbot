@@ -39,15 +39,24 @@ const FOLDER: &str = "Hexbot";
 const TIMEOUT: Duration = Duration::from_secs(90);
 /// How stale the CLI's copy of the vault may get before a list syncs.
 const SYNC_AFTER: Duration = Duration::from_secs(30);
-/// Custom fields Hexbot writes; others on an item stay as they are.
-const MANAGED: &[&str] = &[
-    "hexbot.kind",
-    "hexbot.bots",
-    "Variable",
-    "Private key",
-    "Public key",
-    "Passphrase",
-];
+/// Custom fields Hexbot writes for each kind; others on an item stay as
+/// they are.
+fn managed(kind: Kind) -> &'static [&'static str] {
+    match kind {
+        Kind::Login => &["hexbot.kind", "hexbot.bots"],
+        Kind::ApiKey => &["hexbot.kind", "hexbot.bots", "Variable"],
+        Kind::SshKey => &[
+            "hexbot.kind",
+            "hexbot.bots",
+            "Private key",
+            "Public key",
+            "Passphrase",
+        ],
+    }
+}
+/// The id of the item on the daemon an item was copied from at connect, so
+/// a copy tried again skips what already arrived.
+const COPIED_FROM: &str = "hexbot.copied_from";
 /// `bw` says this when its session key is gone or wrong.
 const LOCKED: i64 = 5302;
 
@@ -426,7 +435,11 @@ fn item_of(record: &Record, mut base: Value) -> Value {
         .cloned()
         .unwrap_or_default()
         .into_iter()
-        .filter(|f| !f["name"].as_str().is_some_and(|n| MANAGED.contains(&n)))
+        .filter(|f| {
+            !f["name"]
+                .as_str()
+                .is_some_and(|n| managed(record.kind).contains(&n))
+        })
         .collect::<Vec<_>>();
     let mut add = |name: &str, value: &str, hidden: bool| {
         fields.push(json!({"name": name, "value": value, "type": if hidden { 1 } else { 0 }}));
@@ -582,15 +595,7 @@ pub(crate) fn put(
             vault(home, owner, &["edit", "item", id], Some(&encoded(&item)))?
         }
         None => {
-            let base = json!({
-                "organizationId": null,
-                "collectionIds": null,
-                "folderId": account.folder,
-                "favorite": false,
-                "fields": [],
-                "reprompt": 0,
-            });
-            let item = item_of(record, base);
+            let item = item_of(record, new_item(account));
             vault(home, owner, &["create", "item"], Some(&encoded(&item)))?
         }
     };
@@ -628,6 +633,18 @@ pub(crate) fn forget_in_trash(
         vault(home, owner, &["delete", "item", &id], None)?;
     }
     Ok(())
+}
+
+/// A new item in the Hexbot folder, before Hexbot's fields are written.
+fn new_item(account: &Account) -> Value {
+    json!({
+        "organizationId": null,
+        "collectionIds": null,
+        "folderId": account.folder,
+        "favorite": false,
+        "fields": [],
+        "reprompt": 0,
+    })
 }
 
 /// Moves an item to Vaultwarden's trash, where Bitwarden apps can restore it.
@@ -715,15 +732,27 @@ pub fn connect(home: &Path, owner: &str, p: &Value) -> Result<Value> {
         let mut copied = 0;
         if p["copy"] == true {
             // A copy cut short and tried again skips what already arrived.
-            let same = |a: &Record, b: &Record| {
-                (a.kind, &a.title, &a.url, &a.username) == (b.kind, &b.title, &b.url, &b.username)
-            };
-            let there = list(home, owner, &account)?;
-            for item in passwords::local_items(home, owner)? {
-                if there.iter().any(|(_, saved)| same(saved, &item)) {
+            let there = vault(
+                home,
+                owner,
+                &["list", "items", "--folderid", &account.folder],
+                None,
+            )?;
+            let arrived = there["data"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|item| field(item, COPIED_FROM))
+                .collect::<Vec<_>>();
+            for (from, item) in passwords::local_items(home, owner)? {
+                if arrived.contains(&from) {
                     continue;
                 }
-                put(home, owner, &account, None, &item)?;
+                let mut copy = item_of(&item, new_item(&account));
+                if let Some(fields) = copy["fields"].as_array_mut() {
+                    fields.push(json!({"name": COPIED_FROM, "value": from, "type": 0}));
+                }
+                vault(home, owner, &["create", "item"], Some(&encoded(&copy)))?;
                 copied += 1;
             }
         }

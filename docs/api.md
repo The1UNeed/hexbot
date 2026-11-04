@@ -1385,7 +1385,9 @@ daemon's environment reaches `bw` for a private CA.
   with. Saving keeps fields and URIs a Bitwarden app added; deleting moves the
   item to Vaultwarden's trash.
 - Lists sync with the server at most 30 seconds apart. With `copy`, connect
-  copies every item saved on the daemon into the Hexbot folder.
+  copies every item saved on the daemon into the Hexbot folder, marking each
+  copy with `hexbot.copied_from` (the daemon item's id), so a connect tried
+  again after a partial copy skips what arrived.
 
 The bot tool `hexbot_passwords` is offered to a bot with Computer use, in
 its own chat and its scheduled jobs; rooms and threads between bots never get

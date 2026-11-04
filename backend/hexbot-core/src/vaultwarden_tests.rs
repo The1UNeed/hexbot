@@ -492,6 +492,51 @@ fn a_copy_cut_short_and_tried_again_makes_no_duplicates() {
 }
 
 #[test]
+fn a_copy_skips_only_items_it_copied_itself() {
+    let home = home();
+    let h = home.path();
+    crate::passwords::save(
+        h,
+        "alice",
+        &json!({"kind":"api_key","title":"OpenAI","key":"sk-local"}),
+    )
+    .unwrap();
+    connect_alice(h, json!({})).unwrap();
+    // The folder already has a different key with the same name.
+    crate::passwords::save(
+        h,
+        "alice",
+        &json!({"kind":"api_key","title":"OpenAI","key":"sk-remote"}),
+    )
+    .unwrap();
+    connect_alice(h, json!({"copy":true})).unwrap();
+    let keys = fake(h)["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["login"]["password"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(keys, ["sk-remote", "sk-local"]);
+}
+
+#[test]
+fn saving_a_login_keeps_fields_named_like_another_kinds() {
+    let home = home();
+    let h = home.path();
+    connect_alice(h, json!({})).unwrap();
+    let saved = crate::passwords::save(h, "alice", &json!({"url":"https://x.com","password":"pw"}))
+        .unwrap();
+    edit_fake(h, |state| {
+        state["items"][0]["fields"] = json!([{"name":"Variable","value":"mine","type":0}]);
+    });
+    crate::passwords::save(h, "alice", &json!({"id":saved["id"],"title":"X"})).unwrap();
+    assert_eq!(
+        field(&fake(h)["items"][0], "Variable").as_deref(),
+        Some("mine")
+    );
+}
+
+#[test]
 fn a_steam_code_key_survives_saving_other_fields() {
     let home = home();
     let h = home.path();
