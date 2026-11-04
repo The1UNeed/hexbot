@@ -50,8 +50,9 @@ const MAX_KEY: usize = 16 * 1024;
 /// Variables a key may not take: the shell and ssh need them.
 const RESERVED_VARIABLES: &[&str] = &[
     "BASH_ENV",
-    // The folder variable of the script that runs a command with keys.
+    // Variables of the script that runs a command with keys.
     "d",
+    "hexbot_agent",
     "ENV",
     "HOME",
     "IFS",
