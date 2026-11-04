@@ -172,6 +172,17 @@ const passwordBots = (login: PasswordItem, bots: PluginBot[]) => {
   if (on.length <= 2) return on.map(b => b.display_name).join(' and ')
   return `${on.length} bots`
 }
+/** Where a user's Passwords are, without reading them; a daemon from before Vaultwarden has only its own vault. */
+const passwordVault = async (rpc: Rpc): Promise<{ vault: PasswordVault; local: number }> => {
+  try {
+    return await rpc<{ vault: PasswordVault; local: number }>('hexbot.passwords.vault')
+  } catch (e) {
+    if (!/unknown method|method not found/i.test(e instanceof Error ? e.message : String(e)))
+      throw e
+    const { logins } = await rpc<{ logins: PasswordItem[] }>('hexbot.passwords.list')
+    return { vault: { kind: 'local' }, local: logins.length }
+  }
+}
 /** Signing in to Vaultwarden and copying run one Bitwarden CLI call each, so it may take minutes. */
 const VAULTWARDEN_CONNECT_TIMEOUT_MS = 10 * 60_000
 /** With Vaultwarden, the key the page names is its master password. */
@@ -553,21 +564,27 @@ export function Management({
         data = pluginRows(await rpc<PluginsList>('hexbot.plugins.list')) as unknown as RowData[]
         break
       case 'passwords': {
-        const list = await rpc<{
-          logins: PasswordItem[]
-          store: string | null
-          vault?: PasswordVault
-          error?: string | null
-        }>('hexbot.passwords.list')
-        data = list.logins as unknown as RowData[]
-        detail = { store: list.store, vault: list.vault ?? { kind: 'local' }, error: list.error }
+        // Where the items are comes first and never waits on Vaultwarden,
+        // so a server that doesn't answer still shows, to disconnect.
+        const where = await passwordVault(rpc)
+        try {
+          const list = await rpc<{
+            logins: PasswordItem[]
+            store: string | null
+            error?: string | null
+          }>('hexbot.passwords.list')
+          data = list.logins as unknown as RowData[]
+          detail = { store: list.store, vault: where.vault, error: list.error }
+        } catch (e) {
+          if (where.vault.kind === 'local') throw e
+          data = []
+          detail = { vault: where.vault, error: e instanceof Error ? e.message : String(e) }
+        }
         break
       }
       case 'password-vault': {
-        const list = await rpc<{ logins: PasswordItem[]; vault?: PasswordVault }>(
-          'hexbot.passwords.list'
-        )
-        detail = { vault: list.vault ?? { kind: 'local' }, count: list.logins.length }
+        const where = await passwordVault(rpc)
+        detail = { vault: where.vault, count: where.local }
         fields = { server: '', email: '', password: '', code: '', copy: true }
         break
       }

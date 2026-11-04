@@ -712,20 +712,14 @@ fn write_entry(entry: &mut keepass::db::Entry, item: &Record) {
 
 /// Items outside the recycle bin.
 fn local_list(home: &Path, owner: &str) -> Result<Vec<(String, Record)>> {
-    local_entries(home, owner, false)
-}
-
-/// Items, with those in the recycle bin when `bin`: a KeePass app can
-/// restore them.
-fn local_entries(home: &Path, owner: &str, bin: bool) -> Result<Vec<(String, Record)>> {
     let Some(vault) = load(home, owner)? else {
         return Ok(vec![]);
     };
-    let recycled = vault.db.recycle_bin().map(|g| g.id());
+    let bin = vault.db.recycle_bin().map(|g| g.id());
     Ok(vault
         .db
         .iter_all_entries()
-        .filter(|e| bin || recycled.is_none_or(|r| e.parent().id() != r))
+        .filter(|e| bin.is_none_or(|bin| e.parent().id() != bin))
         .map(|e| (e.id().uuid().to_string(), record_of(&e)))
         .collect())
 }
@@ -1174,9 +1168,21 @@ pub fn forget_bot(home: &Path, bot: &str) -> Result<()> {
 fn forget_in(home: &Path, owner: &str, bot: &str) -> Result<()> {
     let _lock = lock();
     // The vault on the daemon, recycle bin included, which comes back if
-    // Vaultwarden is disconnected.
-    for (id, item) in without(local_entries(home, owner, true)?, bot) {
-        local_put(home, owner, Some(&id), &item)?;
+    // Vaultwarden is disconnected: read and saved once.
+    if let Some(mut vault) = load(home, owner)? {
+        let mut changed = false;
+        vault.db.foreach_entry_mut(|mut entry| {
+            if let Some(bots) = bots_of(&entry)
+                && bots.iter().any(|b| b == bot)
+            {
+                let kept = bots.into_iter().filter(|b| b != bot).collect::<Vec<_>>();
+                set_custom(&mut entry, BOTS, Some(json!(kept).to_string()));
+                changed = true;
+            }
+        });
+        if changed {
+            persist(home, owner, &vault)?;
+        }
     }
     if let Backend::Vaultwarden(account) = backend(home, owner)? {
         for (id, item) in without(crate::vaultwarden::list(home, owner, &account)?, bot) {
@@ -1367,6 +1373,13 @@ pub fn call(home: &Path, owner: &str, method: &str, p: &Value) -> Option<Result<
                     "error": error,
                 }))
             }
+            // Where the items are, without reading them or waiting on the
+            // lock: a Vaultwarden that doesn't answer still shows, so it can
+            // be disconnected. `local` counts the items saved on the daemon.
+            "hexbot.passwords.vault" => Ok(json!({
+                "vault": crate::vaultwarden::status(home, owner)?,
+                "local": local_list(home, owner)?.len(),
+            })),
             "hexbot.passwords.save" => Ok(json!({"login": save(home, owner, p)?})),
             "hexbot.passwords.set_bots" => {
                 let id = common::required(p, "id")?;

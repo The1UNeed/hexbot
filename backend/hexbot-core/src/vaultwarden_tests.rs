@@ -338,6 +338,13 @@ fn an_unreachable_vaultwarden_still_shows_so_it_can_be_disconnected() {
     assert_eq!(listed["vault"]["kind"], "vaultwarden");
     assert!(listed["error"].as_str().unwrap().contains("FetchError"));
     assert_eq!(listed["logins"], json!([]));
+    // Where they are answers without asking the server at all.
+    let calls = fake(h)["calls"].as_array().unwrap().len();
+    let vault = crate::passwords::call(h, "alice", "hexbot.passwords.vault", &json!({}))
+        .unwrap()
+        .unwrap();
+    assert_eq!(vault["vault"]["kind"], "vaultwarden");
+    assert_eq!(fake(h)["calls"].as_array().unwrap().len(), calls);
     crate::passwords::call(h, "alice", "hexbot.passwords.disconnect", &json!({}))
         .unwrap()
         .unwrap();

@@ -1355,6 +1355,10 @@ Deleting a bot takes it off every list; the bot's name stays reserved until that
   `{vault, copied}` makes a Vaultwarden (or any Bitwarden-compatible server)
   the user's store; see below. 4207 means the account uses two-step login:
   send the authenticator `code` too. 5301 means the Bitwarden CLI is missing.
+- `hexbot.passwords.vault {}` → `{vault, local}` says where the items are
+  without reading them or waiting on another passwords call, so a Vaultwarden
+  that doesn't answer can still be disconnected. `local` counts the items
+  saved on the daemon.
 - `hexbot.passwords.disconnect {}` → `{vault}` signs out and goes back to the
   vault on the daemon, which connecting left as it was. Nothing in
   Vaultwarden is deleted.
