@@ -40,6 +40,8 @@ export {
   ChoiceRow,
   Group,
   type GroupProps,
+  InGroup,
+  PageLook,
   Row,
   type RowProps,
   SwitchRow,

@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
+import { Ionicons } from '@expo/vector-icons'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { Linking, StyleSheet, View } from 'react-native'
 import {
   Banner,
@@ -9,10 +10,13 @@ import {
   Field,
   Form,
   Group,
+  type IconName,
   Layer,
+  PageLook,
   radius,
   Row,
-  Segmented,
+  formatAgo,
+  type SheetAction,
   SwitchRow,
   Text,
   useTheme
@@ -46,6 +50,7 @@ export type Panel = {
     | 'activity'
     | 'bot'
     | 'bot-create'
+    | 'computer'
     | 'connect'
     | 'connector'
     | 'connectors'
@@ -152,39 +157,162 @@ const PASSWORD_STORE_TEXT: Record<string, string> = {
   locked: "Hexbot can't read the vault's key. Unlock the keychain on the daemon's computer.",
   secret_service: "The vault's key is in the keyring of the daemon's computer."
 }
-/** How big the bots' computer is; a new size applies when it is reset. Every bot has it. */
-function ComputerSize({ mobile }: { mobile: ReturnType<typeof useMobile> }) {
+const COMPUTER_STATE: Record<string, string> = {
+  absent: 'Made the first time a bot needs it',
+  error: 'Stopped with an error',
+  repairing: 'Repairing…',
+  resetting: 'Resetting…',
+  restarting: 'Restarting…',
+  running: 'On',
+  starting: 'Starting…',
+  stopped: 'Off',
+  stopping: 'Turning off…'
+}
+const COMPUTER_BUSY = ['repairing', 'resetting', 'restarting', 'starting', 'stopping']
+/** What bots do on their computer, as Settings, Computer use says on the web. */
+const COMPUTER_USES: { title: string; description: string; icon: IconName }[] = [
+  {
+    title: 'Code execution',
+    description: 'Run scripts and install the programs a job needs, in its terminal.',
+    icon: 'code-slash-outline'
+  },
+  {
+    title: 'Browser',
+    description: 'Open pages and work through them in Chrome.',
+    icon: 'globe-outline'
+  },
+  {
+    title: 'Desktop',
+    description: 'See the screen, click and type in its apps. You can watch and take over.',
+    icon: 'browsers-outline'
+  }
+]
+/** Settings, Manuals, Computer use: the bots' one shared computer, its size and its power. */
+function ComputerUse({ mobile }: { mobile: ReturnType<typeof useMobile> }) {
+  const theme = useTheme()
   const status = mobile.computer
   const [error, setError] = useState<string | null>(null)
-  useEffect(() => {
-    void mobile.computerCall().catch((e: unknown) => setError(String(e)))
-  }, [])
-  if (!status?.sizes) return error ? <Text tone="danger">{error}</Text> : null
+  const call = (method?: string, params?: Record<string, unknown>) => {
+    setError(null)
+    void mobile.computerCall(method, params).catch((e: unknown) => setError(String(e)))
+  }
+  useEffect(() => call(), [])
+  const offline = mobile.connection !== 'connected'
+  const busy = !!status && COMPUTER_BUSY.includes(status.state)
+  const running = status?.state === 'running'
+  if (!status)
+    return error ? <Banner message={error} tone="danger" testID="computer-error" /> : null
   return (
-    <Group
-      title="Computer use"
-      footer={
-        status.state === 'absent'
-          ? 'Every bot runs code, browses and uses apps on it. Used when the computer is made.'
-          : "Every bot runs code, browses and uses apps on it. A new size applies after Reset, on the bots' computer card."
-      }
-    >
-      {status.sizes.map(size => (
-        <ChoiceRow
-          key={size.name}
-          title={`${size.name[0]!.toUpperCase()}${size.name.slice(1)}`}
-          subtitle={`${size.cpu} CPUs, ${size.memory_gb} GB`}
-          selected={status.size === size.name}
-          disabled={mobile.connection !== 'connected'}
-          testID={`computer-size-${size.name}`}
-          onPress={() =>
-            void mobile
-              .computerCall('hexbot.computer.configure', { size: size.name })
-              .catch((e: unknown) => setError(String(e)))
+    <>
+      {error || status.error ? (
+        <Banner message={error ?? String(status.error)} tone="danger" testID="computer-error" />
+      ) : null}
+      {status.available === false ? (
+        <Group title="Set up">
+          <Row
+            title="Your bots need Cua for their computer"
+            subtitle="Install Cua on the daemon's computer with uv tool install cua, and start Docker."
+            subtitleLines={4}
+            testID="computer-setup"
+          />
+        </Group>
+      ) : (
+        <Group title="Computer">
+          <Row
+            title="Status"
+            meta={COMPUTER_STATE[status.state] ?? status.state}
+            subtitle={
+              status.state === 'starting'
+                ? 'The first start downloads the computer, a few GB.'
+                : "Open a chat's computer button to watch it or take control."
+            }
+            subtitleLines={3}
+            testID="computer-status"
+            trailing={
+              <View style={styles.controls}>
+                {running ? (
+                  <>
+                    <Button
+                      disabled={busy || offline}
+                      label="Restart"
+                      onPress={() => call('hexbot.computer.restart')}
+                      size="small"
+                      testID="computer-restart"
+                      variant="secondary"
+                    />
+                    <Button
+                      disabled={busy || offline}
+                      label="Turn off"
+                      onPress={() => call('hexbot.computer.stop')}
+                      size="small"
+                      testID="computer-stop"
+                      variant="secondary"
+                    />
+                  </>
+                ) : (
+                  <Button
+                    busy={busy}
+                    disabled={busy || offline}
+                    label="Turn on"
+                    onPress={() => call('hexbot.computer.start')}
+                    size="small"
+                    testID="computer-start"
+                  />
+                )}
+              </View>
+            }
+          />
+          <Row
+            destructive
+            disabled={busy || offline || status.state === 'absent'}
+            onPress={() =>
+              confirm(
+                'Reset',
+                "Everything on your bots' computer is erased, for every bot, and they get a fresh one.",
+                () => call('hexbot.computer.reset')
+              )
+            }
+            subtitle="Erase it and start fresh, for every bot."
+            testID="computer-reset"
+            title="Reset"
+          />
+        </Group>
+      )}
+      {status.available !== false && status.sizes ? (
+        <Group
+          title="Size"
+          footer={
+            status.state === 'absent'
+              ? 'Used when the computer is made.'
+              : 'A new size applies after Reset.'
           }
-        />
-      ))}
-    </Group>
+        >
+          {status.sizes.map(size => (
+            <ChoiceRow
+              key={size.name}
+              title={`${size.name[0]!.toUpperCase()}${size.name.slice(1)}`}
+              subtitle={`${size.cpu} CPUs, ${size.memory_gb} GB`}
+              selected={status.size === size.name}
+              disabled={offline}
+              testID={`computer-size-${size.name}`}
+              onPress={() => call('hexbot.computer.configure', { size: size.name })}
+            />
+          ))}
+        </Group>
+      ) : null}
+      <Group title="What your bots do there" separatorInset={48}>
+        {COMPUTER_USES.map(use => (
+          <Row
+            key={use.title}
+            leading={<Ionicons color={theme.muted} name={use.icon} size={20} />}
+            subtitle={use.description}
+            subtitleLines={3}
+            testID={`computer-use-${use.title.toLowerCase().replace(/ /g, '-')}`}
+            title={use.title}
+          />
+        ))}
+      </Group>
+    </>
   )
 }
 export function Management({
@@ -194,7 +322,9 @@ export function Management({
   onNavigate,
   mobile,
   onSaved,
-  onOpenRoom
+  onOpenRoom,
+  frame,
+  active = true
 }: {
   panel: Panel | null
   onClose: () => void
@@ -205,6 +335,13 @@ export function Management({
   mobile: ReturnType<typeof useMobile>
   onSaved?: () => void
   onOpenRoom?: (room: Room) => void
+  /**
+   * Draws the page in place of a front card: on iOS the page is pushed on
+   * the system's navigation stack, which puts its title and action in the bar.
+   */
+  frame?: (page: { title: string; action?: SheetAction; children: ReactNode }) => ReactNode
+  /** The page is on top of the stack; leave out for a front card. */
+  active?: boolean
 }) {
   const theme = useTheme()
   const [rows, setRows] = useState<RowData[]>([])
@@ -269,7 +406,8 @@ export function Management({
       if (current === epoch.current) setBusy(false)
     }
   }
-  const load = async () => {
+  /** Reads the page's data; `keep` leaves what was typed but not saved. */
+  const load = async (keep = false) => {
     const current = epoch.current
     let data: RowData[] = []
     let fields: Values = {}
@@ -515,7 +653,7 @@ export function Management({
       setRows(data)
       // A plugin card reloads after each action; keep values typed but not
       // yet saved. It opens empty, and Save values clears them itself.
-      if (kind !== 'plugin') setValues(fields)
+      if (kind !== 'plugin' && !keep) setValues(fields)
       setExtra(detail)
     }
   }
@@ -545,6 +683,18 @@ export function Management({
     }
     // A panel is a snapshot; changing it loads a fresh form.
   }, [requested])
+  // A page on the stack stays while one is pushed over it, so it reads again
+  // when it is back on top: a provider just connected shows as connected.
+  const wasActive = useRef(active)
+  useEffect(() => {
+    const back = active && !wasActive.current
+    wasActive.current = active
+    if (!back || !requested || panelLoading) return
+    const current = epoch.current
+    void load(true).catch(e => {
+      if (current === epoch.current) setError(e instanceof Error ? e.message : String(e))
+    })
+  }, [active])
   // A heartbeat starts or ends, or the bot changes its checklist, while the card is open.
   useEffect(() => {
     if (kind !== 'heartbeat' || panelLoading) return
@@ -583,6 +733,16 @@ export function Management({
       multiline={multiline}
       hint={hint}
       secureTextEntry={secret}
+      // An empty row still reads as a field, as the desktop's placeholders do.
+      placeholder={
+        /budget|turns_per/.test(key)
+          ? kind === 'room'
+            ? 'Daemon setting'
+            : 'No limit'
+          : kind === 'settings'
+            ? 'Not set'
+            : undefined
+      }
       autoCapitalize="none"
       autoCorrect={!secret && multiline}
       maxLength={maxLength}
@@ -638,15 +798,17 @@ export function Management({
     const options = modes.filter(m => inherit || m.id !== 'inherit')
     const selected = str(values[key]) || (inherit ? 'inherit' : 'smart')
     return (
-      <Group title="Approvals" footer={modeHelp[selected]}>
-        <View style={styles.segment}>
-          <Segmented
-            onChange={value => set(key, value)}
-            options={options.map(m => ({ key: m.id, label: m.label }))}
-            selected={selected}
-            testID="mode"
+      <Group title="Approvals">
+        {options.map(m => (
+          <ChoiceRow
+            key={m.id}
+            title={m.label}
+            subtitle={modeHelp[m.id]}
+            selected={selected === m.id}
+            onPress={() => set(key, m.id)}
+            testID={`mode-${m.id}`}
           />
-        </View>
+        ))}
       </Group>
     )
   }
@@ -680,32 +842,21 @@ export function Management({
         <>
           {chooseMode('approval_mode', false)}
           <Group title="Models" footer="Provider/model, such as anthropic/claude-sonnet-5.">
-            <View style={styles.inset}>
-              {field('default_model', 'Default for new bots')}
-              {field('fallback_model', 'Fallback when a provider fails')}
-            </View>
+            {field('default_model', 'Default for new bots')}
+            {field('fallback_model', 'Fallback when a provider fails')}
           </Group>
           {field('workspace_dir', 'Workspace on the daemon')}
           <Group title="Budgets" footer="Leave a budget empty for no limit.">
-            <View style={styles.inset}>
-              {field('bot_daily_token_budget', 'Daily tokens for each bot')}
-              {field('room_bot_turns_per_human_turn', 'Bot replies per room message')}
-              {field('room_budget_tokens_per_human_turn', 'Tokens per room message')}
-            </View>
+            {field('bot_daily_token_budget', 'Daily tokens for each bot')}
+            {field('room_bot_turns_per_human_turn', 'Bot replies per room message')}
+            {field('room_budget_tokens_per_human_turn', 'Tokens per room message')}
           </Group>
           <Group
             title="Dreaming"
             footer="Each night, bots fold the day's conversations into their memory."
           >
             {toggle('dream_enabled', 'Dreaming')}
-            <View style={styles.inset}>
-              {field(
-                'dream_time',
-                'Dream time',
-                false,
-                '24-hour time on the daemon, such as 03:00'
-              )}
-            </View>
+            {field('dream_time', 'Dream time', false, '24-hour time on the daemon, such as 03:00')}
           </Group>
           {typeof mobile.settings?.heartbeat_enabled === 'boolean' ? (
             <Group
@@ -715,7 +866,6 @@ export function Management({
               {toggle('heartbeat_enabled', 'Heartbeat')}
             </Group>
           ) : null}
-          <ComputerSize mobile={mobile} />
           {typeof mobile.settings?.usage_data === 'boolean' ? (
             <Group
               title="Privacy"
@@ -726,6 +876,9 @@ export function Management({
           ) : null}
         </>
       )
+      break
+    case 'computer':
+      content = <ComputerUse mobile={mobile} />
       break
     case 'bot-create':
     case 'bot':
@@ -787,7 +940,7 @@ export function Management({
                       onNavigate({ kind: 'bot', bot: result.bot, data: { draft: values } })
                     })
                   }
-                  style={styles.smallButton}
+                  size="small"
                   testID="action-choose-bot-picture"
                   variant="secondary"
                 />
@@ -804,7 +957,7 @@ export function Management({
                         onNavigate({ kind: 'bot', bot: result.bot, data: { draft: values } })
                       })
                     }
-                    style={styles.smallButton}
+                    size="small"
                     testID="action-use-generated-face"
                     variant="plain"
                   />
@@ -816,7 +969,7 @@ export function Management({
               </Text>
             )}
           </View>
-          <View style={styles.stack}>
+          <Group title="Details">
             {!bot
               ? field('name', 'Bot name', false, 'Lowercase letters, numbers and hyphens.')
               : null}
@@ -830,7 +983,7 @@ export function Management({
               false,
               400
             )}
-          </View>
+          </Group>
           {bot ? (
             <FingerprintCards
               disabled={busy || mobile.connection !== 'connected'}
@@ -1119,10 +1272,8 @@ export function Management({
             <>
               {chooseMode('approval_mode')}
               <Group title="Budgets" footer="Leave a budget empty to use the daemon setting.">
-                <View style={styles.inset}>
-                  {field('bot_turns_per_human_turn', 'Bot replies per message')}
-                  {field('budget_tokens_per_human_turn', 'Tokens per message')}
-                </View>
+                {field('bot_turns_per_human_turn', 'Bot replies per message')}
+                {field('budget_tokens_per_human_turn', 'Tokens per message')}
               </Group>
               <Group>
                 {action(room.archived_at ? 'Restore room' : 'Archive room', async () => {
@@ -1150,22 +1301,32 @@ export function Management({
       )
       break
     }
-    case 'providers':
+    case 'providers': {
+      const provider = (p: RowData) => (
+        <Row
+          key={str(p.id)}
+          title={str(p.label)}
+          subtitle={p.configured ? 'Connected' : 'Not connected'}
+          testID={`provider-${p.id}`}
+          chevron
+          onPress={() => navigate('provider', p)}
+        />
+      )
+      // Connected ones first, under their own label, as on the desktop.
+      const connected = rows.filter(p => p.configured === true)
+      const rest = rows.filter(p => p.configured !== true)
       content = (
-        <Group>
-          {rows.map(p => (
-            <Row
-              key={str(p.id)}
-              title={str(p.label)}
-              subtitle={p.configured ? 'Connected' : 'Not connected'}
-              testID={`provider-${p.id}`}
-              chevron
-              onPress={() => navigate('provider', p)}
-            />
-          ))}
-        </Group>
+        <>
+          {connected.length ? <Group title="Connected">{connected.map(provider)}</Group> : null}
+          {rest.length ? (
+            <Group title={connected.length ? 'More providers' : 'All providers'}>
+              {rest.map(provider)}
+            </Group>
+          ) : null}
+        </>
       )
       break
+    }
     case 'provider': {
       const provider = str(panel?.data?.id)
       content = (
@@ -1259,18 +1420,38 @@ export function Management({
           {rows.map(d => (
             <Row
               key={str(d.id)}
+              leading={
+                <View
+                  style={[
+                    styles.dot,
+                    { backgroundColor: d.current ? theme.success : theme.hairline }
+                  ]}
+                />
+              }
               title={str(d.name)}
-              subtitle={d.current ? 'This device' : str(d.platform)}
+              subtitle={`${d.current ? 'This device' : str(d.platform)} · Last seen ${formatAgo(
+                typeof d.last_seen_at === 'number'
+                  ? d.last_seen_at * (d.last_seen_at < 10_000_000_000 ? 1000 : 1)
+                  : null
+              )}`}
               testID={`device-${d.id}`}
-              destructive
-              onPress={() =>
-                confirm(
-                  'Revoke device',
-                  d.current
-                    ? 'This phone will disconnect and need pairing again.'
-                    : 'This device will need pairing again.',
-                  () => void run(() => rpc('hexbot.devices.revoke', { id: d.id }))
-                )
+              trailing={
+                <Button
+                  disabled={busy || mobile.connection !== 'connected'}
+                  label="Revoke"
+                  onPress={() =>
+                    confirm(
+                      'Revoke device',
+                      d.current
+                        ? 'This phone will disconnect and need pairing again.'
+                        : 'This device will need pairing again.',
+                      () => void run(() => rpc('hexbot.devices.revoke', { id: d.id }))
+                    )
+                  }
+                  size="small"
+                  testID={`device-revoke-${d.id}`}
+                  variant="destructive"
+                />
               }
             />
           ))}
@@ -1478,9 +1659,6 @@ export function Management({
       )
       content = (
         <>
-          <Text tone="muted">
-            Everything your bots can use beyond their own tools. Open one to choose its bots.
-          </Text>
           <Group
             title="Connectors"
             footer="Services Hexbot supports. Keys are stored once on this daemon."
@@ -1559,26 +1737,22 @@ export function Management({
               title={valueKind === 'headers' ? 'Headers' : 'Environment'}
               footer={server.url ?? [server.command, ...(server.args ?? [])].join(' ')}
             >
-              <View style={styles.inset}>
-                {values_.map(v =>
-                  field(
-                    `value:${v.key}`,
-                    v.key,
-                    false,
-                    v.set
-                      ? `Saved${v.hint ? ` ${v.hint}` : ''}. Leave empty to keep it.`
-                      : 'Not set',
-                    true
-                  )
-                )}
-                {field(
-                  'new_key',
-                  valueKind === 'headers' ? 'New header' : 'New environment value',
+              {values_.map(v =>
+                field(
+                  `value:${v.key}`,
+                  v.key,
                   false,
-                  valueKind === 'headers' ? 'Such as Authorization' : 'Such as API_TOKEN'
-                )}
-                {field('new_value', 'Value', false, undefined, true)}
-              </View>
+                  v.set ? `Saved${v.hint ? ` ${v.hint}` : ''}. Leave empty to keep it.` : 'Not set',
+                  true
+                )
+              )}
+              {field(
+                'new_key',
+                valueKind === 'headers' ? 'New header' : 'New environment value',
+                false,
+                valueKind === 'headers' ? 'Such as Authorization' : 'Such as API_TOKEN'
+              )}
+              {field('new_value', 'Value', false, undefined, true)}
               {action('Save values', async () => {
                 const change: Record<string, string> = Object.fromEntries(
                   values_
@@ -1668,10 +1842,6 @@ export function Management({
       const store = str(extra.store)
       content = (
         <>
-          <Text tone="muted">
-            Sign-ins your bots use for you. A bot has Hexbot type them into a page and never sees
-            them.
-          </Text>
           <Group footer={store ? PASSWORD_STORE_TEXT[store] : undefined}>
             {row('Add password', 'password-create')}
             {logins.map(login => (
@@ -2048,9 +2218,24 @@ export function Management({
     case 'updates':
       content = (
         <>
-          <Group>
-            <Row title={str(extra.status)} subtitle={str(extra.message)} testID="update-state" />
-            <Row title="Current version" meta={str(extra.version)} testID="update-version" />
+          <Group
+            footer={
+              extra.capability
+                ? undefined
+                : 'This daemon runs from source. Update its checkout on its computer.'
+            }
+          >
+            <Row
+              title="Status"
+              meta={str(extra.status).replace(/^./, c => c.toUpperCase())}
+              subtitle={str(extra.message)}
+              testID="update-state"
+            />
+            <Row
+              title="Current version"
+              meta={str(extra.version) || mobile.info?.version}
+              testID="update-version"
+            />
           </Group>
           {extra.capability ? (
             <>
@@ -2062,11 +2247,7 @@ export function Management({
                 'The daemon will install this released version and restart. Running work may be interrupted.'
               )}
             </>
-          ) : (
-            <Text tone="muted">
-              This daemon runs from source. Update its checkout on its computer.
-            </Text>
-          )}
+          ) : null}
         </>
       )
       break
@@ -2208,6 +2389,7 @@ export function Management({
   }
   const titles: Record<string, string> = {
     settings: 'Daemon settings',
+    computer: 'Computer use',
     'bot-create': 'New bot',
     bot: bot ? `Edit ${bot.display_name}` : 'Edit bot',
     memory: 'Memory',
@@ -2218,9 +2400,9 @@ export function Management({
     rooms: 'All rooms',
     'room-create': 'New room',
     room: room?.name ?? 'Room',
-    providers: 'Models',
+    providers: 'Providers',
     provider: str(panel?.data?.label),
-    network: 'Network and pairing',
+    network: 'Network',
     devices: 'Paired devices',
     usage: 'Usage',
     connectors: 'Connectors',
@@ -2243,6 +2425,27 @@ export function Management({
     'job-create': 'New scheduled job',
     activity: 'Bot activity'
   }
+  /** One line under the title saying what the page is for, as on the desktop. */
+  const descriptions: Record<string, string> = {
+    about: 'About you goes to every bot you own. Each bot keeps its own memory in its profile.',
+    activity: 'Messages your bots sent each other.',
+    computer:
+      'Your bots share one computer of their own: a Linux desktop, separate from yours. Every bot has it, and runs code, browses and uses apps there.',
+    connect:
+      'Reach this daemon from outside your network. Chat traffic never passes through Connect.',
+    devices: 'Phones, browsers and computers that can use this daemon.',
+    network: 'Pair devices with this daemon over your local network.',
+    passwords:
+      "Sign-ins your bots use for you. A bot has Hexbot type them into a page and never sees them. They're kept in a KeePass vault on this daemon.",
+    plugins:
+      'Connectors, MCP servers and skills your bots can use. Choose which bots get each one.',
+    providers:
+      'The model providers your bots can use. Usage is billed by them; Hexbot includes no credits.',
+    settings:
+      'Choose when Hexbot asks before a bot acts, and set the defaults, budgets and daily work of every bot.',
+    updates: 'Version and release status for this daemon.',
+    usage: 'Token use reported by this daemon.'
+  }
   const empty: Record<string, string> = {
     devices: 'No paired devices.',
     skills: 'No skills yet.',
@@ -2252,25 +2455,24 @@ export function Management({
     heartbeat: 'No heartbeats yet.',
     rooms: 'No rooms yet.'
   }
-  return (
-    <Layer
-      visible={!!requested}
-      onClose={onClose}
-      onBack={onBack}
-      title={titles[kind] || 'Settings'}
-      testID="management-sheet"
-      action={
-        save && !panelLoading
-          ? {
-              label: kind === 'bot-create' ? 'Create' : 'Save',
-              busy,
-              disabled: mobile.connection !== 'connected',
-              onPress: () => void run(save!, true)
-            }
-          : undefined
-      }
-    >
+  const title = titles[kind] || 'Settings'
+  const sheetAction: SheetAction | undefined =
+    save && !panelLoading
+      ? {
+          label: kind === 'bot-create' ? 'Create' : 'Save',
+          busy,
+          disabled: mobile.connection !== 'connected',
+          onPress: () => void run(save!, true)
+        }
+      : undefined
+  const body = (
+    <PageLook.Provider value>
       <Form>
+        {descriptions[kind] ? (
+          <Text style={styles.description} tone="muted" variant="callout">
+            {descriptions[kind]}
+          </Text>
+        ) : null}
         {error ? <Banner message={error} tone="danger" testID="management-error" /> : null}
         {notice ? (
           <Text selectable tone="muted" testID="management-notice">
@@ -2289,11 +2491,27 @@ export function Management({
         ) : null}
         {busy ? <Text tone="muted">Working…</Text> : null}
       </Form>
+    </PageLook.Provider>
+  )
+  if (frame) return frame({ action: sheetAction, children: body, title })
+  return (
+    <Layer
+      visible={!!requested}
+      onClose={onClose}
+      onBack={onBack}
+      title={title}
+      testID="management-sheet"
+      action={sheetAction}
+    >
+      {body}
     </Layer>
   )
 }
 
 const styles = StyleSheet.create({
+  controls: { flexDirection: 'row', gap: 6 },
+  description: { marginBottom: -8, marginTop: 4, paddingHorizontal: 4 },
+  dot: { borderRadius: 4, height: 8, width: 8 },
   identity: { alignItems: 'center', borderRadius: radius.panel, gap: 12, padding: 18 },
   inset: { gap: 14, paddingHorizontal: 16, paddingVertical: 14 },
   pictureActions: {
@@ -2302,8 +2520,5 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 4,
     justifyContent: 'center'
-  },
-  segment: { padding: 6 },
-  smallButton: { minHeight: 40, paddingHorizontal: 16 },
-  stack: { gap: 16 }
+  }
 })

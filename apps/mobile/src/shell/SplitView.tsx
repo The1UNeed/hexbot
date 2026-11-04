@@ -2,7 +2,9 @@ import {
   Button,
   Host,
   Menu,
+  NavigationDestination,
   NavigationSplitView,
+  NavigationStack,
   type NavigationSplitViewVisibility,
   RNHostView,
   Toolbar,
@@ -10,13 +12,16 @@ import {
 } from '@expo/ui/swift-ui'
 import {
   accessibilityLabel,
+  disabled,
   ignoreSafeArea,
+  onAppear,
+  onDisappear,
   navigationBarTitleDisplayMode,
   navigationTitle,
   tint
 } from '@expo/ui/swift-ui/modifiers'
-import { type ReactElement, useState } from 'react'
-import { StyleSheet, View } from 'react-native'
+import { type ReactElement, type ReactNode, useEffect, useId, useRef, useState } from 'react'
+import { ScrollView, StyleSheet, View } from 'react-native'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 
 import { type AppScreens, useAppScreens } from '../../App'
@@ -28,7 +33,14 @@ import {
   DaemonSwitch,
   HomeScreen
 } from '../screens'
-import { EmptyState, SystemAvoidsKeyboard, type Theme, useCovered, useTheme } from '../ui'
+import {
+  EmptyState,
+  type SheetAction,
+  SystemAvoidsKeyboard,
+  type Theme,
+  useCovered,
+  useTheme
+} from '../ui'
 
 /**
  * The app on iOS: SwiftUI's split view, like Messages on iPad. The sidebar is
@@ -46,6 +58,31 @@ export function SplitView() {
   const theme = useTheme()
   // Both columns where there is room, like Messages; the sidebar button hides it.
   const [columns, setColumns] = useState<NavigationSplitViewVisibility>('all')
+  // Callbacks read the latest state: the native side may hold older copies.
+  const latest = useRef(app)
+  latest.current = app
+  /**
+   * Back to the list. Collapsed, SwiftUI folds the detail's stack into its
+   * own, and its reports of the column it shows go wrong once a page has
+   * been pushed and popped there. So the views beside the list count
+   * themselves on and off the screen, and when none is on it for a moment
+   * the person went back to the list.
+   */
+  const onScreen = useRef(new Set<string>())
+  const check = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const settle = () => {
+    if (check.current) clearTimeout(check.current)
+    check.current = setTimeout(() => {
+      check.current = null
+      const now = latest.current
+      if (!onScreen.current.size && (now.selected || now.panels.length)) now.select(null)
+    }, 400)
+  }
+  const shown: Shown = (id, on) => {
+    if (on) onScreen.current.add(id)
+    else onScreen.current.delete(id)
+    settle()
+  }
 
   return (
     <Host colorScheme={theme.scheme} ignoreSafeArea="keyboard" style={styles.fill}>
@@ -53,15 +90,15 @@ export function SplitView() {
         columnVisibility={columns}
         onColumnVisibilityChange={setColumns}
         onPreferredCompactColumnChange={column => {
-          if (column === 'sidebar') app.select(null)
+          if (column === 'sidebar') settle()
         }}
-        preferredCompactColumn={app.selected ? 'detail' : 'sidebar'}
+        preferredCompactColumn={app.selected || app.panels.length ? 'detail' : 'sidebar'}
       >
         <NavigationSplitView.Sidebar>
           <Sidebar app={app} />
         </NavigationSplitView.Sidebar>
         <NavigationSplitView.Detail>
-          <Detail app={app} theme={theme} />
+          <Detail app={app} onShown={shown} theme={theme} />
         </NavigationSplitView.Detail>
       </NavigationSplitView>
     </Host>
@@ -143,9 +180,104 @@ function Sidebar({ app }: { app: AppScreens }) {
   )
 }
 
-/** What the sidebar chose, with its title and buttons in the system's bar. */
-function Detail({ app, theme }: { app: AppScreens; theme: Theme }) {
+/**
+ * What the sidebar chose, and the pages opened from it. Settings areas, a
+ * bot's profile and a room's settings push on the system's stack, as in the
+ * iOS Settings app: native back, swipe back, their title and Save in the bar.
+ * Opened from the list with nothing beside it, the first page is the root.
+ */
+function Detail({ app, onShown, theme }: { app: AppScreens; onShown: Shown; theme: Theme }) {
+  const hasView = !!app.selected
+  // Without a chat, Settings or Bots & jobs, the first page is the root.
+  const first = hasView ? 0 : 1
+  const pushed = app.panels.slice(first)
+  const path = pushed.map((panel, i) => `${i + first}-${panel.kind}`)
+  const current = useRef({ first, path })
+  current.current = { first, path }
+
+  return (
+    <NavigationStack
+      onPathChange={next => {
+        // Read through a ref: the native side may hold an older copy of this callback.
+        const { first: base, path: shown } = current.current
+        if (next.length < shown.length) app.keepPanels(base + next.length)
+      }}
+      path={path}
+    >
+      <Root app={app} onShown={onShown} theme={theme} />
+      {pushed.map((panel, i) => (
+        <NavigationDestination key={path[i]} value={path[i]!}>
+          {app.renderPanel(i + first, page => (
+            <Page {...page} onShown={onShown} />
+          ))}
+        </NavigationDestination>
+      ))}
+    </NavigationStack>
+  )
+}
+
+/**
+ * One page on the stack: Hexbot's own content in the column, its title and
+ * its confirming action, such as Save, in the system's bar.
+ */
+function Page({
+  action,
+  children,
+  onShown,
+  title
+}: {
+  title: string
+  action?: SheetAction
+  children: ReactNode
+  onShown: Shown
+}) {
+  const theme = useTheme()
   const covered = useCovered()
+  const visibility = useOnScreen(onShown)
+
+  return (
+    <Toolbar
+      modifiers={[
+        navigationTitle(title),
+        navigationBarTitleDisplayMode('inline'),
+        ignoreSafeArea({ edges: 'bottom', regions: covered ? 'all' : 'container' }),
+        ...visibility
+      ]}
+    >
+      <Column>
+        <View style={[styles.fill, { backgroundColor: theme.grouped }]} testID="management-page">
+          <ScrollView
+            contentContainerStyle={styles.page}
+            contentInsetAdjustmentBehavior="automatic"
+            keyboardDismissMode="interactive"
+            keyboardShouldPersistTaps="handled"
+          >
+            <View style={styles.measure}>{children}</View>
+          </ScrollView>
+        </View>
+      </Column>
+      <Toolbar.Content>
+        {action ? (
+          <ToolbarItem placement="topBarTrailing">
+            <Button
+              label={action.busy && action.busyLabel ? action.busyLabel : action.label}
+              modifiers={[
+                accessibilityLabel(action.label),
+                disabled(!!(action.disabled || action.busy))
+              ]}
+              onPress={action.onPress}
+            />
+          </ToolbarItem>
+        ) : null}
+      </Toolbar.Content>
+    </Toolbar>
+  )
+}
+
+/** What the sidebar chose, with its title and buttons in the system's bar. */
+function Root({ app, onShown, theme }: { app: AppScreens; onShown: Shown; theme: Theme }) {
+  const covered = useCovered()
+  const visibility = useOnScreen(onShown)
   const chat = app.selected && app.selected !== 'settings' && app.selected !== 'library'
   const view =
     app.selected === 'settings'
@@ -157,6 +289,8 @@ function Detail({ app, theme }: { app: AppScreens; theme: Theme }) {
           : null
 
   if (!view) {
+    if (app.panels.length)
+      return app.renderPanel(0, page => <Page {...page} onShown={onShown} />) as ReactElement
     return (
       <Column>
         <EmptyState
@@ -179,7 +313,8 @@ function Detail({ app, theme }: { app: AppScreens; theme: Theme }) {
         navigationBarTitleDisplayMode('inline'),
         // Lists and the composer run down to the screen's edge, as in Messages.
         // Under a card or sheet, the column holds still when it brings up the keyboard.
-        ignoreSafeArea({ edges: 'bottom', regions: covered ? 'all' : 'container' })
+        ignoreSafeArea({ edges: 'bottom', regions: covered ? 'all' : 'container' }),
+        ...visibility
       ]}
     >
       <Column>{view as ReactElement}</Column>
@@ -212,4 +347,24 @@ function Detail({ app, theme }: { app: AppScreens; theme: Theme }) {
   )
 }
 
-const styles = StyleSheet.create({ fill: { flex: 1 } })
+/** Reports a view coming on screen or leaving it, by an id of its own. */
+type Shown = (id: string, on: boolean) => void
+
+/**
+ * Modifiers that report this view on and off the screen. A view React takes
+ * away is off it too: SwiftUI may not say so once its page is gone.
+ */
+function useOnScreen(onShown: Shown) {
+  const id = useId()
+  const report = useRef(onShown)
+  report.current = onShown
+  useEffect(() => () => report.current(id, false), [id])
+  return [onAppear(() => report.current(id, true)), onDisappear(() => report.current(id, false))]
+}
+
+const styles = StyleSheet.create({
+  fill: { flex: 1 },
+  // A readable measure on iPad and iPhone Duo open, as the desktop's settings pages keep.
+  measure: { alignSelf: 'center', maxWidth: 640, width: '100%' },
+  page: { paddingBottom: 40, paddingHorizontal: 16, paddingTop: 8 }
+})

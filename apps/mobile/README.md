@@ -32,13 +32,21 @@ chat's back closes it, except while files upload. The app turns with the
 phone and builds with the iOS 27 SDK, whose scene life cycle Expo SDK 58 sets
 up.
 
-Settings is the daemon, what bots are doing right now, About you, models,
-connectors, skills, usage, devices, pairing, Hex Connect and updates; it also
-switches daemons. + in the Chats bar makes a new bot or room. Bots & jobs is
-every bot's profile, scheduled jobs, and all rooms, archived ones included.
+Settings is the daemon and what bots are doing right now, then the desktop
+app's groups: Models (providers, usage), Bots (plugins, passwords, bot
+activity), Manuals (Computer use), Devices (network, paired devices, Hex
+Connect), You (About you, daemon settings) and App (updates, licenses); it
+also switches daemons. + in the Chats bar makes a new bot or room. Bots & jobs
+is every bot's profile, scheduled jobs, and all rooms, archived ones included.
 
-Profiles, settings areas, tool steps, visuals and the bots' computer open as
-front cards (`src/ui/Layer.tsx`) that leave the screen below in view. The
+Settings areas, profiles and room settings are pages styled like the desktop
+app's settings: a line saying what the page is for, small group labels,
+cards of rows with fields inside them, and filled circles for choices
+(`PageLook` in `src/ui/Row.tsx`). On iOS they push on the system's
+navigation stack beside the list, with native back and swipe back, their
+title and Save in the bar (`src/shell/SplitView.tsx`). On Android and in the
+browser they open as front cards (`src/ui/Layer.tsx`), as tool steps,
+visuals and the bots' computer do everywhere. The
 model pill lists the providers with a key or sign-in, plus the bot's own, each from
 `hexbot.models.list {provider}` so the provider's current list is used, as in
 the web app. Thinking levels come from `reasoning_levels`; a model the daemon
