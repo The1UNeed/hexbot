@@ -45,6 +45,7 @@ pub mod team;
 mod update_path;
 pub mod update_signature;
 pub mod usage;
+pub mod vaultwarden;
 
 pub fn version() -> String {
     serde_json::from_str::<serde_json::Value>(include_str!("../../../apps/desktop/package.json"))

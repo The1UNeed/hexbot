@@ -8,18 +8,25 @@ import { create } from 'zustand'
 
 import {
   type PasswordInput,
+  passwordsConnect,
   passwordsDelete,
+  passwordsDisconnect,
   passwordsList,
   passwordsSave,
-  passwordsSetBots
+  passwordsSetBots,
+  type VaultwardenInput
 } from '../lib/api'
-import type { PasswordItem, PasswordKeyStore } from '../lib/types'
+import type { PasswordItem, PasswordKeyStore, PasswordVault } from '../lib/types'
 
 import { connectionRead } from './connection'
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
 export interface PasswordsState {
+  /** Signs in to a Vaultwarden, which then keeps every item; says how many were copied. */
+  connect: (input: VaultwardenInput) => Promise<number>
+  /** Goes back to the vault on the daemon. */
+  disconnect: () => Promise<void>
   error: null | string
   /** True once the page has asked for the list; events refresh only then. */
   loaded: boolean
@@ -32,6 +39,7 @@ export interface PasswordsState {
   save: (input: PasswordInput) => Promise<PasswordItem>
   setBots: (id: string, bots: null | string[]) => Promise<void>
   store: PasswordKeyStore
+  vault: PasswordVault
 }
 
 /** Only the latest refresh may change the list or end the loading state. */
@@ -55,6 +63,22 @@ export const usePasswords = create<PasswordsState>((set, get) => {
     loading: false,
     logins: [],
     store: null,
+    vault: { kind: 'local' },
+
+    // The page names the new store at once; the list follows when it loads.
+    async connect(input) {
+      const { copied, vault } = await passwordsConnect(input)
+      set({ vault })
+      await get().refresh()
+
+      return copied
+    },
+
+    async disconnect() {
+      const { vault } = await passwordsDisconnect()
+      set({ vault })
+      await get().refresh()
+    },
 
     async refresh() {
       const current = connectionRead()
@@ -65,7 +89,7 @@ export const usePasswords = create<PasswordsState>((set, get) => {
         const list = await passwordsList()
 
         if (current() && mine === latest) {
-          set({ logins: list.logins, store: list.store })
+          set({ logins: list.logins, store: list.store, vault: list.vault ?? { kind: 'local' } })
         }
       } catch (error) {
         if (current() && mine === latest) {
@@ -85,7 +109,14 @@ export const usePasswords = create<PasswordsState>((set, get) => {
 
     reset() {
       latest++
-      set({ error: null, loaded: false, loading: false, logins: [], store: null })
+      set({
+        error: null,
+        loaded: false,
+        loading: false,
+        logins: [],
+        store: null,
+        vault: { kind: 'local' }
+      })
     },
 
     async save(input) {

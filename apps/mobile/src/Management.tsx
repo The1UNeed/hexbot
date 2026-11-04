@@ -29,6 +29,7 @@ import {
   type Device,
   type PasswordItem,
   type PasswordKind,
+  type PasswordVault,
   type Plugin,
   type PluginsList,
   type Room,
@@ -67,6 +68,7 @@ export type Panel = {
     | 'network'
     | 'password'
     | 'password-create'
+    | 'password-vault'
     | 'passwords'
     | 'plugin'
     | 'plugins'
@@ -169,6 +171,14 @@ const passwordBots = (login: PasswordItem, bots: PluginBot[]) => {
   if (!on.length) return 'No bots'
   if (on.length <= 2) return on.map(b => b.display_name).join(' and ')
   return `${on.length} bots`
+}
+/** With Vaultwarden, the key the page names is its master password. */
+const VAULTWARDEN_STORE_TEXT: Record<string, string> = {
+  file: "Your Vaultwarden master password is in a file on the daemon's computer that only you can read.",
+  keychain: "Your Vaultwarden master password is in the keychain of the daemon's computer.",
+  locked:
+    "Hexbot can't read your Vaultwarden master password. Unlock the keychain on the daemon's computer.",
+  secret_service: "Your Vaultwarden master password is in the keyring of the daemon's computer."
 }
 const PASSWORD_STORE_TEXT: Record<string, string> = {
   file: "The vault's key is in a file on the daemon's computer that only you can read.",
@@ -541,11 +551,21 @@ export function Management({
         data = pluginRows(await rpc<PluginsList>('hexbot.plugins.list')) as unknown as RowData[]
         break
       case 'passwords': {
-        const list = await rpc<{ logins: PasswordItem[]; store: string | null }>(
+        const list = await rpc<{
+          logins: PasswordItem[]
+          store: string | null
+          vault?: PasswordVault
+        }>('hexbot.passwords.list')
+        data = list.logins as unknown as RowData[]
+        detail = { store: list.store, vault: list.vault ?? { kind: 'local' } }
+        break
+      }
+      case 'password-vault': {
+        const list = await rpc<{ logins: PasswordItem[]; vault?: PasswordVault }>(
           'hexbot.passwords.list'
         )
-        data = list.logins as unknown as RowData[]
-        detail = { store: list.store }
+        detail = { vault: list.vault ?? { kind: 'local' }, count: list.logins.length }
+        fields = { server: '', email: '', password: '', code: '', copy: true }
         break
       }
       case 'password': {
@@ -1875,6 +1895,7 @@ export function Management({
     case 'passwords': {
       const logins = rows as unknown as PasswordItem[]
       const store = str(extra.store)
+      const vault = (extra.vault as PasswordVault | undefined) ?? { kind: 'local' }
       content = (
         <>
           <Group>
@@ -1891,7 +1912,15 @@ export function Management({
             ))}
           </Group>
           {logins.length ? (
-            <Group footer={store ? PASSWORD_STORE_TEXT[store] : undefined}>
+            <Group
+              footer={
+                store
+                  ? (vault.kind === 'vaultwarden' ? VAULTWARDEN_STORE_TEXT : PASSWORD_STORE_TEXT)[
+                      store
+                    ]
+                  : undefined
+              }
+            >
               {logins.map(login => (
                 <Row
                   key={login.id}
@@ -1914,9 +1943,36 @@ export function Management({
             </Group>
           ) : (
             <Text tone="muted" variant="footnote">
-              When a bot needs to sign in somewhere or needs an API key, it asks you in its chat.
+              {vault.kind === 'vaultwarden'
+                ? "Nothing in your Vaultwarden's Hexbot folder yet. Add items here, or move them into that folder in a Bitwarden app."
+                : 'When a bot needs to sign in somewhere or needs an API key, it asks you in its chat.'}
             </Text>
           )}
+          <Group title="Where they're kept">
+            <Row
+              title={vault.kind === 'vaultwarden' ? 'Vaultwarden' : 'This daemon'}
+              subtitle={
+                vault.kind === 'vaultwarden'
+                  ? [vault.email, vault.server.replace(/^https:\/\//, '')].join(' · ')
+                  : "A KeePass vault on the daemon's computer"
+              }
+              testID="manage-password-vault"
+              leading={
+                <Ionicons
+                  color={theme.muted}
+                  name={
+                    vault.kind === 'vaultwarden'
+                      ? 'shield-checkmark-outline'
+                      : 'lock-closed-outline'
+                  }
+                  size={20}
+                />
+              }
+              chevron
+              onPress={() => navigate('password-vault')}
+              disabled={busy || mobile.connection !== 'connected'}
+            />
+          </Group>
         </>
       )
       break
@@ -2201,6 +2257,65 @@ export function Management({
           ) : null}
         </>
       )
+      break
+    }
+    case 'password-vault': {
+      const vault = (extra.vault as PasswordVault | undefined) ?? { kind: 'local' }
+      const count = Number(extra.count ?? 0)
+      if (vault.kind === 'local')
+        save = () =>
+          rpc('hexbot.passwords.connect', {
+            server: str(values.server).trim(),
+            email: str(values.email).trim(),
+            password: str(values.password),
+            ...(str(values.code).trim() ? { code: str(values.code).trim() } : {}),
+            copy: count > 0 && values.copy === true
+          })
+      content =
+        vault.kind === 'vaultwarden' ? (
+          <Group footer="Hexbot uses only the items in this account's Hexbot folder. Move an item into it in a Bitwarden app to give it to your bots.">
+            <Row
+              title="Vaultwarden"
+              subtitle={[vault.email, vault.server.replace(/^https:\/\//, '')].join(' · ')}
+              testID="password-vault-connected"
+            />
+            {action(
+              'Disconnect Vaultwarden',
+              async () => {
+                await rpc('hexbot.passwords.disconnect')
+                ;(onBack ?? onClose)()
+              },
+              true,
+              'Your bots go back to the passwords saved on this daemon. Nothing in Vaultwarden is deleted.'
+            )}
+          </Group>
+        ) : (
+          <>
+            {field('server', 'Vaultwarden address', false, 'Such as https://vault.example.com')}
+            {field('email', 'Email')}
+            {field('password', 'Master password', false, undefined, true)}
+            {field(
+              'code',
+              'Two-step login code',
+              false,
+              'Only if your account uses two-step login.'
+            )}
+            {count ? (
+              <Group>
+                {toggle(
+                  'copy',
+                  `Copy the ${count} ${count === 1 ? 'item' : 'items'} saved on this daemon`
+                )}
+              </Group>
+            ) : null}
+            <Text tone="muted" variant="footnote">
+              Hexbot signs in with the official Bitwarden CLI, which must be installed on the
+              daemon's computer. It keeps your master password in the daemon's keychain to unlock
+              after a restart, and uses only the items in a Hexbot folder it makes. An account just
+              for your bots is safest.
+            </Text>
+          </>
+        )
       break
     }
     case 'skills':
@@ -2594,6 +2709,7 @@ export function Management({
     plugin: str(panel?.data?.name),
     passwords: 'Passwords',
     password: str(panel?.data?.title),
+    'password-vault': 'Vaultwarden',
     'password-create':
       str(panel?.data?.kind) === 'ssh_key'
         ? 'New SSH key'
@@ -2646,7 +2762,7 @@ export function Management({
   const sheetAction: SheetAction | undefined =
     save && !panelLoading
       ? {
-          label: kind === 'bot-create' ? 'Create' : 'Save',
+          label: kind === 'bot-create' ? 'Create' : kind === 'password-vault' ? 'Connect' : 'Save',
           busy,
           disabled: mobile.connection !== 'connected',
           onPress: () => void run(save!, true)

@@ -114,13 +114,13 @@ const MAX_FIELD: usize = 4096;
 
 /// Where a vault's key lives.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Store {
+pub(crate) enum Store {
     Keychain,
     SecretService,
     File,
 }
 impl Store {
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Store::Keychain => "keychain",
             Store::SecretService => "secret_service",
@@ -144,7 +144,7 @@ fn os_store() -> Option<Store> {
     }
 }
 
-fn dir(home: &Path, owner: &str) -> Result<PathBuf> {
+pub(crate) fn dir(home: &Path, owner: &str) -> Result<PathBuf> {
     common::identifier(owner)?;
     Ok(home.join("users").join(owner).join("passwords"))
 }
@@ -262,6 +262,82 @@ fn os_write(store: Store, account: &str, key: &str) -> bool {
         Store::File => return false,
     };
     matches!(done, Some((0, _))) && os_read(store, account).ok().flatten().as_deref() == Some(key)
+}
+
+fn os_delete(store: Store, account: &str) {
+    let _ = match store {
+        Store::Keychain => helper(
+            "/usr/bin/security",
+            &["delete-generic-password", "-s", SERVICE, "-a", account],
+            b"",
+        ),
+        Store::SecretService => helper(
+            "secret-tool",
+            &["clear", "service", SERVICE, "account", account],
+            b"",
+        ),
+        Store::File => None,
+    };
+}
+
+/// Another secret kept where the vault key is, such as the Vaultwarden master
+/// password: in the OS store, or in `<name>.key` beside the vault, readable
+/// by its owner only. It is written as hex, so any text survives the
+/// keychain's command line.
+pub(crate) fn keep(home: &Path, owner: &str, name: &str, value: &str) -> Result<()> {
+    let hex = value
+        .bytes()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let file = dir(home, owner)?.join(format!("{name}.key"));
+    if let Some(store) = os_store()
+        && os_write(store, &format!("{}-{name}", account(home, owner)), &hex)
+    {
+        let _ = std::fs::remove_file(&file);
+        return Ok(());
+    }
+    private_dir(home, owner)?;
+    common::atomic_write(&file, hex.as_bytes())
+}
+
+/// A secret `keep` wrote, and where it is.
+pub(crate) fn kept(home: &Path, owner: &str, name: &str) -> Result<Option<(String, Store)>> {
+    let decode = |hex: &str| {
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok())
+            .collect::<Option<Vec<u8>>>()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+    };
+    let file = dir(home, owner)?.join(format!("{name}.key"));
+    if let Ok(text) = std::fs::read_to_string(&file)
+        && let Some(value) = decode(text.trim())
+    {
+        return Ok(Some((value, Store::File)));
+    }
+    let Some(store) = os_store() else {
+        return Ok(None);
+    };
+    Ok(os_read(store, &format!("{}-{name}", account(home, owner)))?
+        .and_then(|hex| decode(&hex))
+        .map(|value| (value, store)))
+}
+
+/// Removes a secret `keep` wrote, wherever it is.
+pub(crate) fn forget(home: &Path, owner: &str, name: &str) -> Result<()> {
+    if let Some(store) = os_store() {
+        os_delete(store, &format!("{}-{name}", account(home, owner)));
+    }
+    match std::fs::remove_file(dir(home, owner)?.join(format!("{name}.key"))) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+        _ => Ok(()),
+    }
+}
+
+/// The folder for a user's items and their keys, made owner-only.
+pub(crate) fn folder(home: &Path, owner: &str) -> Result<PathBuf> {
+    private_dir(home, owner)?;
+    dir(home, owner)
 }
 
 fn locked() -> Error {
@@ -434,12 +510,89 @@ fn set_custom(entry: &mut keepass::db::Entry, key: &str, value: Option<String>) 
     }
 }
 
-fn bots_of(entry: &keepass::db::Entry) -> Option<Vec<String>> {
-    serde_json::from_str(custom(entry, BOTS)?).ok()
+/// `SHA256:…`, as `ssh-keygen -l` and GitHub show a key.
+pub(crate) fn fingerprint(public: &str) -> Option<String> {
+    let key = ssh_key::PublicKey::from_openssh(public).ok()?;
+    Some(key.fingerprint(ssh_key::HashAlg::Sha256).to_string())
 }
 
-fn set_bots_of(entry: &mut keepass::db::Entry, bots: Option<&[String]>) {
-    set_custom(entry, BOTS, bots.map(|bots| json!(bots).to_string()));
+/// One saved item, whichever store keeps it: the vault on this daemon or
+/// Vaultwarden (`vaultwarden.rs`). `password` is a login's password, an API
+/// key's key or an SSH key's passphrase; `otp` an `otpauth://` link.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Record {
+    pub kind: Kind,
+    pub title: String,
+    pub url: String,
+    pub username: String,
+    pub password: String,
+    pub otp: String,
+    pub notes: String,
+    pub private_key: String,
+    pub public_key: String,
+    pub env: String,
+    pub bots: Option<Vec<String>>,
+    pub updated_at: Option<i64>,
+}
+
+impl Record {
+    pub(crate) fn new(kind: Kind) -> Record {
+        Record {
+            kind,
+            title: String::new(),
+            url: String::new(),
+            username: String::new(),
+            password: String::new(),
+            otp: String::new(),
+            notes: String::new(),
+            private_key: String::new(),
+            public_key: String::new(),
+            env: String::new(),
+            bots: None,
+            updated_at: None,
+        }
+    }
+}
+
+/// An item as clients and bots read it: never a password, key or code key.
+fn row(id: &str, item: &Record) -> Value {
+    let title = Some(item.title.clone())
+        .filter(|t| !t.is_empty())
+        .or_else(|| host(&item.url))
+        .unwrap_or_else(|| match item.kind {
+            Kind::Login => "Login".into(),
+            Kind::SshKey => "SSH key".into(),
+            Kind::ApiKey => "API key".into(),
+        });
+    let mut row = json!({
+        "id": id,
+        "kind": item.kind.name(),
+        "title": title,
+        "url": item.url,
+        "site": host(&item.url),
+        "username": item.username,
+        "bots": item.bots,
+        "has_password": !item.password.is_empty(),
+        "has_code": !item.otp.is_empty(),
+        "notes": item.notes,
+        "updated_at": item.updated_at,
+    });
+    match item.kind {
+        Kind::Login => {}
+        Kind::SshKey => {
+            row["public_key"] = json!(item.public_key);
+            row["fingerprint"] = json!(fingerprint(&item.public_key));
+            row["has_passphrase"] = json!(!item.password.is_empty());
+        }
+        Kind::ApiKey => row["env"] = json!(item.env),
+    }
+    row
+}
+
+// ---- The vault on this daemon ----
+
+fn bots_of(entry: &keepass::db::Entry) -> Option<Vec<String>> {
+    serde_json::from_str(custom(entry, BOTS)?).ok()
 }
 
 fn kind_of(entry: &keepass::db::Entry) -> Kind {
@@ -448,84 +601,166 @@ fn kind_of(entry: &keepass::db::Entry) -> Kind {
         .unwrap_or(Kind::Login)
 }
 
-/// `SHA256:…`, as `ssh-keygen -l` and GitHub show a key.
-fn fingerprint(public: &str) -> Option<String> {
-    let key = ssh_key::PublicKey::from_openssh(public).ok()?;
-    Some(key.fingerprint(ssh_key::HashAlg::Sha256).to_string())
+fn record_of(entry: &keepass::db::Entry) -> Record {
+    let text = |name: &str| entry.get(name).unwrap_or("").to_owned();
+    Record {
+        kind: kind_of(entry),
+        title: text(fields::TITLE),
+        url: text(fields::URL),
+        username: text(fields::USERNAME),
+        password: text(fields::PASSWORD),
+        otp: entry.get_raw_otp_value().unwrap_or("").to_owned(),
+        notes: text(fields::NOTES),
+        private_key: text(PRIVATE_KEY),
+        public_key: text(PUBLIC_KEY),
+        env: text(VARIABLE),
+        bots: bots_of(entry),
+        updated_at: entry
+            .times
+            .last_modification
+            .map(|t| t.and_utc().timestamp()),
+    }
 }
 
-/// An item as clients and bots read it: never a password, key or code key.
-fn row(entry: &keepass::db::Entry, id: EntryId) -> Value {
-    let kind = kind_of(entry);
-    let url = entry.get_url().unwrap_or("");
-    let title = entry
-        .get_title()
-        .filter(|t| !t.is_empty())
-        .map(str::to_owned)
-        .or_else(|| host(url))
-        .unwrap_or_else(|| match kind {
-            Kind::Login => "Login".into(),
-            Kind::SshKey => "SSH key".into(),
-            Kind::ApiKey => "API key".into(),
-        });
-    let mut row = json!({
-        "id": id.uuid().to_string(),
-        "kind": kind.name(),
-        "title": title,
-        "url": url,
-        "site": host(url),
-        "username": entry.get_username().unwrap_or(""),
-        "bots": bots_of(entry),
-        "has_password": entry.get_password().is_some_and(|p| !p.is_empty()),
-        "has_code": entry.get_raw_otp_value().is_some_and(|v| !v.is_empty()),
-        "notes": entry.get(fields::NOTES).unwrap_or(""),
-        "updated_at": entry.times.last_modification.map(|t| t.and_utc().timestamp()),
-    });
-    match kind {
+/// Writes the fields Hexbot keeps; anything else a KeePass app added stays.
+fn write_entry(entry: &mut keepass::db::Entry, item: &Record) {
+    if item.kind != Kind::Login {
+        set_custom(entry, KIND, Some(item.kind.name().into()));
+    }
+    entry.set_unprotected(fields::TITLE, &item.title);
+    entry.set_unprotected(fields::URL, &item.url);
+    entry.set_unprotected(fields::USERNAME, &item.username);
+    entry.set_unprotected(fields::NOTES, &item.notes);
+    entry.set_protected(fields::PASSWORD, &item.password);
+    if item.otp.is_empty() {
+        entry.fields.remove(fields::OTP);
+    } else {
+        entry.set_protected(fields::OTP, &item.otp);
+    }
+    match item.kind {
         Kind::Login => {}
         Kind::SshKey => {
-            let public = entry.get(PUBLIC_KEY).unwrap_or("");
-            row["public_key"] = json!(public);
-            row["fingerprint"] = json!(fingerprint(public));
-            row["has_passphrase"] = row["has_password"].clone();
+            entry.set_protected(PRIVATE_KEY, &item.private_key);
+            entry.set_unprotected(PUBLIC_KEY, &item.public_key);
         }
-        Kind::ApiKey => {
-            row["env"] = json!(entry.get(VARIABLE).unwrap_or(""));
-        }
+        Kind::ApiKey => entry.set_unprotected(VARIABLE, &item.env),
     }
-    row
+    set_custom(
+        entry,
+        BOTS,
+        item.bots.as_ref().map(|b| json!(b).to_string()),
+    );
+    let now = keepass::db::Times::now();
+    entry.times.last_modification = Some(now);
+    if entry.times.creation.is_none() {
+        entry.times.creation = Some(now);
+    }
 }
 
-/// Items outside the recycle bin, sorted by title.
-fn rows(db: &Database, bot: Option<&str>) -> Vec<Value> {
-    let bin = db.recycle_bin().map(|g| g.id());
-    let mut rows = db
+/// Items outside the recycle bin.
+fn local_list(home: &Path, owner: &str) -> Result<Vec<(String, Record)>> {
+    let Some(vault) = load(home, owner)? else {
+        return Ok(vec![]);
+    };
+    let bin = vault.db.recycle_bin().map(|g| g.id());
+    Ok(vault
+        .db
         .iter_all_entries()
         .filter(|e| bin.is_none_or(|bin| e.parent().id() != bin))
-        .filter(|e| match (bot, bots_of(e)) {
+        .map(|e| (e.id().uuid().to_string(), record_of(&e)))
+        .collect())
+}
+
+fn local_get(home: &Path, owner: &str, id: &str) -> Result<Record> {
+    let vault = load(home, owner)?.ok_or_else(not_found)?;
+    let entry = vault.db.entry(entry_id(id)?).ok_or_else(not_found)?;
+    Ok(record_of(&entry))
+}
+
+fn local_put(home: &Path, owner: &str, id: Option<&str>, item: &Record) -> Result<String> {
+    let mut vault = load_or_new(home, owner)?;
+    let id = match id {
+        Some(id) => {
+            let id = entry_id(id)?;
+            vault.db.entry(id).ok_or_else(not_found)?;
+            id
+        }
+        None => vault.db.root_mut().add_entry().id(),
+    };
+    {
+        let mut entry = vault.db.entry_mut(id).ok_or_else(not_found)?;
+        write_entry(&mut entry, item);
+    }
+    persist(home, owner, &vault)?;
+    Ok(id.uuid().to_string())
+}
+
+fn local_delete(home: &Path, owner: &str, id: &str) -> Result<()> {
+    let mut vault = load(home, owner)?.ok_or_else(not_found)?;
+    let id = entry_id(id)?;
+    vault.db.entry_mut(id).ok_or_else(not_found)?.remove();
+    vault
+        .db
+        .deleted_objects
+        .insert(id.uuid(), Some(keepass::db::Times::now()));
+    persist(home, owner, &vault)
+}
+
+// ---- Either store ----
+
+/// Where a user's items are: the vault on this daemon, or Vaultwarden once
+/// they connect it.
+enum Backend {
+    Local,
+    Vaultwarden(crate::vaultwarden::Account),
+}
+
+fn backend(home: &Path, owner: &str) -> Result<Backend> {
+    Ok(match crate::vaultwarden::account(home, owner)? {
+        Some(account) => Backend::Vaultwarden(account),
+        None => Backend::Local,
+    })
+}
+
+fn all(home: &Path, owner: &str) -> Result<Vec<(String, Record)>> {
+    match backend(home, owner)? {
+        Backend::Local => local_list(home, owner),
+        Backend::Vaultwarden(account) => crate::vaultwarden::list(home, owner, &account),
+    }
+}
+
+fn get(home: &Path, owner: &str, id: &str) -> Result<Record> {
+    match backend(home, owner)? {
+        Backend::Local => local_get(home, owner, id),
+        Backend::Vaultwarden(account) => crate::vaultwarden::get(home, owner, &account, id),
+    }
+}
+
+fn put(home: &Path, owner: &str, id: Option<&str>, item: &Record) -> Result<String> {
+    match backend(home, owner)? {
+        Backend::Local => local_put(home, owner, id, item),
+        Backend::Vaultwarden(account) => crate::vaultwarden::put(home, owner, &account, id, item),
+    }
+}
+
+/// Every item the user saved, or those a bot may use, sorted by title.
+pub fn list(home: &Path, owner: &str, bot: Option<&str>) -> Result<Vec<Value>> {
+    let _lock = lock();
+    let mut rows = all(home, owner)?
+        .iter()
+        .filter(|(_, item)| match (bot, &item.bots) {
             (Some(bot), Some(bots)) => bots.iter().any(|b| b == bot),
             _ => true,
         })
-        .map(|e| row(&e, e.id()))
+        .map(|(id, item)| row(id, item))
         .collect::<Vec<_>>();
     rows.sort_by_key(|r| r["title"].as_str().unwrap_or("").to_lowercase());
-    rows
-}
-
-/// Every item the user saved, or those a bot may use.
-pub fn list(home: &Path, owner: &str, bot: Option<&str>) -> Result<Vec<Value>> {
-    let _lock = lock();
-    Ok(load(home, owner)?
-        .map(|vault| rows(&vault.db, bot))
-        .unwrap_or_default())
+    Ok(rows)
 }
 
 pub fn find(home: &Path, owner: &str, id: &str) -> Result<Value> {
     let _lock = lock();
-    let vault = load(home, owner)?.ok_or_else(not_found)?;
-    let id = entry_id(id)?;
-    let entry = vault.db.entry(id).ok_or_else(not_found)?;
-    Ok(row(&entry, id))
+    Ok(row(id, &get(home, owner, id)?))
 }
 
 /// Whether `bot` may use the item.
@@ -675,7 +910,7 @@ fn bots_param(home: &Path, owner: &str, p: &Value) -> Result<Option<Option<Vec<S
 }
 
 /// A one-time code key: an `otpauth://` URI or a bare base32 secret.
-fn otp_uri(code: &str, title: &str) -> Result<String> {
+pub(crate) fn otp_uri(code: &str, title: &str) -> Result<String> {
     let invalid = || Error::new(4202, "That one-time code key isn't valid.");
     let code = code.trim();
     let mut uri = if code.starts_with("otpauth://") {
@@ -710,14 +945,12 @@ fn otp_uri(code: &str, title: &str) -> Result<String> {
     Ok(uri)
 }
 
-/// Creates an item (no `id`) or changes one. Fields left out stay; an empty
-/// `code` removes a login's one-time code key. New items go to every bot
-/// unless `bots` says otherwise.
-///
-/// `kind` (login when left out) is fixed when the item is made. A login
+/// Applies a save's fields to an item, or to a new one when there is none.
+/// Fields left out stay; an empty `code` removes a login's one-time code
+/// key. `kind` (login when left out) is fixed when the item is made. A login
 /// takes `password` and `code`; an SSH key `private_key` and `passphrase`,
 /// or `generate: true` for a new key; an API key `key` and `env`.
-pub fn save(home: &Path, owner: &str, p: &Value) -> Result<Value> {
+fn apply(home: &Path, owner: &str, existing: Option<Record>, p: &Value) -> Result<Record> {
     let bots = bots_param(home, owner, p)?;
     let url = text(p, "url")?.map(str::trim);
     if let Some(url) = url
@@ -732,17 +965,12 @@ pub fn save(home: &Path, owner: &str, p: &Value) -> Result<Value> {
     let asked = text(p, "kind")?.map(Kind::parse).transpose()?;
     let title = text(p, "title")?.map(str::trim);
     let named = |title: Option<&str>| title.is_some_and(|t| !t.is_empty());
-    let _lock = lock();
-    let mut vault = load_or_new(home, owner)?;
-    let (id, kind) = match text(p, "id")? {
-        Some(id) => {
-            let id = entry_id(id)?;
-            let entry = vault.db.entry(id).ok_or_else(not_found)?;
-            let kind = kind_of(&entry);
-            if asked.is_some_and(|asked| asked != kind) {
+    let mut item = match existing {
+        Some(item) => {
+            if asked.is_some_and(|asked| asked != item.kind) {
                 return Err(Error::new(4202, "An item keeps its kind."));
             }
-            (id, kind)
+            item
         }
         None => {
             let kind = asked.unwrap_or(Kind::Login);
@@ -772,119 +1000,105 @@ pub fn save(home: &Path, owner: &str, p: &Value) -> Result<Value> {
                     }
                 }
             }
-            (vault.db.root_mut().add_entry().id(), kind)
+            Record::new(kind)
         }
     };
-    let code = match text(p, "code")? {
+    let kind = item.kind;
+    if let Some(title) = title {
+        item.title = title.to_owned();
+    }
+    if let Some(url) = url {
+        item.url = url.to_owned();
+    }
+    if let Some(username) = text(p, "username")? {
+        item.username = username.to_owned();
+    }
+    if let Some(notes) = text(p, "notes")? {
+        item.notes = notes.to_owned();
+    }
+    match text(p, "code")? {
         Some(code) if !code.trim().is_empty() => {
             if kind != Kind::Login {
                 return Err(Error::new(4202, "Only logins have a one-time code."));
             }
-            let name = title
+            let name = Some(item.title.clone())
                 .filter(|t| !t.is_empty())
-                .map(str::to_owned)
-                .or_else(|| url.and_then(host))
+                .or_else(|| host(&item.url))
                 .unwrap_or_else(|| "Hexbot".into());
-            Some(Some(otp_uri(code, &name)?))
+            item.otp = otp_uri(code, &name)?;
         }
-        Some(_) => Some(None),
-        None => None,
-    };
-    // An SSH key: the one pasted, or a new one, with its public key.
-    let ssh = match (
-        kind,
-        text(p, "private_key")?.filter(|k| !k.trim().is_empty()),
-    ) {
-        (Kind::SshKey, Some(private)) => {
-            Some(ssh_key(private, text(p, "passphrase")?.unwrap_or(""))?)
-        }
-        (Kind::SshKey, None) if p["generate"] == true => {
-            let comment = title.filter(|t| !t.is_empty()).unwrap_or("Hexbot");
-            Some(ssh_key(&new_ssh_key(comment)?, "")?)
-        }
-        _ => None,
-    };
-    let env = match (kind, text(p, "env")?) {
-        (Kind::ApiKey, Some(env)) if !env.trim().is_empty() => Some(variable(env)?),
-        _ => None,
-    };
-    let mut entry = vault.db.entry_mut(id).ok_or_else(not_found)?;
-    if kind != Kind::Login {
-        set_custom(&mut entry, KIND, Some(kind.name().into()));
-    }
-    if let Some(title) = title {
-        entry.set_unprotected(fields::TITLE, title);
-    }
-    if let Some(url) = url {
-        entry.set_unprotected(fields::URL, url);
-    }
-    if let Some(username) = text(p, "username")? {
-        entry.set_unprotected(fields::USERNAME, username);
-    }
-    if let Some(notes) = text(p, "notes")? {
-        entry.set_unprotected(fields::NOTES, notes);
+        Some(_) => item.otp.clear(),
+        None => {}
     }
     match kind {
         Kind::Login => {
             if let Some(password) = text(p, "password")?.filter(|p| !p.is_empty()) {
-                entry.set_protected(fields::PASSWORD, password);
-            }
-            match code {
-                Some(Some(uri)) => entry.set_protected(fields::OTP, uri),
-                Some(None) => {
-                    entry.fields.remove(fields::OTP);
-                }
-                None => {}
+                item.password = password.to_owned();
             }
         }
         Kind::SshKey => {
-            if let Some((private, public, encrypted)) = ssh {
-                entry.set_protected(PRIVATE_KEY, private);
-                entry.set_unprotected(PUBLIC_KEY, public);
-                let passphrase = text(p, "passphrase")?.filter(|_| encrypted).unwrap_or("");
-                entry.set_protected(fields::PASSWORD, passphrase);
+            // The key pasted, or a new one, with its public key.
+            let pasted = text(p, "private_key")?.filter(|k| !k.trim().is_empty());
+            let given = match pasted {
+                Some(private) => Some((private.to_owned(), text(p, "passphrase")?.unwrap_or(""))),
+                None if p["generate"] == true => {
+                    let comment = Some(item.title.as_str()).filter(|t| !t.is_empty());
+                    Some((new_ssh_key(comment.unwrap_or("Hexbot"))?, ""))
+                }
+                None => None,
+            };
+            if let Some((private, passphrase)) = given {
+                let (private, public, encrypted) = ssh_key(&private, passphrase)?;
+                item.private_key = private;
+                item.public_key = public;
+                item.password = if encrypted {
+                    passphrase.to_owned()
+                } else {
+                    String::new()
+                };
             }
         }
         Kind::ApiKey => {
             if let Some(key) = text(p, "key")?.map(str::trim).filter(|k| !k.is_empty()) {
-                entry.set_protected(fields::PASSWORD, key);
+                item.password = key.to_owned();
             }
-            if let Some(env) = env {
-                entry.set_unprotected(VARIABLE, env);
-            } else if entry.get(VARIABLE).is_none_or(str::is_empty) {
-                let name = default_variable(entry.get_title().unwrap_or(""));
-                entry.set_unprotected(VARIABLE, name);
+            match text(p, "env")?.filter(|e| !e.trim().is_empty()) {
+                Some(env) => item.env = variable(env)?,
+                None if item.env.is_empty() => item.env = default_variable(&item.title),
+                None => {}
             }
         }
     }
-    if let Some(bots) = &bots {
-        set_bots_of(&mut entry, bots.as_deref());
+    if let Some(bots) = bots {
+        item.bots = bots;
     }
-    let now = keepass::db::Times::now();
-    entry.times.last_modification = Some(now);
-    if entry.times.creation.is_none() {
-        entry.times.creation = Some(now);
-    }
-    let item = row(&entry, id);
-    persist(home, owner, &vault)?;
+    item.updated_at = Some(chrono::Utc::now().timestamp());
     Ok(item)
+}
+
+/// Creates an item (no `id`) or changes one (`apply`). New items go to every
+/// bot unless `bots` says otherwise.
+pub fn save(home: &Path, owner: &str, p: &Value) -> Result<Value> {
+    let _lock = lock();
+    let id = text(p, "id")?;
+    let existing = id.map(|id| get(home, owner, id)).transpose()?;
+    let item = apply(home, owner, existing, p)?;
+    let id = put(home, owner, id, &item)?;
+    Ok(row(&id, &item))
 }
 
 pub fn delete(home: &Path, owner: &str, id: &str) -> Result<()> {
     let _lock = lock();
-    let mut vault = load(home, owner)?.ok_or_else(not_found)?;
-    let id = entry_id(id)?;
-    vault.db.entry_mut(id).ok_or_else(not_found)?.remove();
-    vault
-        .db
-        .deleted_objects
-        .insert(id.uuid(), Some(keepass::db::Times::now()));
-    persist(home, owner, &vault)
+    match backend(home, owner)? {
+        Backend::Local => local_delete(home, owner, id),
+        Backend::Vaultwarden(account) => crate::vaultwarden::delete(home, owner, &account, id),
+    }
 }
 
-/// A deleted bot leaves every login's list in every vault, so a later bot
-/// with its name gets nothing it was not given. Bot deletion keeps the name
-/// reserved until this succeeds; a locked vault fails it.
+/// A deleted bot leaves every item's list in every user's store, so a later
+/// bot with its name gets nothing it was not given. Bot deletion keeps the
+/// name reserved until this succeeds; a locked vault or an unreachable
+/// Vaultwarden fails it.
 pub fn forget_bot(home: &Path, bot: &str) -> Result<()> {
     let users = match std::fs::read_dir(home.join("users")) {
         Ok(users) => users,
@@ -900,36 +1114,27 @@ pub fn forget_bot(home: &Path, bot: &str) -> Result<()> {
 }
 fn forget_in(home: &Path, owner: &str, bot: &str) -> Result<()> {
     let _lock = lock();
-    let Some(mut vault) = load(home, owner)? else {
-        return Ok(());
-    };
-    let mut changed = false;
-    vault.db.foreach_entry_mut(|mut entry| {
-        if let Some(bots) = bots_of(&entry)
+    for (id, mut item) in all(home, owner)? {
+        if let Some(bots) = &item.bots
             && bots.iter().any(|b| b == bot)
         {
-            let kept = bots.into_iter().filter(|b| b != bot).collect::<Vec<_>>();
-            set_bots_of(&mut entry, Some(&kept));
-            changed = true;
+            item.bots = Some(bots.iter().filter(|b| *b != bot).cloned().collect());
+            put(home, owner, Some(&id), &item)?;
         }
-    });
-    if changed {
-        persist(home, owner, &vault)?;
     }
     Ok(())
 }
 
 /// The private key in the OpenSSH format, its passphrase taken off, for an
 /// agent to hold.
-fn ssh_private(entry: &keepass::db::Entry) -> Result<Option<String>> {
-    let Some(text) = entry.get(PRIVATE_KEY).filter(|k| !k.is_empty()) else {
+fn ssh_private(item: &Record) -> Result<Option<String>> {
+    if item.private_key.is_empty() {
         return Ok(None);
-    };
+    }
     let broken = || Error::new(5300, "Hexbot can't read this SSH key. Save it again.");
-    let key = ssh_key::PrivateKey::from_openssh(text).map_err(|_| broken())?;
+    let key = ssh_key::PrivateKey::from_openssh(&item.private_key).map_err(|_| broken())?;
     let key = if key.is_encrypted() {
-        key.decrypt(entry.get_password().unwrap_or(""))
-            .map_err(|_| broken())?
+        key.decrypt(&item.password).map_err(|_| broken())?
     } else {
         key
     };
@@ -940,28 +1145,32 @@ fn ssh_private(entry: &keepass::db::Entry) -> Result<Option<String>> {
     ))
 }
 
+/// The one-time code for now and how long it lasts, from a login's key.
+fn code_now(item: &Record) -> Result<Option<(String, u64)>> {
+    if item.otp.is_empty() {
+        return Ok(None);
+    }
+    let Ok(otp) = item.otp.parse::<keepass::db::TOTP>() else {
+        return Ok(None);
+    };
+    let code = otp
+        .value_now()
+        .map_err(|_| Error::new(5300, "The clock is wrong."))?;
+    Ok(Some((code.code, code.valid_for.as_secs())))
+}
+
 /// A secret for the daemon to use: a login's `username`, `password`, or
 /// `code`, the one-time code for now; an API key's `key`; an SSH key's
 /// `private_key`, without its passphrase.
 pub fn secret(home: &Path, owner: &str, id: &str, field: &str) -> Result<String> {
     let _lock = lock();
-    let vault = load(home, owner)?.ok_or_else(not_found)?;
-    let entry = vault.db.entry(entry_id(id)?).ok_or_else(not_found)?;
-    let kind = kind_of(&entry);
+    let item = get(home, owner, id)?;
+    let kind = item.kind;
     let value = match (kind, field) {
-        (Kind::Login, "username") => entry.get_username().map(str::to_owned),
-        (Kind::Login, "password") | (Kind::ApiKey, "key") => {
-            entry.get_password().map(str::to_owned)
-        }
-        (Kind::Login, "code") => match entry.get_otp() {
-            Ok(otp) => Some(
-                otp.value_now()
-                    .map_err(|_| Error::new(5300, "The clock is wrong."))?
-                    .code,
-            ),
-            Err(_) => None,
-        },
-        (Kind::SshKey, "private_key") => ssh_private(&entry)?,
+        (Kind::Login, "username") => Some(item.username.clone()),
+        (Kind::Login, "password") | (Kind::ApiKey, "key") => Some(item.password.clone()),
+        (Kind::Login, "code") => code_now(&item)?.map(|(code, _)| code),
+        (Kind::SshKey, "private_key") => ssh_private(&item)?,
         (Kind::Login, other) => {
             return Err(Error::new(
                 4202,
@@ -994,31 +1203,35 @@ pub fn secret(home: &Path, owner: &str, id: &str, field: &str) -> Result<String>
 /// passphrase.
 fn reveal(home: &Path, owner: &str, id: &str) -> Result<Value> {
     let _lock = lock();
-    let vault = load(home, owner)?.ok_or_else(not_found)?;
-    let id = entry_id(id)?;
-    let entry = vault.db.entry(id).ok_or_else(not_found)?;
-    let password = entry.get_password().unwrap_or("");
-    Ok(match kind_of(&entry) {
+    let item = get(home, owner, id)?;
+    let login = row(id, &item);
+    Ok(match item.kind {
         Kind::Login => {
-            let code = entry
-                .get_otp()
+            let code = code_now(&item)
                 .ok()
-                .and_then(|otp| otp.value_now().ok())
-                .map(|c| json!({"code":c.code,"valid_for":c.valid_for.as_secs()}));
-            json!({"login": row(&entry, id), "password": password, "code": code})
+                .flatten()
+                .map(|(code, valid_for)| json!({"code": code, "valid_for": valid_for}));
+            json!({"login": login, "password": item.password, "code": code})
         }
-        Kind::ApiKey => json!({"login": row(&entry, id), "key": password}),
+        Kind::ApiKey => json!({"login": login, "key": item.password}),
         Kind::SshKey => json!({
-            "login": row(&entry, id),
-            "private_key": entry.get(PRIVATE_KEY).unwrap_or(""),
-            "passphrase": password,
+            "login": login,
+            "private_key": item.private_key,
+            "passphrase": item.password,
         }),
     })
 }
 
-/// Where the vault's key is kept, for Settings: keychain, secret_service,
-/// file, or null before the first password.
+/// Where the key that opens the user's items is kept, for Settings:
+/// keychain, secret_service, file, locked, or null before the first item.
+/// With Vaultwarden, that is its master password.
 fn store(home: &Path, owner: &str) -> Result<Value> {
+    if let Backend::Vaultwarden(_) = backend(home, owner)? {
+        return Ok(match kept(home, owner, crate::vaultwarden::SECRET) {
+            Ok(Some((_, store))) => json!(store.name()),
+            _ => json!("locked"),
+        });
+    }
     if !vault_path(home, owner)?.exists() {
         return Ok(Value::Null);
     }
@@ -1028,10 +1241,20 @@ fn store(home: &Path, owner: &str) -> Result<Value> {
     })
 }
 
+/// Every item in the vault on this daemon, for Vaultwarden's connect to copy.
+pub(crate) fn local_items(home: &Path, owner: &str) -> Result<Vec<Record>> {
+    Ok(local_list(home, owner)?
+        .into_iter()
+        .map(|(_, item)| item)
+        .collect())
+}
+
 pub const CHANGES: &[&str] = &[
     "hexbot.passwords.save",
     "hexbot.passwords.delete",
     "hexbot.passwords.set_bots",
+    "hexbot.passwords.connect",
+    "hexbot.passwords.disconnect",
 ];
 
 pub fn call(home: &Path, owner: &str, method: &str, p: &Value) -> Option<Result<Value>> {
@@ -1054,6 +1277,7 @@ pub fn call(home: &Path, owner: &str, method: &str, p: &Value) -> Option<Result<
                     "logins": list(home, owner, None)?,
                     "bots": bots,
                     "store": store(home, owner)?,
+                    "vault": crate::vaultwarden::status(home, owner)?,
                 }))
             }
             "hexbot.passwords.save" => Ok(json!({"login": save(home, owner, p)?})),
@@ -1070,6 +1294,15 @@ pub fn call(home: &Path, owner: &str, method: &str, p: &Value) -> Option<Result<
                 Ok(json!({"deleted": id}))
             }
             "hexbot.passwords.reveal" => reveal(home, owner, common::required(p, "id")?),
+            "hexbot.passwords.connect" => {
+                let _lock = lock();
+                crate::vaultwarden::connect(home, owner, p)
+            }
+            "hexbot.passwords.disconnect" => {
+                let _lock = lock();
+                crate::vaultwarden::disconnect(home, owner)?;
+                Ok(json!({"vault": crate::vaultwarden::status(home, owner)?}))
+            }
             _ => Err(Error::new(-32601, format!("unknown method: {method}"))),
         }
     })())

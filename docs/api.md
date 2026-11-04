@@ -1328,7 +1328,9 @@ An item lists the bots that may use it in the entry's custom data
 Deleting a bot takes it off every list; the bot's name stays reserved until that succeeds.
 
 - `hexbot.passwords.list {}` → `{logins: [Item], bots: [string], store:
-  "keychain" | "secret_service" | "file" | "locked" | null}`. `logins` holds
+  "keychain" | "secret_service" | "file" | "locked" | null, vault}`. `vault`
+  is `{kind: "local"}` or `{kind: "vaultwarden", server, email, folder}`;
+  with Vaultwarden, `store` is where its master password is kept. `logins` holds
   items of every kind. An `Item` is `{id, kind, title, url, site, username,
   bots, has_password, has_code, notes, updated_at}`; an SSH key adds
   `{public_key, fingerprint, has_passphrase}` and an API key `{env}`. Never a
@@ -1349,7 +1351,41 @@ Deleting a bot takes it off every list; the bot's name stays reserved until that
   clients: a login's `password` and `code: {code, valid_for} | null`, an SSH
   key's `private_key` and `passphrase`, an API key's `key`.
 
+- `hexbot.passwords.connect {server, email, password, code?, copy?}` →
+  `{vault, copied}` makes a Vaultwarden (or any Bitwarden-compatible server)
+  the user's store; see below. 4207 means the account uses two-step login:
+  send the authenticator `code` too. 5301 means the Bitwarden CLI is missing.
+- `hexbot.passwords.disconnect {}` → `{vault}` signs out and goes back to the
+  vault on the daemon, which connecting left as it was. Nothing in
+  Vaultwarden is deleted.
+
 Changes, including a bot's card, emit `hexbot.passwords.changed {}`.
+
+#### Vaultwarden
+
+A user can keep their items in a Vaultwarden account instead of the vault on
+the daemon. Hexbot does no Bitwarden cryptography itself: it runs the
+official Bitwarden CLI, `bw` (`passwords.bitwarden_command` in config.yaml,
+then `HEXBOT_BW_CMD`, then `bw` on the PATH), which must be installed on the
+daemon's computer. The server must use https; `NODE_EXTRA_CA_CERTS` in the
+daemon's environment reaches `bw` for a private CA.
+
+- Each user's `bw` keeps its data in `<home>/users/<id>/passwords/bitwarden`,
+  in the folder bots' shells can't read. The master password is kept where the
+  vault key would be (Keychain, Secret Service, or
+  `passwords/vaultwarden.key`) so Hexbot can unlock after a restart; the
+  session key lives in memory only. Both reach `bw` in its environment, and
+  item contents on stdin, never on a command line.
+- Hexbot uses only the items in the account's `Hexbot` folder, which connect
+  finds or makes. A login is a Login item; an API key a Login item whose
+  password is the key, with custom fields `hexbot.kind: api_key` and
+  `Variable`; an SSH key a Secure note with hidden fields `Private key` and
+  `Passphrase` and a text field `Public key`. An SSH key item made in a
+  Bitwarden app is read too. `hexbot.bots` holds the bots an item is shared
+  with. Saving keeps fields and URIs a Bitwarden app added; deleting moves the
+  item to Vaultwarden's trash.
+- Lists sync with the server at most 30 seconds apart. With `copy`, connect
+  copies every item saved on the daemon into the Hexbot folder.
 
 The bot tool `hexbot_passwords` is offered to a bot with Computer use, in
 its own chat and its scheduled jobs; rooms and threads between bots never get

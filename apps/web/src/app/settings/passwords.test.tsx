@@ -1,8 +1,11 @@
+import { JsonRpcGatewayError } from '@hermes/shared'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, vi } from 'vitest'
 
 import {
+  passwordsConnect,
   passwordsDelete,
+  passwordsDisconnect,
   passwordsList,
   passwordsReveal,
   passwordsSave,
@@ -16,7 +19,9 @@ import { PasswordsSettings } from './passwords'
 
 vi.mock('../../lib/api', async importOriginal => ({
   ...(await importOriginal()),
+  passwordsConnect: vi.fn(),
   passwordsDelete: vi.fn().mockResolvedValue({}),
+  passwordsDisconnect: vi.fn().mockResolvedValue({ vault: { kind: 'local' } }),
   passwordsList: vi.fn(),
   passwordsReveal: vi.fn(),
   passwordsSave: vi.fn(),
@@ -275,6 +280,79 @@ describe('Settings, Passwords', () => {
     fireEvent.change(screen.getByLabelText('Search passwords'), { target: { value: 'openai_api' } })
     expect(screen.queryByTestId('password-login-1')).toBeNull()
     expect(screen.getByTestId('password-api-1')).toBeVisible()
+  })
+
+  it('connects Vaultwarden, asking for a two-step code when the account has one', async () => {
+    const vault = {
+      email: 'me@example.com',
+      folder: 'Hexbot',
+      kind: 'vaultwarden' as const,
+      server: 'https://vault.example.com'
+    }
+
+    vi.mocked(passwordsConnect)
+      .mockRejectedValueOnce(
+        new JsonRpcGatewayError('This account uses two-step login.', { code: 4207 })
+      )
+      .mockResolvedValueOnce({ copied: 1, vault })
+    render(<PasswordsSettings />)
+    await screen.findByTestId('password-login-1')
+    expect(screen.getByText('This daemon')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Use Vaultwarden' }))
+    fireEvent.change(screen.getByLabelText('Vaultwarden address'), {
+      target: { value: 'https://vault.example.com' }
+    })
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'me@example.com' } })
+    fireEvent.change(screen.getByLabelText('Master password'), { target: { value: 'mp' } })
+    expect(
+      screen.getByRole('switch', { name: 'Copy the items saved on this daemon' })
+    ).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
+    await waitFor(() =>
+      expect(passwordsConnect).toHaveBeenCalledWith({
+        copy: true,
+        email: 'me@example.com',
+        password: 'mp',
+        server: 'https://vault.example.com'
+      })
+    )
+    fireEvent.change(await screen.findByLabelText('Two-step login code'), {
+      target: { value: ' 123456 ' }
+    })
+    vi.mocked(passwordsList).mockResolvedValue({
+      bots: [],
+      logins: [schoology],
+      store: 'keychain',
+      vault
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
+    await waitFor(() =>
+      expect(passwordsConnect).toHaveBeenLastCalledWith({
+        code: '123456',
+        copy: true,
+        email: 'me@example.com',
+        password: 'mp',
+        server: 'https://vault.example.com'
+      })
+    )
+    expect(await screen.findByText('Copied 1 item into the Hexbot folder.')).toBeVisible()
+    expect(screen.getByText('me@example.com · vault.example.com')).toBeVisible()
+    expect(
+      screen.getByText(
+        "Your Vaultwarden master password is in the keychain of the daemon's computer."
+      )
+    ).toBeVisible()
+
+    // Disconnecting goes back to the vault on the daemon.
+    vi.mocked(passwordsList).mockResolvedValue({
+      bots: [],
+      logins: [schoology],
+      store: 'keychain',
+      vault: { kind: 'local' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }))
+    await waitFor(() => expect(passwordsDisconnect).toHaveBeenCalled())
+    expect(await screen.findByText('This daemon')).toBeVisible()
   })
 
   it('says what to do when there are none', async () => {

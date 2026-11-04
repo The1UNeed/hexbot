@@ -37,6 +37,7 @@ import type {
   PasswordItem,
   PasswordKeyStore,
   PasswordKind,
+  PasswordVault,
   PluginAnswer,
   PluginKind,
   PluginsList,
@@ -303,6 +304,18 @@ export interface PasswordsList {
   /** Every saved item, of every kind; the name is older than SSH and API keys. */
   logins: PasswordItem[]
   store: PasswordKeyStore
+  /** Older daemons send none: the vault on the daemon. */
+  vault?: PasswordVault
+}
+
+/** Signs in to a Vaultwarden; `code` is a two-step code, asked for with error 4207. */
+export interface VaultwardenInput {
+  code?: string
+  /** Copy the items saved on the daemon into the Hexbot folder. */
+  copy?: boolean
+  email: string
+  password: string
+  server: string
 }
 
 /**
@@ -354,6 +367,16 @@ export function passwordsSetBots(
 
 export function passwordsDelete(id: string): Promise<unknown> {
   return rpcCall('hexbot.passwords.delete', { id })
+}
+
+export function passwordsConnect(
+  input: VaultwardenInput
+): Promise<{ copied: number; vault: PasswordVault }> {
+  return rpcCall('hexbot.passwords.connect', { ...input })
+}
+
+export function passwordsDisconnect(): Promise<{ vault: PasswordVault }> {
+  return rpcCall('hexbot.passwords.disconnect', {})
 }
 
 /** An item's secrets, for the owner only. */

@@ -47,6 +47,19 @@ Passwords and keys are kept on the daemon's computer in one [KeePass](https://ke
 
 Bots' shell commands and file tools can't read the vault or its key in Auto or Manual. In Bypass a bot has no sandbox and could.
 
+## Keeping them in Vaultwarden
+
+If you run [Vaultwarden](https://github.com/dani-garcia/vaultwarden), or use any Bitwarden-compatible server, your bots can use the items there instead. Your Bitwarden apps then see and edit the same logins and keys.
+
+1. Install the official Bitwarden CLI on the daemon's computer: `npm install -g @bitwarden/cli`, or `brew install bitwarden-cli` on a Mac.
+2. In Settings, Passwords, under **Where they're kept**, choose **Use Vaultwarden**.
+3. Enter the server's https address, your email and your master password. If the account uses two-step login, Hexbot asks for the code from your authenticator app.
+4. Choose whether to copy the items already saved on the daemon, then **Connect**.
+
+Hexbot makes a **Hexbot** folder in the account and uses only the items in it. To give your bots a login you already have, move it into that folder in a Bitwarden app. Logins and API keys are Login items; SSH keys are Secure notes with the private key in a hidden field. Deleting an item in Hexbot moves it to Vaultwarden's trash.
+
+Hexbot keeps your master password in the keychain of the daemon's computer, or the key file, so it can unlock after a restart. While unlocked, the Bitwarden CLI can read the whole account, so an account just for your bots is safest. **Disconnect** signs out and goes back to the passwords saved on the daemon; nothing in Vaultwarden is deleted.
+
 ## Where bots can use them
 
 - **Computer use**: Hexbot can't see which site the bots' computer shows, so it asks you before typing unless the bot uses Bypass. Look at the computer before you allow it.

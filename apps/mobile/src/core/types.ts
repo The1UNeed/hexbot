@@ -13,6 +13,7 @@ export type {
   ApiKeyForm,
   PasswordItem,
   PasswordKind,
+  PasswordVault,
   Plugin,
   PluginsList,
   SignInForm,
