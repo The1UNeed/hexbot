@@ -1297,7 +1297,11 @@ async fn a_message_sent_with_interrupt_stops_the_reply_and_starts_a_fresh_run() 
     let s = runtime.sessions.lock().unwrap()["first"].clone();
     let mut events = hub.subscribe();
     runtime
-        .call_inner("alice", "prompt.submit", &json!({"session_id":id,"text":"wait"}))
+        .call_inner(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":id,"text":"wait"}),
+        )
         .await
         .unwrap();
     stop_event(&mut events, |event| {
@@ -1366,7 +1370,10 @@ async fn a_message_sent_with_interrupt_stops_the_reply_and_starts_a_fresh_run() 
         .position(|command| command["c"]["message"] == "change of plan")
         .unwrap();
     assert!(abort < sent, "Stop comes before the new message");
-    assert_eq!(commands[sent]["active"], false, "the message starts a new run");
+    assert_eq!(
+        commands[sent]["active"], false,
+        "the message starts a new run"
+    );
     assert!(s.state.lock().unwrap().busy);
     assert!(!s.state.lock().unwrap().interrupted);
 
