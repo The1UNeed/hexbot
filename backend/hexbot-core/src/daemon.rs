@@ -138,6 +138,50 @@ fn lock_home(home: &Path) -> Result<std::fs::File> {
     file.sync_all()?;
     Ok(file)
 }
+/// The app's readiness probe, setup and the installers read these records
+/// while the daemon starts. On Windows `common::atomic_write` replaces with
+/// MoveFileEx, which fails with "Access is denied" while any reader holds the
+/// old file open (tests/windows_contract.rs, `publication`). std's rename
+/// then retries with POSIX semantics, which replaces the file when every
+/// reader shares delete, as Node, Rust and the app's readiness probe do.
+#[cfg(windows)]
+fn publish_record(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let parent = path
+        .parent()
+        .ok_or_else(|| Error::new(4202, "invalid path"))?;
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_default();
+    let step = |phase: &str| common::io_context(format!("{phase} {name}"));
+    std::fs::create_dir_all(parent).map_err(step("create directory for"))?;
+    // Only the daemon holding the home lock publishes, so its PID and a
+    // counter keep names unique. std creates it with ordinary attributes.
+    let temporary = parent.join(format!(
+        ".{name}.{}-{}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut file =
+        std::fs::File::create_new(&temporary).map_err(step("create temporary file for"))?;
+    let written = file
+        .write_all(bytes)
+        .map_err(step("write"))
+        .and_then(|()| file.sync_all().map_err(step("flush")));
+    drop(file);
+    let published =
+        written.and_then(|()| std::fs::rename(&temporary, path).map_err(step("replace")));
+    if published.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    published
+}
+#[cfg(not(windows))]
+fn publish_record(path: &Path, bytes: &[u8]) -> Result<()> {
+    common::atomic_write(path, bytes)
+}
 /// Only print a startup link to an unsupervised terminal. macOS shells inherit
 /// XPC_SERVICE_NAME=0, which does not name a launchd service.
 fn prints_sign_in_link(terminal: bool, env: impl Fn(&str) -> Option<String>) -> bool {
@@ -290,7 +334,7 @@ async fn run() -> Result<()> {
     let running_record =
         serde_json::to_vec(&serde_json::json!({"pid":std::process::id(),"executable":executable}))
             .unwrap();
-    common::atomic_write(&home.join("runtime/native-running.json"), &running_record)?;
+    publish_record(&home.join("runtime/native-running.json"), &running_record)?;
     diagnostics.launch_phase("Lock the home directory", phase);
     let phase = Instant::now();
     db::migrate(&home)?;
@@ -351,7 +395,7 @@ async fn run() -> Result<()> {
         if first {
             diagnostics.launch_phase("Start bots, rooms and memory", phase);
         }
-        common::atomic_write(
+        publish_record(
             &home.join("serve-state.json"),
             serde_json::json!({"host":address.ip().to_string(),"port":port})
                 .to_string()
@@ -419,8 +463,14 @@ async fn run() -> Result<()> {
         // Windows observers cannot read the held byte-range lock's PID. Keep
         // the early retention record and publish its readiness event after the
         // HTTP identity service exists, including after a listener rebind.
+        // The record has not changed since startup, so this replace is only a
+        // wakeup: a reader blocking it must not stop a serving daemon.
         #[cfg(windows)]
-        common::atomic_write(&home.join("runtime/native-running.json"), &running_record)?;
+        if let Err(error) =
+            publish_record(&home.join("runtime/native-running.json"), &running_record)
+        {
+            eprintln!("Runtime record: {error}");
+        }
         println!("HERMES_BACKEND_READY port={port}");
         std::io::stdout().flush()?;
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(250));
