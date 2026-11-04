@@ -1202,7 +1202,7 @@ it.each([4002, 4200, 4202, 5201])(
     expect(retryOn(card)).toBeNull()
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Read my plan')
     expect(useDrafts.getState().byId.chat).toBe('Read my plan')
-    expect(screen.getByRole('button', { name: 'Remove plan.txt' })).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Remove plan.txt' })).toBeVisible()
     expect(submits()).toEqual([{ session_id: 'chat', text: 'Read my plan' }])
     expect(delivered).toHaveLength(0)
     expect(staged.has('srv-1')).toBe(true)
@@ -1225,7 +1225,7 @@ it.each([
     expect(delivered).toHaveLength(0)
     expect(staged.has('srv-1')).toBe(true)
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Read my plan')
-    expect(screen.getByRole('button', { name: 'Remove plan.txt' })).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Remove plan.txt' })).toBeVisible()
   }
 )
 
@@ -1758,7 +1758,7 @@ it('offers no Retry for an empty-text refusal, which the same send cannot pass',
   expect(retries()).toHaveLength(0)
   expect(submits()[0]).toMatchObject({ text: '', attachments: ['srv-1'] })
   expect(staged.has('srv-1')).toBe(true)
-  expect(screen.getByRole('button', { name: 'Remove plan.txt' })).toBeVisible()
+  expect(await screen.findByRole('button', { name: 'Remove plan.txt' })).toBeVisible()
 })
 
 it.each(['accepted', 'unknown', 'refused'] as const)(

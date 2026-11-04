@@ -561,8 +561,20 @@ impl Runtime {
         s.permit.lock().unwrap().take();
         self.events.forget(&s.owner, &s.id);
     }
+    /// A section without a model of its own takes the bot's (`store::adopt_bot_model`).
+    /// Under the lock a bot update holds while it moves sections, so a model
+    /// read here is never saved after the bot changed it.
+    fn adopt_bot_model(&self, bot: &str, stored: &str) -> Result<()> {
+        let _writer = common::config_writer()?;
+        store::adopt_bot_model(
+            &self.home,
+            stored,
+            &crate::catalog::section_model(&self.home, bot)?,
+        )
+    }
     /// True when the section's saved model differs from the one its process runs.
     fn model_changed(&self, s: &Live) -> Result<bool> {
+        self.adopt_bot_model(&s.bot, &s.stored)?;
         let saved: Option<String> = store::open(&self.home)?
             .query_row(
                 "SELECT options FROM native_sessions WHERE stored_id=?",
@@ -991,6 +1003,7 @@ impl Runtime {
         );
         let cwd = common::resolve_workdir(&self.home, configured)?;
         let dir = store::session_dir(&self.home, stored)?;
+        self.adopt_bot_model(bot, stored)?;
         let existing: Option<String> = store::open(&self.home)?
             .query_row(
                 "SELECT options FROM native_sessions WHERE stored_id=?",
@@ -6240,6 +6253,81 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
         assert_eq!(mode("none", "inherit"), "smart");
         db.execute_batch("INSERT INTO rooms(id,name,owner_id,approval_mode) VALUES('r','R','alice','manual');INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('r','owl','in-room')").unwrap();
         assert_eq!(mode("in-room", "off"), "manual");
+    }
+    #[tokio::test]
+    async fn a_chat_started_before_its_bot_had_a_model_takes_the_bots_model() {
+        let (home, runtime, _) = setup();
+        let config = home.path().join("profiles/owl/config.yaml");
+        fs::write(&config, "model: {}\ntools:\n  enabled_toolsets: []\n").unwrap();
+        // It started on Pi's default model, saved as no model of its own.
+        let s = runtime.open_session("alice", "owl", "first").await.unwrap();
+        let saved = |home: &Path| -> Value {
+            let raw: String = store::open(home)
+                .unwrap()
+                .query_row(
+                    "SELECT options FROM native_sessions WHERE stored_id='first'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            serde_json::from_str(&raw).unwrap()
+        };
+        assert!(saved(home.path())["model"].as_str().is_none());
+        crate::catalog::call(
+            home.path(),
+            "alice",
+            "hexbot.bots.update",
+            &json!({"name":"owl","provider":"anthropic","model":"claude-fable-5-1","reasoning_effort":"high"}),
+        )
+        .unwrap()
+        .unwrap();
+        // Reads keep the running process; the next message runs on the bot's model.
+        assert!(Arc::ptr_eq(
+            &s,
+            &runtime.open_session("alice", "owl", "first").await.unwrap()
+        ));
+        let reopened = runtime
+            .open_for_input("alice", "owl", "first")
+            .await
+            .unwrap();
+        assert!(!Arc::ptr_eq(&s, &reopened));
+        let log = fs::read_to_string(home.path().join("processes.jsonl")).unwrap();
+        let args = serde_json::from_str::<Value>(log.lines().last().unwrap()).unwrap()["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(args.contains("--model claude-fable-5-1 --provider anthropic"));
+        assert!(args.contains("--thinking high"));
+        let options = saved(home.path());
+        assert_eq!(options["model"], "claude-fable-5-1");
+        assert_eq!(options["provider"], "anthropic");
+        // From then on it follows the bot like any other chat.
+        crate::catalog::call(
+            home.path(),
+            "alice",
+            "hexbot.bots.update",
+            &json!({"name":"owl","model":"claude-opus-5-5"}),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(saved(home.path())["model"], "claude-opus-5-5");
+        // A chat whose bot still has no model stays on Pi's default.
+        fs::write(&config, "model: {}\ntools:\n  enabled_toolsets: []\n").unwrap();
+        store::open(home.path())
+            .unwrap()
+            .execute(
+                "UPDATE native_sessions SET options=json_set(options,'$.model',json('{}'),'$.provider',NULL) WHERE stored_id='first'",
+                [],
+            )
+            .unwrap();
+        runtime
+            .open_for_input("alice", "owl", "first")
+            .await
+            .unwrap();
+        assert!(saved(home.path())["model"].as_str().is_none());
     }
     #[tokio::test]
     async fn sections_follow_a_new_bot_model_from_the_next_message() {
