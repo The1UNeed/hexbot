@@ -29,10 +29,12 @@ const DONE: Record<PluginForm['action'], string> = {
  */
 export function PluginCard({
   form,
+  joined,
   onAnswer,
   request
 }: {
   form: PluginForm
+  joined?: boolean
   onAnswer: (
     requestId: string,
     choice: ApprovalChoice,
@@ -77,6 +79,7 @@ export function PluginCard({
 
   return (
     <ConnectCard
+      joined={joined}
       accessibilityLabel={decided ? undefined : `${VERBS[form.action]} ${form.name}`}
       action={
         open ? null : (

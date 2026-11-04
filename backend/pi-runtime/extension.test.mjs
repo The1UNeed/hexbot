@@ -641,6 +641,37 @@ test('Auto asks before full access, with the bot reason, and before writes outsi
   assert.deepEqual(f.choices[6].model, {provider:'test', model:'fallback'});
 });
 
+test('connector reads run in every mode; changes run in Bypass, are reviewed in Auto and ask in Manual', async t => {
+  const change = {connector:'notion', method:'PATCH', path:'/v1/pages/abc', body:{archived:true}};
+  const read = {connector:'notion', method:'POST', path:'/v1/search', body:{query:'tasks'}};
+  for (const mode of ['off', 'smart', 'manual']) {
+    const f = fixture(t, mode);
+    assert.equal(await f.gate('hexbot_connector_read', read), undefined, mode);
+    assert.equal(f.choices.length, 0, mode);
+  }
+  const off = fixture(t, 'off');
+  assert.equal(await off.gate('hexbot_connector_write', change), undefined);
+  assert.equal(off.choices.length, 0);
+  const auto = fixture(t, 'smart');
+  assert.equal((await auto.gate('hexbot_connector_write', change))?.block, true);
+  assert.equal(auto.choices[0].tool, 'hexbot_connector_write');
+  assert.equal(auto.choices[0].command, 'notion PATCH /v1/pages/abc {"archived":true}');
+  assert.match(auto.choices[0].reason, /Auto mode asks before a connector changes anything/);
+  assert.equal(auto.choices[0].review, true);
+  assert.deepEqual(auto.choices[0].input, change);
+  const manual = fixture(t, 'manual');
+  manual.ctx.choice = 'session';
+  assert.equal(await manual.gate('hexbot_connector_write', change), undefined);
+  assert.equal(manual.choices[0].review, undefined);
+  assert.match(manual.choices[0].reason, /Manual mode asks/);
+  // Allowed for the section, it stops asking for that connector only.
+  assert.equal(await manual.gate('hexbot_connector_write', change), undefined);
+  assert.equal(manual.choices.length, 1);
+  manual.ctx.choice = 'deny';
+  assert.equal((await manual.gate('hexbot_connector_write', {...change, connector:'airtable', path:'/v0/app/Tasks'}))?.block, true);
+  assert.equal(manual.choices.length, 2);
+});
+
 test('Auto reviews every step outside the sandbox, whatever was allowed before', async t => {
   const f = fixture(t, 'manual', ['terminal']);
   // An Allow for now grant from Manual does not carry into Auto's reviewed steps.
