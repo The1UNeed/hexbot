@@ -1143,8 +1143,8 @@ bot, including bots created later; a list keeps bots created later off.
   package with a server is `ready` when its server is. Skill rows are the `Skill` shape
   without `path`, and their `bots` are the bots whose grant is on and that
   have what the skill needs. A package's skills also wait for the values its
-  server was added without. Connector and skill rows add `ready_bots`, the
-  bots it is set up for, as through a key in a bot's own `.env`: those bots
+  server was added without. Connector, skill and skills-only package rows add
+  `ready_bots`, the bots it is set up for, as through a key in a bot's own `.env`: those bots
   can be given it while `ready` is false. With `bot`, rows add
   `enabled_for_bot`.
 - `hexbot.plugins.set_bots {kind, id, bots}` → `{plugin: Plugin}`. Gives the
