@@ -277,6 +277,16 @@ read would get past that. The sign-in card's answer travels on the same
 connection as chat, so plain LAN HTTP exposes it the same way; so does the
 API key card's.
 
+A user can keep their items in Vaultwarden instead. Hexbot runs the official
+Bitwarden CLI for every read and write, so Bitwarden's own code does the
+encryption, and uses only the items in the account's Hexbot folder. To unlock
+the account after a restart, the daemon keeps its master password where it
+would keep the vault key, and while unlocked `bw` can decrypt everything in
+that account, not only the Hexbot folder. Use an account just for your bots,
+or share a collection with one, rather than your main vault. The master
+password and session key reach `bw` in its environment, and item contents on
+stdin, never on a command line.
+
 A bot never receives an SSH private key or an API key either. It names the
 keys a shell command on the bots' computer needs, and the daemon, after
 asking unless the bot runs in Bypass, hands them over there: API keys as

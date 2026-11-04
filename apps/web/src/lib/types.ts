@@ -162,7 +162,14 @@ export interface PasswordItem {
   username: string
 }
 
-/** Where the vault's key is kept; null before the first password. */
+/**
+ * Where a user's Passwords are: the KeePass vault on the daemon, or the
+ * Hexbot folder of a Vaultwarden account.
+ */
+export type PasswordVault =
+  { kind: 'local' } | { email: string; folder: string; kind: 'vaultwarden'; server: string }
+
+/** Where the vault's key, or the Vaultwarden master password, is kept; null before the first password. */
 export type PasswordKeyStore = 'file' | 'keychain' | 'locked' | 'secret_service' | null
 
 export interface ApprovalRequest {

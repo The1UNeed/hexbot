@@ -28,8 +28,11 @@ export class HexbotRpcClient {
     return this.client.connect(this.wsUrl)
   }
 
-  call<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
-    return this.client.request<T>(method, params)
+  /** `timeoutMs` overrides the client's default for a call known to take long. */
+  call<T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<T> {
+    return timeoutMs === undefined
+      ? this.client.request<T>(method, params)
+      : this.client.request<T>(method, params, timeoutMs)
   }
 
   subscribe<P = unknown>(
@@ -105,7 +108,8 @@ function waitForActive(timeoutMs: number): Promise<HexbotRpcClient> {
 export async function rpcCall<T>(
   method: string,
   params: Record<string, unknown> = {},
-  waitMs = CONNECT_WAIT_MS
+  waitMs = CONNECT_WAIT_MS,
+  timeoutMs?: number
 ): Promise<T> {
   const client = active ?? (await waitForActive(waitMs).catch(() => null))
 
@@ -113,5 +117,7 @@ export async function rpcCall<T>(
     throw new NotConnectedError(method)
   }
 
-  return client.call<T>(method, params)
+  return timeoutMs === undefined
+    ? client.call<T>(method, params)
+    : client.call<T>(method, params, timeoutMs)
 }

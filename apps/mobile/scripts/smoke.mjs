@@ -751,6 +751,14 @@ try {
       await settle()
       await shot('password')
       await page.getByTestId('management-sheet-back').click()
+      // Vaultwarden is offered beside the vault on the daemon.
+      await page.getByTestId('manage-password-vault').click()
+      await expect(page.getByTestId('management-loading')).not.toBeVisible({ timeout: 30000 })
+      await expect(page.getByTestId('field-server')).toBeVisible()
+      await expect(page.getByTestId('toggle-copy')).toBeVisible()
+      await settle()
+      await shot('password-vault')
+      await page.getByTestId('management-sheet-back').click()
     }
     if (area === 'plugins') {
       // One plugin card chooses the bots that get it.

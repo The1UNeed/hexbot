@@ -1,3 +1,4 @@
+import { JsonRpcGatewayError } from '@hermes/shared'
 import {
   Braces,
   ChevronDown,
@@ -7,7 +8,9 @@ import {
   KeyRound,
   Plus,
   Search,
-  SquareTerminal
+  ShieldCheck,
+  SquareTerminal,
+  Vault
 } from 'lucide-react'
 import { type FormEvent, type ReactNode, useEffect, useMemo, useState } from 'react'
 
@@ -16,10 +19,11 @@ import { confirm } from '../../components/ui/confirm'
 import { Input } from '../../components/ui/input'
 import { Menu } from '../../components/ui/menu'
 import { SkeletonLines } from '../../components/ui/skeleton'
+import { Switch } from '../../components/ui/switch'
 import { Textarea } from '../../components/ui/textarea'
 import { type PasswordInput, type PasswordSecret, passwordsReveal } from '../../lib/api'
 import { cn } from '../../lib/cn'
-import type { PasswordItem, PasswordKeyStore, PasswordKind } from '../../lib/types'
+import type { PasswordItem, PasswordKeyStore, PasswordKind, PasswordVault } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { usePasswords } from '../../stores/passwords'
@@ -38,6 +42,18 @@ const STORE_TEXT: Record<Exclude<PasswordKeyStore, null>, string> = {
     "Hexbot can't read the vault's key. Unlock the keychain on the daemon's computer, then open this page again.",
   secret_service: "The vault's key is in the keyring of the daemon's computer."
 }
+
+/** With Vaultwarden, the key the page names is its master password. */
+const VAULTWARDEN_STORE_TEXT: Record<Exclude<PasswordKeyStore, null>, string> = {
+  file: "Your Vaultwarden master password is in a file on the daemon's computer that only you can read.",
+  keychain: "Your Vaultwarden master password is in the keychain of the daemon's computer.",
+  locked:
+    "Hexbot can't read your Vaultwarden master password. Unlock the keychain on the daemon's computer, then open this page again.",
+  secret_service: "Your Vaultwarden master password is in the keyring of the daemon's computer."
+}
+
+const storeText = (vault: PasswordVault, store: PasswordKeyStore) =>
+  store ? (vault.kind === 'vaultwarden' ? VAULTWARDEN_STORE_TEXT : STORE_TEXT)[store] : undefined
 
 const KINDS: Record<
   PasswordKind,
@@ -123,6 +139,7 @@ export function PasswordsSettings(): React.JSX.Element {
   const loading = usePasswords(state => state.loading)
   const loadError = usePasswords(state => state.error)
   const store = usePasswords(state => state.store)
+  const vault = usePasswords(state => state.vault)
   const refresh = usePasswords(state => state.refresh)
   const [query, setQuery] = useState('')
   const [shown, setShown] = useState<'all' | PasswordKind>('all')
@@ -164,7 +181,9 @@ export function PasswordsSettings(): React.JSX.Element {
 
   return (
     <>
-      <Heading description="Sign-ins, SSH keys and API keys your bots use for you. Hexbot types or hands them over for a bot, which never sees them. They're kept in a KeePass vault on this daemon.">
+      <Heading
+        description={`Sign-ins, SSH keys and API keys your bots use for you. Hexbot types or hands them over for a bot, which never sees them. ${vault.kind === 'vaultwarden' ? "They're kept in your Vaultwarden." : "They're kept in a KeePass vault on this daemon."}`}
+      >
         Passwords
       </Heading>
       <div className="mb-4 flex gap-2">
@@ -226,7 +245,7 @@ export function PasswordsSettings(): React.JSX.Element {
       ) : null}
       {loading && !logins.length && !loadError ? <SkeletonLines label="Loading passwords" /> : null}
       {logins.length ? (
-        <Group footer={store ? STORE_TEXT[store] : undefined}>
+        <Group footer={storeText(vault, store)}>
           {visible.map(login => (
             <ItemRow
               bots={bots}
@@ -244,10 +263,12 @@ export function PasswordsSettings(): React.JSX.Element {
         </Group>
       ) : !loading && !loadError && !adding ? (
         <p className="rounded-[14px] bg-foreground/[0.04] px-4 py-6 text-center text-[length:var(--text-secondary)] text-muted">
-          No passwords yet. When a bot needs to sign in somewhere or needs an API key, it asks you
-          in its chat. You can also add logins, SSH keys and API keys here.
+          {vault.kind === 'vaultwarden'
+            ? "Nothing in your Vaultwarden's Hexbot folder yet. Add logins, SSH keys and API keys here, or move items into that folder in a Bitwarden app."
+            : 'No passwords yet. When a bot needs to sign in somewhere or needs an API key, it asks you in its chat. You can also add logins, SSH keys and API keys here.'}
         </p>
       ) : null}
+      {loading && !logins.length ? null : <VaultSection count={logins.length} vault={vault} />}
     </>
   )
 }
@@ -922,5 +943,237 @@ function ItemForm({
         </Button>
       </div>
     </form>
+  )
+}
+
+/**
+ * Where the items are: the KeePass vault on this daemon, or the Hexbot
+ * folder of a Vaultwarden account, which the official Bitwarden CLI on the
+ * daemon's computer signs in to.
+ */
+function VaultSection({ count, vault }: { count: number; vault: PasswordVault }) {
+  const connect = usePasswords(state => state.connect)
+  const disconnect = usePasswords(state => state.disconnect)
+  const [open, setOpen] = useState(false)
+  const [server, setServer] = useState('')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [code, setCode] = useState('')
+  const [needsCode, setNeedsCode] = useState(false)
+  const [copy, setCopy] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<null | string>(null)
+  const [notice, setNotice] = useState<null | string>(null)
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault()
+    setBusy(true)
+    setError(null)
+
+    try {
+      const copied = await connect({
+        ...(needsCode && code.trim() ? { code: code.trim() } : {}),
+        copy: count > 0 && copy,
+        email: email.trim(),
+        password,
+        server: server.trim()
+      })
+
+      setPassword('')
+      setCode('')
+      setNeedsCode(false)
+      setOpen(false)
+      setNotice(
+        copied
+          ? `Copied ${copied} ${copied === 1 ? 'item' : 'items'} into the Hexbot folder.`
+          : null
+      )
+    } catch (cause) {
+      if (cause instanceof JsonRpcGatewayError && cause.code === 4207) {
+        setNeedsCode(true)
+      }
+
+      setError(errorText(cause))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const leave = async () => {
+    if (
+      !(await confirm({
+        detail:
+          'Your bots go back to the passwords saved on this daemon. Nothing in Vaultwarden is deleted.',
+        title: 'Disconnect Vaultwarden?'
+      }))
+    ) {
+      return
+    }
+
+    setError(null)
+    setNotice(null)
+    setBusy(true)
+    void disconnect()
+      .catch(cause => setError(errorText(cause)))
+      .finally(() => setBusy(false))
+  }
+
+  const status = (
+    <>
+      {notice ? (
+        <p className="px-4 pb-3 text-[length:var(--text-secondary)] text-muted">{notice}</p>
+      ) : null}
+      {error && !open ? (
+        <p className="px-4 pb-3 text-[length:var(--text-secondary)] text-danger" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </>
+  )
+
+  if (vault.kind === 'vaultwarden') {
+    return (
+      <Group
+        className="mt-6"
+        footer="Hexbot uses only the items in this account's Hexbot folder. Move an item into it in a Bitwarden app to give it to your bots."
+        title="Where they're kept"
+      >
+        <div className="flex min-h-[56px] items-center gap-3 px-4 py-2.5">
+          <span className="grid size-8 shrink-0 place-items-center rounded-[8px] bg-foreground/[0.07] text-muted">
+            <ShieldCheck aria-hidden size={15} />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate">Vaultwarden</span>
+            <span className="mt-0.5 block truncate text-[length:var(--text-secondary)] text-muted">
+              {[vault.email, vault.server.replace(/^https:\/\//, '')].join(' · ')}
+            </span>
+          </span>
+          <Button disabled={busy} onClick={() => void leave()} size="sm">
+            Disconnect
+          </Button>
+        </div>
+        {status}
+      </Group>
+    )
+  }
+
+  return (
+    <Group
+      className="mt-6"
+      footer={
+        open
+          ? "Hexbot signs in with the official Bitwarden CLI, which must be installed on the daemon's computer. It keeps your master password in the daemon's keychain to unlock after a restart, and uses only the items in a Hexbot folder it makes. An account just for your bots is safest."
+          : undefined
+      }
+      title="Where they're kept"
+    >
+      <div className="flex min-h-[56px] items-center gap-3 px-4 py-2.5">
+        <span className="grid size-8 shrink-0 place-items-center rounded-[8px] bg-foreground/[0.07] text-muted">
+          <Vault aria-hidden size={15} />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate">This daemon</span>
+          <span className="mt-0.5 block truncate text-[length:var(--text-secondary)] text-muted">
+            A KeePass vault on the daemon's computer
+          </span>
+        </span>
+        {open ? null : (
+          <Button onClick={() => setOpen(true)} size="sm">
+            Use Vaultwarden
+          </Button>
+        )}
+      </div>
+      {status}
+      {open ? (
+        <form
+          className="grid gap-3 border-t border-foreground/[0.06] p-4"
+          onSubmit={event => void submit(event)}
+        >
+          <label>
+            <span className={fieldLabel}>Vaultwarden address</span>
+            <Input
+              autoCapitalize="none"
+              inputMode="url"
+              onChange={event => setServer(event.target.value)}
+              placeholder="https://vault.example.com"
+              spellCheck={false}
+              value={server}
+            />
+          </label>
+          <label>
+            <span className={fieldLabel}>Email</span>
+            <Input
+              autoCapitalize="none"
+              autoComplete="off"
+              inputMode="email"
+              onChange={event => setEmail(event.target.value)}
+              spellCheck={false}
+              value={email}
+            />
+          </label>
+          <label>
+            <span className={fieldLabel}>Master password</span>
+            <Input
+              autoComplete="off"
+              onChange={event => setPassword(event.target.value)}
+              type="password"
+              value={password}
+            />
+          </label>
+          {needsCode ? (
+            <label>
+              <span className={fieldLabel}>Two-step login code</span>
+              <Input
+                autoComplete="one-time-code"
+                inputMode="numeric"
+                onChange={event => setCode(event.target.value)}
+                value={code}
+              />
+            </label>
+          ) : null}
+          {count ? (
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-[length:var(--text-secondary)]">
+                Copy the {count} {count === 1 ? 'item' : 'items'} saved on this daemon
+              </span>
+              <Switch
+                aria-label="Copy the items saved on this daemon"
+                checked={copy}
+                onCheckedChange={setCopy}
+              />
+            </div>
+          ) : null}
+          {error ? (
+            <p className="text-[length:var(--text-secondary)] text-danger" role="alert">
+              {error}
+            </p>
+          ) : null}
+          <div className="flex gap-2">
+            <Button
+              busy={busy}
+              disabled={
+                busy || !server.trim() || !email.trim() || !password || (needsCode && !code.trim())
+              }
+              size="sm"
+              type="submit"
+              variant="primary"
+            >
+              Connect
+            </Button>
+            <Button
+              disabled={busy}
+              onClick={() => {
+                setOpen(false)
+                setError(null)
+              }}
+              size="sm"
+              type="button"
+            >
+              Cancel
+            </Button>
+          </div>
+        </form>
+      ) : null}
+    </Group>
   )
 }
