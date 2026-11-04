@@ -172,7 +172,11 @@ mode, working folder, output folders and running tool call again before
 anything is opened. It refuses credential files and stores, system
 configuration files, project secrets, `.git`, `node_modules` and `.ssh`
 anywhere on the path, the managed runtime, and the Hexbot home outside the
-bot's output folders. Bypass never uses the bridge. On Windows the bridge works through handles
+bot's output folders. It also refuses the repository's configured Git
+metadata (a `core.hooksPath` folder, the folders a `gitdir:` or `commondir`
+link names, included config files) by the same workspace scan commands use,
+and refuses the change when that scan cannot finish. Bypass never uses the
+bridge. On Windows the bridge works through handles
 (`runtime_files_windows.rs`), as it does on macOS and Linux:
 
 - **Paths are judged first.** Network, device, NT object and stream paths,

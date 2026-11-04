@@ -533,6 +533,61 @@ async fn windows_security_runtime_runs_sections_and_scripts_in_the_sandbox() {
             }
             assert!(!work.join("notes.txt").exists());
             assert_eq!(fs::read_to_string(&secret).unwrap(), "private");
+            // The bridge writes as the daemon's user, so the repository's
+            // configured Git metadata refuses by the scan commands use: a
+            // hooksPath folder with an ordinary name, and the metadata folder
+            // a linked worktree's .git file names. Written directly, no git.
+            let repo = work.join("repo");
+            let linked = work.join("meta").join("linked");
+            for dir in [
+                repo.join(".git").join("objects"),
+                repo.join(".githooks"),
+                linked.join("objects"),
+                work.join("linked"),
+            ] {
+                fs::create_dir_all(dir).unwrap();
+            }
+            fs::write(repo.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
+            fs::write(
+                repo.join(".git").join("config"),
+                "[core]\n\thooksPath = .githooks\n",
+            )
+            .unwrap();
+            let hook = repo.join(".githooks").join("pre-commit");
+            fs::write(&hook, "#!/bin/sh\n").unwrap();
+            fs::write(linked.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+            fs::write(work.join("linked").join(".git"), "gitdir: ../meta/linked\n").unwrap();
+            for path in [
+                hook.clone(),
+                repo.join(".githooks").join("post-merge"),
+                linked.join("config"),
+            ] {
+                for operation in ["write", "edit_open", "edit_commit"] {
+                    let reply = ask(&live, request(operation, &path, json!(["0", "0"]))).await;
+                    assert!(
+                        reply["error"]
+                            .as_str()
+                            .unwrap()
+                            .contains("Git metadata is read-only"),
+                        "{operation} {}: {reply}",
+                        path.display()
+                    );
+                }
+            }
+            assert_eq!(fs::read_to_string(&hook).unwrap(), "#!/bin/sh\n");
+            assert!(!repo.join(".githooks").join("post-merge").exists());
+            assert!(!linked.join("config").exists());
+            let ordinary = repo.join("src").join("main.txt");
+            let reply = ask(&live, request("write", &ordinary, Value::Null)).await;
+            assert_eq!(reply["result"], json!({"success":true}), "{reply}");
+            assert_eq!(
+                fs::read_to_string(&ordinary).unwrap(),
+                format!("write-{mode}")
+            );
+            // Later commands and scripts run in a workspace without them.
+            fs::remove_dir_all(&repo).unwrap();
+            fs::remove_dir_all(work.join("meta")).unwrap();
+            fs::remove_dir_all(work.join("linked")).unwrap();
             // A write creates its folder; an edit reads the file's bytes and
             // commits only to the file it read.
             let reply = ask(&live, request("write", &target, Value::Null)).await;
