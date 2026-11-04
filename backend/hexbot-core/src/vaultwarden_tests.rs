@@ -561,6 +561,39 @@ fn saving_a_login_keeps_fields_named_like_another_kinds() {
 }
 
 #[test]
+fn a_locked_key_saved_into_a_bitwarden_ssh_key_item_keeps_its_passphrase() {
+    let home = home();
+    let h = home.path();
+    connect_alice(h, json!({})).unwrap();
+    let saved = crate::passwords::save(
+        h,
+        "alice",
+        &json!({"kind":"ssh_key","title":"Server","generate":true}),
+    )
+    .unwrap();
+    // Made a Bitwarden SSH key item in a Bitwarden app.
+    edit_fake(h, |state| {
+        let item = &mut state["items"][0];
+        item["type"] = json!(5);
+        item["sshKey"] = json!({"privateKey": "", "publicKey": ""});
+        item["fields"] = json!([{"name":"hexbot.kind","value":"ssh_key","type":0}]);
+    });
+    let id = saved["id"].as_str().unwrap();
+    crate::passwords::save(
+        h,
+        "alice",
+        &json!({"id":id,"private_key":crate::passwords::tests::LOCKED_KEY,"passphrase":"correct horse"}),
+    )
+    .unwrap();
+    assert_eq!(fake(h)["items"][0]["type"], 5);
+    assert!(
+        crate::passwords::secret(h, "alice", id, "private_key")
+            .unwrap()
+            .contains("OPENSSH PRIVATE KEY")
+    );
+}
+
+#[test]
 fn a_steam_code_key_survives_saving_other_fields() {
     let home = home();
     let h = home.path();

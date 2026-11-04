@@ -412,6 +412,9 @@ fn record_of(item: &Value) -> Option<Record> {
         5 => Record {
             private_key: text(&item["sshKey"]["privateKey"]),
             public_key: text(&item["sshKey"]["publicKey"]),
+            // Bitwarden's own key item has no passphrase; Hexbot keeps one
+            // for a locked key it saved there.
+            password: field(item, "Passphrase").unwrap_or_default(),
             ..Record::new(Kind::SshKey)
         },
         _ => return None,
@@ -499,6 +502,9 @@ fn item_of(record: &Record, mut base: Value) -> Value {
                 "publicKey": record.public_key,
                 "keyFingerprint": passwords::fingerprint(&record.public_key),
             });
+            if !record.password.is_empty() {
+                add("Passphrase", &record.password, true);
+            }
         }
         Kind::SshKey => {
             add("Private key", &record.private_key, true);

@@ -1416,7 +1416,7 @@ pub fn call(home: &Path, owner: &str, method: &str, p: &Value) -> Option<Result<
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn home() -> tempfile::TempDir {
@@ -1608,7 +1608,7 @@ mod tests {
     }
 
     /// `ssh-keygen -t ed25519 -N 'correct horse' -C fixture`.
-    const LOCKED_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----
+    pub(crate) const LOCKED_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----
 b3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jdHIAAAAGYmNyeXB0AAAAGAAAABDQv9xYPp
 5H9ENVN9QrXI0YAAAAGAAAAAEAAAAzAAAAC3NzaC1lZDI1NTE5AAAAIGou53ZeHy9mJCrn
 DtuPRCQ2bn3hsmoiLLXj38gV9k58AAAAkFn7NOmk9zaPmylcxbMqQdaa2ebLjLcPNoKQaJ
