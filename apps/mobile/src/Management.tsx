@@ -1547,6 +1547,12 @@ export function Management({
                 }
               />
             ))}
+            {/* As on the web: off for every bot takes grants waiting for setup too. */}
+            {bots.length > 1 && p.bots.length
+              ? action('Turn off for every bot', () =>
+                  rpc('hexbot.plugins.set_bots', { kind: p.kind, id: p.id, bots: [] })
+                )
+              : null}
           </Group>
           {server ? (
             <Group
