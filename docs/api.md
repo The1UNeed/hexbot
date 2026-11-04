@@ -1163,7 +1163,7 @@ bot, including bots created later; a list keeps bots created later off.
   can be given it while `ready` is false. Every row adds `waiting_bots`, the
   bots it is on for but not yet set up for, which it reaches once set up;
   clients add them to the `bots` they send to `set_bots`, so changing one bot
-  keeps them. With `bot`, rows add
+  keeps them, and leave them out when turning it off for every bot. With `bot`, rows add
   `enabled_for_bot`.
 - `hexbot.plugins.set_bots {kind, id, bots}` → `{plugin: Plugin}`. Gives the
   plugin to exactly the caller's bots in `bots` and takes it from the

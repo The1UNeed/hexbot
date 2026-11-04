@@ -1309,3 +1309,30 @@ fn a_package_of_skills_set_up_through_a_bots_own_key_can_be_given_to_that_bot() 
         4209
     );
 }
+
+#[test]
+fn a_package_of_skills_does_not_wait_on_a_server_it_does_not_own() {
+    let home = setup();
+    // A standalone server that happens to share the package's name.
+    common::write_config(
+        home.path(),
+        &json!({"mcp_servers": {"notes": {"command": "node", "env": {"NOTES_TOKEN": ""}, "bots": []}}}),
+    )
+    .unwrap();
+    call(
+        home.path(),
+        "alice",
+        "hexbot.plugins.install",
+        json!({"name":"notes","skills":[{"name":"notes-tips","content":
+            "---\ndescription: Notes tips.\n---\nBody."}]}),
+    )
+    .unwrap();
+    let listed = call(home.path(), "alice", "hexbot.plugins.list", json!({})).unwrap();
+    assert_eq!(row(&listed, "packages", "notes")["ready"], true);
+    assert!(
+        crate::skills::resolve(home.path(), Some("owl"))
+            .unwrap()
+            .iter()
+            .any(|s| s.name == "notes-tips" && s.ready)
+    );
+}

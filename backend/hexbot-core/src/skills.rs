@@ -375,7 +375,9 @@ fn resolve_discovered(
             .collect();
         // A package's skills explain its server, so they wait for the values
         // the server was added without.
-        if let Some(plugin) = &skill.plugin {
+        if let Some(plugin) = &skill.plugin
+            && global["mcp_servers"][plugin]["plugin"] == plugin.as_str()
+        {
             skill.missing.extend(
                 crate::connectors::missing_values(&global["mcp_servers"][plugin])
                     .into_iter()
