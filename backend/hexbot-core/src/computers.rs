@@ -802,7 +802,9 @@ pub fn watch(home: &Path) {
 /// lost with its engine, is repaired as Turn on would; when that fails, the
 /// primary bot tells the user once, and the watchdog tries again later.
 pub async fn check(home: &Path) {
-    if saved(home)["on"] != true || with(home, |c| c.busy.is_some()) {
+    // A computer from before `on` was kept is looked at, so a running one
+    // counts as on from then, but never repaired on a guess.
+    if saved(home)["on"] == false || with(home, |c| c.busy.is_some()) {
         return;
     }
     let Ok((cfg, env)) = setup(home) else {
@@ -815,9 +817,10 @@ pub async fn check(home: &Path) {
     // computer and making the new one, does not read as removed.
     let lock = lifecycle(home);
     let _guard = lock.lock().await;
-    if saved(home)["on"] != true || with(home, |c| c.busy.is_some()) {
+    if saved(home)["on"] == false || with(home, |c| c.busy.is_some()) {
         return;
     }
+    let known = saved(home)["on"] == true;
     match info(home, &cfg, &env).await.map(|i| state(i.as_ref())) {
         // Back without the watchdog, as when the user starts Docker: open
         // screens drop the outage too.
@@ -829,6 +832,10 @@ pub async fn check(home: &Path) {
             return;
         }
         Ok("starting") => return,
+        Ok("stopped") if !known => {
+            let _ = save(home, json!({"on":false}));
+            return;
+        }
         // Removed outside Hexbot: a new one waits until a bot or the user asks.
         Ok("absent") => {
             let _ = save(home, json!({"on":false}));

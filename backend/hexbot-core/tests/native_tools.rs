@@ -1483,3 +1483,31 @@ fn tools_are_offered_only_once_set_up() {
     assert!(!missing.contains(&"tts") && !missing.contains(&"vision"));
     assert!(offered("text_to_speech") && offered("vision_analyze"));
 }
+/// A computer from before Hexbot kept whether it should be on: the watchdog
+/// takes a running one as on, so it comes back after the next restart, and a
+/// stopped one as turned off.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_watchdog_learns_whether_a_computer_from_before_should_be_on() {
+    use hexbot_core::computers;
+    let h = running_computer().await;
+    let saved = h.path().join("computer.json");
+    let on = || {
+        serde_json::from_str::<Value>(&std::fs::read_to_string(&saved).unwrap()).unwrap()["on"]
+            .clone()
+    };
+    std::fs::write(&saved, r#"{"size":"small"}"#).unwrap();
+    computers::check(h.path()).await;
+    assert_eq!(on(), true);
+    std::fs::write(h.path().join("engine-down"), "").unwrap();
+    computers::check(h.path()).await;
+    assert_eq!(computer_status(h.path()).await["state"], "running");
+    // Stopped before `on` was kept: left off, and not looked at again.
+    assert_eq!(computer_step(h.path(), "stop").await["state"], "stopped");
+    std::fs::write(&saved, r#"{"size":"small"}"#).unwrap();
+    computers::check(h.path()).await;
+    assert_eq!(on(), false);
+    let before = cua_log(h.path()).len();
+    computers::check(h.path()).await;
+    assert_eq!(cua_log(h.path()).len(), before);
+}
