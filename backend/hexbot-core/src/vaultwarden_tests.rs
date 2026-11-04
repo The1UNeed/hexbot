@@ -3,8 +3,9 @@ use serde_json::json;
 
 /// A Bitwarden CLI stand-in: the commands Hexbot runs, against a JSON file
 /// in its data folder. The master password is `correct horse`; an email
-/// starting with `2fa` wants the code 123456; `lock` in the file forgets
-/// the session, as `bw` does when its session key is gone.
+/// starting with `2fa` wants the code 123456, answering as `bw` does for an
+/// authenticator app; a changed `session` in the file is a session `bw`
+/// forgot; `down` is a server that doesn't answer.
 const FAKE_BW: &str = r#"#!/usr/bin/env node
 const fs = require('fs'), path = require('path'), crypto = require('crypto')
 const file = path.join(process.env.BITWARDENCLI_APPDATA_DIR, 'fake.json')
@@ -22,7 +23,7 @@ if (command === 'config') { state.server = id; ok({ title: 'Saved' }) }
 if (command === 'logout') { state.loggedIn = false; state.session = null; ok({}) }
 if (command === 'login') {
   if (process.env.BW_PASSWORD !== 'correct horse') { save(); console.log('Username or password is incorrect. Try again.'); process.exit(1) }
-  if (object.startsWith('2fa') && opt('--code') !== '123456') { save(); console.log('Two-step login is required.'); process.exit(1) }
+  if (object.startsWith('2fa') && opt('--code') !== '123456') { save(); console.log('Code is required.'); process.exit(1) }
   state.loggedIn = true; state.email = object; state.session = 'session-' + crypto.randomUUID(); save(); console.log(state.session); process.exit(0)
 }
 if (command === 'unlock') {
@@ -30,6 +31,7 @@ if (command === 'unlock') {
   if (process.env.BW_PASSWORD !== 'correct horse') { save(); console.log('Invalid master password.'); process.exit(1) }
   state.session = 'session-' + crypto.randomUUID(); save(); console.log(state.session); process.exit(0)
 }
+if (state.down) fail('FetchError: request to https://vault.example.com/api/sync failed')
 unlocked()
 if (command === 'sync') ok({ title: 'Syncing complete.' })
 if (command === 'list' && object === 'folders') ok({ object: 'list', data: state.folders })
@@ -319,6 +321,96 @@ fn connecting_needs_https_the_right_password_and_a_two_step_code() {
     .unwrap_err();
     assert_eq!(missing.code, 5301);
     assert_eq!(status(other.path(), "alice").unwrap()["kind"], "local");
+}
+
+fn edit_fake(h: &Path, change: impl FnOnce(&mut Value)) {
+    let mut state = fake(h);
+    change(&mut state);
+    std::fs::write(
+        h.join("users/alice/passwords/bitwarden/fake.json"),
+        state.to_string(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn an_unreachable_vaultwarden_still_shows_so_it_can_be_disconnected() {
+    let home = home();
+    let h = home.path();
+    connect_alice(h, json!({})).unwrap();
+    edit_fake(h, |state| state["down"] = json!(true));
+    let listed = crate::passwords::call(h, "alice", "hexbot.passwords.list", &json!({}))
+        .unwrap()
+        .unwrap();
+    assert_eq!(listed["vault"]["kind"], "vaultwarden");
+    assert!(listed["error"].as_str().unwrap().contains("FetchError"));
+    assert_eq!(listed["logins"], json!([]));
+    crate::passwords::call(h, "alice", "hexbot.passwords.disconnect", &json!({}))
+        .unwrap()
+        .unwrap();
+    assert_eq!(status(h, "alice").unwrap()["kind"], "local");
+}
+
+#[test]
+fn reading_an_item_syncs_first_so_a_moved_item_stops_working() {
+    let home = home();
+    let h = home.path();
+    connect_alice(h, json!({})).unwrap();
+    let saved = crate::passwords::save(h, "alice", &json!({"url":"https://x.com","password":"pw"}))
+        .unwrap();
+    let id = saved["id"].as_str().unwrap().to_owned();
+    // Moved out of the Hexbot folder in a Bitwarden app.
+    edit_fake(h, |state| state["items"][0]["folderId"] = Value::Null);
+    synced().lock().unwrap().clear();
+    assert_eq!(
+        crate::passwords::secret(h, "alice", &id, "password")
+            .unwrap_err()
+            .code,
+        4204
+    );
+    let calls = fake(h)["calls"].as_array().unwrap().clone();
+    let sync = calls.iter().rposition(|c| c["args"][0] == "sync").unwrap();
+    let get = calls.iter().rposition(|c| c["args"][0] == "get").unwrap();
+    assert!(sync < get, "synced before reading");
+}
+
+#[test]
+fn a_deleted_bot_leaves_the_daemons_vault_too_while_vaultwarden_is_connected() {
+    let home = home();
+    let h = home.path();
+    crate::passwords::save(
+        h,
+        "alice",
+        &json!({"url":"https://x.com","password":"pw","bots":["owl"]}),
+    )
+    .unwrap();
+    connect_alice(h, json!({})).unwrap();
+    crate::passwords::forget_bot(h, "owl").unwrap();
+    crate::passwords::call(h, "alice", "hexbot.passwords.disconnect", &json!({}))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        crate::passwords::list(h, "alice", None).unwrap()[0]["bots"],
+        json!([])
+    );
+}
+
+#[test]
+fn a_connect_that_fails_part_way_leaves_nothing_behind() {
+    let home = home();
+    let h = home.path();
+    crate::passwords::save(h, "alice", &json!({"url":"https://x.com","password":"pw"})).unwrap();
+    // The vault on the daemon can't be read, so copying it fails after sign-in.
+    std::fs::remove_file(h.join("users/alice/passwords/passwords.key")).unwrap();
+    assert_eq!(
+        connect_alice(h, json!({"copy":true})).unwrap_err().code,
+        5300
+    );
+    assert!(!h.join("users/alice/passwords/vaultwarden.key").exists());
+    assert!(!h.join("users/alice/passwords/vaultwarden.json").exists());
+    assert!(!h.join("users/alice/passwords/bitwarden").exists());
+    assert!(!sessions().lock().unwrap().contains_key(&key(h, "alice")));
+    assert_eq!(status(h, "alice").unwrap()["kind"], "local");
 }
 
 fn home_without_bw() -> tempfile::TempDir {

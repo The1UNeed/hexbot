@@ -355,6 +355,25 @@ describe('Settings, Passwords', () => {
     expect(await screen.findByText('This daemon')).toBeVisible()
   })
 
+  it('keeps Disconnect when Vaultwarden can not be reached', async () => {
+    vi.mocked(passwordsList).mockResolvedValue({
+      bots: [],
+      error: 'Vaultwarden: FetchError',
+      logins: [],
+      store: 'keychain',
+      vault: {
+        email: 'me@example.com',
+        folder: 'Hexbot',
+        kind: 'vaultwarden',
+        server: 'https://v.example.com'
+      }
+    })
+    render(<PasswordsSettings />)
+    expect(await screen.findByText('Vaultwarden: FetchError')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Disconnect' })).toBeVisible()
+    expect(screen.queryByText(/Nothing in your Vaultwarden/)).toBeNull()
+  })
+
   it('says what to do when there are none', async () => {
     vi.mocked(passwordsList).mockResolvedValue({ bots: [], logins: [], store: null })
     render(<PasswordsSettings />)

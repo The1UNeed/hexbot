@@ -555,9 +555,10 @@ export function Management({
           logins: PasswordItem[]
           store: string | null
           vault?: PasswordVault
+          error?: string | null
         }>('hexbot.passwords.list')
         data = list.logins as unknown as RowData[]
-        detail = { store: list.store, vault: list.vault ?? { kind: 'local' } }
+        detail = { store: list.store, vault: list.vault ?? { kind: 'local' }, error: list.error }
         break
       }
       case 'password-vault': {
@@ -1896,8 +1897,13 @@ export function Management({
       const logins = rows as unknown as PasswordItem[]
       const store = str(extra.store)
       const vault = (extra.vault as PasswordVault | undefined) ?? { kind: 'local' }
+      // A Vaultwarden that can't be reached still shows below, to disconnect.
+      const unreachable = str(extra.error)
       content = (
         <>
+          {unreachable ? (
+            <Banner message={unreachable} tone="danger" testID="passwords-error" />
+          ) : null}
           <Group>
             {(['login', 'ssh_key', 'api_key'] as const).map(add => (
               <Row

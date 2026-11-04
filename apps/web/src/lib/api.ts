@@ -304,6 +304,8 @@ export interface PasswordsList {
   /** Every saved item, of every kind; the name is older than SSH and API keys. */
   logins: PasswordItem[]
   store: PasswordKeyStore
+  /** Why Vaultwarden's items couldn't be read; `vault` still names it. */
+  error?: null | string
   /** Older daemons send none: the vault on the daemon. */
   vault?: PasswordVault
 }

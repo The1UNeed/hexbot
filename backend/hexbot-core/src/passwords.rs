@@ -264,7 +264,8 @@ fn os_write(store: Store, account: &str, key: &str) -> bool {
     matches!(done, Some((0, _))) && os_read(store, account).ok().flatten().as_deref() == Some(key)
 }
 
-fn os_delete(store: Store, account: &str) {
+/// Removes an item from the OS store; one that is already gone is fine.
+fn os_delete(store: Store, account: &str) -> Result<()> {
     let _ = match store {
         Store::Keychain => helper(
             "/usr/bin/security",
@@ -278,6 +279,13 @@ fn os_delete(store: Store, account: &str) {
         ),
         Store::File => None,
     };
+    match os_read(store, account) {
+        Ok(None) => Ok(()),
+        _ => Err(Error::new(
+            5300,
+            "Hexbot can't remove a saved key from this computer's keychain. Unlock the keychain and try again.",
+        )),
+    }
 }
 
 /// Another secret kept where the vault key is, such as the Vaultwarden master
@@ -326,7 +334,7 @@ pub(crate) fn kept(home: &Path, owner: &str, name: &str) -> Result<Option<(Strin
 /// Removes a secret `keep` wrote, wherever it is.
 pub(crate) fn forget(home: &Path, owner: &str, name: &str) -> Result<()> {
     if let Some(store) = os_store() {
-        os_delete(store, &format!("{}-{name}", account(home, owner)));
+        os_delete(store, &format!("{}-{name}", account(home, owner)))?;
     }
     match std::fs::remove_file(dir(home, owner)?.join(format!("{name}.key"))) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
@@ -1114,12 +1122,32 @@ pub fn forget_bot(home: &Path, bot: &str) -> Result<()> {
 }
 fn forget_in(home: &Path, owner: &str, bot: &str) -> Result<()> {
     let _lock = lock();
-    for (id, mut item) in all(home, owner)? {
-        if let Some(bots) = &item.bots
-            && bots.iter().any(|b| b == bot)
-        {
-            item.bots = Some(bots.iter().filter(|b| *b != bot).cloned().collect());
-            put(home, owner, Some(&id), &item)?;
+    let without = |items: Vec<(String, Record)>| {
+        items
+            .into_iter()
+            .filter_map(|(id, mut item)| {
+                let kept = item
+                    .bots
+                    .as_ref()?
+                    .iter()
+                    .filter(|b| *b != bot)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if Some(kept.len()) == item.bots.as_ref().map(Vec::len) {
+                    return None;
+                }
+                item.bots = Some(kept);
+                Some((id, item))
+            })
+            .collect::<Vec<_>>()
+    };
+    for (id, item) in without(all(home, owner)?) {
+        put(home, owner, Some(&id), &item)?;
+    }
+    // The vault on the daemon comes back if Vaultwarden is disconnected.
+    if let Backend::Vaultwarden(_) = backend(home, owner)? {
+        for (id, item) in without(local_list(home, owner)?) {
+            local_put(home, owner, Some(&id), &item)?;
         }
     }
     Ok(())
@@ -1273,11 +1301,19 @@ pub fn call(home: &Path, owner: &str, method: &str, p: &Value) -> Option<Result<
                 .into_iter()
                 .filter_map(|r| r["name"].as_str().map(str::to_owned))
                 .collect::<Vec<_>>();
+                // Settings names a Vaultwarden it can't reach, so it can be disconnected.
+                let vault = crate::vaultwarden::status(home, owner)?;
+                let (logins, error) = match list(home, owner, None) {
+                    Ok(logins) => (logins, None),
+                    Err(error) if vault["kind"] == "vaultwarden" => (vec![], Some(error.message)),
+                    Err(error) => return Err(error),
+                };
                 Ok(json!({
-                    "logins": list(home, owner, None)?,
+                    "logins": logins,
                     "bots": bots,
                     "store": store(home, owner)?,
-                    "vault": crate::vaultwarden::status(home, owner)?,
+                    "vault": vault,
+                    "error": error,
                 }))
             }
             "hexbot.passwords.save" => Ok(json!({"login": save(home, owner, p)?})),

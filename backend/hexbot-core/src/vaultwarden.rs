@@ -253,7 +253,11 @@ fn failure(output: &Output) -> Error {
             5303,
             "Hexbot is signed out of Vaultwarden. Connect it again in Settings, Passwords.",
         )
-    } else if lower.contains("two-step") || lower.contains("two step") {
+    } else if lower.contains("two-step")
+        || lower.contains("two step")
+        || lower.contains("code is required")
+        || lower.contains("no provider selected")
+    {
         Error::new(
             4207,
             "This account uses two-step login. Enter the code from your authenticator app.",
@@ -489,11 +493,30 @@ fn not_found() -> Error {
     )
 }
 
+/// Syncs the CLI's copy of the vault when it is more than `SYNC_AFTER` old,
+/// so an item moved, changed or unshared in a Bitwarden app counts soon.
+fn fresh(home: &Path, owner: &str) -> Result<()> {
+    let stale = synced()
+        .lock()
+        .unwrap()
+        .get(&key(home, owner))
+        .is_none_or(|at| at.elapsed() > SYNC_AFTER);
+    if stale {
+        vault(home, owner, &["sync"], None)?;
+        synced()
+            .lock()
+            .unwrap()
+            .insert(key(home, owner), Instant::now());
+    }
+    Ok(())
+}
+
 /// The item as Vaultwarden has it, if it is in the Hexbot folder.
 fn raw(home: &Path, owner: &str, account: &Account, id: &str) -> Result<Value> {
     if uuid::Uuid::parse_str(id).is_err() {
         return Err(not_found());
     }
+    fresh(home, owner)?;
     let item = vault(home, owner, &["get", "item", id], None).map_err(|error| {
         if error.code == 5300 && error.message.to_lowercase().contains("not found") {
             not_found()
@@ -510,18 +533,7 @@ fn raw(home: &Path, owner: &str, account: &Account, id: &str) -> Result<Value> {
 /// The items in the Hexbot folder, fresh from the server at most
 /// `SYNC_AFTER` ago.
 pub(crate) fn list(home: &Path, owner: &str, account: &Account) -> Result<Vec<(String, Record)>> {
-    let stale = synced()
-        .lock()
-        .unwrap()
-        .get(&key(home, owner))
-        .is_none_or(|at| at.elapsed() > SYNC_AFTER);
-    if stale {
-        vault(home, owner, &["sync"], None)?;
-        synced()
-            .lock()
-            .unwrap()
-            .insert(key(home, owner), Instant::now());
-    }
+    fresh(home, owner)?;
     let items = vault(
         home,
         owner,
@@ -598,74 +610,84 @@ pub fn connect(home: &Path, owner: &str, p: &Value) -> Result<Value> {
     let password = common::required(p, "password")?;
     let code = p["code"].as_str().map(str::trim).filter(|c| !c.is_empty());
     program(home)?;
-    // A fresh sign-in, so a server or account changed here leaves nothing behind.
-    forget_session(home, owner);
-    let data = data_dir(home, owner)?;
-    match std::fs::remove_dir_all(&data) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
-        _ => {}
-    }
-    answer(
-        home,
-        owner,
-        &["config", "server", parsed.as_str()],
-        None,
-        None,
-    )?;
-    let mut login = vec!["login", email, "--passwordenv", "BW_PASSWORD", "--raw"];
-    if let Some(code) = code {
-        login.extend(["--method", "0", "--code", code]);
-    }
-    let output = bw(home, owner, &login, None, None, Some(password))?;
-    let session = output.stdout.trim().to_owned();
-    if !output.ok || session.is_empty() || session.contains(char::is_whitespace) {
-        return Err(failure(&output));
-    }
-    sessions().lock().unwrap().insert(key(home, owner), session);
-    passwords::keep(home, owner, SECRET, password)?;
-    let folders = vault(home, owner, &["list", "folders"], None)?;
-    let folder = match folders["data"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|f| f["name"] == FOLDER)
-    {
-        Some(folder) => folder["id"].as_str().unwrap_or("").to_owned(),
-        None => vault(
+    // A sign-in that fails part way leaves no password, session or CLI data.
+    let signed_in = (|| -> Result<Value> {
+        // A fresh sign-in, so a server or account changed here leaves nothing behind.
+        forget_session(home, owner);
+        let data = data_dir(home, owner)?;
+        match std::fs::remove_dir_all(&data) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => {}
+        }
+        answer(
             home,
             owner,
-            &["create", "folder"],
-            Some(&encoded(&json!({"name": FOLDER}))),
-        )?["id"]
-            .as_str()
-            .unwrap_or("")
-            .to_owned(),
-    };
-    if folder.is_empty() {
-        return Err(Error::new(
-            5300,
-            "Vaultwarden didn't make the Hexbot folder.",
-        ));
-    }
-    let account = Account {
-        server: server.to_owned(),
-        email: email.to_owned(),
-        folder,
-    };
-    let mut copied = 0;
-    if p["copy"] == true {
-        for item in passwords::local_items(home, owner)? {
-            put(home, owner, &account, None, &item)?;
-            copied += 1;
+            &["config", "server", parsed.as_str()],
+            None,
+            None,
+        )?;
+        let mut login = vec!["login", email, "--passwordenv", "BW_PASSWORD", "--raw"];
+        if let Some(code) = code {
+            login.extend(["--method", "0", "--code", code]);
         }
+        let output = bw(home, owner, &login, None, None, Some(password))?;
+        let session = output.stdout.trim().to_owned();
+        if !output.ok || session.is_empty() || session.contains(char::is_whitespace) {
+            return Err(failure(&output));
+        }
+        sessions().lock().unwrap().insert(key(home, owner), session);
+        passwords::keep(home, owner, SECRET, password)?;
+        let folders = vault(home, owner, &["list", "folders"], None)?;
+        let folder = match folders["data"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|f| f["name"] == FOLDER)
+        {
+            Some(folder) => folder["id"].as_str().unwrap_or("").to_owned(),
+            None => vault(
+                home,
+                owner,
+                &["create", "folder"],
+                Some(&encoded(&json!({"name": FOLDER}))),
+            )?["id"]
+                .as_str()
+                .unwrap_or("")
+                .to_owned(),
+        };
+        if folder.is_empty() {
+            return Err(Error::new(
+                5300,
+                "Vaultwarden didn't make the Hexbot folder.",
+            ));
+        }
+        let account = Account {
+            server: server.to_owned(),
+            email: email.to_owned(),
+            folder,
+        };
+        let mut copied = 0;
+        if p["copy"] == true {
+            for item in passwords::local_items(home, owner)? {
+                put(home, owner, &account, None, &item)?;
+                copied += 1;
+            }
+        }
+        common::atomic_write(
+            &config_path(home, owner)?,
+            json!({"server": account.server, "email": account.email, "folder": account.folder})
+                .to_string()
+                .as_bytes(),
+        )?;
+        Ok(json!({"vault": status(home, owner)?, "copied": copied}))
+    })();
+    if signed_in.is_err() {
+        forget_session(home, owner);
+        let _ = passwords::forget(home, owner, SECRET);
+        let _ = std::fs::remove_dir_all(data_dir(home, owner)?);
+        let _ = std::fs::remove_file(config_path(home, owner)?);
     }
-    common::atomic_write(
-        &config_path(home, owner)?,
-        json!({"server": account.server, "email": account.email, "folder": account.folder})
-            .to_string()
-            .as_bytes(),
-    )?;
-    Ok(json!({"vault": status(home, owner)?, "copied": copied}))
+    signed_in
 }
 
 fn forget_session(home: &Path, owner: &str) {

@@ -89,7 +89,12 @@ export const usePasswords = create<PasswordsState>((set, get) => {
         const list = await passwordsList()
 
         if (current() && mine === latest) {
-          set({ logins: list.logins, store: list.store, vault: list.vault ?? { kind: 'local' } })
+          set({
+            error: list.error ?? null,
+            logins: list.logins,
+            store: list.store,
+            vault: list.vault ?? { kind: 'local' }
+          })
         }
       } catch (error) {
         if (current() && mine === latest) {
