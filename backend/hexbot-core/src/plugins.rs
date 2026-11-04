@@ -931,7 +931,8 @@ fn package_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<Va
             vec![]
         };
         // A package of skills alone is set up once one of its skills is.
-        let unready_skills = server.is_none() && !parts.is_empty() && !parts.iter().any(|s| s.ready);
+        let unready_skills =
+            server.is_none() && !parts.is_empty() && !parts.iter().any(|s| s.ready);
         let ready = server.is_none_or(|c| c["ready"] == true) && !unready_skills;
         let waiting = server.is_some() && !connectors::missing_values(entry).is_empty();
         // Until its server has its values, or one of its skills what it

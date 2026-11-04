@@ -1253,6 +1253,9 @@ fn a_package_of_skills_waiting_for_a_key_is_given_to_nobody_until_set_up() {
     assert_eq!(skill(true).unwrap_err().code, 4209);
     skill(false).unwrap();
     fs::write(home.path().join(".env"), "HEXBOT_TEST_NOTES_KEY=value\n").unwrap();
-    assert_eq!(give(json!(["owl"])).unwrap()["plugin"]["bots"], json!(["owl"]));
+    assert_eq!(
+        give(json!(["owl"])).unwrap()["plugin"]["bots"],
+        json!(["owl"])
+    );
     skill(true).unwrap();
 }
