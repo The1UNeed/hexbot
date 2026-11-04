@@ -4697,6 +4697,7 @@ impl Runtime {
             password_tool::NAME => self.passwords_tool(s, args).await,
             "self_soul" | "hexbot_soul" => {
                 let path = self.home.join("profiles").join(&s.bot).join("SOUL.md");
+                let cap = MemoryStore::new(self.home.clone()).soul_cap(&s.bot)?;
                 if let Some(text) = args["text"].as_str() {
                     // A scheduled job runs unattended, often straight after reading
                     // the web; it reads the soul but the user changes it, in a section.
@@ -4706,10 +4707,10 @@ impl Runtime {
                             "Soul changes need the user. A scheduled job can read the soul but not change it; ask the user in a section.",
                         ));
                     }
-                    if text.trim().is_empty() || text.chars().count() > 4000 {
+                    if text.trim().is_empty() || text.chars().count() as i64 > cap {
                         return Err(Error::new(
                             4202,
-                            "soul must contain between 1 and 4000 characters",
+                            format!("soul must contain between 1 and {cap} characters"),
                         ));
                     }
                     check_memory_edit(&std::fs::read_to_string(&path).unwrap_or_default(), text)?;
@@ -4723,7 +4724,7 @@ impl Runtime {
                     );
                 }
                 Ok(
-                    json!({"soul":fs::read_to_string(path).unwrap_or_default(),"cap":4000,"saved":args["text"].is_string(),"note":"Your chat and rooms take the change after their next compaction, when the next request starts a new run. Tell the user what changed."}),
+                    json!({"soul":fs::read_to_string(path).unwrap_or_default(),"cap":cap,"saved":args["text"].is_string(),"note":"Your chat and rooms take the change after their next compaction, when the next request starts a new run. Tell the user what changed."}),
                 )
             }
             _ => {

@@ -25,7 +25,9 @@ pub fn defaults() -> Value {
         "heartbeat_enabled": true,
         "default_model": null,
         "fallback_model": null,
-        "usage_data": false
+        "usage_data": false,
+        "soul_char_limit": crate::memory::DEFAULT_SOUL_CAP,
+        "memory_char_limit": crate::memory::DEFAULT_BOT_CAP
     })
 }
 
@@ -74,6 +76,7 @@ fn validate(patch: &Value) -> Result<()> {
                 .as_str()
                 .is_some_and(|s| !s.is_empty() && !s.contains('\0')),
             "dream_time" => value.as_str().is_some_and(clock),
+            "soul_char_limit" | "memory_char_limit" => crate::memory::valid_limit(value),
             "room_bot_turns_per_human_turn"
             | "room_budget_tokens_per_human_turn"
             | "bot_daily_token_budget" => value.is_null() || value.as_u64().is_some(),

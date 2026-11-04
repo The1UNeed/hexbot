@@ -226,6 +226,12 @@ export interface Bot {
   updated_at: null | number
   /** Per-bot working directory; null means the deployment workspace. */
   workdir?: null | string
+  /** The bot's own soul and memory limits in characters; null follows Settings. Older daemons leave them out. */
+  soul_char_limit?: null | number
+  memory_char_limit?: null | number
+  /** The limits in effect: the bot's own, else the setting. Older daemons leave them out. */
+  soul_cap?: number
+  memory_cap?: number
 }
 
 /** The bots' computer, one Cua sandbox per daemon (docs/api.md, "Computer"). */
@@ -315,6 +321,8 @@ export type BotUpdatePatch = Partial<Omit<BotCreateInput, 'avatar' | 'name'>> & 
   dream_enabled?: boolean
   notify?: boolean
   workdir?: null | string
+  soul_char_limit?: null | number
+  memory_char_limit?: null | number
 }
 
 export type ConnectorGroup = 'mcp' | 'media' | 'search' | 'social_home' | 'work'
@@ -716,6 +724,9 @@ export interface Settings {
   heartbeat_enabled?: boolean
   /** Anonymous usage data from this daemon (docs/usage-data.md). Absent on older daemons. */
   usage_data?: boolean
+  /** Default soul and memory limits in characters for bots without their own. Absent on older daemons. */
+  soul_char_limit?: number
+  memory_char_limit?: number
 }
 
 export interface HeartbeatRun {

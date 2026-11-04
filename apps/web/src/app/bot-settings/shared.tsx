@@ -112,6 +112,98 @@ export function Row({
   )
 }
 
+/** What the daemon accepts as a soul or memory limit, in characters. */
+export const LIMIT_MIN = 500
+export const LIMIT_MAX = 20_000
+/** The built-in defaults, for a daemon that does not report its own. */
+export const DEFAULT_SOUL_LIMIT = 4000
+export const DEFAULT_MEMORY_LIMIT = 2200
+
+/**
+ * A row holding one character limit, saved when the field is left. With
+ * `fallback` the field may be empty, which follows that default; without
+ * it a number is required.
+ */
+export function LimitRow({
+  description,
+  fallback,
+  label,
+  onSave,
+  title,
+  value
+}: {
+  description: React.ReactNode
+  fallback?: number
+  label: string
+  onSave: (value: null | number) => Promise<void> | void
+  title: string
+  value: null | number | undefined
+}) {
+  const shown = value == null ? '' : String(value)
+  const [draft, setDraft] = useState(shown)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => setDraft(shown), [shown])
+
+  const commit = () => {
+    const text = draft.trim()
+
+    if (!text) {
+      setError(null)
+
+      if (fallback === undefined) {
+        return setDraft(shown)
+      }
+
+      return value == null ? undefined : void onSave(null)
+    }
+
+    const limit = Number(text)
+
+    if (!Number.isInteger(limit) || limit < LIMIT_MIN || limit > LIMIT_MAX) {
+      return setError(
+        `Use a whole number from ${LIMIT_MIN.toLocaleString()} to ${LIMIT_MAX.toLocaleString()}.`
+      )
+    }
+
+    setError(null)
+
+    if (limit !== value) {
+      void onSave(limit)
+    }
+  }
+
+  return (
+    <Row
+      control={
+        <Input
+          aria-label={label}
+          className="w-28 text-right tabular-nums"
+          inputMode="numeric"
+          invalid={Boolean(error)}
+          onBlur={commit}
+          onChange={event => {
+            setDraft(event.target.value)
+            setError(null)
+          }}
+          onKeyDown={event => event.key === 'Enter' && event.currentTarget.blur()}
+          placeholder={fallback === undefined ? undefined : String(fallback)}
+          value={draft}
+        />
+      }
+      description={
+        error ? (
+          <span className="text-danger" role="alert">
+            {error}
+          </span>
+        ) : (
+          description
+        )
+      }
+      title={title}
+    />
+  )
+}
+
 /**
  * One row that is a choice in a list: a title, a line under it and a check
  * when chosen. Put the rows in a `role="radiogroup"`; like native radios,

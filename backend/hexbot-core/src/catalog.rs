@@ -49,6 +49,8 @@ const FIELDS: &[&str] = &[
     "notify",
     "approval_mode",
     "workdir",
+    "soul_char_limit",
+    "memory_char_limit",
 ];
 
 pub fn profile(home: &Path, name: &str) -> Result<PathBuf> {
@@ -1459,6 +1461,7 @@ fn shape_bot(
 ) -> Result<Value> {
     let name = row["name"].as_str().unwrap_or("");
     let cfg = config(home, name)?;
+    let limits = crate::memory::MemoryStore::new(home.to_path_buf());
     let sections = list_sections(home, caller, &json!({"bot":name,"include_archived":true}))?;
     let recent = sections
         .iter()
@@ -1559,6 +1562,10 @@ fn shape_bot(
         "notify": row["notify"].as_i64().unwrap_or(1) != 0,
         "approval_mode": row["approval_mode"].as_str().unwrap_or("inherit"),
         "workdir": row["workdir"],
+        "soul_char_limit": cfg["memory"][crate::memory::SOUL_LIMIT].as_i64(),
+        "memory_char_limit": cfg["memory"][crate::memory::MEMORY_LIMIT].as_i64(),
+        "soul_cap": limits.cap_in(&cfg, crate::memory::SOUL_LIMIT)?,
+        "memory_cap": limits.cap_in(&cfg, crate::memory::MEMORY_LIMIT)?,
         "status": status,
         "status_detail": detail,
         "provider": cfg["model"]["provider"],
@@ -1617,6 +1624,19 @@ fn validate_patch(home: &Path, p: &Value) -> Result<()> {
                 if let Some(dir) = value.as_str() {
                     check_workdir(home, dir.trim())?;
                 }
+            }
+            "soul_char_limit" | "memory_char_limit"
+                if !value.is_null() && !crate::memory::valid_limit(value) =>
+            {
+                let range = crate::memory::LIMIT_RANGE;
+                return Err(Error::new(
+                    4202,
+                    format!(
+                        "{key} must be null or a whole number from {} to {}",
+                        range.start(),
+                        range.end()
+                    ),
+                ));
             }
             "skills" | "tools" => {
                 let items = value
@@ -1900,6 +1920,36 @@ fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
             .map(str::trim)
             .map(Value::from)
             .unwrap_or(Value::Null);
+    }
+    // A bot's own limits sit beside the memory limit the daemon has always
+    // read from its config; null returns it to the setting.
+    for key in [crate::memory::SOUL_LIMIT, crate::memory::MEMORY_LIMIT] {
+        match p.get(key) {
+            Some(Value::Null) => {
+                if let Some(memory) = cfg["memory"].as_object_mut() {
+                    memory.remove(key);
+                }
+            }
+            Some(limit) => {
+                if !cfg["memory"].is_object() {
+                    cfg["memory"] = json!({});
+                }
+                cfg["memory"][key] = limit.clone();
+            }
+            None => {}
+        }
+    }
+    // Checked against the limit this change leaves, before anything is written.
+    if let Some(text) = p["persona"].as_str() {
+        let cap = crate::memory::MemoryStore::new(home.to_path_buf())
+            .cap_in(&cfg, crate::memory::SOUL_LIMIT)?;
+        let length = text.chars().count();
+        if length as i64 > cap {
+            return Err(Error::new(
+                4221,
+                format!("The soul is {length} characters; the limit is {cap}."),
+            ));
+        }
     }
     writer.write(&dir, &cfg)?;
     let after = section_model(home, name)?;
@@ -2774,6 +2824,11 @@ fn creation_config(mut config: Value) -> Value {
         object.remove("skills");
         // Connected servers are defined once and given to bots by name.
         object.remove("mcp_servers");
+        // A new bot follows the limits in Settings until it is given its own.
+        if let Some(memory) = object.get_mut("memory").and_then(Value::as_object_mut) {
+            memory.remove(crate::memory::SOUL_LIMIT);
+            memory.remove(crate::memory::MEMORY_LIMIT);
+        }
     }
     config
 }
@@ -2882,6 +2937,49 @@ mod parity_tests {
             .unwrap();
         home
     }
+    #[test]
+    fn a_bot_keeps_its_own_limits_and_its_soul_stays_within_one() {
+        let home = home();
+        fs::create_dir_all(home.path().join("profiles/owl")).unwrap();
+        let update = |patch: Value| {
+            let mut patch = patch;
+            patch["name"] = json!("owl");
+            call(home.path(), "alice", "hexbot.bots.update", &patch).unwrap()
+        };
+        let owl = update(json!({})).unwrap()["bot"].clone();
+        assert_eq!(owl["soul_char_limit"], Value::Null);
+        assert_eq!(owl["soul_cap"], 4000);
+        assert_eq!(owl["memory_cap"], 2200);
+        assert_eq!(
+            update(json!({"persona":"a".repeat(4001)}))
+                .unwrap_err()
+                .code,
+            4221
+        );
+        // A soul and the limit that lets it in may arrive together.
+        let owl =
+            update(json!({"persona":"a".repeat(4001),"soul_char_limit":5000})).unwrap()["bot"]
+                .clone();
+        assert_eq!(owl["soul_char_limit"], 5000);
+        assert_eq!(owl["soul_cap"], 5000);
+        assert_eq!(owl["persona"].as_str().unwrap().len(), 4001);
+        let owl = update(json!({"memory_char_limit":800})).unwrap()["bot"].clone();
+        assert_eq!(owl["memory_cap"], 800);
+        assert_eq!(owl["soul_cap"], 5000);
+        // Null returns a limit to the one in Settings.
+        crate::settings::update(home.path(), "alice", &json!({"soul_char_limit":6000})).unwrap();
+        let owl = update(json!({"soul_char_limit":null})).unwrap()["bot"].clone();
+        assert_eq!(owl["soul_char_limit"], Value::Null);
+        assert_eq!(owl["soul_cap"], 6000);
+        for patch in [
+            json!({"soul_char_limit":100}),
+            json!({"memory_char_limit":50000}),
+            json!({"memory_char_limit":"800"}),
+        ] {
+            assert_eq!(update(patch).unwrap_err().code, 4202);
+        }
+    }
+
     #[test]
     fn open_incident_finds_room_transcripts_by_stored_id_without_scans() {
         let home = home();

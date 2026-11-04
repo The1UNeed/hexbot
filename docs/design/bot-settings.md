@@ -94,7 +94,8 @@ Tabs, in order:
 
 1. **Profile.** Face, name, label, description.
 2. **Persona.** Full-height editor. Role templates as a menu that
-   replaces the text after confirming. Word count.
+   replaces the text after confirming. A character count against the
+   soul limit, and the bot's own limit below; empty follows Settings.
 3. **Model.** Provider and model, curated list pinned on top as today,
    with room for the model's description and price per million tokens.
 4. **Memory.** This bot's notes and user notes, dreaming (enabled, may

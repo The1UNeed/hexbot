@@ -286,7 +286,9 @@ mutation methods check ownership.
   (`docs/usage-data.md`); turning it off deletes `<HEXBOT_HOME>/usage.json`.
   Bots cannot change it.
 - `hexbot.settings.set {patch}` → same shape; only whitelisted keys.
-  Room settings are `room_bot_turns_per_human_turn` (default 8),
+  `soul_char_limit` (default 4000) and `memory_char_limit` (default 2200)
+  are the character limits for every bot without its own, each a whole
+  number from 500 to 20000 (4202 otherwise). Room settings are `room_bot_turns_per_human_turn` (default 8),
   `room_budget_tokens_per_human_turn` (default null), and
   `bot_daily_token_budget` (default null).
 
@@ -296,7 +298,14 @@ Bot shape: `{name, display_name, title, description, primary, persona, tools: [s
 provider, model, reasoning_effort | null, avatar: {mime, data} | null, face: {shape, color} | null,
 created_at, updated_at, last_activity_at,
 owner_id, dream_enabled, notify, approval_mode, workdir | null,
+soul_char_limit | null, memory_char_limit | null, soul_cap, memory_cap,
 status, status_detail | null, sections_total, sections_recent: [Section]}`
+
+`soul_char_limit` and `memory_char_limit` are the bot's own limits, stored
+under `memory:` in its `config.yaml`; null follows the setting of the same
+name. `soul_cap` and `memory_cap` are the limits in effect: a managed
+config's value, else the bot's own, else the setting. A new bot starts
+with neither of its own.
 
 `available_tools` lists the `tools` keys whose program or service exists on
 the daemon computer: computer use needs the cua driver, vision a key or
@@ -399,8 +408,11 @@ others (`DESIGN.md`, "The primary bot"). There is at most one per owner.
   has messages.
 - `hexbot.bots.update {name, display_name?, title?, description?, persona?,
   provider?, model?, reasoning_effort?, avatar?, face?, dream_enabled?,
-  tools?, skills?, notify?, approval_mode?, workdir?}` →
-  `{bot: Bot}`. `tools` accepts `terminal`, `files`, `computer_use`,
+  tools?, skills?, notify?, approval_mode?, workdir?, soul_char_limit?,
+  memory_char_limit?}` →
+  `{bot: Bot}`. A limit is a whole number from 500 to 20000, or null to
+  follow Settings (4202 otherwise). A `persona` longer than the soul limit
+  this update leaves is refused with 4221 before anything is written. `tools` accepts `terminal`, `files`, `computer_use`,
   `vision`, `voice`, `message_bots`, `delegate`, and `scheduling`; older
   clients may still send `code_execution` and `browser`, which are dropped; toolsets owned by connectors (web, image_gen, mcp-*) are left
   as they are. Both capability lists use replace semantics. A tool missing
@@ -694,7 +706,8 @@ context of its own; the meter belongs to bot sections.
   prompt, including About you, after ownership is folded.
 - `hexbot.memory.user.set {text}` → same as get. Broadcasts
   `hexbot.memory.user.changed`.
-- `hexbot.memory.bot.get {bot}` → `{memory_md, cap: 2200}`
+- `hexbot.memory.bot.get {bot}` → `{memory_md, cap, updated_at}`. `cap` is
+  the bot's memory limit (`memory_cap` on the bot), 2200 by default.
 - `hexbot.memory.bot.set {bot, memory_md}` → same as get.
 - `hexbot.memory.notes.list {bot}` → `{days: [{date, text}], today, cap:
   4000, retention_days: 30}`. The bot's daily notes, newest day first, each
@@ -973,7 +986,8 @@ result that finds the section idle keeps its originating hop count but no
 requesters, since nobody waits on that turn, so the bot can pass the answer on.
 
 The `hexbot_soul {action: read | write, text?}` tool lets a bot read or
-replace its own `SOUL.md` (capped at 4000 characters). It sits in its own
+replace its own `SOUL.md`, up to the bot's soul limit (`soul_cap`, 4000
+by default). It sits in its own
 plugin toolset, `hexbot-soul`, which is never written to
 `known_plugin_toolsets`, so the core keeps it on for every bot. A write calls
 `profiles.configure {soul}` and broadcasts `hexbot.bots.changed`; it reaches

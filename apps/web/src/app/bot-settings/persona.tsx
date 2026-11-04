@@ -8,14 +8,17 @@ import { Textarea } from '../../components/ui/textarea'
 import { BOT_TEMPLATES } from '../../lib/bot-templates'
 import { cn } from '../../lib/cn'
 import type { Bot } from '../../lib/types'
+import { useSettings } from '../../stores/settings'
 
-import { cardClass, Heading, type SaveBot } from './shared'
-
-const wordCount = (text: string) => (text.trim() ? text.trim().split(/\s+/).length : 0)
+import { cardClass, DEFAULT_SOUL_LIMIT, Group, Heading, LimitRow, type SaveBot } from './shared'
 
 export function PersonaTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   const [persona, setPersona] = useState(bot.persona)
   useEffect(() => setPersona(bot.persona), [bot.persona])
+  const fallback = useSettings(state => state.settings?.soul_char_limit) ?? DEFAULT_SOUL_LIMIT
+  const cap = bot.soul_cap ?? fallback
+  const length = [...persona].length
+  const tooLong = length > cap
 
   const applyTemplate = async (id: string) => {
     const template = BOT_TEMPLATES.find(item => item.id === id)
@@ -33,7 +36,10 @@ export function PersonaTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
     }
 
     setPersona(template.persona)
-    void onSave({ persona: template.persona })
+
+    if ([...template.persona].length <= cap) {
+      void onSave({ persona: template.persona })
+    }
   }
 
   return (
@@ -42,8 +48,12 @@ export function PersonaTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
         Soul
       </Heading>
       <div className="mb-2 flex items-center justify-between px-1">
-        <span className="text-[length:var(--text-meta)] text-muted">
-          {wordCount(persona)} words · saved when you leave the field
+        <span
+          className={cn('text-[length:var(--text-meta)]', tooLong ? 'text-danger' : 'text-muted')}
+          role={tooLong ? 'alert' : undefined}
+        >
+          {length} / {cap} characters ·{' '}
+          {tooLong ? 'shorten it to save' : 'saved when you leave the field'}
         </span>
         <Menu
           items={BOT_TEMPLATES.map(item => ({
@@ -62,7 +72,7 @@ export function PersonaTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
           aria-label="Soul"
           className="min-h-[24rem] flex-1 rounded-none bg-transparent px-4 py-3 hover:bg-transparent focus-visible:bg-transparent"
           onBlur={() => {
-            if (persona !== bot.persona) {
+            if (persona !== bot.persona && !tooLong) {
               void onSave({ persona })
             }
           }}
@@ -70,6 +80,16 @@ export function PersonaTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
           value={persona}
         />
       </div>
+      <Group className="mt-6">
+        <LimitRow
+          description={`Leave empty for the default in Settings, ${fallback.toLocaleString()} characters.`}
+          fallback={fallback}
+          label="Soul limit"
+          onSave={limit => onSave({ soul_char_limit: limit })}
+          title="Soul limit"
+          value={bot.soul_char_limit}
+        />
+      </Group>
     </div>
   )
 }

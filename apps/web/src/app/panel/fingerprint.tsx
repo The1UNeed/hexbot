@@ -160,7 +160,7 @@ export function FingerprintEditor({
     <Suspense fallback={null}>
       <DocumentEditor
         about={about(file, bot.display_name)}
-        cap={file === 'memory' ? memory?.cap : undefined}
+        cap={file === 'memory' ? (bot.memory_cap ?? memory?.cap) : bot.soul_cap}
         fileName={card.fileName}
         onClose={onClose}
         onSave={async text => {
