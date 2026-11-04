@@ -126,8 +126,20 @@ struct Output {
 }
 
 /// Runs `bw` with only the environment it needs. `secret` goes in
-/// `BW_PASSWORD`, `session` in `BW_SESSION`, `input` on stdin.
+/// `BW_PASSWORD`, `session` in `BW_SESSION`, `input` on stdin. It may wait
+/// a minute on the server, off the async workers (`passwords::blocking`).
 fn bw(
+    home: &Path,
+    owner: &str,
+    args: &[&str],
+    input: Option<&str>,
+    session: Option<&str>,
+    secret: Option<&str>,
+) -> Result<Output> {
+    passwords::blocking(|| run(home, owner, args, input, session, secret))
+}
+
+fn run(
     home: &Path,
     owner: &str,
     args: &[&str],
@@ -440,16 +452,23 @@ fn item_of(record: &Record, mut base: Value) -> Value {
                 add("Variable", &record.env, false);
             }
             let mut login = base["login"].as_object().cloned().unwrap_or_default();
-            let rest = login
+            let saved = login
                 .get("uris")
                 .and_then(Value::as_array)
-                .map(|uris| uris.iter().skip(1).cloned().collect::<Vec<_>>())
+                .cloned()
                 .unwrap_or_default();
             let mut uris = vec![];
             if !record.url.is_empty() {
-                uris.push(json!({"uri": record.url, "match": null}));
+                // The first URI keeps the match rule a Bitwarden app set.
+                let mut first = saved
+                    .first()
+                    .filter(|u| u.is_object())
+                    .cloned()
+                    .unwrap_or_else(|| json!({"match": null}));
+                first["uri"] = json!(record.url);
+                uris.push(first);
             }
-            uris.extend(rest);
+            uris.extend(saved.into_iter().skip(1));
             login.insert("uris".into(), json!(uris));
             login.insert("username".into(), json!(record.username));
             login.insert("password".into(), json!(record.password));
@@ -582,6 +601,36 @@ pub(crate) fn put(
         .as_str()
         .map(str::to_owned)
         .ok_or_else(|| Error::new(5300, "Vaultwarden didn't say what it saved."))
+}
+
+/// A deleted bot leaves the lists of items in the Hexbot folder's trash too,
+/// since a Bitwarden app can restore them. The CLI won't edit an item in
+/// the trash, so each one it names comes out for its change and goes back.
+pub(crate) fn forget_in_trash(
+    home: &Path,
+    owner: &str,
+    account: &Account,
+    bot: &str,
+) -> Result<()> {
+    let trash = vault(
+        home,
+        owner,
+        &["list", "items", "--folderid", &account.folder, "--trash"],
+        None,
+    )?;
+    let named = trash["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| Some((item["id"].as_str()?.to_owned(), record_of(item)?)))
+        .collect::<Vec<_>>();
+    for (id, record) in passwords::without(named, bot) {
+        vault(home, owner, &["restore", "item", &id], None)?;
+        let item = item_of(&record, vault(home, owner, &["get", "item", &id], None)?);
+        vault(home, owner, &["edit", "item", &id], Some(&encoded(&item)))?;
+        vault(home, owner, &["delete", "item", &id], None)?;
+    }
+    Ok(())
 }
 
 /// Moves an item to Vaultwarden's trash, where Bitwarden apps can restore it.

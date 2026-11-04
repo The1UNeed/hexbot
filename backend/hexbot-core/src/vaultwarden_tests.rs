@@ -35,11 +35,12 @@ if (state.down) fail('FetchError: request to https://vault.example.com/api/sync 
 unlocked()
 if (command === 'sync') ok({ title: 'Syncing complete.' })
 if (command === 'list' && object === 'folders') ok({ object: 'list', data: state.folders })
-if (command === 'list' && object === 'items') ok({ object: 'list', data: state.items.filter(i => i.folderId === opt('--folderid') && !i.deletedDate) })
+if (command === 'list' && object === 'items') ok({ object: 'list', data: state.items.filter(i => i.folderId === opt('--folderid') && !i.deletedDate === !args.includes('--trash')) })
+if (command === 'restore') { const i = state.items.find(x => x.id === id); if (!i) fail('Not found.'); delete i.deletedDate; ok({}) }
 if (command === 'get') { const item = state.items.find(i => i.id === object && 1) || state.items.find(i => i.id === id); item ? ok(item) : fail('Not found.') }
 if (command === 'create' && object === 'folder') { const f = { ...stdin(), id: crypto.randomUUID(), object: 'folder' }; state.folders.push(f); ok(f) }
 if (command === 'create' && object === 'item') { const i = { ...stdin(), id: crypto.randomUUID(), object: 'item', revisionDate: new Date().toISOString() }; state.items.push(i); ok(i) }
-if (command === 'edit') { const i = state.items.findIndex(x => x.id === id); if (i < 0) fail('Not found.'); state.items[i] = { ...stdin(), id, revisionDate: new Date().toISOString() }; ok(state.items[i]) }
+if (command === 'edit') { const i = state.items.findIndex(x => x.id === id); if (i < 0) fail('Not found.'); if (state.items[i].deletedDate) fail('You may not edit a deleted item. Use the restore command first.'); state.items[i] = { ...stdin(), id, revisionDate: new Date().toISOString() }; ok(state.items[i]) }
 if (command === 'delete') { const i = state.items.find(x => x.id === id); if (!i) fail('Not found.'); i.deletedDate = new Date().toISOString(); ok({}) }
 fail('unknown command ' + args.join(' '))
 "#;
@@ -419,6 +420,75 @@ fn a_connect_that_fails_part_way_leaves_nothing_behind() {
     assert!(!h.join("users/alice/passwords/vaultwarden.key").exists());
 }
 
+#[test]
+fn a_deleted_bot_leaves_trashed_items_and_they_stay_in_the_trash() {
+    let home = home();
+    let h = home.path();
+    connect_alice(h, json!({})).unwrap();
+    let saved = crate::passwords::save(
+        h,
+        "alice",
+        &json!({"url":"https://x.com","password":"pw","bots":["owl","fox"]}),
+    )
+    .unwrap();
+    crate::passwords::delete(h, "alice", saved["id"].as_str().unwrap()).unwrap();
+    crate::passwords::forget_bot(h, "owl").unwrap();
+    let item = fake(h)["items"][0].clone();
+    assert!(!item["deletedDate"].is_null(), "back in the trash");
+    assert_eq!(field(&item, "hexbot.bots").as_deref(), Some(r#"["fox"]"#));
+}
+
+#[test]
+fn saving_keeps_the_match_rule_a_bitwarden_app_set() {
+    let home = home();
+    let h = home.path();
+    connect_alice(h, json!({})).unwrap();
+    let saved = crate::passwords::save(h, "alice", &json!({"url":"https://x.com","password":"pw"}))
+        .unwrap();
+    edit_fake(h, |state| {
+        state["items"][0]["login"]["uris"][0]["match"] = json!(3)
+    });
+    crate::passwords::save(h, "alice", &json!({"id":saved["id"],"url":"https://y.com"})).unwrap();
+    let uri = fake(h)["items"][0]["login"]["uris"][0].clone();
+    assert_eq!(uri, json!({"uri":"https://y.com","match":3}));
+}
+
+/// The daemon's runtime has many threads; a call waiting on `bw` steps
+/// aside for the worker's other tasks instead of holding it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn waiting_on_bw_leaves_the_async_workers_free() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let home = home();
+    let h = home.path().to_owned();
+    connect_alice(&h, json!({})).unwrap();
+    let ticks = std::sync::Arc::new(AtomicUsize::new(0));
+    let ticker = tokio::spawn({
+        let ticks = ticks.clone();
+        async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                ticks.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let before = ticks.load(Ordering::SeqCst);
+    // One worker: without stepping aside, the ticker can't run until `bw` is done.
+    let listed = tokio::spawn(async move {
+        let listed = crate::passwords::list(&h, "alice", None).map(|l| l.len());
+        (listed, ticks.load(Ordering::SeqCst) - before)
+    })
+    .await
+    .unwrap();
+    ticker.abort();
+    assert_eq!(listed.0.unwrap(), 0);
+    assert!(
+        listed.1 > 2,
+        "the ticker ran {} times while bw ran",
+        listed.1
+    );
+}
+
 fn home_without_bw() -> tempfile::TempDir {
     let home = home();
     std::fs::write(
@@ -441,7 +511,8 @@ fn a_real_vaultwarden_keeps_every_kind() {
     crate::db::open(h)
         .unwrap()
         .execute_batch(
-            "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);",
+            "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);
+             INSERT INTO bots(name,owner_id) VALUES('owl','alice'),('fox','alice');",
         )
         .unwrap();
     let p = json!({"server":var("URL"),"email":var("EMAIL"),"password":var("PASSWORD")});
@@ -497,6 +568,22 @@ fn a_real_vaultwarden_keeps_every_kind() {
     for item in [&login, &api, &ssh] {
         crate::passwords::delete(h, "alice", &id(item)).unwrap();
     }
+    // A deleted bot leaves a trashed item's list, and the item stays trashed.
+    let shared = crate::passwords::save(
+        h,
+        "alice",
+        &json!({"title":"Real trash","url":"https://example.com","password":"pw","bots":["owl","fox"]}),
+    )
+    .unwrap();
+    crate::passwords::delete(h, "alice", &id(&shared)).unwrap();
+    crate::passwords::forget_bot(h, "owl").unwrap();
+    assert_eq!(
+        crate::passwords::find(h, "alice", &id(&shared))
+            .unwrap_err()
+            .code,
+        4204,
+        "still in the trash"
+    );
     crate::passwords::call(h, "alice", "hexbot.passwords.disconnect", &json!({}))
         .unwrap()
         .unwrap();

@@ -308,17 +308,22 @@ pub(crate) fn keep(home: &Path, owner: &str, name: &str, value: &str) -> Result<
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
     let file = dir(home, owner)?.join(format!("{name}.key"));
+    let unsure = dir(home, owner)?.join(format!("{name}.os"));
     let os = format!("{}-{name}", account(home, owner));
+    let mut left = false;
     if let Some(store) = os_store() {
         if os_write(store, &os, &hex) {
             let _ = std::fs::remove_file(&file);
             return Ok(());
         }
-        // A write that didn't read back may still have landed; `forget`
-        // takes the file to mean the OS store holds no copy.
-        let _ = os_delete(store, &os);
+        // A write that didn't read back may still have landed.
+        left = os_delete(store, &os).is_err();
     }
     private_dir(home, owner)?;
+    if left {
+        // `forget` then won't take the file to mean the OS store is empty.
+        common::atomic_write(&unsure, b"")?;
+    }
     common::atomic_write(&file, hex.as_bytes())
 }
 
@@ -347,16 +352,22 @@ pub(crate) fn kept(home: &Path, owner: &str, name: &str) -> Result<Option<(Strin
 
 /// Removes a secret `keep` wrote, wherever it is.
 pub(crate) fn forget(home: &Path, owner: &str, name: &str) -> Result<()> {
+    let unsure = dir(home, owner)?.join(format!("{name}.os"));
+    let may_be_in_store = unsure.exists();
     let in_file = match std::fs::remove_file(dir(home, owner)?.join(format!("{name}.key"))) {
         Ok(()) => true,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
         Err(e) => return Err(e.into()),
     };
     match os_store().map(|store| os_delete(store, &format!("{}-{name}", account(home, owner)))) {
-        // `keep` uses the file only when the OS store can't take it.
-        Some(Err(_)) if in_file => Ok(()),
+        // `keep` uses the file only when the OS store can't take it, unless
+        // it left a mark that a copy may have landed there.
+        Some(Err(_)) if in_file && !may_be_in_store => Ok(()),
         Some(Err(error)) => Err(error),
-        _ => Ok(()),
+        _ => match std::fs::remove_file(&unsure) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        },
     }
 }
 
@@ -418,9 +429,25 @@ fn key(home: &Path, owner: &str, create: bool) -> Result<Option<(String, Store)>
 /// Read-modify-write of any vault runs one at a time.
 fn lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
+    // A Vaultwarden call may hold it for a minute.
+    blocking(|| {
+        LOCK.get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    })
+}
+
+/// Runs work that waits on another program, such as the Bitwarden CLI, so
+/// it doesn't hold an async worker: on the daemon's runtime, the worker's
+/// other tasks move to another thread while it waits.
+pub(crate) fn blocking<T>(work: impl FnOnce() -> T) -> T {
+    use tokio::runtime::{Handle, RuntimeFlavor};
+    match Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(work)
+        }
+        _ => work(),
+    }
 }
 
 /// The key is 256 random bits, so the KDF only has to be one every KeePass
@@ -685,14 +712,20 @@ fn write_entry(entry: &mut keepass::db::Entry, item: &Record) {
 
 /// Items outside the recycle bin.
 fn local_list(home: &Path, owner: &str) -> Result<Vec<(String, Record)>> {
+    local_entries(home, owner, false)
+}
+
+/// Items, with those in the recycle bin when `bin`: a KeePass app can
+/// restore them.
+fn local_entries(home: &Path, owner: &str, bin: bool) -> Result<Vec<(String, Record)>> {
     let Some(vault) = load(home, owner)? else {
         return Ok(vec![]);
     };
-    let bin = vault.db.recycle_bin().map(|g| g.id());
+    let recycled = vault.db.recycle_bin().map(|g| g.id());
     Ok(vault
         .db
         .iter_all_entries()
-        .filter(|e| bin.is_none_or(|bin| e.parent().id() != bin))
+        .filter(|e| bin || recycled.is_none_or(|r| e.parent().id() != r))
         .map(|e| (e.id().uuid().to_string(), record_of(&e)))
         .collect())
 }
@@ -1140,35 +1173,33 @@ pub fn forget_bot(home: &Path, bot: &str) -> Result<()> {
 }
 fn forget_in(home: &Path, owner: &str, bot: &str) -> Result<()> {
     let _lock = lock();
-    let without = |items: Vec<(String, Record)>| {
-        items
-            .into_iter()
-            .filter_map(|(id, mut item)| {
-                let kept = item
-                    .bots
-                    .as_ref()?
-                    .iter()
-                    .filter(|b| *b != bot)
-                    .cloned()
-                    .collect::<Vec<_>>();
-                if Some(kept.len()) == item.bots.as_ref().map(Vec::len) {
-                    return None;
-                }
-                item.bots = Some(kept);
-                Some((id, item))
-            })
-            .collect::<Vec<_>>()
-    };
-    for (id, item) in without(all(home, owner)?) {
-        put(home, owner, Some(&id), &item)?;
+    // The vault on the daemon, recycle bin included, which comes back if
+    // Vaultwarden is disconnected.
+    for (id, item) in without(local_entries(home, owner, true)?, bot) {
+        local_put(home, owner, Some(&id), &item)?;
     }
-    // The vault on the daemon comes back if Vaultwarden is disconnected.
-    if let Backend::Vaultwarden(_) = backend(home, owner)? {
-        for (id, item) in without(local_list(home, owner)?) {
-            local_put(home, owner, Some(&id), &item)?;
+    if let Backend::Vaultwarden(account) = backend(home, owner)? {
+        for (id, item) in without(crate::vaultwarden::list(home, owner, &account)?, bot) {
+            crate::vaultwarden::put(home, owner, &account, Some(&id), &item)?;
         }
+        crate::vaultwarden::forget_in_trash(home, owner, &account, bot)?;
     }
     Ok(())
+}
+
+/// The items that name `bot`, with it taken off their lists.
+pub(crate) fn without(items: Vec<(String, Record)>, bot: &str) -> Vec<(String, Record)> {
+    items
+        .into_iter()
+        .filter_map(|(id, mut item)| {
+            let bots = item.bots.as_ref()?;
+            if !bots.iter().any(|b| b == bot) {
+                return None;
+            }
+            item.bots = Some(bots.iter().filter(|b| *b != bot).cloned().collect());
+            Some((id, item))
+        })
+        .collect()
 }
 
 /// The private key in the OpenSSH format, its passphrase taken off, for an
