@@ -309,7 +309,7 @@ impl Runtime {
 
     /// Every plugin as a bot reads it: no keys, values, addresses or other
     /// bots' state unless it looks after them.
-    fn plugin_list(&self, owner: &str, bot: &str, every_bot: bool) -> Result<Value> {
+    pub(super) fn plugin_list(&self, owner: &str, bot: &str, every_bot: bool) -> Result<Value> {
         let listed = crate::plugins::list(&self.home, owner, Some(bot))?;
         let config = common::read_config(&self.home)?;
         let mut plugins = vec![];
@@ -328,14 +328,23 @@ impl Runtime {
                     Some(server) => config["mcp_servers"][server]["description"].clone(),
                     None => p["description"].clone(),
                 };
+                // Ready for this bot: a package of skills can be, through its own `.env`.
+                let ready = p["ready"] != false
+                    || p["ready_bots"]
+                        .as_array()
+                        .is_some_and(|bots| bots.iter().any(|b| b == bot));
                 let mut row = json!({
                     "id": format!("{kind}:{id}"),
                     "name": p["name"],
                     "description": description.as_str().unwrap_or(""),
                     "on": bots_of(p).iter().any(|b| b == bot),
-                    "ready": p["ready"] != false,
+                    "ready": ready,
                 });
-                if let Some(text) = p["state_text"].as_str().or(p["setup"].as_str()) {
+                if let Some(text) = p["state_text"]
+                    .as_str()
+                    .or(p["setup"].as_str())
+                    .filter(|_| !ready || p["ready"] != false)
+                {
                     row["state"] = json!(text);
                 }
                 if let Some(skills) = p["skills"].as_array() {

@@ -6457,3 +6457,37 @@ async fn a_bot_with_notion_on_gets_the_connector_tools() {
     );
     runtime.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_package_of_skills_set_up_through_a_bots_own_key_reads_as_ready_to_that_bot() {
+    let (home, runtime, _hub) = setup();
+    crate::plugins::call(
+        home.path(),
+        "alice",
+        "hexbot.plugins.install",
+        &json!({"name":"notes","skills":[{"name":"notes-sync","content":
+            "---\ndescription: Sync notes.\nprerequisites:\n  env_vars: [HEXBOT_TEST_OWL_NOTES_KEY]\n---\nBody."}]}),
+    )
+    .unwrap()
+    .unwrap();
+    let notes = |runtime: &Runtime| {
+        runtime.plugin_list("alice", "owl", false).unwrap()["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == "package:notes")
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(notes(&runtime)["ready"], false);
+    fs::write(
+        home.path().join("profiles/owl/.env"),
+        "HEXBOT_TEST_OWL_NOTES_KEY=value\n",
+    )
+    .unwrap();
+    // Owl's own key sets it up for Owl, so it is not sent to setup.
+    let row = notes(&runtime);
+    assert_eq!(row["ready"], true, "{row}");
+    assert!(row.get("state").is_none(), "{row}");
+    runtime.shutdown().await;
+}
