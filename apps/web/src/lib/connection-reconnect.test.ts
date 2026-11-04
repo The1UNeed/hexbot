@@ -134,3 +134,53 @@ it('Reconnect now while connected keeps the open socket and opens no other', asy
   expect(open).toHaveLength(1)
   expect(routed).toBe(1)
 })
+
+it('Reconnect now after a handshake that never answers tries again', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+
+  try {
+    const sockets: FakeSocket[] = []
+    let tickets = 0
+
+    // The first ticket request never settles; later ones answer.
+    const fetch = vi.fn<typeof globalThis.fetch>(async url => {
+      if (!String(url).endsWith('/api/auth/ws-ticket')) {
+        return new Response('')
+      }
+
+      tickets += 1
+
+      return tickets === 1 ? new Promise<Response>(() => {}) : new Response('{"ticket":"t"}')
+    })
+
+    const supervisor = new ConnectionSupervisor({
+      fetch,
+      socketFactory: () => {
+        const socket = new FakeSocket()
+        sockets.push(socket)
+
+        return socket as unknown as WebSocket
+      }
+    })
+
+    const first = supervisor.start({
+      kind: 'remote',
+      host: 'daemon.test',
+      port: 443,
+      tls: true,
+      deviceToken: 'token'
+    })
+    await vi.waitFor(() => expect(tickets).toBe(1))
+    await vi.advanceTimersByTimeAsync(15_000)
+    await first
+    await supervisor.retryNow()
+
+    const open = sockets.filter(socket => socket.readyState === WebSocket.OPEN)
+
+    supervisor.stop()
+    expect(tickets).toBe(2)
+    expect(open).toHaveLength(1)
+  } finally {
+    vi.useRealTimers()
+  }
+})

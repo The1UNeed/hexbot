@@ -160,6 +160,16 @@ export async function probeDaemon(origin: string, deps: ConnectionDeps = {}): Pr
   }
 }
 
+function withDeadline<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new UnreachableError(message)), ms)
+  })
+
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer))
+}
+
 /** Bearer token used for HTTP calls against a gated daemon. */
 async function bearerToken(target: ConnectionTarget, deps: ConnectionDeps): Promise<string> {
   if (target.kind === 'remote') {
@@ -492,8 +502,13 @@ export class ConnectionSupervisor {
   }
 
   private async open(target: ConnectionTarget, generation: number): Promise<void> {
-    await probeDaemon(targetOrigin(target), this.deps)
-    const wsUrl = await resolveWsUrl(target, this.deps)
+    // A request can stall without failing. Give up on it, or the one attempt
+    // allowed at a time would hold Reconnect now forever.
+    const wsUrl = await withDeadline(
+      probeDaemon(targetOrigin(target), this.deps).then(() => resolveWsUrl(target, this.deps)),
+      READY_TIMEOUT_MS,
+      'The daemon did not answer.'
+    )
 
     if (generation !== this.generation) {
       return
