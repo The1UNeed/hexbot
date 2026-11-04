@@ -416,6 +416,9 @@ export function useMobile() {
           return
         }
         if (!event.session_id || event.session_id !== liveId.current) return
+        // Read as it lands, so the daemon does not wake this phone about it.
+        if (event.type === 'message.complete' && AppState.currentState === 'active')
+          void rpc('hexbot.sections.mark_read', { id: target.section.id }).catch(() => {})
         if (event.type === 'message.complete' && straddling.current === event.session_id) {
           // Part of this turn was already in the history; the history now has all of it.
           straddling.current = null

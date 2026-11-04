@@ -12,7 +12,8 @@ import {
 } from '../stores/transcripts'
 import fixtures from '../test/fixtures/streaming-turn.json'
 
-import { OPEN_SECTION_EVENT, routeEvent } from './events'
+import { routeEvent } from './events'
+import { OPEN_SECTION_EVENT } from './notify'
 import type { Bot, Section } from './types'
 
 const incident = (overrides: Record<string, unknown> = {}): GatewayEvent =>
@@ -241,6 +242,8 @@ describe('event routing', () => {
     const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
     const opened = vi.fn()
     window.addEventListener(OPEN_SECTION_EVENT, opened)
+    // The real notification path: the browser shows its own.
+    resetTranscriptEffects()
     useBots.setState({ byName: { owl: { display_name: 'Owl', name: 'owl' } as Bot } })
     routeEvent({
       payload: { bot: 'owl', section_id: 'chat-1', text: 'Due tonight.' },

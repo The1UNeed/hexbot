@@ -19,7 +19,7 @@ import {
   nextMessageId,
   sectionsTouch
 } from '../lib/api'
-import { getBridge } from '../lib/bridge'
+import { type NotifyInput, notifyUser } from '../lib/notify'
 import { toMillis } from '../lib/time'
 import type {
   ApprovalChoice,
@@ -124,7 +124,7 @@ export interface Transcript {
 
 export interface TranscriptEffects {
   ackApproval(sessionId: string, requestId: string): void
-  notify(input: { body: string; sectionId?: string; title: string }): void
+  notify(input: NotifyInput): void
   touchSection(sectionId: string): void
 }
 
@@ -267,7 +267,7 @@ const defaultEffects: TranscriptEffects = {
     void approvalReceived(sessionId, requestId).catch(() => undefined)
   },
   notify(input) {
-    getBridge()?.notify(input)
+    notifyUser(input)
   },
   touchSection(sectionId) {
     void sectionsTouch(sectionId).catch(() => undefined)
@@ -299,7 +299,7 @@ export function releaseHeartbeatMessages(sectionId: string): HeartbeatRow[] {
 }
 
 /** Send a native notification through the same effect the store uses. */
-export function transcriptNotify(input: { body: string; sectionId?: string; title: string }): void {
+export function transcriptNotify(input: NotifyInput): void {
   effects.notify(input)
 }
 

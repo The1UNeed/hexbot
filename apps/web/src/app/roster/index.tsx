@@ -24,6 +24,7 @@ import { toHandle } from '../../lib/bot-handle'
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
 import { moodForStatus } from '../../lib/face'
+import { usePageVisible } from '../../lib/page-visible'
 import { previewLine } from '../../lib/preview'
 import { reasoningOptions, runningLevel } from '../../lib/reasoning'
 import { toMillis } from '../../lib/time'
@@ -396,11 +397,15 @@ export function RosterColumn() {
       )?.done_at
     : null
 
+  // Read only once on screen: a closed app window or a background tab has not
+  // seen it, so the daemon still wakes the phone about it.
+  const pageVisible = usePageVisible()
+
   useEffect(() => {
-    if (params.section && activeSectionDoneAt) {
+    if (params.section && activeSectionDoneAt && pageVisible) {
       void sectionsMarkRead(params.section).catch(() => undefined)
     }
-  }, [activeSectionDoneAt, params.section])
+  }, [activeSectionDoneAt, pageVisible, params.section])
   const streamingSessions = useTranscripts(state => state.bySession)
 
   const liveSections = useMemo(() => liveSectionsOf(streamingSessions), [streamingSessions])

@@ -50,6 +50,8 @@ export interface HexbotBridge {
   notify(input: { backgroundOnly?: boolean; body: string; sectionId?: string; title: string }): void
   openExternal(url: string): Promise<void> | void
   onNavigate?(callback: (url: string) => void): () => void
+  /** Whether the app's window is open and not minimized; apps from before it leave it out. */
+  onWindowShown?(callback: (shown: boolean) => void): () => void
   pairWithGrant?(input: {
     host: string
     grant: string

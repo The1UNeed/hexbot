@@ -5079,6 +5079,10 @@ impl Runtime {
                     "UPDATE bots SET last_activity_at=? WHERE name=?",
                     params![now, s.bot],
                 )?;
+                // Unread a while later, it wakes the owner's phones.
+                if error.is_none() {
+                    heartbeat::push_reply_later(&self.home, &s.stored, now);
+                }
                 self.events.emit(
                     &s.owner,
                     None,

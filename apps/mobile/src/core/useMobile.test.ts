@@ -11,9 +11,8 @@ const state = vi.hoisted(() => ({
   event: (_event: unknown) => {},
   ready: async () => {}
 }))
-vi.mock('react-native', () => ({
-  AppState: { addEventListener: () => ({ remove() {} }) }
-}))
+const appState = vi.hoisted(() => ({ currentState: 'active', addEventListener: () => ({ remove() {} }) }))
+vi.mock('react-native', () => ({ AppState: appState }))
 vi.mock('expo-crypto', () => ({ randomUUID: () => 'message' }))
 vi.mock('./storage', () => ({
   activeDaemonId: async () => null,
@@ -740,6 +739,20 @@ describe('recall and closing an error in a bot chat', () => {
     await act(async () => { await hook.result.current.dismissError() })
     expect(hook.result.current.chat.error).toBeNull()
     expect(state.request).toHaveBeenCalledWith('hexbot.bots.clear_status', { name: 'owl' })
+  })
+
+  it('marks a reply read as it lands on screen, so this phone is not woken about it', async () => {
+    await chat()
+    const reads = () => state.request.mock.calls.filter(([m]) => m === 'hexbot.sections.mark_read').length
+    const before = reads()
+    act(() => state.event({ type: 'message.complete', session_id: 'live-owl-chat', payload: { text: 'Done.' } }))
+    expect(reads()).toBe(before + 1)
+    expect(state.request).toHaveBeenLastCalledWith('hexbot.sections.mark_read', { id: 'owl-chat' })
+    // In the background the reply stays unread for the push.
+    appState.currentState = 'background'
+    act(() => state.event({ type: 'message.complete', session_id: 'live-owl-chat', payload: { text: 'Again.' } }))
+    appState.currentState = 'active'
+    expect(reads()).toBe(before + 1)
   })
 
   it('leaves the bot’s state alone when the error is not a Stopped state here', async () => {

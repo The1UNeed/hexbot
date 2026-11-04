@@ -363,30 +363,35 @@ fn push_later(home: &Path, message: &str) {
 
 async fn push(home: &Path, message: &str) -> Result<()> {
     let tickets = send_push(home, message).await?;
-    // An app removed from a phone shows only in the receipt, once Apple or
-    // Google answer Expo; ask then, and forget those tokens too.
-    if !tickets.is_empty() {
-        tokio::time::sleep(RECEIPT_DELAY).await;
-        let token_of = tickets
-            .iter()
-            .filter_map(|t| {
-                Some((
-                    t["id"].as_str()?.to_owned(),
-                    t["token"].as_str()?.to_owned(),
-                ))
-            })
-            .collect::<std::collections::HashMap<_, _>>();
-        let ids = token_of.keys().cloned().collect::<Vec<_>>();
-        for batch in ids.chunks(300) {
-            let gone = crate::services::push_receipts(home, batch).await?;
-            forget_tokens(
-                home,
-                &gone
-                    .iter()
-                    .filter_map(|id| token_of.get(id).cloned())
-                    .collect::<Vec<_>>(),
-            )?;
-        }
+    forget_removed_apps(home, tickets).await
+}
+
+/// An app removed from a phone shows only in the receipt, once Apple or
+/// Google answer Expo; ask then, and forget those tokens too.
+async fn forget_removed_apps(home: &Path, tickets: Vec<Value>) -> Result<()> {
+    if tickets.is_empty() {
+        return Ok(());
+    }
+    tokio::time::sleep(RECEIPT_DELAY).await;
+    let token_of = tickets
+        .iter()
+        .filter_map(|t| {
+            Some((
+                t["id"].as_str()?.to_owned(),
+                t["token"].as_str()?.to_owned(),
+            ))
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    let ids = token_of.keys().cloned().collect::<Vec<_>>();
+    for batch in ids.chunks(300) {
+        let gone = crate::services::push_receipts(home, batch).await?;
+        forget_tokens(
+            home,
+            &gone
+                .iter()
+                .filter_map(|id| token_of.get(id).cloned())
+                .collect::<Vec<_>>(),
+        )?;
     }
     Ok(())
 }
@@ -412,24 +417,38 @@ async fn send_push(home: &Path, message: &str) -> Result<Vec<Value>> {
         .filter(|_| claimed == 1) else {
             return Ok(vec![]);
         };
-        // Each phone learns which of its saved daemons to open from its own device id.
         let targets = if row["notify"] == 1 {
-            common::rows(
-                &conn,
-                "SELECT id,push_token FROM devices WHERE owner_id=? AND revoked_at IS NULL AND push_token IS NOT NULL",
-                &[&row["owner_id"].as_str().unwrap_or("")],
-            )?
-            .into_iter()
-            .filter_map(|r| Some(json!({"token":r["push_token"].as_str()?,"device":r["id"].as_str()?})))
-            .collect::<Vec<_>>()
+            phones(&conn, row["owner_id"].as_str().unwrap_or(""))?
         } else {
             vec![]
         };
         (row, targets)
     };
-    let section = row["section_id"].as_str().unwrap_or("");
-    // Connect takes 20 targets a request. Without Connect set up, it is Ok
-    // with nothing sent.
+    let tickets = wake(home, &targets, row["section_id"].as_str().unwrap_or("")).await?;
+    db::open(home)?.execute(
+        "UPDATE heartbeat_messages SET push_due_at=NULL WHERE id=?",
+        [message],
+    )?;
+    Ok(tickets)
+}
+
+/// The owner's phones that take pushes. Each learns which of its saved
+/// daemons to open from its own device id.
+fn phones(conn: &rusqlite::Connection, owner: &str) -> Result<Vec<Value>> {
+    Ok(common::rows(
+        conn,
+        "SELECT id,push_token FROM devices WHERE owner_id=? AND revoked_at IS NULL AND push_token IS NOT NULL",
+        &[&owner],
+    )?
+    .into_iter()
+    .filter_map(|r| Some(json!({"token":r["push_token"].as_str()?,"device":r["id"].as_str()?})))
+    .collect())
+}
+
+/// Pushes to these phones to open `section`, forgets tokens Expo no longer
+/// knows, and returns the tickets to ask about later. Connect takes 20
+/// targets a request. Without Connect set up, it is Ok with nothing sent.
+async fn wake(home: &Path, targets: &[Value], section: &str) -> Result<Vec<Value>> {
     let mut gone = vec![];
     let mut tickets = vec![];
     for batch in targets.chunks(20) {
@@ -437,12 +456,86 @@ async fn send_push(home: &Path, message: &str) -> Result<Vec<Value>> {
         gone.extend(lost);
         tickets.extend(sent);
     }
-    db::open(home)?.execute(
-        "UPDATE heartbeat_messages SET push_due_at=NULL WHERE id=?",
-        [message],
-    )?;
     forget_tokens(home, &gone)?;
     Ok(tickets)
+}
+
+/// A reply in a bot's chat wakes the owner's phones if nobody has read it
+/// this long after it finished. Any app with the chat on screen marks it read
+/// (`hexbot.sections.mark_read`), so a reply seen as it lands wakes nothing.
+const REPLY_PUSH_DELAY: Duration = Duration::from_secs(30);
+
+/// After a turn in `section` finished at `done_at` without an error. Like a
+/// heartbeat message's push, it carries no text and the bot's Notify me
+/// switch silences it. Not kept across a restart: a reply is pushed soon or
+/// not at all.
+pub(crate) fn push_reply_later(home: &Path, section: &str, done_at: f64) {
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    let key = (home.to_owned(), section.to_owned());
+    newest_replies()
+        .lock()
+        .unwrap()
+        .insert(key.clone(), done_at);
+    handle.spawn(async move {
+        tokio::time::sleep(REPLY_PUSH_DELAY).await;
+        // A later reply in the same chat pushes for both.
+        if !still_newest(&key, done_at) {
+            return;
+        }
+        let (home, section) = key;
+        let result = async {
+            let targets = {
+                let conn = db::open(&home)?;
+                match unread_reply(&conn, &section, done_at)? {
+                    Some(owner) => phones(&conn, &owner)?,
+                    None => return Ok(()),
+                }
+            };
+            let tickets = wake(&home, &targets, &section).await?;
+            forget_removed_apps(&home, tickets).await
+        };
+        if let Err(error) = result.await {
+            eprintln!("Reply push: {}", error.message);
+        }
+    });
+}
+
+/// The reply each chat last finished, by daemon home and section.
+fn newest_replies() -> &'static Mutex<HashMap<(PathBuf, String), f64>> {
+    static NEWEST: OnceLock<Mutex<HashMap<(PathBuf, String), f64>>> = OnceLock::new();
+    NEWEST.get_or_init(Default::default)
+}
+
+/// Whether the reply that finished at `done_at` is still the chat's last one,
+/// forgetting it if so.
+fn still_newest(key: &(PathBuf, String), done_at: f64) -> bool {
+    let mut newest = newest_replies().lock().unwrap();
+    if newest.get(key) != Some(&done_at) {
+        return false;
+    }
+    newest.remove(key);
+    true
+}
+
+/// The owner to wake about the reply that finished in `section` at
+/// `done_at`, while nobody has read the chat since. An app stamps `done_at`
+/// again as the reply lands (`hexbot.sections.touch`), so a later stamp
+/// still counts as unread. Only a bot's chat with its owner: not a thread
+/// between bots, not an earlier Check-ins, not archived.
+fn unread_reply(
+    conn: &rusqlite::Connection,
+    section: &str,
+    done_at: f64,
+) -> Result<Option<String>> {
+    Ok(common::rows(
+        conn,
+        "SELECT s.owner_id FROM sections s JOIN bots b ON b.name=s.bot WHERE s.id=? AND s.done_at>=? AND s.peer_bot IS NULL AND s.purpose IS NULL AND s.archived_at IS NULL AND b.notify=1",
+        &[&section, &done_at],
+    )?
+    .pop()
+    .and_then(|row| row["owner_id"].as_str().map(str::to_owned)))
 }
 
 /// Pushes still due: Connect did not take them, or the daemon stopped before
@@ -951,6 +1044,58 @@ mod tests {
         );
         write(home.path(), &events, "local", "owl", "- Has Sam replied?").unwrap();
         assert_eq!(read(home.path(), "owl").unwrap(), "- Has Sam replied?");
+    }
+
+    #[test]
+    fn a_later_reply_in_the_same_chat_pushes_for_both() {
+        let chat = (PathBuf::from("/tmp/hexbot-newest-test"), "chat".to_owned());
+        let other = (chat.0.clone(), "other".to_owned());
+        newest_replies().lock().unwrap().insert(chat.clone(), 5.0);
+        newest_replies().lock().unwrap().insert(other.clone(), 5.0);
+        newest_replies().lock().unwrap().insert(chat.clone(), 6.0);
+        assert!(!still_newest(&chat, 5.0));
+        assert!(still_newest(&chat, 6.0));
+        // Pushed once.
+        assert!(!still_newest(&chat, 6.0));
+        // Another chat keeps its own.
+        assert!(still_newest(&other, 5.0));
+    }
+
+    #[test]
+    fn only_an_unread_reply_in_a_chat_with_notify_on_wakes_phones() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        let conn = db::open(home.path()).unwrap();
+        conn.execute_batch(
+            "INSERT INTO bots(name,owner_id) VALUES ('owl','alice'),('fox','alice');
+             UPDATE bots SET notify=0 WHERE name='fox';
+             INSERT INTO sections(id,bot,owner_id,done_at) VALUES ('chat','owl','alice',5),('quiet','fox','alice',5);
+             INSERT INTO sections(id,bot,owner_id,done_at,peer_bot) VALUES ('thread','owl','alice',5,'fox');
+             INSERT INTO sections(id,bot,owner_id,done_at,purpose) VALUES ('checkins','owl','alice',5,'checkins');
+             INSERT INTO sections(id,bot,owner_id,done_at,archived_at) VALUES ('old','owl','alice',5,6);",
+        )
+        .unwrap();
+        assert_eq!(
+            unread_reply(&conn, "chat", 5.0).unwrap().as_deref(),
+            Some("alice")
+        );
+        // An app's touch as the reply lands keeps it unread.
+        assert_eq!(
+            unread_reply(&conn, "chat", 4.0).unwrap().as_deref(),
+            Some("alice")
+        );
+        // Notify me off, a thread between bots, Check-ins, archived.
+        for section in ["quiet", "thread", "checkins", "old"] {
+            assert_eq!(
+                unread_reply(&conn, section, 5.0).unwrap(),
+                None,
+                "{section}"
+            );
+        }
+        // Seen on any app.
+        conn.execute("UPDATE sections SET done_at=NULL WHERE id='chat'", [])
+            .unwrap();
+        assert_eq!(unread_reply(&conn, "chat", 5.0).unwrap(), None);
     }
 
     #[test]

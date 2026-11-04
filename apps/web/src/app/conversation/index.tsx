@@ -38,11 +38,12 @@ import {
   sessionRecall
 } from '../../lib/api'
 import { botFace } from '../../lib/avatar-builder'
-import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
+import { botNotifies } from '../../lib/events'
 import { moodForStatus } from '../../lib/face'
 import { mathDelimiters } from '../../lib/math'
 import { mediaKind, mediaOf } from '../../lib/media'
+import { notifyUser } from '../../lib/notify'
 import { plainError } from '../../lib/plain-error'
 import { NotConnectedError } from '../../lib/rpc'
 import { useTurnCues } from '../../lib/sounds'
@@ -2131,65 +2132,50 @@ function BotConversation() {
       toEnd()
     }
   }, [approvals.length, atBottom, clarifies, composerHeight, messages])
-  const wasStreaming = useRef(streaming)
+  // The turn, not its bubble: a card closes the bubble while the turn runs on.
+  const busy = Boolean(transcript?.turnActive) || streaming
+  const wasBusy = useRef({ busy, section: section?.id })
   useEffect(() => {
-    if (wasStreaming.current && !streaming) {
-      const body = messages.at(-1)?.text || 'New message'
-      const input = { body, sectionId: section?.id, title: bot?.display_name ?? 'Hexbot' }
-      const bridge = getBridge()
+    const was = wasBusy.current
 
-      if (bridge) {
-        bridge.notify({ ...input, backgroundOnly: true })
-      } else if (
-        document.hidden &&
-        'Notification' in window &&
-        Notification.permission === 'granted'
-      ) {
-        new Notification(input.title, { body: input.body })
-      }
+    wasBusy.current = { busy, section: section?.id }
+
+    // A failed turn has its own Stopped notification, and a stopped one needs none.
+    if (!was.busy || busy || was.section !== section?.id || transcript?.error) {
+      return
     }
 
-    wasStreaming.current = streaming
-  }, [bot?.display_name, messages, section?.id, streaming])
+    if (!botNotifies(bot?.name)) {
+      return
+    }
+
+    // This turn's last words: the messages after what the user last sent.
+    const turn = messages.slice(messages.findLastIndex(message => message.role === 'user') + 1)
+    const reply = turn.findLast(message => message.role === 'assistant' && message.text.trim())
+
+    notifyUser({
+      backgroundOnly: true,
+      body: reply?.text.trim() || 'Finished.',
+      sectionId: section?.id,
+      title: bot?.display_name ?? 'Hexbot'
+    })
+  }, [bot?.display_name, bot?.name, busy, messages, section?.id, transcript?.error])
   useConversationFeelings(
     bot?.name,
     section?.id,
     messages,
     ready,
-    Boolean(transcript?.turnActive) || streaming
+    busy
   )
   const emotion = useEmotion(bot?.name)
   useTurnCues(section?.id, {
     failed: Boolean(messages.at(-1)?.error),
     ready,
-    // The turn, not its bubble: a card closes the bubble while the turn runs on.
-    streaming: Boolean(transcript?.turnActive) || streaming,
+    streaming: busy,
     waiting:
       approvals.filter(card => !card.decision).length +
       clarifies.filter(card => !card.expired && !Object.keys(card.answers).length).length
   })
-  const previousApprovalCount = useRef(approvals.length)
-  useEffect(() => {
-    if (
-      !getBridge() &&
-      document.hidden &&
-      approvals.length > previousApprovalCount.current &&
-      'Notification' in window &&
-      Notification.permission === 'granted'
-    ) {
-      new Notification(
-        approvals.at(-1)?.form?.kind === 'sign_in' ? 'Sign-in needed' : 'Approval needed',
-        {
-          body:
-            approvals.at(-1)?.command ??
-            approvals.at(-1)?.reason ??
-            'A bot is asking for permission.'
-        }
-      )
-    }
-
-    previousApprovalCount.current = approvals.length
-  }, [approvals])
   const shown = messages.slice(-visible)
 
   // Messages, question cards and approval cards in the order they happened.

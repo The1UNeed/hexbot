@@ -1,6 +1,7 @@
 import { useNavigate } from '@tanstack/react-router'
 import {
   Bell,
+  BellRing,
   Brain,
   ChevronRight,
   ChevronsRight,
@@ -20,6 +21,7 @@ import { useMemo, useState } from 'react'
 
 import { Switch } from '../../components/ui/switch'
 import { cn } from '../../lib/cn'
+import { useBrowserNotifications } from '../../lib/notify'
 import type { Attachment, Bot } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { searchActions, useSearch } from '../../stores/search'
@@ -64,6 +66,8 @@ const SETTINGS_LINKS: { icon: LucideIcon; label: string; tab: BotSettingsTab }[]
 
 function DetailsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   const navigate = useNavigate()
+  const browser = useBrowserNotifications()
+  const notify = bot.notify ?? true
 
   const open = (tab: BotSettingsTab) =>
     void navigate({ params: { bot: bot.name, tab }, to: '/b/$bot/settings/$tab' })
@@ -97,15 +101,33 @@ function DetailsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
           <span className="min-w-0 flex-1">
             <span className="block font-medium">Notify me</span>
             <span className="block text-[length:var(--text-meta)] text-muted">
-              When it stops or needs you
+              When it replies, stops or needs you
             </span>
           </span>
           <Switch
-            aria-label="Notify me when this bot stops or needs me"
-            checked={bot.notify ?? true}
-            onCheckedChange={checked => void onSave({ notify: checked })}
+            aria-label="Notify me when this bot replies, stops or needs me"
+            checked={notify}
+            onCheckedChange={checked => {
+              void onSave({ notify: checked })
+
+              // Turning it on is the click a browser needs before it asks.
+              if (checked) {
+                void browser.ask()
+              }
+            }}
           />
         </div>
+        {notify && browser.askable ? (
+          <button className={rowClass} onClick={() => void browser.ask()} type="button">
+            <RowIcon icon={BellRing} />
+            <span className="min-w-0 flex-1">
+              <span className="block font-medium">Allow in this browser</span>
+              <span className="block text-[length:var(--text-meta)] text-muted">
+                So notifications show while this tab is in the background
+              </span>
+            </span>
+          </button>
+        ) : null}
       </section>
       <section className={listClass}>
         {SETTINGS_LINKS.map(link => (

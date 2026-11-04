@@ -28,7 +28,7 @@ import { hexbotHome } from './backend/paths'
 import { resolveWebDevUrl } from './dev-url'
 import { edition, hasRuntime, requireRuntime } from './edition'
 import { parseDeepLink } from './deep-link'
-import { notify } from './notify'
+import { notify, reportShown } from './notify'
 import { pair, pairingReply, pairWithGrant, type GrantPairOptions, type PairOptions } from './pair'
 import { installService, serviceStatus, uninstallService } from './service'
 import { createTray } from './tray'
@@ -146,6 +146,7 @@ async function buildWindow(): Promise<BrowserWindow> {
     window.on('page-title-updated', event => event.preventDefault())
   }
   mainWindow = window
+  reportShown(window)
   guardWindow(window.webContents, url => shell.openExternal(url), webDevUrl)
   window.once('ready-to-show', () => {
     if (lifecycle.exiting) return
@@ -308,7 +309,8 @@ function registerIpc(): void {
         backgroundOnly: item.backgroundOnly === true,
         title: validString(item.title, 'title', 200),
         body: validString(item.body, 'body', 2_000),
-        sectionId: validString(item.sectionId, 'section id', 256)
+        sectionId:
+          item.sectionId === undefined ? undefined : validString(item.sectionId, 'section id', 256)
       },
       () => mainWindow
     )
