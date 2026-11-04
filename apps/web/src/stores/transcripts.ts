@@ -22,6 +22,7 @@ import {
 import { getBridge } from '../lib/bridge'
 import { toMillis } from '../lib/time'
 import type {
+  ApiKeyForm,
   ApprovalChoice,
   ApprovalRequest,
   Attachment,
@@ -161,7 +162,7 @@ export interface ApprovalRequestPayload {
   turn_id?: string
   choices?: ApprovalChoice[]
   command?: string
-  form?: PluginForm | SignInForm
+  form?: ApiKeyForm | PluginForm | SignInForm
   reason?: string
   request_id?: string
   tool?: string
@@ -1205,7 +1206,9 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         turnId: payload.turn_id,
         choices: payload.choices ?? ['once', 'deny'],
         command: payload.command,
-        ...((payload.form?.kind === 'sign_in' || payload.form?.kind === 'plugin') && {
+        ...((payload.form?.kind === 'sign_in' ||
+          payload.form?.kind === 'plugin' ||
+          payload.form?.kind === 'api_key') && {
           form: payload.form
         }),
         reason: payload.reason,
@@ -1241,7 +1244,12 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       effects.notify({
         body: payload.command ?? payload.reason ?? 'A bot is asking for permission.',
         sectionId: transcript?.sectionId,
-        title: payload.form?.kind === 'sign_in' ? 'Sign-in needed' : 'Approval needed'
+        title:
+          payload.form?.kind === 'sign_in'
+            ? 'Sign-in needed'
+            : payload.form?.kind === 'api_key'
+              ? 'API key needed'
+              : 'Approval needed'
       })
     },
 

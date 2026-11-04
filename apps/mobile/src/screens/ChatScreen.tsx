@@ -34,6 +34,7 @@ import {
   useTheme,
   withAlpha
 } from '../ui'
+import { ApiKeyCard } from './ApiKeyCard'
 import { MediaAttachment } from './MediaAttachment'
 import { PluginCard } from './PluginCard'
 import { SignInCard } from './SignInCard'
@@ -564,6 +565,13 @@ const TranscriptEntry = memo(function TranscriptEntry({
     case 'approval':
       return entry.request.form?.kind === 'plugin' ? (
         <PluginCard
+          form={entry.request.form}
+          joined={continued}
+          onAnswer={onApprove!}
+          request={entry.request}
+        />
+      ) : entry.request.form?.kind === 'api_key' ? (
+        <ApiKeyCard
           form={entry.request.form}
           joined={continued}
           onAnswer={onApprove!}

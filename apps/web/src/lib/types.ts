@@ -63,6 +63,23 @@ export interface SignInForm {
   username?: string
 }
 
+/**
+ * The API key card's fields, on an approval a bot asks with
+ * `hexbot_passwords`. The key typed goes to the daemon with the answer and is
+ * saved in Passwords; the bot never sees it.
+ */
+export interface ApiKeyForm {
+  /** The environment variable commands read it from. */
+  env: string
+  kind: 'api_key'
+  /** The host of the page where the user gets a key, when the bot gave one. */
+  site?: null | string
+  title: string
+  /** True when it replaces a key already saved. */
+  update?: boolean
+  url?: string
+}
+
 /** A key a plugin card asks for: never its value, only whether one is saved. */
 export interface PluginFormField {
   help?: null | string
@@ -114,14 +131,30 @@ export interface PluginAnswer {
   values: Record<string, string>
 }
 
-/** A saved login in Settings, Passwords: never its password or code key. */
-export interface PasswordLogin {
+/** What a saved item in Passwords holds. */
+export type PasswordKind = 'api_key' | 'login' | 'ssh_key'
+
+/**
+ * A saved item in Settings, Passwords: a login, an SSH key or an API key.
+ * Never its password, private key, key or code key.
+ */
+export interface PasswordItem {
   /** The bots that may use it; null means every bot, including new ones. */
   bots: null | string[]
+  /** An API key's environment variable, such as OPENAI_API_KEY. */
+  env?: string
+  /** An SSH key's fingerprint, `SHA256:…`. */
+  fingerprint?: null | string
   has_code: boolean
+  /** An SSH key's: whether it has a passphrase. */
+  has_passphrase?: boolean
   has_password: boolean
   id: string
+  /** Older daemons send no kind: a login. */
+  kind?: PasswordKind
   notes: string
+  /** An SSH key's public key, the line for authorized_keys or GitHub. */
+  public_key?: string
   site: null | string
   title: string
   updated_at: null | number
@@ -140,7 +173,7 @@ export interface ApprovalRequest {
   decision?: ApprovalChoice
   /** The command or action, rendered in monospace. */
   command?: string
-  form?: PluginForm | SignInForm
+  form?: ApiKeyForm | PluginForm | SignInForm
   reason?: string
   receivedAt: number
   requestId: string

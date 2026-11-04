@@ -2375,6 +2375,14 @@ impl Runtime {
                 // The plugin card: the keys typed go to the waiting tool only.
                 let form = &request["approval_payload"]["form"];
                 json!({"value": plugin_tool::answer(form, p)?.to_string()})
+            } else if request["approval_payload"]["form"]["kind"] == "api_key" && choice != "deny" {
+                // The API key card: the key goes to the waiting tool only.
+                let key = p["key"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty() && v.len() <= 4096)
+                    .ok_or_else(|| Error::new(4202, "Enter the key."))?;
+                json!({"value": json!({"key": key}).to_string()})
             } else if request["approval_payload"]["form"].is_object() && choice != "deny" {
                 // The sign-in card: what was typed goes to the waiting tool
                 // only, never to an event, a log or the conversation.

@@ -82,6 +82,7 @@ import {
 } from '../../stores/transcripts'
 import { useUi } from '../../stores/ui'
 
+import { ApiKeyCard } from './api-key-card'
 import { AskingRow } from './asking-row'
 import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
@@ -1009,6 +1010,10 @@ const APPROVAL_CHOICES: Record<ApprovalChoice, string> = {
 export function ApprovalCard({ approval }: { approval: ApprovalRequest }) {
   if (approval.form?.kind === 'plugin') {
     return <PluginCard approval={approval} form={approval.form} />
+  }
+
+  if (approval.form?.kind === 'api_key') {
+    return <ApiKeyCard approval={approval} form={approval.form} />
   }
 
   if (approval.form) {
@@ -2178,7 +2183,11 @@ function BotConversation() {
       Notification.permission === 'granted'
     ) {
       new Notification(
-        approvals.at(-1)?.form?.kind === 'sign_in' ? 'Sign-in needed' : 'Approval needed',
+        approvals.at(-1)?.form?.kind === 'sign_in'
+          ? 'Sign-in needed'
+          : approvals.at(-1)?.form?.kind === 'api_key'
+            ? 'API key needed'
+            : 'Approval needed',
         {
           body:
             approvals.at(-1)?.command ??

@@ -1971,6 +1971,160 @@ pub async fn fill(
     Ok(())
 }
 
+/// The two shell scripts that run a command with saved keys: the first puts
+/// them in an owner-only folder, the second loads them, deletes the folder's
+/// files, runs the command and stops the agent. So the keys are on the
+/// command line of the first, short script only, never of the command.
+/// `vars` are environment variables; `ssh_keys` go in an ssh-agent of the
+/// command's own, each for two minutes at most. The third script removes the
+/// folder, for when the first fails part way.
+fn keyed_scripts(
+    token: &str,
+    command: &str,
+    vars: &[(String, String)],
+    ssh_keys: &[String],
+) -> Result<(String, String, String)> {
+    let end = format!("HEXBOT_{token}");
+    let folder = format!("\"${{TMPDIR:-/tmp}}/hexbot-{token}\"");
+    let quote = |value: &str| format!("'{}'", value.replace('\'', "'\\''"));
+    let mut exports = String::new();
+    for (name, value) in vars {
+        exports.push_str(&format!("export {name}={}\n", quote(value)));
+    }
+    let mut stage = format!(
+        "umask 077 && d={folder} && mkdir \"$d\" && {{\ncat > \"$d/env\" <<'{end}'\n{exports}{end}\n"
+    );
+    for (i, key) in ssh_keys.iter().enumerate() {
+        stage.push_str(&format!(
+            "cat > \"$d/key{i}\" <<'{end}'\n{}\n{end}\n",
+            key.trim_end()
+        ));
+    }
+    stage.push_str("}\n");
+    if exports
+        .lines()
+        .chain(ssh_keys.iter().flat_map(|k| k.lines()))
+        .any(|line| line == end)
+    {
+        return Err(Error::new(
+            4202,
+            "A saved key can't be passed to a command.",
+        ));
+    }
+    // Only the agent this run starts is stopped; one the shell had stays.
+    let mut run = format!(
+        "d={folder}\nhexbot_agent=\ntrap 'if [ -n \"$hexbot_agent\" ]; then kill \"$hexbot_agent\" 2>/dev/null; fi; rm -rf \"$d\"' EXIT\n\
+         if ! [ -f \"$d/env\" ] || ! . \"$d/env\"; then echo 'Hexbot could not pass the keys to this command. Try again.' >&2; exit 97; fi\n\
+         hexbot_agent=\n"
+    );
+    if !ssh_keys.is_empty() {
+        run.push_str(
+            "if ! command -v ssh-agent >/dev/null 2>&1; then echo 'ssh-agent is not installed on this computer. Install openssh-client, then try again.' >&2; exit 97; fi\n\
+             unset SSH_AGENT_PID\n\
+             eval \"$(ssh-agent -s -a \"$d/agent\")\" >/dev/null && hexbot_agent=$SSH_AGENT_PID && ssh-add -q -t 120 \"$d\"/key* >/dev/null 2>&1 || { echo 'Hexbot could not load the SSH key into ssh-agent.' >&2; exit 97; }\n",
+        );
+    }
+    run.push_str(&format!("rm -f \"$d/env\" \"$d\"/key*\n(\n{command}\n)\n"));
+    Ok((stage, run, format!("rm -rf {folder}")))
+}
+
+/// Runs `script` in the computer's shell with saved keys (`keyed_scripts`),
+/// in one turn, so no other bot acts between loading the keys and the
+/// command. What the command prints comes back with every key blanked out.
+pub async fn run_with_keys(
+    home: &Path,
+    bot: &str,
+    cfg: &Value,
+    env: &BTreeMap<String, String>,
+    script: &str,
+    vars: &[(String, String)],
+    ssh_keys: &[String],
+) -> Result<Value> {
+    if with(home, |c| c.user_control) {
+        return Err(taken_over());
+    }
+    if command(cfg, env).is_none() {
+        return Err(unavailable());
+    }
+    let token = {
+        let mut bytes = [0u8; 16];
+        rand::Rng::fill(&mut rand::thread_rng(), &mut bytes);
+        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    };
+    let (stage, run, cleanup) = keyed_scripts(&token, script, vars, ssh_keys)?;
+    ensure(home, cfg, env).await?;
+    let turn = tokio::time::timeout(TURN_WAIT, turns(home).lock_owned())
+        .await
+        .map_err(|_| Error::new(4209, "Another bot kept the computer busy. Try again."))?;
+    if with(home, |c| c.user_control) {
+        return Err(taken_over());
+    }
+    aim(home, bot, "shell", None);
+    with(home, |c| {
+        c.actor = Some(bot.to_owned());
+        c.activity = Some("shell".to_owned());
+    });
+    changed(home);
+    let _acting = Acting { home };
+    let turn = Arc::new(turn);
+    let server = mcp_server(home, bot, cfg, env)?;
+    // Both calls run to their end, holding the turn, even if the bot is
+    // stopped between them: the second is the one that deletes the keys.
+    let (home, bot) = (home.to_owned(), bot.to_owned());
+    tokio::spawn(async move {
+        // What the first script answers may repeat a key; it never goes back.
+        // When it fails part way, it may have written some: remove them.
+        let staged = request(
+            &home,
+            &bot,
+            &server,
+            "computer_shell",
+            json!({"command": stage}),
+            &turn,
+        )
+        .await;
+        if staged.is_err() {
+            let _ = request(
+                &home,
+                &bot,
+                &server,
+                "computer_shell",
+                json!({"command": &cleanup}),
+                &turn,
+            )
+            .await;
+            return Err(Error::new(
+                4211,
+                "Could not pass the keys to the computer. Take a screenshot and try again.",
+            ));
+        }
+        let ran = request(
+            &home,
+            &bot,
+            &server,
+            "computer_shell",
+            json!({"command": run}),
+            &turn,
+        )
+        .await;
+        // A run that never started its shell never ran its own cleanup.
+        if ran.is_err() {
+            let _ = request(
+                &home,
+                &bot,
+                &server,
+                "computer_shell",
+                json!({"command": &cleanup}),
+                &turn,
+            )
+            .await;
+        }
+        ran
+    })
+    .await
+    .map_err(|_| Error::new(4211, "The computer action stopped unexpectedly."))?
+}
+
 /// One call to the computer. It runs to its end even if the bot is stopped,
 /// and keeps the turn until then, so no other bot acts on the screen meanwhile.
 async fn request(
@@ -2225,5 +2379,162 @@ mod tuner_tests {
         stats(&mut tuner, t, 4, 80, 3, 20.).unwrap();
         let said = opened(&mut tuner, t + Duration::from_secs(5));
         assert_eq!(said[0]["payload"]["target_bitrate_kbps"], 1500);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod keyed_tests {
+    use super::keyed_scripts;
+
+    fn sh(script: &str, tmp: &std::path::Path) -> std::process::Output {
+        std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(script)
+            .env("TMPDIR", tmp)
+            .env_remove("SSH_AUTH_SOCK")
+            .env_remove("SSH_AGENT_PID")
+            .output()
+            .unwrap()
+    }
+
+    #[test]
+    fn keys_reach_the_command_and_nothing_stays_behind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let vars = vec![
+            (
+                "OPENAI_API_KEY".to_owned(),
+                "sk-it's \"quoted\" $HOME `x`".to_owned(),
+            ),
+            ("SECOND".to_owned(), "two\nlines".to_owned()),
+        ];
+        let (stage, run, _) = keyed_scripts(
+            "abc123",
+            "printf '%s|%s' \"$OPENAI_API_KEY\" \"$SECOND\"; ls \"$d\"",
+            &vars,
+            &[],
+        )
+        .unwrap();
+        // The command never carries a key on its own command line.
+        assert!(!run.contains("sk-it"));
+        assert!(sh(&stage, tmp.path()).status.success());
+        let out = sh(&run, tmp.path());
+        assert!(out.status.success(), "{out:?}");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(
+            text, "sk-it's \"quoted\" $HOME `x`|two\nlines",
+            "and the folder is empty"
+        );
+        assert_eq!(
+            std::fs::read_dir(tmp.path()).unwrap().count(),
+            0,
+            "the folder goes"
+        );
+        // Without the first script nothing runs.
+        let out = sh(&run, tmp.path());
+        assert_eq!(out.status.code(), Some(97));
+    }
+
+    #[test]
+    fn a_run_with_api_keys_only_leaves_the_shells_own_agent_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut other = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let vars = vec![("K".to_owned(), "v".to_owned())];
+        let (stage, run, _) = keyed_scripts("aaa111", "true", &vars, &[]).unwrap();
+        sh(&stage, tmp.path());
+        let out = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(&run)
+            .env("TMPDIR", tmp.path())
+            .env("SSH_AGENT_PID", other.id().to_string())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        assert!(other.try_wait().unwrap().is_none(), "still running");
+        other.kill().unwrap();
+        // A variable named like the run's own can't stop an agent either.
+        let mut other = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let vars = vec![("hexbot_agent".to_owned(), other.id().to_string())];
+        let (stage, run, _) = keyed_scripts("aaa222", "true", &vars, &[]).unwrap();
+        sh(&stage, tmp.path());
+        assert!(sh(&run, tmp.path()).status.success());
+        assert!(other.try_wait().unwrap().is_none(), "still running");
+        other.kill().unwrap();
+    }
+
+    #[test]
+    fn a_failed_hand_over_is_cleaned_up() {
+        let tmp = tempfile::tempdir().unwrap();
+        let vars = vec![("K".to_owned(), "secret".to_owned())];
+        let (stage, _, cleanup) = keyed_scripts("bbb333", "true", &vars, &[]).unwrap();
+        sh(&stage, tmp.path());
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 1);
+        assert!(sh(&cleanup, tmp.path()).status.success());
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn an_exit_or_failure_in_the_command_still_cleans_up() {
+        let tmp = tempfile::tempdir().unwrap();
+        let vars = vec![("K".to_owned(), "v".to_owned())];
+        let (stage, run, _) = keyed_scripts("def456", "exit 3", &vars, &[]).unwrap();
+        sh(&stage, tmp.path());
+        assert_eq!(sh(&run, tmp.path()).status.code(), Some(3));
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn ssh_keys_live_in_an_agent_for_the_command_only() {
+        let have = |tool: &str| {
+            std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(format!("command -v {tool}"))
+                .output()
+                .is_ok_and(|o| o.status.success())
+        };
+        if !have("ssh-agent") || !have("ssh-add") {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let mut key =
+            ssh_key::PrivateKey::random(&mut rand::rngs::OsRng, ssh_key::Algorithm::Ed25519)
+                .unwrap();
+        key.set_comment("agent-test");
+        let text = key.to_openssh(ssh_key::LineEnding::LF).unwrap().to_string();
+        let (stage, run, _) = keyed_scripts(
+            "fff000",
+            "ssh-add -l; ls \"$d\"; echo \"agent=$SSH_AGENT_PID\" >&2",
+            &[],
+            &[text],
+        )
+        .unwrap();
+        assert!(!run.contains("OPENSSH PRIVATE KEY"));
+        assert!(sh(&stage, tmp.path()).status.success());
+        let out = sh(&run, tmp.path());
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{out:?}");
+        let fingerprint = key.fingerprint(ssh_key::HashAlg::Sha256).to_string();
+        assert!(
+            stdout.contains(&fingerprint) && stdout.contains("agent-test"),
+            "{stdout}"
+        );
+        // Only the agent's socket was in the folder while the command ran.
+        assert!(stdout.trim_end().ends_with("agent"), "{stdout}");
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let pid = stderr.trim().strip_prefix("agent=").unwrap();
+        let alive = std::process::Command::new("kill")
+            .args(["-0", pid])
+            .output()
+            .unwrap();
+        assert!(
+            !alive.status.success(),
+            "the agent stopped with the command"
+        );
     }
 }

@@ -71,6 +71,15 @@ export function computerLabel(action: null | string | undefined, tense: 'done' |
   return `${verbs[tense === 'live' ? 0 : 1]} on the computer`
 }
 
+/**
+ * Passwords, by `hexbot_passwords` action, when it isn't signing in. The
+ * daemon sends the action as the call's summary.
+ */
+const PASSWORDS: Record<string, [live: string, done: string]> = {
+  generate: ['Making an SSH key', 'Made an SSH key'],
+  run: ['Running a command with a saved key', 'Ran a command with a saved key']
+}
+
 /** Tools whose argument preview reads well after the verb, with its connector. */
 const PREVIEW: Record<string, string> = {
   hexbot_show_html: ' ',
@@ -218,6 +227,12 @@ export function toolLabel(
     return computerLabel(call.summary, tense)
   }
 
+  const keys = call.name === 'hexbot_passwords' ? PASSWORDS[(call.summary ?? '').trim()] : null
+
+  if (keys) {
+    return keys[tense === 'live' ? 0 : 1]
+  }
+
   const connector = PREVIEW[call.name]
   const detail = connector === undefined ? '' : preview(call)
   const verbs = (detail ? undefined : NO_PREVIEW[call.name]) ?? VERBS[call.name]
@@ -333,6 +348,12 @@ export function activityLabel(call: ToolCall, name: string): string {
 
   if (call.name === 'computer_use') {
     return `${name} is ${computerLabel(call.summary, 'live').replace(/^\w/, c => c.toLowerCase())}`
+  }
+
+  const keys = call.name === 'hexbot_passwords' ? PASSWORDS[(call.summary ?? '').trim()] : null
+
+  if (keys) {
+    return `${name} is ${keys[0].replace(/^\w/, c => c.toLowerCase())}`
   }
 
   return `${name} ${ACTIVITY[call.name] ?? `is using ${humanize(call.name)}`}`

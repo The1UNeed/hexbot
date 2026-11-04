@@ -1,10 +1,10 @@
 ---
 layout: ../../layouts/Docs.astro
 title: Passwords
-description: Save sign-ins for your bots. They type them into pages and never see them.
+description: Save sign-ins, SSH keys and API keys for your bots. They use them and never see them.
 ---
 
-Every bot can sign in to websites for you on its computer with passwords you save in Hexbot. The bot never reads a password: it asks Hexbot to type one into a field on the bots' computer.
+Every bot can sign in to websites, push to Git servers and call APIs for you on its computer with passwords, SSH keys and API keys you save in Hexbot. The bot never reads one: it asks Hexbot to type a password into a field, or to run a command with a key, on the bots' computer.
 
 ## Saving a password from a chat
 
@@ -14,29 +14,43 @@ If a saved password stops working, the bot shows the card again for that site so
 
 A password saved from a card goes to every bot. Change that in Settings, Passwords.
 
+## SSH keys
+
+A bot that needs to reach a server or a Git host over SSH can make a key itself. Hexbot makes an Ed25519 key, saves it in Passwords and gives the bot only the public key, which it can add to GitHub's SSH keys page with your sign-in, or ask you to add. You can also add a key in Settings, Passwords: let Hexbot make one, or paste a private key you have, with its passphrase if it has one. Hexbot reads keys in the OpenSSH format, which `ssh-keygen` writes by default. For an older PEM key, run `ssh-keygen -p -f <key file>` to convert it first.
+
+When a bot runs `ssh` or `git` with a key, Hexbot puts the key in an `ssh-agent` that lives for that one command, then stops it. The private key is never in a file or on a command line while the command runs.
+
+## API keys
+
+When a bot needs an API key that isn't saved, it shows a card in its chat with the service's name, the environment variable commands read the key from (such as `OPENAI_API_KEY`), and a **Get one** link when it knows where you get a key. Choose **Add key**, paste the key and choose **Save**. Like a password, it goes straight to Passwords and never into the conversation.
+
+When a bot runs a command with the key, Hexbot sets that variable for the command only, and blanks the key out of anything the command prints. You can add keys in Settings, Passwords too, and change the variable there.
+
 ## Settings, Passwords
 
-Open Settings, Passwords to see every saved sign-in. From there you can:
+Open Settings, Passwords to see every saved login, SSH key and API key. From there you can:
 
-- add a password, with an optional one-time code key (the setup key or `otpauth://` link from a site's two-factor setup), so bots can enter the six-digit code too;
-- show or copy a password;
-- edit the site, name, username, password, or notes;
-- choose which bots can use each password, or give it to every bot, including bots you add later;
-- delete a password.
+- add a login, with an optional one-time code key (the setup key or `otpauth://` link from a site's two-factor setup), so bots can enter the six-digit code too;
+- add an SSH key, or an API key and its variable;
+- show or copy a password, a private key or an API key, and copy an SSH key's public key;
+- edit an item's name, notes and the rest of its details;
+- choose which bots can use each item, or give it to every bot, including bots you add later;
+- delete an item.
 
 In the mobile app, open your initials, then Passwords.
 
-Your primary bot can do the same from its own chat, without seeing passwords: it can tell you which bots have a password, give one to a bot, rename it, or delete it. Deleting always asks you first.
+Your primary bot can do the same from its own chat, without seeing any secret: it can tell you which bots have an item, give one to a bot, rename it, or delete it. Deleting always asks you first.
 
 ## Where passwords are kept
 
-Passwords are kept on the daemon's computer in one [KeePass](https://keepass.info) (KDBX 4) file per person, `~/.hexbot/users/<you>/passwords/passwords.kdbx`. The format is open, so you can open the file with [KeePassXC](https://keepassxc.org) or any KeePass app. The file is encrypted with a random key kept in the macOS Keychain, or the keyring on Linux. Where there is neither, such as on Windows or a headless Linux server, the key is in a file next to the vault that only you can read. Settings, Passwords says which one your daemon uses.
+Passwords and keys are kept on the daemon's computer in one [KeePass](https://keepass.info) (KDBX 4) file per person, `~/.hexbot/users/<you>/passwords/passwords.kdbx`. The format is open, so you can open the file with [KeePassXC](https://keepassxc.org) or any KeePass app. The file is encrypted with a random key kept in the macOS Keychain, or the keyring on Linux. Where there is neither, such as on Windows or a headless Linux server, the key is in a file next to the vault that only you can read. Settings, Passwords says which one your daemon uses.
 
 Bots' shell commands and file tools can't read the vault or its key in Auto or Manual. In Bypass a bot has no sandbox and could.
 
 ## Where bots can use them
 
 - **Computer use**: Hexbot can't see which site the bots' computer shows, so it asks you before typing unless the bot uses Bypass. Look at the computer before you allow it.
-- Passwords work in a bot's own chat and in its scheduled jobs. A scheduled job can use a saved password but can't show the Sign in card. Rooms and conversations between bots can't use passwords.
+- **Commands with keys**: Hexbot can't see where a command sends a key, so it asks you before running one with an SSH key or an API key unless the bot uses Bypass. The card names the keys and shows the command. Read it before you allow it.
+- Passwords and keys work in a bot's own chat and in its scheduled jobs. A scheduled job can use them but can't show a card. Rooms and conversations between bots can't use them.
 
-A page's own scripts can read a field after it is filled, and a bot set on finding a password could still get it. Give each password only to bots that need it.
+A page's own scripts can read a field after it is filled, a command can print or send a key it was given, and a bot set on finding a password or key could still get it. Give each item only to bots that need it.

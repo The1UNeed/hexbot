@@ -2,7 +2,7 @@ import type { GatewayEvent } from '@hermes/shared'
 import { splitAttached } from '../../../web/src/lib/media'
 import type { PluginForm } from '../../../web/src/lib/types'
 
-import type { ChatMessage, ChatState, ChatTool, SignInForm, TurnState } from './types'
+import type { ApiKeyForm, ChatMessage, ChatState, ChatTool, SignInForm, TurnState } from './types'
 export const emptyTurn = (): TurnState => ({
   streaming: '',
   interim: [],
@@ -57,6 +57,14 @@ const isSignIn = (value: unknown): value is SignInForm =>
   (value as SignInForm).kind === 'sign_in' &&
   typeof (value as SignInForm).site === 'string' &&
   typeof (value as SignInForm).title === 'string'
+
+/** An API key card's fields, from an `approval.request`. */
+const isApiKey = (value: unknown): value is ApiKeyForm =>
+  typeof value === 'object' &&
+  value !== null &&
+  (value as ApiKeyForm).kind === 'api_key' &&
+  typeof (value as ApiKeyForm).env === 'string' &&
+  typeof (value as ApiKeyForm).title === 'string'
 
 /** A plugin card's fields, from an `approval.request`. */
 const isPlugin = (value: unknown): value is PluginForm =>
@@ -227,7 +235,7 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
         command: String(p.command ?? p.tool_name ?? 'Approve this action'),
         reason: typeof p.reason === 'string' ? p.reason : undefined,
         choices: Array.isArray(p.choices) ? (p.choices as string[]) : ['once', 'deny'],
-        ...((isSignIn(p.form) || isPlugin(p.form)) && { form: p.form })
+        ...((isSignIn(p.form) || isApiKey(p.form) || isPlugin(p.form)) && { form: p.form })
       }
       return {
         ...state,

@@ -95,7 +95,7 @@ it('divides the chat between days and after quiet spells, not between quick mess
   for (const minutes of [2, 12, 30]) expect(screen.queryByText(formatDayDivider(at(minutes)))).toBeNull()
 })
 
-it('shows a plugin card and a sign-in card in the chat, folded until opened', () => {
+it('shows a plugin card, a sign-in card and an API key card in the chat, folded until opened', () => {
   const approval = (id: string, form: NonNullable<Extract<ChatItem, { kind: 'approval' }>['request']['form']>): ChatItem => ({
     kind: 'approval', id, request: { requestId: id, choices: ['once', 'deny'], form }
   })
@@ -109,7 +109,8 @@ it('shows a plugin card and a sign-in card in the chat, folded until opened', ()
       approval('ap-2', {
         kind: 'plugin', action: 'enable', id: 'skill:pdf', name: 'pdf', bot: 'Researcher', other: true, fields: []
       }),
-      approval('ap-3', { kind: 'sign_in', site: 'app.schoology.com', title: 'Schoology' })
+      approval('ap-3', { kind: 'sign_in', site: 'app.schoology.com', title: 'Schoology' }),
+      approval('ap-4', { kind: 'api_key', env: 'OPENAI_API_KEY', title: 'OpenAI' })
     ],
     onSend: vi.fn(), onApprove: vi.fn()
   }))
@@ -120,6 +121,10 @@ it('shows a plugin card and a sign-in card in the chat, folded until opened', ()
   expect(screen.getByText('For Researcher')).toBeTruthy()
   expect(screen.getByText('Schoology')).toBeTruthy()
   expect(screen.getByText('app.schoology.com')).toBeTruthy()
+  // The API key card asks for the key alone, folded behind Add key.
+  expect(screen.getByText('OpenAI')).toBeTruthy()
+  expect(screen.getByText('API key, as OPENAI_API_KEY')).toBeTruthy()
+  expect(screen.queryByTestId('api-key-ap-4-key')).toBeNull()
 })
 
 it("puts a chat's bar buttons in reading order, with a profile or settings icon", () => {

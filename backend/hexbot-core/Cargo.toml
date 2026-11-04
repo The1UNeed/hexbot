@@ -39,6 +39,7 @@ tokio-tungstenite = { version = "=0.29.0", features = ["connect", "rustls-tls-we
 yaml-edit = "=0.3.2"
 jsonschema = { version = "=0.57.0", default-features = false }
 keepass = { version = "=0.17.0", default-features = false, features = ["save_kdbx4", "totp"] }
+ssh-key = { version = "=0.6.7", default-features = false, features = ["std", "ed25519", "encryption", "rand_core"] }
 
 [[bin]]
 name = "hexbot"

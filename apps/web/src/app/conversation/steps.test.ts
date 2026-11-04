@@ -28,6 +28,24 @@ const message = (partial: Partial<Message>): Message => ({
 })
 
 describe('toolLabel', () => {
+  it('says what Passwords does: signing in, running with a key or making one', () => {
+    expect(toolLabel(call({ name: 'hexbot_passwords', summary: 'fill' }))).toBe(
+      'Used a saved password'
+    )
+    expect(toolLabel(call({ name: 'hexbot_passwords', status: 'running', summary: 'run' }))).toBe(
+      'Running a command with a saved key'
+    )
+    expect(toolLabel(call({ name: 'hexbot_passwords', summary: 'generate' }))).toBe(
+      'Made an SSH key'
+    )
+    expect(activityLabel(call({ name: 'hexbot_passwords', summary: 'run' }), 'Owl')).toBe(
+      'Owl is running a command with a saved key'
+    )
+    expect(activityLabel(call({ name: 'hexbot_passwords', summary: 'fill' }), 'Owl')).toBe(
+      'Owl is signing in'
+    )
+  })
+
   it('phrases known tools with their preview', () => {
     expect(toolLabel(call({ name: 'web_search', status: 'running', summary: 'weather' }))).toBe(
       'Searching the web for weather'

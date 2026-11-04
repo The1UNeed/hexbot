@@ -34,8 +34,9 @@ import type {
   ModelOption,
   NetworkInfo,
   PairingCode,
+  PasswordItem,
   PasswordKeyStore,
-  PasswordLogin,
+  PasswordKind,
   PluginAnswer,
   PluginKind,
   PluginsList,
@@ -299,45 +300,64 @@ export function connectorsRemoveMcp(name: string): Promise<{ removed: boolean }>
 
 export interface PasswordsList {
   bots: string[]
-  logins: PasswordLogin[]
+  /** Every saved item, of every kind; the name is older than SSH and API keys. */
+  logins: PasswordItem[]
   store: PasswordKeyStore
 }
 
-/** A new login (no `id`) or a change; fields left out stay. An empty `code` removes it. */
+/**
+ * A new item (no `id`) or a change; fields left out stay. `kind` is fixed
+ * when it is made. A login takes `password` and `code` (empty removes it), an
+ * SSH key `private_key` and `passphrase` or `generate`, an API key `key` and
+ * `env`.
+ */
 export interface PasswordInput {
   bots?: null | string[]
   code?: string
+  env?: string
+  generate?: boolean
   id?: string
+  key?: string
+  kind?: PasswordKind
   notes?: string
+  passphrase?: string
   password?: string
+  private_key?: string
   title?: string
   url?: string
   username?: string
+}
+
+/** What Show reads for the owner: whichever secrets the item's kind has. */
+export interface PasswordSecret {
+  code?: null | { code: string; valid_for: number }
+  key?: string
+  passphrase?: string
+  password?: string
+  private_key?: string
 }
 
 export function passwordsList(): Promise<PasswordsList> {
   return rpcCall<PasswordsList>('hexbot.passwords.list', {})
 }
 
-export function passwordsSave(input: PasswordInput): Promise<{ login: PasswordLogin }> {
-  return rpcCall<{ login: PasswordLogin }>('hexbot.passwords.save', { ...input })
+export function passwordsSave(input: PasswordInput): Promise<{ login: PasswordItem }> {
+  return rpcCall<{ login: PasswordItem }>('hexbot.passwords.save', { ...input })
 }
 
 export function passwordsSetBots(
   id: string,
   bots: null | string[]
-): Promise<{ login: PasswordLogin }> {
-  return rpcCall<{ login: PasswordLogin }>('hexbot.passwords.set_bots', { bots, id })
+): Promise<{ login: PasswordItem }> {
+  return rpcCall<{ login: PasswordItem }>('hexbot.passwords.set_bots', { bots, id })
 }
 
 export function passwordsDelete(id: string): Promise<unknown> {
   return rpcCall('hexbot.passwords.delete', { id })
 }
 
-/** The password and the one-time code for now, for the owner only. */
-export function passwordsReveal(
-  id: string
-): Promise<{ code: null | { code: string; valid_for: number }; password: string }> {
+/** An item's secrets, for the owner only. */
+export function passwordsReveal(id: string): Promise<PasswordSecret> {
   return rpcCall('hexbot.passwords.reveal', { id })
 }
 
@@ -864,7 +884,7 @@ export function approvalRespond(
   sessionId: string,
   requestId: string,
   choice: ApprovalChoice,
-  answer?: PluginAnswer | { password: string; username: string }
+  answer?: PluginAnswer | { key: string } | { password: string; username: string }
 ): Promise<{ resolved: boolean }> {
   return rpcCall<{ resolved: boolean }>('approval.respond', {
     choice,

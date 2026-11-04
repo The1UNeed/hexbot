@@ -1,7 +1,7 @@
 /**
- * Settings, Passwords: the logins saved for the user's bots, without their
- * passwords. Refreshed when the page opens and on `hexbot.passwords.changed`,
- * which every change sends, a bot's sign-in card included.
+ * Settings, Passwords: the logins, SSH keys and API keys saved for the
+ * user's bots, without their secrets. Refreshed when the page opens and on
+ * `hexbot.passwords.changed`, which every change sends, a bot's card included.
  */
 
 import { create } from 'zustand'
@@ -13,7 +13,7 @@ import {
   passwordsSave,
   passwordsSetBots
 } from '../lib/api'
-import type { PasswordKeyStore, PasswordLogin } from '../lib/types'
+import type { PasswordItem, PasswordKeyStore } from '../lib/types'
 
 import { connectionRead } from './connection'
 
@@ -24,12 +24,12 @@ export interface PasswordsState {
   /** True once the page has asked for the list; events refresh only then. */
   loaded: boolean
   loading: boolean
-  logins: PasswordLogin[]
+  logins: PasswordItem[]
   refresh: () => Promise<void>
   remove: (id: string) => Promise<void>
   /** Forget everything: another daemon has other passwords. */
   reset: () => void
-  save: (input: PasswordInput) => Promise<PasswordLogin>
+  save: (input: PasswordInput) => Promise<PasswordItem>
   setBots: (id: string, bots: null | string[]) => Promise<void>
   store: PasswordKeyStore
 }
@@ -38,7 +38,7 @@ export interface PasswordsState {
 let latest = 0
 
 export const usePasswords = create<PasswordsState>((set, get) => {
-  const put = (login: PasswordLogin) =>
+  const put = (login: PasswordItem) =>
     set(state => {
       const rest = state.logins.filter(item => item.id !== login.id)
 
