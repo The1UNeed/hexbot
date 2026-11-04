@@ -2520,5 +2520,5 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 4,
     justifyContent: 'center'
-  },
+  }
 })
