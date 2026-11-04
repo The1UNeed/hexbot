@@ -294,6 +294,105 @@ fn auto_writes_only_the_workspace_and_never_git_or_secrets() {
 }
 
 #[test]
+fn auto_deletes_and_moves_workspace_files_but_never_git_or_secrets() {
+    let f = fixture("delete");
+    // A project's own files, there before the first command.
+    fs::write(f.workspace.join("src/old.txt"), "old").unwrap();
+    fs::create_dir_all(f.workspace.join("old-dir")).unwrap();
+    fs::write(f.workspace.join("old-dir/inner.txt"), "inner").unwrap();
+    let policy = auto(&f);
+    let sid = container_sid(&policy);
+    // Windows deletes or renames an entry for whoever its folder grants
+    // delete child (DC), whatever the entry's own DACL says. No entry for the
+    // container carries DC or full control (F), which holds it, and folders
+    // modify (M) exactly.
+    assert_eq!(script(&f, &policy, "mkdir made\\sub"), 0);
+    for path in [
+        f.workspace.clone(),
+        f.workspace.join("src"),
+        f.workspace.join("src/old.txt"),
+        f.workspace.join("old-dir"),
+        f.workspace.join("made"),
+        f.workspace.join("made/sub"),
+        f.workspace.join(".git"),
+        f.workspace.join(".git/hooks"),
+        f.workspace.join(".git/HEAD"),
+    ] {
+        let entries = entries_for(&path, &sid);
+        assert!(
+            !entries.is_empty()
+                && entries
+                    .iter()
+                    .all(|entry| !entry.contains("DC") && !entry.contains("(F)")),
+            "{}: {entries:?}",
+            path.display()
+        );
+    }
+    for path in [
+        f.workspace.clone(),
+        f.workspace.join("src"),
+        f.workspace.join("made"),
+    ] {
+        let entries = entries_for(&path, &sid);
+        assert!(
+            entries.iter().all(|entry| entry.ends_with("(OI)(CI)(M)")),
+            "{}: {entries:?}",
+            path.display()
+        );
+    }
+    // del, rmdir and move report success even when they change nothing;
+    // check what is left. A secret is neither deleted, moved nor replaced.
+    script(&f, &policy, "del /f /q .env");
+    script(&f, &policy, "move .env src\\");
+    script(&f, &policy, "echo x> decoy.txt && move /y decoy.txt .env");
+    assert_eq!(
+        fs::read_to_string(f.workspace.join(".env")).unwrap(),
+        "KEY=1"
+    );
+    assert!(!f.workspace.join("src/.env").exists());
+    // Git metadata is neither moved nor emptied.
+    script(&f, &policy, "move .git src\\");
+    script(&f, &policy, "del /f /q .git\\HEAD .git\\config");
+    script(&f, &policy, "rmdir .git\\hooks");
+    script(&f, &policy, "ren .git\\hooks hooks.old");
+    assert!(!f.workspace.join("src/.git").exists());
+    assert!(f.workspace.join(".git/HEAD").is_file());
+    assert_eq!(
+        fs::read_to_string(f.workspace.join(".git/config")).unwrap(),
+        "[core]\n"
+    );
+    assert!(f.workspace.join(".git/hooks").is_dir());
+    assert!(!f.workspace.join(".git/hooks.old").exists());
+    // Everything else it may change, it may delete and move: the project's
+    // files, and what it made itself.
+    assert_eq!(script(&f, &policy, "ren src\\old.txt renamed.txt"), 0);
+    assert!(!f.workspace.join("src/old.txt").exists());
+    assert_eq!(
+        fs::read_to_string(f.workspace.join("src/renamed.txt")).unwrap(),
+        "old"
+    );
+    assert_eq!(script(&f, &policy, "del src\\renamed.txt"), 0);
+    assert!(!f.workspace.join("src/renamed.txt").exists());
+    assert_eq!(script(&f, &policy, "rmdir /s /q old-dir"), 0);
+    assert!(!f.workspace.join("old-dir").exists());
+    assert_eq!(script(&f, &policy, "echo x> fresh.txt && del fresh.txt"), 0);
+    assert!(!f.workspace.join("fresh.txt").exists());
+    assert_eq!(script(&f, &policy, "mkdir fresh-dir && rmdir fresh-dir"), 0);
+    assert!(!f.workspace.join("fresh-dir").exists());
+    assert_eq!(
+        script(
+            &f,
+            &policy,
+            "mkdir fresh-tree\\sub && echo x> fresh-tree\\sub\\f.txt && rmdir /s /q fresh-tree"
+        ),
+        0
+    );
+    assert!(!f.workspace.join("fresh-tree").exists());
+    assert_eq!(script(&f, &policy, "rmdir /s /q made"), 0);
+    assert!(!f.workspace.join("made").exists());
+}
+
+#[test]
 fn manual_reads_the_workspace_and_writes_nothing() {
     let f = fixture("manual");
     let policy = Policy {
