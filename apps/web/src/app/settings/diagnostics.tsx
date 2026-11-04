@@ -1379,8 +1379,6 @@ function Logs() {
   // Distance from the bottom to keep when older lines arrive; null scrolls to the end.
   const keep = useRef<null | number>(null)
   const request = useRef(0)
-  // The filters the shown page was read with; older pages must match it.
-  const shown = useRef<{ errors?: boolean; query?: string }>({})
 
   useEffect(() => {
     const timer = setTimeout(() => setQuery(search.trim()), 300)
@@ -1390,14 +1388,15 @@ function Logs() {
 
   useEffect(() => {
     const id = ++request.current
-    const filters = { errors: errorsOnly || undefined, query: query || undefined }
-
     setBusy('tail')
-    diagnosticsLogs({ ...filters, file: file || undefined }).then(
+    diagnosticsLogs({
+      errors: errorsOnly || undefined,
+      file: file || undefined,
+      query: query || undefined
+    }).then(
       next => {
         if (id === request.current) {
           keep.current = null
-          shown.current = filters
           setPage(next)
           setError(null)
           setBusy('')
@@ -1405,6 +1404,12 @@ function Logs() {
       },
       caught => {
         if (id === request.current) {
+          // The lines on screen no longer match the file and filters chosen;
+          // show none, so every control and Refresh act on what was chosen.
+          setPage(
+            shown =>
+              shown && { ...shown, before: 0, file: file || shown.file, lines: [], more: false }
+          )
           setError(caught)
           setBusy('')
         }
@@ -1431,7 +1436,12 @@ function Logs() {
     setBusy('older')
 
     try {
-      const next = await diagnosticsLogs({ ...shown.current, before: page.before, file: page.file })
+      const next = await diagnosticsLogs({
+        errors: errorsOnly || undefined,
+        before: page.before,
+        file: page.file,
+        query: query || undefined
+      })
 
       if (id === request.current) {
         const box = scroller.current
@@ -1529,9 +1539,11 @@ function Logs() {
             : undefined
         }
         footer={
-          read >= page.size
-            ? `${count(page.lines.length, 'line', 'lines')} from the whole file.`
-            : `${count(page.lines.length, 'line', 'lines')} from the last ${formatBytes(read)} of ${formatBytes(page.size)}.`
+          error && !page.lines.length
+            ? undefined
+            : read >= page.size
+              ? `${count(page.lines.length, 'line', 'lines')} from the whole file.`
+              : `${count(page.lines.length, 'line', 'lines')} from the last ${formatBytes(read)} of ${formatBytes(page.size)}.`
         }
         title="Logs"
       >
@@ -1586,11 +1598,13 @@ function Logs() {
             page.lines.map(line => <LogLine key={line.offset} line={line} />)
           ) : (
             <p className="px-4 py-2 font-sans text-[length:var(--text-secondary)] text-muted">
-              {filtered
-                ? page.more
-                  ? `No matches in the last ${formatBytes(read)}.`
-                  : 'No lines match.'
-                : 'This file is empty.'}
+              {error
+                ? `Could not read ${page.file}.`
+                : filtered
+                  ? page.more
+                    ? `No matches in the last ${formatBytes(read)}.`
+                    : 'No lines match.'
+                  : 'This file is empty.'}
             </p>
           )}
         </div>

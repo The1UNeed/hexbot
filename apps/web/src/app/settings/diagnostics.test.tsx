@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, vi } from 'vitest'
 
 import { diagnosticsGet, diagnosticsLogs, diagnosticsTrace } from '../../lib/api'
@@ -426,20 +426,48 @@ describe('diagnostics', () => {
     expect(diagnosticsLogs).not.toHaveBeenCalledWith(expect.objectContaining({ before: 1024 }))
   })
 
-  it('pages back with the filters of the lines shown when a new filter fails', async () => {
+  it('shows the chosen file with its error, not the old lines, when a switch fails', async () => {
     vi.mocked(diagnosticsLogs).mockResolvedValue(logs({ before: 1024, more: true }))
     render(<DiagnosticsSettings />)
     fireEvent.click(await screen.findByRole('tab', { name: 'Logs' }))
     await screen.findByText('HERMES_BACKEND_READY port=9119')
 
-    vi.mocked(diagnosticsLogs).mockRejectedValueOnce(new Error('daemon restarting'))
+    vi.mocked(diagnosticsLogs).mockRejectedValueOnce(new Error('could not read desktop.log'))
     fireEvent.click(screen.getByRole('switch', { name: 'Errors only' }))
-    expect(await screen.findByText('daemon restarting')).toBeInTheDocument()
+    expect(await screen.findByText('could not read desktop.log')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Show older lines' }))
-    await waitFor(() =>
-      expect(diagnosticsLogs).toHaveBeenLastCalledWith({ before: 1024, file: 'daemon.log' })
-    )
+    expect(screen.queryByText('HERMES_BACKEND_READY port=9119')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Show older lines' })).not.toBeInTheDocument()
+    expect(screen.getByText('Could not read daemon.log.')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    await waitFor(() => expect(diagnosticsLogs).toHaveBeenLastCalledWith({ errors: true }))
+  })
+
+  it('keeps the picker on a file that failed to open, and Refresh retries it', async () => {
+    vi.mocked(diagnosticsLogs).mockResolvedValue(logs())
+    render(<DiagnosticsSettings />)
+    fireEvent.click(await screen.findByRole('tab', { name: 'Logs' }))
+    await screen.findByText('HERMES_BACKEND_READY port=9119')
+
+    vi.mocked(diagnosticsLogs).mockRejectedValueOnce(new Error('no log named desktop.log'))
+    const picker = screen.getByRole('combobox', { name: 'File' })
+
+    // As a person would: focus the picker, type the start of the name, press Enter.
+    picker.focus()
+
+    for (const key of 'desk') {
+      fireEvent.keyDown(document.activeElement ?? document.body, { key })
+      await act(async () => undefined)
+    }
+
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Enter' })
+    expect(await screen.findByText('no log named desktop.log')).toBeInTheDocument()
+
+    expect(screen.getByRole('combobox', { name: 'File' })).toHaveTextContent('desktop.log')
+    expect(screen.queryByText('HERMES_BACKEND_READY port=9119')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    await waitFor(() => expect(diagnosticsLogs).toHaveBeenLastCalledWith({ file: 'desktop.log' }))
   })
 
   it('says when no log has been kept and when the daemon is too old for logs', async () => {
