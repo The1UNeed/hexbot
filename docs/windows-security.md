@@ -181,8 +181,11 @@ Residual risks:
 - **Permissions.** A replaced file takes its folder's inherited permissions.
   Explicit entries, attributes and alternate streams on the old file are not
   carried over, where Unix keeps the old file's mode.
-- **Open files.** A file another program holds open without sharing deletion
-  cannot be replaced: the write fails and changes nothing.
+- **Open files.** On NTFS and ReFS a file another program holds open is
+  replaced all the same: that program keeps the old content until it closes,
+  and the write succeeds. Only a file system without the extended rename
+  (FAT, exFAT) fails the write when the destination is held open without
+  sharing deletion.
 
 ## What still refuses
 

@@ -4,7 +4,7 @@ description: "Work on the bots' shared computer: look, act, look again; hand ove
 version: 3.0.0
 author: Hexbot
 license: MIT
-platforms: [macos, linux]
+platforms: [macos, linux, windows]
 metadata:
   hermes:
     tags: [computer-use, desktop, automation, gui, cua]

@@ -147,7 +147,8 @@ entry instead of truncating its inode. Those writes preserve other hard-link
 names, including preexisting aliases and aliases inserted after the file gate.
 Restricted Pi write/edit use a private daemon bridge whose final operations are
 relative to nonfollowing directory handles. Edit reads return bytes and the
-parent's device/inode identity; commit opens the parent again and refuses a
+file's identity — the parent's device and inode on Unix, the volume serial and
+128-bit file ID on Windows; commit opens the parent again and refuses a
 different identity. Pi's existing edit matching, BOM and line-ending handling
 stay in Pi. Existing files must pass the OS writability check, and replacements
 preserve ordinary permission bits without setuid/setgid bits. New files remain
@@ -155,9 +156,9 @@ private (`0600` subject to umask); new directories use `0777` subject to umask.
 Each private request and encoded reply is limited to 1 MiB, about 767 KiB of file
 data after base64 and metadata. Oversized write/edit requests fail before parent
 creation or writing; oversized edit reads fail without truncation. Use a command
-for larger files, under its ordinary approval and sandbox policy. Missing bridge
-support refuses instead of falling back to pathname writes. The native file
-callback's existing 256 KiB UTF-8 read limit and write behavior are unchanged.
+for larger files, under its ordinary approval and sandbox policy. The
+native file callback's existing 256 KiB UTF-8 read limit and write behavior are
+unchanged.
 These file operations do not close the shell/code hard-link class or establish whole-process or
 whole-filesystem containment. See the [Linux hard-link semantics](https://man7.org/linux/man-pages/man2/link.2.html).
 

@@ -64,13 +64,19 @@ try {
   // The helper and Git Bash need not exist until the last pass runs real programs.
   const helper = join(root, 'hexbot.exe'), bash = join(root, 'Git', 'bin', 'bash.exe'), policy = 'cG9saWN5';
   const available = {kind:'appcontainer', helper, bash};
-  const handlers = {}, tools = {}, approvals = [], policies = [], piSettings = {};
+  const handlers = {}, tools = {}, approvals = [], policies = [], fileRequests = [], piSettings = {};
   const settings = {...config, approvalMode:'smart', sandbox:null};
   let policyReply = () => ({result:{helper, policy}});
   const ctx = {ui:{
     input:async title => {
       const request = JSON.parse(title.slice('__HEXBOT_TOOL__'.length));
       if (request.name === 'hexbot_session_settings') return JSON.stringify({result:settings});
+      if (request.name === 'hexbot_pi_file') {
+        fileRequests.push(request.args);
+        return JSON.stringify({result: request.args.operation === 'edit_open'
+          ? {content: Buffer.from('private', 'utf8').toString('base64'), parent: ['1', '2']}
+          : {success: true}});
+      }
       assert.equal(request.name, 'hexbot_sandbox_policy');
       policies.push(request.args);
       return JSON.stringify(policyReply());
@@ -374,9 +380,14 @@ try {
     const found = ['notes.txt:1:time 10:30:45 needle', '.env:1:private', 'notes.txt-2-a -1- b'].join('\n');
     assert.equal(extension.sanitizeSearchResult(found, 'grep', cwd, home), 'notes.txt:1:time 10:30:45 needle');
     // The write and edit tools now reach the daemon's handle bridge: the
-    // gate lets an ordinary file through, and the extension itself writes
-    // nothing on disk.
+    // gate lets an ordinary file through, execution reaches the bridge, and
+    // the extension itself writes nothing on disk.
     for (const tool of ['write', 'edit']) assert.equal(await gate(tool, {path:join(cwd, 'ordinary.txt'), content:'changed'}, tool), undefined, tool);
+    assert.equal(await gate('write', {path:join(cwd, 'bridged.txt'), content:'changed'}, 'bridge-write'), undefined);
+    await run('write', {path:join(cwd, 'bridged.txt'), content:'changed'}, 'bridge-write');
+    assert.equal(fileRequests.at(-1)?.operation, 'write');
+    assert.ok(fileRequests.at(-1)?.path?.endsWith('bridged.txt'), JSON.stringify(fileRequests.at(-1)));
+    assert.equal(fs.existsSync(join(cwd, 'bridged.txt')), false);
     assert.equal(fs.existsSync(join(cwd, 'ordinary.txt')), false);
     assert.deepEqual(approvals, []);
     assert.deepEqual(hostile, []);

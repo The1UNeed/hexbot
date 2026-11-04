@@ -63,27 +63,11 @@ struct FileId {
     volume: u64,
     id: [u8; 16],
 }
-/// BY_HANDLE_FILE_INFORMATION, laid out as the modules that declare its
-/// call before this one do.
-#[repr(C)]
-#[derive(Default)]
-struct FileInformation {
-    attributes: u32,
-    times: [u32; 6],
-    volume: u32,
-    size_high: u32,
-    size_low: u32,
-    links: u32,
-    index_high: u32,
-    index_low: u32,
-}
-
 // Other modules declare some of these with their own struct types.
 #[allow(clashing_extern_declarations)]
 #[link(name = "kernel32", kind = "raw-dylib")]
 unsafe extern "system" {
     fn GetFileType(handle: Handle) -> u32;
-    fn GetFileInformationByHandle(handle: Handle, information: *mut FileInformation) -> i32;
     fn GetFileInformationByHandleEx(
         handle: Handle,
         class: u32,
@@ -269,8 +253,10 @@ fn final_path(handle: &OwnedHandle) -> io::Result<String> {
     }
 }
 
-/// The volume and 128-bit ID of an open file. FAT and exFAT have no 128-bit
-/// IDs; their 64-bit file index is unique on the volume.
+/// The volume and 128-bit ID of an open file. A file system without them
+/// (FAT, exFAT) recycles its file index when a directory entry is reused,
+/// so an edit could commit to a re-created file carrying the old identity;
+/// those refuse instead of falling back to a weaker identity.
 fn identity(handle: &OwnedHandle) -> io::Result<[String; 2]> {
     let mut info = FileId::default();
     // SAFETY: a valid handle and an output struct of the class's size.
@@ -285,13 +271,9 @@ fn identity(handle: &OwnedHandle) -> io::Result<[String; 2]> {
     {
         return Ok(policy::identity(info.volume, info.id));
     }
-    let mut info = FileInformation::default();
-    // SAFETY: a valid handle and an output struct.
-    check(unsafe { GetFileInformationByHandle(handle.as_raw_handle(), &mut info) })?;
-    let index = (u128::from(info.index_high) << 32) | u128::from(info.index_low);
-    Ok(policy::identity(
-        u64::from(info.volume),
-        index.to_le_bytes(),
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "This file system has no file identity an edit can check.",
     ))
 }
 
@@ -339,6 +321,8 @@ impl FileAccess {
             .ok_or_else(|| Error::new(4202, "file path must be Unicode"))?;
         let walk =
             policy::walk(text).map_err(|reason| Error::new(4202, format!("{reason}: {text}")))?;
+        // A mapped network drive is not local, whatever its letter says.
+        crate::windows_sandbox::fixed_drive(&walk.plain[..3])?;
         let mut folder = open_root(&walk.root)?;
         for name in &walk.folders {
             folder = open_at(

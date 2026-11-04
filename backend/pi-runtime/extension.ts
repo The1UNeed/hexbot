@@ -318,9 +318,12 @@ export default function hexbot(pi: any) {
             return undefined;
           };
           if (process.platform === 'win32') {
-            // The daemon's bridge scans and locks on Windows: it judges every
-            // path and enforces the policy at the handles it opens. The gate
-            // asks only for what it can judge here.
+            // The daemon's bridge judges every path at the handles it opens;
+            // the gate keeps the pure-name Git check and the asks it can
+            // judge, not the Unix-only workspace scan.
+            for (let parent = path; dirname(parent) !== parent; parent = dirname(parent)) {
+              if (gitDirectory(parent)) return {block: true, reason: 'Git metadata is read-only. Use an approved full_access command.'};
+            }
             ask = askFor();
           } else {
             const scan = workspaceProtected([cwd, ...live.outputDirs ?? []]);
@@ -530,8 +533,18 @@ export default function hexbot(pi: any) {
         // The approval covered the file the gate resolved, not a link swapped in since.
         if (path !== allowed.target) throw new Error('The file changed after it was checked. Try again.');
         if (allowed.overwrites !== undefined && existsSync(path) !== allowed.overwrites) throw new Error('The file changed after it was reviewed. Try again.');
-        const denial = writeDenial(args.path ?? '.', cwd, live.home, live.outputDirs);
-        if (denial) throw new Error(denial);
+        if (process.platform === 'win32') {
+          // The daemon's bridge judges every path again at the handles it
+          // opens; the pure-name Git check is kept here, the Unix-only scan
+          // it cannot run is not.
+          for (let parent = path; dirname(parent) !== parent; parent = dirname(parent)) {
+            if (gitDirectory(parent)) throw new Error('Git metadata is read-only. Use an approved full_access command.');
+          }
+          if (hostWriteTier(args.path ?? '.', cwd, true) === 'deny') throw new Error(NEVER_WRITTEN);
+        } else {
+          const denial = writeDenial(args.path ?? '.', cwd, live.home, live.outputDirs);
+          if (denial) throw new Error(denial);
+        }
       }
       args = {...args, path};
       // Reuse the same read-deny roots for every candidate and the output filter.
