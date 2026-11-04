@@ -10,11 +10,14 @@
 //! programs a command may run. An AppContainer's access check ignores deny
 //! entries for its own SID, so protection is what the allow entries leave out:
 //! Git metadata keeps a read allow and project secrets keep none (`Change::Cap`).
-//! A walk that grants a tree meets each protected root by its file identity and
-//! writes only what the cap leaves below it, so no grant ever opens a protected
-//! entry, and a protected entry a walk cannot reach stops the command. A root
-//! that is or holds the user's profile, the Hexbot home, a credential store or
-//! the managed runtime is refused before anything changes.
+//! Deleting or renaming an entry takes DELETE on it or FILE_DELETE_CHILD on its
+//! folder: no cap keeps the first and no grant carries the second, so neither
+//! is ever deleted or moved aside. A walk that grants a tree meets each
+//! protected root by its file identity and writes only what the cap leaves
+//! below it, so no grant ever opens a protected entry, and a protected entry a
+//! walk cannot reach stops the command. A root that is or holds the user's
+//! profile, the Hexbot home, a credential store or the managed runtime is
+//! refused before anything changes.
 //!
 //! Grants are applied by walking each tree through handles. Every entry is
 //! opened relative to its parent's handle without following reparse points, so
@@ -340,11 +343,18 @@ const READ_CONTROL: u32 = 0x0002_0000;
 const WRITE_DAC: u32 = 0x0004_0000;
 const SYNCHRONIZE: u32 = 0x0010_0000;
 const LIST_DIRECTORY: u32 = 0x0001;
+/// FILE_DELETE_CHILD: a folder's right to delete or rename any of its
+/// entries, whatever the entry's own DACL says.
+const DELETE_CHILD: u32 = 0x0040;
 const READ_ATTRIBUTES: u32 = 0x0080;
+const DELETE: u32 = 0x0001_0000;
 /// Read, list, traverse and execute: also all Git metadata keeps.
 pub const READ: u32 = 0x0012_00A9;
-/// READ plus create, write, delete and delete children; never WRITE_DAC or WRITE_OWNER.
+/// READ plus create, write and delete, as icacls's (M); never DELETE_CHILD,
+/// WRITE_DAC or WRITE_OWNER.
 pub const MODIFY: u32 = 0x0013_01BF;
+// What the module docs rely on: no grant carries DELETE_CHILD, no cap keeps DELETE.
+const _: () = assert!(MODIFY & DELETE_CHILD == 0 && READ & (DELETE | DELETE_CHILD) == 0);
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 const SHARE_ALL: u32 = 0x7;
