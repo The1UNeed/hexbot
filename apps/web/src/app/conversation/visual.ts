@@ -148,9 +148,19 @@ function rgb(hex: string): null | number[] {
   return digits ? [0, 2, 4].map(i => parseInt(digits.slice(i, i + 2), 16)) : null
 }
 
-/** Page defaults, before the page's own CSS: theme background, text and font, no body margin. */
+/**
+ * Page defaults, before the page's own CSS: theme background, text and font,
+ * no body margin, and scrollbars that stay visible. The frame grows with the
+ * page, so a scroll area inside it is the only place content can hide; with
+ * overlay scrollbars, a list capped by max-height spills sideways out of view
+ * with nothing to show it is there. The frame's own scrollbar keeps the
+ * system style, so it never takes width from the page it measures.
+ */
 const BASE_CSS =
-  'html{background:var(--background);color:var(--foreground);font:14px/1.5 var(--font-sans);-webkit-font-smoothing:antialiased}body{margin:0}'
+  'html{background:var(--background);color:var(--foreground);font:14px/1.5 var(--font-sans);-webkit-font-smoothing:antialiased}body{margin:0}' +
+  ':not(:root)::-webkit-scrollbar{width:8px;height:8px}' +
+  ':not(:root)::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--foreground) 30%,transparent);border-radius:4px}' +
+  ':not(:root)::-webkit-scrollbar-track,:not(:root)::-webkit-scrollbar-corner{background:transparent}'
 
 /**
  * Runs first inside the frame. It applies the theme before the page paints and
