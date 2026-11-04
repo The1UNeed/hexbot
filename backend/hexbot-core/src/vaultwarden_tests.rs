@@ -8,7 +8,8 @@ use serde_json::json;
 /// forgot; `down` is a server that doesn't answer.
 const FAKE_BW: &str = r#"#!/usr/bin/env node
 const fs = require('fs'), path = require('path'), crypto = require('crypto')
-const file = path.join(process.env.BITWARDENCLI_APPDATA_DIR, 'fake.json')
+// The server's side lives beside this program, so it outlives the CLI's data folder.
+const file = path.join(__dirname, 'fake.json')
 const state = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file)) : { items: [], folders: [], calls: [] }
 const args = process.argv.slice(2).filter(a => a !== '--nointeraction' && a !== '--response')
 const save = () => fs.writeFileSync(file, JSON.stringify(state))
@@ -35,10 +36,19 @@ if (state.down) fail('FetchError: request to https://vault.example.com/api/sync 
 unlocked()
 if (command === 'sync') ok({ title: 'Syncing complete.' })
 if (command === 'list' && object === 'folders') ok({ object: 'list', data: state.folders })
+// With `gate`, listing items waits up to five seconds for a `go` file the test writes.
+if (command === 'list' && object === 'items' && state.gate) {
+  const go = path.join(__dirname, 'go')
+  const until = Date.now() + 5000
+  while (!fs.existsSync(go) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
+  if (!fs.existsSync(go)) fail('no go')
+}
 if (command === 'list' && object === 'items') ok({ object: 'list', data: state.items.filter(i => i.folderId === opt('--folderid') && !i.deletedDate === !args.includes('--trash')) })
 if (command === 'restore') { const i = state.items.find(x => x.id === id); if (!i) fail('Not found.'); delete i.deletedDate; ok({}) }
 if (command === 'get') { const item = state.items.find(i => i.id === object && 1) || state.items.find(i => i.id === id); item ? ok(item) : fail('Not found.') }
 if (command === 'create' && object === 'folder') { const f = { ...stdin(), id: crypto.randomUUID(), object: 'folder' }; state.folders.push(f); ok(f) }
+if (command === 'create' && object === 'item' && state.failCreate === 0) { delete state.failCreate; fail('FetchError: connection reset') }
+if (command === 'create' && object === 'item' && state.failCreate > 0) state.failCreate--
 if (command === 'create' && object === 'item') { const i = { ...stdin(), id: crypto.randomUUID(), object: 'item', revisionDate: new Date().toISOString() }; state.items.push(i); ok(i) }
 if (command === 'edit') { const i = state.items.findIndex(x => x.id === id); if (i < 0) fail('Not found.'); if (state.items[i].deletedDate) fail('You may not edit a deleted item. Use the restore command first.'); state.items[i] = { ...stdin(), id, revisionDate: new Date().toISOString() }; ok(state.items[i]) }
 if (command === 'delete') { const i = state.items.find(x => x.id === id); if (!i) fail('Not found.'); i.deletedDate = new Date().toISOString(); ok({}) }
@@ -68,10 +78,7 @@ fn home() -> tempfile::TempDir {
 }
 
 fn fake(home: &Path) -> Value {
-    serde_json::from_str(
-        &std::fs::read_to_string(home.join("users/alice/passwords/bitwarden/fake.json")).unwrap(),
-    )
-    .unwrap()
+    serde_json::from_str(&std::fs::read_to_string(home.join("fake.json")).unwrap()).unwrap()
 }
 
 fn connect_alice(h: &Path, extra: Value) -> Result<Value> {
@@ -185,11 +192,7 @@ fn items_live_in_the_hexbot_folder_and_secrets_never_reach_a_command_line() {
         .as_array_mut()
         .unwrap()
         .push(json!({"uri":"https://schoology.com/m"}));
-    std::fs::write(
-        h.join("users/alice/passwords/bitwarden/fake.json"),
-        state.to_string(),
-    )
-    .unwrap();
+    std::fs::write(h.join("fake.json"), state.to_string()).unwrap();
     crate::passwords::save(h, "alice", &json!({"id":id,"username":"alex2"})).unwrap();
     let schoology = fake(h)["items"][at].clone();
     assert_eq!(schoology["login"]["username"], "alex2");
@@ -236,11 +239,7 @@ fn only_hexbot_folder_items_are_used() {
          "login":{"username":"me","password":"elsewhere","uris":[]}},
         {"id":"0b1e1a52-0000-4000-8000-000000000002","type":3,"name":"Visa","folderId":state["folders"][0]["id"]}
     ]);
-    std::fs::write(
-        h.join("users/alice/passwords/bitwarden/fake.json"),
-        state.to_string(),
-    )
-    .unwrap();
+    std::fs::write(h.join("fake.json"), state.to_string()).unwrap();
     assert!(crate::passwords::list(h, "alice", None).unwrap().is_empty());
     for id in [
         "0b1e1a52-0000-4000-8000-000000000001",
@@ -270,11 +269,7 @@ fn a_forgotten_session_unlocks_again_and_disconnect_goes_back_to_this_daemon() {
     // After a restart, or when `bw` forgets the session, Hexbot unlocks again.
     let mut state = fake(h);
     state["session"] = json!("session-new");
-    std::fs::write(
-        h.join("users/alice/passwords/bitwarden/fake.json"),
-        state.to_string(),
-    )
-    .unwrap();
+    std::fs::write(h.join("fake.json"), state.to_string()).unwrap();
     crate::passwords::save(h, "alice", &json!({"url":"https://y.com","password":"vw"})).unwrap();
     assert_eq!(crate::passwords::list(h, "alice", None).unwrap().len(), 1);
     let unlocks = fake(h)["calls"]
@@ -327,11 +322,7 @@ fn connecting_needs_https_the_right_password_and_a_two_step_code() {
 fn edit_fake(h: &Path, change: impl FnOnce(&mut Value)) {
     let mut state = fake(h);
     change(&mut state);
-    std::fs::write(
-        h.join("users/alice/passwords/bitwarden/fake.json"),
-        state.to_string(),
-    )
-    .unwrap();
+    std::fs::write(h.join("fake.json"), state.to_string()).unwrap();
 }
 
 #[test]
@@ -454,39 +445,85 @@ fn saving_keeps_the_match_rule_a_bitwarden_app_set() {
 }
 
 /// The daemon's runtime has many threads; a call waiting on `bw` steps
-/// aside for the worker's other tasks instead of holding it.
+/// aside for the worker's other tasks instead of holding it. With one
+/// worker, the fake `bw` finishes only once another task writes its `go`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn waiting_on_bw_leaves_the_async_workers_free() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     let home = home();
     let h = home.path().to_owned();
     connect_alice(&h, json!({})).unwrap();
-    let ticks = std::sync::Arc::new(AtomicUsize::new(0));
-    let ticker = tokio::spawn({
-        let ticks = ticks.clone();
+    edit_fake(&h, |state| state["gate"] = json!(true));
+    let (started, waiting) = tokio::sync::oneshot::channel::<()>();
+    let listing = tokio::spawn({
+        let h = h.clone();
         async move {
-            loop {
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                ticks.fetch_add(1, Ordering::SeqCst);
-            }
+            started.send(()).unwrap();
+            crate::passwords::list(&h, "alice", None).map(|l| l.len())
         }
     });
-    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    let before = ticks.load(Ordering::SeqCst);
-    // One worker: without stepping aside, the ticker can't run until `bw` is done.
-    let listed = tokio::spawn(async move {
-        let listed = crate::passwords::list(&h, "alice", None).map(|l| l.len());
-        (listed, ticks.load(Ordering::SeqCst) - before)
-    })
-    .await
+    let go = h.join("go");
+    tokio::spawn(async move {
+        waiting.await.unwrap();
+        std::fs::write(go, "").unwrap();
+    });
+    assert_eq!(listing.await.unwrap().unwrap(), 0);
+}
+
+#[test]
+fn a_copy_cut_short_and_tried_again_makes_no_duplicates() {
+    let home = home();
+    let h = home.path();
+    for site in ["https://a.com", "https://b.com", "https://c.com"] {
+        crate::passwords::save(h, "alice", &json!({"url":site,"password":"pw"})).unwrap();
+    }
+    std::fs::write(
+        h.join("fake.json"),
+        json!({"items":[],"folders":[],"calls":[],"failCreate":1}).to_string(),
+    )
     .unwrap();
-    ticker.abort();
-    assert_eq!(listed.0.unwrap(), 0);
-    assert!(
-        listed.1 > 2,
-        "the ticker ran {} times while bw ran",
-        listed.1
+    assert_eq!(
+        connect_alice(h, json!({"copy":true})).unwrap_err().code,
+        5300
     );
+    assert_eq!(fake(h)["items"].as_array().unwrap().len(), 1);
+    let connected = connect_alice(h, json!({"copy":true})).unwrap();
+    assert_eq!(connected["copied"], 2);
+    assert_eq!(fake(h)["items"].as_array().unwrap().len(), 3);
+}
+
+#[test]
+fn a_steam_code_key_survives_saving_other_fields() {
+    let home = home();
+    let h = home.path();
+    connect_alice(h, json!({})).unwrap();
+    let saved = crate::passwords::save(
+        h,
+        "alice",
+        &json!({"url":"https://steam.com","password":"pw"}),
+    )
+    .unwrap();
+    edit_fake(h, |state| {
+        state["items"][0]["login"]["totp"] = json!("steam://ABCDEFGHIJ")
+    });
+    let id = saved["id"].as_str().unwrap();
+    crate::passwords::save(h, "alice", &json!({"id":id,"title":"Steam"})).unwrap();
+    assert_eq!(fake(h)["items"][0]["login"]["totp"], "steam://ABCDEFGHIJ");
+    assert_eq!(
+        crate::passwords::find(h, "alice", id).unwrap()["has_code"],
+        true
+    );
+    // A bare key, as Bitwarden apps save it, still gives codes and stays bare.
+    edit_fake(h, |state| {
+        state["items"][0]["login"]["totp"] = json!("JBSWY3DPEHPK3PXP")
+    });
+    assert_eq!(
+        crate::passwords::secret(h, "alice", id, "code")
+            .unwrap()
+            .len(),
+        6
+    );
+    crate::passwords::save(h, "alice", &json!({"id":id,"title":"Steam 2"})).unwrap();
+    assert_eq!(fake(h)["items"][0]["login"]["totp"], "JBSWY3DPEHPK3PXP");
 }
 
 fn home_without_bw() -> tempfile::TempDir {

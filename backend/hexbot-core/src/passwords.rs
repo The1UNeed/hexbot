@@ -1227,7 +1227,12 @@ fn code_now(item: &Record) -> Result<Option<(String, u64)>> {
     if item.otp.is_empty() {
         return Ok(None);
     }
-    let Ok(otp) = item.otp.parse::<keepass::db::TOTP>() else {
+    // Vaultwarden keeps a key as an app saved it, such as a bare base32
+    // secret; a Steam key gives no code here.
+    let Some(otp) = otp_uri(&item.otp, &item.title)
+        .ok()
+        .and_then(|uri| uri.parse::<keepass::db::TOTP>().ok())
+    else {
         return Ok(None);
     };
     let code = otp

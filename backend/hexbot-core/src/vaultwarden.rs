@@ -387,12 +387,9 @@ fn record_of(item: &Value) -> Option<Record> {
                 url: text(&login["uris"][0]["uri"]),
                 username: text(&login["username"]),
                 password: text(&login["password"]),
-                // Bitwarden takes a bare key too; Hexbot reads an otpauth link.
-                otp: if totp.is_empty() {
-                    totp
-                } else {
-                    passwords::otp_uri(&totp, &title).unwrap_or_default()
-                },
+                // Kept as saved, a Steam key included, so saving another
+                // field never changes it; `code_now` reads what it can.
+                otp: totp,
                 env: field(item, "Variable").unwrap_or_default(),
                 ..Record::new(kind)
             }
@@ -717,7 +714,15 @@ pub fn connect(home: &Path, owner: &str, p: &Value) -> Result<Value> {
         };
         let mut copied = 0;
         if p["copy"] == true {
+            // A copy cut short and tried again skips what already arrived.
+            let same = |a: &Record, b: &Record| {
+                (a.kind, &a.title, &a.url, &a.username) == (b.kind, &b.title, &b.url, &b.username)
+            };
+            let there = list(home, owner, &account)?;
             for item in passwords::local_items(home, owner)? {
+                if there.iter().any(|(_, saved)| same(saved, &item)) {
+                    continue;
+                }
                 put(home, owner, &account, None, &item)?;
                 copied += 1;
             }
