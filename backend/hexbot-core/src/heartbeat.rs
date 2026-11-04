@@ -520,10 +520,9 @@ fn still_newest(key: &(PathBuf, String), done_at: f64) -> bool {
 }
 
 /// The owner to wake about the reply that finished in `section` at
-/// `done_at`, while nobody has read the chat since. An app stamps `done_at`
-/// again as the reply lands (`hexbot.sections.touch`), so a later stamp
-/// still counts as unread. Only a bot's chat with its owner: not a thread
-/// between bots, not an earlier Check-ins, not archived.
+/// `done_at`, while nobody has read the chat since. Only a bot's chat with
+/// its owner: not a thread between bots, not an earlier Check-ins, not
+/// archived.
 fn unread_reply(
     conn: &rusqlite::Connection,
     section: &str,
@@ -1077,11 +1076,6 @@ mod tests {
         .unwrap();
         assert_eq!(
             unread_reply(&conn, "chat", 5.0).unwrap().as_deref(),
-            Some("alice")
-        );
-        // An app's touch as the reply lands keeps it unread.
-        assert_eq!(
-            unread_reply(&conn, "chat", 4.0).unwrap().as_deref(),
             Some("alice")
         );
         // Notify me off, a thread between bots, Check-ins, archived.

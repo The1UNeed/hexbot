@@ -671,7 +671,9 @@ context of its own; the meter belongs to bot sections.
   kept. `hexbot.bots.delete` purges the bot's owned history, including retained
   sections whose catalog rows have already gone.
 - `hexbot.sections.touch {id}` is internal; activity is stamped by the plugin
-  on `message.complete`. It also sets the section's `done_at`.
+  on `message.complete`. It leaves `done_at` alone: the daemon sets it when the
+  turn ends, before `message.complete`, so a touch cannot undo a read made on
+  another device.
 - `hexbot.sections.mark_read {id}` → `{section: Section}` clears `done_at`:
   the user has seen the finished work. Broadcasts `hexbot.sections.changed`,
   so the green dot clears on every device. Clients call it only while the chat

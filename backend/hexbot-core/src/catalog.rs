@@ -2752,10 +2752,13 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
                         params![now, id],
                     )?;
                 }
+                // Activity only. The turn's end marks the chat unread
+                // (runtime.rs) before any app hears it finished, so an app's
+                // touch cannot undo a read made on another device.
                 "hexbot.sections.touch" => {
                     tx.execute(
-                        "UPDATE sections SET updated_at=?,done_at=? WHERE id=?",
-                        params![now, now, id],
+                        "UPDATE sections SET updated_at=? WHERE id=?",
+                        params![now, id],
                     )?;
                 }
                 _ => {

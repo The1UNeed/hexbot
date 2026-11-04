@@ -90,14 +90,18 @@ fn lifecycle_preserves_memory_and_reopens_archived_sections() {
         catalog::section(h, "alice", id).unwrap()["title"],
         "Next task"
     );
-    assert!(
-        call(h, "alice", "hexbot.sections.touch", json!({"id":id}))["section"]["done_at"]
-            .is_number()
-    );
+    db::open(h)
+        .unwrap()
+        .execute("UPDATE sections SET done_at=5 WHERE id=?", [id])
+        .unwrap();
     assert!(
         call(h, "alice", "hexbot.sections.mark_read", json!({"id":id}))["section"]["done_at"]
             .is_null()
     );
+    // An app's touch as the reply lands, after the phone read it, keeps it read.
+    let touched = call(h, "alice", "hexbot.sections.touch", json!({"id":id}))["section"].clone();
+    assert!(touched["done_at"].is_null());
+    assert!(touched["updated_at"].as_f64().unwrap() > 5.0);
     let rejected = catalog::call(h, "alice", "hexbot.sections.delete", &json!({"id":id}))
         .unwrap()
         .unwrap_err();
