@@ -1368,7 +1368,8 @@ key into its variable and each SSH key into an `ssh-agent` of that command's
 own (`ssh-add -t 120`), deletes the files, runs the command in a subshell and
 stops the agent when it ends, however it ends. The keys are never on the
 command line of the command itself, and API key values are blanked from its
-output and from every later browser and computer result in the conversation.
+output and from every later browser and computer result of any bot, since
+all bots share the computer, until the daemon restarts.
 `generate {title}` makes and saves an Ed25519 SSH key and returns its public
 key. The primary bot, in its own chat, also has `share {id, bots}`, `update
 {id, title?, url?, username?, env?}` and `delete` (always asks).

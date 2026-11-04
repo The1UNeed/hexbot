@@ -2614,11 +2614,12 @@ fn filled() -> &'static Mutex<FilledMap> {
     static FILLED: OnceLock<Mutex<FilledMap>> = OnceLock::new();
     FILLED.get_or_init(Default::default)
 }
-/// API keys each section's commands ran with. A command can save one in a
-/// file on the bots' computer, which outlives the section's processes, so
-/// these stay blanked for as long as the daemon runs.
-fn ran_with() -> &'static Mutex<FilledMap> {
-    static RAN_WITH: OnceLock<Mutex<FilledMap>> = OnceLock::new();
+/// API keys commands ran with, by daemon home. A command can save one in a
+/// file on the bots' computer, which every bot shares and which outlives the
+/// section's processes, so these stay blanked for every bot and section for
+/// as long as the daemon runs.
+fn ran_with() -> &'static Mutex<HashMap<PathBuf, Vec<String>>> {
+    static RAN_WITH: OnceLock<Mutex<HashMap<PathBuf, Vec<String>>>> = OnceLock::new();
     RAN_WITH.get_or_init(Default::default)
 }
 const BLANKED: &str = "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}";
@@ -2688,7 +2689,7 @@ async fn scrub_filled(
         ran_with()
             .lock()
             .await
-            .get(&key)
+            .get(home)
             .cloned()
             .unwrap_or_default(),
     );
@@ -2837,8 +2838,8 @@ pub async fn computer_fill(
 /// Runs a shell command on the bots' computer with saved keys: `vars` as
 /// environment variables, `ssh_keys` in an ssh-agent for that command only
 /// (`computers::run_with_keys`). The variables' values are blanked from its
-/// output and from every later browser and computer result in the section,
-/// even after its processes stop and the chat resumes.
+/// output and from every later browser and computer result of any bot, since
+/// they share the computer, even after the chat's processes stop.
 pub async fn computer_run(
     home: &Path,
     bot: &str,
@@ -2854,9 +2855,7 @@ pub async fn computer_run(
     let env = connectors::credentials(home, bot)?;
     {
         let mut ran_with = ran_with().lock().await;
-        let secrets = ran_with
-            .entry((home.to_owned(), bot.to_owned(), stored.to_owned()))
-            .or_default();
+        let secrets = ran_with.entry(home.to_owned()).or_default();
         for (_, value) in vars {
             if !secrets.contains(value) {
                 secrets.push(value.clone());
@@ -2876,10 +2875,10 @@ mod blank_tests {
     async fn keys_a_command_ran_with_stay_blanked_after_the_session_closes() {
         let home = tempfile::tempdir().unwrap();
         let key = (home.path().to_owned(), "owl".to_owned(), "s1".to_owned());
-        ran_with()
-            .lock()
-            .await
-            .insert(key.clone(), vec!["sk-saved-in-a-file".to_owned()]);
+        ran_with().lock().await.insert(
+            home.path().to_owned(),
+            vec!["sk-saved-in-a-file".to_owned()],
+        );
         filled()
             .lock()
             .await
@@ -2893,6 +2892,12 @@ mod blank_tests {
         let text = shown["content"][0]["text"].as_str().unwrap();
         assert!(!text.contains("sk-saved-in-a-file"), "{text}");
         assert!(text.contains("typed-password"), "the browser's go with it");
+        // Every bot shares the computer: another bot's chat is blanked too.
+        let read = json!({"content": [{"type": "text", "text": "sk-saved-in-a-file"}]});
+        let shown = scrub_filled(home.path(), "fox", "s2", Ok(read))
+            .await
+            .unwrap();
+        assert_eq!(shown["content"][0]["text"], BLANKED);
     }
 
     #[test]

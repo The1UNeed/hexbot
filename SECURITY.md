@@ -287,8 +287,9 @@ before the command starts, so they are not on its command line. Like a filled
 password, this keeps keys out of prompts, history and provider traffic but
 does not contain a bot trying to steal one: the command can print a key's
 variable, save it, or send it anywhere. Hexbot blanks API key values from the
-command's output and from later browser and computer results in that
-conversation, and an encoded print gets past that. An agent keeps a private
+command's output and from later browser and computer results of every bot,
+since they share the computer, until the daemon restarts; an encoded print
+gets past that. An agent keeps a private
 key from being read back, but while the command runs anything on the bots'
 computer can ask it to sign. Give each key only to bots that need it, and
 read the command on the approval card before you allow it.
