@@ -380,7 +380,8 @@ it('submits the optimistic UUID and only its server upload IDs when the daemon s
     session_id: 'durable-id',
     text: 'Read my plan',
     input_id: local.inputId,
-    attachments: [uploaded.id]
+    attachments: [uploaded.id],
+    interrupt: true
   })
   expect(local.inputId).toMatch(
     /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/

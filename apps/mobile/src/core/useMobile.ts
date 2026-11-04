@@ -756,6 +756,8 @@ export function useMobile() {
           session_id: sessionId,
           text,
           attachments,
+          // A reply in progress stops first, so this message goes next.
+          interrupt: true,
           ...(inputId && { input_id: inputId })
         })
         unsent.current.delete(sessionId)

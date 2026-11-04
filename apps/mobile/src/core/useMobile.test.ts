@@ -528,7 +528,7 @@ it('holds owner input through reconnect lookup failure and retries the canonical
   await act(async () => { await state.ready() })
   expect(hook.result.current.liveSessionId()).toBe('live-owl-chat')
   await act(async () => { await hook.result.current.send('after retry') })
-  expect(state.request).toHaveBeenCalledWith('prompt.submit', expect.objectContaining({ session_id: 'live-owl-chat', text: 'after retry' }))
+  expect(state.request).toHaveBeenCalledWith('prompt.submit', expect.objectContaining({ session_id: 'live-owl-chat', text: 'after retry', interrupt: true }))
   expect(state.request.mock.calls.some(([method, params]) => method === 'prompt.submit' && params.text.includes('early'))).toBe(false)
 })
 it.each(['room', 'bot', 'back', 'daemon', 'unmount'] as const)(
