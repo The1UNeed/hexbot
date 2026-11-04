@@ -1,4 +1,5 @@
 import type { GatewayEvent } from '@hermes/shared'
+import { splitAttached } from '../../../web/src/lib/media'
 import type { PluginForm } from '../../../web/src/lib/types'
 
 import type { ChatMessage, ChatState, ChatTool, SignInForm, TurnState } from './types'
@@ -94,12 +95,15 @@ export function historyMessages(raw: unknown[]): ChatMessage[] {
       }
       target.tools = [...(target.tools ?? []), tool]
     } else if (row.role === 'user' || row.role === 'assistant') {
-      const text = textContent(row.content ?? row.text)
-      if (text || (Array.isArray(row.tool_calls) && row.tool_calls.length))
+      // The files you sent are listed under your words; each shows as it did live.
+      const said = textContent(row.content ?? row.text)
+      const { files, text } = row.role === 'user' ? splitAttached(said) : { files: [], text: said }
+      if (text || files.length || (Array.isArray(row.tool_calls) && row.tool_calls.length))
         messages.push({
           id: String(row.id ?? row.row_id ?? `history-${messages.length}`),
           role: row.role,
           text,
+          ...(files.length && { attachments: files }),
           // Rows carry `timestamp` in Unix seconds.
           ...(typeof row.timestamp === 'number' &&
             row.timestamp > 0 && { createdAt: row.timestamp * 1000 }),

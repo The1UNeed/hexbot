@@ -30,6 +30,7 @@ import {
 } from './routes'
 import type {
   Bot,
+  ChatMessage,
   ChatState,
   ComputerQuality,
   ComputerStatus,
@@ -681,7 +682,12 @@ export function useMobile() {
    * daemon sends only those. Undefined leaves every staged file attached, for
    * daemons that do not give uploads an id.
    */
-  const send = async (input: string, hasAttachments = false, attachments?: string[]) => {
+  const send = async (
+    input: string,
+    hasAttachments = false,
+    attachments?: string[],
+    files?: ChatMessage['attachments']
+  ) => {
     const text = attachmentPrompt(input, hasAttachments)
     const target = routeRef.current
     if (!target || !text) throw new Error('Enter a message or attach a file.')
@@ -696,7 +702,17 @@ export function useMobile() {
       error: null,
       messages:
         target.kind === 'section'
-          ? [...c.messages, { id: messageId, role: 'user', text, inputId, createdAt: Date.now() }]
+          ? [
+              ...c.messages,
+              {
+                id: messageId,
+                role: 'user',
+                text,
+                inputId,
+                createdAt: Date.now(),
+                ...(files?.length && { attachments: files })
+              }
+            ]
           : c.messages
     }))
     try {

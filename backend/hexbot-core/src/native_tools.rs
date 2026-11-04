@@ -185,7 +185,7 @@ fn artifacts_dir(home: &Path, bot: &str) -> Result<PathBuf> {
     }
     Ok(dir)
 }
-fn artifact(home: &Path, bot: &str, kind: &str, extension: &str) -> Result<PathBuf> {
+pub(crate) fn artifact(home: &Path, bot: &str, kind: &str, extension: &str) -> Result<PathBuf> {
     let root = artifacts_dir(home, bot)?;
     let dir = root.join(kind);
     fs::create_dir_all(&dir)?;

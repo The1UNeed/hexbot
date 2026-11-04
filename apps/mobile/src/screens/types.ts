@@ -101,8 +101,11 @@ export type CardAnswer = import('../../../web/src/lib/types').PluginAnswer | Sig
 export interface AttachmentView {
   id: string
   name: string
-  kind: 'file' | 'image'
+  kind: import('../../../web/src/lib/media').MediaKind
+  /** This phone's own copy, such as a file you just picked. */
   uri?: string | null
+  /** The daemon's copy, read when it shows. */
+  path?: string
 }
 
 /** One entry in a chat transcript, oldest first. */

@@ -20,6 +20,7 @@ vi.mock('react-native', async () => {
 })
 vi.mock('@expo/vector-icons', () => ({ Ionicons: () => null }))
 vi.mock('../ui/PluginIcon', () => ({ PluginIcon: () => null }))
+vi.mock('../screens/MediaAttachment', () => ({ MediaAttachment: () => null }))
 vi.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ bottom: 0 }) }))
 vi.mock('../ui', async () => {
   const { createElement } = await import('react')

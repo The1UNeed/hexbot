@@ -128,6 +128,21 @@ describe('history projection', () => {
     expect(message?.toolCalls[0]?.args).toEqual({ html: '<p>1</p>', title: 'Costs' })
   })
 
+  it('brings back the files you sent as attachments, not as text', () => {
+    const kept = '/h/runtime/sessions/s/attachments/0123456789abcdef0123456789abcdef-clip.mp4'
+
+    const [mine, theirs] = messagesFromHistory([
+      { role: 'user', text: `Watch this\n\nAttached files:\n${kept}` },
+      { role: 'assistant', text: 'Attached files:\nnot a list of yours' }
+    ] as Parameters<typeof messagesFromHistory>[0])
+
+    expect(mine?.text).toBe('Watch this')
+    expect(mine?.attachments).toEqual([
+      { id: kept, kind: 'video', mime: 'video/mp4', name: 'clip.mp4', path: kept }
+    ])
+    expect(theirs?.attachments).toEqual([])
+  })
+
   it('brings back each answered question under the message that asked it', () => {
     const ask = (id: string, args: object) => ({
       role: 'assistant',

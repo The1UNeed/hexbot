@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
+import * as api from '../../lib/api'
 import type { Message } from '../../lib/types'
 import {
   resetTranscriptEffects,
@@ -302,6 +303,138 @@ describe('MessageRow files', () => {
     expect(video.tagName).toBe('VIDEO')
     expect(video).toHaveAttribute('src', 'blob:bench')
     expect(video).toHaveAttribute('controls')
+  })
+
+  it('plays what the bot made or shared from the daemon, under its reply', async () => {
+    const read = vi.spyOn(api, 'filesRead').mockImplementation(async (_session, path) => ({
+      data_url: `data:${path.endsWith('.mp3') ? 'audio/mpeg' : 'video/mp4'};base64,AAAA`,
+      mime: path.endsWith('.mp3') ? 'audio/mpeg' : 'video/mp4',
+      modified: 0,
+      name: path.split('/').pop()!,
+      path,
+      size: 3,
+      version: 'v'
+    }))
+
+    const made = vi.fn(() => 'blob:made')
+    URL.createObjectURL = made
+    URL.revokeObjectURL = vi.fn()
+
+    const voice = '/home/profiles/owl/artifacts/audio/a1.mp3'
+
+    render(
+      <MessageRow
+        message={message({
+          text: 'Here it is.',
+          toolCalls: [
+            {
+              args: { text: 'Hello' },
+              durationS: 0,
+              name: 'text_to_speech',
+              // Live, a Pi result: its text and its details name the file once.
+              result: {
+                content: [{ text: JSON.stringify({ media: `MEDIA:${voice}` }), type: 'text' }],
+                details: { file_path: voice, media: `MEDIA:${voice}` }
+              },
+              startedAt: 0,
+              status: 'ok',
+              toolId: 't'
+            },
+            {
+              args: { path: 'clip.mp4' },
+              durationS: 0,
+              name: 'hexbot_share_file',
+              result: '{"name":"clip.mp4","shared":true,"size":3}',
+              startedAt: 0,
+              status: 'ok',
+              toolId: 's'
+            },
+            {
+              // It shared the voice reply too: it still shows once.
+              args: { path: voice },
+              durationS: 0,
+              name: 'hexbot_share_file',
+              result: '{"name":"a1.mp3","shared":true,"size":3}',
+              startedAt: 0,
+              status: 'ok',
+              toolId: 'v'
+            },
+            {
+              args: { path: 'notes.md' },
+              durationS: 0,
+              name: 'hexbot_share_file',
+              result: '{"name":"notes.md","shared":true,"size":3}',
+              startedAt: 0,
+              status: 'ok',
+              toolId: 'n'
+            },
+            {
+              args: {},
+              durationS: 0,
+              name: 'video_generate',
+              // From history, the result's text.
+              result: '{"media":"MEDIA:/art/videos/lake.mp4","video":"https://fal.test/lake"}',
+              startedAt: 0,
+              status: 'ok',
+              toolId: 'g'
+            },
+            {
+              args: { text: 'Again' },
+              durationS: 0,
+              name: 'text_to_speech',
+              result: { error: 'speech provider did not create audio' },
+              startedAt: 0,
+              status: 'error',
+              toolId: 'e'
+            }
+          ]
+        })}
+        onFile={() => {}}
+        onImage={() => {}}
+        onRetry={() => {}}
+        sessionId="live-1"
+      />
+    )
+
+    const [audio, ...again] = await screen.findAllByLabelText('a1.mp3')
+    expect(again).toEqual([])
+    expect(audio!.tagName).toBe('AUDIO')
+    expect(audio).toHaveAttribute('src', 'blob:made')
+    expect((await screen.findByLabelText('clip.mp4')).tagName).toBe('VIDEO')
+    expect((await screen.findByLabelText('lake.mp4')).tagName).toBe('VIDEO')
+    // A shared document stays a card that opens beside the chat.
+    expect(
+      screen.getByRole('button', { name: 'Open notes.md beside the chat' })
+    ).toBeInTheDocument()
+    expect(read.mock.calls.map(call => call[1]).sort()).toEqual(
+      ['/art/videos/lake.mp4', 'clip.mp4', voice].sort()
+    )
+    // The players sit under the reply, with the files it shared.
+    expect(
+      audio!.compareDocumentPosition(screen.getByText('Here it is.')) &
+        Node.DOCUMENT_POSITION_PRECEDING
+    ).toBeTruthy()
+    read.mockRestore()
+  })
+
+  it('shows no media in a room', () => {
+    row({
+      text: 'Here it is.',
+      toolCalls: [
+        {
+          args: {},
+          durationS: 0,
+          name: 'text_to_speech',
+          result: '{"media":"MEDIA:/home/artifacts/audio/a1.mp3"}',
+          startedAt: 0,
+          status: 'ok',
+          toolId: 't'
+        }
+      ]
+    })
+
+    expect(screen.getByText('Here it is.')).toBeInTheDocument()
+    expect(screen.queryByText('a1.mp3')).toBeNull()
   })
 
   it('offers the files the bot shared, not the ones it only wrote, and none in a room', () => {

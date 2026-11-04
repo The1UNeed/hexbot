@@ -56,7 +56,7 @@ impl Runtime {
             "shared": true,
             "name": path.file_name().and_then(|n| n.to_str()).unwrap_or(""),
             "size": size,
-            "note": "The user sees the file as a card under your reply and can open it. Don't repeat its path or contents.",
+            "note": "The user sees the file under your reply and can open or play it. Don't repeat its path or contents.",
         }))
     }
 
@@ -126,6 +126,8 @@ fn binary_format(path: &Path) -> bool {
     let mime = mime_of(path);
     mime == "application/pdf"
         || mime.contains("officedocument")
+        || mime.starts_with("video/")
+        || mime.starts_with("audio/")
         || (mime.starts_with("image/") && mime != "image/svg+xml")
 }
 
@@ -147,6 +149,16 @@ fn mime_of(path: &Path) -> &'static str {
         "gif" => "image/gif",
         "webp" => "image/webp",
         "svg" => "image/svg+xml",
+        "mp4" | "m4v" => "video/mp4",
+        "mov" => "video/quicktime",
+        "webm" => "video/webm",
+        "mp3" => "audio/mpeg",
+        "m4a" => "audio/mp4",
+        "aac" => "audio/aac",
+        "wav" => "audio/wav",
+        "ogg" | "oga" => "audio/ogg",
+        "opus" => "audio/opus",
+        "flac" => "audio/flac",
         "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -434,6 +446,26 @@ mod tests {
         );
         assert_eq!(write_text(&path, "oops", None).unwrap_err().code, 4202);
         assert!(fs::read_to_string(&path).unwrap().starts_with("%PDF-1.4"));
+    }
+
+    #[test]
+    fn video_and_audio_open_as_media_even_when_their_bytes_decode() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = fs::canonicalize(dir.path()).unwrap();
+        for (name, mime) in [("clip.mp4", "video/mp4"), ("voice.mp3", "audio/mpeg")] {
+            let path = dir.join(name);
+            fs::write(&path, "ID3 plain bytes").unwrap();
+            let read = read_payload(&path).unwrap();
+            assert_eq!(read["mime"], mime);
+            assert!(read["text"].is_null());
+            assert!(
+                read["data_url"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with(&format!("data:{mime};base64,"))
+            );
+            assert_eq!(write_text(&path, "oops", None).unwrap_err().code, 4202);
+        }
     }
 
     #[test]

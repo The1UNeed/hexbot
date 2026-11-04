@@ -75,7 +75,8 @@ data model. The native transport and event projection live in
   is taken from the working folder, and a leading `~`, `$HOME` or `${HOME}`
   is the user's home, as the bot's file tools read it. A read answers `text`
   for UTF-8 without NUL bytes up to 2 MiB, otherwise a `data_url`, up to
-  45 MiB (4202 over); PDFs, images and Office files are always a `data_url`.
+  45 MiB (4202 over); PDFs, images, video, audio and Office files are always
+  a `data_url`.
   `version` is the SHA-256 of the contents. A write replaces a text file up
   to 2 MiB in one step through a directory handle that refuses symlinks and
   keeps its permissions, one write at a time; it refuses binary files (4202)
@@ -1001,7 +1002,21 @@ file `hexbot.files.read` can open (the chat's working folder, the bot's
 `artifacts` folder or the chat's `attachments`; 4302 elsewhere, 4204 when
 missing, 4202 over the 45 MiB a read returns) and answers `{shared: true, name, size, note}`. Clients show each
 file a message shared once, as a card under the bot's reply that opens it
-beside the chat; files the bot only wrote or edited do not show.
+beside the chat; files the bot only wrote or edited do not show. A picture, video or audio
+file shows or plays there instead of its card.
+
+Media in a chat. A message's files are named in its stored text: a user row
+ends with `\n\nAttached files:\n` and one kept path per line, which clients
+show as attachments rather than words. A bot's media tools name each file they
+made as `MEDIA:<path>` in the result: `text_to_speech` (`file_path`, in the
+bot's `artifacts/audio`), `image_generate` (each of `images[].path`) and
+`video_generate` (a copy of FAL's clip in `artifacts/videos`, as `file_path`;
+when the copy cannot be made, only the `video` link). Clients read each file
+through `hexbot.files.read` and show it with the files the message shared,
+under the bot's reply: a picture, a video or an audio file inline, anything
+else as a file card. The web UI and the Electron app play from an object URL
+(the app's CSP allows `blob:` media, not `data:`); the mobile app keeps one
+copy per path in its cache.
 
 ### Connectors and skills
 

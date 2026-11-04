@@ -65,7 +65,12 @@ export interface ChatMessage {
   streaming?: boolean
   createdAt?: number
   tools?: ChatTool[]
-  attachments?: { name: string; uri?: string }[]
+  attachments?: {
+    name: string
+    kind?: import('../../../web/src/lib/media').MediaKind
+    uri?: string | null
+    path?: string
+  }[]
   /** The key your message was sent with, which names it for Recall. */
   inputId?: string
 }

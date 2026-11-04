@@ -697,6 +697,12 @@
      "source": "https://www.npmjs.com/package/expo-asset/v/58.0.16"
     },
     {
+     "name": "expo-audio",
+     "version": "58.0.9",
+     "license": "MIT",
+     "source": "https://www.npmjs.com/package/expo-audio/v/58.0.9"
+    },
+    {
      "name": "expo-blur",
      "version": "58.0.4",
      "license": "MIT",
@@ -803,6 +809,12 @@
      "version": "58.0.6",
      "license": "MIT",
      "source": "https://www.npmjs.com/package/expo-system-ui/v/58.0.6"
+    },
+    {
+     "name": "expo-video",
+     "version": "58.0.12",
+     "license": "MIT",
+     "source": "https://www.npmjs.com/package/expo-video/v/58.0.12"
     },
     {
      "name": "expo-web-browser",

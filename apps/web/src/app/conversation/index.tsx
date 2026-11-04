@@ -42,6 +42,7 @@ import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
 import { moodForStatus } from '../../lib/face'
 import { mathDelimiters } from '../../lib/math'
+import { mediaKind, mediaOf } from '../../lib/media'
 import { plainError } from '../../lib/plain-error'
 import { NotConnectedError } from '../../lib/rpc'
 import { useTurnCues } from '../../lib/sounds'
@@ -86,6 +87,7 @@ import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
 import { FileCard } from './file-card'
 import { filesOf, type FileTarget, mimeOf, openFile } from './file-tab'
+import { MediaView } from './media'
 import { PluginCard } from './plugin-card'
 import { RoomConversation } from './room'
 import { useSearchJump } from './search-jump'
@@ -340,21 +342,24 @@ export const Markdown = memo(function Markdown({ text }: { text: string }) {
 })
 
 /**
- * What a message carries, above its bubble. A picture shows whole and opens
- * over the chat; a video plays where it is; every other file is a card that
- * opens beside the chat, where it can be read and, when it is text, edited
- * with the bot. Without `onFile` (a room) a card only names the file.
+ * What a message carries, above its bubble: the files you sent, or the ones the
+ * bot made or sent. A picture shows whole and opens over the chat; a video or
+ * audio file plays where it is; every other file is a card that opens beside
+ * the chat, where it can be read and, when it is text, edited with the bot.
+ * Without `onFile` and a session (a room) a card only names the file.
  */
 function Attachments({
   attachments,
   mine,
   onFile,
-  onImage
+  onImage,
+  sessionId
 }: {
   attachments: Attachment[]
   mine: boolean
   onFile?: (file: FileTarget) => void
   onImage: (source: string) => void
+  sessionId?: string
 }) {
   return (
     <div className={cn('flex max-w-full flex-wrap gap-2', mine && 'justify-end')}>
@@ -377,23 +382,9 @@ function Attachments({
           )
         }
 
-        if (item.kind === 'video' && item.url) {
-          return (
-            <video
-              aria-label={item.name}
-              className="max-h-64 max-w-full rounded-panel bg-black"
-              controls
-              key={item.id}
-              playsInline
-              preload="metadata"
-              src={item.url}
-            />
-          )
-        }
-
         const target = item.path || item.url
 
-        return (
+        const card = (
           <FileCard
             key={item.id}
             label={`Open ${item.name} beside the chat`}
@@ -412,29 +403,27 @@ function Attachments({
             size={item.size}
           />
         )
-      })}
-    </div>
-  )
-}
 
-/** The files the bot shared in a message: each a card that opens beside the chat. */
-function SharedFiles({
-  files,
-  onFile
-}: {
-  files: FileTarget[]
-  onFile: (file: FileTarget) => void
-}) {
-  return (
-    <div className="flex max-w-full flex-wrap gap-2">
-      {files.map(file => (
-        <FileCard
-          key={file.path}
-          label={`Open ${file.name} beside the chat`}
-          name={file.name}
-          onOpen={() => onFile(file)}
-        />
-      ))}
+        const plays = item.kind === 'video' || item.kind === 'audio' || item.kind === 'image'
+
+        // A file the daemon keeps plays from there; one just sent, from this page.
+        if (plays && (item.url || (item.path && sessionId))) {
+          return (
+            <MediaView
+              fallback={card}
+              key={item.id}
+              kind={item.kind}
+              name={item.name}
+              onImage={onImage}
+              path={item.path}
+              sessionId={sessionId}
+              url={item.url}
+            />
+          )
+        }
+
+        return card
+      })}
     </div>
   )
 }
@@ -653,6 +642,7 @@ export const MessageRow = memo(function MessageRow({
   retryMessage,
   fresh = false,
   joined = false,
+  sessionId,
   showFace = false
 }: {
   bot?: Bot
@@ -680,6 +670,8 @@ export const MessageRow = memo(function MessageRow({
   fresh?: boolean
   /** Follows a bubble from the same side: it sits 4 px under it, one stack. */
   joined?: boolean
+  /** The chat's live session, which reads the files it plays; a bot's own chat only. */
+  sessionId?: string
   /** Rooms draw a face beside every bot bubble; a bot's own chat does not. */
   showFace?: boolean
 }) {
@@ -763,6 +755,7 @@ export const MessageRow = memo(function MessageRow({
   // Visuals sit above the bot's final reply, under what it said before. They
   // take the column's full width; bubbles keep theirs.
   const visuals = assistant ? visualsOf(message) : []
+
   const replied = assistant && !message.streaming && Boolean(message.text.trim())
 
   const column = bubbles.map((text, index) => (
@@ -824,6 +817,7 @@ export const MessageRow = memo(function MessageRow({
           mine={!assistant}
           onFile={onFile}
           onImage={onImage}
+          sessionId={sessionId}
         />
         {!bubbles.length && delivery ? (
           <DeliveryMark delivery={delivery} onRetry={retryMark} />
@@ -838,10 +832,36 @@ export const MessageRow = memo(function MessageRow({
     )
   }
 
-  const shared = assistant && onFile ? filesOf(message) : []
+  // Under the reply: the files the bot shared and what its media tools made. A
+  // picture, video or audio file shows or plays there; any other is a card.
+  const shared: Attachment[] =
+    assistant && onFile
+      ? [
+          ...filesOf(message).map(file => ({
+            id: file.path!,
+            kind: mediaKind(file.mime, file.name),
+            mime: file.mime,
+            name: file.name,
+            path: file.path
+          })),
+          // A file it made and then shared shows once.
+          ...mediaOf(message.toolCalls)
+            .filter(file => !filesOf(message).some(shared => shared.path === file.path))
+            .map(file => ({ id: file.path, ...file }))
+        ]
+      : []
 
-  if (shared.length && onFile) {
-    column.push(<SharedFiles files={shared} key="shared" onFile={onFile} />)
+  if (shared.length) {
+    column.push(
+      <Attachments
+        attachments={shared}
+        key="shared"
+        mine={false}
+        onFile={onFile}
+        onImage={onImage}
+        sessionId={sessionId}
+      />
+    )
   }
 
   // A step that only used tools shows nothing, so it takes no room: its
@@ -1432,10 +1452,11 @@ function Composer({
       }
 
       const attachments: Attachment[] = files.map((item, index) => {
-        // The same reading the upload used, so a .pdf with no type is a PDF here too.
-        const kind = item.file.type.startsWith('video/')
-          ? 'video'
-          : attachmentKind(item.file.type, item.file.name)
+        // The same reading the upload used, so a .pdf with no type is a PDF here
+        // too; a video or audio file with no type is known by its name.
+        const sent = attachmentKind(item.file.type, item.file.name)
+        const media = mediaKind(item.file.type || mimeOf(item.file.name), item.file.name)
+        const kind = sent === 'file' && (media === 'video' || media === 'audio') ? media : sent
 
         return {
           dataUrl: item.preview,
@@ -1444,11 +1465,12 @@ function Composer({
           mime: item.file.type,
           name: item.file.name,
           // A file the daemon keeps opens from there, and can be edited with the
-          // bot; a PDF it keeps only as page images, and a video, play from
+          // bot; a PDF it keeps only as page images, and a video or audio file, play from
           // this page's copy.
           path: kind === 'image' ? undefined : answers[index]?.path,
           size: item.file.size,
-          url: kind === 'pdf' || kind === 'video' ? holdCopy(item.file) : undefined
+          url:
+            kind === 'pdf' || kind === 'video' || kind === 'audio' ? holdCopy(item.file) : undefined
         }
       })
 
@@ -2849,6 +2871,7 @@ function BotConversation() {
                     onRetry={retryWith?.[0]}
                     quiet={shownMessage.error ? quietLine(shownMessage) : false}
                     retryMessage={retryWith?.[1]}
+                    sessionId={liveId ?? undefined}
                   />
                 )
               }

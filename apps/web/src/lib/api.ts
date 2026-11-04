@@ -9,6 +9,7 @@ import { JsonRpcGatewayError } from '@hermes/shared'
 
 import { useConnection } from '../stores/connection'
 
+import { splitAttached } from './media'
 import { rpcCall } from './rpc'
 import { toMillis } from './time'
 import type {
@@ -1360,8 +1361,11 @@ export function messagesFromHistory(
       continue
     }
 
+    // The files you sent are named under your words; each shows as it did live.
+    const attached = role === 'user' ? splitAttached(text) : { files: [], text }
+
     const message: Message = {
-      attachments: [],
+      attachments: attached.files.map(file => ({ id: file.path, ...file })),
       createdAt: 0,
       id: String(row.row_id ?? nextMessageId()),
       ...sent(row),
@@ -1374,7 +1378,7 @@ export function messagesFromHistory(
         }),
       role,
       streaming: false,
-      text,
+      text: attached.text,
       toolCalls: []
     }
 

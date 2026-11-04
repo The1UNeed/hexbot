@@ -19,7 +19,7 @@ Open Bot settings, Tools. Each switch controls one capability. Computer use isn'
 | Terminal | Runs shell commands on the daemon computer. |
 | Files | Reads, writes, and searches files. |
 | Vision | Reads images you attach. |
-| Voice | Speaks replies with the built-in voice; premium voice uses a connector. |
+| Voice | Speaks replies with the built-in voice, which play in the chat; premium voice uses a connector. |
 | Message other bots | Asks a named teammate for help privately. |
 | Delegate | Hands a subtask to an isolated subagent. |
 | Scheduling | Creates and manages reminders and recurring jobs. |
