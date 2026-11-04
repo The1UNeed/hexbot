@@ -308,11 +308,15 @@ pub(crate) fn keep(home: &Path, owner: &str, name: &str, value: &str) -> Result<
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
     let file = dir(home, owner)?.join(format!("{name}.key"));
-    if let Some(store) = os_store()
-        && os_write(store, &format!("{}-{name}", account(home, owner)), &hex)
-    {
-        let _ = std::fs::remove_file(&file);
-        return Ok(());
+    let os = format!("{}-{name}", account(home, owner));
+    if let Some(store) = os_store() {
+        if os_write(store, &os, &hex) {
+            let _ = std::fs::remove_file(&file);
+            return Ok(());
+        }
+        // A write that didn't read back may still have landed; `forget`
+        // takes the file to mean the OS store holds no copy.
+        let _ = os_delete(store, &os);
     }
     private_dir(home, owner)?;
     common::atomic_write(&file, hex.as_bytes())
