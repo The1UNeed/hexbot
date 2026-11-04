@@ -380,6 +380,10 @@ more freedom and more capability than a hosted product can offer.
   opens beside the chat. The files a bot writes or edits while it works stay
   out of the chat; the chat is for what the user asked for, not a log of
   every file touched.
+- Media: a video or audio file you send plays in your message, then and after
+  a reload. A bot's voice replies, the pictures and clips it makes, and a
+  picture, video or audio file it shares show under its reply: video and audio
+  play there. Rooms name these files without playing them.
 
 ## 4. Network, auth, Connect
 

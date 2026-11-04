@@ -343,7 +343,8 @@ function QuickTools({
 /**
  * A file beside the chat. Text opens in the editor, saved as it is typed; the
  * quick tools ask the bot to change it, and each edit the bot makes shows as
- * it lands. A PDF opens in the viewer; anything else offers a download.
+ * it lands. A PDF opens in the viewer, a picture, video or audio file shows or
+ * plays; anything else offers a download.
  */
 export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
   const selected = useUi(state => state.lastSection)
@@ -534,6 +535,22 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
         className="mx-auto max-h-full max-w-full rounded-[12px] object-contain"
         src={objectUrl}
       />
+    )
+  } else if (mime.startsWith('video/') && objectUrl) {
+    body = (
+      <video
+        aria-label={name}
+        className="mx-auto max-h-full max-w-full rounded-[12px] bg-black"
+        controls
+        playsInline
+        src={objectUrl}
+      />
+    )
+  } else if (mime.startsWith('audio/') && objectUrl) {
+    body = (
+      <div className="grid h-full place-items-center p-4">
+        <audio aria-label={name} className="w-full max-w-md" controls src={objectUrl} />
+      </div>
     )
   } else {
     body = (

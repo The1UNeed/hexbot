@@ -214,14 +214,17 @@ with Viewport Segments place both poses on the exact halves.
   type itself out; each message appears whole and springs in. In a room the
   bot's words arrive as its room message when its turn ends.
 - Attachments sit above the message's bubble. A picture shows whole and
-  opens over the chat in a lightbox; a video plays where it is. Every other
+  opens over the chat in a lightbox; a video or audio file plays where it
+  is, from the page's copy while it is open and the daemon's after. Every other
   file is a card: a page icon banded in its type's colour (PDF red,
   documents blue, spreadsheets green, presentations orange, code violet),
   its name cut in the middle so the extension stays ("esp32-c6-mini-1_mini-1u_d…
   .pdf"), and its size ("951kB"). A card opens the file beside the chat.
   Each file the bot shared in a message (`hexbot_share_file`) is the same
   card under its reply, with its kind in place of the size; files it only
-  wrote or edited along the way, such as scripts and tests, do not show. The composer shows pictures as
+  wrote or edited along the way, such as scripts and tests, do not show.
+  A shared picture, video or audio file shows or plays there instead, and so
+  do the voice replies, pictures and clips its media tools make. The composer shows pictures as
   thumbnails and other files as cards, each with a remove button. A room's
   cards only name the file.
 - Files beside the chat open as tabs in the side panel, next to any

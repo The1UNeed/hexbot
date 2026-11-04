@@ -73,6 +73,8 @@ import { useFeeling } from './src/core/feelings'
 import { clearTapped, useTappedSection } from './src/core/tapped'
 import { chatPreview, pulseTarget, purposeOf, stoppedIn } from './src/core/routes'
 import { previewLine } from '../web/src/lib/preview'
+import { mediaKind, mediaOf, mimeOf } from '../web/src/lib/media'
+import { mediaUri, type ReadMedia } from './src/core/media'
 import { CONNECT_ORIGIN, parseConnectCallback } from './src/core/links'
 import { clearConnectSession, loadConnectSession, saveConnectSession } from './src/core/storage'
 import { connectGrant, request, RevokedError } from './src/core/transport'
@@ -489,9 +491,11 @@ function MobileApp({ children }: { children?: ReactNode }) {
               data_url: `data:${asset.mimeType || 'application/octet-stream'};base64,${asset.base64}`
             }
     })
+    // A picture, video or audio file shows from the phone's own copy.
+    const kind = image ? 'image' : mediaKind(asset.mimeType ?? mimeOf(asset.name), asset.name)
     setAttachments(list => [
       ...list,
-      { id, name: asset.name, kind: image ? 'image' : 'file', uri: image ? asset.uri : null }
+      { id, name: asset.name, kind, uri: kind === 'file' || kind === 'pdf' ? null : asset.uri }
     ])
   }
   // An uploaded file left out of the message is dropped by the daemon when it is sent.
@@ -760,22 +764,41 @@ function MobileApp({ children }: { children?: ReactNode }) {
                     : 'human'
                   : 'bot',
               text: m.text,
+              // The files you sent; the files the bot chose to share, not every file it
+              // touched; and what its media tools made. Pictures, video and audio play.
+              attachments: [
+                ...(m.attachments ?? []).map((file, i) => ({
+                  id: `${m.id}-file-${i}`,
+                  kind: file.kind ?? 'file',
+                  name: file.name,
+                  path: file.path,
+                  uri: file.uri
+                })),
+                ...(m.role === 'assistant' ? sharedFiles(m.tools) : []).map(file => ({
+                  id: `${m.id}-${file.path}`,
+                  kind: mediaKind(mimeOf(file.name), file.name),
+                  name: file.name,
+                  path: file.path
+                })),
+                // A file it made and then shared shows once.
+                ...mediaOf(
+                  (m.tools ?? []).map(t => ({ name: t.name, result: t.detail, status: t.status }))
+                )
+                  .filter(file => !sharedFiles(m.tools).some(shared => shared.path === file.path))
+                  .map(file => ({
+                    id: file.path,
+                    kind: file.kind,
+                    name: file.name,
+                    path: file.path
+                  }))
+              ],
               createdAt: m.createdAt,
               author:
                 m.role === 'user'
                   ? { name: m.senderName || 'Former member' }
                   : m.sender && botByName(m.sender)
                     ? faceOf(botByName(m.sender)!)
-                    : undefined,
-              // The files the bot chose to share, not every file it touched.
-              attachments:
-                m.role === 'assistant'
-                  ? sharedFiles(m.tools).map(file => ({
-                      id: `${m.id}-${file.path}`,
-                      kind: 'file' as const,
-                      name: file.name
-                    }))
-                  : undefined
+                    : undefined
             }
           ]
     )
@@ -885,11 +908,13 @@ function MobileApp({ children }: { children?: ReactNode }) {
         const files = attachmentData.current.size
         // Daemons older than upload ids send every staged file.
         const named = ids.length === files
-        await mobile.send(text, files > 0, named ? ids : undefined).catch((e: unknown) => {
-          // The next Send uploads the files again; the daemon drops the copies it holds.
-          if (named) for (const asset of attachmentData.current.values()) asset.upload = undefined
-          throw e
-        })
+        await mobile
+          .send(text, files > 0, named ? ids : undefined, attachments)
+          .catch((e: unknown) => {
+            // The next Send uploads the files again; the daemon drops the copies it holds.
+            if (named) for (const asset of attachmentData.current.values()) asset.upload = undefined
+            throw e
+          })
         setAttachments([])
         attachmentData.current.clear()
       } catch (e) {
@@ -900,6 +925,16 @@ function MobileApp({ children }: { children?: ReactNode }) {
       }
     })
   }
+  // A file the daemon keeps plays from a copy read once through this chat.
+  const loadMedia = useCallback((path: string) => {
+    const current = mobileRef.current
+    const sessionId = current.liveSessionId()
+    if (!sessionId) return Promise.reject(new Error('Open this chat again.'))
+    // A shared file's path can be relative to the chat's folder, so the chat is in the key.
+    return mediaUri(`${current.active?.id}:${sessionId}:${path}`, () =>
+      current.rpc<ReadMedia>('hexbot.files.read', { session_id: sessionId, path })
+    )
+  }, [])
   const renderMessageText = useCallback<NonNullable<ChatScreenProps['renderMessageText']>>(
     item => (item.text ? <MarkdownText text={item.text} user={item.role === 'user'} /> : null),
     []
@@ -1005,6 +1040,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
     onOpenSearch: () => setSearchOpen(true),
     focus,
     renderMessageText,
+    loadMedia: route?.kind === 'section' ? loadMedia : undefined,
     busy: mobile.chat.busy,
     waiting: mobile.chat.busy && !mobile.chat.streaming ? { label: 'Working' } : undefined,
     onSend: send,

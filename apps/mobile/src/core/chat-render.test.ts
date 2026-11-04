@@ -22,6 +22,14 @@ vi.mock('react-native', async () => {
 })
 vi.mock('@expo/vector-icons', () => ({ Ionicons: () => null }))
 vi.mock('../ui/PluginIcon', () => ({ PluginIcon: () => null }))
+// The players are native views; this checks which file each message hands them.
+vi.mock('../screens/MediaAttachment', async () => {
+  const { createElement } = await import('react')
+  return {
+    MediaAttachment: ({ file, load }: { file: { kind: string; name: string }; load?: unknown }) =>
+      createElement('div', { 'data-testid': `media-${file.kind}` }, `${file.name}${load ? ' from the daemon' : ''}`)
+  }
+})
 vi.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ bottom: 0 }) }))
 vi.mock('../ui', async () => {
   const { createElement } = await import('react')
@@ -127,4 +135,26 @@ it("puts a chat's bar buttons in reading order, with a profile or settings icon"
     ['search', 'magnifyingglass', 'Search'],
     ['settings', 'gearshape', 'Room settings']
   ])
+})
+
+it('plays the pictures, videos and audio files a message carries, and names any other file', () => {
+  const load = vi.fn()
+  const items: ChatItem[] = [
+    {
+      kind: 'message', id: 'sent', role: 'user', text: 'Watch this',
+      attachments: [
+        { id: 'v', kind: 'video', name: 'clip.mp4', path: '/a/clip.mp4' },
+        { id: 'f', kind: 'file', name: 'notes.txt', path: '/a/notes.txt' }
+      ]
+    },
+    {
+      kind: 'message', id: 'made', role: 'bot', text: '',
+      attachments: [{ id: 'a', kind: 'audio', name: 'voice.mp3', path: '/art/voice.mp3' }]
+    }
+  ]
+  render(createElement(ChatScreen, { title: 'Owl', face: { name: 'Owl' }, items, onSend: vi.fn(), onApprove: vi.fn(), loadMedia: load }))
+  expect(screen.getByTestId('media-video').textContent).toBe('clip.mp4 from the daemon')
+  expect(screen.getByTestId('media-audio').textContent).toBe('voice.mp3 from the daemon')
+  expect(screen.queryByTestId('media-file')).toBeNull()
+  expect(screen.getByText('notes.txt')).toBeTruthy()
 })

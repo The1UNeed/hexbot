@@ -217,9 +217,11 @@ function LibraryTab({
                 <>
                   <RowIcon icon={File} />
                   <span className="min-w-0 flex-1 truncate font-medium">{item.name}</span>
-                  <span className="shrink-0 text-[length:var(--text-meta)] text-muted">
-                    {Math.ceil(item.size / 1024)} KB
-                  </span>
+                  {item.size !== undefined ? (
+                    <span className="shrink-0 text-[length:var(--text-meta)] text-muted">
+                      {Math.ceil(item.size / 1024)} KB
+                    </span>
+                  ) : null}
                 </>
               )
 

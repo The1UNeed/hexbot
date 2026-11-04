@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { mediaOf } from '../../../web/src/lib/media'
 import {
   heartbeatMessage,
   emptyChat,
@@ -156,6 +157,36 @@ describe('restored tools and questions', () => {
       status: 'ok'
     })
   })
+  it('brings back the files you sent and the media a bot made', () => {
+    const kept = '/h/runtime/sessions/s/attachments/0123456789abcdef0123456789abcdef-clip.mp4'
+    const messages = historyMessages([
+      { role: 'user', content: `Watch this\n\nAttached files:\n${kept}` },
+      { role: 'assistant', text: '', tool_calls: [{ id: 'tts', function: { arguments: '{}' } }] },
+      {
+        role: 'tool',
+        name: 'text_to_speech',
+        tool_call_id: 'tts',
+        text: '{"media":"MEDIA:/h/profiles/owl/artifacts/audio/a1.mp3","success":true}'
+      },
+      { role: 'assistant', text: 'Here it is.' }
+    ])
+    expect(messages[0]).toMatchObject({
+      text: 'Watch this',
+      attachments: [{ kind: 'video', name: 'clip.mp4', path: kept }]
+    })
+    expect(
+      mediaOf(
+        (messages[1].tools ?? []).map(t => ({ name: t.name, result: t.detail, status: t.status }))
+      )
+    ).toEqual([
+      {
+        kind: 'audio',
+        mime: 'audio/mpeg',
+        name: 'a1.mp3',
+        path: '/h/profiles/owl/artifacts/audio/a1.mp3'
+      }
+    ])
+  })
   it('restores only unanswered questions and preserves multiple-choice selection', () => {
     const state = reduceChat(
       emptyChat(),
@@ -256,7 +287,12 @@ describe('heartbeat messages', () => {
   it('join the open thread once', () => {
     const once = heartbeatMessage(emptyChat(), 'heartbeat-1', 'BA 286 is two hours late.')
     expect(once.messages).toEqual([
-      { id: 'heartbeat-1', role: 'assistant', text: 'BA 286 is two hours late.', createdAt: expect.any(Number) }
+      {
+        id: 'heartbeat-1',
+        role: 'assistant',
+        text: 'BA 286 is two hours late.',
+        createdAt: expect.any(Number)
+      }
     ])
     expect(heartbeatMessage(once, 'heartbeat-1', 'BA 286 is two hours late.')).toBe(once)
     // Already in the history it loaded, under the same row id.

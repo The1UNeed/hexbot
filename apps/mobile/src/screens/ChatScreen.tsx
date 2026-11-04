@@ -3,7 +3,6 @@ import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState
 import {
   FlatList,
   type ListRenderItemInfo,
-  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -35,6 +34,7 @@ import {
   useTheme,
   withAlpha
 } from '../ui'
+import { MediaAttachment } from './MediaAttachment'
 import { PluginCard } from './PluginCard'
 import { SignInCard } from './SignInCard'
 import type {
@@ -107,6 +107,8 @@ export interface ChatScreenProps {
 
   /** Draw a message's text yourself, such as with a Markdown renderer. */
   renderMessageText?: (item: MessageItem) => ReactNode
+  /** A file the daemon keeps, as a URI to play; a bot's own chat only. */
+  loadMedia?: (path: string) => Promise<string>
   /** Opens the bots' computer on its own card; the button shows only with this. */
   onOpenComputer?: () => void
   /** A bot is acting on the computer, or you have it: the button shows a dot. */
@@ -339,7 +341,8 @@ function ChatBody(props: ChatScreenProps) {
     onOpenVisual,
     onRecall,
     recallId,
-    renderMessageText
+    renderMessageText,
+    loadMedia
   } = props
   const waitingLabel = waiting?.label
   const waitingWho = waiting?.who ?? (room ? null : fallbackFace)
@@ -359,6 +362,7 @@ function ChatBody(props: ChatScreenProps) {
               : undefined
           }
           renderText={entry.kind === 'message' ? renderMessageText : undefined}
+          loadMedia={entry.kind === 'message' ? loadMedia : undefined}
           onApprove={entry.kind === 'approval' ? onApprove : undefined}
           onOpenVisual={entry.kind === 'visual' ? onOpenVisual : undefined}
           waitingLabel={entry.kind === 'waiting' ? waitingLabel : undefined}
@@ -383,6 +387,7 @@ function ChatBody(props: ChatScreenProps) {
       onRecall,
       onMessageLongPress,
       renderMessageText,
+      loadMedia,
       onApprove,
       onOpenVisual,
       waitingLabel,
@@ -503,6 +508,7 @@ const TranscriptEntry = memo(function TranscriptEntry({
   room,
   onLongPress,
   renderText,
+  loadMedia,
   onApprove,
   onOpenVisual,
   waitingLabel,
@@ -515,6 +521,7 @@ const TranscriptEntry = memo(function TranscriptEntry({
   room: boolean
   onLongPress?: (id: string) => void
   renderText?: ChatScreenProps['renderMessageText']
+  loadMedia?: ChatScreenProps['loadMedia']
   onApprove?: ChatScreenProps['onApprove']
   onOpenVisual?: ChatScreenProps['onOpenVisual']
   waitingLabel?: string | null
@@ -577,6 +584,7 @@ const TranscriptEntry = memo(function TranscriptEntry({
           item={entry}
           onLongPress={onLongPress}
           renderText={renderText}
+          loadMedia={loadMedia}
           showAuthor={room && entry.role !== 'user' && !continued}
         />
       )
@@ -590,6 +598,7 @@ function MessageBubble({
   item,
   onLongPress,
   renderText,
+  loadMedia,
   showAuthor
 }: {
   /** The thread's bot, for replies that do not name one. */
@@ -599,6 +608,7 @@ function MessageBubble({
   showAuthor: boolean
   onLongPress?: (id: string) => void
   renderText?: (item: MessageItem) => ReactNode
+  loadMedia?: ChatScreenProps['loadMedia']
 }) {
   const theme = useTheme()
   const mine = item.role === 'user'
@@ -638,15 +648,8 @@ function MessageBubble({
       ) : null}
       {item.attachments?.length ? (
         <View style={[styles.attachments, { justifyContent: mine ? 'flex-end' : 'flex-start' }]}>
-          {item.attachments.map(file =>
-            file.kind === 'image' && file.uri ? (
-              <Image
-                accessibilityLabel={file.name}
-                key={file.id}
-                source={{ uri: file.uri }}
-                style={[styles.image, { backgroundColor: theme.fill }]}
-              />
-            ) : (
+          {item.attachments.map(file => {
+            const card = (
               <View key={file.id} style={[styles.file, { borderColor: theme.hairline }]}>
                 <Ionicons color={theme.muted} name="document-outline" size={16} />
                 <Text numberOfLines={1} style={styles.fileName} variant="footnote">
@@ -654,7 +657,12 @@ function MessageBubble({
                 </Text>
               </View>
             )
-          )}
+            return file.kind === 'image' || file.kind === 'video' || file.kind === 'audio' ? (
+              <MediaAttachment card={card} file={file} key={file.id} load={loadMedia} />
+            ) : (
+              card
+            )
+          })}
         </View>
       ) : null}
       {item.error ? (
@@ -990,7 +998,6 @@ const styles = StyleSheet.create({
     paddingVertical: 8
   },
   fileName: { flexShrink: 1 },
-  image: { borderRadius: 16, height: 140, width: 180 },
   input: {
     flex: 1,
     fontSize: 17,

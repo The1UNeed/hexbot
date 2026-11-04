@@ -156,12 +156,13 @@ export interface Attachment {
   name: string
   /** Gateway-local path returned by `file.attach`. */
   path?: string
-  size: number
+  /** Unknown for a file read back from history. */
+  size?: number
   /** An object URL for a file this page still holds (a PDF just sent), to open beside the chat. */
   url?: string
 }
 
-export type AttachmentKind = 'file' | 'image' | 'pdf' | 'video'
+export type AttachmentKind = 'audio' | 'file' | 'image' | 'pdf' | 'video'
 
 export interface Avatar {
   data: string
