@@ -637,7 +637,21 @@ pub(super) fn answer(form: &Value, p: &Value) -> Result<Value> {
 /// What the bot should know once a plugin is on.
 fn after_change(plugin: &Value, id: &str, own: bool, skills: &[String]) -> String {
     // Installed but waiting for a value: no bot has it until the user sets it up.
-    if plugin["state"] == "not_set_up" {
+    // A bot whose own keys set it up already has it.
+    let waiting = plugin["state"] == "not_set_up" && plugin["enabled_for_bot"] != true;
+    // A package of skills alone has no card: what it needs is set up by hand.
+    if waiting && plugin["kind"] == "package" && plugin["server"].is_null() {
+        return format!(
+            "Installed, not set up yet ({}). Ask the user to finish it in Settings, Plugins; {} from the next message after that.",
+            plugin["state_text"].as_str().unwrap_or("needs setup"),
+            if own {
+                "it reaches you"
+            } else {
+                "it reaches that bot"
+            }
+        );
+    }
+    if waiting {
         return format!(
             "Installed, not set up yet ({}): call setup with id {id} now, so the user can finish it on a card. {} from the next message after that.",
             plugin["state_text"].as_str().unwrap_or("needs setup"),
