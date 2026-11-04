@@ -1281,9 +1281,6 @@ function MobileApp({ children }: { children?: ReactNode }) {
   const select = (key: string | null) => {
     const row = conversations.find(c => `${c.kind}-${c.id}` === key)
     if (key && key !== 'settings' && key !== 'library' && !row) return
-    // Pages pushed beside the sidebar belong to what was shown there.
-    const shown = selected === 'chat' ? openChatRow || 'chat' : selected
-    if (key === null || key !== shown) setPanels([])
     if (selected === 'chat' && (key === null || key !== openChatRow)) {
       // Leaving a chat closes it, as back does; while a file uploads, it
       // stays. Another chat replaces it, so the column never empties.
@@ -1291,6 +1288,9 @@ function MobileApp({ children }: { children?: ReactNode }) {
       if (row) setPanels([])
       else closeChat()
     }
+    // Pages pushed beside the sidebar belong to what was shown there.
+    const shown = selected === 'chat' ? openChatRow || 'chat' : selected
+    if (key === null || key !== shown) setPanels([])
     setSelected(row ? 'chat' : (key as 'settings' | 'library' | null))
     if (row && key !== openChatRow) openConversation(row)
   }

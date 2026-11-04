@@ -278,7 +278,7 @@ function ComputerUse({ mobile }: { mobile: ReturnType<typeof useMobile> }) {
           />
         </Group>
       )}
-      {status.sizes ? (
+      {status.available !== false && status.sizes ? (
         <Group
           title="Size"
           footer={
