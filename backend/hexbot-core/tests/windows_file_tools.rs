@@ -5,7 +5,7 @@
 //! renames. Other hosts run the bridge's portable rules
 //! (`runtime_files_windows_policy.rs`) and the Unix handle tests.
 use base64::{Engine, engine::general_purpose::STANDARD};
-use hexbot_core::{Error, Result, common};
+use hexbot_core::{Error, Result, common, windows_sandbox};
 use serde_json::{Value, json};
 use std::{
     ffi::OsString,

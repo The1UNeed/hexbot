@@ -1,6 +1,8 @@
 //! Test-only stdio fixture for the production private file protocol and handles.
 use hexbot_core::common;
 use hexbot_core::{Error, Result};
+#[cfg(windows)]
+use hexbot_core::windows_sandbox;
 use serde_json::{Value, json};
 use std::io::Read;
 #[cfg(unix)]
