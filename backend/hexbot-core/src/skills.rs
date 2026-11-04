@@ -731,7 +731,11 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Result<Value>
             let enabled = p["enabled"]
                 .as_bool()
                 .ok_or_else(|| Error::new(4202, "enabled must be a boolean"))?;
-            find_unlocked(home, target, name)?;
+            let skill = find_unlocked(home, target, name)?;
+            // Giving a skill to a bot waits for what it needs; taking it away does not.
+            if target.is_some() && enabled && !skill.ready {
+                return Err(crate::connectors::not_set_up(&skill.name));
+            }
             set_enabled(home, target, name, enabled)?;
             Ok(json!({"skill":find_unlocked(home, target, name)?}))
         }

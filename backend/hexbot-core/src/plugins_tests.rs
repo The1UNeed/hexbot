@@ -1213,3 +1213,46 @@ fn a_package_whose_server_is_gone_does_not_block_new_bots() {
     assert_eq!(skill_on(home.path(), "cat", "github-issues"), Some(false));
     assert_eq!(skill_on(home.path(), "raven", "github-issues"), Some(false));
 }
+
+#[test]
+fn a_package_of_skills_waiting_for_a_key_is_given_to_nobody_until_set_up() {
+    let home = setup();
+    call(
+        home.path(),
+        "alice",
+        "hexbot.plugins.install",
+        json!({"name":"notes","skills":[{"name":"notes-sync","content":
+            "---\ndescription: Sync notes.\nprerequisites:\n  env_vars: [HEXBOT_TEST_NOTES_KEY]\n---\nBody."}]}),
+    )
+    .unwrap();
+    let listed = call(home.path(), "alice", "hexbot.plugins.list", json!({})).unwrap();
+    let notes = row(&listed, "packages", "notes");
+    assert_eq!(notes["ready"], false);
+    assert_eq!(notes["bots"], json!([]));
+    assert_eq!(notes["state_text"], "Needs HEXBOT_TEST_NOTES_KEY");
+    let give = |bots: Value| {
+        call(
+            home.path(),
+            "alice",
+            "hexbot.plugins.set_bots",
+            json!({"kind":"package","id":"notes","bots":bots}),
+        )
+    };
+    // Taken away before setup, it can't be given back until set up.
+    give(json!([])).unwrap();
+    assert_eq!(give(json!(["owl"])).unwrap_err().code, 4209);
+    // The skill itself can't be switched on for a bot either; off still works.
+    let skill = |enabled: bool| {
+        crate::skills::call(
+            home.path(),
+            "alice",
+            "hexbot.skills.set_for_bot",
+            &json!({"name":"notes-sync","bot":"owl","enabled":enabled}),
+        )
+    };
+    assert_eq!(skill(true).unwrap_err().code, 4209);
+    skill(false).unwrap();
+    fs::write(home.path().join(".env"), "HEXBOT_TEST_NOTES_KEY=value\n").unwrap();
+    assert_eq!(give(json!(["owl"])).unwrap()["plugin"]["bots"], json!(["owl"]));
+    skill(true).unwrap();
+}
