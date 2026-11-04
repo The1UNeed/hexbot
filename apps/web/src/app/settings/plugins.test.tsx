@@ -264,6 +264,8 @@ describe('Settings, Plugins', () => {
     const picker = screen.getByRole('group', { name: 'Bots that use Web search' })
     expect(within(picker).getByRole('button', { name: 'HexBot' })).toBeDisabled()
     expect(screen.queryByRole('button', { name: 'Turn on for every bot' })).toBeNull()
+    // On for no bot yet, so there is nothing to turn off.
+    expect(screen.queryByRole('button', { name: 'Turn off for every bot' })).toBeNull()
     fireEvent.click(within(picker).getByRole('button', { name: 'Owl' }))
     await waitFor(() =>
       expect(pluginsSetBots).toHaveBeenCalledWith('connector', 'web_search', ['owl'])
