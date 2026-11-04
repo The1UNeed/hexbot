@@ -681,13 +681,33 @@ pub fn connect(home: &Path, owner: &str, p: &Value) -> Result<Value> {
         )?;
         Ok(json!({"vault": status(home, owner)?, "copied": copied}))
     })();
-    if signed_in.is_err() {
-        forget_session(home, owner);
-        let _ = passwords::forget(home, owner, SECRET);
-        let _ = std::fs::remove_dir_all(data_dir(home, owner)?);
-        let _ = std::fs::remove_file(config_path(home, owner)?);
+    match signed_in {
+        Err(mut error) => {
+            // A master password the keychain wouldn't give back is said too;
+            // Disconnect, or connecting again, removes it.
+            if let Err(left) = clear(home, owner) {
+                error.message = format!("{} {}", error.message, left.message);
+            }
+            Err(error)
+        }
+        ok => ok,
     }
-    signed_in
+}
+
+/// Removes everything a connection keeps on the daemon, whatever is left.
+fn clear(home: &Path, owner: &str) -> Result<()> {
+    forget_session(home, owner);
+    passwords::forget(home, owner, SECRET)?;
+    for removed in [
+        std::fs::remove_dir_all(data_dir(home, owner)?),
+        std::fs::remove_file(config_path(home, owner)?),
+    ] {
+        match removed {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn forget_session(home: &Path, owner: &str) {
@@ -696,22 +716,13 @@ fn forget_session(home: &Path, owner: &str) {
 }
 
 /// Signs out and forgets the master password; Passwords goes back to the
-/// vault on this daemon. Nothing in Vaultwarden is deleted.
+/// vault on this daemon. Nothing in Vaultwarden is deleted. It runs whole
+/// every time, so it also cleans up after a failed connect.
 pub fn disconnect(home: &Path, owner: &str) -> Result<()> {
-    if account(home, owner)?.is_none() {
-        return Ok(());
-    }
-    if program(home).is_ok() {
+    if data_dir(home, owner)?.exists() && program(home).is_ok() {
         let _ = bw(home, owner, &["logout"], None, None, None);
     }
-    forget_session(home, owner);
-    passwords::forget(home, owner, SECRET)?;
-    match std::fs::remove_dir_all(data_dir(home, owner)?) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
-        _ => {}
-    }
-    std::fs::remove_file(config_path(home, owner)?)?;
-    Ok(())
+    clear(home, owner)
 }
 
 #[cfg(all(test, unix))]

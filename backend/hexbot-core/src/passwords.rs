@@ -264,23 +264,33 @@ fn os_write(store: Store, account: &str, key: &str) -> bool {
     matches!(done, Some((0, _))) && os_read(store, account).ok().flatten().as_deref() == Some(key)
 }
 
-/// Removes an item from the OS store; one that is already gone is fine.
+/// Removes an item from the OS store; one that is already gone is fine. A
+/// store whose helper isn't installed holds nothing Hexbot wrote.
 fn os_delete(store: Store, account: &str) -> Result<()> {
-    let _ = match store {
+    let program = match store {
+        Store::Keychain => "/usr/bin/security",
+        Store::SecretService => "secret-tool",
+        Store::File => return Ok(()),
+    };
+    if crate::native_tools::on_path(program).is_none() {
+        return Ok(());
+    }
+    let done = match store {
         Store::Keychain => helper(
-            "/usr/bin/security",
+            program,
             &["delete-generic-password", "-s", SERVICE, "-a", account],
             b"",
         ),
-        Store::SecretService => helper(
-            "secret-tool",
+        _ => helper(
+            program,
             &["clear", "service", SERVICE, "account", account],
             b"",
         ),
-        Store::File => None,
     };
-    match os_read(store, account) {
-        Ok(None) => Ok(()),
+    // `security` says 44 for no such item; `secret-tool clear` succeeds then.
+    match done {
+        Some((0, _)) => Ok(()),
+        Some((44, _)) if store == Store::Keychain => Ok(()),
         _ => Err(Error::new(
             5300,
             "Hexbot can't remove a saved key from this computer's keychain. Unlock the keychain and try again.",
@@ -333,11 +343,15 @@ pub(crate) fn kept(home: &Path, owner: &str, name: &str) -> Result<Option<(Strin
 
 /// Removes a secret `keep` wrote, wherever it is.
 pub(crate) fn forget(home: &Path, owner: &str, name: &str) -> Result<()> {
-    if let Some(store) = os_store() {
-        os_delete(store, &format!("{}-{name}", account(home, owner)))?;
-    }
-    match std::fs::remove_file(dir(home, owner)?.join(format!("{name}.key"))) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+    let in_file = match std::fs::remove_file(dir(home, owner)?.join(format!("{name}.key"))) {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => return Err(e.into()),
+    };
+    match os_store().map(|store| os_delete(store, &format!("{}-{name}", account(home, owner)))) {
+        // `keep` uses the file only when the OS store can't take it.
+        Some(Err(_)) if in_file => Ok(()),
+        Some(Err(error)) => Err(error),
         _ => Ok(()),
     }
 }

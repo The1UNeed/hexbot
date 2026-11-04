@@ -411,6 +411,12 @@ fn a_connect_that_fails_part_way_leaves_nothing_behind() {
     assert!(!h.join("users/alice/passwords/bitwarden").exists());
     assert!(!sessions().lock().unwrap().contains_key(&key(h, "alice")));
     assert_eq!(status(h, "alice").unwrap()["kind"], "local");
+    // Disconnect runs whole even with nothing connected, so it can clean up.
+    std::fs::write(h.join("users/alice/passwords/vaultwarden.key"), "6869").unwrap();
+    crate::passwords::call(h, "alice", "hexbot.passwords.disconnect", &json!({}))
+        .unwrap()
+        .unwrap();
+    assert!(!h.join("users/alice/passwords/vaultwarden.key").exists());
 }
 
 fn home_without_bw() -> tempfile::TempDir {
