@@ -178,7 +178,7 @@ pnpm --filter ./apps/connect run typecheck && pnpm --filter ./apps/connect run t
 node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs && node scripts/desktop/release-smoke.mjs
 ```
 
-`ci.yml` runs all of these on every push and pull request, and `release.yml`
+`ci.yml` runs all of these on every pull request and push to `main`, and `release.yml`
 runs it again before building packages.
 
 Backend tests wait on events and RPC replies, never on `sleep`.
@@ -214,7 +214,7 @@ Code"): one `release.yml` for both channels, a stable tag, a scheduled
 nightly, and a finalize step that commits bookkeeping back to `main`.
 
 - `main` is always buildable. CI (`ci.yml`) runs tests and builds on every
-  push and pull request and publishes nothing.
+  pull request and push to `main` and publishes nothing.
 - A **stable** release is a `v<version>` tag on `main` where `<version>`
   equals `apps/desktop/package.json` (`preflight` refuses anything else).
   Push the tag, or dispatch `release.yml` on `main` with channel `stable`

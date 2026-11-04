@@ -83,6 +83,26 @@ describe('MessageRow', () => {
     expect(screen.queryByText(/short answers|Warm but efficient|Files are local/)).toBeNull()
   })
 
+  it('draws nothing for a step that only used tools, but keeps the gap above an ask', () => {
+    const call = (name: string, args: Record<string, unknown> = {}) => ({
+      args,
+      durationS: 1,
+      name,
+      result: null,
+      startedAt: 1,
+      status: 'ok' as const,
+      toolId: name
+    })
+
+    const { container } = row({ toolCalls: [call('hexbot_plugins')] })
+    expect(container).toBeEmptyDOMElement()
+    container.remove()
+
+    row({ toolCalls: [call('message_bot', { to: 'writer' })] })
+    expect(screen.getByTestId('bot-message')).toHaveClass('pt-4')
+    expect(screen.getByTestId('asking-rows')).toBeInTheDocument()
+  })
+
   it('keeps Copy beside your own messages', () => {
     row({ role: 'user', text: 'Hi' })
     expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument()

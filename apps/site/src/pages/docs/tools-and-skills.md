@@ -40,6 +40,8 @@ Connectors are the services Hexbot supports: web search, image and video generat
 
 You set up a connector in Settings, Plugins, or in Bot settings, Connectors, by choosing its provider and entering the requested credentials. Each bot has its own on/off switch. A connector must be ready and enabled for that bot before its tools appear in the bot's chat.
 
+Notion and Airtable keys stay with the daemon. A bot reads and changes your workspace through Hexbot, which adds the key to each request; the bot never sees the key, and its commands never have it. It does not need your Notion or Airtable password. Reading runs in every approval mode. A change runs in Bypass, is checked first in Auto, and asks you in Manual. Notion only shows a bot the pages you connect to your integration: on the page, open **...**, then **Connections**.
+
 **Connected** means an authenticated probe answered. **Key saved** means Hexbot stored the key but has not verified it with a live probe. Use the connector's test action if a service stops working, and check its reported error before replacing credentials.
 
 Your model provider and your connectors may bill separately. A model subscription does not include an image service or premium voice account.

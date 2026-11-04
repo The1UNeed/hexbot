@@ -529,7 +529,7 @@ pub fn render_prompt(
         lines.join("\n")
     };
     format!(
-        "Room: {}\nYou are @{bot}. Members: {members}{memory}\n\nTranscript since your last turn:\n{transcript}\n\nRoom rules:\n- Reply once. Say (pass) when you have nothing to add.\n- Mention a member by @handle to bring them in.\n- Mention @user when you need the human, then wait.\n- Do not reveal private conversations.",
+        "Room: {}\nYou are @{bot}. Members: {members}{memory}\n\nTranscript since your last turn:\n{transcript}\n\nRoom rules:\n- Reply once. Say (pass) when you have nothing to add.\n- Add what the others have not said, and speak only for yourself.\n- Mention a member by @handle to bring them in.\n- Mention @user when you need the human, then wait.\n- Do not reveal private conversations.",
         room["name"].as_str().unwrap_or("")
     )
 }
