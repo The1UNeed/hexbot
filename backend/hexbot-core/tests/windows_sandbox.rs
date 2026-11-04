@@ -123,6 +123,40 @@ fn icacls(path: &Path) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
+/// The ACL entries `path` carries for the SID `sid`, as icacls writes their
+/// flags and rights: `(I)(OI)(CI)(RX)`, say.
+fn entries_for(path: &Path, sid: &str) -> Vec<String> {
+    icacls(path)
+        .lines()
+        .filter_map(|line| {
+            let at = line.find(sid)?;
+            Some(
+                line[at + sid.len()..]
+                    .trim_start_matches(':')
+                    .trim()
+                    .to_owned(),
+            )
+        })
+        .collect()
+}
+
+/// The SID of the container `policy` runs in, granted as a command would be.
+fn container_sid(policy: &Policy) -> String {
+    sandbox::prepare(policy).unwrap().sid.text().unwrap()
+}
+
+/// Git Bash as the daemon finds it, when Git for Windows is installed.
+fn git_bash() -> Option<PathBuf> {
+    hexbot_core::windows_sandbox::git_bash()
+}
+
+/// Whether the daemon's probe ran Git Bash correctly in a container. Stock
+/// Git for Windows cannot start there, and its probe says why.
+fn contained_bash() -> Option<PathBuf> {
+    let bash = git_bash()?;
+    sandbox::probe_bash(&bash).is_ok().then_some(bash)
+}
+
 /// Whether the AppContainer profile behind `sid` is registered for this user.
 fn registered(sid: &str) -> bool {
     Command::new(system("reg.exe"))
@@ -146,27 +180,72 @@ fn auto_writes_only_the_workspace_and_never_git_or_secrets() {
     let outside_acl = icacls(&f.outside.join("id_ed25519"));
     assert_eq!(script(&f, &policy, "echo x> new.txt"), 0);
     assert!(f.workspace.join("new.txt").is_file());
+    // An AppContainer's access check ignores deny entries for its own SID, so
+    // protection is what the allow entries leave out: the workspace modifies,
+    // Git metadata only reads, the secret carries no entry, and none denies.
+    let sid = container_sid(&policy);
+    let workspace = entries_for(&f.workspace, &sid);
+    assert!(
+        workspace.iter().any(|entry| entry.contains("(M)")),
+        "{workspace:?}"
+    );
+    for path in [
+        f.workspace.join(".git"),
+        f.workspace.join(".git/hooks"),
+        f.workspace.join(".git/config"),
+        f.workspace.join(".git/HEAD"),
+    ] {
+        let entries = entries_for(&path, &sid);
+        assert!(
+            !entries.is_empty() && entries.iter().all(|entry| entry.contains("(RX)")),
+            "{}: {entries:?}",
+            path.display()
+        );
+    }
+    assert_eq!(
+        entries_for(&f.workspace.join(".env"), &sid),
+        Vec::<String>::new()
+    );
+    for path in [
+        &f.workspace,
+        &f.workspace.join(".git"),
+        &f.workspace.join("src/a.txt"),
+    ] {
+        assert!(
+            !entries_for(path, &sid)
+                .iter()
+                .any(|entry| entry.contains("DENY"))
+        );
+    }
     assert_eq!(script(&f, &policy, "echo more>> src\\a.txt"), 0);
     assert_eq!(script(&f, &policy, "mkdir made && echo x> made\\b.txt"), 0);
     assert!(f.workspace.join("made/b.txt").is_file());
     // Git metadata reads, never writes.
     assert_eq!(script(&f, &policy, "type .git\\HEAD"), 0);
+    assert_eq!(script(&f, &policy, "type .git\\config"), 0);
     assert_ne!(script(&f, &policy, "echo x>> .git\\config"), 0);
     assert_ne!(script(&f, &policy, "echo x> .git\\hooks\\pre-commit"), 0);
     // rmdir reports success even when it removes nothing; check what is left.
+    // Nothing moves Git metadata aside to plant another in its place.
     script(&f, &policy, "rmdir /s /q .git");
+    script(&f, &policy, "ren .git\\HEAD HEAD.old");
+    script(&f, &policy, "ren .git git.old");
     assert_eq!(
         fs::read_to_string(f.workspace.join(".git/config")).unwrap(),
         "[core]\n"
     );
     assert!(!f.workspace.join(".git/hooks/pre-commit").exists());
-    // Project secrets neither read nor write.
+    assert!(f.workspace.join(".git/HEAD").is_file());
+    assert!(!f.workspace.join("git.old").exists());
+    // Project secrets neither read nor write, nor move aside.
     assert_ne!(script(&f, &policy, "type .env"), 0);
     assert_ne!(script(&f, &policy, "echo x>> .env"), 0);
+    script(&f, &policy, "ren .env env.txt");
     assert_eq!(
         fs::read_to_string(f.workspace.join(".env")).unwrap(),
         "KEY=1"
     );
+    assert!(!f.workspace.join("env.txt").exists());
     // A hard link to a profile file and a junction out of the workspace stay closed,
     // and granting the workspace did not change the profile file's own entries.
     assert_ne!(script(&f, &policy, "type linked"), 0);
@@ -215,6 +294,16 @@ fn manual_reads_the_workspace_and_writes_nothing() {
         ..Policy::default()
     };
     assert_eq!(script(&f, &policy, "type src\\a.txt"), 0);
+    let sid = container_sid(&policy);
+    let workspace = entries_for(&f.workspace, &sid);
+    assert!(
+        !workspace.is_empty() && workspace.iter().all(|entry| entry.contains("(RX)")),
+        "{workspace:?}"
+    );
+    assert_eq!(
+        entries_for(&f.workspace.join(".env"), &sid),
+        Vec::<String>::new()
+    );
     assert_ne!(script(&f, &policy, "echo x> new.txt"), 0);
     assert_ne!(script(&f, &policy, "echo x>> src\\a.txt"), 0);
     assert_ne!(script(&f, &policy, "type .env"), 0);
@@ -265,11 +354,11 @@ fn no_network_and_no_loopback() {
 }
 
 #[test]
-fn git_bash_and_node_run_inside() {
+fn git_bash_runs_inside_only_when_its_probe_passes_and_node_runs_inside() {
     let f = fixture("tools");
     let mut policy = auto(&f);
-    let bash = PathBuf::from(r"C:\Program Files\Git\usr\bin\bash.exe");
-    if bash.is_file() {
+    if let Some(bash) = git_bash() {
+        let contained = contained_bash().is_some();
         let code = run(
             &f,
             &policy,
@@ -278,13 +367,23 @@ fn git_bash_and_node_run_inside() {
                 "--noprofile",
                 "--norc",
                 "-c",
-                "echo ok > bash.txt && cat src/a.txt && ! cat .env",
+                "echo ok > bash.txt && cat src/a.txt && ! cat .env && ! echo x >> .git/config",
             ],
         );
-        assert_eq!(code, 0, "Git Bash did not run in the sandbox");
+        if contained {
+            assert_eq!(code, 0, "Git Bash passed its probe but did not run");
+            assert_eq!(
+                fs::read_to_string(f.workspace.join("bash.txt")).unwrap(),
+                "ok\n"
+            );
+        } else {
+            // The probe's refusal holds: this Git Bash ran nothing at all.
+            assert_ne!(code, 0, "Git Bash ran although its probe failed");
+            assert!(!f.workspace.join("bash.txt").exists());
+        }
         assert_eq!(
-            fs::read_to_string(f.workspace.join("bash.txt")).unwrap(),
-            "ok\n"
+            fs::read_to_string(f.workspace.join(".git/config")).unwrap(),
+            "[core]\n"
         );
     }
     if let Some(node) = std::env::var_os("HEXBOT_WINDOWS_NODE") {
@@ -390,11 +489,14 @@ fn reset_removes_hexbot_entries_and_keeps_every_other_one() {
     ];
     let before: Vec<String> = watched.iter().map(|p| icacls(p)).collect();
     assert_eq!(script(&f, &auto(&f), "echo x> new.txt"), 0);
+    let sid = container_sid(&auto(&f));
     assert!(
-        icacls(&f.workspace).contains("S-1-15-2-"),
+        !entries_for(&f.workspace, &sid).is_empty(),
         "the workspace was never granted"
     );
-    assert!(icacls(&f.workspace.join(".env")).contains("S-1-15-2-"));
+    assert!(!entries_for(&f.workspace.join(".git/config"), &sid).is_empty());
+    // The secret's cap left it no entry at all, so it was never changed.
+    assert_eq!(icacls(&f.workspace.join(".env")), before[4]);
     sandbox::reset(&f.home).unwrap();
     let after: Vec<String> = watched.iter().map(|p| icacls(p)).collect();
     assert_eq!(after, before);
@@ -477,12 +579,13 @@ fn each_policy_gets_its_own_container() {
 }
 
 #[test]
-fn a_deny_walk_that_misses_an_entry_stops_the_command() {
+fn a_protected_entry_the_walk_cannot_change_stops_the_command() {
     let f = fixture("deny-walk");
     let locked = f.workspace.join(".git").join("locked");
     fs::write(&locked, "x").unwrap();
     // OWNER RIGHTS replaces the owner's implicit rights: Hexbot cannot change
-    // this DACL, but the user can still delete the file.
+    // this DACL, but the user can still delete the file. An entry in a
+    // protected tree the walk cannot cap might keep what it held before.
     let status = Command::new(system("icacls.exe"))
         .arg(&locked)
         .args(["/inheritance:r", "/grant:r", "*S-1-3-4:(R,D)"])
@@ -493,7 +596,7 @@ fn a_deny_walk_that_misses_an_entry_stops_the_command() {
     let policy = auto(&f);
     let error = sandbox::prepare(&policy)
         .err()
-        .expect("the deny walk missed an entry");
+        .expect("the walk missed a protected entry");
     assert!(error.to_string().contains("Could not protect"), "{error}");
     assert_not_run(&helper(&f, &policy, "echo x> ran.txt").output().unwrap());
     assert!(!f.workspace.join("ran.txt").exists());
@@ -694,11 +797,32 @@ fn reset_deletes_every_profile_it_made() {
 fn the_probe_runs_a_contained_command_and_leaves_no_profile() {
     sandbox::probe().unwrap();
     assert!(sandbox::probe_available());
-    let sid = sandbox::profile_sid(sandbox::PROBE_PROFILE)
-        .unwrap()
-        .text()
-        .unwrap();
-    assert!(!registered(&sid), "the probe left its profile");
+    // Git Bash either runs a pipe, a second program and a command
+    // substitution in a container, or fails as its MSYS runtime does there:
+    // it creates its shared objects in the global namespace, which no
+    // AppContainer may write. The captured output proves the probe ran it.
+    if let Some(bash) = git_bash() {
+        match sandbox::probe_bash(&bash) {
+            Ok(()) => assert!(hexbot_core::windows_sandbox::contained_git_bash().is_ok()),
+            Err(error) => {
+                let message = error.to_string();
+                assert!(
+                    message.contains("NtCreateDirectoryObject")
+                        && message.contains("BaseNamedObjects"),
+                    "{message}"
+                );
+                let refusal = hexbot_core::windows_sandbox::contained_git_bash().unwrap_err();
+                assert_eq!(
+                    refusal.message,
+                    hexbot_core::windows_sandbox::GIT_BASH_UNCONTAINED
+                );
+            }
+        }
+    }
+    for profile in [sandbox::PROBE_PROFILE, sandbox::BASH_PROBE_PROFILE] {
+        let sid = sandbox::profile_sid(profile).unwrap().text().unwrap();
+        assert!(!registered(&sid), "the probe left {profile}");
+    }
 }
 
 #[test]
@@ -746,8 +870,8 @@ fn arguments_reach_programs_unchanged() {
         let seen: Vec<String> = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(seen, cases);
     }
-    let bash = PathBuf::from(r"C:\Program Files\Git\usr\bin\bash.exe");
-    if bash.is_file() {
+    // Only a Git Bash that runs in a container has arguments to check.
+    if let Some(bash) = contained_bash() {
         // MSYS expands none of these once quoted. It reads backslashes inside
         // quotes its own way, so these cases have none.
         let msys = [

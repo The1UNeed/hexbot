@@ -49,7 +49,7 @@ pub mod windows_container;
 mod windows_node_path;
 mod windows_paths;
 #[cfg(windows)]
-mod windows_sandbox;
+pub mod windows_sandbox;
 #[cfg(not(windows))]
 pub mod windows_service;
 mod windows_task;

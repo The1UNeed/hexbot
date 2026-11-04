@@ -22,7 +22,9 @@ in a throwaway container. When that works, `hexbot.info` reports `sandbox:
 "appcontainer"` and `hexbot status` reports the sandbox as available. When it
 does not, Auto and Manual refuse local commands and file tools, scheduled
 scripts do not run, and Settings, Approvals says so. They never fall back to
-an approval that would run with the user's own permissions.
+an approval that would run with the user's own permissions. Shell commands
+need Git Bash to start inside the container too, which a second probe checks
+([Shells and scripts](#shells-and-scripts)).
 
 What is guaranteed:
 
@@ -52,14 +54,22 @@ What is guaranteed:
   output folders are, must not be, hold or sit inside one of the home's
   stores: its `.env` files, `users/<id>/passwords` and `approvals`,
   `runtime/provider-auth`, `desktop-data` or `connect.json`. Project secrets
-  (`.env`, `.envrc`) and the home's own credential paths are
-  denied outright.
+  (`.env`, `.envrc`) and the home's own credential paths under a granted
+  root keep no entry for the container at all.
 - **Git metadata stays read-only.** `.git`, linked `gitdir` and `commondir`
   targets, bare repositories and configured hooks folders inside a writable
-  root get a write deny, and a deny that misses an entry stops the command.
-  As on Linux, a scan that stops early, a missing hooks target that would
-  make a whole repository read-only, or a link on the way to Git metadata
-  refuses the command.
+  root keep only a read entry, so a command can neither change them nor move
+  them aside to plant others. As on Linux, a scan that stops early, a missing
+  hooks target that would make a whole repository read-only, or a link on the
+  way to Git metadata refuses the command.
+- **Protection is the absence of an allow.** An AppContainer's access check
+  ignores deny entries for its own SID, so Hexbot writes none: Git metadata
+  and secrets are protected by what their allow entries leave out. A grant
+  meets each protected path by its file identity while it walks, wherever it
+  is, and writes only what that path keeps below it, so no grant ever opens
+  one, not even for a moment while another command of the same container
+  runs. A protected entry a walk cannot open, list or change, or a link
+  inside a protected tree, stops the command.
 - **Grants are recorded and reversible.** A journal names every container
   before it is created and every root before it changes. Grants are applied
   by walking each tree through handles without following links, so swapping
@@ -94,10 +104,31 @@ PATH as it would. It does not substitute `cmd.exe` for Bash. Pi stops when
 its input ends, the request Windows has instead of SIGTERM, and is ended
 with its job after the same grace.
 
+In Auto and Manual, Git Bash runs in the container only after the daemon's
+probe ran it there, once for each Git Bash it finds: a pipe into a second
+program inside a command substitution, which must print exactly what it
+should (`windows_container::probe_bash`). Git for Windows' MSYS runtime does
+not pass. When it starts, it creates its shared objects under the global
+`\BaseNamedObjects` namespace, where no AppContainer may create anything
+(`NtCreateDirectoryObject(\BaseNamedObjects\msys-2.0S5-…)` fails with
+`STATUS_ACCESS_DENIED`). It also gives the objects it makes, such as the ones
+that map process IDs and its signal pipes, to Everyone, which an
+AppContainer's access check never counts. Preparing that namespace from
+outside the container cannot help: the runtime's own processes still could
+not open each other's objects, and a half-working runtime can return from
+`fork` as the child in both processes, so a command would run twice. So
+while the probe fails, Pi's bash tool, the user's own commands and `.sh` and
+`.bash` scripts refuse in Auto and Manual with that reason, before anything
+starts; session settings carry it as `bashRefusal`. `.py` and `.exe` scripts,
+Pi's read, write and edit tools and other contained programs still run, and
+Bypass runs shell commands without a sandbox. A Git Bash installed for this
+user only is not readable to the probe's container, so its probe fails too.
+
 Pi asks the daemon for the policy of each of its commands through the
 private `hexbot_sandbox_policy` bridge, which builds it from the section's
 live working folder, outputs and approval mode, checked as session settings
-are. Session settings name the sandbox, its helper and Git Bash. The private
+are. Session settings name the sandbox, its helper and Git Bash, or why there
+is none (`bashRefusal`). The private
 extension then starts the helper itself, never through a shell: `<helper>
 sandbox exec <policy> -- <Git Bash> --noprofile --norc -c <command>`, with
 the sanitized environment, stdin ignored and no window. The user's own
@@ -192,6 +223,9 @@ Residual risks:
 - **`full_access`.** An AppContainer has no network and reads only what it
   is granted, so an approved command cannot leave the workspace sandbox for
   the base layer alone. Bypass runs commands without a sandbox.
+- **Shell commands and shell scripts, while Git Bash cannot start inside the
+  sandbox.** That is every Git for Windows release so far
+  ([Shells and scripts](#shells-and-scripts)). Bypass runs them.
 - **Copilot**, including its reviewer, in every mode. It runs with the base
   layer alone, which Windows does not have.
 - **The daemon's retired Python worker** (`execute_code`) and the file
@@ -206,8 +240,13 @@ Residual risks:
   granted root keeps them until reset; a file moved in has none until the
   next command of that policy walks the root again.
 - **New metadata and secrets.** `.git` folders and `.env` files created
-  while a command runs inherit the root's allow. They are denied from the
-  next command on.
+  while a command runs inherit the root's allow. They lose it from the next
+  command on.
+- **Permissions applied again.** A tool that applies inheritance again across
+  a workspace, such as `icacls /reset /t` or Explorer's "Replace all child
+  object permission entries", gives protected entries the workspace's allow
+  until the next command of that policy finds the change and caps them
+  again.
 - **Narrower reads than macOS and Linux.** Programs installed for one user
   outside the granted roots, such as a Python or Node.js in AppData, cannot
   be read, so commands cannot run them. Workspaces in OneDrive and other
@@ -311,9 +350,13 @@ probes as a newly created local standard user, and publish nothing:
 - `.github/workflows/windows-contract.yml`, job `sandbox`, runs
   `tests/windows_sandbox.rs` against real AppContainers, ACLs, sockets and
   processes: workspace writes with Git metadata, secrets, junctions and hard
-  links kept out, read-only Manual, one container per policy, no network or
-  loopback, Git Bash and Node inside, process trees that end with the
-  helper, root refusals, journal and reset, and argument quoting.
+  links kept out, Git metadata that cannot be moved aside, ACL entries that
+  never deny and leave secrets none, read-only Manual, one container per
+  policy, no network or loopback, Node inside, process trees that end with
+  the helper, root refusals, journal and reset, and argument quoting. The
+  startup probe must run, and the Git Bash probe must either run Git Bash in
+  a container or fail with the MSYS runtime's own error; a Git Bash that
+  fails it runs nothing.
 - `.github/workflows/windows-security.yml` runs the production Pi extension
   probes and the compiled `tests/windows_security.rs` boundary probe, with
   the daemon binary as the sandbox helper. The probe checks that Auto writes
@@ -327,7 +370,9 @@ probes as a newly created local standard user, and publish nothing:
   snapshot, commits an edit only to the file it read, and refuses Bypass, a
   stale snapshot, protected names and network, device, stream and
   missing-drive paths by their text, and that an Auto `.sh` scheduled script
-  writes the workspace while a Manual one writes nothing. Copilot refuses
+  writes the workspace while a Manual one writes nothing, or, while Git Bash
+  cannot start inside the sandbox, that both refuse with that reason and
+  session settings carry it. Copilot refuses
   before path or command resolution. Runtime and selection files stay
   byte-identical, owned Pi processes stop, and no container profile is left
   registered.

@@ -66,8 +66,9 @@ export const storeEntries = () => (credentialPolicy.write.deny as string[]).conc
 // The sandbox session settings name. On Windows only an AppContainer the
 // daemon's startup probe ran contains a command, so Auto and Manual refuse
 // without one and never turn the gap into an approval that runs with the
-// user's own permissions, including an approved full_access request.
-export type Sandbox = {kind?: string, bash?: string | null} | null | undefined;
+// user's own permissions, including an approved full_access request. Without
+// a Git Bash that starts inside it, `bashRefusal` says why.
+export type Sandbox = {kind?: string, bash?: string | null, bashRefusal?: string | null} | null | undefined;
 export const WINDOWS_ISOLATION_UNAVAILABLE = 'The Windows sandbox could not start, so Auto and Manual refuse local commands and file tools, and scheduled scripts do not run. Bypass has no sandbox or credential protection. Restart Hexbot to try again.';
 export const WINDOWS_FULL_ACCESS = 'On Windows, Auto and Manual run every command inside the sandbox, so full_access is not available. Bypass runs commands without a sandbox.';
 export const NO_GIT_BASH = 'Shell commands and scripts on Windows run in Git Bash, which is not installed. Install Git for Windows, then try again.';

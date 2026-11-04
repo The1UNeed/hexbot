@@ -235,8 +235,11 @@ export default function hexbot(pi: any) {
   type Level = 'none' | 'base' | 'confined';
   type AllowedCall = {mode: string, cwd: string, level: Level, target?: string, overwrites?: boolean};
   const levelFor = (input: any): Level => live.approvalMode === 'off' ? 'none' : input?.full_access === true ? 'base' : 'confined';
-  // Git Bash, which session settings name on Windows.
+  // Git Bash, which session settings name on Windows when it starts inside the
+  // sandbox, and otherwise the daemon's reason: not installed, or it cannot
+  // start inside the sandbox.
   const gitBash = (): string | undefined => typeof live.sandbox?.bash === 'string' && isAbsolute(live.sandbox.bash) ? live.sandbox.bash : undefined;
+  const noGitBash = (): string => typeof live.sandbox?.bashRefusal === 'string' && live.sandbox.bashRefusal ? live.sandbox.bashRefusal : NO_GIT_BASH;
   // What Windows refuses outside Bypass before a path resolves or a command
   // starts: every local tool without the sandbox, full_access (a container has
   // no base layer to leave to), commands without Git Bash, and file tools
@@ -244,7 +247,7 @@ export default function hexbot(pi: any) {
   const windowsRefusal = (tool: string, fullAccess: boolean): string | undefined => {
     if (process.platform !== 'win32' || !LOCAL_TOOLS.includes(tool)) return;
     if (!isolationAvailable(live.sandbox)) return WINDOWS_ISOLATION_UNAVAILABLE;
-    if (tool === 'bash') return fullAccess ? WINDOWS_FULL_ACCESS : gitBash() ? undefined : NO_GIT_BASH;
+    if (tool === 'bash') return fullAccess ? WINDOWS_FULL_ACCESS : gitBash() ? undefined : noGitBash();
     try { userHomes(); } catch (error: any) { return error.message; }
   };
   // What the gate allowed for each call: the mode it decided under, how bash
@@ -411,7 +414,7 @@ export default function hexbot(pi: any) {
     if (signal?.aborted) throw new Error('aborted');
     if (level !== 'confined') throw new Error(WINDOWS_FULL_ACCESS);
     const bash = gitBash();
-    if (!bash) throw new Error(NO_GIT_BASH);
+    if (!bash) throw new Error(noGitBash());
     let reply: any;
     try { reply = await bridge(ctx ?? currentContext, 'hexbot_sandbox_policy', {level}); }
     catch (error: any) { throw signal?.aborted || error?.interrupted ? new Error('aborted') : error; }

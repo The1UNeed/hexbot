@@ -185,6 +185,15 @@ try {
     assert.deepEqual(await gate('bash', {command:'echo x'}, 'no-git'), {block:true, reason:NO_GIT_BASH});
     await assert.rejects(run('bash', {command:'echo x'}, 'no-git'), {message:NO_GIT_BASH});
     assert.equal((await handlers.user_bash({command:'echo x'},ctx)).result.output, NO_GIT_BASH);
+    // A Git Bash that cannot start inside the sandbox refuses with the
+    // daemon's reason, before a policy request or a spawn.
+    const uncontained = 'Git Bash cannot start inside the Windows sandbox.';
+    const asked = policies.length;
+    settings.sandbox = {...available, bash:null, bashRefusal:uncontained};
+    assert.deepEqual(await gate('bash', {command:'echo x'}, 'uncontained'), {block:true, reason:uncontained});
+    await assert.rejects(run('bash', {command:'echo x'}, 'uncontained'), {message:uncontained});
+    assert.equal((await handlers.user_bash({command:'echo x'},ctx)).result.output, uncontained);
+    assert.equal(policies.length, asked);
 
     // Network, device, stream and drive-relative paths refuse by their text.
     settings.sandbox = available;
@@ -297,6 +306,11 @@ try {
     settings.sandbox = {...available, bash:null};
     await assert.rejects(run('bash', {command:'echo x'}, 'no-bash'), {message:NO_GIT_BASH});
     await assert.rejects(pending.operations.exec('echo x', cwd, {onData() {}}), {message:NO_GIT_BASH});
+    settings.sandbox = available;
+    assert.equal(await gate('bash', {command:'echo x'}, 'no-contained-bash'), undefined);
+    settings.sandbox = {...available, bash:null, bashRefusal:uncontained};
+    await assert.rejects(run('bash', {command:'echo x'}, 'no-contained-bash'), {message:uncontained});
+    await assert.rejects(pending.operations.exec('echo x', cwd, {onData() {}}), {message:uncontained});
     settings.sandbox = available;
     assert.equal(await gate('bash', {command:'echo x'}, 'mode'), undefined);
     settings.approvalMode = 'manual';

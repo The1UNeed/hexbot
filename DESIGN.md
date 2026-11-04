@@ -264,7 +264,9 @@ more freedom and more capability than a hosted product can offer.
   only the working folder, outputs and runtime programs granted (read-only in
   Manual). Pi's bash, the user's own commands and scheduled scripts run in
   it; Pi's read tools judge each path before they open it, and its write
-  and edit go through the daemon's handle bridge. If the startup probe fails
+  and edit go through the daemon's handle bridge. Shell commands need Git
+  Bash to start inside the container, which Git for Windows' MSYS runtime
+  cannot, so they refuse there with that reason. If the startup probe fails
   Auto and Manual refuse rather than ask. `full_access` and the retired
   Python worker refuse in Auto and Manual, and Copilot in every mode. Bypass
   retains Pi's Bash dialect without containment, requiring Bash on the host.

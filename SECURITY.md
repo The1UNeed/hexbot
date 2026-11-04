@@ -41,9 +41,14 @@ no network and access only to the roots the policy grants. Those are the
 working folder and output folders (read-only in Manual), the managed Python
 and Git for Windows. The user's profile, the Hexbot home, credential stores
 and the managed runtime are never granted; project secrets and credential
-files under a granted root are denied, and Git metadata in a writable root
-stays read-only. Scheduled scripts run there: `.sh` and `.bash` in Git Bash,
-`.py` with the managed Python, and `.exe`. Network, device and stream paths
+files under a granted root keep no access, and Git metadata in a writable
+root stays read-only. An AppContainer ignores deny entries for its own SID,
+so both are protected by what their allow entries leave out, never by a
+deny. Scheduled scripts run there: `.py` with the managed Python, `.exe`, and
+`.sh` and `.bash` in Git Bash once Git Bash has started inside the sandbox.
+Git for Windows' MSYS runtime cannot start in an AppContainer, so Auto and
+Manual refuse shell commands and shell scripts with that reason instead.
+Network, device and stream paths
 are refused by their text before anything opens them, and the Git scan reads
 settings with its own parser rather than a Git found through `PATH`. Pi's
 read, grep, find and ls keep credential files private and never follow a

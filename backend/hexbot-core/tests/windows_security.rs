@@ -390,6 +390,12 @@ async fn windows_security_runtime_runs_sections_and_scripts_in_the_sandbox() {
             let settings = &reply["result"];
             assert_eq!(settings["sandbox"]["kind"], "appcontainer", "{reply}");
             assert_eq!(settings["sandbox"]["helper"], json!(hexbot));
+            // Git Bash for Pi's commands when it starts in the sandbox, or why not.
+            assert_ne!(
+                settings["sandbox"]["bash"].is_string(),
+                settings["sandbox"]["bashRefusal"].is_string(),
+                "{reply}"
+            );
             assert_eq!(settings["cwd"], json!(absent_workdir));
             assert!(absent_workdir.is_dir() && absent_output.is_dir());
             // A network working folder refuses by its text, before outputs.
@@ -666,7 +672,20 @@ async fn windows_security_runtime_runs_sections_and_scripts_in_the_sandbox() {
                 .await
                 .unwrap();
             let job = wait(&mut events, &id).await;
-            if mode == "smart" {
+            // Shell scripts need a Git Bash that starts inside the sandbox.
+            // Stock Git for Windows does not, and the script refuses with
+            // the daemon's reason instead of starting.
+            let refusal = credentials::sandbox_settings().unwrap()["bashRefusal"]
+                .as_str()
+                .map(str::to_owned);
+            if let Some(refusal) = refusal {
+                assert_eq!(job["last_status"], "error", "{job}");
+                assert!(
+                    job["last_error"].as_str().unwrap().contains(&refusal),
+                    "{job}"
+                );
+                assert!(!marker.exists());
+            } else if mode == "smart" {
                 assert_eq!(job["last_status"], "success", "{job}");
                 assert_eq!(job["last_output"].as_str().unwrap().trim(), "wrote");
                 assert_eq!(fs::read_to_string(&marker).unwrap(), "scheduled");

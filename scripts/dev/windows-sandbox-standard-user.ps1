@@ -35,7 +35,11 @@ try {
   $env:TMP = $env:TEMP
   $env:HEXBOT_WINDOWS_HEXBOT = Join-Path $root 'hexbot.exe'
   $env:HEXBOT_WINDOWS_NODE = Join-Path $root 'node.exe'
-  & (Join-Path $root 'sandbox-test.exe') --test-threads=1 --nocapture
+  # One test at a time, and one stream for the tests and the commands they
+  # contain, so a contained command's errors sit beside the test that ran it.
+  # The root has no spaces, so cmd needs no quotes inside its command.
+  $test = Join-Path $root 'sandbox-test.exe'
+  & (Join-Path $env:SystemRoot 'System32\cmd.exe') /d /c "$test --test-threads=1 --nocapture 2>&1"
   $result = $LASTEXITCODE
   # Every test resets its home and the probe deletes its profile, so a Hexbot
   # profile still registered for this user is a leak.

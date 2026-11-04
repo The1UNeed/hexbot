@@ -72,8 +72,8 @@ pub mod sandbox {
         DenyAll,
     }
     impl GrantKind {
-        /// A deny protects entries an allow above it opened, so an entry its
-        /// walk misses stays open.
+        /// Whether the grant protects a path rather than opening one: it caps
+        /// what allows above it opened, so an entry its walk misses stays open.
         pub fn denies(self) -> bool {
             matches!(self, Self::DenyWrite | Self::DenyAll)
         }

@@ -7,16 +7,21 @@
 //! not even loopback, and reaches no file the user owns unless Hexbot granted
 //! it. Grants are allow entries for the container's SID only: the workspace and
 //! output folders, its own private home and temp folder, and the runtime
-//! programs a command may run. Git metadata gets a write deny and project
-//! secrets a full deny for the same SID; a deny that misses an entry stops the
-//! command. A root that is or holds the user's profile, the Hexbot home, a
-//! credential store or the managed runtime is refused before anything changes.
+//! programs a command may run. An AppContainer's access check ignores deny
+//! entries for its own SID, so protection is what the allow entries leave out:
+//! Git metadata keeps a read allow and project secrets keep none (`Change::Cap`).
+//! A walk that grants a tree meets each protected root by its file identity and
+//! writes only what the cap leaves below it, so no grant ever opens a protected
+//! entry, and a protected entry a walk cannot reach stops the command. A root
+//! that is or holds the user's profile, the Hexbot home, a credential store or
+//! the managed runtime is refused before anything changes.
 //!
 //! Grants are applied by walking each tree through handles. Every entry is
 //! opened relative to its parent's handle without following reparse points, so
 //! swapping a folder for a junction during the walk cannot redirect it. Reparse
 //! points are never changed or entered, and a file with more than one hard link
-//! is never granted: its DACL is shared with names outside the tree. A journal
+//! is never granted: its DACL is shared with names outside the tree. Taking
+//! access away is safe through any name, so caps and resets still reach it. A journal
 //! names every profile before it is created and every root before it changes,
 //! and `hexbot sandbox reset` removes every entry for those profiles' SIDs from
 //! the roots it names, then deletes the profiles. Other entries are never
@@ -127,6 +132,12 @@ struct FileInformation {
     index_high: u32,
     index_low: u32,
 }
+impl FileInformation {
+    /// The file's index on its volume: with the volume serial, its identity.
+    fn index(&self) -> u64 {
+        (u64::from(self.index_high) << 32) | u64::from(self.index_low)
+    }
+}
 #[repr(C)]
 struct UnicodeString {
     length: u16,
@@ -206,20 +217,6 @@ unsafe extern "system" {
     ) -> i32;
     fn GetAce(acl: *const c_void, index: u32, ace: *mut *mut c_void) -> i32;
     fn AddAce(acl: *mut c_void, revision: u32, index: u32, ace: *const c_void, length: u32) -> i32;
-    fn AddAccessAllowedAceEx(
-        acl: *mut c_void,
-        revision: u32,
-        flags: u32,
-        mask: u32,
-        sid: Sid,
-    ) -> i32;
-    fn AddAccessDeniedAceEx(
-        acl: *mut c_void,
-        revision: u32,
-        flags: u32,
-        mask: u32,
-        sid: Sid,
-    ) -> i32;
     fn ConvertSidToStringSidW(sid: Sid, text: *mut *mut u16) -> i32;
     fn OpenProcessToken(process: Handle, access: u32, token: *mut Handle) -> i32;
 }
@@ -285,6 +282,22 @@ unsafe extern "system" {
     fn WaitForSingleObject(handle: Handle, milliseconds: u32) -> u32;
     fn GetExitCodeProcess(process: Handle, code: *mut u32) -> i32;
     fn GetStdHandle(which: u32) -> Handle;
+    fn CreatePipe(read: *mut Handle, write: *mut Handle, security: *mut c_void, size: u32) -> i32;
+    fn PeekNamedPipe(
+        pipe: Handle,
+        buffer: *mut c_void,
+        size: u32,
+        read: *mut u32,
+        available: *mut u32,
+        left: *mut u32,
+    ) -> i32;
+    fn ReadFile(
+        file: Handle,
+        buffer: *mut c_void,
+        size: u32,
+        read: *mut u32,
+        overlapped: *mut c_void,
+    ) -> i32;
     fn GetCurrentProcess() -> Handle;
     fn DuplicateHandle(
         source_process: Handle,
@@ -328,14 +341,10 @@ const WRITE_DAC: u32 = 0x0004_0000;
 const SYNCHRONIZE: u32 = 0x0010_0000;
 const LIST_DIRECTORY: u32 = 0x0001;
 const READ_ATTRIBUTES: u32 = 0x0080;
-/// Read, list, traverse and execute.
+/// Read, list, traverse and execute: also all Git metadata keeps.
 pub const READ: u32 = 0x0012_00A9;
 /// READ plus create, write, delete and delete children; never WRITE_DAC or WRITE_OWNER.
 pub const MODIFY: u32 = 0x0013_01BF;
-/// Every right that changes an object, without READ_CONTROL or SYNCHRONIZE,
-/// which reads share.
-pub const DENY_WRITE: u32 = 0x000D_0156;
-pub const DENY_ALL: u32 = 0x001F_01FF;
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 const SHARE_ALL: u32 = 0x7;
@@ -486,7 +495,9 @@ fn delete_profile(name: &str) -> io::Result<()> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Change {
     Allow(u32),
-    Deny(u32),
+    /// Every allow entry for the SIDs keeps only these rights, and goes when
+    /// none are left. Nothing is added, so a cap never grants: it protects.
+    Cap(u32),
     /// Remove every entry for the SIDs, allow or deny, explicit or inherited.
     Revoke,
 }
@@ -496,10 +507,41 @@ pub enum Change {
 pub struct Walk {
     pub changed: usize,
     pub unchanged: usize,
-    /// Reparse points and files with several hard links: never changed or entered.
+    /// Reparse points, never changed or entered, and files with several hard
+    /// links, never granted.
     pub skipped_links: usize,
     /// Entries Hexbot cannot open or change. A grant leaves them inaccessible.
     pub failed: usize,
+    /// Protected entries the walk could not keep within their cap: reparse
+    /// points and entries it could not open, list or change. One stops the
+    /// command, since such an entry keeps what it was granted before.
+    pub unprotected: usize,
+}
+
+/// A protected root a walk may meet below its own root, by file identity, so
+/// no rename or path form can hide it, and the rights its entries keep.
+#[derive(Clone, Copy, Debug)]
+struct Limit {
+    volume: u32,
+    index: u64,
+    cap: u32,
+}
+
+/// Two caps on one entry keep what both allow.
+fn tighter(cap: Option<u32>, other: Option<u32>) -> Option<u32> {
+    match (cap, other) {
+        (Some(cap), Some(other)) => Some(cap & other),
+        (cap, other) => cap.or(other),
+    }
+}
+
+/// The cap the protected roots in `limits` put on the entry `info` describes.
+fn limit(limits: &[Limit], info: &FileInformation) -> Option<u32> {
+    limits
+        .iter()
+        .filter(|limit| limit.volume == info.volume && limit.index == info.index())
+        .map(|limit| limit.cap)
+        .reduce(|cap, other| cap & other)
 }
 
 fn descriptor(handle: Handle) -> io::Result<Vec<u8>> {
@@ -531,12 +573,39 @@ fn descriptor(handle: Handle) -> io::Result<Vec<u8>> {
     Ok(buffer)
 }
 
+#[derive(Clone)]
 struct Ace {
     kind: u8,
     flags: u8,
     mask: u32,
     bytes: Vec<u8>,
     ours: bool,
+}
+impl Ace {
+    /// An allow entry for `sid`, laid out as AddAccessAllowedAceEx writes it.
+    fn allowed(flags: u8, mask: u32, sid: Sid) -> Ace {
+        // SAFETY: a valid SID of GetLengthSid bytes.
+        let sid =
+            unsafe { std::slice::from_raw_parts(sid as *const u8, GetLengthSid(sid) as usize) };
+        let mut bytes = vec![ALLOWED, flags];
+        bytes.extend(((8 + sid.len()) as u16).to_le_bytes());
+        bytes.extend(mask.to_le_bytes());
+        bytes.extend(sid);
+        Ace {
+            kind: ALLOWED,
+            flags,
+            mask,
+            bytes,
+            ours: true,
+        }
+    }
+    /// This entry with the rights `mask`.
+    fn with_mask(&self, mask: u32) -> Ace {
+        let mut ace = self.clone();
+        ace.bytes[4..8].copy_from_slice(&mask.to_le_bytes());
+        ace.mask = mask;
+        ace
+    }
 }
 
 /// The entries of a DACL, marking those for one of `sids`.
@@ -584,12 +653,15 @@ fn entries(dacl: *mut c_void, sids: &[Sid]) -> io::Result<Vec<Ace>> {
     Ok(list)
 }
 
-/// Apply `change` for `sids` to one object. `explicit` marks the root of a walk;
-/// below it entries carry INHERITED, as the system's own propagation writes them.
+/// Apply `change` for `sids` to one object, then keep every allow entry for
+/// them within `cap` when the object is protected. `explicit` marks the root of
+/// a walk; below it entries carry INHERITED, as the system's own propagation
+/// writes them.
 fn change_object(
     handle: Handle,
     directory: bool,
     change: Change,
+    cap: Option<u32>,
     explicit: bool,
     sids: &[Sid],
 ) -> io::Result<bool> {
@@ -623,87 +695,72 @@ fn change_object(
         0
     };
     let flags = inherit | if explicit { 0 } else { INHERITED };
-    let wanted = match change {
-        Change::Allow(mask) => Some((ALLOWED, mask)),
-        Change::Deny(mask) => Some((DENIED, mask)),
-        Change::Revoke => None,
+    let cap = match change {
+        Change::Cap(limit) => Some(cap.map_or(limit, |cap| cap & limit)),
+        _ => cap,
     };
-    if let Some((kind, mask)) = wanted {
-        if existing
-            .iter()
-            .any(|ace| ace.ours && ace.kind == kind && ace.mask == mask && ace.flags == flags)
-        {
-            return Ok(false);
+    // Hexbot writes no deny entries: an AppContainer's access check ignores
+    // them for its own SID. Ones an earlier build wrote go with any change.
+    // A grant replaces this object's earlier allow for the SIDs that is as
+    // explicit or inherited as its own.
+    let mut list: Vec<Ace> = existing
+        .iter()
+        .filter(|ace| {
+            !ace.ours
+                || match change {
+                    Change::Revoke => false,
+                    Change::Cap(_) => ace.kind != DENIED,
+                    Change::Allow(_) => {
+                        ace.kind == ALLOWED && (ace.flags & INHERITED) != (flags & INHERITED)
+                    }
+                }
+        })
+        .cloned()
+        .collect();
+    if let Change::Allow(mask) = change {
+        let mask = cap.map_or(mask, |cap| mask & cap);
+        if mask != 0 {
+            // Canonical order: explicit entries before inherited ones. An
+            // explicit allow ends the explicit section, an inherited one goes last.
+            let at = if explicit {
+                list.iter()
+                    .position(|ace| ace.flags & INHERITED != 0)
+                    .unwrap_or(list.len())
+            } else {
+                list.len()
+            };
+            for (offset, sid) in sids.iter().enumerate() {
+                list.insert(at + offset, Ace::allowed(flags, mask, *sid));
+            }
         }
-    } else if !existing.iter().any(|ace| ace.ours) {
+    }
+    if let Some(cap) = cap {
+        // A protected object keeps only what its cap allows, whichever walk
+        // or name granted the rest.
+        list = list
+            .into_iter()
+            .filter_map(|ace| {
+                if !(ace.ours && ace.kind == ALLOWED) || ace.mask & !cap == 0 {
+                    Some(ace)
+                } else if ace.mask & cap == 0 {
+                    None
+                } else {
+                    Some(ace.with_mask(ace.mask & cap))
+                }
+            })
+            .collect();
+    }
+    if list.len() == existing.len() && list.iter().zip(&existing).all(|(a, b)| a.bytes == b.bytes) {
         return Ok(false);
     }
-    // Canonical order: explicit deny, explicit allow, then inherited entries.
-    // An explicit deny goes first, an explicit allow and an inherited deny at the
-    // start of the inherited section, an inherited allow last. A grant replaces
-    // this object's earlier entries for the SIDs of the same kind.
-    let kept: Vec<&Ace> = existing
-        .iter()
-        .filter(|ace| match wanted {
-            None => !ace.ours,
-            Some((kind, _)) => {
-                !(ace.ours && ace.kind == kind && (ace.flags & INHERITED) == (flags & INHERITED))
-            }
-        })
-        .collect();
-    let first_inherited = kept
-        .iter()
-        .position(|ace| ace.flags & INHERITED != 0)
-        .unwrap_or(kept.len());
-    let position = match wanted {
-        None => kept.len(),
-        Some((DENIED, _)) if explicit => 0,
-        Some((ALLOWED, _)) if !explicit => kept.len(),
-        Some(_) => first_inherited,
-    };
-    let sid_bytes: u32 = sids
-        .iter()
-        .map(|sid| unsafe { GetLengthSid(*sid) } + 8)
-        .sum();
-    let length = 8
-        + kept.iter().map(|ace| ace.bytes.len() as u32).sum::<u32>()
-        + if wanted.is_some() { sid_bytes } else { 0 };
+    let length = 8 + list.iter().map(|ace| ace.bytes.len() as u32).sum::<u32>();
     let length = (length + 3) & !3;
-    let mut acl = vec![0u8; length as usize];
+    // u32 units keep the ACL DWORD-aligned, as Windows requires.
+    let mut acl = vec![0u32; length as usize / 4];
     // SAFETY: a buffer of `length` bytes.
     check(unsafe { InitializeAcl(acl.as_mut_ptr().cast(), length, ACL_REVISION) })?;
-    let add_ours = |acl: &mut Vec<u8>| -> io::Result<()> {
-        if let Some((kind, mask)) = wanted {
-            for sid in sids {
-                // SAFETY: the ACL was sized for these entries.
-                check(unsafe {
-                    if kind == ALLOWED {
-                        AddAccessAllowedAceEx(
-                            acl.as_mut_ptr().cast(),
-                            ACL_REVISION,
-                            flags as u32,
-                            mask,
-                            *sid,
-                        )
-                    } else {
-                        AddAccessDeniedAceEx(
-                            acl.as_mut_ptr().cast(),
-                            ACL_REVISION,
-                            flags as u32,
-                            mask,
-                            *sid,
-                        )
-                    }
-                })?;
-            }
-        }
-        Ok(())
-    };
-    for (index, ace) in kept.iter().enumerate() {
-        if index == position {
-            add_ours(&mut acl)?;
-        }
-        // SAFETY: an ACE copied from the original DACL; appended at the end.
+    for ace in &list {
+        // SAFETY: the ACL was sized for these entries; each is appended at the end.
         check(unsafe {
             AddAce(
                 acl.as_mut_ptr().cast(),
@@ -714,10 +771,8 @@ fn change_object(
             )
         })?;
     }
-    if position == kept.len() {
-        add_ours(&mut acl)?;
-    }
-    let mut descriptor = [0u8; 64];
+    // u64 units keep the absolute descriptor's pointers aligned.
+    let mut descriptor = [0u64; 8];
     // SAFETY: an absolute descriptor in a buffer larger than SECURITY_DESCRIPTOR_MIN_LENGTH.
     check(unsafe { InitializeSecurityDescriptor(descriptor.as_mut_ptr().cast(), 1) })?;
     // SAFETY: the ACL outlives the descriptor's use below.
@@ -766,6 +821,30 @@ fn open_root(path: &Path) -> io::Result<OwnedHandle> {
             FLAG_BACKUP_SEMANTICS | FLAG_OPEN_REPARSE_POINT,
             ptr::null_mut(),
         )
+    })
+}
+
+/// The protected root at `path` as walks meet it: by its file identity, the
+/// link itself when it is one.
+fn limit_at(path: &Path, cap: u32) -> io::Result<Limit> {
+    let name = wide(path.as_os_str());
+    // SAFETY: a NUL-terminated path; the handle is owned below.
+    let handle = owned(unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            READ_ATTRIBUTES | SYNCHRONIZE,
+            SHARE_ALL,
+            ptr::null_mut(),
+            OPEN_EXISTING,
+            FLAG_BACKUP_SEMANTICS | FLAG_OPEN_REPARSE_POINT,
+            ptr::null_mut(),
+        )
+    })?;
+    let info = information(handle.as_raw_handle())?;
+    Ok(Limit {
+        volume: info.volume,
+        index: info.index(),
+        cap,
     })
 }
 
@@ -871,6 +950,18 @@ fn names(directory: Handle) -> io::Result<Vec<Vec<u16>>> {
 
 /// Apply `change` to `root` and everything below it, through handles.
 pub fn walk(root: &Path, change: Change, sids: &[&ContainerSid]) -> io::Result<Walk> {
+    walk_limited(root, change, None, &[], sids)
+}
+
+/// As `walk`, keeping `root` within `cap` and each protected root in `limits`
+/// it meets, and everything below them, within that root's cap.
+fn walk_limited(
+    root: &Path,
+    change: Change,
+    cap: Option<u32>,
+    limits: &[Limit],
+    sids: &[&ContainerSid],
+) -> io::Result<Walk> {
     let sids: Vec<Sid> = sids.iter().map(|sid| sid.as_ptr()).collect();
     let root = open_root(root)?;
     let info = information(root.as_raw_handle())?;
@@ -881,14 +972,15 @@ pub fn walk(root: &Path, change: Change, sids: &[&ContainerSid]) -> io::Result<W
         ));
     }
     let directory = info.attributes & FILE_ATTRIBUTE_DIRECTORY != 0;
-    if !directory && info.links > 1 && change != Change::Revoke {
+    if !directory && info.links > 1 && matches!(change, Change::Allow(_)) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "Sandbox roots cannot have several hard links",
         ));
     }
+    let cap = tighter(cap, limit(limits, &info));
     let mut walk = Walk::default();
-    if change_object(root.as_raw_handle(), directory, change, true, &sids)? {
+    if change_object(root.as_raw_handle(), directory, change, cap, true, &sids)? {
         walk.changed += 1;
     } else {
         walk.unchanged += 1;
@@ -896,51 +988,72 @@ pub fn walk(root: &Path, change: Change, sids: &[&ContainerSid]) -> io::Result<W
     if !directory {
         return Ok(walk);
     }
-    let mut stack = vec![root];
-    while let Some(parent) = stack.pop() {
+    // A protected tree a walk cannot finish keeps what it was granted before.
+    let protected = |cap: Option<u32>| match change {
+        Change::Revoke => false,
+        Change::Cap(_) => true,
+        Change::Allow(_) => cap.is_some(),
+    };
+    let mut stack = vec![(root, cap)];
+    while let Some((parent, cap)) = stack.pop() {
         let listed = match names(parent.as_raw_handle()) {
             Ok(listed) => listed,
             Err(_) => {
                 walk.failed += 1;
+                walk.unprotected += usize::from(protected(cap));
                 continue;
             }
         };
         for name in listed {
             let Ok(child) = open_child(parent.as_raw_handle(), &name) else {
                 walk.failed += 1;
+                walk.unprotected += usize::from(protected(cap));
                 continue;
             };
             let Ok(info) = information(child.as_raw_handle()) else {
                 walk.failed += 1;
+                walk.unprotected += usize::from(protected(cap));
                 continue;
             };
-            let directory = info.attributes & FILE_ATTRIBUTE_DIRECTORY != 0;
-            if info.attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 || (!directory && info.links > 1)
-            {
-                // Revoking still cleans a file that gained a second name later.
-                if change == Change::Revoke && info.attributes & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
-                    let _ = change_object(child.as_raw_handle(), false, change, false, &sids);
-                }
+            let cap = tighter(cap, limit(limits, &info));
+            if info.attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                // Never changed or entered: inside a protected tree it is a way
+                // around the cap.
                 walk.skipped_links += 1;
+                walk.unprotected += usize::from(protected(cap));
                 continue;
             }
-            match change_object(child.as_raw_handle(), directory, change, false, &sids) {
+            let directory = info.attributes & FILE_ATTRIBUTE_DIRECTORY != 0;
+            let mut change = change;
+            if !directory && info.links > 1 {
+                // A file with several names is never granted. Taking access
+                // away is safe through any name, so a cap or a reset still
+                // reaches it, as does a file that gained a name later.
+                walk.skipped_links += 1;
+                if let Change::Allow(_) = change {
+                    let Some(cap) = cap else { continue };
+                    change = Change::Cap(cap);
+                }
+            }
+            match change_object(child.as_raw_handle(), directory, change, cap, false, &sids) {
                 Ok(true) => walk.changed += 1,
                 Ok(false) => walk.unchanged += 1,
                 Err(_) => {
                     walk.failed += 1;
+                    walk.unprotected += usize::from(protected(cap));
                     continue;
                 }
             }
             if directory {
-                stack.push(child);
+                stack.push((child, cap));
             }
         }
     }
     Ok(walk)
 }
 
-/// Whether `root` already carries the explicit entry `change` would write.
+/// Whether `root` already carries what `change` writes there: the explicit
+/// allow of a grant, no allow beyond a cap, or no entry at all for a revoke.
 pub fn applied(root: &Path, change: Change, sid: &ContainerSid) -> io::Result<bool> {
     let handle = open_root(root)?;
     let info = information(handle.as_raw_handle())?;
@@ -961,23 +1074,26 @@ pub fn applied(root: &Path, change: Change, sid: &ContainerSid) -> io::Result<bo
     } else {
         0
     };
-    let (kind, mask) = match change {
-        Change::Allow(mask) => (ALLOWED, mask),
-        Change::Deny(mask) => (DENIED, mask),
-        Change::Revoke => return Ok(!entries(dacl, &[sid.as_ptr()])?.iter().any(|ace| ace.ours)),
-    };
-    Ok(entries(dacl, &[sid.as_ptr()])?
-        .iter()
-        .any(|ace| ace.ours && ace.kind == kind && ace.mask == mask && ace.flags == flags))
+    let list = entries(dacl, &[sid.as_ptr()])?;
+    let mut ours = list.iter().filter(|ace| ace.ours);
+    Ok(match change {
+        Change::Allow(mask) => {
+            ours.any(|ace| ace.kind == ALLOWED && ace.mask == mask && ace.flags == flags)
+        }
+        Change::Cap(cap) => !ours.any(|ace| ace.kind == ALLOWED && ace.mask & !cap != 0),
+        Change::Revoke => ours.next().is_none(),
+    })
 }
 
 impl GrantKind {
+    /// What the grant writes. Protected paths keep less, never more: Git
+    /// metadata only reads, and project secrets keep nothing.
     pub fn change(self) -> Change {
         match self {
             Self::Read => Change::Allow(READ),
             Self::Modify => Change::Allow(MODIFY),
-            Self::DenyWrite => Change::Deny(DENY_WRITE),
-            Self::DenyAll => Change::Deny(DENY_ALL),
+            Self::DenyWrite => Change::Cap(READ),
+            Self::DenyAll => Change::Cap(0),
         }
     }
 }
@@ -1018,9 +1134,11 @@ pub fn lock(home: &Path) -> io::Result<fs::File> {
 }
 
 /// Make sure `path` carries `kind` for `profile`, walking it only when the
-/// journal has no finished grant or the root lost its entry. A deny walk that
-/// misses an entry fails: that entry keeps the allow it inherited from above,
-/// so the command must not start.
+/// journal has no finished grant or the root lost its entry. `cap` keeps a
+/// root inside a protected one within that root's cap, and `limits` keep the
+/// protected roots the walk meets within theirs. A walk that leaves a
+/// protected entry beyond its cap fails, so the command does not start.
+#[allow(clippy::too_many_arguments)]
 fn ensure(
     home: &Path,
     journal: &mut Journal,
@@ -1028,14 +1146,24 @@ fn ensure(
     profile: &str,
     kind: GrantKind,
     sid: &ContainerSid,
+    cap: Option<u32>,
+    limits: &[Limit],
 ) -> io::Result<()> {
+    let change = kind.change();
+    // What the walk leaves on the root itself.
+    let expected = match (change, cap) {
+        (Change::Allow(mask), Some(cap)) if mask & cap == 0 => Change::Cap(cap),
+        (Change::Allow(mask), Some(cap)) => Change::Allow(mask & cap),
+        (Change::Cap(limit), Some(cap)) => Change::Cap(limit & cap),
+        (change, _) => change,
+    };
     let index = journal
         .roots
         .iter()
         .position(|root| root.path == path && root.profile == profile && root.kind == kind);
     if let Some(index) = index
         && journal.roots[index].complete
-        && applied(path, kind.change(), sid)?
+        && applied(path, expected, sid)?
     {
         return Ok(());
     }
@@ -1050,15 +1178,12 @@ fn ensure(
     });
     journal.roots[index].complete = false;
     write_journal(home, journal)?;
-    let walk = walk(path, kind.change(), &[sid])?;
-    if kind.denies() && (walk.failed > 0 || walk.skipped_links > 0) {
+    let walk = walk_limited(path, change, cap, limits, &[sid])?;
+    if walk.unprotected > 0 {
         // Left unfinished: the next command walks it again, and reset revokes it.
-        // A skipped link keeps the entry's inherited access, so a deny that
-        // could not reach every entry stops the command.
         return Err(io::Error::other(format!(
-            "Could not protect {} entries ({} unlinks) under {}",
-            walk.failed,
-            walk.skipped_links,
+            "Could not protect {} entries under {}",
+            walk.unprotected,
             path.display()
         )));
     }
@@ -1295,6 +1420,28 @@ pub fn prepare(policy: &Policy) -> io::Result<Container> {
             .collect()
     };
     let (deny_write, deny_all) = (denied(&policy.deny_write)?, denied(&policy.deny_all)?);
+    // Git metadata keeps a read allow and project secrets none: the caps the
+    // grants below never pass, met by file identity wherever a walk finds them.
+    let caps: Vec<(&Root, u32)> = deny_write
+        .iter()
+        .map(|root| (root, READ))
+        .chain(deny_all.iter().map(|root| (root, 0)))
+        .collect();
+    let mut limits = Vec::new();
+    for (root, cap) in &caps {
+        match limit_at(&root.canonical, *cap) {
+            Ok(limit) => limits.push(limit),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    // A root inside a protected one starts within that one's cap.
+    let cap_of = |root: &Root| {
+        caps.iter()
+            .filter(|(protected, _)| rules::within(&root.folded, &protected.folded))
+            .map(|(_, cap)| *cap)
+            .reduce(|cap, other| cap & other)
+    };
     let folded = |roots: &[Root]| {
         roots
             .iter()
@@ -1314,21 +1461,33 @@ pub fn prepare(policy: &Policy) -> io::Result<Container> {
     for folder in ["home", "tmp", "appdata/roaming", "appdata/local"] {
         fs::create_dir_all(private.join(folder))?;
     }
-    let mut grant = |path: &Path, kind| ensure(&home, &mut journal, path, &profile, kind, &sid);
-    grant(&fs::canonicalize(&private)?, GrantKind::Modify)?;
+    let mut grant = |path: &Path, kind, cap| {
+        ensure(
+            &home,
+            &mut journal,
+            path,
+            &profile,
+            kind,
+            &sid,
+            cap,
+            &limits,
+        )
+    };
+    grant(&fs::canonicalize(&private)?, GrantKind::Modify, None)?;
     // Manual callers pass the workspace as readable and only approved outputs
-    // as writable; the access level picks the container, not the grants.
+    // as writable; the access level picks the container, not the grants. The
+    // protected roots are capped last, which also covers one no grant reaches.
     for root in &readable {
-        grant(&root.canonical, GrantKind::Read)?;
+        grant(&root.canonical, GrantKind::Read, cap_of(root))?;
     }
     for root in &writable {
-        grant(&root.canonical, GrantKind::Modify)?;
+        grant(&root.canonical, GrantKind::Modify, cap_of(root))?;
     }
     for root in &deny_write {
-        grant(&root.canonical, GrantKind::DenyWrite)?;
+        grant(&root.canonical, GrantKind::DenyWrite, cap_of(root))?;
     }
     for root in &deny_all {
-        grant(&root.canonical, GrantKind::DenyAll)?;
+        grant(&root.canonical, GrantKind::DenyAll, cap_of(root))?;
     }
     Ok(Container {
         sid,
@@ -1415,9 +1574,14 @@ fn standard_handle(which: u32) -> io::Result<OwnedHandle> {
     if !handle.is_null() && handle as isize != -1 {
         return inheritable(handle);
     }
+    inheritable(null_device()?.as_raw_handle())
+}
+
+/// The NUL device, for reading and writing.
+fn null_device() -> io::Result<OwnedHandle> {
     let name = wide(OsStr::new(r"\\.\NUL"));
     // SAFETY: a NUL-terminated device name; the handle is owned below.
-    let null = owned(unsafe {
+    owned(unsafe {
         CreateFileW(
             name.as_ptr(),
             GENERIC_READ | GENERIC_WRITE,
@@ -1427,8 +1591,7 @@ fn standard_handle(which: u32) -> io::Result<OwnedHandle> {
             0,
             ptr::null_mut(),
         )
-    })?;
-    inheritable(null.as_raw_handle())
+    })
 }
 
 fn inheritable(handle: Handle) -> io::Result<OwnedHandle> {
@@ -1457,10 +1620,33 @@ pub fn spawn(
     environment: &[(OsString, OsString)],
     process_limit: Option<u32>,
 ) -> io::Result<Contained> {
-    let standard: Vec<OwnedHandle> = [0xFFFF_FFF6u32, 0xFFFF_FFF5, 0xFFFF_FFF4]
-        .into_iter()
-        .map(standard_handle)
-        .collect::<io::Result<_>>()?;
+    let standard: [OwnedHandle; 3] = [
+        standard_handle(0xFFFF_FFF6)?,
+        standard_handle(0xFFFF_FFF5)?,
+        standard_handle(0xFFFF_FFF4)?,
+    ];
+    spawn_with(
+        sid,
+        program,
+        arguments,
+        directory,
+        environment,
+        process_limit,
+        standard,
+    )
+}
+
+/// As `spawn`, with `standard` as its stdin, stdout and stderr: inheritable
+/// handles this process gives up once the program starts.
+fn spawn_with(
+    sid: &ContainerSid,
+    program: &Path,
+    arguments: &[OsString],
+    directory: Option<&Path>,
+    environment: &[(OsString, OsString)],
+    process_limit: Option<u32>,
+    standard: [OwnedHandle; 3],
+) -> io::Result<Contained> {
     let mut handles: Vec<Handle> = standard.iter().map(|h| h.as_raw_handle()).collect();
     let mut size = 0;
     // SAFETY: a size query for two attributes.
@@ -1615,8 +1801,20 @@ pub fn path_from_wide(units: &[u16]) -> PathBuf {
 /// The profile the startup probe creates and deletes. One name per user, so a
 /// probe that crashed leaves nothing the next probe does not delete.
 pub const PROBE_PROFILE: &str = "Hexbot.Sandbox.probe";
+/// The profile the Git Bash probe creates and deletes, apart from the startup
+/// probe's so the two never share one.
+pub const BASH_PROBE_PROFILE: &str = "Hexbot.Sandbox.probe.bash";
 /// A hung probe must not hold the daemon; the bubblewrap probe waits as long.
 const PROBE_MILLIS: u32 = 5000;
+/// Git Bash starts its runtime, a pipe and a second program.
+const BASH_PROBE_MILLIS: u32 = 15000;
+/// What the Git Bash probe runs and must print: a pipe into another program
+/// inside a command substitution, so a runtime that cannot start, fork, wait
+/// or pass output between its processes does not pass.
+const BASH_PROBE: &str = "echo \"$(printf hexbot | /usr/bin/cat)\"";
+const BASH_PROBE_OUTPUT: &[u8] = b"hexbot\n";
+/// The most of a probe's output kept, and its pipe's buffer.
+const PROBE_OUTPUT: u32 = 64 * 1024;
 
 /// Whether contained commands can run here, probed once per process: the
 /// counterpart of the bubblewrap probe on Linux.
@@ -1625,21 +1823,47 @@ pub fn probe_available() -> bool {
     *AVAILABLE.get_or_init(|| probe().is_ok())
 }
 
+/// Run `probe` in the throwaway profile `name` with no grants, then delete it.
+fn throwaway(name: &str, probe: impl FnOnce(&ContainerSid) -> io::Result<()>) -> io::Result<()> {
+    let sid = create_profile(name)?;
+    let ran = probe(&sid);
+    drop(sid);
+    ran.and(delete_profile(name))
+}
+
+/// System32 and the Windows folder, which every AppContainer may read, so a
+/// probe needs no grant, and the environment a probe's program starts with.
+/// Windows does not start an AppContainer process without LOCALAPPDATA in
+/// its environment block; the folder it names is never opened for it.
+fn probe_setting() -> io::Result<(PathBuf, Vec<(OsString, OsString)>)> {
+    let cmd = crate::windows_paths::system_program("cmd.exe")?;
+    let system = cmd.parent().unwrap_or(&cmd).to_owned();
+    let windows = system.parent().unwrap_or(&system).as_os_str().to_owned();
+    let local = match std::env::var_os("LOCALAPPDATA").filter(|local| !local.is_empty()) {
+        Some(local) => local,
+        None => profile_directory()?
+            .join("AppData")
+            .join("Local")
+            .into_os_string(),
+    };
+    let environment = vec![
+        (OsString::from("SystemRoot"), windows.clone()),
+        (OsString::from("windir"), windows),
+        (OsString::from("LOCALAPPDATA"), local),
+    ];
+    Ok((system, environment))
+}
+
 /// Run `cmd /c exit 0` in a throwaway profile with no grants, then delete it.
 pub fn probe() -> io::Result<()> {
-    let sid = create_profile(PROBE_PROFILE)?;
-    let ran = (|| {
-        let cmd = crate::windows_paths::system_program("cmd.exe")?;
-        let system = cmd.parent().unwrap_or(&cmd);
-        let windows = system.parent().unwrap_or(system);
-        let environment = [(OsString::from("SystemRoot"), windows.as_os_str().to_owned())];
+    throwaway(PROBE_PROFILE, |sid| {
+        let (system, environment) = probe_setting()?;
         let arguments = ["/d", "/c", "exit", "0"].map(OsString::from);
-        // System32 is readable to every AppContainer, so it needs no grant.
         let child = spawn(
-            &sid,
-            &cmd,
+            sid,
+            &system.join("cmd.exe"),
             &arguments,
-            Some(system),
+            Some(&system),
             &environment,
             Some(PROCESS_LIMIT),
         )?;
@@ -1653,9 +1877,126 @@ pub fn probe() -> io::Result<()> {
                 "The sandbox probe did not finish",
             )),
         }
-    })();
-    drop(sid);
-    ran.and(delete_profile(PROBE_PROFILE))
+    })
+}
+
+/// Whether Git Bash at `bash` runs correctly in a container: a pipe, a second
+/// program and a command substitution, in a throwaway profile with no grants.
+/// Git for Windows installed in Program Files needs none; one installed for
+/// this user only is not readable to the profile, so its probe fails.
+///
+/// Stock Git for Windows fails it. Its MSYS runtime creates its shared
+/// objects in the global `\BaseNamedObjects` namespace, where no
+/// AppContainer may create anything, and gives the objects it makes to
+/// Everyone, which an AppContainer's access check never counts. Preparing
+/// that namespace from outside cannot help: the runtime's own processes
+/// could still not open each other's objects. The error carries what Git
+/// Bash printed.
+pub fn probe_bash(bash: &Path) -> io::Result<()> {
+    throwaway(BASH_PROBE_PROFILE, |sid| {
+        let (system, environment) = probe_setting()?;
+        let arguments = ["--noprofile", "--norc", "-c", BASH_PROBE].map(OsString::from);
+        let (code, output) = captured(
+            sid,
+            bash,
+            &arguments,
+            Some(&system),
+            &environment,
+            BASH_PROBE_MILLIS,
+        )?;
+        if code == 0 && output == BASH_PROBE_OUTPUT {
+            return Ok(());
+        }
+        Err(io::Error::other(format!(
+            "Git Bash exited with {code:#x} and printed: {}",
+            String::from_utf8_lossy(&output).trim()
+        )))
+    })
+}
+
+/// Run `program` in the container `sid` with stdin from NUL and stdout and
+/// stderr in one pipe, and return its exit code and what it printed. Its tree
+/// ends before the output is read, so nothing it started writes after that.
+fn captured(
+    sid: &ContainerSid,
+    program: &Path,
+    arguments: &[OsString],
+    directory: Option<&Path>,
+    environment: &[(OsString, OsString)],
+    milliseconds: u32,
+) -> io::Result<(u32, Vec<u8>)> {
+    let (mut read, mut write) = (ptr::null_mut(), ptr::null_mut());
+    // SAFETY: two out pointers; neither end is inheritable, and both are owned below.
+    check(unsafe { CreatePipe(&mut read, &mut write, ptr::null_mut(), PROBE_OUTPUT) })?;
+    let (read, write) = (owned(read)?, owned(write)?);
+    let standard = [
+        inheritable(null_device()?.as_raw_handle())?,
+        inheritable(write.as_raw_handle())?,
+        inheritable(write.as_raw_handle())?,
+    ];
+    // Only the program holds the write end from here on, so the read ends when
+    // its tree does.
+    drop(write);
+    let child = spawn_with(
+        sid,
+        program,
+        arguments,
+        directory,
+        environment,
+        Some(PROCESS_LIMIT),
+        standard,
+    )?;
+    let code = child.wait_for(milliseconds)?;
+    // Closing the job ends the program's whole tree.
+    drop(child);
+    let Some(code) = code else {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!("{} did not finish", program.display()),
+        ));
+    };
+    // Only what is already buffered is read: another program this process
+    // started meanwhile may have inherited the write end, and it never ends
+    // the pipe.
+    let mut output = Vec::new();
+    while output.len() < PROBE_OUTPUT as usize {
+        let mut available = 0;
+        // SAFETY: a pipe handle and a count; nothing is copied. An ended,
+        // empty pipe fails, which ends the output too.
+        let peeked = unsafe {
+            PeekNamedPipe(
+                read.as_raw_handle(),
+                ptr::null_mut(),
+                0,
+                ptr::null_mut(),
+                &mut available,
+                ptr::null_mut(),
+            )
+        };
+        if peeked == 0 || available == 0 {
+            break;
+        }
+        let start = output.len();
+        let wanted = available.min(PROBE_OUTPUT - start as u32);
+        output.resize(start + wanted as usize, 0);
+        let mut filled = 0;
+        // SAFETY: a buffer of `wanted` bytes, which the pipe already holds, so
+        // the read returns at once.
+        check(unsafe {
+            ReadFile(
+                read.as_raw_handle(),
+                output[start..].as_mut_ptr().cast(),
+                wanted,
+                &mut filled,
+                ptr::null_mut(),
+            )
+        })?;
+        output.truncate(start + filled as usize);
+        if filled == 0 {
+            break;
+        }
+    }
+    Ok((code, output))
 }
 
 /// `hexbot sandbox exec <policy> -- <program> [arguments...]` runs one program

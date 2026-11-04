@@ -437,17 +437,26 @@ pub fn isolation_available() -> bool {
     sandbox().is_some()
 }
 /// The sandbox for session settings: its kind and, on Windows, the helper and
-/// the Bash that Pi's commands run through. Null when there is none.
+/// the Bash that Pi's commands run through, or why they have none: Git Bash
+/// is not installed, or it cannot start inside the sandbox. Null when there
+/// is no sandbox.
 pub fn sandbox_settings() -> Result<serde_json::Value> {
     let Some(kind) = sandbox() else {
         return Ok(serde_json::Value::Null);
     };
     #[cfg(windows)]
-    return Ok(serde_json::json!({
-        "kind": kind,
-        "helper": crate::windows_sandbox::helper()?,
-        "bash": crate::windows_sandbox::git_bash(),
-    }));
+    {
+        let (bash, refusal) = match crate::windows_sandbox::contained_git_bash() {
+            Ok(bash) => (Some(bash), None),
+            Err(error) => (None, Some(error.message)),
+        };
+        Ok(serde_json::json!({
+            "kind": kind,
+            "helper": crate::windows_sandbox::helper()?,
+            "bash": bash,
+            "bashRefusal": refusal,
+        }))
+    }
     #[cfg(not(windows))]
     Ok(serde_json::json!({ "kind": kind }))
 }
@@ -2343,13 +2352,12 @@ fn windows_command(
     Ok(command)
 }
 /// The program a contained command starts, by its full path: `bash` is Git
-/// Bash. A contained command never searches the PATH, which a workspace can
-/// change.
+/// Bash, when it starts inside the sandbox. A contained command never
+/// searches the PATH, which a workspace can change.
 #[cfg(windows)]
 fn windows_program(program: &str) -> Result<PathBuf> {
     if program == "bash" {
-        return crate::windows_sandbox::git_bash()
-            .ok_or_else(|| Error::new(4302, crate::windows_sandbox::NO_GIT_BASH));
+        return crate::windows_sandbox::contained_git_bash();
     }
     let path = Path::new(program);
     if !path.is_absolute() {

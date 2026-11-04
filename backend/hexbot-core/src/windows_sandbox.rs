@@ -2,14 +2,15 @@
 //! through `hexbot sandbox exec` (`windows_container`), with a policy that
 //! `credentials` builds. This module finds what the policy and the helper
 //! need on this computer: the helper itself, Git for Windows and its Bash,
-//! and the managed Python. It reads Git metadata only from local disks, and
-//! names what Windows still refuses.
+//! whether that Bash starts inside the sandbox, and the managed Python. It
+//! reads Git metadata only from local disks, and names what Windows still
+//! refuses.
 use crate::windows_paths::sandbox as rules;
 use crate::{Error, Result};
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
-    sync::OnceLock,
+    sync::{Mutex, OnceLock},
 };
 
 /// Why Auto and Manual refuse local commands: the startup probe could not run
@@ -19,6 +20,9 @@ pub const UNAVAILABLE: &str = "The Windows sandbox could not start, so Auto and 
 /// and never starts on Windows.
 pub const NATIVE_WORKER: &str = "On Windows, code runs on the bot's own computer (Computer use), not on the computer running Hexbot.";
 pub const NO_GIT_BASH: &str = "Shell commands and scripts on Windows run in Git Bash, which is not installed. Install Git for Windows, then try again.";
+/// Why Auto and Manual refuse shell commands when Git Bash is installed but
+/// its probe could not run it in a container (`windows_container::probe_bash`).
+pub const GIT_BASH_UNCONTAINED: &str = "Git Bash cannot start inside the Windows sandbox, so Auto and Manual do not run shell commands or shell scripts on this computer. Bypass runs them without a sandbox.";
 pub const TOO_LARGE: &str = "This workspace has too many protected files for the Windows sandbox to start a command. Choose a smaller workspace.";
 
 static HELPER: OnceLock<PathBuf> = OnceLock::new();
@@ -140,6 +144,31 @@ pub fn git_install() -> Option<PathBuf> {
 /// Git Bash, which runs shell scripts as Pi's Bash does on Windows.
 pub fn git_bash() -> Option<PathBuf> {
     git_install().map(|git| git.join(r"bin\bash.exe"))
+}
+
+/// Git Bash for contained commands, once its probe ran it in a container.
+/// The probe runs once for each Git Bash this process finds, and its reason
+/// goes to the daemon's log when it fails.
+pub fn contained_git_bash() -> Result<PathBuf> {
+    static PROBED: Mutex<Option<(PathBuf, bool)>> = Mutex::new(None);
+    let bash = git_bash().ok_or_else(|| Error::new(4302, NO_GIT_BASH))?;
+    let mut probed = PROBED.lock().unwrap_or_else(|error| error.into_inner());
+    let contained = match &*probed {
+        Some((probed, contained)) if *probed == bash => *contained,
+        _ => {
+            let result = crate::windows_container::probe_bash(&bash);
+            if let Err(error) = &result {
+                eprintln!("{GIT_BASH_UNCONTAINED} {error}");
+            }
+            *probed = Some((bash.clone(), result.is_ok()));
+            result.is_ok()
+        }
+    };
+    if contained {
+        Ok(bash)
+    } else {
+        Err(Error::new(4302, GIT_BASH_UNCONTAINED))
+    }
 }
 
 /// Program Files and the Windows folder are readable to every AppContainer,
