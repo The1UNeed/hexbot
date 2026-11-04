@@ -119,5 +119,7 @@ export interface ChatState extends TurnState {
 }
 export type Rpc = <T = Record<string, unknown>>(
   method: string,
-  params?: Record<string, unknown>
+  params?: Record<string, unknown>,
+  /** Overrides the session's 30 s for a call known to take long. */
+  timeoutMs?: number
 ) => Promise<T>

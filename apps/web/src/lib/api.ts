@@ -371,10 +371,18 @@ export function passwordsDelete(id: string): Promise<unknown> {
   return rpcCall('hexbot.passwords.delete', { id })
 }
 
+/** Signing in and copying run one Bitwarden CLI call each, so it may take minutes. */
+export const VAULTWARDEN_CONNECT_TIMEOUT_MS = 10 * 60_000
+
 export function passwordsConnect(
   input: VaultwardenInput
 ): Promise<{ copied: number; vault: PasswordVault }> {
-  return rpcCall('hexbot.passwords.connect', { ...input })
+  return rpcCall(
+    'hexbot.passwords.connect',
+    { ...input },
+    undefined,
+    VAULTWARDEN_CONNECT_TIMEOUT_MS
+  )
 }
 
 export function passwordsDisconnect(): Promise<{ vault: PasswordVault }> {

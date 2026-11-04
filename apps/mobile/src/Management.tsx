@@ -172,6 +172,8 @@ const passwordBots = (login: PasswordItem, bots: PluginBot[]) => {
   if (on.length <= 2) return on.map(b => b.display_name).join(' and ')
   return `${on.length} bots`
 }
+/** Signing in to Vaultwarden and copying run one Bitwarden CLI call each, so it may take minutes. */
+const VAULTWARDEN_CONNECT_TIMEOUT_MS = 10 * 60_000
 /** With Vaultwarden, the key the page names is its master password. */
 const VAULTWARDEN_STORE_TEXT: Record<string, string> = {
   file: "Your Vaultwarden master password is in a file on the daemon's computer that only you can read.",
@@ -2270,13 +2272,18 @@ export function Management({
       const count = Number(extra.count ?? 0)
       if (vault.kind === 'local')
         save = () =>
-          rpc('hexbot.passwords.connect', {
-            server: str(values.server).trim(),
-            email: str(values.email).trim(),
-            password: str(values.password),
-            ...(str(values.code).trim() ? { code: str(values.code).trim() } : {}),
-            copy: count > 0 && values.copy === true
-          })
+          rpc(
+            'hexbot.passwords.connect',
+            {
+              server: str(values.server).trim(),
+              email: str(values.email).trim(),
+              password: str(values.password),
+              ...(str(values.code).trim() ? { code: str(values.code).trim() } : {}),
+              copy: count > 0 && values.copy === true
+            },
+            // Signing in and copying run one Bitwarden CLI call each.
+            VAULTWARDEN_CONNECT_TIMEOUT_MS
+          )
       content =
         vault.kind === 'vaultwarden' ? (
           <Group footer="Hexbot uses only the items in this account's Hexbot folder. Move an item into it in a Bitwarden app to give it to your bots.">

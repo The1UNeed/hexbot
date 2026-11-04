@@ -116,13 +116,15 @@ export function useMobile() {
     setChoosing(null)
     setLoading(false)
   }, [])
-  const rpc: Rpc = useCallback(async (method, params = {}) => {
+  const rpc: Rpc = useCallback(async (method, params = {}, timeoutMs) => {
     const current = session.current
     if (!current || current.client.connectionState !== 'open')
       throw new Error('Connect to a daemon first.')
     let value: unknown
     try {
-      value = await current.client.request(method, params)
+      value = await (timeoutMs === undefined
+        ? current.client.request(method, params)
+        : current.client.request(method, params, timeoutMs))
     } catch (error) {
       if (
         (method === 'attachments.clear' || method.startsWith('hexbot.jobs.')) &&

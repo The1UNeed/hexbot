@@ -50,6 +50,7 @@ if (command === 'create' && object === 'folder') { const f = { ...stdin(), id: c
 if (command === 'create' && object === 'item' && state.failCreate === 0) { delete state.failCreate; fail('FetchError: connection reset') }
 if (command === 'create' && object === 'item' && state.failCreate > 0) state.failCreate--
 if (command === 'create' && object === 'item') { const i = { ...stdin(), id: crypto.randomUUID(), object: 'item', revisionDate: new Date().toISOString() }; state.items.push(i); ok(i) }
+if (command === 'edit' && state.failEdit) { delete state.failEdit; fail('FetchError: connection reset') }
 if (command === 'edit') { const i = state.items.findIndex(x => x.id === id); if (i < 0) fail('Not found.'); if (state.items[i].deletedDate) fail('You may not edit a deleted item. Use the restore command first.'); state.items[i] = { ...stdin(), id, revisionDate: new Date().toISOString() }; ok(state.items[i]) }
 if (command === 'delete') { const i = state.items.find(x => x.id === id); if (!i) fail('Not found.'); i.deletedDate = new Date().toISOString(); ok({}) }
 fail('unknown command ' + args.join(' '))
@@ -427,6 +428,16 @@ fn a_deleted_bot_leaves_trashed_items_and_they_stay_in_the_trash() {
     let item = fake(h)["items"][0].clone();
     assert!(!item["deletedDate"].is_null(), "back in the trash");
     assert_eq!(field(&item, "hexbot.bots").as_deref(), Some(r#"["fox"]"#));
+    // A change that fails still puts the item back in the trash.
+    edit_fake(h, |state| state["failEdit"] = json!(true));
+    assert_eq!(
+        crate::passwords::forget_bot(h, "fox").unwrap_err().code,
+        5300
+    );
+    assert!(
+        !fake(h)["items"][0]["deletedDate"].is_null(),
+        "still in the trash"
+    );
 }
 
 #[test]

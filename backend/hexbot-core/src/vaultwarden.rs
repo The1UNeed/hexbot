@@ -628,9 +628,15 @@ pub(crate) fn forget_in_trash(
         .collect::<Vec<_>>();
     for (id, record) in passwords::without(named, bot) {
         vault(home, owner, &["restore", "item", &id], None)?;
-        let item = item_of(&record, vault(home, owner, &["get", "item", &id], None)?);
-        vault(home, owner, &["edit", "item", &id], Some(&encoded(&item)))?;
-        vault(home, owner, &["delete", "item", &id], None)?;
+        let changed = vault(home, owner, &["get", "item", &id], None).and_then(|item| {
+            let item = item_of(&record, item);
+            vault(home, owner, &["edit", "item", &id], Some(&encoded(&item)))
+        });
+        // Back to the trash whether or not the change took, so a failure
+        // never leaves a deleted item in use.
+        let trashed = vault(home, owner, &["delete", "item", &id], None);
+        changed?;
+        trashed?;
     }
     Ok(())
 }
