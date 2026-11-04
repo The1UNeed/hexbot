@@ -1319,6 +1319,19 @@ async fn a_message_sent_with_interrupt_stops_the_reply_and_starts_a_fresh_run() 
         .await
         .unwrap_err();
     assert_eq!(refused.code, 4002);
+    // A message that would be refused anyway leaves the reply running.
+    let refused = runtime
+        .call_inner(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":id,"text":"see file","attachments":["gone"],"interrupt":true}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, 4204);
+    let commands = fs::read_to_string(home.path().join("commands.jsonl")).unwrap();
+    assert!(!commands.contains("\"type\":\"abort\""), "{commands}");
+    assert!(!s.state.lock().unwrap().superseded);
 
     let sending = {
         let (runtime, id) = (runtime.clone(), id.clone());

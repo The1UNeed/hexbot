@@ -127,7 +127,15 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
   const sessionId = event.session_id ?? ''
   switch (event.type) {
     case 'message.start':
-      return { ...state, busy: true, streaming: '', interim: [], tools: [], error: null }
+      return {
+        ...state,
+        busy: true,
+        streaming: '',
+        interim: [],
+        tools: [],
+        error: null,
+        turnAt: state.messages.length
+      }
     case 'message.delta':
       return { ...state, busy: true, streaming: state.streaming + text }
     case 'message.interim':
@@ -139,17 +147,20 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
     case 'message.complete': {
       const parts = [...state.interim, text || state.streaming].filter(Boolean)
       if (!parts.length && state.tools.length) parts.push('')
+      const at = Math.min(state.turnAt ?? state.messages.length, state.messages.length)
       return {
         ...state,
+        turnAt: undefined,
         messages: [
-          ...state.messages,
+          ...state.messages.slice(0, at),
           ...parts.map((part, index): ChatMessage => ({
             id: `${sessionId}-${String((event as GatewayEvent & { seq?: number }).seq ?? state.messages.length)}-${index}`,
             role: 'assistant',
             text: part,
             createdAt: Date.now(),
             tools: index === parts.length - 1 ? state.tools : undefined
-          }))
+          })),
+          ...state.messages.slice(at)
         ],
         busy: false,
         streaming: '',

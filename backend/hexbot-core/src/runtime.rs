@@ -3058,11 +3058,20 @@ impl Runtime {
                 // off, as Stop would, and starts the next turn with it. Input
                 // arriving during that Stop waits for it as queued input does;
                 // a `/compact` in progress finishes first.
+                // A message that would be refused anyway leaves the reply alone.
+                let text = required(p, "text")?;
                 let interrupt = p["interrupt"] == true && p["display_kind"] != "hidden";
                 if interrupt {
+                    let sendable = !text.trim().is_empty()
+                        && text.len() <= 1024 * 1024
+                        && recall::refuse_typed(text).is_ok();
                     let working = {
                         let state = s.state.lock().unwrap();
-                        state.busy && !state.compacting && !state.interrupted
+                        let staged = uploads.as_ref().is_none_or(|ids| {
+                            ids.iter()
+                                .all(|id| state.staged.iter().any(|u| &u.id == id))
+                        });
+                        sendable && staged && state.busy && !state.compacting && !state.interrupted
                     };
                     if working {
                         s.state.lock().unwrap().superseded = true;
@@ -3075,7 +3084,7 @@ impl Runtime {
                 let result = self
                     .submit_admitted(
                         &s,
-                        required(p, "text")?,
+                        text,
                         p["display_kind"] == "hidden",
                         p["queued"] == true || interrupt,
                         None,

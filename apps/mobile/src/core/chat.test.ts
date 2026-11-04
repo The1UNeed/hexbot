@@ -9,6 +9,7 @@ import {
   sharedFiles
 } from './chat'
 import type { GatewayEvent } from '@hermes/shared'
+import type { ChatState } from './types'
 const event = (type: string, payload: Record<string, unknown> = {}): GatewayEvent => ({
   type,
   session_id: 's1',
@@ -25,6 +26,21 @@ describe('chat event projection', () => {
     expect(s.messages.map(m => m.text)).toEqual(['Checking files.', 'Found two.'])
     expect(s.busy).toBe(false)
     expect(s.streaming).toBe('')
+  })
+  it('keeps a reply cut off by your next message ahead of that message', () => {
+    let s: ChatState = { ...emptyChat(), messages: [{ id: 'a', role: 'user', text: 'Write an essay' }] }
+    s = reduceChat(s, event('message.start'))
+    s = reduceChat(s, event('message.delta', { text: 'Bridges are' }))
+    s = { ...s, messages: [...s.messages, { id: 'b', role: 'user', text: 'Stop that' }] }
+    s = reduceChat(s, event('message.complete', { text: 'Bridges are' }))
+    s = reduceChat(s, event('message.start'))
+    s = reduceChat(s, event('message.complete', { text: 'A bridge spans a gap.' }))
+    expect(s.messages.map(m => m.text)).toEqual([
+      'Write an essay',
+      'Bridges are',
+      'Stop that',
+      'A bridge spans a gap.'
+    ])
   })
   it('shows Auto mode checking a step and keeps the turn busy after', () => {
     let s = reduceChat(emptyChat(), event('status.update', { kind: 'working', text: 'Working' }))
