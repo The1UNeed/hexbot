@@ -1,5 +1,6 @@
 import { Ionicons } from '@expo/vector-icons'
 import {
+  type ComponentProps,
   createContext,
   type ReactNode,
   useCallback,
@@ -158,7 +159,17 @@ export interface AppScreens {
   onChatClosed: () => void
   /** Files are uploading: the chat stays open until they are sent. */
   uploading: boolean
+  /**
+   * Pages opened from Settings, a profile or a room's settings, in order. On
+   * iOS each is pushed on the system's navigation stack beside the sidebar.
+   */
+  panels: Panel[]
+  /** Draws the page at `index` of `panels` inside `frame`. */
+  renderPanel: (index: number, frame: NonNullable<ManagementFrame>) => ReactNode
+  /** Keeps the first `count` pages, as the system's back button or swipe leaves the rest. */
+  keepPanels: (count: number) => void
 }
+type ManagementFrame = ComponentProps<typeof Management>['frame']
 const Screens = createContext<AppScreens | null>(null)
 export function useAppScreens(): AppScreens {
   const screens = useContext(Screens)
@@ -356,8 +367,11 @@ function MobileApp({ children }: { children?: ReactNode }) {
   const [selected, setSelected] = useState<'chat' | 'settings' | 'library' | null>(null)
   useEffect(() => {
     if (openKey && openKey !== shownChat.current) {
-      if (Platform.OS === 'ios') setSelected('chat')
-      else router.navigate('/chat')
+      if (Platform.OS === 'ios') {
+        setSelected('chat')
+        // Pages pushed beside the list belong to what was there, such as New bot.
+        setPanels([])
+      } else router.navigate('/chat')
     }
     if (!openKey) setSelected(current => (current === 'chat' ? null : current))
     shownChat.current = openKey
@@ -665,39 +679,51 @@ function MobileApp({ children }: { children?: ReactNode }) {
   const licenses = { areas: [area('licenses', 'Licenses', 'document-text-outline')] }
   const settingsGroups: { title?: string; areas: DaemonArea[] }[] = demo
     ? [licenses]
-    : [
-        { areas: [area('about', 'About you', 'person-outline')] },
+    : // The groups of the desktop app's Settings, with the areas this phone has.
+      [
+        {
+          title: 'Models',
+          areas: [
+            area('providers', 'Providers', 'key-outline'),
+            area('usage', 'Usage', 'speedometer-outline')
+          ]
+        },
         {
           title: 'Bots',
           areas: [
-            area('settings', 'Daemon settings', 'options-outline', 'Approvals, budgets'),
-            area('providers', 'Models', 'hardware-chip-outline'),
             area(
               'plugins',
               'Plugins',
               'extension-puzzle-outline',
               'Connectors, MCP servers, skills'
             ),
-            area('passwords', 'Passwords', 'key-outline', 'Sign-ins your bots use')
-          ]
-        },
-        {
-          title: 'Activity',
-          areas: [
-            area('usage', 'Usage', 'stats-chart-outline'),
+            area('passwords', 'Passwords', 'lock-closed-outline', 'Sign-ins your bots use'),
             area('activity', 'Bot activity', 'pulse-outline')
           ]
         },
+        { title: 'Manuals', areas: [area('computer', 'Computer use', 'desktop-outline')] },
         {
-          title: 'This daemon',
+          title: 'Devices',
           areas: [
+            area('network', 'Network', 'wifi-outline'),
             area('devices', 'Paired devices', 'phone-portrait-outline'),
-            area('network', 'Network and pairing', 'wifi-outline'),
-            area('connect', 'Hex Connect', 'cloud-outline'),
-            area('updates', 'Updates', 'download-outline', mobile.info?.version ?? null)
+            area('connect', 'Hex Connect', 'globe-outline')
           ]
         },
-        licenses
+        {
+          title: 'You',
+          areas: [
+            area('about', 'About you', 'person-outline'),
+            area('settings', 'Daemon settings', 'options-outline', 'Approvals, budgets')
+          ]
+        },
+        {
+          title: 'App',
+          areas: [
+            area('updates', 'Updates', 'download-outline', mobile.info?.version ?? null),
+            area('licenses', 'Licenses', 'document-text-outline')
+          ]
+        }
       ]
   const { items: historyItems, visuals } = useMemo(() => {
     const botByName = (name: string) => mobile.bots.find(b => b.name === name)
@@ -1255,6 +1281,9 @@ function MobileApp({ children }: { children?: ReactNode }) {
   const select = (key: string | null) => {
     const row = conversations.find(c => `${c.kind}-${c.id}` === key)
     if (key && key !== 'settings' && key !== 'library' && !row) return
+    // Pages pushed beside the sidebar belong to what was shown there.
+    const shown = selected === 'chat' ? openChatRow || 'chat' : selected
+    if (key === null || key !== shown) setPanels([])
     if (selected === 'chat' && (key === null || key !== openChatRow)) {
       // Leaving a chat closes it, as back does; while a file uploads, it
       // stays. Another chat replaces it, so the column never empties.
@@ -1264,6 +1293,11 @@ function MobileApp({ children }: { children?: ReactNode }) {
     }
     setSelected(row ? 'chat' : (key as 'settings' | 'library' | null))
     if (row && key !== openChatRow) openConversation(row)
+  }
+  const openRoomFromPanel = (room: Room) => {
+    setPanels([])
+    setBotPage(null)
+    act(() => mobile.openRoom(room))
   }
   const homeProps: HomeScreenProps = {
     error: mobile.error,
@@ -1332,7 +1366,21 @@ function MobileApp({ children }: { children?: ReactNode }) {
     settings: settingsScreen,
     library: libraryScreen,
     onChatClosed: closeChat,
-    uploading: !!uploading
+    uploading: !!uploading,
+    panels,
+    renderPanel: (index, frame) =>
+      panels[index] ? (
+        <Management
+          panel={panels[index]}
+          frame={frame}
+          onClose={() => setPanels([])}
+          onBack={() => setPanels(stack => stack.slice(0, index))}
+          onNavigate={navigate}
+          mobile={mobile}
+          onOpenRoom={openRoomFromPanel}
+        />
+      ) : null,
+    keepPanels: count => setPanels(stack => (stack.length > count ? stack.slice(0, count) : stack))
   }
   return (
     <Screens.Provider value={screens}>
@@ -1473,18 +1521,17 @@ function MobileApp({ children }: { children?: ReactNode }) {
             />
           ) : null}
         </Layer>
-        <Management
-          panel={panel}
-          onClose={() => setPanels([])}
-          onBack={panels.length > 1 ? () => setPanels(stack => stack.slice(0, -1)) : undefined}
-          onNavigate={navigate}
-          mobile={mobile}
-          onOpenRoom={room => {
-            setPanels([])
-            setBotPage(null)
-            act(() => mobile.openRoom(room))
-          }}
-        />
+        {/* iOS pushes these pages on its own navigation stack, in `src/shell/SplitView.tsx`. */}
+        {Platform.OS === 'ios' ? null : (
+          <Management
+            panel={panel}
+            onClose={() => setPanels([])}
+            onBack={panels.length > 1 ? () => setPanels(stack => stack.slice(0, -1)) : undefined}
+            onNavigate={navigate}
+            mobile={mobile}
+            onOpenRoom={openRoomFromPanel}
+          />
+        )}
         <ChatChooser
           choices={mobile.choosing?.choices ?? []}
           name={

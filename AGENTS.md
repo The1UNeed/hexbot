@@ -267,9 +267,11 @@ exercise the graph.
 - Native components only where the system has to place something. On iOS
   that is SwiftUI's `NavigationSplitView` (`@expo/ui`,
   `apps/mobile/src/shell/SplitView.tsx`), which puts the list beside the
-  chat on iPhone Duo open and iPad, and the top bars' items, which iOS moves
-  into iPhone Duo's side rail. Everything inside the columns, the list, its
-  grid button and Search, the chat and its composer, is Hexbot's own.
+  chat on iPhone Duo open and iPad, its navigation stack, which pushes
+  settings areas, profiles and room settings beside the list, and the top
+  bars' items, which iOS moves into iPhone Duo's side rail. Everything inside
+  the columns, the list, its grid button and Search, the chat and its
+  composer, every settings page, is Hexbot's own.
 
 ## Cursor Cloud specific instructions
 

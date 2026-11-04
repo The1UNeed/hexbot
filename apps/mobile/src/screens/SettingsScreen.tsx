@@ -24,6 +24,7 @@ export interface DaemonArea {
   key:
     | 'about'
     | 'activity'
+    | 'computer'
     | 'connect'
     | 'connectors'
     | 'devices'
