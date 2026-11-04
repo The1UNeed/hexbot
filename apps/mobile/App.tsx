@@ -1098,10 +1098,6 @@ function MobileApp({ children }: { children?: ReactNode }) {
           })
         }
         onConnectSignIn={() => act(signIn)}
-        onDemo={() => {
-          setDemo(true)
-          setAddDaemon(false)
-        }}
         pending={
           mobile.loading
             ? 'pair'
