@@ -692,7 +692,8 @@ function ItemForm({
     }
 
     if (kind === 'ssh_key') {
-      if (privateKey.trim()) {
+      // A key typed under Paste, then left for Make a new key, is not sent.
+      if ((item || paste) && privateKey.trim()) {
         input.private_key = privateKey
         input.passphrase = passphrase
       } else if (!item) {

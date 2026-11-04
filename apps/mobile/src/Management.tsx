@@ -1942,7 +1942,8 @@ export function Management({
           if (str(values.password)) change.password = str(values.password)
           if (str(values.code).trim()) change.code = str(values.code)
         } else if (itemKind === 'ssh_key') {
-          if (str(values.private_key).trim()) {
+          // A key typed under Paste, then left for a new key, is not sent.
+          if ((editing || values.paste === true) && str(values.private_key).trim()) {
             change.private_key = str(values.private_key)
             change.passphrase = str(values.passphrase)
           } else if (!editing) change.generate = true

@@ -2065,31 +2065,38 @@ pub async fn run_with_keys(
     let _acting = Acting { home };
     let turn = Arc::new(turn);
     let server = mcp_server(home, bot, cfg, env)?;
-    // What the first script answers may repeat a key; it never goes back.
-    request(
-        home,
-        bot,
-        &server,
-        "computer_shell",
-        json!({"command": stage}),
-        &turn,
-    )
-    .await
-    .map_err(|_| {
-        Error::new(
-            4211,
-            "Could not pass the keys to the computer. Take a screenshot and try again.",
+    // Both calls run to their end, holding the turn, even if the bot is
+    // stopped between them: the second is the one that deletes the keys.
+    let (home, bot) = (home.to_owned(), bot.to_owned());
+    tokio::spawn(async move {
+        // What the first script answers may repeat a key; it never goes back.
+        request(
+            &home,
+            &bot,
+            &server,
+            "computer_shell",
+            json!({"command": stage}),
+            &turn,
         )
-    })?;
-    request(
-        home,
-        bot,
-        &server,
-        "computer_shell",
-        json!({"command": run}),
-        &turn,
-    )
+        .await
+        .map_err(|_| {
+            Error::new(
+                4211,
+                "Could not pass the keys to the computer. Take a screenshot and try again.",
+            )
+        })?;
+        request(
+            &home,
+            &bot,
+            &server,
+            "computer_shell",
+            json!({"command": run}),
+            &turn,
+        )
+        .await
+    })
     .await
+    .map_err(|_| Error::new(4211, "The computer action stopped unexpectedly."))?
 }
 
 /// One call to the computer. It runs to its end even if the bot is stopped,

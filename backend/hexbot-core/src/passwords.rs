@@ -50,6 +50,8 @@ const MAX_KEY: usize = 16 * 1024;
 /// Variables a key may not take: the shell and ssh need them.
 const RESERVED_VARIABLES: &[&str] = &[
     "BASH_ENV",
+    // The folder variable of the script that runs a command with keys.
+    "d",
     "ENV",
     "HOME",
     "IFS",
@@ -1382,6 +1384,9 @@ RRt6ydivhAlY3kFw==
         );
         assert!(
             err(json!({"kind":"api_key","title":"x","key":"sk-1","env":"PATH"})).contains("shell")
+        );
+        assert!(
+            err(json!({"kind":"api_key","title":"x","key":"sk-1","env":"d"})).contains("shell")
         );
         let key = save(
             h,

@@ -215,6 +215,18 @@ describe('Settings, Passwords', () => {
       })
     )
     expect(await screen.findByRole('alert')).toHaveTextContent("doesn't open")
+
+    // Back to Make a new key, the pasted key is not sent.
+    fireEvent.click(screen.getByRole('button', { name: 'Make a new key' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() =>
+      expect(passwordsSave).toHaveBeenLastCalledWith({
+        generate: true,
+        kind: 'ssh_key',
+        notes: '',
+        title: 'Server'
+      })
+    )
   })
 
   it('adds an API key, naming its variable from its name', async () => {
