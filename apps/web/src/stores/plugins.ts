@@ -15,7 +15,7 @@ import {
   pluginsRemove,
   pluginsSetBots
 } from '../lib/api'
-import { pluginRows } from '../lib/plugin-rows'
+import { pluginRows, withWaiting } from '../lib/plugin-rows'
 import type { Plugin, PluginKind } from '../lib/types'
 
 import { connectionRead } from './connection'
@@ -86,7 +86,8 @@ export const usePlugins = create<PluginsState>((set, get) => {
       replace(key, { ...plugin, bots })
 
       try {
-        await pluginsSetBots(plugin.kind as PluginKind, plugin.id, bots)
+        // A grant still waiting for setup is kept; the picker does not show it.
+        await pluginsSetBots(plugin.kind as PluginKind, plugin.id, withWaiting(plugin, bots))
       } catch (error) {
         replace(key, plugin)
 

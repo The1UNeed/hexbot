@@ -365,6 +365,8 @@ export interface Connector {
   ready?: boolean
   /** The bots it is set up for, as through a key in a bot's own settings. */
   ready_bots?: string[]
+  /** On for these bots but waiting for setup: kept when the bots change, and given once set up. */
+  waiting_bots?: string[]
   scope: 'bot' | 'daemon'
   state: ConnectorState
   state_text: string
@@ -413,6 +415,8 @@ export interface PluginsList {
     ready: boolean
     /** A package of skills alone: the bots it is set up for, as through a key in a bot's own settings. */
     ready_bots?: string[]
+    /** On for these bots but waiting for setup: kept when the bots change, and given once set up. */
+    waiting_bots?: string[]
     server: null | PluginServer
     skills: { description: string; name: string }[]
     state: ConnectorState
@@ -424,6 +428,8 @@ export interface PluginsList {
     id: string
     kind: 'skill'
     ready_bots?: string[]
+    /** On for these bots but waiting for setup: kept when the bots change, and given once set up. */
+    waiting_bots?: string[]
     source?: string
   })[]
 }
@@ -449,6 +455,8 @@ export interface Plugin {
   ready: boolean
   /** The bots it can be given to while it is not set up for every bot. */
   ready_bots?: string[]
+  /** On for these bots but waiting for setup: kept when the bots change, and given once set up. */
+  waiting_bots?: string[]
   server?: null | PluginServer
   skills?: { description: string; name: string }[]
   source?: string

@@ -609,12 +609,16 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
         // own `.env` sets it up for that bot alone.
         let mut bots = vec![];
         let mut ready_bots = vec![];
+        // On for a bot but waiting for its key: kept, and given once set up.
+        let mut waiting_bots = vec![];
         for n in &names {
             if has_keys(home, Some(n), &required)? {
                 ready_bots.push(n.clone());
                 if enabled(home, n, id)? {
                     bots.push(n.clone())
                 }
+            } else if enabled(home, n, id)? {
+                waiting_bots.push(n.clone());
             }
         }
         out.push(json!({
@@ -633,6 +637,7 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
             "enabled_for_bot": bot.map(|b| bots.iter().any(|n| n == b)),
             "enabled_bots": bots,
             "ready_bots": ready_bots,
+            "waiting_bots": waiting_bots,
             "last_error": err.map(|e| {
                 json!({
                 "text":e["text"],

@@ -62,18 +62,24 @@ fn connector_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<
         }
         // A switched-off server is still given to the bots on its stored list;
         // one still waiting for a value is given to nobody yet.
-        let bots = match row["id"].as_str().and_then(|id| id.strip_prefix("mcp:")) {
+        let id = row["id"].as_str().unwrap_or("").to_owned();
+        let bots = match id.strip_prefix("mcp:") {
             Some(server)
                 if connectors::missing_values(&config["mcp_servers"][server]).is_empty() =>
             {
                 json!(connectors::mcp_bots(home, server)?)
             }
-            Some(_) => json!([]),
+            Some(server) => {
+                row["waiting_bots"] = only(&json!(connectors::mcp_bots(home, server)?), own);
+                json!([])
+            }
             None => row["enabled_bots"].clone(),
         };
         row["bots"] = only(&bots, own);
-        if row["ready_bots"].is_array() {
-            row["ready_bots"] = only(&row["ready_bots"], own);
+        for key in ["ready_bots", "waiting_bots"] {
+            if row[key].is_array() {
+                row[key] = only(&row[key], own);
+            }
         }
     }
     Ok(rows)
@@ -113,6 +119,17 @@ fn skill_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<Valu
         row["id"] = json!(skill.name);
         row["bots"] = json!(given);
         row["ready_bots"] = json!(ready_bots);
+        // On for a bot but waiting for what it needs: kept, and given once set up.
+        row["waiting_bots"] = json!(
+            per_bot
+                .iter()
+                .filter(|(_, list)| {
+                    list.iter()
+                        .any(|s| s.name == skill.name && s.enabled_for_bot && !s.ready)
+                })
+                .map(|(b, _)| *b)
+                .collect::<Vec<_>>()
+        );
         row.as_object_mut().unwrap().remove("path");
         rows.push(row);
     }
@@ -958,14 +975,17 @@ fn package_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<Va
             .collect::<Vec<_>>();
         // Until its server has its values, or one of its skills what it
         // needs, it is given to nobody, or only to the bots set up for it.
-        let given = if waiting {
-            vec![]
-        } else {
-            package_grants(own, &server_bots, &per_bot, &parts)
-                .into_iter()
-                .filter(|b| !unready_skills || ready_bots.contains(b))
-                .collect()
-        };
+        let grants = package_grants(own, &server_bots, &per_bot, &parts);
+        let given = grants
+            .iter()
+            .filter(|b| !waiting && (!unready_skills || ready_bots.contains(b)))
+            .cloned()
+            .collect::<Vec<_>>();
+        // On for a bot but waiting for setup: kept, and given once set up.
+        let waiting_bots = grants
+            .into_iter()
+            .filter(|b| !given.contains(b))
+            .collect::<Vec<_>>();
         let (state, state_text) = match server {
             Some(c) => (c["state"].clone(), c["state_text"].clone()),
             None if unready_skills => (
@@ -998,6 +1018,7 @@ fn package_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<Va
         if server.is_none() {
             row["ready_bots"] = json!(ready_bots);
         }
+        row["waiting_bots"] = json!(waiting_bots);
         if let Some(bot) = bot {
             row["enabled_for_bot"] = json!(given.iter().any(|b| b == bot));
         }

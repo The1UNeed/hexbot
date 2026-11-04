@@ -1160,7 +1160,10 @@ bot, including bots created later; a list keeps bots created later off.
   have what the skill needs. A package's skills also wait for the values its
   server was added without. Connector, skill and skills-only package rows add
   `ready_bots`, the bots it is set up for, as through a key in a bot's own `.env`: those bots
-  can be given it while `ready` is false. With `bot`, rows add
+  can be given it while `ready` is false. Every row adds `waiting_bots`, the
+  bots it is on for but not yet set up for, which it reaches once set up;
+  clients add them to the `bots` they send to `set_bots`, so changing one bot
+  keeps them. With `bot`, rows add
   `enabled_for_bot`.
 - `hexbot.plugins.set_bots {kind, id, bots}` → `{plugin: Plugin}`. Gives the
   plugin to exactly the caller's bots in `bots` and takes it from the
