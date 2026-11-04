@@ -930,16 +930,23 @@ fn package_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<Va
         } else {
             vec![]
         };
-        let ready = server.is_none_or(|c| c["ready"] == true);
+        // A package of skills alone is set up once one of its skills is.
+        let unready_skills = server.is_none() && !parts.is_empty() && !parts.iter().any(|s| s.ready);
+        let ready = server.is_none_or(|c| c["ready"] == true) && !unready_skills;
         let waiting = server.is_some() && !connectors::missing_values(entry).is_empty();
-        // Until its server has its values, it is given to nobody.
-        let given = if waiting {
+        // Until its server has its values, or one of its skills what it
+        // needs, it is given to nobody.
+        let given = if waiting || unready_skills {
             vec![]
         } else {
             package_grants(own, &server_bots, &per_bot, &parts)
         };
         let (state, state_text) = match server {
             Some(c) => (c["state"].clone(), c["state_text"].clone()),
+            None if unready_skills => (
+                json!("not_set_up"),
+                json!(format!("Needs {}", needs(&parts[0].missing))),
+            ),
             None => (
                 json!("ready"),
                 json!(format!(
@@ -969,6 +976,18 @@ fn package_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<Va
         rows.push(row);
     }
     Ok(rows)
+}
+
+/// What a skill still needs, as its setup line names it.
+fn needs(missing: &[skills::Requirement]) -> String {
+    missing
+        .iter()
+        .map(|need| match need {
+            skills::Requirement::Env(name) | skills::Requirement::Command(name) => name.clone(),
+            skills::Requirement::Platform(list) => list.join(" or "),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The bots a package is stored as given to, set up or not: on for a bot
