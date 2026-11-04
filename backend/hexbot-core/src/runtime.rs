@@ -1946,6 +1946,12 @@ impl Runtime {
                 self.reload(&s);
             }
             s.run_ended.send_modify(|v| *v += 1);
+            if let Err(error) = self.mark_done(&s, common::now()) {
+                eprintln!(
+                    "Compaction of {} not marked done: {}",
+                    s.stored, error.message
+                );
+            }
             match result {
                 Ok(()) => {
                     self.emit(
@@ -3172,6 +3178,22 @@ impl Runtime {
             _ => Err(Error::new(-32601, "unknown runtime method")),
         }
     }
+    /// A turn in `s` ended at `now`: the chat shows unread until someone sees
+    /// it. Called before the turn's `message.complete`, because an app with the
+    /// chat on screen marks it read at once and a later stamp would undo that.
+    fn mark_done(&self, s: &Live, now: f64) -> Result<()> {
+        let conn = db::open(&self.home)?;
+        conn.execute(
+            "UPDATE sections SET updated_at=?,done_at=? WHERE id=?",
+            params![now, now, s.stored],
+        )?;
+        conn.execute(
+            "UPDATE bots SET last_activity_at=? WHERE name=?",
+            params![now, s.bot],
+        )?;
+        Ok(())
+    }
+
     fn incident(&self, s: &Live, text: &str) {
         if let Ok(incident) = crate::settings::record_incident(
             &self.home,
@@ -5065,21 +5087,8 @@ impl Runtime {
                     eprintln!("Usage unavailable for {}: {}", s.stored, error.message);
                     json!({})
                 });
-                // Stamped before anyone hears it finished: an app with the chat
-                // on screen marks it read at once, and a later stamp would undo that.
                 let now = common::now();
-                let stamped = (|| -> Result<()> {
-                    let conn = db::open(&self.home)?;
-                    conn.execute(
-                        "UPDATE sections SET updated_at=?,done_at=? WHERE id=?",
-                        params![now, now, s.stored],
-                    )?;
-                    conn.execute(
-                        "UPDATE bots SET last_activity_at=? WHERE name=?",
-                        params![now, s.bot],
-                    )?;
-                    Ok(())
-                })();
+                let stamped = self.mark_done(s, now);
                 self.emit(s, "message.complete", with_fields(json!({"text":text,"error":error,"status":if error.is_some(){"error"}else{"complete"},"usage":usage}), &fields));
                 self.emit_usage(s, false);
                 self.emit(s, "status.update", json!({"kind":"idle","text":""}));
@@ -5343,6 +5352,12 @@ fn pump(
                 };
                 runtime.expired(&s, pending);
                 if busy {
+                    if let Err(stamp) = runtime.mark_done(&s, common::now()) {
+                        eprintln!(
+                            "Failed turn in {} not marked done: {}",
+                            s.stored, stamp.message
+                        );
+                    }
                     runtime.incident(&s, &error.message);
                     runtime.emit(
                         &s,

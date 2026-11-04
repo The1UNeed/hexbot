@@ -5864,6 +5864,22 @@ emit({type:'response',id:c.id,command:c.type,success:true,data:{}});});
         if answer == "ok" {
             assert!(texts.iter().any(|t| t == "Older messages summarised."));
         }
+        // A compaction, done or failed, shows finished until it is read; no
+        // app's touch does that (`hexbot.sections.touch`). A refused message
+        // never started: its sender has the error.
+        let conn = db::open(&runtime.home).unwrap();
+        let done: Option<f64> = conn
+            .query_row("SELECT done_at FROM sections WHERE id='first'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            done.is_some(),
+            text == "/compact",
+            "{text} ending with {answer}"
+        );
+        conn.execute("UPDATE sections SET done_at=NULL WHERE id='first'", [])
+            .unwrap();
     }
     assert!(Arc::ptr_eq(&s, &runtime.sessions.lock().unwrap()["first"]));
     assert!(!s.state.lock().unwrap().busy);
