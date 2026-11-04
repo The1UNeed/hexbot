@@ -2607,13 +2607,19 @@ async fn browser_tool(
     Ok(result)
 }
 type FilledMap = HashMap<(PathBuf, String, String), Vec<String>>;
-/// Secrets typed into each section's browser, and API keys its commands
-/// ran with. A page script can read a field back and a command can save a
-/// key in a file, so every later browser and computer result has them
-/// blanked out.
+/// Secrets typed into each section's browser. A page script can read a
+/// field back, so every later browser and computer result has them blanked
+/// out until the browser closes.
 fn filled() -> &'static Mutex<FilledMap> {
     static FILLED: OnceLock<Mutex<FilledMap>> = OnceLock::new();
     FILLED.get_or_init(Default::default)
+}
+/// API keys each section's commands ran with. A command can save one in a
+/// file on the bots' computer, which outlives the section's processes, so
+/// these stay blanked for as long as the daemon runs.
+fn ran_with() -> &'static Mutex<FilledMap> {
+    static RAN_WITH: OnceLock<Mutex<FilledMap>> = OnceLock::new();
+    RAN_WITH.get_or_init(Default::default)
 }
 const BLANKED: &str = "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}";
 /// Blanks each secret, longest first, as typed and as it reads inside a
@@ -2676,12 +2682,16 @@ async fn scrub_filled(
     stored: &str,
     result: Result<Value>,
 ) -> Result<Value> {
-    let secrets = filled()
-        .lock()
-        .await
-        .get(&(home.to_owned(), bot.to_owned(), stored.to_owned()))
-        .cloned()
-        .unwrap_or_default();
+    let key = (home.to_owned(), bot.to_owned(), stored.to_owned());
+    let mut secrets = filled().lock().await.get(&key).cloned().unwrap_or_default();
+    secrets.extend(
+        ran_with()
+            .lock()
+            .await
+            .get(&key)
+            .cloned()
+            .unwrap_or_default(),
+    );
     if secrets.is_empty() {
         return result;
     }
@@ -2827,7 +2837,8 @@ pub async fn computer_fill(
 /// Runs a shell command on the bots' computer with saved keys: `vars` as
 /// environment variables, `ssh_keys` in an ssh-agent for that command only
 /// (`computers::run_with_keys`). The variables' values are blanked from its
-/// output and from every later browser and computer result in the section.
+/// output and from every later browser and computer result in the section,
+/// even after its processes stop and the chat resumes.
 pub async fn computer_run(
     home: &Path,
     bot: &str,
@@ -2842,8 +2853,8 @@ pub async fn computer_run(
     let cfg = common::merged_config(home, bot)?;
     let env = connectors::credentials(home, bot)?;
     {
-        let mut filled = filled().lock().await;
-        let secrets = filled
+        let mut ran_with = ran_with().lock().await;
+        let secrets = ran_with
             .entry((home.to_owned(), bot.to_owned(), stored.to_owned()))
             .or_default();
         for (_, value) in vars {
@@ -2860,6 +2871,29 @@ pub async fn computer_run(
 #[cfg(test)]
 mod blank_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn keys_a_command_ran_with_stay_blanked_after_the_session_closes() {
+        let home = tempfile::tempdir().unwrap();
+        let key = (home.path().to_owned(), "owl".to_owned(), "s1".to_owned());
+        ran_with()
+            .lock()
+            .await
+            .insert(key.clone(), vec!["sk-saved-in-a-file".to_owned()]);
+        filled()
+            .lock()
+            .await
+            .insert(key, vec!["typed-password".to_owned()]);
+        close_browsers(home.path(), "s1").await;
+        let read =
+            json!({"content": [{"type": "text", "text": "sk-saved-in-a-file typed-password"}]});
+        let shown = scrub_filled(home.path(), "owl", "s1", Ok(read))
+            .await
+            .unwrap();
+        let text = shown["content"][0]["text"].as_str().unwrap();
+        assert!(!text.contains("sk-saved-in-a-file"), "{text}");
+        assert!(text.contains("typed-password"), "the browser's go with it");
+    }
 
     #[test]
     fn filled_secrets_are_blanked_however_they_are_written() {

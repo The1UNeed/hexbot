@@ -2089,7 +2089,7 @@ pub async fn run_with_keys(
                 &bot,
                 &server,
                 "computer_shell",
-                json!({"command": cleanup}),
+                json!({"command": &cleanup}),
                 &turn,
             )
             .await;
@@ -2098,7 +2098,7 @@ pub async fn run_with_keys(
                 "Could not pass the keys to the computer. Take a screenshot and try again.",
             ));
         }
-        request(
+        let ran = request(
             &home,
             &bot,
             &server,
@@ -2106,7 +2106,20 @@ pub async fn run_with_keys(
             json!({"command": run}),
             &turn,
         )
-        .await
+        .await;
+        // A run that never started its shell never ran its own cleanup.
+        if ran.is_err() {
+            let _ = request(
+                &home,
+                &bot,
+                &server,
+                "computer_shell",
+                json!({"command": &cleanup}),
+                &turn,
+            )
+            .await;
+        }
+        ran
     })
     .await
     .map_err(|_| Error::new(4211, "The computer action stopped unexpectedly."))?
