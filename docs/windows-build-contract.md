@@ -520,7 +520,10 @@ owner, HTTP install ID/PID and unchanged running/port metadata. The executable
 must resolve inside this home's canonical managed runtime and match the live
 process image. A held home with unreadable, stale or inconsistent evidence is
 an error, never permission to spawn or stop a process. The daemon republishes
-its running record after HTTP startup so event-based observers can check again.
+its running record after HTTP startup so event-based observers can check
+again. It publishes its running record and serve-state.json with std's
+rename, which replaces a file every reader opened with delete sharing; a
+failed republication is logged, never fatal.
 The task fixture also binds that process to the verified scheduler instance and
 excludes prior desktop/task PIDs. The a305 native run failed before either
 repair because its old fixture accepted an exited PID from a retained record;
