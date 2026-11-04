@@ -3058,11 +3058,14 @@ impl Runtime {
                 // off, as Stop would, and starts the next turn with it. Input
                 // arriving during that Stop waits for it as queued input does;
                 // a `/compact` in progress finishes first.
-                // A message that would be refused anyway leaves the reply alone.
+                // A message that would be refused anyway leaves the reply
+                // alone, and so does `/compact`, which waits for an idle bot.
                 let text = required(p, "text")?;
                 let interrupt = p["interrupt"] == true && p["display_kind"] != "hidden";
                 if interrupt {
-                    let sendable = !text.trim().is_empty()
+                    let compact = text.trim() == "/compact" || text.trim().starts_with("/compact ");
+                    let sendable = !compact
+                        && !text.trim().is_empty()
                         && text.len() <= 1024 * 1024
                         && recall::refuse_typed(text).is_ok();
                     let working = {
