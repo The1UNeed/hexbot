@@ -347,6 +347,7 @@ const LIST_DIRECTORY: u32 = 0x0001;
 /// entries, whatever the entry's own DACL says.
 const DELETE_CHILD: u32 = 0x0040;
 const READ_ATTRIBUTES: u32 = 0x0080;
+const FILE_TRAVERSE: u32 = 0x0020;
 const DELETE: u32 = 0x0001_0000;
 /// Read, list, traverse and execute: also all Git metadata keeps.
 pub const READ: u32 = 0x0012_00A9;
@@ -1104,6 +1105,7 @@ impl GrantKind {
             Self::Modify => Change::Allow(MODIFY),
             Self::DenyWrite => Change::Cap(READ),
             Self::DenyAll => Change::Cap(0),
+            Self::Traverse => Change::Allow(FILE_TRAVERSE),
         }
     }
 }
@@ -1197,6 +1199,47 @@ fn ensure(
             path.display()
         )));
     }
+    journal.roots[index].complete = true;
+    write_journal(home, journal)
+}
+
+/// Grant `kind` on `path`'s own entry alone, never what it holds: the
+/// pass-through folders above a container's private folder. Journaled like
+/// every grant, so reset takes it back.
+#[allow(clippy::too_many_arguments)]
+fn ensure_entry(
+    home: &Path,
+    journal: &mut Journal,
+    path: &Path,
+    profile: &str,
+    kind: GrantKind,
+    sid: &ContainerSid,
+) -> io::Result<()> {
+    let change = kind.change();
+    let index = journal
+        .roots
+        .iter()
+        .position(|root| root.path == path && root.profile == profile && root.kind == kind);
+    if let Some(index) = index
+        && journal.roots[index].complete
+        && applied(path, change, sid)?
+    {
+        return Ok(());
+    }
+    let index = index.unwrap_or_else(|| {
+        journal.roots.push(JournalEntry {
+            path: path.to_owned(),
+            profile: profile.to_owned(),
+            kind,
+            complete: false,
+        });
+        journal.roots.len() - 1
+    });
+    journal.roots[index].complete = false;
+    write_journal(home, journal)?;
+    let root = open_root(path)?;
+    let sids = [sid.as_ptr()];
+    change_object(root.as_raw_handle(), true, change, None, false, &sids)?;
     journal.roots[index].complete = true;
     write_journal(home, journal)
 }
@@ -1510,6 +1553,34 @@ pub fn prepare(policy: &Policy) -> io::Result<Container> {
     }
     for root in &deny_all {
         grant(&root.canonical, GrantKind::DenyAll, cap_of(root))?;
+    }
+    // A container reaches its private folder by name, and its token has no
+    // traverse bypass: each ancestor between the home and that folder gets
+    // pass-through alone, never list or read.
+    let mut ancestors = Vec::new();
+    let mut chain = private.parent().map(Path::to_path_buf);
+    while let Some(dir) = chain {
+        if dir == home {
+            ancestors.push(dir);
+            break;
+        }
+        chain = dir.parent().map(Path::to_path_buf);
+        if chain.is_none() {
+            break;
+        }
+        ancestors.push(dir);
+    }
+    for dir in ancestors.iter().rev() {
+        if let Ok(canonical) = fs::canonicalize(dir) {
+            ensure_entry(
+                &home,
+                &mut journal,
+                &canonical,
+                &profile,
+                GrantKind::Traverse,
+                &sid,
+            )?;
+        }
     }
     Ok(Container {
         sid,

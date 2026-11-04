@@ -70,6 +70,9 @@ pub mod sandbox {
         Modify,
         DenyWrite,
         DenyAll,
+        /// Pass-through alone: the folder may be crossed on the way to a
+        /// granted one, never listed or read.
+        Traverse,
     }
     impl GrantKind {
         /// Whether the grant protects a path rather than opening one: it caps

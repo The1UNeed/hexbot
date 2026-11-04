@@ -65,7 +65,11 @@ What is guaranteed:
   way to Git metadata refuses the command.
 - **Protection is the absence of an allow.** An AppContainer's access check
   ignores deny entries for its own SID, so Hexbot writes none: Git metadata
-  and secrets are protected by what their allow entries leave out. A grant
+  and secrets are protected by what their allow entries leave out. No grant
+  includes the right to delete a folder's entries, which Windows honours
+  whatever an entry's own permissions say, so a command deletes or moves an
+  entry only when that entry allows it, and Git metadata and secrets never
+  do. A grant
   meets each protected path by its file identity while it walks, wherever it
   is, and writes only what that path keeps below it, so no grant ever opens
   one, not even for a moment while another command of the same container
@@ -269,8 +273,11 @@ Residual risks:
   DACL is shared with names outside the tree. A link made later by a process
   outside the sandbox to a file a container was granted shares that grant.
 - **Moved files.** Grants are written onto each file. A file moved out of a
-  granted root keeps them until reset; a file moved in has none until the
-  next command of that policy walks the root again.
+  granted root keeps them until reset; a file moved in has none, so a command
+  can neither read, change nor delete it until the next command of that
+  policy walks the root again. The pass-through entries above a container's
+  private folder name the folders alone: they let a command cross to what it
+  was granted, never list or read what is on the way.
 - **New metadata and secrets.** `.git` folders and `.env` files created
   while a command runs inherit the root's allow. They lose it from the next
   command on.

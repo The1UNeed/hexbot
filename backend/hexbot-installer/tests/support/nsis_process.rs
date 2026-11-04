@@ -131,14 +131,21 @@ pub fn terminal(
         .env("HEXBOT_SERVICE_ROOT", &installer.paths.service_root)
         .env("HEXBOT_SERVICE_NO_LOAD", "1")
         .env("HEXBOT_CLI_NO_PATH", "1")
-        .env("HEXBOT_UPDATE_URL", &installer.base_url);
+        .env("HEXBOT_UPDATE_URL", &installer.base_url)
+        // A PowerShell 7 runner's module path reaches Windows PowerShell 5.1
+        // through this Rust child, and 5.1 then resolves incompatible
+        // same-name modules (about_PSModulePath); a stripped standard-user
+        // context can pass no path at all. Name 5.1's system modules for
+        // every child; production is unchanged.
+        .env(
+            "PSModulePath",
+            std::path::PathBuf::from(
+                std::env::var_os("SystemRoot").unwrap_or_default(),
+            )
+            .join("system32\\WindowsPowerShell\\v1.0\\Modules"),
+        );
     if let Some(policy) = policy {
         command.env("PSExecutionPolicyPreference", policy);
-        // Controlled policy scenarios only. A PowerShell 7 runner's module
-        // path reaches Windows PowerShell 5.1 through this Rust child, and 5.1
-        // then resolves incompatible same-name modules (about_PSModulePath).
-        // Removing it lets 5.1 build its default path; production is unchanged.
-        command.env_remove("PSModulePath");
     }
     let stdout = tempfile::tempfile().unwrap();
     let stderr = tempfile::tempfile().unwrap();
