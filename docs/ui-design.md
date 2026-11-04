@@ -219,8 +219,9 @@ with Viewport Segments place both poses on the exact halves.
   documents blue, spreadsheets green, presentations orange, code violet),
   its name cut in the middle so the extension stays ("esp32-c6-mini-1_mini-1u_d…
   .pdf"), and its size ("951kB"). A card opens the file beside the chat.
-  Each file the bot wrote or edited in a message is the same card under its
-  reply, with its kind in place of the size. The composer shows pictures as
+  Each file the bot shared in a message (`hexbot_share_file`) is the same
+  card under its reply, with its kind in place of the size; files it only
+  wrote or edited along the way, such as scripts and tests, do not show. The composer shows pictures as
   thumbnails and other files as cards, each with a remove button. A room's
   cards only name the file.
 - Files beside the chat open as tabs in the side panel, next to any

@@ -304,19 +304,23 @@ describe('MessageRow files', () => {
     expect(video).toHaveAttribute('controls')
   })
 
-  it('offers the files the bot wrote, and none in a room', () => {
+  it('offers the files the bot shared, not the ones it only wrote, and none in a room', () => {
+    const step = (name: string, path: string, toolId: string) => ({
+      args: { content: '# Plan', path },
+      durationS: 0,
+      name,
+      result: null,
+      startedAt: 0,
+      status: 'ok' as const,
+      toolId
+    })
+
     const wrote = message({
       text: 'I drafted it.',
       toolCalls: [
-        {
-          args: { content: '# Plan', path: '/work/plan.md' },
-          durationS: 0,
-          name: 'write',
-          result: null,
-          startedAt: 0,
-          status: 'ok',
-          toolId: 'w'
-        }
+        step('write', '/work/make_plan.py', 'w1'),
+        step('write', '/work/plan.md', 'w2'),
+        step('hexbot_share_file', '/work/plan.md', 's')
       ]
     })
 
@@ -326,6 +330,7 @@ describe('MessageRow files', () => {
       <MessageRow message={wrote} onFile={onFile} onImage={() => {}} onRetry={() => {}} />
     )
 
+    expect(screen.queryByRole('button', { name: 'Open make_plan.py beside the chat' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Open plan.md beside the chat' }))
     expect(onFile).toHaveBeenCalledWith({
       mime: 'text/markdown',

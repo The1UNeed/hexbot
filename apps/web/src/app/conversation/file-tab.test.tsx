@@ -84,19 +84,23 @@ function transcript(toolCalls: ToolCall[], streaming = false) {
 }
 
 describe('filesOf', () => {
-  it('lists each file the bot wrote or edited once, live or restored', () => {
+  it('lists each file the bot shared once, live or restored, and none it only wrote', () => {
+    const share = 'hexbot_share_file'
+
     expect(
       filesOf({
         toolCalls: [
           call({ toolId: 'a' }),
-          call({ args: '{"path":"/work/plan.md"}', name: 'edit', toolId: 'b' }),
-          call({ args: { path: 'notes/pins.csv' }, name: 'edit', toolId: 'c' }),
+          call({ args: { path: '/work/test_plan.py' }, name: 'write', toolId: 'w' }),
+          call({ args: '{"path":"/work/plan.md"}', name: share, toolId: 'b' }),
+          call({ args: { path: 'notes/pins.csv' }, name: share, toolId: 'c' }),
+          call({ args: { path: 'notes/pins.csv' }, name: share, toolId: 'c2' }),
           call({
             args: { path: '/s/attachments/4157abc3ebd7498086605acf7dd52ace-bench-plan.md' },
-            name: 'edit',
+            name: share,
             toolId: 'f'
           }),
-          call({ name: 'write', status: 'error', toolId: 'd', args: { path: '/work/bad.md' } }),
+          call({ name: share, status: 'error', toolId: 'd', args: { path: '/work/bad.md' } }),
           call({ name: 'read', toolId: 'e', args: { path: '/work/read.md' } })
         ]
       })

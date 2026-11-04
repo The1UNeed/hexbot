@@ -993,6 +993,16 @@ its frame to another site; the Electron app's own policy does the same, it
 serves the frame page without that policy, and it blocks any frame
 navigation other than to it.
 
+The `hexbot_share_file {path}` tool hands the user one file the bot chose: a
+document, an export, a finished result. Like a visual it is a base tool, left
+out of rooms, threads between bots, subagents and scheduled jobs, and the file
+stays in the call's arguments. The daemon checks that `path` names an existing
+file `hexbot.files.read` can open (the chat's working folder, the bot's
+`artifacts` folder or the chat's `attachments`; 4302 elsewhere, 4204 when
+missing, 4202 over the 45 MiB a read returns) and answers `{shared: true, name, size, note}`. Clients show each
+file a message shared once, as a card under the bot's reply that opens it
+beside the chat; files the bot only wrote or edited do not show.
+
 ### Connectors and skills
 
 A connector is an outside service a bot can reach (web search, image

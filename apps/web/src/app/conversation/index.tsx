@@ -417,8 +417,8 @@ function Attachments({
   )
 }
 
-/** The files the bot wrote in a message: each a card that opens beside the chat. */
-function WrittenFiles({
+/** The files the bot shared in a message: each a card that opens beside the chat. */
+function SharedFiles({
   files,
   onFile
 }: {
@@ -838,10 +838,10 @@ export const MessageRow = memo(function MessageRow({
     )
   }
 
-  const written = assistant && onFile ? filesOf(message) : []
+  const shared = assistant && onFile ? filesOf(message) : []
 
-  if (written.length && onFile) {
-    column.push(<WrittenFiles files={written} key="written" onFile={onFile} />)
+  if (shared.length && onFile) {
+    column.push(<SharedFiles files={shared} key="shared" onFile={onFile} />)
   }
 
   // A step that only used tools shows nothing, so it takes no room: its

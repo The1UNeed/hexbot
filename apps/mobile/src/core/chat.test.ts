@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import { heartbeatMessage, emptyChat, reduceChat, historyMessages, replayChat } from './chat'
+import {
+  heartbeatMessage,
+  emptyChat,
+  reduceChat,
+  historyMessages,
+  replayChat,
+  sharedFiles
+} from './chat'
 import type { GatewayEvent } from '@hermes/shared'
 const event = (type: string, payload: Record<string, unknown> = {}): GatewayEvent => ({
   type,
@@ -258,5 +265,29 @@ describe('heartbeat messages', () => {
       messages: historyMessages([{ role: 'assistant', text: 'Hi', row_id: 'heartbeat-2' }])
     }
     expect(heartbeatMessage(loaded, 'heartbeat-2', 'Hi')).toBe(loaded)
+  })
+})
+
+describe('sharedFiles', () => {
+  it('lists the files a bot shared once each, not the ones it only wrote', () => {
+    const tool = (id: string, name: string, path: string, status: 'ok' | 'error' = 'ok') => ({
+      args: JSON.stringify({ path }),
+      detail: '',
+      id,
+      name,
+      status
+    })
+    expect(
+      sharedFiles([
+        tool('a', 'write', '/work/make_audiobook.py'),
+        tool('b', 'hexbot_share_file', '/work/chapter-1.mp3'),
+        tool('c', 'hexbot_share_file', '/work/chapter-1.mp3'),
+        tool('d', 'hexbot_share_file', '/s/attachments/4157abc3ebd7498086605acf7dd52ace-notes.md'),
+        tool('e', 'hexbot_share_file', '/work/missing.md', 'error')
+      ])
+    ).toEqual([
+      { name: 'chapter-1.mp3', path: '/work/chapter-1.mp3' },
+      { name: 'notes.md', path: '/s/attachments/4157abc3ebd7498086605acf7dd52ace-notes.md' }
+    ])
   })
 })

@@ -98,7 +98,7 @@ Close a Stopped card with its **×** once you have read it. If the bot shows Sto
 
 ## Search a chat
 
-In the web and desktop apps, choose the search button at the top of a bot's side panel to search your whole chat with it: what you and the bot said, files you shared or it wrote, the visuals it drew, and its soul and memory. Choose a message or file to scroll the chat to it; a visual opens beside the chat, and soul or memory opens in its editor. In a room, the search button next to Room settings searches the room's messages and files. On the phone, the search button is at the top of the chat. Search looks at what the app has loaded: all of a bot's chat, and a room's recent messages (show earlier ones to search further back on the phone).
+In the web and desktop apps, choose the search button at the top of a bot's side panel to search your whole chat with it: what you and the bot said, files you or the bot shared, the visuals it drew, and its soul and memory. Choose a message or file to scroll the chat to it; a visual opens beside the chat, and soul or memory opens in its editor. In a room, the search button next to Room settings searches the room's messages and files. On the phone, the search button is at the top of the chat. Search looks at what the app has loaded: all of a bot's chat, and a room's recent messages (show earlier ones to search further back on the phone).
 
 ## Recall a message
 

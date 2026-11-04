@@ -30,6 +30,36 @@ impl Runtime {
             .map_err(|e| Error::new(5200, e.to_string()))?
     }
 
+    /// `hexbot_share_file`: the bot hands the user one file it chose. Like a
+    /// visual, the card lives in the call's own arguments; this checks that
+    /// the file is one the chat can open, so a card never leads nowhere.
+    pub(super) fn share_file(&self, s: &Live, args: &Value) -> Result<Value> {
+        if !shows_visuals(&self.home, &s.stored)? {
+            return Err(Error::new(
+                4202,
+                "Files are shared only in your chat with the user. Name the file in your reply here.",
+            ));
+        }
+        let path = self.file_path(s, required(args, "path")?)?;
+        let size = fs::metadata(&path)?.len();
+        // The card opens through `read_payload`, which refuses larger files.
+        if size > READ_LIMIT {
+            return Err(Error::new(
+                4202,
+                format!(
+                    "The file is over {} MiB, too large to open in the chat. Make it smaller or split it.",
+                    READ_LIMIT / 1024 / 1024
+                ),
+            ));
+        }
+        Ok(json!({
+            "shared": true,
+            "name": path.file_name().and_then(|n| n.to_str()).unwrap_or(""),
+            "size": size,
+            "note": "The user sees the file as a card under your reply and can open it. Don't repeat its path or contents.",
+        }))
+    }
+
     fn file_path(&self, s: &Live, value: &str) -> Result<PathBuf> {
         let roots = [
             crate::native_tools::section_workdir(&self.home, &s.bot, &s.stored)?,

@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { filesRead, filesWrite, type OpenedFile } from '../../lib/api'
 import { cn } from '../../lib/cn'
-import type { Message } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useLiveSessionId } from '../../stores/sections'
 import { useTranscript } from '../../stores/transcripts'
@@ -13,66 +12,14 @@ import { type FileTab, fileTab, visualsActions } from '../../stores/visuals'
 import { errorText } from '../bot-settings/shared'
 import { DocumentEditor } from '../panel/document-editor'
 
+import type { FileTarget } from './shared-files'
+
 import { sendText } from './index'
 
 /** The bot's tools that change a file; when one finishes, an open file is read again. */
 export const FILE_TOOLS = new Set(['edit', 'patch', 'write', 'write_file'])
 
-/** A file to open beside the chat: the daemon's path for it, or an object URL this page holds. */
-export interface FileTarget {
-  mime: string
-  name: string
-  path?: string
-  url?: string
-}
-
-const MIMES: Record<string, string> = {
-  csv: 'text/csv',
-  json: 'application/json',
-  md: 'text/markdown',
-  pdf: 'application/pdf',
-  png: 'image/png',
-  txt: 'text/plain'
-}
-
-export function mimeOf(name: string): string {
-  return MIMES[name.split('.').pop()?.toLowerCase() ?? ''] ?? 'application/octet-stream'
-}
-
-/** The file's own name: an attachment is kept as `<32-hex id>-<name>`. */
-const baseName = (path: string) =>
-  (path.split(/[\\/]/).pop() || path).replace(/^[0-9a-f]{32}-(?=.)/, '')
-
-/** The files the bot wrote or edited in a message, once each, in the order it first touched them. */
-export function filesOf(message: Pick<Message, 'toolCalls'>): FileTarget[] {
-  const seen = new Set<string>()
-
-  return message.toolCalls.flatMap(call => {
-    if (!FILE_TOOLS.has(call.name) || call.status !== 'ok') {
-      return []
-    }
-
-    const args = typeof call.args === 'string' ? parse(call.args) : call.args
-    const path = (args as { path?: unknown } | null)?.path
-
-    if (typeof path !== 'string' || !path || seen.has(path)) {
-      return []
-    }
-
-    seen.add(path)
-    const name = baseName(path)
-
-    return [{ mime: mimeOf(name), name, path }]
-  })
-}
-
-function parse(text: string): unknown {
-  try {
-    return JSON.parse(text)
-  } catch {
-    return null
-  }
-}
+export { filesOf, type FileTarget, mimeOf, SHARE_FILE_TOOL } from './shared-files'
 
 /**
  * Opens a file in a tab beside the chat, read and saved through the chat's live

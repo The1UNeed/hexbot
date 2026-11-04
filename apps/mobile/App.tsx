@@ -63,7 +63,7 @@ import {
 import { MarkdownText } from './src/MarkdownText'
 import { VisualFrame } from './src/VisualFrame'
 import { visualDocument } from './src/core/visual'
-import { parseArgs } from './src/core/chat'
+import { parseArgs, sharedFiles } from './src/core/chat'
 import { type SearchDocument, searchEntries } from './src/core/search'
 import { Management, type Panel } from './src/Management'
 import { useMobile } from './src/core/useMobile'
@@ -732,7 +732,8 @@ function MobileApp({ children }: { children?: ReactNode }) {
       m.role === 'system'
         ? [{ kind: 'notice', id: m.id, text: m.text, tone: m.tone }]
         : [
-            // A conversation shows what bots say and the visuals they draw, not their steps.
+            // A conversation shows what bots say, the visuals they draw and the files they
+            // share, not their steps.
             ...(m.tools ?? [])
               .filter(t => t.name === 'hexbot_show_html' && t.status === 'ok')
               .flatMap((t, i) => {
@@ -765,7 +766,16 @@ function MobileApp({ children }: { children?: ReactNode }) {
                   ? { name: m.senderName || 'Former member' }
                   : m.sender && botByName(m.sender)
                     ? faceOf(botByName(m.sender)!)
-                    : undefined
+                    : undefined,
+              // The files the bot chose to share, not every file it touched.
+              attachments:
+                m.role === 'assistant'
+                  ? sharedFiles(m.tools).map(file => ({
+                      id: `${m.id}-${file.path}`,
+                      kind: 'file' as const,
+                      name: file.name
+                    }))
+                  : undefined
             }
           ]
     )
