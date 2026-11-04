@@ -1,9 +1,11 @@
 # Refusal tests only. This does not enable or publish Windows packages.
 name: Windows security boundary
 
+# Pull requests check branches; push covers main only, so a branch with an
+# open pull request runs this once.
 on:
   push:
-    branches: ['**']
+    branches: [main]
     paths:
       - 'backend/pi-runtime/**'
       - 'backend/hexbot-core/**'

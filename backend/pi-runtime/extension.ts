@@ -212,7 +212,9 @@ export default function hexbot(pi: any) {
     const mcp = event.toolName.startsWith('mcp__');
     const resource = ['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource'].includes(event.toolName);
     const script = event.toolName === 'codemode' && typeof event.input?.code === 'string' && config.mcpServers?.length;
-    if (!['bash', 'read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName) && !browser && !mcp && !resource && !script) return;
+    // Notion and Airtable changes the daemon sends with the bot's key.
+    const connector = event.toolName === 'hexbot_connector_write';
+    if (!['bash', 'read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName) && !browser && !mcp && !resource && !script && !connector) return;
     try {
       await refresh(ctx);
       // Retain what this check saw, even if another gate refreshes live settings.
@@ -253,6 +255,12 @@ export default function hexbot(pi: any) {
           ask = {key: `mcp:${server}`, command: args === '{}' ? label : `${label} ${args.length > 300 ? args.slice(0, 300) + '…' : args}`,
             reason: live.approvalMode === 'manual' ? 'Manual mode asks before a connected tool runs.' : 'Auto mode asks before a connected tool changes anything.'};
         }
+      }
+      if (connector) {
+        const {connector: id, method, path, body} = event.input ?? {};
+        const data = body === undefined ? '' : JSON.stringify(body);
+        ask = {key: `connector:${id}`, command: `${id} ${method} ${path}${data ? ' ' + (data.length > 300 ? data.slice(0, 300) + '…' : data) : ''}`,
+          reason: live.approvalMode === 'manual' ? 'Manual mode asks before a connector changes anything.' : 'Auto mode asks before a connector changes anything.'};
       }
       if (['read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName)) {
         const input = event.input.path ?? '.';
@@ -298,7 +306,7 @@ export default function hexbot(pi: any) {
       // In Auto the daemon's reviewer answers routine steps outside the sandbox
       // one at a time, so a grant remembered in another mode does not cover them.
       // Host configuration uses user approvals; incomplete scans ask every time.
-      const review = mode === 'smart' && !ask.once && (REVIEWED.includes(ask.key) || ask.key.startsWith('mcp:'));
+      const review = mode === 'smart' && !ask.once && (REVIEWED.includes(ask.key) || ask.key.startsWith('mcp:') || ask.key.startsWith('connector:'));
       if (sessionAllowed.has(ask.key) && !ask.once && !review) return;
       // The reviewer reads the whole input the tool will run with, not the card's preview,
       // and uses the model Pi runs now, which is the fallback after the primary failed.
@@ -620,7 +628,7 @@ function credentialName(path: string, home: string, denied: string[]): boolean {
   const local = relative(fold(root), fold(path)).split(sep).join('/');
   return !local.startsWith('../') && (policyRegex(credentialPolicy.basename).test(name) || policyRegex(credentialPolicy.home).test(local));
 }
-// Steps outside the sandbox that Auto's reviewer may let through; connected tools too.
+// Steps outside the sandbox that Auto's reviewer may let through; connected tools and connector changes too.
 const REVIEWED = ['shell:full-access', 'file:outside', 'browser_console'];
 const NEVER_WRITTEN = 'Credential and system configuration files are never written by tools.';
 // credential-policy.json "write": deny entries are credential stores that tools

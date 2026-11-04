@@ -6361,3 +6361,74 @@ async fn native_approval_parent_swap_never_writes_managed_runtime() {
         runtime.shutdown().await;
     }
 }
+
+/// Notion and Airtable keys never reach a shell, so a bot that has either
+/// gets the daemon's connector tools, and its chat takes them at its next
+/// message. A heartbeat only reads.
+#[tokio::test]
+async fn a_bot_with_notion_on_gets_the_connector_tools() {
+    let (home, runtime, _hub) = setup();
+    let names = |overrides: Option<&Value>| {
+        runtime
+            .fresh_tools("alice", "owl", "first", None, overrides)
+            .unwrap()
+            .0
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_owned))
+            .filter(|name| name.starts_with("hexbot_connector"))
+            .collect::<Vec<_>>()
+    };
+    crate::connectors::set_enabled(home.path(), "owl", "notion", false).unwrap();
+    crate::connectors::set_enabled(home.path(), "owl", "airtable", false).unwrap();
+    assert!(names(None).is_empty());
+    runtime.open_session("alice", "owl", "first").await.unwrap();
+    assert!(!runtime.tools_stale("alice", "owl", "first").unwrap());
+    crate::connectors::set_enabled(home.path(), "owl", "notion", true).unwrap();
+    assert_eq!(
+        names(None),
+        ["hexbot_connector_read", "hexbot_connector_write"]
+    );
+    assert!(runtime.tools_stale("alice", "owl", "first").unwrap());
+    // Code reaches daemon tools without the extension's gate, so it cannot change a connector.
+    let s = runtime
+        .open_for_input("alice", "owl", "first")
+        .await
+        .unwrap();
+    assert!(s.tools.iter().any(|t| t["name"] == connector_tool::WRITE));
+    runtime.register_worker_bridge(&s);
+    let bridge = crate::native_tools::dispatcher(home.path(), "first").unwrap();
+    let error = bridge(
+        connector_tool::WRITE.into(),
+        json!({"connector":"notion","method":"PATCH","path":"/v1/pages/a"}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, 4302);
+    assert_eq!(
+        names(Some(&json!({"heartbeat":"run-1"}))),
+        ["hexbot_connector_read"]
+    );
+    // Turned off again, a request is refused before any key is read.
+    crate::connectors::set_enabled(home.path(), "owl", "notion", false).unwrap();
+    let s = runtime.open_session("alice", "owl", "first").await.unwrap();
+    let error = connector_tool::request(
+        home.path(),
+        "owl",
+        &json!({"connector":"notion","method":"POST","path":"/v1/search"}),
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, 4210);
+    assert!(
+        runtime
+            .tool(
+                &s,
+                connector_tool::WRITE,
+                &json!({"connector":"notion","method":"PATCH","path":"/v1/pages/a"})
+            )
+            .await
+            .is_err()
+    );
+    runtime.shutdown().await;
+}

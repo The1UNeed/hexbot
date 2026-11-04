@@ -232,7 +232,10 @@ Tool-event `message_id` names the assistant that actually owns `toolCallId`.
 Unknown, nested or ambiguous owners omit it. An explicit `parentToolCallId`
 prevents direct-call attribution even when the nested ID equals an earlier
 top-level tool ID. Tool-result history keeps its
-own distinct `row_id` and `tool_call_id`. Cards may omit fragment association.
+own distinct `row_id` and `tool_call_id`. An approval or question card carries
+the `turn_id` and the `message_id` of the assistant fragment whose tool asked,
+so clients keep it under that fragment once history is read again. A card
+asked outside a run carries neither.
 
 Terminal metadata is captured at `agent_end`, rather than read from a newer
 operation at settlement. Unmatched settlement cannot finish a known active

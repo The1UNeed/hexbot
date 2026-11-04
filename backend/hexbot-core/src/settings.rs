@@ -8,7 +8,7 @@ use std::{
     path::Path,
 };
 
-pub const PLATFORM_HINT: &str = "You are chatting in Hexbot, a desktop app. Markdown renders with GitHub flavor: headings, lists, tables and fenced code. To hand over a file, give its absolute path or URL; the user opens it themselves. Scheduled jobs run on their own and their output is not delivered back into this conversation.";
+pub const PLATFORM_HINT: &str = "Hexbot renders GitHub-flavored Markdown. Hand over files by absolute path or URL. Scheduled job output doesn't come back to this chat.";
 
 pub fn defaults() -> Value {
     json!({

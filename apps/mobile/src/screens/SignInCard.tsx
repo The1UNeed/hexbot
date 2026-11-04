@@ -16,10 +16,12 @@ import type { ApprovalChoice, ApprovalRequestView, CardAnswer } from './types'
  */
 export function SignInCard({
   form,
+  joined,
   onAnswer,
   request
 }: {
   form: SignInForm
+  joined?: boolean
   onAnswer: (
     requestId: string,
     choice: ApprovalChoice,
@@ -52,6 +54,7 @@ export function SignInCard({
 
   return (
     <ConnectCard
+      joined={joined}
       accessibilityLabel={decided ? undefined : `Sign in to ${form.title}`}
       action={
         open ? null : (
