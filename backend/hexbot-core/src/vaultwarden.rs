@@ -54,9 +54,22 @@ fn managed(kind: Kind) -> &'static [&'static str] {
         ],
     }
 }
-/// The id of the item on the daemon an item was copied from at connect, so
-/// a copy tried again skips what already arrived.
+/// The item on the daemon an item was copied from at connect, as its id and
+/// a hash of what it held, so a copy tried again skips what already arrived
+/// and a later copy of a changed item brings the change.
 const COPIED_FROM: &str = "hexbot.copied_from";
+
+fn copied_from(id: &str, item: &Record) -> String {
+    use sha2::Digest;
+    let mut contents = item.clone();
+    contents.updated_at = None;
+    let digest = sha2::Sha256::digest(format!("{contents:?}").as_bytes());
+    let short = digest[..8]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    format!("{id}:{short}")
+}
 /// `bw` says this when its session key is gone or wrong.
 const LOCKED: i64 = 5302;
 
@@ -756,7 +769,8 @@ pub fn connect(home: &Path, owner: &str, p: &Value) -> Result<Value> {
                 .flatten()
                 .filter_map(|item| field(item, COPIED_FROM))
                 .collect::<Vec<_>>();
-            for (from, item) in passwords::local_items(home, owner)? {
+            for (id, item) in passwords::local_items(home, owner)? {
+                let from = copied_from(&id, &item);
                 if arrived.contains(&from) {
                     continue;
                 }

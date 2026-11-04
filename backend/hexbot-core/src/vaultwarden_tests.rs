@@ -516,6 +516,34 @@ fn a_copy_cut_short_and_tried_again_makes_no_duplicates() {
 }
 
 #[test]
+fn a_later_copy_brings_an_item_changed_since_the_last() {
+    let home = home();
+    let h = home.path();
+    let local =
+        crate::passwords::save(h, "alice", &json!({"url":"https://x.com","password":"old"}))
+            .unwrap();
+    connect_alice(h, json!({"copy":true})).unwrap();
+    crate::passwords::call(h, "alice", "hexbot.passwords.disconnect", &json!({}))
+        .unwrap()
+        .unwrap();
+    crate::passwords::save(h, "alice", &json!({"id":local["id"],"password":"new"})).unwrap();
+    assert_eq!(connect_alice(h, json!({"copy":true})).unwrap()["copied"], 1);
+    let passwords = fake(h)["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["login"]["password"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        passwords,
+        ["old", "new"],
+        "the earlier copy stays as it was"
+    );
+    // Unchanged, it isn't copied a third time.
+    assert_eq!(connect_alice(h, json!({"copy":true})).unwrap()["copied"], 0);
+}
+
+#[test]
 fn a_copy_skips_only_items_it_copied_itself() {
     let home = home();
     let h = home.path();

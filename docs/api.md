@@ -1390,8 +1390,9 @@ daemon's environment reaches `bw` for a private CA.
   item to Vaultwarden's trash.
 - Lists sync with the server at most 30 seconds apart. With `copy`, connect
   copies every item saved on the daemon into the Hexbot folder, marking each
-  copy with `hexbot.copied_from` (the daemon item's id), so a connect tried
-  again after a partial copy skips what arrived.
+  copy with `hexbot.copied_from` (the daemon item's id and a hash of what it
+  held), so a connect tried again after a partial copy skips what arrived,
+  and a later one copies an item changed since as a new item.
 
 The bot tool `hexbot_passwords` is offered to a bot with Computer use, in
 its own chat and its scheduled jobs; rooms and threads between bots never get
