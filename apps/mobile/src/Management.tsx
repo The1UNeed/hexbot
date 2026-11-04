@@ -921,13 +921,13 @@ export function Management({
                 workdir: values.workdir || null,
                 dream_enabled: values.dream_enabled,
                 notify: values.notify,
-                // A daemon from before the limits leaves them out.
-                ...(bot.soul_cap !== undefined
-                  ? {
-                      soul_char_limit: num(values.soul_char_limit),
-                      memory_char_limit: num(values.memory_char_limit)
-                    }
-                  : {})
+                // Only a limit the user changed: a daemon from before the limits
+                // refuses them, and a limit the field can't show is kept.
+                ...Object.fromEntries(
+                  (['soul_char_limit', 'memory_char_limit'] as const)
+                    .filter(key => str(values[key]) !== str(bot[key]))
+                    .map(key => [key, num(values[key])])
+                )
               }
             : {})
         }

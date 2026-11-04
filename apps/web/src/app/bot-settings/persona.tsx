@@ -16,9 +16,10 @@ export function PersonaTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   const [persona, setPersona] = useState(bot.persona)
   useEffect(() => setPersona(bot.persona), [bot.persona])
   const fallback = useSettings(state => state.settings?.soul_char_limit) ?? DEFAULT_SOUL_LIMIT
-  const cap = bot.soul_cap ?? fallback
+  // A daemon from before soul limits reports none and takes any soul from the user.
+  const cap = bot.soul_cap
   const length = [...persona].length
-  const tooLong = length > cap
+  const tooLong = cap !== undefined && length > cap
 
   const applyTemplate = async (id: string) => {
     const template = BOT_TEMPLATES.find(item => item.id === id)
@@ -37,7 +38,7 @@ export function PersonaTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
 
     setPersona(template.persona)
 
-    if ([...template.persona].length <= cap) {
+    if (cap === undefined || [...template.persona].length <= cap) {
       void onSave({ persona: template.persona })
     }
   }
@@ -52,7 +53,7 @@ export function PersonaTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
           className={cn('text-[length:var(--text-meta)]', tooLong ? 'text-danger' : 'text-muted')}
           role={tooLong ? 'alert' : undefined}
         >
-          {length} / {cap} characters ·{' '}
+          {cap === undefined ? length : `${length} / ${cap}`} characters ·{' '}
           {tooLong ? 'shorten it to save' : 'saved when you leave the field'}
         </span>
         <Menu
@@ -80,16 +81,18 @@ export function PersonaTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
           value={persona}
         />
       </div>
-      <Group className="mt-6">
-        <LimitRow
-          description={`Leave empty for the default in Settings, ${fallback.toLocaleString()} characters.`}
-          fallback={fallback}
-          label="Soul limit"
-          onSave={limit => onSave({ soul_char_limit: limit })}
-          title="Soul limit"
-          value={bot.soul_char_limit}
-        />
-      </Group>
+      {cap === undefined ? null : (
+        <Group className="mt-6">
+          <LimitRow
+            description={`Leave empty for the default in Settings, ${fallback.toLocaleString()} characters.`}
+            fallback={fallback}
+            label="Soul limit"
+            onSave={limit => onSave({ soul_char_limit: limit })}
+            title="Soul limit"
+            value={bot.soul_char_limit}
+          />
+        </Group>
+      )}
     </div>
   )
 }

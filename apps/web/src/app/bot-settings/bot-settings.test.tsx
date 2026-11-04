@@ -134,7 +134,7 @@ describe('soul and memory limits', () => {
 
   it("sets the bot's own limit, refuses one out of range, and empties back to the default", () => {
     const save = vi.fn()
-    const { rerender } = render(<PersonaTab bot={bot} onSave={save} />)
+    const { rerender } = render(<PersonaTab bot={{ ...bot, soul_cap: 4000 }} onSave={save} />)
     const limit = screen.getByLabelText('Soul limit')
     expect(limit).toHaveAttribute('placeholder', '4000')
     fireEvent.change(limit, { target: { value: '100' } })
@@ -149,6 +149,17 @@ describe('soul and memory limits', () => {
     fireEvent.change(limit, { target: { value: '' } })
     fireEvent.blur(limit)
     expect(save).toHaveBeenLastCalledWith({ soul_char_limit: null })
+  })
+
+  it('leaves the soul unlimited and offers no limit on a daemon from before limits', () => {
+    const save = vi.fn()
+    render(<PersonaTab bot={bot} onSave={save} />)
+    expect(screen.queryByLabelText('Soul limit')).toBeNull()
+    const soul = screen.getByLabelText('Soul')
+    fireEvent.change(soul, { target: { value: 'x'.repeat(5000) } })
+    fireEvent.blur(soul)
+    expect(screen.getByText(/5000 characters/)).toBeVisible()
+    expect(save).toHaveBeenCalledWith({ persona: 'x'.repeat(5000) })
   })
 })
 

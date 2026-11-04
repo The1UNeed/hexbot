@@ -180,16 +180,19 @@ function BotMemoryTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
         Memory
       </Heading>
       <div className="space-y-8">
-        <Group>
-          <LimitRow
-            description={`Leave empty for the default in Settings, ${fallback.toLocaleString()} characters.`}
-            fallback={fallback}
-            label="Memory limit"
-            onSave={limit => onSave({ memory_char_limit: limit })}
-            title="Memory limit"
-            value={bot.memory_char_limit}
-          />
-        </Group>
+        {/* A daemon from before memory limits reports none and can't set one. */}
+        {bot.memory_cap === undefined ? null : (
+          <Group>
+            <LimitRow
+              description={`Leave empty for the default in Settings, ${fallback.toLocaleString()} characters.`}
+              fallback={fallback}
+              label="Memory limit"
+              onSave={limit => onSave({ memory_char_limit: limit })}
+              title="Memory limit"
+              value={bot.memory_char_limit}
+            />
+          </Group>
+        )}
         <NotesBlock bot={botName} />
         <Group>
           <Row
