@@ -10,7 +10,6 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ComponentType } from 'react'
 
 import { ChatChooser } from '../app/chat-chooser'
-import { Avatar } from '../components/ui/avatar'
 import { HEXBOT_ACT_NAMES } from '../components/ui/hexbot-act'
 import { HexbotMark } from '../components/ui/wordmark'
 import { setActiveRpc } from '../lib/rpc'
@@ -408,18 +407,6 @@ describe('onboarding', () => {
       expect(container.querySelector(`[data-act="${name}"]`)?.childElementCount).toBeGreaterThan(0)
       unmount()
     }
-  })
-
-  it('plays a random act when any Hexbot is clicked, then stops', () => {
-    vi.useFakeTimers()
-    const { container } = render(<Avatar name="Scout" />)
-
-    expect(container.querySelector('[data-act]')).toBeNull()
-    fireEvent.click(screen.getByRole('img', { name: 'Scout' }))
-    expect(container.querySelector('[data-act]')).not.toBeNull()
-    act(() => void vi.advanceTimersByTime(4000))
-    expect(container.querySelector('[data-act]')).toBeNull()
-    vi.useRealTimers()
   })
 
   it('moves the install percentage forward and never back', () => {

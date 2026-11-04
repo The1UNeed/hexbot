@@ -44,8 +44,8 @@ One animation frame loop drives every visible, moving face, writes only the
 attributes that changed, and stops when no face moves. Held, offscreen,
 hidden-page, and reduced-motion faces do not run; reduced motion draws each
 mood's rest pose, morph included. React draws every SVG node at rest, and
-the engine moves those same nodes. The existing click acts are CSS and hold
-the face at rest while they play.
+the engine moves those same nodes. Acts are CSS and hold the face at rest
+while they play.
 
 The site logo, favicon, and desktop and mobile package icons show the same
 capsule eyes as the faces.
