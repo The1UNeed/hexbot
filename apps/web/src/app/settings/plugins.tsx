@@ -470,12 +470,14 @@ function BotPicker({
 }) {
   const all = bots.every(bot => chosen.includes(bot.name))
   const turnOn = !all && bots.every(bot => canGive(bot.name))
+  // Turning off is offered only once it is on for a bot.
+  const bulk = bots.length > 1 && (turnOn || chosen.length > 0)
 
   return (
     <div>
       <div className="mb-1.5 flex items-center gap-3">
         <span className="text-muted">Bots</span>
-        {bots.length > 1 ? (
+        {bulk ? (
           <button
             className="text-[length:var(--text-meta)] text-muted underline-offset-2 hover:text-foreground hover:underline disabled:pointer-events-none disabled:opacity-50"
             // Off for every bot means every grant, those waiting for setup too.
