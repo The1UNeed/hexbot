@@ -27,9 +27,15 @@ fn junction(link: &Path, target: &Path) {
 /// entry's type, flags, rights and trustee.
 fn dacl(path: &Path) -> (String, Vec<[String; 4]>) {
     let literal = path.to_str().unwrap().replace('\'', "''");
+    let modules = std::env::var_os("SystemRoot")
+        .map(|root| std::path::Path::new(&root).join("system32\\WindowsPowerShell\\v1.0\\Modules"))
+        .unwrap_or_default();
     let output = Command::new(
         windows_paths::system_program("WindowsPowerShell/v1.0/powershell.exe").unwrap(),
     )
+    // A standard-user session can inherit no PSModulePath, without which
+    // PowerShell cannot load the module Get-Acl lives in.
+    .env("PSModulePath", &modules)
     .args(["-NoProfile", "-NonInteractive", "-Command"])
     .arg(format!("(Get-Acl -LiteralPath '{literal}').Sddl"))
     .output()

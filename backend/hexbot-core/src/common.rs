@@ -1057,14 +1057,10 @@ fn names_path(program: &str) -> bool {
             Some(std::path::Component::Prefix(_))
         )
 }
-/// `path` when it is an executable file. On Windows, `path` itself first —
-/// the Windows shells try the literal name before its extensions — then
-/// each PATHEXT extension in turn.
+/// `path` when it is an executable file. On Windows, `path` itself only when
+/// it ends in a PATHEXT extension, else with each of them in turn — the
+/// Windows shells run a file by name only with a runnable extension.
 fn executable(path: &Path) -> Option<std::path::PathBuf> {
-    #[cfg(windows)]
-    if executable_file(path) {
-        return Some(path.to_path_buf());
-    }
     #[cfg(windows)]
     return windows_names(path, std::env::var_os("PATHEXT").as_deref())
         .into_iter()
