@@ -41,10 +41,21 @@ impl Runtime {
             ));
         }
         let path = self.file_path(s, required(args, "path")?)?;
+        let size = fs::metadata(&path)?.len();
+        // The card opens through `read_payload`, which refuses larger files.
+        if size > READ_LIMIT {
+            return Err(Error::new(
+                4202,
+                format!(
+                    "The file is over {} MiB, too large to open in the chat. Make it smaller or split it.",
+                    READ_LIMIT / 1024 / 1024
+                ),
+            ));
+        }
         Ok(json!({
             "shared": true,
             "name": path.file_name().and_then(|n| n.to_str()).unwrap_or(""),
-            "size": fs::metadata(&path)?.len(),
+            "size": size,
             "note": "The user sees the file as a card under your reply and can open it. Don't repeat its path or contents.",
         }))
     }

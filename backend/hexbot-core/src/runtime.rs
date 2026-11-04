@@ -7130,7 +7130,16 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
         assert_eq!(shared["size"], 8);
         let outside = home.path().join("secret.txt");
         fs::write(&outside, "no").unwrap();
-        for (path, code) in [(outside.to_str().unwrap(), 4302), ("missing.md", 4204)] {
+        // Larger than the chat can open: refused, so the card never shows an error.
+        fs::File::create(work.join("book.mp3"))
+            .unwrap()
+            .set_len(45 * 1024 * 1024 + 1)
+            .unwrap();
+        for (path, code) in [
+            (outside.to_str().unwrap(), 4302),
+            ("missing.md", 4204),
+            ("book.mp3", 4202),
+        ] {
             assert_eq!(
                 runtime
                     .tool(&s, "hexbot_share_file", &json!({"path":path}))
