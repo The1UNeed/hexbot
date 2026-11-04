@@ -1413,6 +1413,14 @@ pub fn prepare(policy: &Policy) -> io::Result<Container> {
     for path in &policy.readable {
         readable.extend(allowed(path, false)?);
     }
+    // The bundled shell is read as a program is, but it is not part of the
+    // container's name below: every runtime brings it at a new path. A shell
+    // that cannot be granted only takes the shell away, which its probe
+    // already refuses commands for, so other programs still run.
+    let shell = policy
+        .shell
+        .as_deref()
+        .and_then(|path| allowed(path, false).ok().flatten());
     let denied = |paths: &[PathBuf]| -> io::Result<Vec<Root>> {
         paths
             .iter()
@@ -1480,6 +1488,10 @@ pub fn prepare(policy: &Policy) -> io::Result<Container> {
     for root in &readable {
         grant(&root.canonical, GrantKind::Read, cap_of(root))?;
     }
+    if let Some(shell) = &shell {
+        // Recorded first, so a grant that fails is walked again next time.
+        let _ = grant(&shell.canonical, GrantKind::Read, cap_of(shell));
+    }
     for root in &writable {
         grant(&root.canonical, GrantKind::Modify, cap_of(root))?;
     }
@@ -1496,9 +1508,15 @@ pub fn prepare(policy: &Policy) -> io::Result<Container> {
     })
 }
 
+/// What the bundled shell, BusyBox, needs to take its arguments as given.
+/// Started by anything but itself, it expands wildcards in them as other
+/// Windows programs do, so a command such as `ls *` could reach it as file
+/// names; the shell alone expands them, in the commands it runs.
+pub const SHELL_ENVIRONMENT: (&str, &str) = ("BB_GLOBBING", "0");
+
 /// The environment a contained command sees: the caller's, with its home,
-/// profile and temp folders moved into the container's private folders, and
-/// without the Hexbot home.
+/// profile and temp folders moved into the container's private folders,
+/// without the Hexbot home, and with [`SHELL_ENVIRONMENT`].
 pub fn environment(
     container: &Container,
     inherited: impl IntoIterator<Item = (OsString, OsString)>,
@@ -1512,7 +1530,7 @@ pub fn environment(
         ("APPDATA", private.join("appdata").join("roaming")),
         ("LOCALAPPDATA", private.join("appdata").join("local")),
     ];
-    let removed = ["HEXBOT_HOME", "HERMES_HOME"];
+    let removed = ["HEXBOT_HOME", "HERMES_HOME", SHELL_ENVIRONMENT.0];
     let mut env: Vec<(OsString, OsString)> = inherited
         .into_iter()
         .filter(|(name, _)| {
@@ -1529,11 +1547,15 @@ pub fn environment(
             .into_iter()
             .map(|(name, path)| (OsString::from(name), path.into_os_string())),
     );
+    env.push((
+        OsString::from(SHELL_ENVIRONMENT.0),
+        OsString::from(SHELL_ENVIRONMENT.1),
+    ));
     env
 }
 
 /// Quote one argument as the Microsoft C runtime parses it, so that MSYS
-/// programs such as Git Bash expand none of it either.
+/// programs such as Git's own tools expand none of it either.
 pub fn quote(argument: &OsStr) -> Vec<u16> {
     rules::quote(&argument.encode_wide().collect::<Vec<_>>())
 }
@@ -1801,18 +1823,13 @@ pub fn path_from_wide(units: &[u16]) -> PathBuf {
 /// The profile the startup probe creates and deletes. One name per user, so a
 /// probe that crashed leaves nothing the next probe does not delete.
 pub const PROBE_PROFILE: &str = "Hexbot.Sandbox.probe";
-/// The profile the Git Bash probe creates and deletes, apart from the startup
+/// The profile the shell probe creates and deletes, apart from the startup
 /// probe's so the two never share one.
-pub const BASH_PROBE_PROFILE: &str = "Hexbot.Sandbox.probe.bash";
+pub const SHELL_PROBE_PROFILE: &str = "Hexbot.Sandbox.probe.shell";
 /// A hung probe must not hold the daemon; the bubblewrap probe waits as long.
 const PROBE_MILLIS: u32 = 5000;
-/// Git Bash starts its runtime, a pipe and a second program.
-const BASH_PROBE_MILLIS: u32 = 15000;
-/// What the Git Bash probe runs and must print: a pipe into another program
-/// inside a command substitution, so a runtime that cannot start, fork, wait
-/// or pass output between its processes does not pass.
-const BASH_PROBE: &str = "echo \"$(printf hexbot | /usr/bin/cat)\"";
-const BASH_PROBE_OUTPUT: &[u8] = b"hexbot\n";
+/// The shell starts itself again for the pipe and the command substitution.
+const SHELL_PROBE_MILLIS: u32 = 15000;
 /// The most of a probe's output kept, and its pipe's buffer.
 const PROBE_OUTPUT: u32 = 64 * 1024;
 
@@ -1823,7 +1840,8 @@ pub fn probe_available() -> bool {
     *AVAILABLE.get_or_init(|| probe().is_ok())
 }
 
-/// Run `probe` in the throwaway profile `name` with no grants, then delete it.
+/// Run `probe` in the throwaway profile `name`, which holds no grant beyond
+/// what `probe` gives it and takes back, then delete it.
 fn throwaway(name: &str, probe: impl FnOnce(&ContainerSid) -> io::Result<()>) -> io::Result<()> {
     let sid = create_profile(name)?;
     let ran = probe(&sid);
@@ -1880,38 +1898,88 @@ pub fn probe() -> io::Result<()> {
     })
 }
 
-/// Whether Git Bash at `bash` runs correctly in a container: a pipe, a second
-/// program and a command substitution, in a throwaway profile with no grants.
-/// Git for Windows installed in Program Files needs none; one installed for
-/// this user only is not readable to the profile, so its probe fails.
+/// Whether the shell at `shell`, the runtime's BusyBox, runs correctly in a
+/// container: its `sh` runs a pipe into a second program inside a command
+/// substitution and must print a fresh nonce exactly, so a shell that cannot
+/// start, start itself again, wait or pass output between its processes does
+/// not pass. It runs in a throwaway profile that may read the shell alone.
 ///
-/// Stock Git for Windows fails it. Its MSYS runtime creates its shared
-/// objects in the global `\BaseNamedObjects` namespace, where no
-/// AppContainer may create anything, and gives the objects it makes to
-/// Everyone, which an AppContainer's access check never counts. Preparing
-/// that namespace from outside cannot help: the runtime's own processes
-/// could still not open each other's objects. The error carries what Git
-/// Bash printed.
-pub fn probe_bash(bash: &Path) -> io::Result<()> {
-    throwaway(BASH_PROBE_PROFILE, |sid| {
-        let (system, environment) = probe_setting()?;
-        let arguments = ["--noprofile", "--norc", "-c", BASH_PROBE].map(OsString::from);
-        let (code, output) = captured(
-            sid,
-            bash,
-            &arguments,
-            Some(&system),
-            &environment,
-            BASH_PROBE_MILLIS,
-        )?;
-        if code == 0 && output == BASH_PROBE_OUTPUT {
-            return Ok(());
-        }
-        Err(io::Error::other(format!(
-            "Git Bash exited with {code:#x} and printed: {}",
-            String::from_utf8_lossy(&output).trim()
-        )))
+/// BusyBox starts each pipe stage and subshell as a new copy of itself and
+/// hands it the shell's state in an unnamed file mapping the copy inherits,
+/// so, unlike Git Bash's MSYS runtime, it creates nothing in a global
+/// namespace no AppContainer may write. The probe's grant on the shell is
+/// journaled in `home` while it lasts, so `reset` removes one a crash left
+/// behind, and the next probe does too. The error carries what the shell
+/// printed.
+pub fn probe_shell(home: &Path, shell: &Path) -> io::Result<()> {
+    let home = PathBuf::from(plain(&fs::canonicalize(home)?)?);
+    // Grants and the journal name the file as `prepare` does; the shell runs
+    // by its plain path, as commands start it.
+    let granted = fs::canonicalize(shell)?;
+    let program = PathBuf::from(plain(&granted)?);
+    // Letters and digits only: the shell prints it as it is.
+    let nonce = format!("hexbot{}", crate::common::id());
+    let command = format!("echo \"$(printf {nonce} | cat)\"");
+    throwaway(SHELL_PROBE_PROFILE, |sid| {
+        let ran = probe_read(&home, &granted, sid, true)
+            .and_then(|()| probe_setting())
+            .and_then(|(system, mut environment)| {
+                environment.push((
+                    OsString::from(SHELL_ENVIRONMENT.0),
+                    OsString::from(SHELL_ENVIRONMENT.1),
+                ));
+                let arguments = ["sh", "-c", command.as_str()].map(OsString::from);
+                let (code, output) = captured(
+                    sid,
+                    &program,
+                    &arguments,
+                    Some(&system),
+                    &environment,
+                    SHELL_PROBE_MILLIS,
+                )?;
+                if code == 0 && output == format!("{nonce}\n").as_bytes() {
+                    return Ok(());
+                }
+                Err(io::Error::other(format!(
+                    "The shell exited with {code:#x} and printed: {}",
+                    String::from_utf8_lossy(&output).trim()
+                )))
+            });
+        // Taken away even when the grant failed, so no record stays.
+        let revoked = probe_read(&home, &granted, sid, false);
+        ran.and(revoked)
     })
+}
+
+/// Give the shell probe's profile a read of `shell`, or take it away, under
+/// the lock and in the journal. A revoke that leaves an entry keeps its
+/// journal record, so `reset` tries again.
+fn probe_read(home: &Path, shell: &Path, sid: &ContainerSid, grant: bool) -> io::Result<()> {
+    let _lock = lock(home)?;
+    let mut journal = read_journal(home)?;
+    let ours = |root: &JournalEntry| root.path == shell && root.profile == SHELL_PROBE_PROFILE;
+    if grant {
+        if !journal.roots.iter().any(ours) {
+            journal.roots.push(JournalEntry {
+                path: shell.to_owned(),
+                profile: SHELL_PROBE_PROFILE.to_owned(),
+                kind: GrantKind::Read,
+                complete: false,
+            });
+            write_journal(home, &journal)?;
+        }
+        walk(shell, Change::Allow(READ), &[sid])?;
+        return Ok(());
+    }
+    let walk = walk(shell, Change::Revoke, &[sid])?;
+    if walk.failed > 0 {
+        return Err(io::Error::other(format!(
+            "Could not remove the shell probe's entry from {}",
+            shell.display()
+        )));
+    }
+    journal.roots.retain(|root| !ours(root));
+    write_journal(home, &journal)
 }
 
 /// Run `program` in the container `sid` with stdin from NUL and stdout and

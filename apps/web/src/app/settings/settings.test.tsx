@@ -398,7 +398,7 @@ describe('settings', () => {
     expect(await screen.findByRole('status')).toHaveTextContent(/older than the app/)
   })
 
-  it('shows the Windows notice when the daemon runs on Windows without a sandbox', async () => {
+  it('shows the Windows notice without a sandbox, and names the shell commands run in with one', async () => {
     useSettings.setState({ refresh: vi.fn().mockResolvedValue(undefined) })
     vi.mocked(daemonInfo).mockResolvedValueOnce({
       approvals: 'sandbox',
@@ -412,19 +412,37 @@ describe('settings', () => {
       'The Windows sandbox could not start, so Auto and Manual refuse local commands and file tools, and scheduled scripts do not run. Bypass has no sandbox or credential protection.'
     )
     expect(notice).not.toHaveTextContent(/bubblewrap/i)
+    // Without the sandbox nothing runs in its shell, so the page names none.
+    expect(screen.queryByText(/BusyBox/)).toBeNull()
     first.unmount()
-    // A Windows daemon whose AppContainer started has nothing to warn about.
+    // A Windows daemon whose AppContainer started has nothing to warn about,
+    // and says which shell its commands run in.
     vi.mocked(daemonInfo).mockResolvedValueOnce({
       approvals: 'sandbox',
       platform: 'windows',
       sandbox: 'appcontainer',
       version: '0.1.5'
     } as DaemonInfo)
+    const second = render(<ApprovalsSettings />)
+    expect(
+      await screen.findByText(
+        'On Windows, Auto and Manual run commands in BusyBox, a POSIX shell, not Bash. Bypass runs them in Git Bash.'
+      )
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('status')).toBeNull()
+    second.unmount()
+    // Other platforms' sandboxes run the system's shell and say nothing of it.
+    vi.mocked(daemonInfo).mockResolvedValueOnce({
+      approvals: 'sandbox',
+      platform: 'linux',
+      sandbox: 'bubblewrap',
+      version: '0.1.5'
+    } as DaemonInfo)
     render(<ApprovalsSettings />)
     await act(async () => {
       await vi.mocked(daemonInfo).mock.results.at(-1)?.value
     })
-    expect(screen.queryByRole('status')).toBeNull()
+    expect(screen.queryByText(/BusyBox/)).toBeNull()
   })
 
   it('applies a selected theme to the document', () => {

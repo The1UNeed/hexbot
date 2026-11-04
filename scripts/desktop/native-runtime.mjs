@@ -103,6 +103,31 @@ export const NODE_SHA256 = Object.freeze({
   'linux-x64': '1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af',
   'win32-x64': '2b0ff57b049cda1bbcea2240eec20467018713c1efe1f7360c2681859b90ed71'
 })
+// busybox-w32, the shell Auto and Manual run commands and shell scripts in on
+// Windows (backend/hexbot-core/src/windows_sandbox.rs): its `sh` is ash. The
+// 64-bit Unicode build of FRP-6075 (2026-05-07). The checksum is the one in
+// the release's SHA256SUM, whose Ed25519 signature checks against Ron
+// Yorston's key B43E 244B 92A8 1389 CAAA A171 690E 10A0 513D A84B, the one
+// github.com/rmyorston.gpg serves too. frippery.org deletes a build about
+// three years after its release, so move the pin before then.
+export const BUSYBOX = Object.freeze({
+  version: 'FRP-6075-g169694ebd',
+  url: 'https://frippery.org/files/busybox/busybox-w64u-FRP-6075-g169694ebd.exe',
+  sha256: '6e263d154d8548d1eb936f65d1d8312c80df31c45974e48d6335e4dcc0f4f34c',
+  source: 'https://frippery.org/files/busybox/busybox-w32-FRP-6075-g169694ebd.tgz'
+})
+// Download the pinned BusyBox into `bin` as busybox.exe. A wrong checksum
+// leaves nothing behind; `download` writes a file and returns its SHA-256.
+export async function stageBusybox(bin, download = (url, dest) => retryDownload(() => downloadTool(url, dest))) {
+  await mkdir(bin, { recursive: true })
+  const executable = join(bin, 'busybox.exe')
+  const partial = join(bin, `.busybox-${process.pid}.download`)
+  try {
+    if (await download(BUSYBOX.url, partial) !== BUSYBOX.sha256) throw new Error(`${basename(BUSYBOX.url)} checksum mismatch`)
+    await rename(partial, executable)
+  } finally { await rm(partial, { force: true }) }
+  return executable
+}
 async function archiveTool() {
   // GNU tar cannot write ZIPs. Linux release fixtures use libarchive too.
   if (process.platform !== 'win32') return process.platform === 'linux' ? 'bsdtar' : 'tar'
@@ -278,6 +303,9 @@ export async function stageNativeRuntime({
       binDirectory: join(staging, 'bin'), stagingDirectory: staging,
       platform, arch, exists: existsSync, download, run
     })
+    // The shell Windows commands run in inside the sandbox; the other
+    // platforms' sandboxes run the system's.
+    if (windows) await stageBusybox(join(staging, 'bin'), download)
     const beforeBytes = await directoryBytes(pi)
     await pruneRuntimeDependencies(join(pi, 'node_modules'), platform, arch)
     const afterBytes = await directoryBytes(pi)
@@ -299,7 +327,8 @@ export async function stageNativeRuntime({
     }
     // Third-party licenses for everything above; web/ carries the web app's own.
     await writeFile(join(staging, 'THIRD_PARTY_NOTICES'), await notices({
-      repository, nodeModules: join(pi, 'node_modules'), targets: [triple], node: { version: nodeVersion, license }
+      repository, nodeModules: join(pi, 'node_modules'), targets: [triple], node: { version: nodeVersion, license },
+      ...(windows ? { busybox: BUSYBOX } : {})
     }))
     await cp(join(repository, 'apps/web/dist'), join(staging, 'web'), { recursive: true })
     await cp(join(repository, 'skills'), join(staging, 'skills'), { recursive: true, dereference: true })
@@ -311,7 +340,7 @@ export async function stageNativeRuntime({
     }
     await cp(join(root, 'scripts/desktop/pi-launch.mjs'), join(pi, 'launch.mjs'))
     const files = {}
-    for (const file of [...(windows ? ['hexbot.exe', 'hexbot-cli.exe', 'node.exe', 'pi/launch.mjs'] : ['hexbot', 'hexbot-core', 'node', 'pi/hexbot-pi']), 'pi/package-lock.json', 'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js', 'web/index.html', `bin/rg${windows ? '.exe' : ''}`, `bin/fd${windows ? '.exe' : ''}`, 'pi/search-tools.mjs'])
+    for (const file of [...(windows ? ['hexbot.exe', 'hexbot-cli.exe', 'node.exe', 'pi/launch.mjs', 'bin/busybox.exe'] : ['hexbot', 'hexbot-core', 'node', 'pi/hexbot-pi']), 'pi/package-lock.json', 'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js', 'web/index.html', `bin/rg${windows ? '.exe' : ''}`, `bin/fd${windows ? '.exe' : ''}`, 'pi/search-tools.mjs'])
       files[file] = createHash('sha256').update(await readFile(join(staging, file))).digest('hex')
     // The app keeps whichever installed runtime was built from newer source,
     // across Stable and Nightly (apps/desktop/src/main/backend/bootstrap.ts).

@@ -36,6 +36,11 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
         repository: 'https://github.com/BurntSushi/ripgrep'
       },
       { license: 'MIT OR Apache-2.0', name: 'fd', repository: 'https://github.com/sharkdp/fd' },
+      {
+        license: 'GPL-2.0',
+        name: 'busybox-w32',
+        repository: 'https://github.com/rmyorston/busybox-w32'
+      },
       { license: 'Public domain', name: 'SQLite', repository: 'https://github.com/sqlite/sqlite' },
       { license: 'MIT OR Apache-2.0', name: 'uv', repository: 'https://github.com/astral-sh/uv' },
       { license: 'PSF-2.0', name: 'Python', repository: 'https://github.com/python/cpython' },

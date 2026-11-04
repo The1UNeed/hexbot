@@ -487,6 +487,13 @@ jobs; portable release fixtures verify that plumbing. See
 [the build contract](windows-build-contract.md) for the runtime layout and
 the native controls.
 
+The shell checks in those suites need the runtime's BusyBox beside the
+daemon binary they test. Both workflows stage the pinned one there with
+`node scripts/desktop/stage-busybox.mjs <daemon folder>/bin` and name it in
+`HEXBOT_WINDOWS_BUSYBOX`, so a missing shell fails them. Run locally without
+it, `windows_sandbox` prints `SKIPPED (no bundled shell)` and skips those
+checks, and `windows_security` expects shell scripts to refuse.
+
 On macOS or Linux, check that the daemon still compiles for Windows:
 
 ```sh

@@ -22,11 +22,12 @@ const root = fs.mkdtempSync(join(tmpdir(), 'hexbot-windows-security-'));
 const originalCwd = process.cwd();
 // Stands in for `hexbot sandbox exec <policy> -- <program> [arguments]`: Node
 // runs this script, named `sandbox`, from the workspace. It records its command
-// line and runs the program without a container.
+// line and runs the program without a container, with BB_GLOBBING=0 as the
+// helper sets it.
 const STAND_IN = `const argv = process.argv.slice(2);
 require('node:fs').writeFileSync(require('node:path').join(__dirname, 'helper-call.json'), JSON.stringify({argv, cwd:process.cwd(), env:process.env}));
 if (argv.at(-1) === 'hexbot-fixture-wait') { process.stdout.write('hexbot-fixture-started\\n'); setInterval(() => {}, 1000); }
-else process.exit(require('node:child_process').spawnSync(argv[3], argv.slice(4), {stdio:'inherit'}).status ?? 1);
+else process.exit(require('node:child_process').spawnSync(argv[3], argv.slice(4), {stdio:'inherit', env:{...process.env, BB_GLOBBING:'0'}}).status ?? 1);
 `;
 try {
   const home = join(root, 'home'), cwd = join(root, 'workspace'), user = join(root, 'user');
@@ -61,9 +62,10 @@ try {
   const config = {home, cwd, prompt:'Frozen', tools:[], enabledToolsets:['file', 'terminal']};
   const configPath = join(root, 'session.json'); fs.writeFileSync(configPath, JSON.stringify(config));
   process.env.HEXBOT_SESSION_CONFIG = configPath;
-  // The helper and Git Bash need not exist until the last pass runs real programs.
-  const helper = join(root, 'hexbot.exe'), bash = join(root, 'Git', 'bin', 'bash.exe'), policy = 'cG9saWN5';
-  const available = {kind:'appcontainer', helper, bash};
+  // The helper and the runtime's shell need not exist until the last pass
+  // runs real programs.
+  const helper = join(root, 'hexbot.exe'), shell = join(root, 'runtime', 'bin', 'busybox.exe'), policy = 'cG9saWN5';
+  const available = {kind:'appcontainer', helper, shell:{path:shell, kind:'busybox'}};
   const handlers = {}, tools = {}, approvals = [], policies = [], fileRequests = [], piSettings = {};
   const settings = {...config, approvalMode:'smart', sandbox:null};
   let policyReply = () => ({result:{helper, policy}});
@@ -150,15 +152,16 @@ try {
     extension = await import('../extension.ts');
     assert.deepEqual(extension.shellEnvironment({SystemRoot:'os',windir:'os',UserProfile:'profile',appdata:'roaming',LocalAppData:'local',NODE_OPTIONS:'bad',PYTHONPATH:'bad',BASH_ENV:'bad',OPENAI_API_KEY:'secret',ARBITRARY_CONNECTOR:'secret',COMSPEC:'bad',PATHEXT:'bad'}), {SystemRoot:'os',windir:'os',UserProfile:'profile',appdata:'roaming',LocalAppData:'local'});
     isolation = await import('../isolation.ts');
-    const {WINDOWS_ISOLATION_UNAVAILABLE:UNAVAILABLE, WINDOWS_FULL_ACCESS, NO_GIT_BASH, WINDOWS_PROFILE, WINDOWS_PATHS} = isolation;
+    const {WINDOWS_ISOLATION_UNAVAILABLE:UNAVAILABLE, WINDOWS_FULL_ACCESS, NO_CONTAINED_SHELL, WINDOWS_PROFILE, WINDOWS_PATHS} = isolation;
     extension.default({on:(name, handler) => handlers[name] = handler, registerTool:tool => tools[tool.name] = tool, registerProvider() {}, getSettings:() => piSettings});
-    assert.match(tools.bash.description, /Git Bash: use Bash syntax, not cmd.exe or PowerShell/);
+    assert.match(tools.bash.description, /POSIX shell, BusyBox ash, not Bash: use sh syntax without arrays or brace expansion, not cmd.exe or PowerShell/);
+    assert.match(tools.bash.description, /In Bypass commands run in Git Bash without a sandbox/);
     assert.match(tools.bash.description, /full_access is not available on Windows/);
     assert.deepEqual(accesses,[], 'registration must not resolve hostile homes');
 
     // Without the AppContainer every local tool refuses in every mode but
     // Bypass, before file access, shell discovery, approval or a policy request.
-    for (const sandbox of [null, {kind:'sandbox-exec'}, {helper, bash}]) for (const mode of ['smart','manual','unknown']) {
+    for (const sandbox of [null, {kind:'sandbox-exec'}, {helper, shell:available.shell}]) for (const mode of ['smart','manual','unknown']) {
       Object.assign(settings, {sandbox, approvalMode:mode});
       await Promise.all(calls.map(async ([toolName,input], index) => {
         assert.deepEqual(await gate(toolName, input, `${mode}-${index}`), {block:true, reason:UNAVAILABLE});
@@ -181,15 +184,19 @@ try {
       }
       assert.equal(typeof (await handlers.user_bash({command:'echo ok'},ctx)).operations.exec, 'function');
     }
-    settings.sandbox = {...available, bash:null};
-    assert.deepEqual(await gate('bash', {command:'echo x'}, 'no-git'), {block:true, reason:NO_GIT_BASH});
-    await assert.rejects(run('bash', {command:'echo x'}, 'no-git'), {message:NO_GIT_BASH});
-    assert.equal((await handlers.user_bash({command:'echo x'},ctx)).result.output, NO_GIT_BASH);
-    // A Git Bash that cannot start inside the sandbox refuses with the
-    // daemon's reason, before a policy request or a spawn.
-    const uncontained = 'Git Bash cannot start inside the Windows sandbox.';
+    // Without a shell, or with one the extension cannot start (a relative
+    // path, a kind it does not know), commands refuse before anything starts.
+    for (const [index, missing] of [null, undefined, {path:'busybox.exe', kind:'busybox'}, {path:shell, kind:'bash'}, {path:shell, kind:'toString'}, {path:shell}].entries()) {
+      settings.sandbox = {...available, shell:missing};
+      assert.deepEqual(await gate('bash', {command:'echo x'}, `no-shell-${index}`), {block:true, reason:NO_CONTAINED_SHELL});
+      await assert.rejects(run('bash', {command:'echo x'}, `no-shell-${index}`), {message:NO_CONTAINED_SHELL});
+      assert.equal((await handlers.user_bash({command:'echo x'},ctx)).result.output, NO_CONTAINED_SHELL);
+    }
+    // A shell that cannot start inside the sandbox refuses with the daemon's
+    // reason, before a policy request or a spawn.
+    const uncontained = "Hexbot's sandboxed shell (BusyBox) could not start inside the Windows sandbox.";
     const asked = policies.length;
-    settings.sandbox = {...available, bash:null, bashRefusal:uncontained};
+    settings.sandbox = {...available, shell:null, shellRefusal:uncontained};
     assert.deepEqual(await gate('bash', {command:'echo x'}, 'uncontained'), {block:true, reason:uncontained});
     await assert.rejects(run('bash', {command:'echo x'}, 'uncontained'), {message:uncontained});
     assert.equal((await handlers.user_bash({command:'echo x'},ctx)).result.output, uncontained);
@@ -239,8 +246,8 @@ try {
     process.env.HEXBOT_FIXTURE_SECRET = 'secret';
     process.env.BASH_ENV = join(cwd, 'startup.sh');
     // A contained command starts the helper directly, with the policy the daemon
-    // gave for this section, Git Bash and the command as separate arguments, and
-    // the sanitized environment. Neither mode asks.
+    // gave for this section, the runtime's shell running its sh, the command as
+    // separate arguments, and the sanitized environment. Neither mode asks.
     const command = `printf '%s|' "a \\"quoted\\" value" 'back\\slash' '$HOME'`;
     for (const mode of ['smart', 'manual']) {
       settings.approvalMode = mode;
@@ -250,7 +257,7 @@ try {
       assert.equal(result.structuredContent.output.trim(), 'contained');
       const call = spawned.at(-1);
       assert.equal(call.file, helper);
-      assert.deepEqual(call.args, ['sandbox', 'exec', policy, '--', bash, '--noprofile', '--norc', '-c', command]);
+      assert.deepEqual(call.args, ['sandbox', 'exec', policy, '--', shell, 'sh', '-c', command]);
       assert.deepEqual({cwd:call.options.cwd, stdio:call.options.stdio, windowsHide:call.options.windowsHide, shell:call.options.shell}, {cwd, stdio:['ignore','pipe','pipe'], windowsHide:true, shell:undefined});
       assert.equal(call.options.env.HEXBOT_FIXTURE_SECRET, undefined);
       assert.equal(call.options.env.BASH_ENV, undefined);
@@ -286,7 +293,7 @@ try {
     let userOutput = '';
     assert.deepEqual(await userCommand.operations.exec('echo user', cwd, {onData:data => userOutput += data}), {exitCode:0});
     assert.equal(userOutput, 'user\n');
-    assert.deepEqual(spawned.at(-1).args, ['sandbox', 'exec', policy, '--', bash, '--noprofile', '--norc', '-c', 'echo user']);
+    assert.deepEqual(spawned.at(-1).args, ['sandbox', 'exec', policy, '--', shell, 'sh', '-c', 'echo user']);
     assert.equal(spawned.at(-1).options.env.HEXBOT_FIXTURE_SECRET, undefined);
 
     // Execution rechecks the live settings and starts nothing when they changed,
@@ -294,7 +301,7 @@ try {
     const counts = () => ({spawned:spawned.length, policies:policies.length});
     const before = counts();
     const pending = await handlers.user_bash({command:'echo x'}, ctx);
-    for (const [index, sandbox] of [null, {kind:'sandbox-exec'}, {helper, bash}].entries()) {
+    for (const [index, sandbox] of [null, {kind:'sandbox-exec'}, {helper, shell:available.shell}].entries()) {
       settings.sandbox = available;
       assert.equal(await gate('bash', {command:'echo x'}, `gone-${index}`), undefined);
       settings.sandbox = sandbox;
@@ -302,14 +309,14 @@ try {
       await assert.rejects(pending.operations.exec('echo x', cwd, {onData() {}}), {message:UNAVAILABLE});
     }
     settings.sandbox = available;
-    assert.equal(await gate('bash', {command:'echo x'}, 'no-bash'), undefined);
-    settings.sandbox = {...available, bash:null};
-    await assert.rejects(run('bash', {command:'echo x'}, 'no-bash'), {message:NO_GIT_BASH});
-    await assert.rejects(pending.operations.exec('echo x', cwd, {onData() {}}), {message:NO_GIT_BASH});
+    assert.equal(await gate('bash', {command:'echo x'}, 'no-shell'), undefined);
+    settings.sandbox = {...available, shell:null};
+    await assert.rejects(run('bash', {command:'echo x'}, 'no-shell'), {message:NO_CONTAINED_SHELL});
+    await assert.rejects(pending.operations.exec('echo x', cwd, {onData() {}}), {message:NO_CONTAINED_SHELL});
     settings.sandbox = available;
-    assert.equal(await gate('bash', {command:'echo x'}, 'no-contained-bash'), undefined);
-    settings.sandbox = {...available, bash:null, bashRefusal:uncontained};
-    await assert.rejects(run('bash', {command:'echo x'}, 'no-contained-bash'), {message:uncontained});
+    assert.equal(await gate('bash', {command:'echo x'}, 'no-contained-shell'), undefined);
+    settings.sandbox = {...available, shell:null, shellRefusal:uncontained};
+    await assert.rejects(run('bash', {command:'echo x'}, 'no-contained-shell'), {message:uncontained});
     await assert.rejects(pending.operations.exec('echo x', cwd, {onData() {}}), {message:uncontained});
     settings.sandbox = available;
     assert.equal(await gate('bash', {command:'echo x'}, 'mode'), undefined);
@@ -419,22 +426,26 @@ try {
   assert.equal(fs.existsSync(join(cwd,'ordinary.txt')),false);
   assert.equal(fs.readFileSync(nativePath,'utf8'),'private');
   // Node stands in for the helper here: the command line it gets, the exit code
-  // and the output it passes back, a timeout and Stop. Natively this needs Git
-  // Bash; the AppContainer itself is the native Rust probes' to prove.
-  const gitBash = simulated ? '/bin/bash' : [process.env.ProgramW6432, process.env.ProgramFiles].filter(Boolean).map(dir => join(dir, 'Git', 'bin', 'bash.exe')).find(path => fs.existsSync(path));
-  if (gitBash) {
+  // and the output it passes back, a timeout and Stop. Natively this needs the
+  // pinned BusyBox CI stages (HEXBOT_WINDOWS_BUSYBOX); elsewhere env runs the
+  // same `sh -c <command>`. The AppContainer itself is the native Rust probes'
+  // to prove.
+  const staged = process.env.HEXBOT_WINDOWS_BUSYBOX;
+  const realShell = simulated ? '/usr/bin/env' : staged && fs.existsSync(staged) ? staged : undefined;
+  if (!simulated && staged && !realShell) throw new Error(`The staged shell is missing: ${staged}`);
+  if (realShell) {
     fs.writeFileSync(join(cwd, 'sandbox'), STAND_IN);
-    settings.sandbox = {kind:'appcontainer', helper:process.execPath, bash:gitBash};
+    settings.sandbox = {kind:'appcontainer', helper:process.execPath, shell:{path:realShell, kind:'busybox'}};
     policyReply = () => ({result:{helper:process.execPath, policy}});
     settings.approvalMode = 'smart';
     const command = `printf '%s|' "a \\"quoted\\" value" 'back\\slash' '$HOME' && printf done`;
     assert.equal(await gate('bash', {command}, 'real-command'), undefined);
     const result = await run('bash', {command, timeout:30}, 'real-command');
     const call = JSON.parse(fs.readFileSync(join(cwd, 'helper-call.json'), 'utf8'));
-    assert.deepEqual(call.argv, ['exec', policy, '--', gitBash, '--noprofile', '--norc', '-c', command]);
+    assert.deepEqual(call.argv, ['exec', policy, '--', realShell, 'sh', '-c', command]);
     assert.equal(fs.realpathSync(call.cwd), fs.realpathSync(cwd));
     assert.equal(call.env.HEXBOT_SESSION_CONFIG, undefined);
-    if (simulated) assert.equal(result.structuredContent.output, 'a "quoted" value|back\\slash|$HOME|done');
+    assert.equal(result.structuredContent.output, 'a "quoted" value|back\\slash|$HOME|done');
     assert.equal(await gate('bash', {command:'exit 3'}, 'real-exit'), undefined);
     assert.equal((await run('bash', {command:'exit 3'}, 'real-exit')).structuredContent.exit_code, 3);
     assert.equal(await gate('bash', {command:'hexbot-fixture-wait'}, 'real-timeout'), undefined);
@@ -451,6 +462,7 @@ try {
   if (!simulated) {
     // Bypass is explicitly uncontained. Exercise Pi's actual Bash dialect and
     // its honest missing-shell failure, after restoring safe fixture homes.
+    const gitBash = [process.env.ProgramW6432, process.env.ProgramFiles].filter(Boolean).map(dir => join(dir, 'Git', 'bin', 'bash.exe')).find(path => fs.existsSync(path));
     const bypassHome = join(root,'bypass-home'); fs.mkdirSync(bypassHome);
     process.env.HOME = bypassHome; process.env.USERPROFILE = bypassHome;
     settings.approvalMode = 'off';

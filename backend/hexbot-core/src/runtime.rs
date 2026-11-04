@@ -3526,7 +3526,7 @@ impl Runtime {
         saved["home"] = json!(self.home);
         // On Windows, Pi runs the section's commands through this helper,
         // with a policy from `hexbot_sandbox_policy`.
-        saved["sandbox"] = crate::credentials::sandbox_settings()?;
+        saved["sandbox"] = crate::credentials::sandbox_settings(&self.home)?;
         // Hash expanded entries, not just YAML: credential edits revoke old clients too.
         if let Some(names) = own["mcpServers"].as_array() {
             let servers = crate::connectors::pi_mcp_servers(&self.home, &s.bot, names)?;

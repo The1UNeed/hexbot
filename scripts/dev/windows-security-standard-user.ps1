@@ -2,7 +2,10 @@ param(
   [Parameter(Mandatory=$true)][string]$Runtime,
   [string]$Probe,
   # The daemon, which the native probe runs as the sandbox helper.
-  [string]$Hexbot
+  [string]$Hexbot,
+  # The pinned BusyBox (scripts/desktop/stage-busybox.mjs), which the probes
+  # find beside the daemon as the runtime has it.
+  [string]$Busybox
 )
 $ErrorActionPreference = 'Stop'
 $name = 'hexbot-security'
@@ -14,6 +17,7 @@ try {
   New-Item -ItemType Directory -Path $root | Out-Null
   Copy-Item -LiteralPath $Runtime -Destination (Join-Path $root 'runtime') -Recurse
   Copy-Item -LiteralPath (Get-Command node.exe).Source -Destination (Join-Path $root 'node.exe')
+  if ($Busybox) { Copy-Item -LiteralPath $Busybox -Destination (Join-Path $root 'busybox-staged.exe') }
   if ($Probe) {
     # The probe names a trusted Python in the bot's config; Auto and Manual
     # must refuse execute_code before it starts.
@@ -42,6 +46,14 @@ try {
   $env:TEMP = Join-Path $root 'temp'
   $env:TMP = $env:TEMP
   $env:HEXBOT_WINDOWS_NODE = Join-Path $root 'node.exe'
+  # The runtime's shell beside the daemon, copied by this user so that it
+  # owns it, as it owns an installed runtime: the sandbox changes its DACL.
+  $staged = Join-Path $root 'busybox-staged.exe'
+  if (Test-Path -LiteralPath $staged) {
+    New-Item -ItemType Directory -Path (Join-Path $root 'bin') | Out-Null
+    Copy-Item -LiteralPath $staged -Destination (Join-Path $root 'bin\busybox.exe')
+    $env:HEXBOT_WINDOWS_BUSYBOX = Join-Path $root 'bin\busybox.exe'
+  }
   & $env:HEXBOT_WINDOWS_NODE --test (Join-Path $root 'runtime/windows-security.test.mjs') (Join-Path $root 'runtime/windows-daemon-pi.test.mjs')
   $result = $LASTEXITCODE
   if (Test-Path (Join-Path $root 'native-test.exe')) {

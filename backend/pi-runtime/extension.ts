@@ -5,7 +5,7 @@ import { resolve, dirname, basename, relative, sep, join, isAbsolute } from 'nod
 import { homedir, tmpdir, constants as osConstants } from 'node:os';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createBashTool, createReadTool, createWriteTool, createEditTool, createGrepTool, createFindTool, createLsTool } from '@earendil-works/pi-coding-agent';
-import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoots, userHomes, managedRuntimeRoots, requireSupportedExecution, WINDOWS_ISOLATION_UNAVAILABLE, WINDOWS_FULL_ACCESS, NO_GIT_BASH, refusal, storeEntries, windowsRealPath, linkTarget, privateKeyName, probeIsolation, readDenied, secretFileName, gitDirectory, SCAN_REASON, SCAN_FILE_REASON, within, workspaceProtected, lockedGit, scanFailureReason} from './isolation.ts';
+import {credentialPolicy, fold, isolatedCommand, isolationAvailable, policyRegex, policyRoots, userHomes, managedRuntimeRoots, requireSupportedExecution, WINDOWS_ISOLATION_UNAVAILABLE, WINDOWS_FULL_ACCESS, NO_CONTAINED_SHELL, SHELL_ARGUMENTS, refusal, storeEntries, windowsRealPath, linkTarget, privateKeyName, probeIsolation, readDenied, secretFileName, gitDirectory, SCAN_REASON, SCAN_FILE_REASON, within, workspaceProtected, lockedGit, scanFailureReason} from './isolation.ts';
 import { registerAcp } from './acp.ts';
 import { lazyStream } from '@earendil-works/pi-ai';
 import { builtinProviders } from '@earendil-works/pi-ai/providers/all';
@@ -235,19 +235,24 @@ export default function hexbot(pi: any) {
   type Level = 'none' | 'base' | 'confined';
   type AllowedCall = {mode: string, cwd: string, level: Level, target?: string, overwrites?: boolean};
   const levelFor = (input: any): Level => live.approvalMode === 'off' ? 'none' : input?.full_access === true ? 'base' : 'confined';
-  // Git Bash, which session settings name on Windows when it starts inside the
-  // sandbox, and otherwise the daemon's reason: not installed, or it cannot
-  // start inside the sandbox.
-  const gitBash = (): string | undefined => typeof live.sandbox?.bash === 'string' && isAbsolute(live.sandbox.bash) ? live.sandbox.bash : undefined;
-  const noGitBash = (): string => typeof live.sandbox?.bashRefusal === 'string' && live.sandbox.bashRefusal ? live.sandbox.bashRefusal : NO_GIT_BASH;
+  // The shell contained commands run in on Windows: the runtime's BusyBox,
+  // which session settings name, with its kind, once the daemon's probe ran
+  // it inside the sandbox. It starts as `<path> sh -c <command>`. Otherwise
+  // the daemon's reason: the runtime has none, or it cannot start inside.
+  const containedShell = (): string[] | undefined => {
+    const {path, kind} = live.sandbox?.shell ?? {};
+    if (typeof path !== 'string' || !isAbsolute(path) || typeof kind !== 'string' || !Object.hasOwn(SHELL_ARGUMENTS, kind)) return;
+    return [path, ...SHELL_ARGUMENTS[kind]];
+  };
+  const noShell = (): string => typeof live.sandbox?.shellRefusal === 'string' && live.sandbox.shellRefusal ? live.sandbox.shellRefusal : NO_CONTAINED_SHELL;
   // What Windows refuses outside Bypass before a path resolves or a command
   // starts: every local tool without the sandbox, full_access (a container has
-  // no base layer to leave to), commands without Git Bash, and file tools
-  // without a local profile to protect.
+  // no base layer to leave to), commands without a contained shell, and file
+  // tools without a local profile to protect.
   const windowsRefusal = (tool: string, fullAccess: boolean): string | undefined => {
     if (process.platform !== 'win32' || !LOCAL_TOOLS.includes(tool)) return;
     if (!isolationAvailable(live.sandbox)) return WINDOWS_ISOLATION_UNAVAILABLE;
-    if (tool === 'bash') return fullAccess ? WINDOWS_FULL_ACCESS : gitBash() ? undefined : noGitBash();
+    if (tool === 'bash') return fullAccess ? WINDOWS_FULL_ACCESS : containedShell() ? undefined : noShell();
     try { userHomes(); } catch (error: any) { return error.message; }
   };
   // What the gate allowed for each call: the mode it decided under, how bash
@@ -404,17 +409,18 @@ export default function hexbot(pi: any) {
     : `[The command ran in the sandbox, without internet access and with writes only in ${live.cwd ?? config.cwd}, its output folders, and temporary folders. If it failed for that reason, run it again with full_access and a reason.]`;
   // Windows contains a command with the daemon's helper and the policy
   // hexbot_sandbox_policy gives this section at this level:
-  // `<helper> sandbox exec <policy> -- <Git Bash> --noprofile --norc -c <command>`.
-  // Node starts the helper itself, never through a shell, so no MSYS path
-  // conversion touches the policy or the command. The helper's job ends every
-  // process the command started once the helper ends, so a timeout or Stop
-  // kills the helper alone. The rest follows Pi's local shell operations.
+  // `<helper> sandbox exec <policy> -- <BusyBox> sh -c <command>`. Node starts
+  // the helper itself, never through a shell, and the helper starts BusyBox
+  // with BB_GLOBBING=0, so nothing expands the policy or the command on the
+  // way. The helper's job ends every process the command started once the
+  // helper ends, so a timeout or Stop kills the helper alone. The rest
+  // follows Pi's local shell operations.
   const containedExec = async (ctx: any, level: Level, command: string, cwd: string, {onData, signal, timeout, env}: any) => {
     const limit = timeout === undefined ? undefined : timeoutMs(timeout);
     if (signal?.aborted) throw new Error('aborted');
     if (level !== 'confined') throw new Error(WINDOWS_FULL_ACCESS);
-    const bash = gitBash();
-    if (!bash) throw new Error(noGitBash());
+    const shell = containedShell();
+    if (!shell) throw new Error(noShell());
     let reply: any;
     try { reply = await bridge(ctx ?? currentContext, 'hexbot_sandbox_policy', {level}); }
     catch (error: any) { throw signal?.aborted || error?.interrupted ? new Error('aborted') : error; }
@@ -426,7 +432,7 @@ export default function hexbot(pi: any) {
     if (policy.length + command.length + 200 > 32767) throw new Error('This command is longer than Windows allows. Put it in a script file and run that.');
     let child: ChildProcess;
     try {
-      child = spawn(helper, ['sandbox', 'exec', policy, '--', bash, '--noprofile', '--norc', '-c', command], {cwd, env: shellEnvironment(env ?? process.env), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true});
+      child = spawn(helper, ['sandbox', 'exec', policy, '--', ...shell, '-c', command], {cwd, env: shellEnvironment(env ?? process.env), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true});
     } catch (error: any) {
       // A Windows command line holds 32,767 characters, the policy included.
       if (error?.code === 'E2BIG' || error?.code === 'ENAMETOOLONG') throw new Error('This command is longer than Windows allows. Put it in a script file and run that.');
@@ -450,7 +456,8 @@ export default function hexbot(pi: any) {
     }
   };
   // Bypass runs Pi's own Bash. Pi's bash tool takes it from Pi's settings, where
-  // the daemon names Git Bash on Windows; this tool replaces Pi's.
+  // the daemon names Git Bash on Windows; this tool replaces Pi's. Git Bash
+  // never runs contained: its MSYS runtime cannot start in an AppContainer.
   const piShellPath = (): string | undefined => {
     try {
       const shell = pi.getSettings?.()?.shellPath;
@@ -460,7 +467,8 @@ export default function hexbot(pi: any) {
     } catch { return undefined; }
   };
   // How the bash tool runs a command: Pi's own Bash in Bypass, Bash inside the
-  // OS sandbox on macOS and Linux, and the daemon's helper on Windows.
+  // OS sandbox on macOS and Linux, and the runtime's BusyBox shell through the
+  // daemon's helper on Windows.
   const shell = (level: Level, ctx?: any) => level === 'none' ? {shellPath: piShellPath()}
     : process.platform === 'win32' ? {operations: {exec: (command: string, cwd: string, options: any) => containedExec(ctx, level, command, cwd, options)}}
     : {spawnHook: (c: any) => ({...c, command: spawnFor(level, c.command), env: shellEnvironment(c.env)})};
@@ -494,7 +502,7 @@ export default function hexbot(pi: any) {
     const tool = factory(config.cwd, options());
     const definition = name === 'bash' ? {
       description: tool.description + (process.platform === 'win32'
-        ? ' On Windows commands run in Git Bash: use Bash syntax, not cmd.exe or PowerShell syntax. In Auto and Manual they run in a sandbox without internet access that writes only to the workspace, or in Manual only to output folders. full_access is not available on Windows. In Bypass commands run without a sandbox.'
+        ? ' On Windows, Auto and Manual run commands in a POSIX shell, BusyBox ash, not Bash: use sh syntax without arrays or brace expansion, not cmd.exe or PowerShell syntax. They run in a sandbox without internet access that writes only to the workspace, or in Manual only to output folders. full_access is not available on Windows. In Bypass commands run in Git Bash without a sandbox.'
         : ' Commands may run in a sandbox that blocks internet access and writes outside the workspace. When a command needs either, set full_access and give a reason.'),
       parameters: {type: 'object', properties: {
         command: {type: 'string', description: 'Shell command to execute'},

@@ -14,6 +14,9 @@ on:
       - '.cargo/config.toml'
       - '.cargo/config'
       - 'scripts/dev/*windows-security*'
+      # The BusyBox pin and the script that stages it beside the daemon.
+      - 'scripts/desktop/native-runtime.mjs'
+      - 'scripts/desktop/stage-busybox.mjs'
       - '.github/workflows/windows-security.yml'
   pull_request:
     paths:
@@ -25,6 +28,9 @@ on:
       - '.cargo/config.toml'
       - '.cargo/config'
       - 'scripts/dev/*windows-security*'
+      # The BusyBox pin and the script that stages it beside the daemon.
+      - 'scripts/desktop/native-runtime.mjs'
+      - 'scripts/desktop/stage-busybox.mjs'
       - '.github/workflows/windows-security.yml'
 
 permissions:
@@ -41,9 +47,16 @@ jobs:
         with:
           node-version: '26.5.0'
       - run: npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund
+      - name: Stage the pinned BusyBox the Windows runtime ships
+        shell: pwsh
+        run: |
+          $directory = Join-Path $env:RUNNER_TEMP 'busybox'
+          node scripts/desktop/stage-busybox.mjs $directory
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot stage the pinned BusyBox' }
+          "HEXBOT_WINDOWS_STAGED_BUSYBOX=$(Join-Path $directory 'busybox.exe')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Exercise the real Pi extension without an administrator token
         shell: pwsh
-        run: ./scripts/dev/windows-security-standard-user.ps1 -Runtime (Resolve-Path backend/pi-runtime).Path
+        run: ./scripts/dev/windows-security-standard-user.ps1 -Runtime (Resolve-Path backend/pi-runtime).Path -Busybox "$env:HEXBOT_WINDOWS_STAGED_BUSYBOX"
 
   combined-refusal:
     name: Combined native Rust and Pi refusal under a standard user
@@ -70,6 +83,13 @@ jobs:
           "HEXBOT_WINDOWS_DAEMON=$($daemon[0].executable)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Install the pinned production Pi runtime
         run: npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund
+      - name: Stage the pinned BusyBox the Windows runtime ships
+        shell: pwsh
+        run: |
+          $directory = Join-Path $env:RUNNER_TEMP 'busybox'
+          node scripts/desktop/stage-busybox.mjs $directory
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot stage the pinned BusyBox' }
+          "HEXBOT_WINDOWS_STAGED_BUSYBOX=$(Join-Path $directory 'busybox.exe')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Exercise production runtime gates as a standard local user
         shell: pwsh
-        run: ./scripts/dev/windows-security-standard-user.ps1 -Runtime (Resolve-Path backend/pi-runtime).Path -Probe "$env:HEXBOT_WINDOWS_PROBE" -Hexbot "$env:HEXBOT_WINDOWS_DAEMON"
+        run: ./scripts/dev/windows-security-standard-user.ps1 -Runtime (Resolve-Path backend/pi-runtime).Path -Probe "$env:HEXBOT_WINDOWS_PROBE" -Hexbot "$env:HEXBOT_WINDOWS_DAEMON" -Busybox "$env:HEXBOT_WINDOWS_STAGED_BUSYBOX"

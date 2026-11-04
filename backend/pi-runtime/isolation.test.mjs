@@ -5,7 +5,18 @@ import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, linkSync, s
 import {dirname, join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createInterface} from 'node:readline';
-import {isolatedCommand, probeIsolation, sandboxProfile, bwrapArguments} from './isolation.ts';
+import {isolatedCommand, probeIsolation, sandboxProfile, bwrapArguments, WINDOWS_ISOLATION_UNAVAILABLE, NO_CONTAINED_SHELL, SHELL_ARGUMENTS} from './isolation.ts';
+
+// The extension refuses with the daemon's own words when settings give no
+// reason, and starts the shell the daemon names as the daemon does.
+test('Windows refusals and the contained shell match the daemon', () => {
+  const rust = readFileSync(new URL('../hexbot-core/src/windows_sandbox.rs', import.meta.url), 'utf8');
+  const daemon = name => JSON.parse(rust.match(new RegExp(`pub const ${name}: &str = ("(?:[^"\\\\]|\\\\.)*");`))[1]);
+  assert.equal(WINDOWS_ISOLATION_UNAVAILABLE, daemon('UNAVAILABLE'));
+  assert.equal(NO_CONTAINED_SHELL, daemon('NO_SHELL'));
+  assert.deepEqual(Object.keys(SHELL_ARGUMENTS), [daemon('SHELL_KIND')]);
+  assert.deepEqual(SHELL_ARGUMENTS[daemon('SHELL_KIND')], [daemon('SHELL_APPLET')]);
+});
 
 // Scans read the user's own Git configuration. These tests use none, so the
 // developer's ~/.gitconfig and system config cannot change their results.

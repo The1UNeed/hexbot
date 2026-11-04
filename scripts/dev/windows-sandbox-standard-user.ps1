@@ -2,7 +2,10 @@
 # AppContainers, ACLs, sockets and processes. Only disposable CI data is used.
 param(
   [Parameter(Mandatory=$true)][string]$Probe,
-  [Parameter(Mandatory=$true)][string]$Hexbot
+  [Parameter(Mandatory=$true)][string]$Hexbot,
+  # The pinned BusyBox (scripts/desktop/stage-busybox.mjs), which the tests
+  # find beside the daemon as the runtime has it.
+  [string]$Busybox
 )
 $ErrorActionPreference = 'Stop'
 $name = 'hexbot-sandbox'
@@ -15,6 +18,7 @@ try {
   Copy-Item -LiteralPath $Probe -Destination (Join-Path $root 'sandbox-test.exe')
   Copy-Item -LiteralPath $Hexbot -Destination (Join-Path $root 'hexbot.exe')
   Copy-Item -LiteralPath (Get-Command node.exe).Source -Destination (Join-Path $root 'node.exe')
+  if ($Busybox) { Copy-Item -LiteralPath $Busybox -Destination (Join-Path $root 'busybox-staged.exe') }
   New-Item -ItemType Directory -Path (Join-Path $root 'temp') | Out-Null
   @'
 $ErrorActionPreference = 'Stop'
@@ -35,6 +39,14 @@ try {
   $env:TMP = $env:TEMP
   $env:HEXBOT_WINDOWS_HEXBOT = Join-Path $root 'hexbot.exe'
   $env:HEXBOT_WINDOWS_NODE = Join-Path $root 'node.exe'
+  # The runtime's shell beside the daemon, copied by this user so that it
+  # owns it, as it owns an installed runtime: the sandbox changes its DACL.
+  $staged = Join-Path $root 'busybox-staged.exe'
+  if (Test-Path -LiteralPath $staged) {
+    New-Item -ItemType Directory -Path (Join-Path $root 'bin') | Out-Null
+    Copy-Item -LiteralPath $staged -Destination (Join-Path $root 'bin\busybox.exe')
+    $env:HEXBOT_WINDOWS_BUSYBOX = Join-Path $root 'bin\busybox.exe'
+  }
   # One test at a time, and one stream for the tests and the commands they
   # contain, so a contained command's errors sit beside the test that ran it.
   # The root has no spaces, so cmd needs no quotes inside its command.

@@ -1223,7 +1223,14 @@ export function ApprovalsSettings(): React.JSX.Element {
             : 'No OS sandbox is available, so Manual and Auto ask before every shell command and code run. Install bubblewrap on the computer running the daemon, then restart the daemon to restore isolation.'}
         </Notice>
       ) : null}
-      <Group title="Mode">
+      <Group
+        footer={
+          info?.platform === 'windows' && info.sandbox === 'appcontainer'
+            ? 'On Windows, Auto and Manual run commands in BusyBox, a POSIX shell, not Bash. Bypass runs them in Git Bash.'
+            : undefined
+        }
+        title="Mode"
+      >
         <div aria-label="Approval mode" className={dividerClass} role="radiogroup">
           {approvalModes(role, settings?.approval_mode).map(mode => (
             <ChoiceRow

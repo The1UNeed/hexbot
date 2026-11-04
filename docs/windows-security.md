@@ -23,8 +23,8 @@ in a throwaway container. When that works, `hexbot.info` reports `sandbox:
 does not, Auto and Manual refuse local commands and file tools, scheduled
 scripts do not run, and Settings, Approvals says so. They never fall back to
 an approval that would run with the user's own permissions. Shell commands
-need Git Bash to start inside the container too, which a second probe checks
-([Shells and scripts](#shells-and-scripts)).
+run in the shell the runtime ships, BusyBox, once a second probe has run it
+inside a container ([Shells and scripts](#shells-and-scripts)).
 
 What is guaranteed:
 
@@ -39,8 +39,9 @@ What is guaranteed:
   what Windows lets every AppContainer read, such as Program Files and the
   Windows folder. Auto writes the working folder and the bot's output
   folders. Manual reads them and writes nothing but an approved output
-  folder in the Hexbot home. Every policy reads the managed Python and a Git
-  for Windows installed for this user only. Each container has its own home,
+  folder in the Hexbot home. Every policy reads the managed Python, the
+  runtime's BusyBox and a Git for Windows installed for this user only. Each
+  container has its own home,
   temp and AppData folders inside the Hexbot home, and its environment points
   there.
 - **Credential isolation.** No root may be, contain or sit inside the
@@ -92,47 +93,73 @@ What is guaranteed:
 
 ## Shells and scripts
 
-Shell commands and `.sh` and `.bash` scheduled scripts run in Git Bash, found
-where the Git for Windows installer recorded it or in its default folders,
+In Auto and Manual, Pi's bash tool, the user's own commands and `.sh` and
+`.bash` scheduled scripts run in the shell the Windows runtime ships:
+[busybox-w32](https://frippery.org/busybox/), one `bin\busybox.exe` beside
+the daemon (`windows_sandbox::bundled_shell`), whose `sh` is ash. A command
+runs as `<busybox> sh -c <command>` and a script as `<busybox> sh <script>`,
 never through the PATH. `.py` scripts run with the managed Python
 (`runtime/tools/code-python`), `.exe` scripts run as themselves, and any
-other script refuses. Bypass uses Pi's own Bash with no sandbox and no
-credential protection: the same Git Bash, which the daemon names in each
-bot's Pi settings (`shellPath`) because Pi's environment has no
-`ProgramFiles` for its own search. Without Git for Windows, Pi searches the
-PATH as it would. It does not substitute `cmd.exe` for Bash. Pi stops when
-its input ends, the request Windows has instead of SIGTERM, and is ended
-with its job after the same grace.
+other script refuses. The pin and its checksum are in
+`scripts/desktop/native-runtime.mjs`; the runtime's `THIRD_PARTY_NOTICES`
+carries BusyBox's GPL-2.0 and where its source is.
 
-In Auto and Manual, Git Bash runs in the container only after the daemon's
-probe ran it there, once for each Git Bash it finds: a pipe into a second
-program inside a command substitution, which must print exactly what it
-should (`windows_container::probe_bash`). Git for Windows' MSYS runtime does
-not pass. When it starts, it creates its shared objects under the global
-`\BaseNamedObjects` namespace, where no AppContainer may create anything
+ash is a POSIX shell with some Bash extensions, such as `[[ ]]`,
+`${v//a/b}`, `$'...'`, `&>`, `local` and `set -o pipefail`, but it is not
+Bash: it has no arrays, brace expansion or `declare`, so a command or a
+`.bash` script that uses them fails. Commands such as `ls`, `grep`, `sed`,
+`awk` and `find` are BusyBox's own, run by the same binary.
+
+Git Bash cannot be that shell. Git for Windows' MSYS runtime creates its
+shared objects under the global `\BaseNamedObjects` namespace, where no
+AppContainer may create anything
 (`NtCreateDirectoryObject(\BaseNamedObjects\msys-2.0S5-…)` fails with
-`STATUS_ACCESS_DENIED`). It also gives the objects it makes, such as the ones
-that map process IDs and its signal pipes, to Everyone, which an
+`STATUS_ACCESS_DENIED`). It also gives the objects it makes, such as the
+ones that map process IDs and its signal pipes, to Everyone, which an
 AppContainer's access check never counts. Preparing that namespace from
 outside the container cannot help: the runtime's own processes still could
 not open each other's objects, and a half-working runtime can return from
-`fork` as the child in both processes, so a command would run twice. So
-while the probe fails, Pi's bash tool, the user's own commands and `.sh` and
-`.bash` scripts refuse in Auto and Manual with that reason, before anything
-starts; session settings carry it as `bashRefusal`. `.py` and `.exe` scripts,
-Pi's read, write and edit tools and other contained programs still run, and
-Bypass runs shell commands without a sandbox. A Git Bash installed for this
-user only is not readable to the probe's container, so its probe fails too.
+`fork` as the child in both processes, so a command would run twice. BusyBox
+needs none of that. It starts each pipe stage and subshell as a new copy of
+itself and hands it the shell's state in an unnamed file mapping the copy
+inherits.
+
+The shell runs in a container only after the daemon's probe ran it there,
+once for each shell it finds: in a throwaway container that may read the
+shell alone, `sh -c` pipes a fresh nonce into a second copy of the shell
+inside a command substitution, and the output must be exactly that nonce
+(`windows_container::probe_shell`). The probe's grant is journaled while it
+lasts and taken back. While the probe fails, or when the runtime has no
+shell, as a daemon built from source has none, Pi's bash tool, the user's
+own commands and `.sh` and `.bash` scripts refuse with that reason before
+anything starts; session settings carry it as `shellRefusal`. `.py` and
+`.exe` scripts, Pi's read, write and edit tools and other contained programs
+still run, and Bypass runs shell commands without a sandbox.
+
+Every policy may read and run the shell, never change it. The helper grants
+it as it grants the programs a policy reads, but leaves it out of the
+container's name, since each runtime brings it at a new path
+(`Policy::shell`). The helper starts it, like every contained program, with
+`BB_GLOBBING=0`: started by anything but itself, BusyBox expands wildcards
+in its own arguments as other Windows programs do, so a command such as
+`ls *` could otherwise reach the shell as file names.
+
+Bypass uses Pi's own Bash with no sandbox and no credential protection: Git
+Bash, which the daemon names in each bot's Pi settings (`shellPath`) because
+Pi's environment has no `ProgramFiles` for its own search. Without Git for
+Windows, Pi searches the PATH as it would. It does not substitute `cmd.exe`
+or BusyBox for Bash. Pi stops when its input ends, the request Windows has
+instead of SIGTERM, and is ended with its job after the same grace.
 
 Pi asks the daemon for the policy of each of its commands through the
 private `hexbot_sandbox_policy` bridge, which builds it from the section's
 live working folder, outputs and approval mode, checked as session settings
-are. Session settings name the sandbox, its helper and Git Bash, or why there
-is none (`bashRefusal`). The private
+are. Session settings name the sandbox, its helper and the shell, its path
+and kind (`busybox`), or why there is none (`shellRefusal`). The private
 extension then starts the helper itself, never through a shell: `<helper>
-sandbox exec <policy> -- <Git Bash> --noprofile --norc -c <command>`, with
-the sanitized environment, stdin ignored and no window. The user's own
-commands and the terminal tool take the same path. Execution rechecks the
+sandbox exec <policy> -- <busybox> sh -c <command>`, with the sanitized
+environment, stdin ignored and no window. The user's own commands and the
+terminal tool take the same path. Execution rechecks the
 live settings, so a command whose approval mode or working folder changed
 after it was allowed starts nothing. A timeout or Stop kills the helper,
 whose job ends the command's processes. A Windows command line holds at most
@@ -227,9 +254,10 @@ Residual risks:
 - **`full_access`.** An AppContainer has no network and reads only what it
   is granted, so an approved command cannot leave the workspace sandbox for
   the base layer alone. Bypass runs commands without a sandbox.
-- **Shell commands and shell scripts, while Git Bash cannot start inside the
-  sandbox.** That is every Git for Windows release so far
-  ([Shells and scripts](#shells-and-scripts)). Bypass runs them.
+- **Shell commands and shell scripts, when the runtime's shell is missing
+  or cannot start inside the sandbox**
+  ([Shells and scripts](#shells-and-scripts)). Bypass runs them in Git
+  Bash.
 - **Copilot**, including its reviewer, in every mode. It runs with the base
   layer alone, which Windows does not have.
 - **The daemon's retired Python worker** (`execute_code`) and the file
@@ -262,9 +290,17 @@ Residual risks:
   into them.
 - **Named pipes and other objects.** A container can open named pipes and
   other kernel objects whose security admits every AppContainer.
-- **MSYS arguments.** Arguments are quoted so MSYS expands no glob or `~`,
-  but MSYS reads `\\` inside quotes as one backslash, so an argument with a
-  doubled backslash reaches Git Bash changed.
+- **The shell's dialect.** ash is not Bash: arrays, brace expansion and
+  `declare` fail, in commands and in `.bash` scripts alike. Bypass runs Bash.
+- **MSYS programs.** Git for Windows' MSYS programs, Git Bash and the tools
+  in its `usr\bin` such as `less`, cannot start in a container. `git` itself
+  can, but a hook or alias that needs Git's own `sh` fails.
+- **The shell is a third-party binary.** Every Windows build downloads
+  BusyBox from frippery.org at its pinned checksum and fails while that site
+  is down; the pin must move before frippery.org deletes the build, about
+  three years after its release. Some antivirus software flags busybox.exe,
+  and Windows Security scans every copy the shell starts, which slows
+  commands that start many processes.
 - **No memory or CPU caps.** The job limits only the number of processes.
 - **Policy size.** A policy is one command-line argument. A workspace with
   very many protected files refuses rather than drop protections.
@@ -280,7 +316,8 @@ The daemon is a direct `hexbot.exe`. A validated selection in
 `runtime/native-current.json` identifies an immutable build under
 `runtime/native/<build>/hexbot.exe`, which is also the sandbox helper.
 Bundled Node is an absolute sibling `node.exe`, launched with the sibling
-`pi/launch.mjs`. Neither a `.cmd` daemon nor a symlink supplies this
+`pi/launch.mjs`, and the shell contained commands run in is the sibling
+`bin/busybox.exe`. Neither a `.cmd` daemon nor a symlink supplies this
 contract. Managed Python lives under
 `runtime/tools/code-python/Scripts/python.exe`.
 
@@ -358,9 +395,13 @@ probes as a newly created local standard user, and publish nothing:
   never deny and leave secrets none, read-only Manual, one container per
   policy, no network or loopback, Node inside, process trees that end with
   the helper, root refusals, journal and reset, and argument quoting. The
-  startup probe must run, and the Git Bash probe must either run Git Bash in
-  a container or fail with the MSYS runtime's own error; a Git Bash that
-  fails it runs nothing.
+  startup probe must run. The job stages the pinned BusyBox beside the
+  daemon binary (`scripts/desktop/stage-busybox.mjs`), so the shell probe
+  must run it in a container, print its nonce and take its grant back, and
+  the shell must run a pipe inside a policy, write the workspace, leave Git
+  metadata and the secret unchanged, hold only a read-and-run entry on its
+  own file, keep the container's name, and take every quoting case as
+  given. Run without a staged shell, those checks say they were skipped.
 - `.github/workflows/windows-security.yml` runs the production Pi extension
   probes and the compiled `tests/windows_security.rs` boundary probe, with
   the daemon binary as the sandbox helper. The probe checks that Auto writes
@@ -374,8 +415,9 @@ probes as a newly created local standard user, and publish nothing:
   snapshot, commits an edit only to the file it read, and refuses Bypass, a
   stale snapshot, protected names and network, device, stream and
   missing-drive paths by their text, and that an Auto `.sh` scheduled script
-  writes the workspace while a Manual one writes nothing, or, while Git Bash
-  cannot start inside the sandbox, that both refuse with that reason and
+  runs in BusyBox and writes the workspace while a Manual one writes nothing.
+  The job stages the pinned BusyBox beside the helper, so a shell refusal
+  fails it; without one, both scripts refuse with the daemon's reason and
   session settings carry it. Copilot refuses
   before path or command resolution. Runtime and selection files stay
   byte-identical, owned Pi processes stop, and no container profile is left

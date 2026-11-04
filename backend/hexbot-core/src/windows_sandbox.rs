@@ -1,10 +1,10 @@
 //! The Windows sandbox from the daemon's side. Auto and Manual commands run
 //! through `hexbot sandbox exec` (`windows_container`), with a policy that
 //! `credentials` builds. This module finds what the policy and the helper
-//! need on this computer: the helper itself, Git for Windows and its Bash,
-//! whether that Bash starts inside the sandbox, and the managed Python. It
-//! reads Git metadata only from local disks, and names what Windows still
-//! refuses.
+//! need on this computer: the helper itself, the shell the runtime ships and
+//! whether it starts inside the sandbox, Git for Windows, whose Git Bash
+//! Bypass runs, and the managed Python. It reads Git metadata only from local
+//! disks, and names what Windows still refuses.
 use crate::windows_paths::sandbox as rules;
 use crate::{Error, Result};
 use std::{
@@ -19,10 +19,17 @@ pub const UNAVAILABLE: &str = "The Windows sandbox could not start, so Auto and 
 /// Code runs on the bot's own computer; the daemon's Python worker is retired
 /// and never starts on Windows.
 pub const NATIVE_WORKER: &str = "On Windows, code runs on the bot's own computer (Computer use), not on the computer running Hexbot.";
-pub const NO_GIT_BASH: &str = "Shell commands and scripts on Windows run in Git Bash, which is not installed. Install Git for Windows, then try again.";
-/// Why Auto and Manual refuse shell commands when Git Bash is installed but
-/// its probe could not run it in a container (`windows_container::probe_bash`).
-pub const GIT_BASH_UNCONTAINED: &str = "Git Bash cannot start inside the Windows sandbox, so Auto and Manual do not run shell commands or shell scripts on this computer. Bypass runs them without a sandbox.";
+/// Why Auto and Manual refuse shell commands and shell scripts when the
+/// runtime has no shell of its own, as a daemon built from source has none.
+pub const NO_SHELL: &str = "Hexbot's sandboxed shell (BusyBox) is missing, so Auto and Manual do not run shell commands or shell scripts on Windows. Reinstall Hexbot to restore it. Bypass runs them in Git Bash, without a sandbox.";
+/// Why they refuse when the runtime's shell is there but its probe could not
+/// run it in a container (`windows_container::probe_shell`).
+pub const SHELL_UNCONTAINED: &str = "Hexbot's sandboxed shell (BusyBox) could not start inside the Windows sandbox, so Auto and Manual do not run shell commands or shell scripts. Restart Hexbot to try again. Bypass runs them in Git Bash, without a sandbox.";
+/// The kind of shell session settings name: BusyBox, whose `sh` is ash, a
+/// POSIX shell with some Bash extensions.
+pub const SHELL_KIND: &str = "busybox";
+/// What BusyBox is told to run before a command or a script: its `sh`.
+pub const SHELL_APPLET: &str = "sh";
 pub const TOO_LARGE: &str = "This workspace has too many protected files for the Windows sandbox to start a command. Choose a smaller workspace.";
 
 static HELPER: OnceLock<PathBuf> = OnceLock::new();
@@ -141,33 +148,44 @@ pub fn git_install() -> Option<PathBuf> {
         .find(|folder| folder.join(r"bin\bash.exe").is_file())
 }
 
-/// Git Bash, which runs shell scripts as Pi's Bash does on Windows.
+/// Git Bash, which Pi's own Bash runs in Bypass. Its MSYS runtime cannot
+/// start inside an AppContainer (`windows_container::probe_shell`), so
+/// contained commands never run it.
 pub fn git_bash() -> Option<PathBuf> {
     git_install().map(|git| git.join(r"bin\bash.exe"))
 }
 
-/// Git Bash for contained commands, once its probe ran it in a container.
-/// The probe runs once for each Git Bash this process finds, and its reason
-/// goes to the daemon's log when it fails.
-pub fn contained_git_bash() -> Result<PathBuf> {
+/// The shell the runtime ships: `bin\busybox.exe` beside the helper, which
+/// is the daemon's own executable, in plain form. Only a file on a local
+/// fixed drive counts. A daemon built from source has none.
+pub fn bundled_shell() -> Option<PathBuf> {
+    let shell = real(&helper().ok()?.parent()?.join(r"bin\busybox.exe"))?;
+    fixed_drive(shell.to_str()?).ok()?;
+    shell.is_file().then_some(shell)
+}
+
+/// The shell contained commands and shell scripts run in, BusyBox's `sh`,
+/// once its probe ran it in a container. The probe runs once for each shell
+/// this process finds, and its reason goes to the daemon's log when it fails.
+pub fn contained_shell(home: &Path) -> Result<PathBuf> {
     static PROBED: Mutex<Option<(PathBuf, bool)>> = Mutex::new(None);
-    let bash = git_bash().ok_or_else(|| Error::new(4302, NO_GIT_BASH))?;
+    let shell = bundled_shell().ok_or_else(|| Error::new(4302, NO_SHELL))?;
     let mut probed = PROBED.lock().unwrap_or_else(|error| error.into_inner());
     let contained = match &*probed {
-        Some((probed, contained)) if *probed == bash => *contained,
+        Some((probed, contained)) if *probed == shell => *contained,
         _ => {
-            let result = crate::windows_container::probe_bash(&bash);
+            let result = crate::windows_container::probe_shell(home, &shell);
             if let Err(error) = &result {
-                eprintln!("{GIT_BASH_UNCONTAINED} {error}");
+                eprintln!("{SHELL_UNCONTAINED} {error}");
             }
-            *probed = Some((bash.clone(), result.is_ok()));
+            *probed = Some((shell.clone(), result.is_ok()));
             result.is_ok()
         }
     };
     if contained {
-        Ok(bash)
+        Ok(shell)
     } else {
-        Err(Error::new(4302, GIT_BASH_UNCONTAINED))
+        Err(Error::new(4302, SHELL_UNCONTAINED))
     }
 }
 
@@ -193,7 +211,8 @@ fn readable_to_containers(path: &Path) -> bool {
 
 /// Folders every contained command may read and run programs from: the
 /// managed Python, its base interpreter, and Git for Windows when it is
-/// installed for this user only.
+/// installed for this user only, for `git` itself. The bundled shell is
+/// granted apart (`Policy::shell`), since its path changes with each runtime.
 pub fn programs(home: &Path) -> Vec<PathBuf> {
     let mut programs = Vec::new();
     let venv = home.join(r"runtime\tools\code-python");

@@ -264,13 +264,14 @@ more freedom and more capability than a hosted product can offer.
   only the working folder, outputs and runtime programs granted (read-only in
   Manual). Pi's bash, the user's own commands and scheduled scripts run in
   it; Pi's read tools judge each path before they open it, and its write
-  and edit go through the daemon's handle bridge. Shell commands need Git
-  Bash to start inside the container, which Git for Windows' MSYS runtime
-  cannot, so they refuse there with that reason. If the startup probe fails
-  Auto and Manual refuse rather than ask. `full_access` and the retired
-  Python worker refuse in Auto and Manual, and Copilot in every mode. Bypass
-  retains Pi's Bash dialect without containment, requiring Bash on the host.
-  It does not change the tool to `cmd.exe`. See
+  and edit go through the daemon's handle bridge. Shell commands and shell
+  scripts run in the POSIX shell (ash) of the busybox-w32 the runtime ships,
+  since Git for Windows' MSYS runtime cannot start in a container; they
+  refuse with a reason when that shell is missing or its probe fails. If the
+  startup probe fails, Auto and Manual refuse rather than ask. `full_access`
+  and the retired Python worker refuse in Auto and Manual, and Copilot in
+  every mode. Bypass retains Pi's Bash dialect without containment, requiring
+  Bash on the host. It does not change the tool to `cmd.exe`. See
   [the Windows security contract](docs/windows-security.md).
 - Connected tools use Pi's built-in MCP through codemode. A section freezes
   server namespaces and tool declarations; a bot's chat takes changed ones at

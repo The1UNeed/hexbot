@@ -85,9 +85,16 @@ jobs:
           if ($probe.Count -ne 1 -or $daemon.Count -ne 1) { throw 'Expected one sandbox test and one daemon executable' }
           "HEXBOT_SANDBOX_PROBE=$($probe[0].executable)" >> $env:GITHUB_ENV
           "HEXBOT_SANDBOX_DAEMON=$($daemon[0].executable)" >> $env:GITHUB_ENV
+      - name: Stage the pinned BusyBox the Windows runtime ships
+        shell: pwsh
+        run: |
+          $directory = Join-Path $env:RUNNER_TEMP 'busybox'
+          node scripts/desktop/stage-busybox.mjs $directory
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot stage the pinned BusyBox' }
+          "HEXBOT_SANDBOX_BUSYBOX=$(Join-Path $directory 'busybox.exe')" >> $env:GITHUB_ENV
       - name: Run the sandbox as a standard user
         shell: pwsh
-        run: ./scripts/dev/windows-sandbox-standard-user.ps1 -Probe $env:HEXBOT_SANDBOX_PROBE -Hexbot $env:HEXBOT_SANDBOX_DAEMON
+        run: ./scripts/dev/windows-sandbox-standard-user.ps1 -Probe $env:HEXBOT_SANDBOX_PROBE -Hexbot $env:HEXBOT_SANDBOX_DAEMON -Busybox $env:HEXBOT_SANDBOX_BUSYBOX
   native-runtime:
     env:
       HEXBOT_CLI_NO_PATH: '1'

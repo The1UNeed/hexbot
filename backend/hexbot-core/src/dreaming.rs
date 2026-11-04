@@ -1888,9 +1888,9 @@ impl Dreaming {
         let cwd = workdir
             .map(PathBuf::from)
             .unwrap_or_else(|| workspace.clone());
-        // Windows runs shell scripts in Git Bash (the sandbox finds it), Python
-        // with the managed Python, and programs as themselves. Any other file
-        // has no interpreter there.
+        // Windows runs shell scripts, .bash ones too, in the runtime's BusyBox
+        // `sh` (the sandbox finds it), Python with the managed Python, and
+        // programs as themselves. Any other file has no interpreter there.
         let extension = path.extension().and_then(|s| s.to_str()).map(|s| {
             if cfg!(windows) {
                 s.to_ascii_lowercase()

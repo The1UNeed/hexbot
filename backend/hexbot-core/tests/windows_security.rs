@@ -126,6 +126,14 @@ async fn windows_security_auto_writes_manual_reads_and_full_access_refuses() {
             contains(&policy["deny_all"], &work.join(".env")),
             "{policy}"
         );
+        // Every policy may run the runtime's shell, beside the helper.
+        if let Some(staged) = std::env::var_os("HEXBOT_WINDOWS_BUSYBOX") {
+            let named = policy["shell"].as_str().unwrap_or_default();
+            assert!(
+                named.eq_ignore_ascii_case(&staged.to_string_lossy()),
+                "{policy}"
+            );
+        }
         let output = command("echo contained>written.txt")
             .output()
             .await
@@ -390,12 +398,18 @@ async fn windows_security_runtime_runs_sections_and_scripts_in_the_sandbox() {
             let settings = &reply["result"];
             assert_eq!(settings["sandbox"]["kind"], "appcontainer", "{reply}");
             assert_eq!(settings["sandbox"]["helper"], json!(hexbot));
-            // Git Bash for Pi's commands when it starts in the sandbox, or why not.
+            // The runtime's shell for Pi's commands, BusyBox, when it starts
+            // in the sandbox, or why not.
+            let shell = &settings["sandbox"]["shell"];
             assert_ne!(
-                settings["sandbox"]["bash"].is_string(),
-                settings["sandbox"]["bashRefusal"].is_string(),
+                shell.is_object(),
+                settings["sandbox"]["shellRefusal"].is_string(),
                 "{reply}"
             );
+            if shell.is_object() {
+                assert_eq!(shell["kind"], "busybox", "{reply}");
+                assert!(Path::new(shell["path"].as_str().unwrap()).is_file());
+            }
             assert_eq!(settings["cwd"], json!(absent_workdir));
             assert!(absent_workdir.is_dir() && absent_output.is_dir());
             // A network working folder refuses by its text, before outputs.
@@ -727,12 +741,16 @@ async fn windows_security_runtime_runs_sections_and_scripts_in_the_sandbox() {
                 .await
                 .unwrap();
             let job = wait(&mut events, &id).await;
-            // Shell scripts need a Git Bash that starts inside the sandbox.
-            // Stock Git for Windows does not, and the script refuses with
-            // the daemon's reason instead of starting.
-            let refusal = credentials::sandbox_settings().unwrap()["bashRefusal"]
+            // Shell scripts run in the runtime's shell, BusyBox's sh, once it
+            // starts inside the sandbox. Without it, as when the runtime is
+            // not staged beside the helper, the script refuses with the
+            // daemon's reason instead of starting.
+            let refusal = credentials::sandbox_settings(&home).unwrap()["shellRefusal"]
                 .as_str()
                 .map(str::to_owned);
+            if std::env::var_os("HEXBOT_WINDOWS_BUSYBOX").is_some() {
+                assert_eq!(refusal, None, "the staged shell must run scheduled scripts");
+            }
             if let Some(refusal) = refusal {
                 assert_eq!(job["last_status"], "error", "{job}");
                 assert!(

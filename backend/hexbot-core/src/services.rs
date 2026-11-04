@@ -2206,6 +2206,7 @@ fn assert_setup_retains_verified_newer_runtime() {
             "pi/search-tools.mjs",
             "bin/rg.exe",
             "bin/fd.exe",
+            "bin/busybox.exe",
             "web/index.html",
             "pi/package-lock.json",
             "pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js",

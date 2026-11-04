@@ -96,6 +96,11 @@ pub mod sandbox {
         pub deny_write: Vec<PathBuf>,
         /// Project secrets: never read or written.
         pub deny_all: Vec<PathBuf>,
+        /// The shell the runtime ships (`windows_sandbox::bundled_shell`),
+        /// read as `readable` is but left out of the container's name: each
+        /// runtime brings it at a new path, and the containers stay the same.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub shell: Option<PathBuf>,
     }
 
     /// Every profile Hexbot created and every root it changed, kept before each.
@@ -338,8 +343,9 @@ pub mod sandbox {
     }
 
     /// Units that need quotes: separators for the C runtime and MSYS, quotes
-    /// of either kind, and what MSYS expands outside quotes when Git Bash or
-    /// its tools read a Windows command line: `~` and the glob characters.
+    /// of either kind, and what MSYS expands outside quotes when one of Git's
+    /// MSYS tools reads a Windows command line: `~` and the glob characters.
+    /// BusyBox expands none: the sandbox sets `BB_GLOBBING=0` for it.
     const QUOTED: &[u8] = b" \t\n\r\x0b\x0c\"'*?[{~";
 
     /// Quote one argument as the Microsoft C runtime parses it. MSYS reads

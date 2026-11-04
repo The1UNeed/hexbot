@@ -274,10 +274,30 @@ async function searchToolLibraries(tools) {
 }
 
 /**
- * The daemon runtime: the Rust daemon, the Pi packages installed beside it,
- * Node, and the search tools. Its web app carries its own notices.
+ * busybox-w32, which the Windows runtime ships unmodified as bin/busybox.exe:
+ * the shell its sandbox runs commands in. Hexbot only starts it as a separate
+ * program and links none of its code, so carrying it is mere aggregation and
+ * its GPL-2.0 covers BusyBox alone. `busybox` is the pin in native-runtime.mjs;
+ * the license it ships is kept for that version.
  */
-export async function runtimeNotices({ repository = root, nodeModules, targets = RUST_TARGETS, node }) {
+export async function busyboxNotice(busybox) {
+  const directory = join(licenses, 'busybox')
+  const kept = JSON.parse(await readFile(join(directory, 'native.json'), 'utf8'))
+  if (kept.version !== busybox.version)
+    throw new Error(`${relative(root, directory)} is for busybox-w32 ${kept.version}; check the license busybox-w32 ${busybox.version} ships and update it`)
+  const text = [
+    `bin/busybox.exe is busybox-w32 ${busybox.version}, BusyBox for Windows, exactly as published at ${busybox.url}. It is a separate program: Hexbot starts it as the shell for the commands bots run on Windows and links none of its code, so it is only distributed alongside Hexbot (mere aggregation), and its license, version 2 of the GNU General Public License, covers BusyBox alone. The complete source code for this build is at ${busybox.source} and https://github.com/rmyorston/busybox-w32/tree/${busybox.version}.`,
+    await readFile(join(directory, kept.file), 'utf8')
+  ].join('\n\n')
+  return { name: 'busybox-w32', version: busybox.version, license: kept.license, source: busybox.source, text }
+}
+
+/**
+ * The daemon runtime: the Rust daemon, the Pi packages installed beside it,
+ * Node, the search tools and, on Windows, BusyBox. Its web app carries its
+ * own notices.
+ */
+export async function runtimeNotices({ repository = root, nodeModules, targets = RUST_TARGETS, node, busybox }) {
   const tools = JSON.parse(await readFile(join(repository, 'backend/hexbot-core/assets/code-tools.json'), 'utf8'))
   const crates = await mkdtemp(join(tmpdir(), 'hexbot-tool-crates-'))
   try {
@@ -290,7 +310,8 @@ export async function runtimeNotices({ repository = root, nodeModules, targets =
       ...await toolPackages('fd-find', tools.fd.version, crates, { targets: toolTargets(tools.fd) })
     ]
     const nodeNotice = { name: 'Node.js', version: node.version, license: 'MIT', source: `https://github.com/nodejs/node/tree/v${node.version}`, text: node.license }
-    return renderNotices('The Hexbot daemon runtime', await noticeEntries(packages, [nodeNotice, await rustStandardLibrary(repository), ...await searchToolLibraries(tools)]))
+    const programs = busybox ? [await busyboxNotice(busybox)] : []
+    return renderNotices('The Hexbot daemon runtime', await noticeEntries(packages, [nodeNotice, await rustStandardLibrary(repository), ...await searchToolLibraries(tools), ...programs]))
   } finally {
     await rm(crates, { recursive: true, force: true })
   }

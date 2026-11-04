@@ -437,28 +437,35 @@ pub fn isolation_available() -> bool {
     sandbox().is_some()
 }
 /// The sandbox for session settings: its kind and, on Windows, the helper and
-/// the Bash that Pi's commands run through, or why they have none: Git Bash
-/// is not installed, or it cannot start inside the sandbox. Null when there
-/// is no sandbox.
-pub fn sandbox_settings() -> Result<serde_json::Value> {
+/// the shell Pi's commands run in, its path and kind, or why they have none:
+/// the runtime has no shell, or it cannot start inside the sandbox. Null when
+/// there is no sandbox.
+pub fn sandbox_settings(home: &Path) -> Result<serde_json::Value> {
     let Some(kind) = sandbox() else {
         return Ok(serde_json::Value::Null);
     };
     #[cfg(windows)]
     {
-        let (bash, refusal) = match crate::windows_sandbox::contained_git_bash() {
-            Ok(bash) => (Some(bash), None),
-            Err(error) => (None, Some(error.message)),
+        use crate::windows_sandbox::{SHELL_KIND, contained_shell, helper};
+        let (shell, refusal) = match contained_shell(home) {
+            Ok(path) => (
+                serde_json::json!({"path": path, "kind": SHELL_KIND}),
+                serde_json::Value::Null,
+            ),
+            Err(error) => (serde_json::Value::Null, serde_json::json!(error.message)),
         };
         Ok(serde_json::json!({
             "kind": kind,
-            "helper": crate::windows_sandbox::helper()?,
-            "bash": bash,
-            "bashRefusal": refusal,
+            "helper": helper()?,
+            "shell": shell,
+            "shellRefusal": refusal,
         }))
     }
     #[cfg(not(windows))]
-    Ok(serde_json::json!({ "kind": kind }))
+    {
+        let _ = home;
+        Ok(serde_json::json!({ "kind": kind }))
+    }
 }
 /// The daemon runs its own executable as the Windows sandbox helper. An
 /// integration test links this library into its own executable, which has no
@@ -2342,22 +2349,26 @@ fn windows_command(
     readable: &[PathBuf],
 ) -> Result<tokio::process::Command> {
     let policy = windows_command_policy(home, writable, confine, approved_outputs, readable)?;
-    let program = windows_program(program)?;
+    let (program, leading) = windows_program(home, program)?;
     let mut command = tokio::process::Command::new(crate::windows_sandbox::helper()?);
     command
         .args(["sandbox", "exec"])
         .arg(policy)
         .arg("--")
-        .arg(program);
+        .arg(program)
+        .args(leading);
     Ok(command)
 }
-/// The program a contained command starts, by its full path: `bash` is Git
-/// Bash, when it starts inside the sandbox. A contained command never
-/// searches the PATH, which a workspace can change.
+/// The program a contained command starts, by its full path, and the
+/// arguments that come before the caller's. `bash`, which shell scripts run
+/// in, is the runtime's BusyBox running its `sh`, once its probe ran it
+/// inside the sandbox. A contained command never searches the PATH, which a
+/// workspace can change.
 #[cfg(windows)]
-fn windows_program(program: &str) -> Result<PathBuf> {
+fn windows_program(home: &Path, program: &str) -> Result<(PathBuf, &'static [&'static str])> {
     if program == "bash" {
-        return crate::windows_sandbox::contained_git_bash();
+        let shell = crate::windows_sandbox::contained_shell(home)?;
+        return Ok((shell, &[crate::windows_sandbox::SHELL_APPLET]));
     }
     let path = Path::new(program);
     if !path.is_absolute() {
@@ -2369,7 +2380,7 @@ fn windows_program(program: &str) -> Result<PathBuf> {
         ));
     }
     local(path)?;
-    Ok(path.to_owned())
+    Ok((path.to_owned(), &[]))
 }
 /// A policy is one command-line argument, and a Windows command line holds
 /// 32,767 characters with the program and its arguments.
@@ -2406,7 +2417,10 @@ fn windows_command_policy(
     let scan = workspace_protected(&roots, WORKSPACE_DIRS)?;
     let mut programs = crate::windows_sandbox::programs(home);
     programs.extend(readable);
-    let policy = windows_policy(home, writable, confine, approved_outputs, &scan, &programs)?;
+    let mut policy = windows_policy(home, writable, confine, approved_outputs, &scan, &programs)?;
+    // Every command may run the runtime's shell; the helper keeps it out of
+    // the container's name.
+    policy.shell = crate::windows_sandbox::bundled_shell();
     let json = serde_json::to_vec(&policy).map_err(|error| Error::new(5200, error.to_string()))?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(json);
     if encoded.len() > POLICY_CHARS {
@@ -2495,6 +2509,7 @@ fn windows_policy(
         deny_all: deny_all.list,
         writable,
         readable,
+        shell: None,
     })
 }
 /// Variables every child may inherit. Provider keys, connector secrets, and runtime

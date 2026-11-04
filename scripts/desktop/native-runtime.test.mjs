@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { promisify } from 'node:util'
 import { archiveProgram, extractWindowsArchive, installTool, toolAsset } from '../../apps/desktop/src/main/backend/tools.ts'
-import { inventoryNativeRuntime, copyNativeRuntime, publishWindowsRuntime, publishNativeRuntime, createNativeArchive, extractStandaloneNode, launchers, nativeTarget, stageNativeRuntime, rustTarget, pruneRuntimeDependencies, directoryBytes, standaloneNode, retryDownload, NODE_VERSION, NODE_SHA256 } from './native-runtime.mjs'
+import { inventoryNativeRuntime, copyNativeRuntime, publishWindowsRuntime, publishNativeRuntime, createNativeArchive, extractStandaloneNode, launchers, nativeTarget, stageNativeRuntime, stageBusybox, rustTarget, pruneRuntimeDependencies, directoryBytes, standaloneNode, retryDownload, BUSYBOX, NODE_VERSION, NODE_SHA256 } from './native-runtime.mjs'
 const exec = promisify(execFile)
 async function captureArchiveCommand(program, argv, cwd) {
   const child = spawn(program, argv, { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -107,6 +107,31 @@ test('Windows tool archives use ASCII operands and forward their Unicode cwd for
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
+test('BusyBox is pinned to one official 64-bit Unicode busybox-w32 build and its source', () => {
+  assert.match(BUSYBOX.version, /^FRP-\d+-g[0-9a-f]{9}$/)
+  assert.equal(BUSYBOX.url, `https://frippery.org/files/busybox/busybox-w64u-${BUSYBOX.version}.exe`)
+  assert.equal(BUSYBOX.source, `https://frippery.org/files/busybox/busybox-w32-${BUSYBOX.version}.tgz`)
+  assert.match(BUSYBOX.sha256, /^[a-f0-9]{64}$/)
+  assert.ok(Object.isFrozen(BUSYBOX))
+})
+
+test('the Windows runtime stages the pinned BusyBox and keeps nothing a wrong checksum downloaded', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hexbot busybox π 中文 & '))
+  try {
+    const bin = join(root, 'bin'), urls = []
+    const download = bytes => async (url, destination) => { urls.push(url); await writeFile(destination, bytes); return createHash('sha256').update(bytes).digest('hex') }
+    await assert.rejects(stageBusybox(bin, download('tampered')), /busybox-w64u-.*\.exe checksum mismatch/)
+    assert.deepEqual(await readdir(bin), [])
+    // A synthetic file whose digest stands in for the pinned one: the real
+    // download and its checksum run natively (scripts/desktop/stage-busybox.mjs).
+    const pinned = async (url, destination) => { urls.push(url); await writeFile(destination, 'pinned busybox'); return BUSYBOX.sha256 }
+    assert.equal(await stageBusybox(bin, pinned), join(bin, 'busybox.exe'))
+    assert.equal(await readFile(join(bin, 'busybox.exe'), 'utf8'), 'pinned busybox')
+    assert.deepEqual(await readdir(bin), ['busybox.exe'])
+    assert.deepEqual(urls, [BUSYBOX.url, BUSYBOX.url])
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
 test('Windows archive members and tools reject unsupported or escaping operands before extraction', async () => {
   let ran = false
   for (const [filename, member] of [['../archive.zip', 'rg.exe'], ['archive.zip', '../rg.exe'], ['archive.zip', 'C:/rg.exe'], ['archive.zip', '-option'], ['archive.zip', 'nested\\rg.exe'], ['archive.zip', 'π.exe']])
@@ -194,6 +219,9 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
     assert.equal(manifest.piVersion, '1.0.1'); assert.equal(manifest.version, '1.2.3')
     assert.match(manifest.files['hexbot-core'], /^[a-f0-9]{64}$/)
     for (const file of ['bin/rg', 'bin/fd', 'pi/search-tools.mjs']) assert.match(manifest.files[file], /^[a-f0-9]{64}$/)
+    // BusyBox is the Windows sandbox's shell; this runtime neither ships nor credits it.
+    assert.equal(manifest.files['bin/busybox.exe'], undefined)
+    assert.equal(existsSync(join(result.destination, 'bin/busybox.exe')), false)
     assert(Number.isSafeInteger(manifest.builtAt) && manifest.builtAt > 0)
     const cargo = calls.find(c => c.command === 'cargo').args
     assert(cargo.includes('--locked'))
@@ -212,6 +240,7 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
     assert.match(noticed.nodeModules, /\/pi\/node_modules$/)
     assert.deepEqual(noticed.targets, [rustTarget(process.platform, process.arch)])
     assert.equal(noticed.node.version, '22.20.0')
+    assert.equal(noticed.busybox, undefined)
     assert.equal(await readFile(join(result.destination, 'THIRD_PARTY_NOTICES'), 'utf8'), 'third-party notices\n')
     // Headless installs and daemon updates unpack this archive.
     const archive = join(root, 'native.tar.gz')

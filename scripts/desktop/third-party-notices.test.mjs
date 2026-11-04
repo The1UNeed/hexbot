@@ -3,7 +3,8 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { cargoPackages, installedPackages, noticeEntries, reactNativeNotices, renderNotices, toolPackages } from './third-party-notices.mjs'
+import { busyboxNotice, cargoPackages, installedPackages, noticeEntries, reactNativeNotices, renderNotices, toolPackages } from './third-party-notices.mjs'
+import { BUSYBOX } from './native-runtime.mjs'
 
 const apache = readFile(new URL('../../LICENSE', import.meta.url), 'utf8')
 
@@ -128,6 +129,21 @@ test('a -sys crate also ships the license of the C library it builds', async t =
   await writeFile(join(root, 'zstd-sys/zstd/LICENSE'), 'library license')
   const { entries } = await noticeEntries([{ name: 'zstd-sys', version: '1.0.0', license: 'MIT', authors: [], source: 's', directory: join(root, 'zstd-sys'), files: [], nested: true }])
   assert.equal(entries[0].text, 'binding license\n\nlibrary license')
+})
+
+test('the Windows runtime credits the pinned BusyBox with its GPL-2.0 and where its source is', async () => {
+  const notice = await busyboxNotice(BUSYBOX)
+  assert.deepEqual([notice.name, notice.version, notice.license, notice.source], ['busybox-w32', BUSYBOX.version, 'GPL-2.0-only', BUSYBOX.source])
+  assert.match(notice.text, /mere aggregation/)
+  assert.ok(notice.text.includes(BUSYBOX.url) && notice.text.includes(BUSYBOX.source))
+  assert.ok(notice.text.includes(`https://github.com/rmyorston/busybox-w32/tree/${BUSYBOX.version}`))
+  assert.match(notice.text, /GNU GENERAL PUBLIC LICENSE\s+Version 2, June 1991/)
+  assert.match(notice.text, /Version 2 is the only version of this license/)
+  // The entry renders as its own section, never folded into another's text.
+  const rendered = renderNotices('The Hexbot daemon runtime', await noticeEntries([], [notice]))
+  assert.ok(rendered.includes(`busybox-w32 ${BUSYBOX.version} (GPL-2.0-only) ${BUSYBOX.source}`))
+  // A pin that moves without its license refuses the build.
+  await assert.rejects(busyboxNotice({ ...BUSYBOX, version: 'FRP-1-g000000000' }), /is for busybox-w32 .* update it/)
 })
 
 test('the installed React Native has notices for its native libraries', async () => {

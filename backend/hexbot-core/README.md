@@ -339,10 +339,12 @@ activation descriptors still require the same device/inode and lock checks.
 On Windows, Auto and Manual commands run in an AppContainer through the
 daemon's own `hexbot sandbox exec` (`windows_container.rs`), with a policy
 `credentials.rs` builds from the same workspace scan as the other sandboxes
-(`windows_policy`). `windows_sandbox.rs` finds the helper, Git Bash and the
-managed Python, reads Git metadata only from local disks, and names what
-still refuses: `full_access`, Copilot and the retired Python worker. Pi's
-bash runs through the helper, and Pi's write and edit reach files through
+(`windows_policy`). `windows_sandbox.rs` finds the helper, the BusyBox
+shell the runtime ships beside it and whether that shell starts in a
+container, Git Bash for Bypass and the managed Python, reads Git metadata
+only from local disks, and names what still refuses: `full_access`, Copilot
+and the retired Python worker. Pi's bash runs BusyBox's `sh` through the
+helper, and Pi's write and edit reach files through
 handles (`runtime_files_windows.rs`). When the startup probe fails, Auto and
 Manual refuse rather than ask, and scheduled scripts need the sandbox in every
 mode. Pi asks for a command's policy through `hexbot_sandbox_policy`. Bypass

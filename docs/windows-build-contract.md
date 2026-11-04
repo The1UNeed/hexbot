@@ -44,7 +44,8 @@ is uploaded.
 ## Runtime layout
 
 Windows x64 uses `hexbot.exe`, `hexbot-cli.exe`, `node.exe`, `pi/launch.mjs`, the locked Pi
-installation, `pi/search-tools.mjs`, `bin/rg.exe`, `bin/fd.exe`, `web/` and
+installation, `pi/search-tools.mjs`, `bin/rg.exe`, `bin/fd.exe`,
+`bin/busybox.exe` (the shell the sandbox runs commands in), `web/` and
 `skills/`. `manifest.json` records the `win32-x64` target and SHA-256 hashes.
 There is no command-shell daemon launcher. Rust invokes the bundled Node with
 the absolute Pi JavaScript path. macOS and Linux keep their current launchers.
@@ -473,6 +474,21 @@ GitHub release metadata for [uv 0.12.18](https://github.com/astral-sh/uv/release
 Node uses the Windows x64 ZIP digest from
 [Node 22.23.3 SHASUMS256](https://nodejs.org/dist/v22.23.3/SHASUMS256.txt).
 The uv ZIP is flat; rg and fd have a top-level release directory.
+BusyBox is the bare 64-bit Unicode executable of
+[busybox-w32 FRP-6075-g169694ebd](https://frippery.org/busybox/release-notes/FRP-6075.html)
+(2026-05-07), `busybox-w64u-FRP-6075-g169694ebd.exe`, SHA-256
+`6e263d154d8548d1eb936f65d1d8312c80df31c45974e48d6335e4dcc0f4f34c`. That is
+the digest in the release's
+[SHA256SUM](https://frippery.org/files/busybox/SHA256SUM), whose Ed25519
+signature checks against Ron Yorston's key
+`B43E 244B 92A8 1389 CAAA A171 690E 10A0 513D A84B`, the one
+[github.com/rmyorston.gpg](https://github.com/rmyorston.gpg) also serves. The
+newer FRP-6354 was eight days old when this was pinned; pins keep the two
+weeks npm packages wait (`minimumReleaseAge`). frippery.org deletes builds
+about three years after release, so the pin must move before then. Staging
+writes it as `bin/busybox.exe`, which `setup` and the app's bootstrap require
+on Windows, and CI stages the same file beside the test daemon with
+`scripts/desktop/stage-busybox.mjs`.
 
 The 49f native run checked merge `0b6cb125` with the exact 49f source tree. It
 passed the initial MSVC and task/PATH/CLI checks, then failed the final staging

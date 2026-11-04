@@ -145,16 +145,26 @@ fn container_sid(policy: &Policy) -> String {
     sandbox::prepare(policy).unwrap().sid.text().unwrap()
 }
 
-/// Git Bash as the daemon finds it, when Git for Windows is installed.
-fn git_bash() -> Option<PathBuf> {
-    hexbot_core::windows_sandbox::git_bash()
-}
-
-/// Whether the daemon's probe ran Git Bash correctly in a container. Stock
-/// Git for Windows cannot start there, and its probe says why.
-fn contained_bash() -> Option<PathBuf> {
-    let bash = git_bash()?;
-    sandbox::probe_bash(&bash).is_ok().then_some(bash)
+/// The runtime's shell, `bin\busybox.exe` beside the daemon binary, as the
+/// daemon finds it. CI stages the pinned BusyBox there and names it in
+/// `HEXBOT_WINDOWS_BUSYBOX`, so there it must be found; a machine without it
+/// skips the shell checks and says why.
+fn bundled_shell() -> Option<PathBuf> {
+    hexbot_core::windows_sandbox::use_helper(hexbot());
+    let shell = hexbot_core::windows_sandbox::bundled_shell();
+    match (&shell, std::env::var_os("HEXBOT_WINDOWS_BUSYBOX")) {
+        (None, Some(staged)) => panic!(
+            "the staged shell {} is not beside the daemon binary {}",
+            PathBuf::from(staged).display(),
+            hexbot().display()
+        ),
+        (None, None) => eprintln!(
+            "SKIPPED (no bundled shell): {} has no bin\\busybox.exe beside it; run scripts/desktop/stage-busybox.mjs to stage the pinned BusyBox there",
+            hexbot().display()
+        ),
+        _ => {}
+    }
+    shell
 }
 
 /// Whether the AppContainer profile behind `sid` is registered for this user.
@@ -354,36 +364,48 @@ fn no_network_and_no_loopback() {
 }
 
 #[test]
-fn git_bash_runs_inside_only_when_its_probe_passes_and_node_runs_inside() {
+fn the_bundled_shell_and_node_run_inside() {
     let f = fixture("tools");
     let mut policy = auto(&f);
-    if let Some(bash) = git_bash() {
-        let contained = contained_bash().is_some();
+    if let Some(shell) = bundled_shell() {
+        // The policy names the shell as the daemon's does. A pipe into a
+        // second copy of the shell, the workspace written, Git metadata and
+        // the secret kept out.
+        policy.shell = Some(shell.clone());
         let code = run(
             &f,
             &policy,
-            &bash,
+            &shell,
             &[
-                "--noprofile",
-                "--norc",
+                "sh",
                 "-c",
-                "echo ok > bash.txt && cat src/a.txt && ! cat .env && ! echo x >> .git/config",
+                "echo ok > shell.txt && cat src/a.txt | grep -q hello && ! cat .env && ! echo x >> .git/config",
             ],
         );
-        if contained {
-            assert_eq!(code, 0, "Git Bash passed its probe but did not run");
-            assert_eq!(
-                fs::read_to_string(f.workspace.join("bash.txt")).unwrap(),
-                "ok\n"
-            );
-        } else {
-            // The probe's refusal holds: this Git Bash ran nothing at all.
-            assert_ne!(code, 0, "Git Bash ran although its probe failed");
-            assert!(!f.workspace.join("bash.txt").exists());
-        }
+        assert_eq!(code, 0, "the bundled shell did not run inside");
+        assert_eq!(
+            fs::read_to_string(f.workspace.join("shell.txt")).unwrap(),
+            "ok\n"
+        );
         assert_eq!(
             fs::read_to_string(f.workspace.join(".git/config")).unwrap(),
             "[core]\n"
+        );
+        // The container may read and run the shell, never change it.
+        let sid = container_sid(&policy);
+        let entries = entries_for(&shell, &sid);
+        assert!(
+            !entries.is_empty() && entries.iter().all(|entry| entry.contains("(RX)")),
+            "{entries:?}"
+        );
+        // The shell is not part of the container's name: a policy without it
+        // runs in the same container.
+        assert_eq!(
+            sid,
+            container_sid(&Policy {
+                shell: None,
+                ..policy.clone()
+            })
         );
     }
     if let Some(node) = std::env::var_os("HEXBOT_WINDOWS_NODE") {
@@ -794,32 +816,28 @@ fn reset_deletes_every_profile_it_made() {
 }
 
 #[test]
-fn the_probe_runs_a_contained_command_and_leaves_no_profile() {
+fn the_probes_run_contained_commands_and_leave_no_profile() {
     sandbox::probe().unwrap();
     assert!(sandbox::probe_available());
-    // Git Bash either runs a pipe, a second program and a command
-    // substitution in a container, or fails as its MSYS runtime does there:
-    // it creates its shared objects in the global namespace, which no
-    // AppContainer may write. The captured output proves the probe ran it.
-    if let Some(bash) = git_bash() {
-        match sandbox::probe_bash(&bash) {
-            Ok(()) => assert!(hexbot_core::windows_sandbox::contained_git_bash().is_ok()),
-            Err(error) => {
-                let message = error.to_string();
-                assert!(
-                    message.contains("NtCreateDirectoryObject")
-                        && message.contains("BaseNamedObjects"),
-                    "{message}"
-                );
-                let refusal = hexbot_core::windows_sandbox::contained_git_bash().unwrap_err();
-                assert_eq!(
-                    refusal.message,
-                    hexbot_core::windows_sandbox::GIT_BASH_UNCONTAINED
-                );
-            }
-        }
+    // The runtime's shell runs a pipe into a second copy of itself inside a
+    // command substitution in a container, and prints the probe's fresh
+    // nonce exactly. The probe then takes back its grant and its record.
+    if let Some(shell) = bundled_shell() {
+        let home = tempfile::tempdir().unwrap();
+        sandbox::probe_shell(home.path(), &shell).unwrap();
+        let sid = sandbox::profile_sid(sandbox::SHELL_PROBE_PROFILE)
+            .unwrap()
+            .text()
+            .unwrap();
+        assert_eq!(entries_for(&shell, &sid), Vec::<String>::new());
+        let journal = fs::read_to_string(home.path().join("runtime/sandbox/grants.json")).unwrap();
+        assert!(journal.contains("\"roots\": []"), "{journal}");
+        assert_eq!(
+            hexbot_core::windows_sandbox::contained_shell(home.path()).unwrap(),
+            shell
+        );
     }
-    for profile in [sandbox::PROBE_PROFILE, sandbox::BASH_PROBE_PROFILE] {
+    for profile in [sandbox::PROBE_PROFILE, sandbox::SHELL_PROBE_PROFILE] {
         let sid = sandbox::profile_sid(profile).unwrap().text().unwrap();
         assert!(!registered(&sid), "the probe left {profile}");
     }
@@ -870,31 +888,17 @@ fn arguments_reach_programs_unchanged() {
         let seen: Vec<String> = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(seen, cases);
     }
-    // Only a Git Bash that runs in a container has arguments to check.
-    if let Some(bash) = contained_bash() {
-        // MSYS expands none of these once quoted. It reads backslashes inside
-        // quotes its own way, so these cases have none.
-        let msys = [
-            "with space",
-            "*",
-            "*.txt",
-            "a?b",
-            "[ab]",
-            "{a,b}",
-            "~",
-            "it's",
-            "a\"b",
-            "tab\there",
-        ];
-        let mut arguments = vec![
-            "--noprofile",
-            "--norc",
-            "-c",
-            "printf '<%s>\\n' \"$@\"",
-            "bash",
-        ];
-        arguments.extend(msys);
-        let output = helper_with(&f, &auto(&f), &bash, &arguments)
+    // The runtime's shell takes every case as given, wildcards included:
+    // the helper starts it with BB_GLOBBING=0, so it expands none of its
+    // own arguments, and its Unicode build reads them as UTF-8.
+    if let Some(shell) = bundled_shell() {
+        let policy = Policy {
+            shell: Some(shell.clone()),
+            ..auto(&f)
+        };
+        let mut arguments = vec!["sh", "-c", "printf '<%s>\\n' \"$@\"", "sh"];
+        arguments.extend(cases);
+        let output = helper_with(&f, &policy, &shell, &arguments)
             .output()
             .unwrap();
         assert_eq!(
@@ -903,7 +907,7 @@ fn arguments_reach_programs_unchanged() {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let expected: String = msys.iter().map(|case| format!("<{case}>\n")).collect();
+        let expected: String = cases.iter().map(|case| format!("<{case}>\n")).collect();
         assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
     }
 }
