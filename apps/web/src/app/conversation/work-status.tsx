@@ -43,6 +43,7 @@ const ICONS: Record<string, LucideIcon> = {
   execute_code: Code,
   hexbot_passwords: KeyRound,
   hexbot_plugins: Puzzle,
+  hexbot_share_file: FileText,
   hexbot_show_html: ChartColumn,
   hexbot_soul: Sparkles,
   image_generate: Image,

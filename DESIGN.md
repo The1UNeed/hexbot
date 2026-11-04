@@ -375,6 +375,11 @@ more freedom and more capability than a hosted product can offer.
   that opens it beside the chat, where each visual gets a tab like a
   browser's. It follows the app's theme and runs sandboxed with no network
   access beyond a few script CDNs.
+- Shared files: a bot hands the user a file it chose, the way a person
+  attaches one (`hexbot_share_file`). It shows as a card under the reply and
+  opens beside the chat. The files a bot writes or edits while it works stay
+  out of the chat; the chat is for what the user asked for, not a log of
+  every file touched.
 
 ## 4. Network, auth, Connect
 

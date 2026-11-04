@@ -32,6 +32,23 @@ export const parseArgs = (value: unknown): unknown => {
     return value
   }
 }
+/** The file's own name: an attachment is kept as `<32-hex id>-<name>`. */
+const fileName = (path: string) =>
+  (path.split(/[\\/]/).filter(Boolean).at(-1) ?? path).replace(/^[0-9a-f]{32}-(?=.)/, '')
+/**
+ * The files a bot shared in a message (`hexbot_share_file`), once each, in the
+ * order it shared them. Files it only wrote or edited along the way stay out.
+ */
+export function sharedFiles(tools: ChatTool[] = []): { name: string; path: string }[] {
+  const seen = new Set<string>()
+  return tools.flatMap(tool => {
+    if (tool.name !== 'hexbot_share_file' || tool.status !== 'ok') return []
+    const path = (parseArgs(tool.args) as { path?: unknown } | null)?.path
+    if (typeof path !== 'string' || !path.trim() || seen.has(path)) return []
+    seen.add(path)
+    return [{ name: fileName(path), path }]
+  })
+}
 /** A sign-in card's fields, from an `approval.request`. */
 const isSignIn = (value: unknown): value is SignInForm =>
   typeof value === 'object' &&
