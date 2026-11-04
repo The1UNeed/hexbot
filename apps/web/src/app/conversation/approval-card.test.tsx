@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 
 import type { ApprovalRequest } from '../../lib/types'
 
@@ -31,5 +31,24 @@ describe('approval card', () => {
     unmount()
     render(<ApprovalCard approval={request({ decision: 'always' })} />)
     expect(screen.getByText('Always allowed')).toBeVisible()
+  })
+
+  it('folds to one line once answered and opens on click', () => {
+    render(
+      <ApprovalCard
+        approval={request({ command: 'cd /tmp\npython3 run.py', decision: 'once' })}
+      />
+    )
+
+    expect(screen.queryByText('Approval needed')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
+    expect(screen.getByText('cd /tmp')).toBeVisible()
+    expect(screen.queryByText(/Downloads the dependencies/)).toBeNull()
+
+    const toggle = screen.getByRole('button', { expanded: false })
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText(/Downloads the dependencies/)).toBeVisible()
+    expect(screen.getByText(/python3 run\.py/)).toBeVisible()
   })
 })
