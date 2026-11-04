@@ -323,7 +323,8 @@ export function Management({
   mobile,
   onSaved,
   onOpenRoom,
-  frame
+  frame,
+  active = true
 }: {
   panel: Panel | null
   onClose: () => void
@@ -339,6 +340,8 @@ export function Management({
    * the system's navigation stack, which puts its title and action in the bar.
    */
   frame?: (page: { title: string; action?: SheetAction; children: ReactNode }) => ReactNode
+  /** The page is on top of the stack; leave out for a front card. */
+  active?: boolean
 }) {
   const theme = useTheme()
   const [rows, setRows] = useState<RowData[]>([])
@@ -403,7 +406,8 @@ export function Management({
       if (current === epoch.current) setBusy(false)
     }
   }
-  const load = async () => {
+  /** Reads the page's data; `keep` leaves what was typed but not saved. */
+  const load = async (keep = false) => {
     const current = epoch.current
     let data: RowData[] = []
     let fields: Values = {}
@@ -649,7 +653,7 @@ export function Management({
       setRows(data)
       // A plugin card reloads after each action; keep values typed but not
       // yet saved. It opens empty, and Save values clears them itself.
-      if (kind !== 'plugin') setValues(fields)
+      if (kind !== 'plugin' && !keep) setValues(fields)
       setExtra(detail)
     }
   }
@@ -679,6 +683,18 @@ export function Management({
     }
     // A panel is a snapshot; changing it loads a fresh form.
   }, [requested])
+  // A page on the stack stays while one is pushed over it, so it reads again
+  // when it is back on top: a provider just connected shows as connected.
+  const wasActive = useRef(active)
+  useEffect(() => {
+    const back = active && !wasActive.current
+    wasActive.current = active
+    if (!back || !requested || panelLoading) return
+    const current = epoch.current
+    void load(true).catch(e => {
+      if (current === epoch.current) setError(e instanceof Error ? e.message : String(e))
+    })
+  }, [active])
   // A heartbeat starts or ends, or the bot changes its checklist, while the card is open.
   useEffect(() => {
     if (kind !== 'heartbeat' || panelLoading) return

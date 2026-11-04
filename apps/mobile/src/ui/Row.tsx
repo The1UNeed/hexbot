@@ -70,6 +70,8 @@ export function Row({
       accessibilityHint={accessibilityHint}
       accessibilityLabel={label}
       accessibilityRole={interactive ? 'button' : undefined}
+      // A row that is not a button itself lets VoiceOver reach the controls in it.
+      accessible={interactive || !trailing}
       accessibilityState={{ disabled: !!disabled, selected }}
       disabled={disabled || !interactive}
       onLongPress={onLongPress}

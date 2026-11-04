@@ -1373,6 +1373,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
         <Management
           panel={panels[index]}
           frame={frame}
+          active={index === panels.length - 1}
           onClose={() => setPanels([])}
           onBack={() => setPanels(stack => stack.slice(0, index))}
           onNavigate={navigate}
