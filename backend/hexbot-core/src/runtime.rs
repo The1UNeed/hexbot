@@ -5065,20 +5065,26 @@ impl Runtime {
                     eprintln!("Usage unavailable for {}: {}", s.stored, error.message);
                     json!({})
                 });
+                // Stamped before anyone hears it finished: an app with the chat
+                // on screen marks it read at once, and a later stamp would undo that.
+                let now = common::now();
+                let stamped = (|| -> Result<()> {
+                    let conn = db::open(&self.home)?;
+                    conn.execute(
+                        "UPDATE sections SET updated_at=?,done_at=? WHERE id=?",
+                        params![now, now, s.stored],
+                    )?;
+                    conn.execute(
+                        "UPDATE bots SET last_activity_at=? WHERE name=?",
+                        params![now, s.bot],
+                    )?;
+                    Ok(())
+                })();
                 self.emit(s, "message.complete", with_fields(json!({"text":text,"error":error,"status":if error.is_some(){"error"}else{"complete"},"usage":usage}), &fields));
                 self.emit_usage(s, false);
                 self.emit(s, "status.update", json!({"kind":"idle","text":""}));
                 s.settled.send_modify(|v| *v += 1);
-                let now = common::now();
-                let conn = db::open(&self.home)?;
-                conn.execute(
-                    "UPDATE sections SET updated_at=?,done_at=? WHERE id=?",
-                    params![now, now, s.stored],
-                )?;
-                conn.execute(
-                    "UPDATE bots SET last_activity_at=? WHERE name=?",
-                    params![now, s.bot],
-                )?;
+                stamped?;
                 // Unread a while later, it wakes the owner's phones.
                 if error.is_none() {
                     heartbeat::push_reply_later(&self.home, &s.stored, now);
