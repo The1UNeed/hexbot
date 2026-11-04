@@ -34,7 +34,7 @@ import {
 import { botPhoto } from './core/avatar'
 import { scheduleChange } from './core/jobs'
 import { requirementText } from './core/skills'
-import { canGive, pluginRows } from '../../web/src/lib/plugin-rows'
+import { canGive, pluginRows, withWaiting } from '../../web/src/lib/plugin-rows'
 import { PluginIcon } from './ui/PluginIcon'
 import { isOpenRoom } from './core/routes'
 import { pickFile } from './core/pickFile'
@@ -1516,7 +1516,7 @@ export function Management({
           rpc('hexbot.plugins.set_bots', {
             kind: p.kind,
             id: p.id,
-            bots: next.filter(name => bots.some(b => b.name === name))
+            bots: withWaiting(p, next).filter(name => bots.some(b => b.name === name))
           })
         )
       content = (

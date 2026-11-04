@@ -27,6 +27,14 @@ export function canGive(plugin: Plugin, bot: string): boolean {
   return plugin.ready || Boolean(plugin.ready_bots?.includes(bot))
 }
 
+/**
+ * The bots to give a plugin to when the user picks `next`: a grant still
+ * waiting for setup is kept, since the picker does not show it.
+ */
+export function withWaiting(plugin: Plugin, next: string[]): string[] {
+  return [...new Set([...next, ...(plugin.waiting_bots ?? [])])]
+}
+
 /** One list of rows, whatever their kind. */
 export function pluginRows(list: PluginsList): Plugin[] {
   return [
@@ -41,6 +49,7 @@ export function pluginRows(list: PluginsList): Plugin[] {
       name: row.mcp?.name ?? row.name,
       ready: row.ready !== false,
       ready_bots: row.ready_bots,
+      waiting_bots: row.waiting_bots,
       server: row.server ?? null,
       state: row.state,
       state_text: row.state_text
@@ -59,6 +68,7 @@ export function pluginRows(list: PluginsList): Plugin[] {
       name: row.name,
       ready: row.ready,
       ready_bots: row.ready_bots,
+      waiting_bots: row.waiting_bots,
       server: row.server,
       skills: row.skills,
       state: row.state,
@@ -75,6 +85,7 @@ export function pluginRows(list: PluginsList): Plugin[] {
       name: row.name,
       ready: row.ready !== false,
       ready_bots: row.ready_bots,
+      waiting_bots: row.waiting_bots,
       source: row.source,
       state: row.ready === false ? 'not_set_up' : 'ready',
       state_text:

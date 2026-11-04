@@ -729,6 +729,11 @@ fn a_connector_ready_through_a_bots_own_key_can_be_given_to_that_bot() {
         row(&listed, "connectors", "notion")["ready_bots"],
         json!(["owl"])
     );
+    // Cat's grant from new-bot defaults waits for setup, so clients keep it.
+    assert_eq!(
+        row(&listed, "connectors", "notion")["waiting_bots"],
+        json!(["cat"])
+    );
     let assign = |bots: Value| {
         call(
             home.path(),
