@@ -24,7 +24,7 @@ export function MediaAttachment({
 }: {
   card: ReactNode
   file: AttachmentView
-  load?: (path: string) => Promise<string>
+  load?: (path: string, id: string) => Promise<string>
 }) {
   const theme = useTheme()
   const [read, setRead] = useState<{ uri?: string; failed?: boolean }>({})
@@ -33,14 +33,14 @@ export function MediaAttachment({
   useEffect(() => {
     if (file.uri || !file.path || !load) return
     let live = true
-    load(file.path).then(
+    load(file.path, file.id).then(
       uri => live && setRead({ uri }),
       () => live && setRead({ failed: true })
     )
     return () => {
       live = false
     }
-  }, [file.path, file.uri, load])
+  }, [file.id, file.path, file.uri, load])
 
   if (read.failed || (!uri && !(file.path && load))) return card
   if (!uri)

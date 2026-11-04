@@ -50,3 +50,17 @@ it('reads again after a failed read, and refuses text', async () => {
   await expect(mediaUri('d:/notes.txt', text)).rejects.toThrow('cannot play')
   expect(text).toHaveBeenCalledTimes(2)
 })
+
+it('gives two files with one name their own copies', async () => {
+  const read = (data: string) => async () => ({
+    data_url: `data:video/mp4;base64,${data}`,
+    mime: 'video/mp4',
+    name: 'clip.mp4'
+  })
+  const [first, second] = await Promise.all([
+    mediaUri('d:/a/clip.mp4', read('AAAA')),
+    mediaUri('d:/b/clip.mp4', read('BBBB'))
+  ])
+  expect(first).not.toBe(second)
+  expect(files.written.map(file => file.content)).toEqual(['AAAA', 'BBBB'])
+})

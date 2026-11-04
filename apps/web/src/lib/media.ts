@@ -2,11 +2,7 @@
 // the files a bot's media tools made. Shared by the web and mobile apps.
 
 /** The tools whose results name a file the chat shows, each as `MEDIA:<path>`. */
-export const MEDIA_TOOLS = new Set([
-  'image_generate',
-  'text_to_speech',
-  'video_generate'
-])
+export const MEDIA_TOOLS = new Set(['image_generate', 'text_to_speech', 'video_generate'])
 
 export type MediaKind = 'audio' | 'file' | 'image' | 'pdf' | 'video'
 
@@ -74,22 +70,25 @@ function mediaFile(path: string): MediaFile {
   return { kind: mediaKind(mime, name), mime, name, path }
 }
 
-const ATTACHED = /(?:^|\n\n)Attached files:\n(.+)$/s
+const ATTACHED = '\n\nAttached files:\n'
+
+/** A file the daemon kept for a message: `<chat>/attachments/<32-hex id>-<name>`. */
+const KEPT = /[\\/]attachments[\\/][0-9a-f]{32}-[^\\/]+$/
 
 /**
  * Your message as the daemon keeps it: the words, then the files that went
  * with it, listed under "Attached files:".
  */
 export function splitAttached(text: string): { files: MediaFile[]; text: string } {
-  const match = ATTACHED.exec(text)
+  // The daemon adds its list last; words you wrote under that heading stay words.
+  const start = `\n\n${text}`.lastIndexOf(ATTACHED)
+  const paths = start < 0 ? [] : `\n\n${text}`.slice(start + ATTACHED.length).split('\n')
 
-  if (!match) {
+  if (!paths.length || !paths.every(path => KEPT.test(path))) {
     return { files: [], text }
   }
 
-  const paths = match[1]!.split('\n').filter(line => line.trim())
-
-  return { files: paths.map(mediaFile), text: text.slice(0, match.index) }
+  return { files: paths.map(mediaFile), text: text.slice(0, Math.max(0, start - 2)) }
 }
 
 /** Every `MEDIA:<path>` in a tool's result, as a Pi result object or its text. */

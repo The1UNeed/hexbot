@@ -1452,12 +1452,11 @@ function Composer({
       }
 
       const attachments: Attachment[] = files.map((item, index) => {
-        // The same reading the upload used, so a .pdf with no type is a PDF here too.
-        const kind = item.file.type.startsWith('video/')
-          ? 'video'
-          : item.file.type.startsWith('audio/')
-            ? 'audio'
-            : attachmentKind(item.file.type, item.file.name)
+        // The same reading the upload used, so a .pdf with no type is a PDF here
+        // too; a video or audio file with no type is known by its name.
+        const sent = attachmentKind(item.file.type, item.file.name)
+        const media = mediaKind(item.file.type || mimeOf(item.file.name), item.file.name)
+        const kind = sent === 'file' && (media === 'video' || media === 'audio') ? media : sent
 
         return {
           dataUrl: item.preview,

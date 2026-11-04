@@ -107,8 +107,11 @@ export interface ChatScreenProps {
 
   /** Draw a message's text yourself, such as with a Markdown renderer. */
   renderMessageText?: (item: MessageItem) => ReactNode
-  /** A file the daemon keeps, as a URI to play; a bot's own chat only. */
-  loadMedia?: (path: string) => Promise<string>
+  /**
+   * A file the daemon keeps, as a URI to play; a bot's own chat only. `id` is
+   * the message's file, so a file shared again after a change is read again.
+   */
+  loadMedia?: (path: string, id: string) => Promise<string>
   /** Opens the bots' computer on its own card; the button shows only with this. */
   onOpenComputer?: () => void
   /** A bot is acting on the computer, or you have it: the button shows a dot. */

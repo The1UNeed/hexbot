@@ -488,7 +488,9 @@ try {
   // Exact selection keeps the other app's upload available, with its bytes intact.
   const retainedText = await readFile(left.path, 'utf8')
   assert.equal(retainedText, 'Not for this message.')
-  await expect(page.getByText('brief.txt', { exact: true })).not.toBeVisible()
+  // The composer lets the file go; your message keeps it, as a card.
+  await expect(page.getByTestId(/^chat-attachment-remove-/)).toHaveCount(0)
+  await expect(page.getByText('brief.txt', { exact: true })).toHaveCount(1)
   await expect
     .poll(async () => (await rpc('session.status', { session_id: live })).status)
     .toBe('idle')

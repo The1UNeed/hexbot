@@ -10,6 +10,8 @@ export interface ReadMedia {
 }
 
 const made = new Map<string, Promise<string>>()
+// Two files with one name, read in the same millisecond, get their own copies.
+let copies = 0
 
 /**
  * A file the daemon keeps, as a URI this phone plays: a copy in the app's
@@ -35,7 +37,10 @@ async function save(file: ReadMedia): Promise<string> {
     )
   const folder = new Directory(Paths.cache, 'hexbot-media')
   folder.create({ idempotent: true, intermediates: true })
-  const copy = new File(folder, `${Date.now().toString(36)}-${file.name.replace(/[^\w.-]/g, '_')}`)
+  const copy = new File(
+    folder,
+    `${Date.now().toString(36)}-${++copies}-${file.name.replace(/[^\w.-]/g, '_')}`
+  )
   await copy.write(match[2], { encoding: 'base64' })
   return copy.uri
 }

@@ -926,12 +926,13 @@ function MobileApp({ children }: { children?: ReactNode }) {
     })
   }
   // A file the daemon keeps plays from a copy read once through this chat.
-  const loadMedia = useCallback((path: string) => {
+  const loadMedia = useCallback((path: string, id: string) => {
     const current = mobileRef.current
     const sessionId = current.liveSessionId()
     if (!sessionId) return Promise.reject(new Error('Open this chat again.'))
-    // A shared file's path can be relative to the chat's folder, so the chat is in the key.
-    return mediaUri(`${current.active?.id}:${sessionId}:${path}`, () =>
+    // A shared file's path can be relative to the chat's folder, so the chat is in the
+    // key, and so is the message's file: a file shared again after a change is read again.
+    return mediaUri(`${current.active?.id}:${sessionId}:${id}:${path}`, () =>
       current.rpc<ReadMedia>('hexbot.files.read', { session_id: sessionId, path })
     )
   }, [])
