@@ -770,7 +770,9 @@ export function useMobile() {
       setChat(c => ({
         ...c,
         messages: c.messages.filter(m => m.id !== messageId),
-        busy: target.kind === 'room' && Object.keys(c.turns).length > 0,
+        // A refused follow-up leaves a reply that is still running as it was.
+        busy:
+          target.kind === 'room' ? Object.keys(c.turns).length > 0 : c.turnAt !== undefined,
         error: errorText(error)
       }))
       throw error

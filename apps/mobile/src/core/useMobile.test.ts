@@ -719,6 +719,20 @@ describe('recall and closing an error in a bot chat', () => {
     expect(hook.result.current.chat.busy).toBe(false)
   })
 
+  it('keeps a running reply working when a follow-up is refused', async () => {
+    const hook = await chat()
+    act(() => state.event({ type: 'message.start', session_id: 'live-owl-chat', payload: {} }))
+    state.request.mockImplementation(async (method: string, params: Record<string, unknown> = {}) => {
+      if (method === 'prompt.submit') throw Object.assign(new Error('attachment not found: gone; attach it again'), { code: 4204 })
+      return reply(method, params)
+    })
+    await act(async () => { await hook.result.current.send('Use this file').catch(() => {}) })
+    expect(hook.result.current.chat.busy).toBe(true)
+    expect(hook.result.current.chat.messages).toEqual([])
+    act(() => state.event({ type: 'message.complete', session_id: 'live-owl-chat', payload: { text: 'Done' } }))
+    expect(hook.result.current.chat.busy).toBe(false)
+  })
+
   it('names a message from the history by its row when it has no input id', async () => {
     const hook = await chat()
     state.request.mockImplementation(async (method: string, params: Record<string, unknown> = {}) => {
