@@ -118,14 +118,13 @@ describe('original faces', () => {
     const rows = (names: string[]) => (
       <>
         {names.map(name => (
-          <Avatar key={name} name={name} />
+          <Avatar act={name === 'Scout' ? 'type' : null} key={name} name={name} />
         ))}
       </>
     )
 
     const { container, rerender, unmount } = render(rows(['Scout', 'Builder']))
     const scout = container.querySelector('[aria-label="Scout"]')!
-    fireEvent.click(scout)
     expect(scout.querySelector('[data-act]')).not.toBeNull()
     rerender(rows(['Builder', 'Scout']))
     expect(container.lastChild).toBe(scout)
@@ -297,42 +296,17 @@ describe('original faces', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
-  it("plays a clicked act on every face of one bot, and on no other bot's", () => {
-    vi.useFakeTimers()
-
+  it('plays nothing when a face or the mark is clicked', () => {
     const { container, unmount } = render(
       <>
-        <Avatar name="Scout" size="lg" />
-        <Avatar name="Scout" size="sm" />
-        <Avatar name="Builder" size="sm" />
+        <Avatar name="Scout" />
+        <HexbotMark />
       </>
     )
 
     fireEvent.click(container.querySelector('[aria-label="Scout"]')!)
-
-    const acts = [...container.querySelectorAll('[data-act]')].map(item =>
-      item.getAttribute('data-act')
-    )
-
-    expect(acts).toHaveLength(2)
-    expect(acts[0]).toBe(acts[1])
-    expect(container.querySelector('[aria-label="Builder"] [data-act]')).toBeNull()
-    act(() => vi.advanceTimersByTime(4000))
+    fireEvent.click(container.querySelector('.hex-face[aria-hidden]')!)
     expect(container.querySelector('[data-act]')).toBeNull()
     unmount()
-
-    // Two bots that share a display name stay apart: faces sync by the bot's own name.
-    const twins = render(
-      <>
-        <Avatar name="Scout" sync="scout" />
-        <Avatar name="Scout" sync="scout-2" />
-      </>
-    )
-
-    fireEvent.click(twins.container.querySelector('[aria-label="Scout"]')!)
-    expect(twins.container.querySelectorAll('[data-act]')).toHaveLength(1)
-    expect(twins.container.querySelectorAll('svg[data-sync="scout-2"]')).toHaveLength(1)
-    twins.unmount()
-    expect(vi.getTimerCount()).toBe(0)
   })
 })

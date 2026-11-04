@@ -49,7 +49,7 @@ const avatarVariants = cva('relative inline-flex shrink-0 items-center justify-c
 })
 
 export interface AvatarProps extends VariantProps<typeof avatarVariants> {
-  /** An act to keep playing, such as typing while the bot works. A click plays a random one. */
+  /** An act to keep playing, such as typing while the bot works. */
   act?: HexbotActName | null
   className?: string
   /** Data URL or `data:<mime>;base64,...` from the bot's profile asset. */
@@ -379,7 +379,7 @@ export function useFaceColor(
 /**
  * The generated face, live, whether the bot has none saved or saved one this
  * app drew; any other uploaded picture as it is. Every face of one bot (the
- * sidebar, the header, the chat) moves as one and plays a clicked act together.
+ * sidebar, the header, the chat) moves as one.
  */
 export function Avatar({
   act,
@@ -392,7 +392,7 @@ export function Avatar({
   style,
   sync = name
 }: AvatarProps) {
-  const playing = useAct(act, `avatar:${sync}`)
+  const playing = useAct(act)
   const { ref, visible } = useFaceVisibility<HTMLSpanElement>()
   const read = useFaceRead(image)
   const face = read ?? style ?? styleForName(name)
@@ -406,7 +406,6 @@ export function Avatar({
       data-look={look ?? undefined}
       data-mood={picture ? undefined : shownMood}
       data-visible={visible}
-      onClick={playing.play}
       ref={ref}
       role="img"
     >

@@ -82,9 +82,9 @@ own visual identity. Read `CLAUDE.md` for the words.
   late each appeared.
   Reduced motion draws each mood's rest pose, morph included, and offscreen
   or hidden-page faces stop. Mobile draws the same settled expressions.
-  Click a face or the in-app mark for one of the existing 21 acts; a bot's
-  act plays on every face of that bot. Acts hold the face at rest and clean
-  up with their React subtree.
+  Clicking a face does nothing. Acts play only when the app gives a face
+  one, such as typing while the bot works; they hold the face at rest and
+  clean up with their React subtree.
   The site's faces, logo, favicon, and package icons use the same capsule
   eyes.
 - Shadows only on floating layers (menus, dialogs, the glass chrome) and the
