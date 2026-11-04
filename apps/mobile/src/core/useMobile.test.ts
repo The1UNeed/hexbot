@@ -755,6 +755,18 @@ describe('recall and closing an error in a bot chat', () => {
     expect(reads()).toBe(before + 1)
   })
 
+  it('leaves a reply unread while a page covers the chat, and reads it when the page closes', async () => {
+    const hook = await chat()
+    const reads = () => state.request.mock.calls.filter(([m]) => m === 'hexbot.sections.mark_read').length
+    const before = reads()
+    act(() => hook.result.current.setChatCovered(true))
+    act(() => state.event({ type: 'message.complete', session_id: 'live-owl-chat', payload: { text: 'Done.' } }))
+    expect(reads()).toBe(before)
+    act(() => hook.result.current.setChatCovered(false))
+    expect(reads()).toBe(before + 1)
+    expect(state.request).toHaveBeenLastCalledWith('hexbot.sections.mark_read', { id: 'owl-chat' })
+  })
+
   it('leaves the bot’s state alone when the error is not a Stopped state here', async () => {
     const hook = await chat()
     act(() => state.event({ type: 'message.complete', session_id: 'live-owl-chat', payload: { error: 'The turn was interrupted' } }))

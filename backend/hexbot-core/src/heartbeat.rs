@@ -520,7 +520,9 @@ fn still_newest(key: &(PathBuf, String), done_at: f64) -> bool {
 }
 
 /// The owner to wake about the reply that finished in `section` at
-/// `done_at`, while nobody has read the chat since. Only a bot's chat with
+/// `done_at`, while nobody has read the chat since and no later turn has
+/// ended there: a failed or stopped one stamps the chat too, and must not
+/// bring back a reply already read. Only a bot's chat with
 /// its owner: not a thread between bots, not an earlier Check-ins, not
 /// archived.
 fn unread_reply(
@@ -530,7 +532,7 @@ fn unread_reply(
 ) -> Result<Option<String>> {
     Ok(common::rows(
         conn,
-        "SELECT s.owner_id FROM sections s JOIN bots b ON b.name=s.bot WHERE s.id=? AND s.done_at>=? AND s.peer_bot IS NULL AND s.purpose IS NULL AND s.archived_at IS NULL AND b.notify=1",
+        "SELECT s.owner_id FROM sections s JOIN bots b ON b.name=s.bot WHERE s.id=? AND s.done_at=? AND s.peer_bot IS NULL AND s.purpose IS NULL AND s.archived_at IS NULL AND b.notify=1",
         &[&section, &done_at],
     )?
     .pop()
@@ -1078,6 +1080,8 @@ mod tests {
             unread_reply(&conn, "chat", 5.0).unwrap().as_deref(),
             Some("alice")
         );
+        // Read, then a later turn failed: that stamp is not this reply's.
+        assert_eq!(unread_reply(&conn, "chat", 4.0).unwrap(), None);
         // Notify me off, a thread between bots, Check-ins, archived.
         for section in ["quiet", "thread", "checkins", "old"] {
             assert_eq!(
