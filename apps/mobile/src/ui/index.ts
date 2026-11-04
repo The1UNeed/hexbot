@@ -45,8 +45,15 @@ export {
   SwitchRow,
   type SwitchRowProps
 } from './Row'
-export { Layer, LayerRoot, type LayerProps, PEEK } from './Layer'
-export { LargeHeader, Screen, type ScreenProps, TopBar, type TopBarProps } from './Screen'
+export { Layer, LayerRoot, type LayerProps, PEEK, useCover, useCovered } from './Layer'
+export {
+  LargeHeader,
+  Screen,
+  type ScreenProps,
+  SystemAvoidsKeyboard,
+  TopBar,
+  type TopBarProps
+} from './Screen'
 export { type SegmentOption, Segmented } from './Segmented'
 export { Form, ModalSheet, type ModalSheetProps, type SheetAction } from './Sheet'
 export { Text, type TextProps, type TextTone } from './Text'
