@@ -814,11 +814,11 @@ export function useMobile() {
     if (owner && stoppedIn(owner, target.section))
       await rpc('hexbot.bots.clear_status', { name: owner.name })
   }
-  /** `answer` answers a sign-in or plugin card: what was typed goes to the daemon, never the chat. */
+  /** `answer` answers a sign-in, API key or plugin card: what was typed goes to the daemon, never the chat. */
   const approval = async (
     requestId: string,
     choice: string,
-    answer?: PluginAnswer | { username: string; password: string }
+    answer?: PluginAnswer | { key: string } | { username: string; password: string }
   ) => {
     const pending = chat.approvals.find(a => a.requestId === requestId)
     if (!pending) return

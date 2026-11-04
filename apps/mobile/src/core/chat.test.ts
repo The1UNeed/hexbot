@@ -91,6 +91,14 @@ describe('chat event projection', () => {
     )
     expect(s.approvals[0].form).toBeUndefined()
   })
+  it("keeps an API key card's fields", () => {
+    const form = { kind: 'api_key', env: 'OPENAI_API_KEY', site: 'platform.openai.com', title: 'OpenAI' }
+    const s = reduceChat(
+      emptyChat(),
+      event('approval.request', { request_id: 'r1', command: 'Add your OpenAI API key', form })
+    )
+    expect(s.approvals[0].form).toEqual(form)
+  })
   it('moves a question card forward on a re-send with newer answers, never back', () => {
     const questions = [
       { qid: 'q1', question: 'Colour?' },

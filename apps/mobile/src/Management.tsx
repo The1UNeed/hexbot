@@ -27,7 +27,8 @@ import {
   type Bot,
   type Connector,
   type Device,
-  type PasswordLogin,
+  type PasswordItem,
+  type PasswordKind,
   type Plugin,
   type PluginsList,
   type Room,
@@ -143,8 +144,26 @@ const pluginBots = (plugin: Plugin, bots: PluginBot[]) => {
   if (on.length <= 2) return on.map(b => b.display_name).join(' and ')
   return `${on.length} bots`
 }
-/** Who may use a saved login, in a few words; null is every bot. */
-const passwordBots = (login: PasswordLogin, bots: PluginBot[]) => {
+/** Older daemons send no kind: every item they have is a login. */
+const passwordKind = (item: PasswordItem | undefined): PasswordKind => item?.kind ?? 'login'
+const PASSWORD_KINDS: Record<PasswordKind, { icon: IconName; label: string }> = {
+  api_key: { icon: 'code-slash-outline', label: 'API key' },
+  login: { icon: 'key-outline', label: 'Login' },
+  ssh_key: { icon: 'terminal-outline', label: 'SSH key' }
+}
+/** The line under an item's name: where it signs in, or what kind of key it is. */
+const passwordSubtitle = (item: PasswordItem) => {
+  switch (passwordKind(item)) {
+    case 'ssh_key':
+      return ['SSH key', item.fingerprint].filter(Boolean).join(' · ')
+    case 'api_key':
+      return ['API key', item.env].filter(Boolean).join(' · ')
+    default:
+      return [item.site, item.username].filter(Boolean).join(' · ')
+  }
+}
+/** Who may use a saved item, in a few words; null is every bot. */
+const passwordBots = (login: PasswordItem, bots: PluginBot[]) => {
   if (login.bots === null) return 'Every bot'
   const on = bots.filter(b => login.bots?.includes(b.name))
   if (!on.length) return 'No bots'
@@ -522,7 +541,7 @@ export function Management({
         data = pluginRows(await rpc<PluginsList>('hexbot.plugins.list')) as unknown as RowData[]
         break
       case 'passwords': {
-        const list = await rpc<{ logins: PasswordLogin[]; store: string | null }>(
+        const list = await rpc<{ logins: PasswordItem[]; store: string | null }>(
           'hexbot.passwords.list'
         )
         data = list.logins as unknown as RowData[]
@@ -531,8 +550,8 @@ export function Management({
       }
       case 'password': {
         // Fresh from the daemon, so a card returned to shows the current bots.
-        const opened = panel?.data as unknown as PasswordLogin | undefined
-        const { logins } = await rpc<{ logins: PasswordLogin[] }>('hexbot.passwords.list')
+        const opened = panel?.data as unknown as PasswordItem | undefined
+        const { logins } = await rpc<{ logins: PasswordItem[] }>('hexbot.passwords.list')
         const login = logins.find(l => l.id === opened?.id) ?? opened
         detail = { login }
         fields = {
@@ -541,12 +560,28 @@ export function Management({
           username: str(login?.username),
           password: '',
           code: '',
+          env: str(login?.env),
+          key: '',
+          private_key: '',
+          passphrase: '',
           notes: str(login?.notes)
         }
         break
       }
       case 'password-create':
-        fields = { title: '', url: '', username: '', password: '', code: '', notes: '' }
+        fields = {
+          title: '',
+          url: '',
+          username: '',
+          password: '',
+          code: '',
+          env: '',
+          key: '',
+          private_key: '',
+          passphrase: '',
+          paste: false,
+          notes: ''
+        }
         break
       case 'plugin': {
         // Fresh from the daemon, so a card returned to shows the current bots.
@@ -1838,28 +1873,48 @@ export function Management({
       break
     }
     case 'passwords': {
-      const logins = rows as unknown as PasswordLogin[]
+      const logins = rows as unknown as PasswordItem[]
       const store = str(extra.store)
       content = (
         <>
-          <Group footer={store ? PASSWORD_STORE_TEXT[store] : undefined}>
-            {row('Add password', 'password-create')}
-            {logins.map(login => (
+          <Group>
+            {(['login', 'ssh_key', 'api_key'] as const).map(add => (
               <Row
-                key={login.id}
-                title={login.title}
-                subtitle={[login.site, login.username, passwordBots(login, pluginRoster)]
-                  .filter(Boolean)
-                  .join(' · ')}
-                testID={`password-${login.id}`}
+                key={add}
+                title={`Add ${add === 'login' ? 'login' : PASSWORD_KINDS[add].label}`}
+                testID={`manage-password-create-${add}`}
+                leading={<Ionicons color={theme.muted} name={PASSWORD_KINDS[add].icon} size={20} />}
                 chevron
-                onPress={() => navigate('password', login as unknown as RowData)}
+                onPress={() => navigate('password-create', { kind: add } as RowData)}
+                disabled={busy || mobile.connection !== 'connected'}
               />
             ))}
           </Group>
-          {logins.length ? null : (
+          {logins.length ? (
+            <Group footer={store ? PASSWORD_STORE_TEXT[store] : undefined}>
+              {logins.map(login => (
+                <Row
+                  key={login.id}
+                  title={login.title}
+                  subtitle={[passwordSubtitle(login), passwordBots(login, pluginRoster)]
+                    .filter(Boolean)
+                    .join(' · ')}
+                  testID={`password-${login.id}`}
+                  leading={
+                    <Ionicons
+                      color={theme.muted}
+                      name={PASSWORD_KINDS[passwordKind(login)].icon}
+                      size={20}
+                    />
+                  }
+                  chevron
+                  onPress={() => navigate('password', login as unknown as RowData)}
+                />
+              ))}
+            </Group>
+          ) : (
             <Text tone="muted" variant="footnote">
-              When a bot needs to sign in somewhere, it asks you in its chat.
+              When a bot needs to sign in somewhere or needs an API key, it asks you in its chat.
             </Text>
           )}
         </>
@@ -1868,18 +1923,34 @@ export function Management({
     }
     case 'password-create':
     case 'password': {
-      const login = (extra.login ?? panel?.data) as unknown as PasswordLogin | undefined
+      const login = (extra.login ?? panel?.data) as unknown as PasswordItem | undefined
       const editing = kind === 'password' && login
+      // A new item's kind comes with the page; an item keeps its own.
+      const itemKind: PasswordKind = editing
+        ? passwordKind(login)
+        : ((str(panel?.data?.kind) || 'login') as PasswordKind)
       save = () => {
         const change: Record<string, unknown> = {
           title: str(values.title),
-          url: str(values.url).trim(),
-          username: str(values.username),
           notes: str(values.notes)
         }
         if (editing) change.id = login.id
-        if (str(values.password)) change.password = str(values.password)
-        if (str(values.code).trim()) change.code = str(values.code)
+        else if (itemKind !== 'login') change.kind = itemKind
+        if (itemKind === 'login') {
+          change.url = str(values.url).trim()
+          change.username = str(values.username)
+          if (str(values.password)) change.password = str(values.password)
+          if (str(values.code).trim()) change.code = str(values.code)
+        } else if (itemKind === 'ssh_key') {
+          if (str(values.private_key).trim()) {
+            change.private_key = str(values.private_key)
+            change.passphrase = str(values.passphrase)
+          } else if (!editing) change.generate = true
+        } else {
+          change.url = str(values.url).trim()
+          change.env = str(values.env).trim()
+          if (str(values.key).trim()) change.key = str(values.key)
+        }
         return rpc('hexbot.passwords.save', change)
       }
       const bots = pluginRoster
@@ -1891,7 +1962,7 @@ export function Management({
         const current = epoch.current
         setBusy(true)
         setError(null)
-        void rpc<{ login: PasswordLogin }>('hexbot.passwords.set_bots', {
+        void rpc<{ login: PasswordItem }>('hexbot.passwords.set_bots', {
           id: login!.id,
           bots: next
         })
@@ -1906,28 +1977,123 @@ export function Management({
             if (current === epoch.current) setBusy(false)
           })
       }
-      const revealed = extra.revealed as { password: string; code: string | null } | undefined
+      const revealed = extra.revealed as
+        | {
+            password?: string
+            code?: string | null
+            key?: string
+            private_key?: string
+            passphrase?: string
+          }
+        | undefined
+      const shownText =
+        itemKind === 'ssh_key'
+          ? str(revealed?.private_key)
+          : itemKind === 'api_key'
+            ? str(revealed?.key)
+            : str(revealed?.password)
+      const shownLabel =
+        itemKind === 'ssh_key'
+          ? revealed?.passphrase
+            ? `Private key. Passphrase ${revealed.passphrase}`
+            : 'Private key'
+          : itemKind === 'api_key'
+            ? 'Key'
+            : revealed?.code
+              ? `Password. One-time code ${revealed.code}`
+              : 'Password'
       content = (
         <>
-          {field('url', 'Site', false, 'Such as https://app.schoology.com')}
-          {field('title', 'Name')}
-          {field('username', 'Username or email')}
-          {field(
-            'password',
-            'Password',
-            false,
-            editing ? 'Leave empty to keep it.' : undefined,
-            true
-          )}
-          {field(
-            'code',
-            'One-time code key (optional)',
-            false,
-            editing && login.has_code
-              ? 'Leave empty to keep it.'
-              : 'The setup key or otpauth:// link',
-            true
-          )}
+          {itemKind === 'login' ? (
+            <>
+              {field('url', 'Site', false, 'Such as https://app.schoology.com')}
+              {field('title', 'Name')}
+              {field('username', 'Username or email')}
+              {field(
+                'password',
+                'Password',
+                false,
+                editing ? 'Leave empty to keep it.' : undefined,
+                true
+              )}
+              {field(
+                'code',
+                'One-time code key (optional)',
+                false,
+                editing && login.has_code
+                  ? 'Leave empty to keep it.'
+                  : 'The setup key or otpauth:// link',
+                true
+              )}
+            </>
+          ) : null}
+          {itemKind === 'ssh_key' ? (
+            <>
+              {field('title', 'Name', false, editing ? undefined : 'Such as GitHub')}
+              {editing && login.public_key ? (
+                <Group
+                  title="Public key"
+                  footer="Add it where your bots sign in, such as GitHub's SSH keys page or a server's authorized_keys."
+                >
+                  <View style={styles.inset} testID="password-public-key">
+                    <Text selectable variant="body">
+                      {login.public_key}
+                    </Text>
+                    {login.fingerprint ? (
+                      <Text selectable tone="muted" variant="footnote">
+                        {login.fingerprint}
+                      </Text>
+                    ) : null}
+                  </View>
+                </Group>
+              ) : null}
+              {editing ? null : (
+                <Group
+                  footer={
+                    values.paste === true
+                      ? undefined
+                      : "Hexbot makes an Ed25519 key and shows you its public key to add where it's needed."
+                  }
+                >
+                  {toggle('paste', 'Paste an existing key')}
+                </Group>
+              )}
+              {editing || values.paste === true ? (
+                <>
+                  <Field
+                    key="private_key"
+                    label={editing ? 'Replace the private key' : 'Private key'}
+                    testID="field-private_key"
+                    value={str(values.private_key)}
+                    onChangeText={v => set('private_key', v)}
+                    multiline
+                    monospace
+                    hint={
+                      editing
+                        ? 'Leave empty to keep it.'
+                        : 'It starts with -----BEGIN OPENSSH PRIVATE KEY-----'
+                    }
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                  {field('passphrase', 'Passphrase (if the key has one)', false, undefined, true)}
+                </>
+              ) : null}
+            </>
+          ) : null}
+          {itemKind === 'api_key' ? (
+            <>
+              {field('title', 'Name', false, editing ? undefined : 'Such as OpenAI')}
+              {field('key', 'Key', false, editing ? 'Leave empty to keep it.' : undefined, true)}
+              {field(
+                'env',
+                'Variable',
+                false,
+                'Commands read the key from it. Left empty, Hexbot names it from the name, such as OPENAI_API_KEY.'
+              )}
+              {field('url', 'Site (optional)', false, 'Such as https://platform.openai.com')}
+            </>
+          ) : null}
           {field('notes', 'Notes', true)}
           {editing ? (
             <>
@@ -1961,15 +2127,21 @@ export function Management({
                   // All of it, selectable to copy: a row would cut a long one off.
                   <View style={styles.inset} testID="password-revealed">
                     <Text selectable variant="body">
-                      {revealed.password}
+                      {shownText}
                     </Text>
                     <Text tone="muted" variant="footnote">
-                      {revealed.code ? `Password. One-time code ${revealed.code}` : 'Password'}
+                      {shownLabel}
                     </Text>
                   </View>
                 ) : (
                   <Row
-                    title="Show password"
+                    title={
+                      itemKind === 'ssh_key'
+                        ? 'Show private key'
+                        : itemKind === 'api_key'
+                          ? 'Show key'
+                          : 'Show password'
+                    }
                     testID="action-show-password"
                     disabled={busy || mobile.connection !== 'connected'}
                     onPress={() => {
@@ -1978,14 +2150,17 @@ export function Management({
                       // goes when it expires.
                       const current = epoch.current
                       void rpc<{
-                        password: string
-                        code: { code: string; valid_for: number } | null
+                        password?: string
+                        code?: { code: string; valid_for: number } | null
+                        key?: string
+                        private_key?: string
+                        passphrase?: string
                       }>('hexbot.passwords.reveal', { id: login.id })
                         .then(shown => {
                           if (current !== epoch.current) return
                           setExtra(previous => ({
                             ...previous,
-                            revealed: { password: shown.password, code: shown.code?.code ?? null }
+                            revealed: { ...shown, code: shown.code?.code ?? null }
                           }))
                           if (shown.code)
                             setTimeout(() => {
@@ -2006,13 +2181,19 @@ export function Management({
                     )
                   : null}
                 {action(
-                  'Delete password',
+                  itemKind === 'login'
+                    ? 'Delete password'
+                    : `Delete ${PASSWORD_KINDS[itemKind].label}`,
                   async () => {
                     await rpc('hexbot.passwords.delete', { id: login.id })
                     ;(onBack ?? onClose)()
                   },
                   true,
-                  'Your bots can no longer sign in with it.'
+                  itemKind === 'login'
+                    ? 'Your bots can no longer sign in with it.'
+                    : itemKind === 'ssh_key'
+                      ? 'Your bots can no longer use it. Remove its public key where you added it, too.'
+                      : 'Your bots can no longer use it.'
                 )}
               </Group>
             </>
@@ -2412,7 +2593,12 @@ export function Management({
     plugin: str(panel?.data?.name),
     passwords: 'Passwords',
     password: str(panel?.data?.title),
-    'password-create': 'New password',
+    'password-create':
+      str(panel?.data?.kind) === 'ssh_key'
+        ? 'New SSH key'
+        : str(panel?.data?.kind) === 'api_key'
+          ? 'New API key'
+          : 'New login',
     skills: 'Skills',
     skill: str(panel?.data?.name),
     'skill-create': 'Create skill',
@@ -2436,7 +2622,7 @@ export function Management({
     devices: 'Phones, browsers and computers that can use this daemon.',
     network: 'Pair devices with this daemon over your local network.',
     passwords:
-      "Sign-ins your bots use for you. A bot has Hexbot type them into a page and never sees them. They're kept in a KeePass vault on this daemon.",
+      "Sign-ins, SSH keys and API keys your bots use for you. Hexbot types or hands them over for a bot, which never sees them. They're kept in a KeePass vault on this daemon.",
     plugins:
       'Connectors, MCP servers and skills your bots can use. Choose which bots get each one.',
     providers:

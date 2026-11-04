@@ -97,7 +97,9 @@ data model. The native transport and event projection live in
   sign-in card `hexbot_passwords` shows: answer `once` with `username` and
   `password` (4202 without a password), or `deny` to cancel. What was typed
   goes to the waiting tool only and is saved in Passwords; no event, log or
-  history row carries it. A `form` with `kind: "plugin"` is the plugin card
+  history row carries it. A `form` with `kind: "api_key"` (`{title, env,
+  url, site, update}`) is the API key card: answer `once` with `key` (4202
+  without one), kept the same way. A `form` with `kind: "plugin"` is the plugin card
   `hexbot_plugins` shows: `{action: "install" | "enable" | "setup", id, name,
   description, icon, bot, other, detail, run, fields, providers, provider}`
   (`other` when it is for another bot than the one asking; `run`, with
@@ -1305,35 +1307,71 @@ and the mobile smoke test set it so temporary daemons leave nothing in the
 login keychain. Bots' shells and file tools can't read that folder, temporary files included. A vault
 whose key can't be read stays locked (5300); Hexbot never replaces it.
 
-A login lists the bots that may use it in the entry's custom data
+The vault holds three kinds of item, named in the entry's custom data
+`hexbot.kind` (none means a login, so entries made in another KeePass app are
+logins):
+
+- `login`: title, URL, username, the password as the entry's password, and a
+  one-time code key in `otp`.
+- `ssh_key`: an OpenSSH private key in the protected field `Private key`, its
+  passphrase as the entry's password, and its public key in `Public key`. Only
+  the OpenSSH format (`-----BEGIN OPENSSH PRIVATE KEY-----`) is read; a PEM key
+  is refused with the `ssh-keygen -p` command that converts it.
+- `api_key`: the key as the entry's password and the environment variable a
+  command reads it from in `Variable`. Without one, the variable is named
+  from the title: OpenAI makes `OPENAI_API_KEY`, GitHub token makes
+  `GITHUB_TOKEN`. Names the shell or ssh needs (`PATH`, `HOME`,
+  `SSH_AUTH_SOCK` and a few more) are refused.
+
+An item lists the bots that may use it in the entry's custom data
 `hexbot.bots`; `bots: null` means every bot, including bots created later.
 Deleting a bot takes it off every list; the bot's name stays reserved until that succeeds.
 
-- `hexbot.passwords.list {}` → `{logins: [Login], bots: [string], store:
-  "keychain" | "secret_service" | "file" | "locked" | null}`. A `Login` is
-  `{id, title, url, site, username, bots, has_password, has_code, notes,
-  updated_at}`, never a password or code key.
-- `hexbot.passwords.save {id?, title?, url?, username?, password?, code?,
-  notes?, bots?}` → `{login}`. Without `id` it creates a login and needs a
-  password and a site or title. Fields left out stay. `code` is an
-  `otpauth://` link or base32 key; an empty `code` removes it. `url` must be
-  http or https.
+- `hexbot.passwords.list {}` → `{logins: [Item], bots: [string], store:
+  "keychain" | "secret_service" | "file" | "locked" | null}`. `logins` holds
+  items of every kind. An `Item` is `{id, kind, title, url, site, username,
+  bots, has_password, has_code, notes, updated_at}`; an SSH key adds
+  `{public_key, fingerprint, has_passphrase}` and an API key `{env}`. Never a
+  password, private key, key or code key.
+- `hexbot.passwords.save {id?, kind?, title?, url?, username?, notes?, bots?,
+  ...}` → `{login}`. `kind` (default `login`) is fixed when the item is made.
+  Fields left out stay; `url` must be http or https.
+  - A login takes `password` and `code`. A new one needs a password and a
+    site or title. `code` is an `otpauth://` link or base32 key; an empty
+    `code` removes it.
+  - An SSH key takes `private_key` and `passphrase` (needed, and checked, when
+    the key has one), or `generate: true` for a new Ed25519 key. A new one
+    needs a title.
+  - An API key takes `key` and `env`. A new one needs a title and a key.
 - `hexbot.passwords.set_bots {id, bots}` → `{login}`.
 - `hexbot.passwords.delete {id}` → `{deleted}`.
-- `hexbot.passwords.reveal {id}` → `{login, password, code: {code,
-  valid_for} | null}`, for the owner's own clients.
+- `hexbot.passwords.reveal {id}` → `{login, ...}`, for the owner's own
+  clients: a login's `password` and `code: {code, valid_for} | null`, an SSH
+  key's `private_key` and `passphrase`, an API key's `key`.
 
-Changes, including a bot's sign-in card, emit `hexbot.passwords.changed {}`.
+Changes, including a bot's card, emit `hexbot.passwords.changed {}`.
 
 The bot tool `hexbot_passwords` is offered to a bot with Computer use, in
 its own chat and its scheduled jobs; rooms and threads between bots never get
-it. `list` returns `{id, title, site, username, has_code}`. `ask` shows the
-sign-in card (refused in a job); the login it saves goes to every bot. `fill
-{id, fields: [{field: username | password | code, coordinate}]}` types on the
-bots' computer and asks first unless the bot runs in Bypass. A field with a
-`ref`, from the daemon's retired browser, is refused. The primary bot, in its own chat, also
-has `share {id, bots}`, `update {id, title?, url?, username?}` and `delete`
-(always asks).
+it. `list` returns `{items: [{id, kind, title, site, ...}]}`: a login's
+`username` and `has_code`, an SSH key's `public_key` and `fingerprint`, an API
+key's `env`. `ask` shows the sign-in card, or with `kind: "api_key"` and
+`{title, env?, url?}` the API key card (both refused in a job); what it saves
+goes to every bot. `fill {id, fields: [{field: username | password | code,
+coordinate}]}` types a login on the bots' computer and asks first unless the
+bot runs in Bypass. A field with a `ref`, from the daemon's retired browser,
+is refused. `run {command, ids}` runs one shell command on the bots' computer
+with up to eight SSH and API keys, and asks first unless the bot runs in
+Bypass. A first, short shell call writes the keys to an owner-only folder
+under `$TMPDIR` named by a random token; the command's own call loads each API
+key into its variable and each SSH key into an `ssh-agent` of that command's
+own (`ssh-add -t 120`), deletes the files, runs the command in a subshell and
+stops the agent when it ends, however it ends. The keys are never on the
+command line of the command itself, and API key values are blanked from its
+output and from every later browser and computer result in the conversation.
+`generate {title}` makes and saves an Ed25519 SSH key and returns its public
+key. The primary bot, in its own chat, also has `share {id, bots}`, `update
+{id, title?, url?, username?, env?}` and `delete` (always asks).
 
 ### Providers and models
 

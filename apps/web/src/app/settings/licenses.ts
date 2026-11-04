@@ -317,6 +317,12 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
         repository: 'https://github.com/RustCrypto/hashes'
       },
       {
+        license: 'Apache-2.0 OR MIT',
+        name: 'RustCrypto SSH',
+        packages: ['ssh-key'],
+        repository: 'https://github.com/RustCrypto/SSH'
+      },
+      {
         license: 'MIT OR Apache-2.0',
         name: 'rust-base64',
         packages: ['base64'],

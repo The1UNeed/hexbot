@@ -578,7 +578,10 @@ pub async fn call(
                     "web_extract" => extract(home, bot, &cfg, &env, args).await,
                     "execute_code" => execute_code(home, bot, stored, &cfg, &env, args).await,
                     "vision_analyze" => vision(home, bot, &cfg, &env, args).await,
-                    "computer_use" => crate::computers::act(home, bot, &cfg, &env, args).await,
+                    "computer_use" => {
+                        let result = crate::computers::act(home, bot, &cfg, &env, args).await;
+                        scrub_filled(home, bot, stored, result).await
+                    }
                     "text_to_speech" => speech(home, bot, &cfg, &env, args).await,
                     "image_generate" => image_generate(home, bot, &cfg, &env, args).await,
                     "browser_exec" => browser_exec().await,
@@ -2604,8 +2607,10 @@ async fn browser_tool(
     Ok(result)
 }
 type FilledMap = HashMap<(PathBuf, String, String), Vec<String>>;
-/// Secrets typed into each section's browser. A page script can read a
-/// field back, so every later browser result has them blanked out.
+/// Secrets typed into each section's browser, and API keys its commands
+/// ran with. A page script can read a field back and a command can save a
+/// key in a file, so every later browser and computer result has them
+/// blanked out.
 fn filled() -> &'static Mutex<FilledMap> {
     static FILLED: OnceLock<Mutex<FilledMap>> = OnceLock::new();
     FILLED.get_or_init(Default::default)
@@ -2817,6 +2822,39 @@ pub async fn computer_fill(
     let cfg = common::merged_config(home, bot)?;
     let env = connectors::credentials(home, bot)?;
     crate::computers::fill(home, bot, &cfg, &env, &points).await
+}
+
+/// Runs a shell command on the bots' computer with saved keys: `vars` as
+/// environment variables, `ssh_keys` in an ssh-agent for that command only
+/// (`computers::run_with_keys`). The variables' values are blanked from its
+/// output and from every later browser and computer result in the section.
+pub async fn computer_run(
+    home: &Path,
+    bot: &str,
+    stored: &str,
+    command: &str,
+    vars: &[(String, String)],
+    ssh_keys: &[String],
+) -> Result<Value> {
+    if !enabled(home, bot, "computer_use")? {
+        return Err(Error::new(4302, "tool is disabled: computer_use"));
+    }
+    let cfg = common::merged_config(home, bot)?;
+    let env = connectors::credentials(home, bot)?;
+    {
+        let mut filled = filled().lock().await;
+        let secrets = filled
+            .entry((home.to_owned(), bot.to_owned(), stored.to_owned()))
+            .or_default();
+        for (_, value) in vars {
+            if !secrets.contains(value) {
+                secrets.push(value.clone());
+            }
+        }
+    }
+    let result =
+        crate::computers::run_with_keys(home, bot, &cfg, &env, command, vars, ssh_keys).await;
+    scrub_filled(home, bot, stored, result).await
 }
 
 #[cfg(test)]

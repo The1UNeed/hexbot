@@ -8,7 +8,7 @@ import {
   passwordsSave,
   passwordsSetBots
 } from '../../lib/api'
-import type { Bot, PasswordLogin } from '../../lib/types'
+import type { Bot, PasswordItem } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { usePasswords } from '../../stores/passwords'
 
@@ -25,7 +25,7 @@ vi.mock('../../lib/api', async importOriginal => ({
 
 vi.mock('../../components/ui/confirm', () => ({ confirm: vi.fn().mockResolvedValue(true) }))
 
-const schoology: PasswordLogin = {
+const schoology: PasswordItem = {
   bots: null,
   has_code: true,
   has_password: true,
@@ -71,7 +71,7 @@ describe('Settings, Passwords', () => {
       code: { code: '123456', valid_for: 20 },
       password: 'hunter2'
     })
-    let answer: (value: { login: PasswordLogin }) => void = () => undefined
+    let answer: (value: { login: PasswordItem }) => void = () => undefined
     vi.mocked(passwordsSetBots).mockReturnValue(new Promise(resolve => (answer = resolve)))
     render(<PasswordsSettings />)
     fireEvent.click(await screen.findByRole('button', { name: /Schoology/ }))
@@ -106,6 +106,7 @@ describe('Settings, Passwords', () => {
     render(<PasswordsSettings />)
     await screen.findByTestId('password-login-1')
     fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Login' }))
     const save = screen.getByRole('button', { name: 'Save' })
     expect(save).toBeDisabled()
     fireEvent.change(screen.getByLabelText('Site'), { target: { value: ' https://example.com ' } })
@@ -128,9 +129,146 @@ describe('Settings, Passwords', () => {
     await waitFor(() => expect(screen.queryByTestId('password-login-1')).toBeNull())
   })
 
+  it('makes an SSH key, shows its public key, and the private key only when asked', async () => {
+    const github: PasswordItem = {
+      bots: null,
+      fingerprint: 'SHA256:GPeuPte1++Gywv986aVurpkbhakdHkMnkVHx0lvvGDY',
+      has_code: false,
+      has_passphrase: false,
+      has_password: false,
+      id: 'ssh-1',
+      kind: 'ssh_key',
+      notes: '',
+      public_key: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGou GitHub',
+      site: null,
+      title: 'GitHub',
+      updated_at: 1,
+      url: '',
+      username: ''
+    }
+
+    vi.mocked(passwordsSave).mockResolvedValue({ login: github })
+    vi.mocked(passwordsReveal).mockResolvedValue({
+      passphrase: '',
+      private_key: '-----BEGIN OPENSSH PRIVATE KEY-----\nb3Bl\n-----END OPENSSH PRIVATE KEY-----\n'
+    })
+    render(<PasswordsSettings />)
+    await screen.findByTestId('password-login-1')
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'SSH key' }))
+    expect(screen.getByText('New SSH key')).toBeVisible()
+    // Hexbot makes the key unless one is pasted.
+    expect(screen.queryByLabelText('Private key')).toBeNull()
+    const save = screen.getByRole('button', { name: 'Save' })
+    expect(save).toBeDisabled()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'GitHub' } })
+    fireEvent.click(save)
+    await waitFor(() =>
+      expect(passwordsSave).toHaveBeenCalledWith({
+        generate: true,
+        kind: 'ssh_key',
+        notes: '',
+        title: 'GitHub'
+      })
+    )
+    const row = await screen.findByTestId('password-ssh-1')
+    expect(within(row).getByText(/SSH key · SHA256:GPeu/)).toBeVisible()
+
+    // Two kinds: the list can show one.
+    fireEvent.click(screen.getByRole('button', { name: 'SSH keys' }))
+    expect(screen.queryByTestId('password-login-1')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'All' }))
+    expect(screen.getByTestId('password-login-1')).toBeVisible()
+
+    fireEvent.click(within(row).getByRole('button', { name: /GitHub/ }))
+    expect(within(row).getByText(github.public_key!)).toBeVisible()
+    expect(within(row).getByRole('button', { name: 'Copy public key' })).toBeVisible()
+    expect(within(row).queryByText(/BEGIN OPENSSH/)).toBeNull()
+    expect(within(row).queryByText('Passphrase')).toBeNull()
+    fireEvent.click(within(row).getByRole('button', { name: 'Show private key' }))
+    expect(await within(row).findByText(/BEGIN OPENSSH PRIVATE KEY/)).toBeVisible()
+    expect(passwordsReveal).toHaveBeenCalledWith('ssh-1')
+  })
+
+  it('pastes an SSH key with its passphrase', async () => {
+    vi.mocked(passwordsSave).mockRejectedValue(new Error("That passphrase doesn't open this key."))
+    render(<PasswordsSettings />)
+    await screen.findByTestId('password-login-1')
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'SSH key' }))
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Server' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Paste a key' }))
+    const save = screen.getByRole('button', { name: 'Save' })
+    expect(save).toBeDisabled()
+    fireEvent.change(screen.getByLabelText('Private key'), { target: { value: 'KEY' } })
+    fireEvent.change(screen.getByLabelText('Passphrase (if the key has one)'), {
+      target: { value: 'pp' }
+    })
+    fireEvent.click(save)
+    await waitFor(() =>
+      expect(passwordsSave).toHaveBeenCalledWith({
+        kind: 'ssh_key',
+        notes: '',
+        passphrase: 'pp',
+        private_key: 'KEY',
+        title: 'Server'
+      })
+    )
+    expect(await screen.findByRole('alert')).toHaveTextContent("doesn't open")
+  })
+
+  it('adds an API key, naming its variable from its name', async () => {
+    const openai: PasswordItem = {
+      bots: null,
+      env: 'OPENAI_API_KEY',
+      has_code: false,
+      has_password: true,
+      id: 'api-1',
+      kind: 'api_key',
+      notes: '',
+      site: null,
+      title: 'OpenAI',
+      updated_at: 1,
+      url: '',
+      username: ''
+    }
+
+    vi.mocked(passwordsSave).mockResolvedValue({ login: openai })
+    vi.mocked(passwordsReveal).mockResolvedValue({ key: 'sk-test' })
+    render(<PasswordsSettings />)
+    await screen.findByTestId('password-login-1')
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'API key' }))
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'OpenAI' } })
+    expect(screen.getByLabelText('Variable')).toHaveAttribute('placeholder', 'OPENAI_API_KEY')
+    fireEvent.change(screen.getByLabelText('Key'), { target: { value: 'sk-test' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() =>
+      expect(passwordsSave).toHaveBeenCalledWith({
+        env: '',
+        key: 'sk-test',
+        kind: 'api_key',
+        notes: '',
+        title: 'OpenAI',
+        url: ''
+      })
+    )
+    const row = await screen.findByTestId('password-api-1')
+    expect(within(row).getByText('API key · OPENAI_API_KEY')).toBeVisible()
+    fireEvent.click(within(row).getByRole('button', { name: /OpenAI/ }))
+    expect(within(row).queryByText('sk-test')).toBeNull()
+    fireEvent.click(within(row).getByRole('button', { name: 'Show key' }))
+    expect(await within(row).findByText('sk-test')).toBeVisible()
+    // Searching finds a key by its variable.
+    fireEvent.change(screen.getByLabelText('Search passwords'), { target: { value: 'openai_api' } })
+    expect(screen.queryByTestId('password-login-1')).toBeNull()
+    expect(screen.getByTestId('password-api-1')).toBeVisible()
+  })
+
   it('says what to do when there are none', async () => {
     vi.mocked(passwordsList).mockResolvedValue({ bots: [], logins: [], store: null })
     render(<PasswordsSettings />)
     expect(await screen.findByText(/No passwords yet/)).toBeVisible()
+    expect(screen.queryByRole('group', { name: 'Show' })).toBeNull()
   })
 })

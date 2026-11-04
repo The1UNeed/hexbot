@@ -257,7 +257,7 @@ Provider credentials are local files protected by directory and file permissions
 not encrypted by an OS keychain. Same-user malware and unprotected backups can
 read them. The daemon and its configured providers must be trusted with these keys.
 
-Saved passwords are a KeePass (KDBX 4) vault per user, encrypted with a random
+Saved passwords, SSH keys and API keys are a KeePass (KDBX 4) vault per user, encrypted with a random
 256-bit key kept in the macOS Keychain or the Linux Secret Service, or, where
 neither is available (Windows, most headless Linux), in an owner-only key file
 beside the vault. A backup of the vault alone can't be opened; a backup that
@@ -274,7 +274,24 @@ traffic; it does not contain a bot that is trying to steal one. A filled
 field can be read back by a page script, so the daemon blanks the filled
 values out of every later browser result in that conversation, but an encoded
 read would get past that. The sign-in card's answer travels on the same
-connection as chat, so plain LAN HTTP exposes it the same way.
+connection as chat, so plain LAN HTTP exposes it the same way; so does the
+API key card's.
+
+A bot never receives an SSH private key or an API key either. It names the
+keys a shell command on the bots' computer needs, and the daemon, after
+asking unless the bot runs in Bypass, hands them over there: API keys as
+environment variables, SSH keys in an ssh-agent that holds them for that
+command only. The keys reach the computer in a short first shell call that
+writes them to an owner-only folder, and the command's call deletes them
+before the command starts, so they are not on its command line. Like a filled
+password, this keeps keys out of prompts, history and provider traffic but
+does not contain a bot trying to steal one: the command can print a key's
+variable, save it, or send it anywhere. Hexbot blanks API key values from the
+command's output and from later browser and computer results in that
+conversation, and an encoded print gets past that. An agent keeps a private
+key from being read back, but while the command runs anything on the bots'
+computer can ask it to sign. Give each key only to bots that need it, and
+read the command on the approval card before you allow it.
 
 Installers validate archive paths, reject links, enforce size limits, and verify
 download checksums. Install and native daemon manifests carry Ed25519 release

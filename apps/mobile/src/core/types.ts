@@ -10,7 +10,9 @@ export type {
   Provider,
   ModelOption,
   Connector,
-  PasswordLogin,
+  ApiKeyForm,
+  PasswordItem,
+  PasswordKind,
   Plugin,
   PluginsList,
   SignInForm,
@@ -80,8 +82,9 @@ export interface PendingApproval {
   command: string
   reason?: string
   choices: string[]
-  /** The sign-in card a bot shows to save a password, or a plugin card. */
+  /** The sign-in or API key card a bot shows to save a secret, or a plugin card. */
   form?:
+    | import('../../../web/src/lib/types').ApiKeyForm
     | import('../../../web/src/lib/types').PluginForm
     | import('../../../web/src/lib/types').SignInForm
 }

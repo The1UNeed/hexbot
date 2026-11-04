@@ -6,10 +6,21 @@
 //! way, stay in that one folder, which bots' shells can't read. The key is the
 //! vault's KeePass password, so KeePassXC and other KeePass apps open it too.
 //!
-//! Bots never read a password. They list logins (title, site, username),
-//! ask the user for one through a sign-in card, and have the daemon type it
-//! into a page (`runtime_passwords.rs`). Each login names the bots that may
-//! use it in its custom data; no list means every bot.
+//! The vault holds three kinds of item, named in each entry's custom data
+//! (none means a login, so entries made in another KeePass app are logins):
+//!
+//! - a **login**: site, username, password and a one-time code key;
+//! - an **SSH key**: an OpenSSH private key in the protected field
+//!   `Private key`, its passphrase as the entry's password, and its public
+//!   key in `Public key`;
+//! - an **API key**: the key as the entry's password and the environment
+//!   variable a command reads it from in `Variable`.
+//!
+//! Bots never read a secret. They list items (never a secret), ask the user
+//! for a login or an API key through a card, have the daemon type a login
+//! into a page, and run commands on the bots' computer with SSH keys in an
+//! agent and API keys in the environment (`runtime_passwords.rs`). Each item
+//! names the bots that may use it in its custom data; no list means every bot.
 use crate::{Error, Result, common, db};
 use keepass::{
     Database, DatabaseKey,
@@ -25,8 +36,75 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Entry custom data: the bots that may use a login, as a JSON array.
+/// Entry custom data: the bots that may use an item, as a JSON array.
 const BOTS: &str = "hexbot.bots";
+/// Entry custom data: the item's kind; none is a login.
+const KIND: &str = "hexbot.kind";
+/// An SSH key's fields, named for people reading the vault in KeePassXC.
+const PRIVATE_KEY: &str = "Private key";
+const PUBLIC_KEY: &str = "Public key";
+/// The environment variable an API key goes in.
+const VARIABLE: &str = "Variable";
+/// A private key is longer than other fields: an 8192-bit RSA key is 6.5 KB.
+const MAX_KEY: usize = 16 * 1024;
+/// Variables a key may not take: the shell and ssh need them.
+const RESERVED_VARIABLES: &[&str] = &[
+    "BASH_ENV",
+    "ENV",
+    "HOME",
+    "IFS",
+    "LD_LIBRARY_PATH",
+    "LD_PRELOAD",
+    "PATH",
+    "PS4",
+    "PWD",
+    "SHELL",
+    "SSH_AGENT_PID",
+    "SSH_AUTH_SOCK",
+    "USER",
+];
+
+/// What an item holds.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Kind {
+    Login,
+    SshKey,
+    ApiKey,
+}
+impl Kind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Kind::Login => "login",
+            Kind::SshKey => "ssh_key",
+            Kind::ApiKey => "api_key",
+        }
+    }
+    pub fn parse(name: &str) -> Result<Kind> {
+        match name {
+            "login" => Ok(Kind::Login),
+            "ssh_key" => Ok(Kind::SshKey),
+            "api_key" => Ok(Kind::ApiKey),
+            other => Err(Error::new(
+                4202,
+                format!("unknown kind: {other}. Use login, ssh_key or api_key."),
+            )),
+        }
+    }
+    /// The kind of an item as `row` writes it.
+    pub fn of(item: &Value) -> Kind {
+        item["kind"]
+            .as_str()
+            .and_then(|k| Kind::parse(k).ok())
+            .unwrap_or(Kind::Login)
+    }
+    fn words(self) -> &'static str {
+        match self {
+            Kind::Login => "login",
+            Kind::SshKey => "SSH key",
+            Kind::ApiKey => "API key",
+        }
+    }
+}
 /// The keychain item's service name.
 const SERVICE: &str = "hexbot-passwords";
 const MAX_FIELD: usize = 4096;
@@ -329,23 +407,23 @@ pub fn same_site(saved: &str, page: &str) -> bool {
     a == b || a.ends_with(&format!(".{b}")) || b.ends_with(&format!(".{a}"))
 }
 
-fn bots_of(entry: &keepass::db::Entry) -> Option<Vec<String>> {
-    match entry.custom_data.get(BOTS)?.value.as_ref()? {
-        CustomDataValue::String(text) => serde_json::from_str(text).ok(),
+fn custom<'a>(entry: &'a keepass::db::Entry, key: &str) -> Option<&'a str> {
+    match entry.custom_data.get(key)?.value.as_ref()? {
+        CustomDataValue::String(text) => Some(text),
         CustomDataValue::Binary(_) => None,
     }
 }
 
-fn set_bots_of(entry: &mut keepass::db::Entry, bots: Option<&[String]>) {
-    match bots {
+fn set_custom(entry: &mut keepass::db::Entry, key: &str, value: Option<String>) {
+    match value {
         None => {
-            entry.custom_data.remove(BOTS);
+            entry.custom_data.remove(key);
         }
-        Some(bots) => {
+        Some(value) => {
             entry.custom_data.insert(
-                BOTS.into(),
+                key.into(),
                 CustomDataItem {
-                    value: Some(CustomDataValue::String(json!(bots).to_string())),
+                    value: Some(CustomDataValue::String(value)),
                     last_modification_time: Some(keepass::db::Times::now()),
                 },
             );
@@ -353,17 +431,43 @@ fn set_bots_of(entry: &mut keepass::db::Entry, bots: Option<&[String]>) {
     }
 }
 
-/// A login as clients and bots read it: never its password or code key.
+fn bots_of(entry: &keepass::db::Entry) -> Option<Vec<String>> {
+    serde_json::from_str(custom(entry, BOTS)?).ok()
+}
+
+fn set_bots_of(entry: &mut keepass::db::Entry, bots: Option<&[String]>) {
+    set_custom(entry, BOTS, bots.map(|bots| json!(bots).to_string()));
+}
+
+fn kind_of(entry: &keepass::db::Entry) -> Kind {
+    custom(entry, KIND)
+        .and_then(|k| Kind::parse(k).ok())
+        .unwrap_or(Kind::Login)
+}
+
+/// `SHA256:…`, as `ssh-keygen -l` and GitHub show a key.
+fn fingerprint(public: &str) -> Option<String> {
+    let key = ssh_key::PublicKey::from_openssh(public).ok()?;
+    Some(key.fingerprint(ssh_key::HashAlg::Sha256).to_string())
+}
+
+/// An item as clients and bots read it: never a password, key or code key.
 fn row(entry: &keepass::db::Entry, id: EntryId) -> Value {
+    let kind = kind_of(entry);
     let url = entry.get_url().unwrap_or("");
     let title = entry
         .get_title()
         .filter(|t| !t.is_empty())
         .map(str::to_owned)
         .or_else(|| host(url))
-        .unwrap_or_else(|| "Login".into());
-    json!({
+        .unwrap_or_else(|| match kind {
+            Kind::Login => "Login".into(),
+            Kind::SshKey => "SSH key".into(),
+            Kind::ApiKey => "API key".into(),
+        });
+    let mut row = json!({
         "id": id.uuid().to_string(),
+        "kind": kind.name(),
         "title": title,
         "url": url,
         "site": host(url),
@@ -373,10 +477,23 @@ fn row(entry: &keepass::db::Entry, id: EntryId) -> Value {
         "has_code": entry.get_raw_otp_value().is_some_and(|v| !v.is_empty()),
         "notes": entry.get(fields::NOTES).unwrap_or(""),
         "updated_at": entry.times.last_modification.map(|t| t.and_utc().timestamp()),
-    })
+    });
+    match kind {
+        Kind::Login => {}
+        Kind::SshKey => {
+            let public = entry.get(PUBLIC_KEY).unwrap_or("");
+            row["public_key"] = json!(public);
+            row["fingerprint"] = json!(fingerprint(public));
+            row["has_passphrase"] = row["has_password"].clone();
+        }
+        Kind::ApiKey => {
+            row["env"] = json!(entry.get(VARIABLE).unwrap_or(""));
+        }
+    }
+    row
 }
 
-/// Logins outside the recycle bin, sorted by title.
+/// Items outside the recycle bin, sorted by title.
 fn rows(db: &Database, bot: Option<&str>) -> Vec<Value> {
     let bin = db.recycle_bin().map(|g| g.id());
     let mut rows = db
@@ -392,7 +509,7 @@ fn rows(db: &Database, bot: Option<&str>) -> Vec<Value> {
     rows
 }
 
-/// Every login the user saved, or those a bot may use.
+/// Every item the user saved, or those a bot may use.
 pub fn list(home: &Path, owner: &str, bot: Option<&str>) -> Result<Vec<Value>> {
     let _lock = lock();
     Ok(load(home, owner)?
@@ -408,7 +525,7 @@ pub fn find(home: &Path, owner: &str, id: &str) -> Result<Value> {
     Ok(row(&entry, id))
 }
 
-/// Whether `bot` may use the login.
+/// Whether `bot` may use the item.
 pub fn allowed(login: &Value, bot: &str) -> bool {
     login["bots"]
         .as_array()
@@ -416,12 +533,120 @@ pub fn allowed(login: &Value, bot: &str) -> bool {
 }
 
 fn text<'a>(p: &'a Value, key: &str) -> Result<Option<&'a str>> {
+    let max = if key == "private_key" {
+        MAX_KEY
+    } else {
+        MAX_FIELD
+    };
     match p.get(key) {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::String(s)) if s.len() <= MAX_FIELD => Ok(Some(s)),
+        Some(Value::String(s)) if s.len() <= max => Ok(Some(s)),
         Some(Value::String(_)) => Err(Error::new(4202, format!("{key} is too long"))),
         Some(_) => Err(Error::new(4202, format!("{key} must be text"))),
     }
+}
+
+/// An SSH private key as saved: the key as given, its public key, and
+/// whether it has a passphrase. Only the OpenSSH format, which ssh-keygen
+/// has written by default since 2018, is read.
+fn ssh_key(text: &str, passphrase: &str) -> Result<(String, String, bool)> {
+    let text = text.trim();
+    if text.starts_with("ssh-") || text.starts_with("ecdsa-") || text.starts_with("sk-") {
+        return Err(Error::new(
+            4202,
+            "That's a public key. Paste the private key, which starts with -----BEGIN OPENSSH PRIVATE KEY-----.",
+        ));
+    }
+    if text.starts_with("-----BEGIN") && !text.starts_with("-----BEGIN OPENSSH PRIVATE KEY-----") {
+        return Err(Error::new(
+            4202,
+            "Hexbot reads SSH keys in the OpenSSH format. Convert this one with ssh-keygen -p -f <key file>, then paste it again.",
+        ));
+    }
+    let key = ssh_key::PrivateKey::from_openssh(text).map_err(|_| {
+        Error::new(
+            4202,
+            "That isn't an SSH private key. It starts with -----BEGIN OPENSSH PRIVATE KEY-----.",
+        )
+    })?;
+    let encrypted = key.is_encrypted();
+    // A locked key keeps its comment inside, with the private half.
+    let key = if encrypted {
+        if passphrase.is_empty() {
+            return Err(Error::new(4202, "This key has a passphrase. Enter it too."));
+        }
+        key.decrypt(passphrase)
+            .map_err(|_| Error::new(4202, "That passphrase doesn't open this key."))?
+    } else {
+        key
+    };
+    let public = key
+        .public_key()
+        .to_openssh()
+        .map_err(|_| Error::new(4202, "Hexbot can't read this key's public half."))?;
+    Ok((format!("{text}\n"), public, encrypted))
+}
+
+/// A new Ed25519 key, the kind GitHub and OpenSSH recommend, named `comment`.
+fn new_ssh_key(comment: &str) -> Result<String> {
+    let mut key = ssh_key::PrivateKey::random(&mut rand::rngs::OsRng, ssh_key::Algorithm::Ed25519)
+        .map_err(|e| Error::new(5300, format!("Hexbot can't make an SSH key: {e}")))?;
+    key.set_comment(comment);
+    Ok(key
+        .to_openssh(ssh_key::LineEnding::LF)
+        .map_err(|e| Error::new(5300, format!("Hexbot can't make an SSH key: {e}")))?
+        .to_string())
+}
+
+/// An environment variable name a command can read.
+pub fn variable(name: &str) -> Result<String> {
+    let name = name.trim();
+    let mut chars = name.chars();
+    let valid = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && name.len() <= 128;
+    if !valid {
+        return Err(Error::new(
+            4202,
+            "The variable name takes letters, digits and _, such as OPENAI_API_KEY.",
+        ));
+    }
+    if RESERVED_VARIABLES.contains(&name) {
+        return Err(Error::new(
+            4202,
+            format!("{name} is used by the shell. Choose another name."),
+        ));
+    }
+    Ok(name.to_owned())
+}
+
+/// The variable a key goes in when none is given: OpenAI makes
+/// OPENAI_API_KEY, GitHub token makes GITHUB_TOKEN.
+pub fn default_variable(title: &str) -> String {
+    let mut name = String::new();
+    for c in title.chars() {
+        if c.is_ascii_alphanumeric() {
+            name.push(c.to_ascii_uppercase());
+        } else if !name.is_empty() && !name.ends_with('_') {
+            name.push('_');
+        }
+    }
+    let mut name = name.trim_end_matches('_').to_owned();
+    if name.is_empty() {
+        return "API_KEY".into();
+    }
+    if name.starts_with(|c: char| c.is_ascii_digit()) {
+        name.insert(0, '_');
+    }
+    if !["KEY", "TOKEN", "SECRET"]
+        .iter()
+        .any(|end| name.ends_with(end))
+    {
+        name.push_str("_API_KEY");
+    }
+    name
 }
 
 /// `bots`: absent leaves it, null means every bot, a list names them.
@@ -482,9 +707,13 @@ fn otp_uri(code: &str, title: &str) -> Result<String> {
     Ok(uri)
 }
 
-/// Creates a login (no `id`) or changes one. Fields left out stay; an empty
-/// `code` removes the one-time code key. New logins go to every bot unless
-/// `bots` says otherwise.
+/// Creates an item (no `id`) or changes one. Fields left out stay; an empty
+/// `code` removes a login's one-time code key. New items go to every bot
+/// unless `bots` says otherwise.
+///
+/// `kind` (login when left out) is fixed when the item is made. A login
+/// takes `password` and `code`; an SSH key `private_key` and `passphrase`,
+/// or `generate: true` for a new key; an API key `key` and `env`.
 pub fn save(home: &Path, owner: &str, p: &Value) -> Result<Value> {
     let bots = bots_param(home, owner, p)?;
     let url = text(p, "url")?.map(str::trim);
@@ -497,29 +726,57 @@ pub fn save(home: &Path, owner: &str, p: &Value) -> Result<Value> {
             "The site must be an http or https address.",
         ));
     }
+    let asked = text(p, "kind")?.map(Kind::parse).transpose()?;
+    let title = text(p, "title")?.map(str::trim);
+    let named = |title: Option<&str>| title.is_some_and(|t| !t.is_empty());
     let _lock = lock();
     let mut vault = load_or_new(home, owner)?;
-    let id = match text(p, "id")? {
+    let (id, kind) = match text(p, "id")? {
         Some(id) => {
             let id = entry_id(id)?;
-            vault.db.entry(id).ok_or_else(not_found)?;
-            id
+            let entry = vault.db.entry(id).ok_or_else(not_found)?;
+            let kind = kind_of(&entry);
+            if asked.is_some_and(|asked| asked != kind) {
+                return Err(Error::new(4202, "An item keeps its kind."));
+            }
+            (id, kind)
         }
         None => {
-            if url.is_none_or(str::is_empty)
-                && text(p, "title")?.is_none_or(|t| t.trim().is_empty())
-            {
-                return Err(Error::new(4202, "A password needs a site or a name."));
+            let kind = asked.unwrap_or(Kind::Login);
+            match kind {
+                Kind::Login => {
+                    if url.is_none_or(str::is_empty) && !named(title) {
+                        return Err(Error::new(4202, "A password needs a site or a name."));
+                    }
+                    if text(p, "password")?.is_none_or(str::is_empty) {
+                        return Err(Error::new(4202, "Enter the password."));
+                    }
+                }
+                Kind::SshKey => {
+                    if !named(title) {
+                        return Err(Error::new(4202, "Give the SSH key a name."));
+                    }
+                    if p["generate"] != true && text(p, "private_key")?.is_none_or(str::is_empty) {
+                        return Err(Error::new(4202, "Paste the private key."));
+                    }
+                }
+                Kind::ApiKey => {
+                    if !named(title) {
+                        return Err(Error::new(4202, "Give the API key a name."));
+                    }
+                    if text(p, "key")?.is_none_or(|k| k.trim().is_empty()) {
+                        return Err(Error::new(4202, "Enter the key."));
+                    }
+                }
             }
-            if text(p, "password")?.is_none_or(str::is_empty) {
-                return Err(Error::new(4202, "Enter the password."));
-            }
-            vault.db.root_mut().add_entry().id()
+            (vault.db.root_mut().add_entry().id(), kind)
         }
     };
-    let title = text(p, "title")?.map(str::trim);
     let code = match text(p, "code")? {
         Some(code) if !code.trim().is_empty() => {
+            if kind != Kind::Login {
+                return Err(Error::new(4202, "Only logins have a one-time code."));
+            }
             let name = title
                 .filter(|t| !t.is_empty())
                 .map(str::to_owned)
@@ -530,7 +787,28 @@ pub fn save(home: &Path, owner: &str, p: &Value) -> Result<Value> {
         Some(_) => Some(None),
         None => None,
     };
+    // An SSH key: the one pasted, or a new one, with its public key.
+    let ssh = match (
+        kind,
+        text(p, "private_key")?.filter(|k| !k.trim().is_empty()),
+    ) {
+        (Kind::SshKey, Some(private)) => {
+            Some(ssh_key(private, text(p, "passphrase")?.unwrap_or(""))?)
+        }
+        (Kind::SshKey, None) if p["generate"] == true => {
+            let comment = title.filter(|t| !t.is_empty()).unwrap_or("Hexbot");
+            Some(ssh_key(&new_ssh_key(comment)?, "")?)
+        }
+        _ => None,
+    };
+    let env = match (kind, text(p, "env")?) {
+        (Kind::ApiKey, Some(env)) if !env.trim().is_empty() => Some(variable(env)?),
+        _ => None,
+    };
     let mut entry = vault.db.entry_mut(id).ok_or_else(not_found)?;
+    if kind != Kind::Login {
+        set_custom(&mut entry, KIND, Some(kind.name().into()));
+    }
     if let Some(title) = title {
         entry.set_unprotected(fields::TITLE, title);
     }
@@ -540,18 +818,41 @@ pub fn save(home: &Path, owner: &str, p: &Value) -> Result<Value> {
     if let Some(username) = text(p, "username")? {
         entry.set_unprotected(fields::USERNAME, username);
     }
-    if let Some(password) = text(p, "password")?.filter(|p| !p.is_empty()) {
-        entry.set_protected(fields::PASSWORD, password);
-    }
     if let Some(notes) = text(p, "notes")? {
         entry.set_unprotected(fields::NOTES, notes);
     }
-    match code {
-        Some(Some(uri)) => entry.set_protected(fields::OTP, uri),
-        Some(None) => {
-            entry.fields.remove(fields::OTP);
+    match kind {
+        Kind::Login => {
+            if let Some(password) = text(p, "password")?.filter(|p| !p.is_empty()) {
+                entry.set_protected(fields::PASSWORD, password);
+            }
+            match code {
+                Some(Some(uri)) => entry.set_protected(fields::OTP, uri),
+                Some(None) => {
+                    entry.fields.remove(fields::OTP);
+                }
+                None => {}
+            }
         }
-        None => {}
+        Kind::SshKey => {
+            if let Some((private, public, encrypted)) = ssh {
+                entry.set_protected(PRIVATE_KEY, private);
+                entry.set_unprotected(PUBLIC_KEY, public);
+                let passphrase = text(p, "passphrase")?.filter(|_| encrypted).unwrap_or("");
+                entry.set_protected(fields::PASSWORD, passphrase);
+            }
+        }
+        Kind::ApiKey => {
+            if let Some(key) = text(p, "key")?.map(str::trim).filter(|k| !k.is_empty()) {
+                entry.set_protected(fields::PASSWORD, key);
+            }
+            if let Some(env) = env {
+                entry.set_unprotected(VARIABLE, env);
+            } else if entry.get(VARIABLE).is_none_or(str::is_empty) {
+                let name = default_variable(entry.get_title().unwrap_or(""));
+                entry.set_unprotected(VARIABLE, name);
+            }
+        }
     }
     if let Some(bots) = &bots {
         set_bots_of(&mut entry, bots.as_deref());
@@ -561,9 +862,9 @@ pub fn save(home: &Path, owner: &str, p: &Value) -> Result<Value> {
     if entry.times.creation.is_none() {
         entry.times.creation = Some(now);
     }
-    let login = row(&entry, id);
+    let item = row(&entry, id);
     persist(home, owner, &vault)?;
-    Ok(login)
+    Ok(item)
 }
 
 pub fn delete(home: &Path, owner: &str, id: &str) -> Result<()> {
@@ -615,16 +916,41 @@ fn forget_in(home: &Path, owner: &str, bot: &str) -> Result<()> {
     Ok(())
 }
 
-/// A secret for the daemon to type: `username`, `password`, or `code`, the
-/// one-time code for now.
+/// The private key in the OpenSSH format, its passphrase taken off, for an
+/// agent to hold.
+fn ssh_private(entry: &keepass::db::Entry) -> Result<Option<String>> {
+    let Some(text) = entry.get(PRIVATE_KEY).filter(|k| !k.is_empty()) else {
+        return Ok(None);
+    };
+    let broken = || Error::new(5300, "Hexbot can't read this SSH key. Save it again.");
+    let key = ssh_key::PrivateKey::from_openssh(text).map_err(|_| broken())?;
+    let key = if key.is_encrypted() {
+        key.decrypt(entry.get_password().unwrap_or(""))
+            .map_err(|_| broken())?
+    } else {
+        key
+    };
+    Ok(Some(
+        key.to_openssh(ssh_key::LineEnding::LF)
+            .map_err(|_| broken())?
+            .to_string(),
+    ))
+}
+
+/// A secret for the daemon to use: a login's `username`, `password`, or
+/// `code`, the one-time code for now; an API key's `key`; an SSH key's
+/// `private_key`, without its passphrase.
 pub fn secret(home: &Path, owner: &str, id: &str, field: &str) -> Result<String> {
     let _lock = lock();
     let vault = load(home, owner)?.ok_or_else(not_found)?;
     let entry = vault.db.entry(entry_id(id)?).ok_or_else(not_found)?;
-    let value = match field {
-        "username" => entry.get_username().map(str::to_owned),
-        "password" => entry.get_password().map(str::to_owned),
-        "code" => match entry.get_otp() {
+    let kind = kind_of(&entry);
+    let value = match (kind, field) {
+        (Kind::Login, "username") => entry.get_username().map(str::to_owned),
+        (Kind::Login, "password") | (Kind::ApiKey, "key") => {
+            entry.get_password().map(str::to_owned)
+        }
+        (Kind::Login, "code") => match entry.get_otp() {
             Ok(otp) => Some(
                 otp.value_now()
                     .map_err(|_| Error::new(5300, "The clock is wrong."))?
@@ -632,37 +958,59 @@ pub fn secret(home: &Path, owner: &str, id: &str, field: &str) -> Result<String>
             ),
             Err(_) => None,
         },
-        other => {
+        (Kind::SshKey, "private_key") => ssh_private(&entry)?,
+        (Kind::Login, other) => {
             return Err(Error::new(
                 4202,
                 format!("unknown field: {other}. Use username, password or code."),
+            ));
+        }
+        (kind, other) => {
+            return Err(Error::new(
+                4202,
+                format!(
+                    "An {} has no {other}. Only logins are typed into pages; use run for SSH and API keys.",
+                    kind.words()
+                ),
             ));
         }
     };
     value.filter(|v| !v.is_empty()).ok_or_else(|| {
         Error::new(
             4204,
-            format!("This login has no saved {field}. Ask the user to add it."),
+            format!(
+                "This {} has no saved {field}. Ask the user to add it.",
+                kind.words()
+            ),
         )
     })
 }
 
-/// Everything about one login, for its owner in Settings.
+/// Everything about one item, for its owner in Settings: a login's password
+/// and one-time code, an API key's key, an SSH key's private key and
+/// passphrase.
 fn reveal(home: &Path, owner: &str, id: &str) -> Result<Value> {
     let _lock = lock();
     let vault = load(home, owner)?.ok_or_else(not_found)?;
     let id = entry_id(id)?;
     let entry = vault.db.entry(id).ok_or_else(not_found)?;
-    let code = entry
-        .get_otp()
-        .ok()
-        .and_then(|otp| otp.value_now().ok())
-        .map(|c| json!({"code":c.code,"valid_for":c.valid_for.as_secs()}));
-    Ok(json!({
-        "login": row(&entry, id),
-        "password": entry.get_password().unwrap_or(""),
-        "code": code,
-    }))
+    let password = entry.get_password().unwrap_or("");
+    Ok(match kind_of(&entry) {
+        Kind::Login => {
+            let code = entry
+                .get_otp()
+                .ok()
+                .and_then(|otp| otp.value_now().ok())
+                .map(|c| json!({"code":c.code,"valid_for":c.valid_for.as_secs()}));
+            json!({"login": row(&entry, id), "password": password, "code": code})
+        }
+        Kind::ApiKey => json!({"login": row(&entry, id), "key": password}),
+        Kind::SshKey => json!({
+            "login": row(&entry, id),
+            "private_key": entry.get(PRIVATE_KEY).unwrap_or(""),
+            "passphrase": password,
+        }),
+    })
 }
 
 /// Where the vault's key is kept, for Settings: keychain, secret_service,
@@ -914,6 +1262,165 @@ mod tests {
                 .code,
             5300
         );
+    }
+
+    /// `ssh-keygen -t ed25519 -N 'correct horse' -C fixture`.
+    const LOCKED_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jdHIAAAAGYmNyeXB0AAAAGAAAABDQv9xYPp
+5H9ENVN9QrXI0YAAAAGAAAAAEAAAAzAAAAC3NzaC1lZDI1NTE5AAAAIGou53ZeHy9mJCrn
+DtuPRCQ2bn3hsmoiLLXj38gV9k58AAAAkFn7NOmk9zaPmylcxbMqQdaa2ebLjLcPNoKQaJ
+YyYw1ReYKibAoyHh/u6PbLYIWRzJ8zh2QUuq7YN0SaSidrKdAXsgqiVm/q5s1uwTKhev/C
+kh3xBceQ3HasQwrcl7I0XRTQzIegdNkHQZBEO6EeS0dA4C7yN8FJ0lUdvR0LAwF3unqOxu
+RRt6ydivhAlY3kFw==
+-----END OPENSSH PRIVATE KEY-----
+";
+
+    #[test]
+    fn ssh_keys_keep_their_private_half_and_show_the_public_one() {
+        let home = home();
+        let h = home.path();
+        let err = |p: Value| save(h, "alice", &p).unwrap_err().message;
+        assert!(
+            err(json!({"kind":"ssh_key","title":"GitHub","private_key":LOCKED_KEY}))
+                .contains("passphrase")
+        );
+        assert!(err(json!({"kind":"ssh_key","title":"GitHub","private_key":LOCKED_KEY,"passphrase":"wrong"})).contains("doesn't open"));
+        assert!(err(json!({"kind":"ssh_key","title":"GitHub","private_key":"-----BEGIN RSA PRIVATE KEY-----\nMIIB\n-----END RSA PRIVATE KEY-----"})).contains("ssh-keygen -p"));
+        assert!(
+            err(json!({"kind":"ssh_key","title":"GitHub","private_key":"ssh-ed25519 AAAA me"}))
+                .contains("public key")
+        );
+        assert!(err(json!({"kind":"ssh_key","private_key":LOCKED_KEY})).contains("name"));
+        let key = save(
+            h,
+            "alice",
+            &json!({"kind":"ssh_key","title":"GitHub","private_key":LOCKED_KEY,"passphrase":"correct horse"}),
+        )
+        .unwrap();
+        assert_eq!(key["kind"], "ssh_key");
+        assert_eq!(key["has_passphrase"], true);
+        assert_eq!(
+            key["fingerprint"],
+            "SHA256:GPeuPte1++Gywv986aVurpkbhakdHkMnkVHx0lvvGDY"
+        );
+        assert!(
+            key["public_key"]
+                .as_str()
+                .unwrap()
+                .starts_with("ssh-ed25519 AAAA")
+        );
+        assert!(!key.to_string().contains("b3BlbnNzaC1rZXkt"));
+        let id = key["id"].as_str().unwrap();
+        // The agent gets it without its passphrase, and it is still the same key.
+        let open = secret(h, "alice", id, "private_key").unwrap();
+        let parsed = ssh_key::PrivateKey::from_openssh(&open).unwrap();
+        assert!(!parsed.is_encrypted());
+        assert_eq!(
+            parsed.public_key().to_openssh().unwrap(),
+            key["public_key"].as_str().unwrap()
+        );
+        // Only logins are typed into pages.
+        assert_eq!(secret(h, "alice", id, "password").unwrap_err().code, 4202);
+        let shown = reveal(h, "alice", id).unwrap();
+        assert_eq!(shown["private_key"], LOCKED_KEY);
+        assert_eq!(shown["passphrase"], "correct horse");
+        // Renaming keeps the key; a kind never changes.
+        let renamed = save(h, "alice", &json!({"id":id,"title":"Work GitHub"})).unwrap();
+        assert_eq!(renamed["fingerprint"], key["fingerprint"]);
+        assert!(err(json!({"id":id,"kind":"login"})).contains("kind"));
+        assert!(err(json!({"id":id,"code":"JBSWY3DPEHPK3PXP"})).contains("one-time"));
+        // KeePass apps see the fields by name.
+        let k = std::fs::read_to_string(key_path(h, "alice").unwrap()).unwrap();
+        let bytes = std::fs::read(vault_path(h, "alice").unwrap()).unwrap();
+        let db = Database::parse(&bytes, DatabaseKey::new().with_password(&k)).unwrap();
+        let entry = db.iter_all_entries().next().unwrap();
+        assert_eq!(entry.get(PRIVATE_KEY), Some(LOCKED_KEY));
+        assert_eq!(entry.get_password(), Some("correct horse"));
+    }
+
+    #[test]
+    fn new_ssh_keys_are_ed25519_and_never_leave_the_vault() {
+        let home = home();
+        let h = home.path();
+        let key = save(
+            h,
+            "alice",
+            &json!({"kind":"ssh_key","title":"Deploy","generate":true,"bots":["owl"]}),
+        )
+        .unwrap();
+        let public = key["public_key"].as_str().unwrap();
+        assert!(
+            public.starts_with("ssh-ed25519 ") && public.ends_with(" Deploy"),
+            "{public}"
+        );
+        assert_eq!(key["has_passphrase"], false);
+        assert_eq!(key["bots"], json!(["owl"]));
+        let other = save(
+            h,
+            "alice",
+            &json!({"kind":"ssh_key","title":"Deploy","generate":true}),
+        )
+        .unwrap();
+        assert_ne!(other["public_key"], key["public_key"], "every key is new");
+        assert!(
+            secret(h, "alice", key["id"].as_str().unwrap(), "private_key")
+                .unwrap()
+                .starts_with("-----BEGIN OPENSSH PRIVATE KEY-----")
+        );
+    }
+
+    #[test]
+    fn api_keys_name_the_variable_they_go_in() {
+        let home = home();
+        let h = home.path();
+        let err = |p: Value| save(h, "alice", &p).unwrap_err().message;
+        assert!(err(json!({"kind":"api_key","title":"OpenAI"})).contains("key"));
+        assert!(err(json!({"kind":"api_key","key":"sk-1"})).contains("name"));
+        assert!(
+            err(json!({"kind":"api_key","title":"x","key":"sk-1","env":"1BAD"}))
+                .contains("letters")
+        );
+        assert!(
+            err(json!({"kind":"api_key","title":"x","key":"sk-1","env":"PATH"})).contains("shell")
+        );
+        let key = save(
+            h,
+            "alice",
+            &json!({"kind":"api_key","title":"OpenAI","key":" sk-secret ","url":"https://platform.openai.com"}),
+        )
+        .unwrap();
+        assert_eq!(key["kind"], "api_key");
+        assert_eq!(key["env"], "OPENAI_API_KEY");
+        assert_eq!(key["site"], "platform.openai.com");
+        assert!(!key.to_string().contains("sk-secret"));
+        let id = key["id"].as_str().unwrap();
+        assert_eq!(secret(h, "alice", id, "key").unwrap(), "sk-secret");
+        assert_eq!(reveal(h, "alice", id).unwrap()["key"], "sk-secret");
+        let changed = save(h, "alice", &json!({"id":id,"env":"OPENAI_KEY"})).unwrap();
+        assert_eq!(changed["env"], "OPENAI_KEY");
+        assert_eq!(secret(h, "alice", id, "key").unwrap(), "sk-secret");
+        for (title, env) in [
+            ("GitHub token", "GITHUB_TOKEN"),
+            ("Stripe secret", "STRIPE_SECRET"),
+            ("ElevenLabs", "ELEVENLABS_API_KEY"),
+            ("1Password", "_1PASSWORD_API_KEY"),
+            ("!!", "API_KEY"),
+        ] {
+            assert_eq!(default_variable(title), env);
+        }
+        // Lists hold every kind, sorted by title.
+        save(
+            h,
+            "alice",
+            &json!({"url":"https://a.com","password":"p","title":"Amazon"}),
+        )
+        .unwrap();
+        let kinds = list(h, "alice", None)
+            .unwrap()
+            .iter()
+            .map(|i| i["kind"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(kinds, ["login", "api_key"]);
     }
 
     #[test]
