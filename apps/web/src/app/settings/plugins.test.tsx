@@ -300,6 +300,29 @@ describe('Settings, Plugins', () => {
     )
   })
 
+  it('turning a plugin off for every bot also drops a grant waiting for setup', async () => {
+    vi.mocked(pluginsSetBots).mockClear()
+    const unset = { ...search, state: 'not_set_up' as const, state_text: 'Not set up' }
+    vi.mocked(pluginsList).mockResolvedValue(
+      list({
+        connectors: [
+          {
+            ...unset,
+            bots: ['owl'],
+            kind: 'connector',
+            ready: false,
+            ready_bots: ['owl'],
+            waiting_bots: ['hexbot']
+          }
+        ]
+      })
+    )
+    render(<PluginsSettings />)
+    fireEvent.click(await screen.findByText('Web search'))
+    fireEvent.click(screen.getByRole('button', { name: 'Turn off for every bot' }))
+    await waitFor(() => expect(pluginsSetBots).toHaveBeenCalledWith('connector', 'web_search', []))
+  })
+
   it('turns a skill that is off for every bot back on', async () => {
     const base = list()
     vi.mocked(pluginsList).mockResolvedValue({

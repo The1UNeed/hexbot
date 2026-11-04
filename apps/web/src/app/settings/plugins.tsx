@@ -346,9 +346,9 @@ function PluginRow({
   const setBots = usePlugins(state => state.setBots)
   const [error, setError] = useState<null | string>(null)
 
-  const choose = (next: string[]) => {
+  const choose = (next: string[], keepWaiting = true) => {
     setError(null)
-    void setBots(plugin, next).catch(cause => setError(errorText(cause)))
+    void setBots(plugin, next, keepWaiting).catch(cause => setError(errorText(cause)))
   }
 
   const toggle = (bot: string, on: boolean) =>
@@ -466,7 +466,7 @@ function BotPicker({
   canGive: (bot: string) => boolean
   chosen: string[]
   name: string
-  onChange: (bots: string[]) => void
+  onChange: (bots: string[], keepWaiting?: boolean) => void
 }) {
   const all = bots.every(bot => chosen.includes(bot.name))
   const turnOn = !all && bots.every(bot => canGive(bot.name))
@@ -478,7 +478,8 @@ function BotPicker({
         {bots.length > 1 ? (
           <button
             className="text-[length:var(--text-meta)] text-muted underline-offset-2 hover:text-foreground hover:underline disabled:pointer-events-none disabled:opacity-50"
-            onClick={() => onChange(turnOn ? bots.map(bot => bot.name) : [])}
+            // Off for every bot means every grant, those waiting for setup too.
+            onClick={() => (turnOn ? onChange(bots.map(bot => bot.name)) : onChange([], false))}
             type="button"
           >
             {turnOn ? 'Turn on for every bot' : 'Turn off for every bot'}
