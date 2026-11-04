@@ -1376,10 +1376,17 @@ pub fn call(home: &Path, owner: &str, method: &str, p: &Value) -> Option<Result<
             // Where the items are, without reading them or waiting on the
             // lock: a Vaultwarden that doesn't answer still shows, so it can
             // be disconnected. `local` counts the items saved on the daemon.
-            "hexbot.passwords.vault" => Ok(json!({
-                "vault": crate::vaultwarden::status(home, owner)?,
-                "local": local_list(home, owner)?.len(),
-            })),
+            "hexbot.passwords.vault" => {
+                let vault = crate::vaultwarden::status(home, owner)?;
+                // The count is for copying in at connect; once connected, the
+                // daemon's vault isn't opened at all.
+                let local = if vault["kind"] == "local" {
+                    local_list(home, owner)?.len()
+                } else {
+                    0
+                };
+                Ok(json!({"vault": vault, "local": local}))
+            }
             "hexbot.passwords.save" => Ok(json!({"login": save(home, owner, p)?})),
             "hexbot.passwords.set_bots" => {
                 let id = common::required(p, "id")?;

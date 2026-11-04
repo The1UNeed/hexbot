@@ -1358,7 +1358,7 @@ Deleting a bot takes it off every list; the bot's name stays reserved until that
 - `hexbot.passwords.vault {}` → `{vault, local}` says where the items are
   without reading them or waiting on another passwords call, so a Vaultwarden
   that doesn't answer can still be disconnected. `local` counts the items
-  saved on the daemon.
+  saved on the daemon while they are the store, and is 0 once connected.
 - `hexbot.passwords.disconnect {}` → `{vault}` signs out and goes back to the
   vault on the daemon, which connecting left as it was. Nothing in
   Vaultwarden is deleted.

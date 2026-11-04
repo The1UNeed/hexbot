@@ -345,6 +345,12 @@ fn an_unreachable_vaultwarden_still_shows_so_it_can_be_disconnected() {
         .unwrap();
     assert_eq!(vault["vault"]["kind"], "vaultwarden");
     assert_eq!(fake(h)["calls"].as_array().unwrap().len(), calls);
+    // Nor does it open the daemon's own vault, which may not open.
+    std::fs::write(h.join("users/alice/passwords/passwords.kdbx"), "broken").unwrap();
+    let vault = crate::passwords::call(h, "alice", "hexbot.passwords.vault", &json!({}))
+        .unwrap()
+        .unwrap();
+    assert_eq!(vault["vault"]["kind"], "vaultwarden");
     crate::passwords::call(h, "alice", "hexbot.passwords.disconnect", &json!({}))
         .unwrap()
         .unwrap();
