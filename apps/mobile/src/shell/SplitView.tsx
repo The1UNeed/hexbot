@@ -28,7 +28,7 @@ import {
   DaemonSwitch,
   HomeScreen
 } from '../screens'
-import { EmptyState, type Theme, useTheme } from '../ui'
+import { EmptyState, SystemAvoidsKeyboard, type Theme, useCovered, useTheme } from '../ui'
 
 /**
  * The app on iOS: SwiftUI's split view, like Messages on iPad. The sidebar is
@@ -70,13 +70,16 @@ export function SplitView() {
 
 /**
  * React Native content in a column. SwiftUI keeps the column clear of the
- * bars and the side rail; a provider here measures from the column, so the
- * screen pads only for what is left, such as the home indicator.
+ * bars, the side rail and the keyboard; a provider here measures from the
+ * column, so the screen pads only for what is left, such as the home
+ * indicator, and does not lift itself above the keyboard again.
  */
 function Column({ children }: { children: ReactElement }) {
   return (
     <RNHostView>
-      <SafeAreaProvider style={styles.fill}>{children}</SafeAreaProvider>
+      <SafeAreaProvider style={styles.fill}>
+        <SystemAvoidsKeyboard.Provider value>{children}</SystemAvoidsKeyboard.Provider>
+      </SafeAreaProvider>
     </RNHostView>
   )
 }
@@ -84,13 +87,14 @@ function Column({ children }: { children: ReactElement }) {
 function Sidebar({ app }: { app: AppScreens }) {
   const home = app.homeProps
   const canCreate = !!(home.onNewBot || home.onNewRoom)
+  const covered = useCovered()
 
   return (
     <Toolbar
       modifiers={[
         // No title, as in the list's own header: your initials, then +.
         navigationBarTitleDisplayMode('inline'),
-        ignoreSafeArea({ edges: 'bottom', regions: 'container' })
+        ignoreSafeArea({ edges: 'bottom', regions: covered ? 'all' : 'container' })
       ]}
     >
       <Column>
@@ -141,6 +145,7 @@ function Sidebar({ app }: { app: AppScreens }) {
 
 /** What the sidebar chose, with its title and buttons in the system's bar. */
 function Detail({ app, theme }: { app: AppScreens; theme: Theme }) {
+  const covered = useCovered()
   const chat = app.selected && app.selected !== 'settings' && app.selected !== 'library'
   const view =
     app.selected === 'settings'
@@ -173,7 +178,8 @@ function Detail({ app, theme }: { app: AppScreens; theme: Theme }) {
         navigationTitle(title),
         navigationBarTitleDisplayMode('inline'),
         // Lists and the composer run down to the screen's edge, as in Messages.
-        ignoreSafeArea({ edges: 'bottom', regions: 'container' })
+        // Under a card or sheet, the column holds still when it brings up the keyboard.
+        ignoreSafeArea({ edges: 'bottom', regions: covered ? 'all' : 'container' })
       ]}
     >
       <Column>{view as ReactElement}</Column>

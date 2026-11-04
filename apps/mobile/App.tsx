@@ -1098,10 +1098,6 @@ function MobileApp({ children }: { children?: ReactNode }) {
           })
         }
         onConnectSignIn={() => act(signIn)}
-        onDemo={() => {
-          setDemo(true)
-          setAddDaemon(false)
-        }}
         pending={
           mobile.loading
             ? 'pair'
@@ -1378,7 +1374,8 @@ function MobileApp({ children }: { children?: ReactNode }) {
             {children}
           </View>
           {connection ? <View style={StyleSheet.absoluteFill}>{connection}</View> : null}
-          {mobile.loading && mobile.active ? (
+          {/* A bot's chat shows its own loading: the bot's face and "Opening conversation". */}
+          {mobile.loading && mobile.active && route?.kind !== 'section' ? (
             <View
               pointerEvents="none"
               style={{ position: 'absolute', top: 70, alignSelf: 'center' }}
