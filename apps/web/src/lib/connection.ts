@@ -553,6 +553,9 @@ export class ConnectionSupervisor {
     this.client = client
     this.detach = attachEventRouting(client)
     setActiveRpc(client)
+    // The handshake is done. A drop while hydrating must start a new one,
+    // not join this attempt.
+    this.connecting = null
 
     client.onState(state => {
       if (state === 'closed' || state === 'error') {

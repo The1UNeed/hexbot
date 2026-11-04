@@ -6,6 +6,8 @@ import * as events from './events'
 /** A daemon socket that opens, says gateway.ready, and answers every request. */
 class FakeSocket extends EventTarget {
   readyState: number = WebSocket.CONNECTING
+  /** Leaves requests unanswered, so hydration waits. */
+  silent = false
 
   constructor() {
     super()
@@ -35,6 +37,10 @@ class FakeSocket extends EventTarget {
   }
 
   send(data: string) {
+    if (this.silent) {
+      return
+    }
+
     const { id } = JSON.parse(data) as { id: string }
     queueMicrotask(() => this.frame({ id, result: {} }))
   }
@@ -170,6 +176,7 @@ it('Reconnect now after a handshake that never answers tries again', async () =>
       tls: true,
       deviceToken: 'token'
     })
+
     await vi.waitFor(() => expect(tickets).toBe(1))
     await vi.advanceTimersByTimeAsync(15_000)
     await first
@@ -183,4 +190,42 @@ it('Reconnect now after a handshake that never answers tries again', async () =>
   } finally {
     vi.useRealTimers()
   }
+})
+
+it('a socket that drops while the chat list loads can reconnect', async () => {
+  const sockets: FakeSocket[] = []
+
+  const fetch = vi.fn<typeof globalThis.fetch>(async url =>
+    String(url).endsWith('/api/auth/ws-ticket') ? new Response('{"ticket":"t"}') : new Response('')
+  )
+
+  const supervisor = new ConnectionSupervisor({
+    fetch,
+    socketFactory: () => {
+      const socket = new FakeSocket()
+      socket.silent = sockets.length === 0
+      sockets.push(socket)
+
+      return socket as unknown as WebSocket
+    }
+  })
+
+  const first = supervisor.start({
+    kind: 'remote',
+    host: 'daemon.test',
+    port: 443,
+    tls: true,
+    deviceToken: 'token'
+  })
+
+  await vi.waitFor(() => expect(supervisor.rpc).not.toBeNull())
+  sockets[0]!.close()
+  await supervisor.retryNow()
+  await first
+
+  const open = sockets.filter(socket => socket.readyState === WebSocket.OPEN)
+
+  supervisor.stop()
+  expect(sockets).toHaveLength(2)
+  expect(open).toHaveLength(1)
 })
