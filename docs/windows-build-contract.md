@@ -745,7 +745,7 @@ with `%USERNAME%` and `${APP_EXECUTABLE_FILENAME}`. Full's `Hexbot.exe` also
 matches the native daemon's `hexbot.exe` on Windows.
 
 Before every outer NSIS invocation, a read-only preflight repeats the two probes
-without changing policy or their inherited environment. A bounded DOS/PE
+without changing the policy they inherit. A bounded DOS/PE
 machine read from the verified incoming installer, or authenticated known
 uninstaller, selects trusted WOW64 PowerShell for I386 or System32 for AMD64.
 This matters because the pinned NSIS stub/plugins use x86-unicode; changing
@@ -759,14 +759,17 @@ fallback because `Get-ExecutionPolicy` failed with CouldNotAutoloadMatchingModul
 in the 32-bit host, not because of the policy. Microsoft documents that a
 PowerShell 7 parent's `PSModulePath` reaches Windows PowerShell 5.1 through an
 intermediate process and makes it resolve incompatible same-name modules
-(about_PSModulePath). That matches the CI runner shape, though the run did not
-record the resolved module path. The controlled RemoteSigned and Restricted
-terminal fixtures therefore remove the inherited `PSModulePath` from their own
-child only. A native control on the actual I386 and AMD64 hosts requires the
-pinned probes to pass under RemoteSigned with default modules and the policy
-probe to fail under Restricted. It records the unmodified environment as
-evidence. Production keeps the inherited environment, and the probes and
-branch decision still mirror NSIS.
+(about_PSModulePath). That matches the CI runner shape, and a stripped
+standard-user context can pass no module path at all. The installer
+therefore starts every Windows PowerShell with that host's own
+`$PSHOME\Modules` as its module path (`windows_paths::powershell_modules`),
+and runs NSIS with the module path of the host its preflight probed, so the
+macro's own probes load the same modules as the preflight's and both take
+the same branch. The terminal fixtures pass the runner's environment
+through unchanged. A native control on the actual I386 and AMD64 hosts
+requires the pinned probes to pass under RemoteSigned with default modules
+and the policy probe to fail under Restricted. It records the unmodified
+environment as evidence.
 
 In the available branch, the preflight refuses matching raw directory prefixes,
 including sibling names, while preserving an independent daemon outside them.

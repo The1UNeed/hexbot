@@ -131,19 +131,9 @@ pub fn terminal(
         .env("HEXBOT_SERVICE_ROOT", &installer.paths.service_root)
         .env("HEXBOT_SERVICE_NO_LOAD", "1")
         .env("HEXBOT_CLI_NO_PATH", "1")
-        .env("HEXBOT_UPDATE_URL", &installer.base_url)
-        // A PowerShell 7 runner's module path reaches Windows PowerShell 5.1
-        // through this Rust child, and 5.1 then resolves incompatible
-        // same-name modules (about_PSModulePath); a stripped standard-user
-        // context can pass no path at all. Name 5.1's system modules for
-        // every child; production is unchanged.
-        .env(
-            "PSModulePath",
-            std::path::PathBuf::from(
-                std::env::var_os("SystemRoot").unwrap_or_default(),
-            )
-            .join("system32\\WindowsPowerShell\\v1.0\\Modules"),
-        );
+        // The runner's PowerShell 7 module path reaches this child as it is:
+        // the installer names each Windows PowerShell's own modules itself.
+        .env("HEXBOT_UPDATE_URL", &installer.base_url);
     if let Some(policy) = policy {
         command.env("PSExecutionPolicyPreference", policy);
     }
@@ -162,11 +152,14 @@ pub fn terminal(
         panic!("Installer watchdog expired for {args:?}");
     }
     let status = child.wait().unwrap();
+    // A sanity cap per stream. `--json` prints an event for every read of a
+    // download, and one Full package's events alone pass 256 KiB.
+    const CAP: u64 = 4 * 1024 * 1024;
     let bytes = |mut file: std::fs::File| {
         file.seek(SeekFrom::Start(0)).unwrap();
         let mut bytes = Vec::new();
-        file.take(262145).read_to_end(&mut bytes).unwrap();
-        assert!(bytes.len() <= 262144);
+        file.take(CAP + 1).read_to_end(&mut bytes).unwrap();
+        assert!(bytes.len() as u64 <= CAP, "{} bytes", bytes.len());
         bytes
     };
     let output = std::process::Output {

@@ -230,7 +230,8 @@ mod private_acl {
         }
     }
 
-    /// The SID of the user this process runs as, in text form.
+    /// The SID of the user this process runs as, in text form: the token's
+    /// user, never its owner, which an elevated token sets to Administrators.
     fn user() -> io::Result<&'static str> {
         static USER: OnceLock<String> = OnceLock::new();
         if let Some(user) = USER.get() {

@@ -43,7 +43,12 @@ What is guaranteed:
   runtime's BusyBox and a Git for Windows installed for this user only. Each
   container has its own home,
   temp and AppData folders inside the Hexbot home, and its environment points
-  there.
+  there. Windows itself moves a contained command's LOCALAPPDATA, TEMP and
+  TMP into a profile folder below the LOCALAPPDATA it is given, so that
+  folder is one of the container's own. No folder on the way
+  to what a container is granted carries an entry for it: its token keeps the
+  right to bypass traverse checks, so it crosses folders it can neither list
+  nor read.
 - **Credential isolation.** No root may be, contain or sit inside the
   user's profile, the Hexbot home, a credential store or the managed
   runtime; the helper refuses such a policy before anything changes. The
@@ -275,9 +280,7 @@ Residual risks:
 - **Moved files.** Grants are written onto each file. A file moved out of a
   granted root keeps them until reset; a file moved in has none, so a command
   can neither read, change nor delete it until the next command of that
-  policy walks the root again. The pass-through entries above a container's
-  private folder name the folders alone: they let a command cross to what it
-  was granted, never list or read what is on the way.
+  policy walks the root again.
 - **New metadata and secrets.** `.git` folders and `.env` files created
   while a command runs inherit the root's allow. They lose it from the next
   command on.

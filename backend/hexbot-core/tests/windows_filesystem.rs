@@ -24,7 +24,9 @@ fn junction(link: &Path, target: &Path) {
 }
 
 /// The DACL of `path` as Windows reports it: its control flags and each
-/// entry's type, flags, rights and trustee.
+/// entry's type, flags, rights and trustee. The trustee is the entry's full
+/// SID: SDDL writes some SIDs as aliases, such as `LA` for this machine's
+/// built-in Administrator, the account GitHub's Windows runners run as.
 fn dacl(path: &Path) -> (String, Vec<[String; 4]>) {
     let literal = path.to_str().unwrap().replace('\'', "''");
     let modules = std::env::var_os("SystemRoot")
@@ -37,19 +39,27 @@ fn dacl(path: &Path) -> (String, Vec<[String; 4]>) {
     // PowerShell cannot load the module Get-Acl lives in.
     .env("PSModulePath", &modules)
     .args(["-NoProfile", "-NonInteractive", "-Command"])
-    .arg(format!("(Get-Acl -LiteralPath '{literal}').Sddl"))
+    // The SDDL, then each entry's SID in the DACL's order.
+    .arg(format!(
+        "$s=(Get-Acl -LiteralPath '{literal}').Sddl;$s;(New-Object Security.AccessControl.RawSecurityDescriptor $s).DiscretionaryAcl|ForEach-Object{{$_.SecurityIdentifier.Value}}"
+    ))
     .output()
     .unwrap();
     assert!(output.status.success(), "{output:?}");
-    let sddl = String::from_utf8(output.stdout).unwrap();
+    let text = String::from_utf8(output.stdout).unwrap();
+    let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
+    let sddl = lines.next().unwrap();
+    let sids: Vec<&str> = lines.collect();
     let dacl = sddl[sddl.find("D:").unwrap() + 2..].trim();
     let (flags, aces) = dacl.split_once('(').unwrap();
+    let aces: Vec<&str> = aces.trim_end_matches(')').split(")(").collect();
+    assert_eq!(aces.len(), sids.len(), "{text}");
     let entries = aces
-        .trim_end_matches(')')
-        .split(")(")
-        .map(|ace| {
+        .iter()
+        .zip(sids)
+        .map(|(ace, sid)| {
             let parts: Vec<&str> = ace.split(';').collect();
-            [parts[0], parts[1], parts[2], parts[5]].map(str::to_owned)
+            [parts[0], parts[1], parts[2], sid].map(str::to_owned)
         })
         .collect();
     (flags.to_owned(), entries)
@@ -57,7 +67,7 @@ fn dacl(path: &Path) -> (String, Vec<[String; 4]>) {
 
 /// SYSTEM and the user, with full control and these entry flags.
 fn private(sid: &str, flags: &str) -> Vec<[String; 4]> {
-    ["SY", sid]
+    ["S-1-5-18", sid]
         .map(|trustee| ["A", flags, "FA", trustee].map(str::to_owned))
         .to_vec()
 }

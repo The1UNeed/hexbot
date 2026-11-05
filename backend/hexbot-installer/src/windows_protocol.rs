@@ -77,17 +77,15 @@ fn script(key: &str) -> String {
 }
 #[cfg(windows)]
 fn execute(binding: &Binding, script: &str, diagnostic_key: &str) -> crate::Result<()> {
-    use std::{os::windows::process::CommandExt, process::Command};
-    let output = Command::new(crate::windows_paths::system_program(
-        "WindowsPowerShell/v1.0/powershell.exe",
-    )?)
-    .args(["-NoProfile", "-NonInteractive", "-Command", script])
-    .env(
-        "HEXBOT_PROTOCOL_BINDINGS",
-        serde_json::to_string(&binding.0)?,
-    )
-    .creation_flags(0x08000000)
-    .output()?;
+    use std::os::windows::process::CommandExt;
+    let output = crate::windows_paths::system_powershell()?
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .env(
+            "HEXBOT_PROTOCOL_BINDINGS",
+            serde_json::to_string(&binding.0)?,
+        )
+        .creation_flags(0x08000000)
+        .output()?;
     let diagnose = || {
         eprintln!(
             "Windows protocol cleanup failed: {}",

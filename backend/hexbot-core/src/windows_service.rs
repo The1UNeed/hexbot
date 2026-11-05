@@ -83,7 +83,12 @@ async fn powershell(script: &str) -> Result<String> {
     let executable = crate::windows_paths::system_program("WindowsPowerShell/v1.0/powershell.exe")?;
     #[cfg(not(windows))]
     let executable = PathBuf::from("powershell.exe");
-    let mut command = Command::new(executable);
+    let mut command = Command::new(&executable);
+    #[cfg(windows)]
+    command.env(
+        "PSModulePath",
+        crate::windows_paths::powershell_modules(&executable),
+    );
     command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
     output(command).await
 }

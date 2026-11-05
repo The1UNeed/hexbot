@@ -282,7 +282,18 @@ fn auto_writes_only_the_workspace_and_never_git_or_secrets() {
         ),
         0
     );
-    // A folder the walk never reached is created by the command with its grant.
+    // Windows points TEMP at the container's profile folder below the
+    // LOCALAPPDATA its environment names: its own, in its private folder.
+    let private = sandbox::prepare(&policy).unwrap().private;
+    assert_eq!(script(&f, &policy, "echo %TEMP%>temp.txt"), 0);
+    let temp = fs::read_to_string(f.workspace.join("temp.txt")).unwrap();
+    assert!(
+        temp.trim()
+            .to_lowercase()
+            .starts_with(&private.to_string_lossy().to_lowercase()),
+        "{temp} is outside {}",
+        private.display()
+    );
     assert_eq!(
         script(
             &f,
@@ -364,32 +375,39 @@ fn auto_deletes_and_moves_workspace_files_but_never_git_or_secrets() {
     assert!(f.workspace.join(".git/hooks").is_dir());
     assert!(!f.workspace.join(".git/hooks.old").exists());
     // Everything else it may change, it may delete and move: the project's
-    // files, and what it made itself.
+    // files, and what it made itself. del's and rmdir's exit codes prove
+    // nothing either way, so each removal is judged by what it leaves.
     assert_eq!(script(&f, &policy, "ren src\\old.txt renamed.txt"), 0);
     assert!(!f.workspace.join("src/old.txt").exists());
     assert_eq!(
         fs::read_to_string(f.workspace.join("src/renamed.txt")).unwrap(),
         "old"
     );
-    assert_eq!(script(&f, &policy, "del src\\renamed.txt"), 0);
-    assert!(!f.workspace.join("src/renamed.txt").exists());
-    assert_eq!(script(&f, &policy, "rmdir /s /q old-dir"), 0);
-    assert!(!f.workspace.join("old-dir").exists());
-    assert_eq!(script(&f, &policy, "echo x> fresh.txt && del fresh.txt"), 0);
-    assert!(!f.workspace.join("fresh.txt").exists());
-    assert_eq!(script(&f, &policy, "mkdir fresh-dir && rmdir fresh-dir"), 0);
-    assert!(!f.workspace.join("fresh-dir").exists());
+    let removed = |command: &str, path: &str| {
+        let code = script(&f, &policy, command);
+        let left = f.workspace.join(path);
+        assert!(
+            !left.exists(),
+            "{command} exited {code} and left {path}: {}",
+            icacls(&left)
+        );
+    };
+    removed("del src\\renamed.txt", "src/renamed.txt");
+    removed("rmdir /s /q old-dir", "old-dir");
+    assert_eq!(script(&f, &policy, "echo x> fresh.txt"), 0);
+    removed("del fresh.txt", "fresh.txt");
+    assert_eq!(script(&f, &policy, "mkdir fresh-dir"), 0);
+    removed("rmdir fresh-dir", "fresh-dir");
     assert_eq!(
         script(
             &f,
             &policy,
-            "mkdir fresh-tree\\sub && echo x> fresh-tree\\sub\\f.txt && rmdir /s /q fresh-tree"
+            "mkdir fresh-tree\\sub && echo x> fresh-tree\\sub\\f.txt"
         ),
         0
     );
-    assert!(!f.workspace.join("fresh-tree").exists());
-    assert_eq!(script(&f, &policy, "rmdir /s /q made"), 0);
-    assert!(!f.workspace.join("made").exists());
+    removed("rmdir /s /q fresh-tree", "fresh-tree");
+    removed("rmdir /s /q made", "made");
 }
 
 #[test]
@@ -626,6 +644,68 @@ fn reset_removes_hexbot_entries_and_keeps_every_other_one() {
         journal.contains("\"roots\": []") && journal.contains("\"profiles\": []"),
         "{journal}"
     );
+}
+
+#[test]
+fn reset_takes_a_pass_through_entry_off_its_folder_alone() {
+    let f = fixture("pass-through");
+    let container = sandbox::prepare(&auto(&f)).unwrap();
+    let sid = container.sid.text().unwrap();
+    // A container crosses the folders above its private folder with no
+    // entry on any of them.
+    let runtime = f.home.join("runtime");
+    for folder in [f.home.clone(), runtime.clone(), runtime.join("sandbox")] {
+        assert_eq!(
+            entries_for(&folder, &sid),
+            Vec::<String>::new(),
+            "{}",
+            folder.display()
+        );
+    }
+    // Earlier builds wrote a pass-through entry on each of them, the home
+    // among them, and journaled it by its canonical path.
+    let home = fs::canonicalize(&f.home).unwrap();
+    let status = Command::new(system("icacls.exe"))
+        .arg(&f.home)
+        .args(["/grant", &format!("*{sid}:(X)")])
+        .stdout(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "cannot write the pass-through entry");
+    assert!(!entries_for(&f.home, &sid).is_empty());
+    let path = f.home.join("runtime/sandbox/grants.json");
+    let mut journal: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    journal["roots"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "path": home,
+            "profile": container.profile,
+            "kind": "traverse",
+            "complete": true,
+        }));
+    fs::write(&path, serde_json::to_vec_pretty(&journal).unwrap()).unwrap();
+    // An entry in the home whose DACL Hexbot cannot change, as OWNER RIGHTS
+    // leaves it: a walk of the home would fail there and keep the profile.
+    let locked = f.home.join("locked");
+    fs::write(&locked, "x").unwrap();
+    let status = Command::new(system("icacls.exe"))
+        .arg(&locked)
+        .args(["/inheritance:r", "/grant:r", "*S-1-3-4:(R,D)"])
+        .stdout(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "cannot lock the fixture");
+    drop(container);
+    sandbox::reset(&f.home).unwrap();
+    assert_eq!(entries_for(&f.home, &sid), Vec::<String>::new());
+    let journal = fs::read_to_string(&path).unwrap();
+    assert!(
+        journal.contains("\"roots\": []") && journal.contains("\"profiles\": []"),
+        "{journal}"
+    );
+    assert!(!registered(&sid), "reset left the profile");
+    fs::remove_file(&locked).unwrap();
 }
 
 #[test]

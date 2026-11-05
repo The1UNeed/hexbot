@@ -983,9 +983,9 @@ impl Installer {
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
-            windows_nsis_process::check(&self.paths, &destination, id, &installer)?;
             // NSIS requires /D last, without quotes even when it contains spaces.
-            let mut command = self.paths.command(&installer);
+            let mut command =
+                windows_nsis_process::checked_command(&self.paths, &destination, id, &installer)?;
             command
                 .arg("/S")
                 .arg("/currentuser")
@@ -1202,8 +1202,12 @@ impl Installer {
                 }
                 self.check_windows_registration(&app.path, &app.app_id, Some(&uninstallers[0]))?;
                 let protocol = windows_protocol::binding(&app.path, &app.app_id);
-                windows_nsis_process::check(&self.paths, &app.path, &app.app_id, &uninstallers[0])?;
-                let mut command = self.paths.command(&uninstallers[0]);
+                let mut command = windows_nsis_process::checked_command(
+                    &self.paths,
+                    &app.path,
+                    &app.app_id,
+                    &uninstallers[0],
+                )?;
                 command
                     .arg("/S")
                     .arg("/currentuser")
@@ -1285,11 +1289,15 @@ impl Installer {
                 "$ErrorActionPreference='Stop';{}\n$root=[HexbotFinalPath]::Resolve($env:HEXBOT_APP_PROBE)+[IO.Path]::DirectorySeparatorChar; @(Get-CimInstance Win32_Process | Where-Object {{ if($_.Name -notin @('Hexbot.exe','HexbotClient.exe')){{return $false}};if(!$_.ExecutablePath){{throw 'Cannot verify whether the Windows app is running'}};[HexbotFinalPath]::Resolve($_.ExecutablePath).StartsWith($root,[StringComparison]::OrdinalIgnoreCase) }}).Count",
                 include_str!("../../hexbot-core/assets/windows-runtime-selection.ps1")
             );
+            let program =
+                crate::windows_paths::system_program("WindowsPowerShell/v1.0/powershell.exe")?;
             let output = self
                 .paths
-                .command(crate::windows_paths::system_program(
-                    "WindowsPowerShell/v1.0/powershell.exe",
-                )?)
+                .command(&program)
+                .env(
+                    "PSModulePath",
+                    crate::windows_paths::powershell_modules(&program),
+                )
                 .env("HEXBOT_APP_PROBE", app)
                 .args(["-NoProfile", "-NonInteractive", "-Command", &script])
                 .output()?;

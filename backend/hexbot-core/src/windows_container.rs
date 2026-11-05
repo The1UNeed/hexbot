@@ -7,9 +7,12 @@
 //! not even loopback, and reaches no file the user owns unless Hexbot granted
 //! it. Grants are allow entries for the container's SID only: the workspace and
 //! output folders, its own private home and temp folder, and the runtime
-//! programs a command may run. An AppContainer's access check ignores deny
-//! entries for its own SID, so protection is what the allow entries leave out:
-//! Git metadata keeps a read allow and project secrets keep none (`Change::Cap`).
+//! programs a command may run. No folder on the way to a grant carries an
+//! entry: a container's token keeps the right to bypass traverse checks, so it
+//! crosses folders it can neither list nor read. An AppContainer's access
+//! check ignores deny entries for its own SID, so protection is what the allow
+//! entries leave out: Git metadata keeps a read allow and project secrets keep
+//! none (`Change::Cap`).
 //! Deleting or renaming an entry takes DELETE on it or FILE_DELETE_CHILD on its
 //! folder: no cap keeps the first and no grant carries the second, so neither
 //! is ever deleted or moved aside. A walk that grants a tree meets each
@@ -29,6 +32,11 @@
 //! and `hexbot sandbox reset` removes every entry for those profiles' SIDs from
 //! the roots it names, then deletes the profiles. Other entries are never
 //! touched. One lock file serializes all changes across processes.
+//!
+//! Windows moves a contained command's LOCALAPPDATA, TEMP and TMP into the
+//! container's profile folder below the LOCALAPPDATA its environment names
+//! (Microsoft's "Launch an AppContainer"). That folder is created inside the
+//! container's private folder, so its temp folder is its own.
 use crate::windows_paths::sandbox::{self as rules, Protected};
 pub use crate::windows_paths::sandbox::{Access, GrantKind, Journal, JournalEntry, Policy};
 use std::{
@@ -964,16 +972,9 @@ pub fn walk(root: &Path, change: Change, sids: &[&ContainerSid]) -> io::Result<W
     walk_limited(root, change, None, &[], sids)
 }
 
-/// As `walk`, keeping `root` within `cap` and each protected root in `limits`
-/// it meets, and everything below them, within that root's cap.
-fn walk_limited(
-    root: &Path,
-    change: Change,
-    cap: Option<u32>,
-    limits: &[Limit],
-    sids: &[&ContainerSid],
-) -> io::Result<Walk> {
-    let sids: Vec<Sid> = sids.iter().map(|sid| sid.as_ptr()).collect();
+/// Open the root of a change: never a link or junction, and for a grant never
+/// a file with several names.
+fn change_root(root: &Path, change: Change) -> io::Result<(OwnedHandle, FileInformation)> {
     let root = open_root(root)?;
     let info = information(root.as_raw_handle())?;
     if info.attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
@@ -989,6 +990,42 @@ fn walk_limited(
             "Sandbox roots cannot have several hard links",
         ));
     }
+    Ok((root, info))
+}
+
+/// Remove every entry for `sids` from `path`'s own entry, opening nothing
+/// below it.
+fn revoke_entry(path: &Path, sids: &[&ContainerSid]) -> io::Result<Walk> {
+    let sids: Vec<Sid> = sids.iter().map(|sid| sid.as_ptr()).collect();
+    let (root, info) = change_root(path, Change::Revoke)?;
+    let directory = info.attributes & FILE_ATTRIBUTE_DIRECTORY != 0;
+    let changed = change_object(
+        root.as_raw_handle(),
+        directory,
+        Change::Revoke,
+        None,
+        true,
+        &sids,
+    )?;
+    Ok(Walk {
+        changed: usize::from(changed),
+        unchanged: usize::from(!changed),
+        ..Walk::default()
+    })
+}
+
+/// As `walk`, keeping `root` within `cap` and each protected root in `limits`
+/// it meets, and everything below them, within that root's cap.
+fn walk_limited(
+    root: &Path,
+    change: Change,
+    cap: Option<u32>,
+    limits: &[Limit],
+    sids: &[&ContainerSid],
+) -> io::Result<Walk> {
+    let sids: Vec<Sid> = sids.iter().map(|sid| sid.as_ptr()).collect();
+    let (root, info) = change_root(root, change)?;
+    let directory = info.attributes & FILE_ATTRIBUTE_DIRECTORY != 0;
     let cap = tighter(cap, limit(limits, &info));
     let mut walk = Walk::default();
     if change_object(root.as_raw_handle(), directory, change, cap, true, &sids)? {
@@ -1105,6 +1142,7 @@ impl GrantKind {
             Self::Modify => Change::Allow(MODIFY),
             Self::DenyWrite => Change::Cap(READ),
             Self::DenyAll => Change::Cap(0),
+            // Only earlier builds wrote these; `reset` takes them back.
             Self::Traverse => Change::Allow(FILE_TRAVERSE),
         }
     }
@@ -1203,47 +1241,6 @@ fn ensure(
     write_journal(home, journal)
 }
 
-/// Grant `kind` on `path`'s own entry alone, never what it holds: the
-/// pass-through folders above a container's private folder. Journaled like
-/// every grant, so reset takes it back.
-#[allow(clippy::too_many_arguments)]
-fn ensure_entry(
-    home: &Path,
-    journal: &mut Journal,
-    path: &Path,
-    profile: &str,
-    kind: GrantKind,
-    sid: &ContainerSid,
-) -> io::Result<()> {
-    let change = kind.change();
-    let index = journal
-        .roots
-        .iter()
-        .position(|root| root.path == path && root.profile == profile && root.kind == kind);
-    if let Some(index) = index
-        && journal.roots[index].complete
-        && applied(path, change, sid)?
-    {
-        return Ok(());
-    }
-    let index = index.unwrap_or_else(|| {
-        journal.roots.push(JournalEntry {
-            path: path.to_owned(),
-            profile: profile.to_owned(),
-            kind,
-            complete: false,
-        });
-        journal.roots.len() - 1
-    });
-    journal.roots[index].complete = false;
-    write_journal(home, journal)?;
-    let root = open_root(path)?;
-    let sids = [sid.as_ptr()];
-    change_object(root.as_raw_handle(), true, change, None, false, &sids)?;
-    journal.roots[index].complete = true;
-    write_journal(home, journal)
-}
-
 /// Remove every entry for the journaled profiles' SIDs from every journaled
 /// root, then delete each profile no remaining root names: once every root
 /// is revoked, every profile. Roots that no longer exist are dropped.
@@ -1259,18 +1256,29 @@ pub fn reset(home: &Path) -> io::Result<Walk> {
     let mut total = Walk::default();
     let mut left = Vec::new();
     for path in paths {
-        // One walk per root, for every profile it was granted to.
+        // One change per root, for every profile it was granted to.
         let granted: Vec<JournalEntry> = journal
             .roots
             .iter()
             .filter(|root| root.path == path)
             .cloned()
             .collect();
+        // Earlier builds wrote pass-through entries on the folders above a
+        // private folder, the home among them. Each names its folder alone,
+        // so it is taken off that folder and nothing below it is opened.
+        let alone = granted.iter().all(|root| root.kind == GrantKind::Traverse);
         let revoked = granted
             .iter()
             .map(|root| profile_sid(&root.profile))
             .collect::<io::Result<Vec<_>>>()
-            .and_then(|sids| walk(&path, Change::Revoke, &sids.iter().collect::<Vec<_>>()));
+            .and_then(|sids| {
+                let sids: Vec<&ContainerSid> = sids.iter().collect();
+                if alone {
+                    revoke_entry(&path, &sids)
+                } else {
+                    walk(&path, Change::Revoke, &sids)
+                }
+            });
         match revoked {
             Ok(walk) => {
                 total.changed += walk.changed;
@@ -1303,8 +1311,26 @@ pub struct Container {
     pub sid: ContainerSid,
     /// The profile reset deletes.
     pub profile: String,
-    /// Its private home and temp folder, in the plain form programs are given.
+    /// Its private folder, which holds its home, AppData and temp folder, in
+    /// the plain form programs are given.
     pub private: PathBuf,
+}
+
+/// The LOCALAPPDATA a contained command's environment names, inside the
+/// container's private folder `private`. Windows starts from it: the command
+/// gets `<it>\Packages\<profile>\AC` as LOCALAPPDATA, and that folder's `Temp`
+/// as TEMP and TMP, whatever its environment said.
+fn local_app_data(private: &Path) -> PathBuf {
+    private.join("appdata").join("local")
+}
+
+/// The temp folder Windows gives a command of the container `profile`.
+fn temp_folder(private: &Path, profile: &str) -> PathBuf {
+    local_app_data(private)
+        .join("Packages")
+        .join(profile)
+        .join("AC")
+        .join("Temp")
 }
 
 /// Folders of the user's profile that hold its credential stores. A root may
@@ -1519,8 +1545,12 @@ pub fn prepare(policy: &Policy) -> io::Result<Container> {
         write_journal(&home, &journal)?;
     }
     let sid = create_profile(&profile)?;
-    for folder in ["home", "tmp", "appdata/roaming", "appdata/local"] {
-        fs::create_dir_all(private.join(folder))?;
+    for folder in [
+        private.join("home"),
+        private.join("appdata").join("roaming"),
+        temp_folder(&private, &profile),
+    ] {
+        fs::create_dir_all(folder)?;
     }
     let mut grant = |path: &Path, kind, cap| {
         ensure(
@@ -1554,34 +1584,6 @@ pub fn prepare(policy: &Policy) -> io::Result<Container> {
     for root in &deny_all {
         grant(&root.canonical, GrantKind::DenyAll, cap_of(root))?;
     }
-    // A container reaches its private folder by name, and its token has no
-    // traverse bypass: each ancestor between the home and that folder gets
-    // pass-through alone, never list or read.
-    let mut ancestors = Vec::new();
-    let mut chain = private.parent().map(Path::to_path_buf);
-    while let Some(dir) = chain {
-        if dir == home {
-            ancestors.push(dir);
-            break;
-        }
-        chain = dir.parent().map(Path::to_path_buf);
-        if chain.is_none() {
-            break;
-        }
-        ancestors.push(dir);
-    }
-    for dir in ancestors.iter().rev() {
-        if let Ok(canonical) = fs::canonicalize(dir) {
-            ensure_entry(
-                &home,
-                &mut journal,
-                &canonical,
-                &profile,
-                GrantKind::Traverse,
-                &sid,
-            )?;
-        }
-    }
     Ok(Container {
         sid,
         profile,
@@ -1597,19 +1599,22 @@ pub const SHELL_ENVIRONMENT: (&str, &str) = ("BB_GLOBBING", "0");
 
 /// The environment a contained command sees: the caller's, with its home,
 /// profile and temp folders moved into the container's private folders,
-/// without the Hexbot home, and with [`SHELL_ENVIRONMENT`].
+/// without the Hexbot home, and with [`SHELL_ENVIRONMENT`]. TEMP and TMP name
+/// the folder Windows points them at in any case, and LOCALAPPDATA the folder
+/// it starts from ([`local_app_data`]).
 pub fn environment(
     container: &Container,
     inherited: impl IntoIterator<Item = (OsString, OsString)>,
 ) -> Vec<(OsString, OsString)> {
     let private = &container.private;
+    let temp = temp_folder(private, &container.profile);
     let moved = [
         ("HOME", private.join("home")),
         ("USERPROFILE", private.join("home")),
-        ("TEMP", private.join("tmp")),
-        ("TMP", private.join("tmp")),
+        ("TEMP", temp.clone()),
+        ("TMP", temp),
         ("APPDATA", private.join("appdata").join("roaming")),
-        ("LOCALAPPDATA", private.join("appdata").join("local")),
+        ("LOCALAPPDATA", local_app_data(private)),
     ];
     let removed = ["HEXBOT_HOME", "HERMES_HOME", SHELL_ENVIRONMENT.0];
     let mut env: Vec<(OsString, OsString)> = inherited
@@ -1933,7 +1938,8 @@ fn throwaway(name: &str, probe: impl FnOnce(&ContainerSid) -> io::Result<()>) ->
 /// System32 and the Windows folder, which every AppContainer may read, so a
 /// probe needs no grant, and the environment a probe's program starts with.
 /// Windows does not start an AppContainer process without LOCALAPPDATA in
-/// its environment block; the folder it names is never opened for it.
+/// its environment block, since it moves the process's LOCALAPPDATA, TEMP and
+/// TMP below it ([`local_app_data`]); a probe opens none of them.
 fn probe_setting() -> io::Result<(PathBuf, Vec<(OsString, OsString)>)> {
     let cmd = crate::windows_paths::system_program("cmd.exe")?;
     let system = cmd.parent().unwrap_or(&cmd).to_owned();

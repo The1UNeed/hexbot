@@ -35,6 +35,32 @@ pub fn system_program(relative: &str) -> std::io::Result<std::path::PathBuf> {
     Ok(program)
 }
 
+/// The module path for the Windows PowerShell at `program`: its own
+/// `$PSHOME\Modules`, the folder of `program`. A PowerShell 7 parent's module
+/// path reaches Windows PowerShell 5.1 through every process in between, and
+/// 5.1 then finds 7's same-name modules first and cannot load them
+/// (about_PSModulePath); a stripped environment names no modules at all.
+/// Every Windows PowerShell Hexbot starts gets this path, as does a program
+/// that starts one for Hexbot.
+// Only some of the crates that include this file start PowerShell.
+#[cfg(windows)]
+#[allow(dead_code)]
+pub fn powershell_modules(program: &std::path::Path) -> std::path::PathBuf {
+    // Rebuilt from its components, so every separator is native.
+    let home: std::path::PathBuf = program.parent().unwrap_or(program).components().collect();
+    home.join("Modules")
+}
+
+/// System32's Windows PowerShell, with its own modules ([`powershell_modules`]).
+#[cfg(windows)]
+#[allow(dead_code)]
+pub fn system_powershell() -> std::io::Result<std::process::Command> {
+    let program = system_program("WindowsPowerShell/v1.0/powershell.exe")?;
+    let mut command = std::process::Command::new(&program);
+    command.env("PSModulePath", powershell_modules(&program));
+    Ok(command)
+}
+
 /// The Windows sandbox's rules: path forms, which roots a container may be
 /// granted, command-line quoting, profile names and the grant journal.
 /// `windows_container` applies them.
@@ -70,8 +96,9 @@ pub mod sandbox {
         Modify,
         DenyWrite,
         DenyAll,
-        /// Pass-through alone: the folder may be crossed on the way to a
-        /// granted one, never listed or read.
+        /// Pass-through alone on one folder above a private folder. Earlier
+        /// builds wrote it; a container needs none, and `hexbot sandbox
+        /// reset` takes it off that folder without opening what it holds.
         Traverse,
     }
     impl GrantKind {
