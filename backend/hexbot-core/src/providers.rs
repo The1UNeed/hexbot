@@ -658,26 +658,49 @@ pub fn list_providers(home: &Path) -> Result<Value> {
     Ok(json!({"providers":rows}))
 }
 /// Whether a provider has a key or sign-in right now, by any of its names.
-/// A custom provider counts as connected while its endpoint is configured.
-pub fn connected(home: &Path, name: &str) -> Result<bool> {
+/// With a bot's profile, the bot's own key, sign-in, or endpoint in it
+/// count too, as `prepare_pi_config_locked` gives them to Pi.
+pub fn connected(home: &Path, profile_home: Option<&Path>, name: &str) -> Result<bool> {
     let slug = canonical_provider(name);
-    match profiles().iter().find(|p| p["name"] == slug) {
-        // Signed in outside Hexbot, through the provider's own tool: the
-        // daemon only knows when the user turned it off.
-        Some(p) if string(p, "auth_type") == "external_process" => {
-            Ok(read_json(&home.join("providers-disabled.json"))?[slug.as_str()] != true)
+    let profile_cfg = profile_home
+        .map(common::read_config)
+        .transpose()?
+        .unwrap_or_else(|| json!({}));
+    let Some(p) = profiles().iter().find(|p| p["name"] == slug) else {
+        // A custom endpoint answers to its name and to custom:<name>. The
+        // bot's own endpoints replace the daemon's.
+        let mut cfg = common::read_config(home)?;
+        for key in ["providers", "custom_providers"] {
+            if profile_cfg.get(key).is_some() {
+                cfg[key] = profile_cfg[key].clone();
+            }
         }
-        Some(p) => configured(home, p),
-        // A custom endpoint answers to its name and to custom:<name>.
-        None => Ok(custom_profiles(&common::read_config(home)?)
-            .iter()
-            .any(|p| {
-                p["name"] == slug
-                    || p["aliases"]
-                        .as_array()
-                        .is_some_and(|aliases| aliases.iter().any(|alias| alias == &slug))
-            })),
+        return Ok(custom_profiles(&cfg).iter().any(|p| {
+            p["name"] == slug
+                || p["aliases"]
+                    .as_array()
+                    .is_some_and(|aliases| aliases.iter().any(|alias| alias == &slug))
+        }));
+    };
+    if read_json(&home.join("providers-disabled.json"))?[slug.as_str()] == true {
+        return Ok(false);
     }
+    // Signed in outside Hexbot, through the provider's own tool: the daemon
+    // only knows when the user turned it off.
+    if string(p, "auth_type") == "external_process" {
+        return Ok(true);
+    }
+    if configured(home, p)? {
+        return Ok(true);
+    }
+    let Some(dir) = profile_home else {
+        return Ok(false);
+    };
+    let inline = canonical_provider(string(&profile_cfg["model"], "provider")) == slug
+        && profile_cfg["model"]["api_key"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty());
+    Ok(inline || configured(dir, p)?)
 }
 fn catalog_models(slug: &str) -> Vec<String> {
     let mut models = profiles()

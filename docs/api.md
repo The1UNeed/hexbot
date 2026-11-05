@@ -324,7 +324,8 @@ when it overrides the default.
 name resolves to, so `claude`, `codex` and `openai` count as their
 providers, and a custom endpoint by its name or `custom:<name>`. A provider
 signed in outside Hexbot through its own tool, such as Copilot ACP, counts
-until the user turns it off. The primary bot's tools store the connected
+until the user turns it off. A bot's own key, sign-in, or endpoint in its
+profile counts for that bot. The primary bot's tools store the connected
 provider's id from `hexbot.providers.list`, whatever name the bot used.
 `provider_connected` is whether the bot's `provider` has a key or sign-in
 right now, and null for a bot with no provider of its own. While it is

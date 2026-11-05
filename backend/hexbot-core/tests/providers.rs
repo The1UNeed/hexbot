@@ -99,11 +99,11 @@ async fn removing_a_provider_disconnects_it_and_drops_the_defaults_on_it() {
     let h = home.path();
     // Clearing pins a provider off whatever the shell's environment holds.
     providers::clear_key(h, "openrouter").unwrap();
-    assert!(!providers::connected(h, "openrouter").unwrap());
-    assert!(!providers::connected(h, "nowhere").unwrap());
+    assert!(!providers::connected(h, None, "openrouter").unwrap());
+    assert!(!providers::connected(h, None, "nowhere").unwrap());
     providers::set_key(h, "openrouter", "sk-test").unwrap();
-    assert!(providers::connected(h, "openrouter").unwrap());
-    assert!(providers::connected(h, "OpenRouter").unwrap());
+    assert!(providers::connected(h, None, "openrouter").unwrap());
+    assert!(providers::connected(h, None, "OpenRouter").unwrap());
     providers::set_key(h, "anthropic", "sk-ant").unwrap();
     settings::update(
         h,
@@ -122,7 +122,7 @@ async fn removing_a_provider_disconnects_it_and_drops_the_defaults_on_it() {
     let after = settings::get(h).unwrap();
     assert!(after["default_model"].is_null());
     assert_eq!(after["fallback_model"], "anthropic/claude-haiku-4");
-    assert!(!providers::connected(h, "openrouter").unwrap());
+    assert!(!providers::connected(h, None, "openrouter").unwrap());
     // The other way in, from the model picker, does the same.
     settings::update(h, "local", &json!({"default_model":"claude/claude-opus-4"})).unwrap();
     call(h, "local", "model.disconnect", json!({"slug":"anthropic"}))
@@ -147,14 +147,33 @@ fn custom_endpoints_and_external_sign_ins_count_as_connected() {
         &json!({"providers":{"work":{"api":"https://example.test/v1","api_key":"custom-secret","models":["work-model"]}}}),
     )
     .unwrap();
-    assert!(providers::connected(h, "work").unwrap());
-    assert!(providers::connected(h, "custom:work").unwrap());
-    assert!(!providers::connected(h, "custom:play").unwrap());
+    assert!(providers::connected(h, None, "work").unwrap());
+    assert!(providers::connected(h, None, "custom:work").unwrap());
+    assert!(!providers::connected(h, None, "custom:play").unwrap());
     // Copilot ACP signs in through its own CLI, which the daemon cannot see;
     // it counts until the user turns it off.
-    assert!(providers::connected(h, "copilot-acp").unwrap());
+    assert!(providers::connected(h, None, "copilot-acp").unwrap());
     providers::clear_key(h, "copilot-acp").unwrap();
-    assert!(!providers::connected(h, "copilot-acp").unwrap());
+    assert!(!providers::connected(h, None, "copilot-acp").unwrap());
+    // A bot's own endpoint or key, in its profile, counts for that bot, and
+    // its own endpoints stand in for the daemon's.
+    let profile = h.join("profiles/local-model");
+    fs::create_dir_all(&profile).unwrap();
+    common::write_config(
+        &profile,
+        &json!({"model":{"provider":"custom","default":"local-model","base_url":"http://127.0.0.1:11434/v1","api_key":"local-secret"},"providers":{"lab":{"api":"https://lab.test/v1","api_key":"lab-secret"}}}),
+    )
+    .unwrap();
+    assert!(providers::connected(h, Some(&profile), "custom").unwrap());
+    assert!(!providers::connected(h, None, "custom:lab").unwrap());
+    assert!(providers::connected(h, Some(&profile), "custom:lab").unwrap());
+    assert!(!providers::connected(h, Some(&profile), "custom:work").unwrap());
+    common::write_config(
+        &profile,
+        &json!({"model":{"provider":"openrouter","default":"openai/gpt-5.6","api_key":"sk-bot"}}),
+    )
+    .unwrap();
+    assert!(providers::connected(h, Some(&profile), "openrouter").unwrap());
 }
 #[tokio::test]
 async fn a_finished_sign_in_tells_the_apps_the_bots_changed() {

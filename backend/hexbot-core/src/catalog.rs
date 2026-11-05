@@ -1465,7 +1465,11 @@ fn shape_bot(
     // Apps ask for a new provider and model while this is false, before the
     // user types; a bot without a provider of its own has nothing to lose.
     let provider_connected = match cfg["model"]["provider"].as_str().filter(|p| !p.is_empty()) {
-        Some(provider) => Value::Bool(crate::providers::connected(home, provider)?),
+        Some(provider) => Value::Bool(crate::providers::connected(
+            home,
+            Some(&profile(home, name)?),
+            provider,
+        )?),
         None => Value::Null,
     };
     let sections = list_sections(home, caller, &json!({"bot":name,"include_archived":true}))?;

@@ -77,6 +77,20 @@ fn a_bot_says_whether_its_provider_is_connected() {
     hexbot_core::providers::set_key(h, "anthropic", "sk-ant").unwrap();
     let bot = call(h, "alice", "hexbot.bots.get", json!({"name":"named"}))["bot"].clone();
     assert_eq!(bot["provider_connected"], true);
+    // A bot's own endpoint, in its profile, counts for that bot.
+    let local = call(
+        h,
+        "alice",
+        "hexbot.bots.create",
+        json!({"name":"local","provider":"custom:lab","model":"lab-model"}),
+    );
+    assert_eq!(local["bot"]["provider_connected"], false);
+    let profile = catalog::profile(h, "local").unwrap();
+    let mut cfg = hexbot_core::common::read_config(&profile).unwrap();
+    cfg["providers"] = json!({"lab":{"api":"https://lab.test/v1","api_key":"lab-secret"}});
+    hexbot_core::common::write_config(&profile, &cfg).unwrap();
+    let bot = call(h, "alice", "hexbot.bots.get", json!({"name":"local"}))["bot"].clone();
+    assert_eq!(bot["provider_connected"], true);
 }
 #[test]
 fn lifecycle_preserves_memory_and_reopens_archived_sections() {
