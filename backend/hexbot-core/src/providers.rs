@@ -698,8 +698,10 @@ pub fn connected(home: &Path, profile_home: Option<&Path>, name: &str) -> Result
         return Ok(true);
     }
     // The Qwen CLI's own sign-in, which the daemon imports to run the bot.
+    // That file belongs to the CLI: one it cannot read is no sign-in, and
+    // never fails the bot list.
     if slug == "qwen-oauth" {
-        let state = import_qwen(home)?;
+        let state = import_qwen(home).unwrap_or_default();
         let tokens = if state["tokens"].is_object() {
             &state["tokens"]
         } else {

@@ -216,6 +216,9 @@ fn custom_endpoints_and_external_sign_ins_count_as_connected() {
     .unwrap();
     assert!(providers::connected(h, None, "qwen-oauth").unwrap());
     assert!(providers::connected(h, Some(&plain), "qwen-oauth").unwrap());
+    // A file the Qwen CLI left half written is no sign-in, not an error.
+    fs::write(&creds, "{\"access_tok").unwrap();
+    assert!(!providers::connected(h, None, "qwen-oauth").unwrap());
 }
 #[tokio::test]
 async fn a_finished_sign_in_tells_the_apps_the_bots_changed() {
