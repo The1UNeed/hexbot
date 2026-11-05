@@ -114,7 +114,7 @@ jobs:
       - name: Check the native daemon and real launcher regressions
         run: cargo clippy --locked --manifest-path backend/hexbot-core/Cargo.toml --lib --bins -- -D warnings
       - name: Run native Unicode, junction, service logs and security regressions
-        run: cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test task_readiness --test service_parent_policy --test windows_service_parent --test windows_launchers --test windows_contract --test windows_shutdown --test windows_filesystem --test windows_file_tools -- --nocapture
+        run: cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test task_readiness --test service_parent_policy --test windows_service_parent --test windows_launchers --test windows_contract --test windows_shutdown --test windows_filesystem --test windows_file_tools -- --nocapture --test-threads=1
       - name: Verify the actual PowerShell stop controller before real task recovery
         run: node --test scripts/desktop/windows-task-stop.test.mjs scripts/desktop/windows-service-logs.test.mjs
       - name: Recover an interrupted owned task install without claiming foreign files

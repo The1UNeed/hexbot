@@ -274,6 +274,12 @@ Residual risks:
 
 ## Residual risks
 
+- **cmd.exe's del.** The bundled shell removes a file the container may delete;
+  cmd's own del and rmdir refuse some of the same files with "Access is
+  denied" even though the ACL allows the deletion and the file carries no
+  read-only flag. Commands run through cmd /c may need `rm` from the bundled
+  shell for those deletions.
+
 - **Hard links.** A file with more than one name is never granted, since its
   DACL is shared with names outside the tree. A link made later by a process
   outside the sandbox to a file a container was granted shares that grant.
