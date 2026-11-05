@@ -69,6 +69,9 @@ struct State {
     compacting: bool,
     closed: bool,
     interrupted: bool,
+    /// The owner's next message stopped this run. It ends without an error:
+    /// the owner moved on, so there is nothing to retry.
+    superseded: bool,
     /// Stop calls still cancelling dialogs, native tools or Pi itself.
     stops: usize,
     /// Stop recovery owns admission until retained Pi input has been resubmitted.
@@ -104,6 +107,9 @@ struct State {
     owner_run: bool,
     /// The owner's clients were told this run started.
     announced: bool,
+    /// When this run first acted on the bots' computer. The user watches the
+    /// computer, so the bot shows Working there even in a scheduled job.
+    on_computer: Option<f64>,
 }
 impl State {
     /// Ends the turn, however it ends: settled, compacted, refused or cut
@@ -113,6 +119,7 @@ impl State {
         self.busy = false;
         self.owner_run = false;
         self.announced = false;
+        self.on_computer = None;
         std::mem::take(&mut self.reread)
     }
     fn dialogs_cancelled(&self) -> bool {
@@ -1266,6 +1273,7 @@ impl Runtime {
                 compacting: false,
                 closed: false,
                 interrupted: false,
+                superseded: false,
                 stops: 0,
                 recovering: false,
                 stop_epoch: 0,
@@ -1288,6 +1296,7 @@ impl Runtime {
                 reread: false,
                 owner_run: false,
                 announced: false,
+                on_computer: None,
             }),
             requests: Mutex::new(tokio::task::JoinSet::new()),
             event_gate: Mutex::new(()),
@@ -2048,6 +2057,7 @@ impl Runtime {
                         state.output.clear();
                         state.error = None;
                         state.interrupted = false;
+                        state.superseded = false;
                         state.chain = chain.take().unwrap_or_default();
                         state.owner_run = !hidden;
                         // A background result that finds the section idle starts a turn
@@ -3044,15 +3054,42 @@ impl Runtime {
                         ));
                     }
                 };
+                // A message the owner sends while the bot works cuts its reply
+                // off, as Stop would, and starts the next turn with it. Input
+                // arriving during that Stop waits for it as queued input does;
+                // a `/compact` in progress finishes first.
+                // A message that would be refused anyway leaves the reply
+                // alone, and so does `/compact`, which waits for an idle bot.
+                let text = required(p, "text")?;
+                let interrupt = p["interrupt"] == true && p["display_kind"] != "hidden";
+                if interrupt {
+                    let compact = text.trim() == "/compact" || text.trim().starts_with("/compact ");
+                    let sendable = !compact
+                        && !text.trim().is_empty()
+                        && text.len() <= 1024 * 1024
+                        && recall::refuse_typed(text).is_ok();
+                    let working = {
+                        let state = s.state.lock().unwrap();
+                        let staged = uploads.as_ref().is_none_or(|ids| {
+                            ids.iter()
+                                .all(|id| state.staged.iter().any(|u| &u.id == id))
+                        });
+                        sendable && staged && state.busy && !state.compacting && !state.interrupted
+                    };
+                    if working {
+                        s.state.lock().unwrap().superseded = true;
+                        self.interrupt(&s, DEADLINE).await?;
+                    }
+                }
                 // Actual admission owns its own boundary after every wait; this
                 // initial landing must not prevent its configuration restart.
                 let admission = _landing.and_then(Landing::into_admission);
                 let result = self
                     .submit_admitted(
                         &s,
-                        required(p, "text")?,
+                        text,
                         p["display_kind"] == "hidden",
-                        p["queued"] == true,
+                        p["queued"] == true || interrupt,
                         None,
                         uploads.as_deref(),
                         admission,
@@ -3277,59 +3314,74 @@ impl Runtime {
             })
             .collect()
     }
-    /// A bot is working only in a conversation the user can see: its chat or
-    /// a room. Heartbeats, jobs, dreams and delegates run out of sight and stay
-    /// quiet, unless one is waiting for the user.
+    /// A bot is working only where the user can see it: its chat, a room, or
+    /// the bots' computer. Heartbeats, jobs, dreams and delegates otherwise run
+    /// out of sight and stay quiet, unless one is waiting for the user.
     pub fn status_for_bot(&self, owner: &str, bot: &str) -> Option<Value> {
         let sessions = self.sessions.lock().unwrap();
-        let mut active = sessions
+        let active = sessions
             .values()
             .filter(|session| session.owner == owner && session.bot == bot)
             .filter_map(|session| {
                 let state = session.state.lock().unwrap();
-                state
-                    .busy
-                    .then(|| (session.clone(), !state.pending.is_empty()))
+                state.busy.then(|| {
+                    (
+                        session.clone(),
+                        !state.pending.is_empty(),
+                        state.on_computer,
+                    )
+                })
             })
             .collect::<Vec<_>>();
         drop(sessions);
-        active.sort_by_key(|(session, waiting)| {
-            std::cmp::Reverse((*waiting, session.stored.clone()))
-        });
         let conn = db::open(&self.home).ok();
-        let (session, waiting, context) = active.into_iter().find_map(|(session, waiting)| {
-            let context = conn
-                .as_ref()
-                .and_then(|conn| {
-                    conn.query_row(
-                        "SELECT (SELECT id FROM sections WHERE id=?1),(SELECT room_id FROM room_sessions WHERE stored_session_id=?1),(SELECT MAX(started_at) FROM room_turns WHERE bot=?2 AND status='running')",
-                        params![session.stored, bot],
-                        |row| {
-                            Ok((
-                                row.get::<_, Option<String>>(0)?,
-                                row.get::<_, Option<String>>(1)?,
-                                row.get::<_, Option<f64>>(2)?,
-                            ))
-                        },
-                    )
-                    .ok()
-                })
-                .unwrap_or_default();
-            let seen = context.0.is_some() || context.1.is_some();
-            (waiting || seen).then_some((session, waiting, context))
-        })?;
+        let (session, waiting, on_computer, context) = active
+            .into_iter()
+            .filter_map(|(session, waiting, on_computer)| {
+                let context = conn
+                    .as_ref()
+                    .and_then(|conn| {
+                        conn.query_row(
+                            "SELECT (SELECT id FROM sections WHERE id=?1),(SELECT room_id FROM room_sessions WHERE stored_session_id=?1),(SELECT MAX(started_at) FROM room_turns WHERE bot=?2 AND status='running')",
+                            params![session.stored, bot],
+                            |row| {
+                                Ok((
+                                    row.get::<_, Option<String>>(0)?,
+                                    row.get::<_, Option<String>>(1)?,
+                                    row.get::<_, Option<f64>>(2)?,
+                                ))
+                            },
+                        )
+                        .ok()
+                    })
+                    .unwrap_or_default();
+                let seen = context.0.is_some() || context.1.is_some();
+                (waiting || seen || on_computer.is_some())
+                    .then_some((session, waiting, on_computer, context))
+            })
+            // Waiting first, then a conversation the user can open.
+            .max_by_key(|(session, waiting, _, context)| {
+                (
+                    *waiting,
+                    context.0.is_some() || context.1.is_some(),
+                    session.stored.clone(),
+                )
+            })?;
+        let elsewhere = context.0.is_none() && context.1.is_none();
         Some(json!({
             "status": if waiting { "needs_you" } else { "working" },
             "status_detail": {
                 "text": if waiting {
                     "Waiting for you"
+                } else if elsewhere && on_computer.is_some() {
+                    "Using the computer"
                 } else {
                     "Working"
                 },
                 "section_id": context.0,
                 "room_id": context.1,
                 "session_id": session.id,
-                "since": context.2.unwrap_or_else(common::now),
+                "since": context.2.or(on_computer).unwrap_or_else(common::now),
                 "action": null
             }
         }))
@@ -4994,7 +5046,7 @@ impl Runtime {
             "tool_execution_start" => {
                 let name = store::client_tool_name(event["toolName"].as_str().unwrap_or(""));
                 let context = tool_context(name, &event["args"]);
-                {
+                let to_computer = {
                     let mut state = s.state.lock().unwrap();
                     let id = event["toolCallId"].as_str().unwrap_or("");
                     state.tool_started.insert(
@@ -5005,8 +5057,18 @@ impl Runtime {
                         ),
                     );
                     state.tool_context.insert(id.into(), context.clone());
-                }
+                    let to_computer =
+                        name == "computer_use" && state.busy && state.on_computer.is_none();
+                    if to_computer {
+                        state.on_computer = Some(common::now());
+                    }
+                    to_computer
+                };
                 self.emit(s, "tool.start", with_fields(json!({"tool_id":event["toolCallId"],"name":name,"context":context,"args":event["args"],"parent_tool_call_id":event["parentToolCallId"]}), &observed.fields));
+                if to_computer {
+                    self.events
+                        .emit(&s.owner, None, "hexbot.bots.changed", json!({"name":s.bot}));
+                }
             }
             "tool_execution_end" => {
                 let text = store::text(&event["result"]["content"]);
@@ -5075,6 +5137,10 @@ impl Runtime {
                     if !state.display.is_empty() {
                         return Ok(());
                     }
+                    let superseded = std::mem::take(&mut state.superseded);
+                    if superseded && state.error.as_deref() == Some("The turn was interrupted") {
+                        state.error = None;
+                    }
                     if state.end_turn() {
                         self.reload(s);
                     }
@@ -5091,7 +5157,8 @@ impl Runtime {
                             .map_or_else(|| state.output.clone(), |end| end.text.clone()),
                         ending
                             .as_ref()
-                            .map_or_else(|| state.error.clone(), |end| end.error.clone()),
+                            .map_or_else(|| state.error.clone(), |end| end.error.clone())
+                            .filter(|e| !(superseded && e == "The turn was interrupted")),
                         std::mem::take(&mut state.pending),
                     )
                 };

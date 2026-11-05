@@ -23,8 +23,14 @@ data model. The native transport and event projection live in
 
 ## Core methods the client calls directly
 
-- Chat: `prompt.submit {session_id, text, attachments?, input_id?}`,
+- Chat: `prompt.submit {session_id, text, attachments?, input_id?, interrupt?}`,
   `session.interrupt`, `session.steer {session_id, text, input_id?}`.
+  A `prompt.submit` while the bot works answers 4002, unless it sets
+  `interrupt: true`: then the running reply stops first, as
+  `session.interrupt` would, and the message starts the next run once Stop
+  finishes. A `/compact` in progress finishes first, and a `/compact` sent
+  this way is still refused while the bot works. The web and mobile apps
+  send every message from the composer this way.
   `session.steer` steers a healthy busy run. During Stop or manual compaction
   it waits before staging input; when idle it starts a fresh run. Close or
   process exit rejects a waiting steer with a session error.
@@ -324,8 +330,10 @@ when it overrides the default.
 reverse order), folded by the daemon from live session state, room turns,
 room `waiting.human` events, and open incidents. Only a bot's chat and its
 room sessions make it `working`; heartbeats, scheduled jobs, dreams, CLI runs
-and subagents never do, though one waiting on the user still makes it
-`needs_you`. `status_detail` is
+and subagents do only once their run acts on the bots' computer, until it
+ends (`status_detail.text` "Using the computer", no section or room), and one
+waiting on the user still makes it `needs_you`. The first `computer_use` call
+of a run sends `hexbot.bots.changed {name}`. `status_detail` is
 `{text, section_id, room_id, session_id, since, action, in_chat}` where `action` is
 null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`. A stopped
 bot's `in_chat` is true when the failure has no room and no conversation of

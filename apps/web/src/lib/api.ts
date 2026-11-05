@@ -833,6 +833,8 @@ export interface PromptSubmitOptions {
   input_id?: string
   attachments?: string[]
   display_kind?: 'hidden'
+  /** Stop a reply in progress first, so this message goes next. */
+  interrupt?: boolean
   queued?: boolean
   surface?: string
 }

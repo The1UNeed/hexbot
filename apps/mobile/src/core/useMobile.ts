@@ -346,10 +346,13 @@ export function useMobile() {
             : (await rpc<{ status: string }>('session.status', { session_id: restoredLiveId }))
                 .status === 'working'
         if (sequence !== openSequence.current) return
+        const messages = historyMessages(rows.rows)
         let snapshot: ChatState = {
           ...emptyChat(),
           busy,
-          messages: historyMessages(rows.rows)
+          messages,
+          // A reply already running when the chat opened lands after these rows.
+          ...(busy && { turnAt: messages.length })
         }
         // The snapshot goes first: an answer or Stop that arrived while it loaded is newer.
         if (result.pending_clarify)
@@ -896,6 +899,8 @@ export function useMobile() {
           session_id: sessionId,
           text,
           attachments,
+          // A reply in progress stops first, so this message goes next.
+          interrupt: true,
           ...(inputId && { input_id: inputId })
         })
         unsent.current.delete(sessionId)
@@ -908,7 +913,9 @@ export function useMobile() {
       setChat(c => ({
         ...c,
         messages: c.messages.filter(m => m.id !== messageId),
-        busy: target.kind === 'room' && Object.keys(c.turns).length > 0,
+        // A refused follow-up leaves a reply that is still running as it was.
+        busy:
+          target.kind === 'room' ? Object.keys(c.turns).length > 0 : c.turnAt !== undefined,
         error: errorText(error)
       }))
       throw error

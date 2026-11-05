@@ -112,6 +112,11 @@ export interface ChatState extends TurnState {
   messages: ChatMessage[]
   /** Room turns in flight by live session id. A section keeps its own turn in the top-level fields. */
   turns: Record<string, RoomTurnState>
+  /**
+   * How many messages the chat had when the running turn started. Its reply
+   * goes there, ahead of a message you sent since, which cut it off.
+   */
+  turnAt?: number
 }
 export type Rpc = <T = Record<string, unknown>>(
   method: string,

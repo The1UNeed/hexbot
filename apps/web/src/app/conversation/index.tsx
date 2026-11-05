@@ -1128,6 +1128,9 @@ async function submitOrReopen(
   const { current, files, uploads } = retry
   let pending = retry.pending
   const identified = useConnection.getState().daemon?.transcript_identity === true
+  // A message sent while the bot works cuts its reply off and goes next. A
+  // resend may already be the turn it works on, so it never stops one.
+  const interrupt = !retry.resend
 
   if (!current()) {
     return false
@@ -1166,7 +1169,7 @@ async function submitOrReopen(
     await promptSubmit(
       sessionId,
       text,
-      identified ? { input_id: pending.inputId, attachments: uploads } : {}
+      identified ? { input_id: pending.inputId, attachments: uploads, interrupt } : {}
     )
 
     accepted()
@@ -1240,7 +1243,7 @@ async function submitOrReopen(
           begin()
           await promptSubmit(active, text, {
             attachments,
-            ...(identified && { input_id: pending.inputId })
+            ...(identified && { input_id: pending.inputId, interrupt })
           })
 
           accepted()
@@ -3042,7 +3045,8 @@ function BotConversation() {
               sessionId={liveId}
               // A stopped turn is the Retry pill under it; the field stays calm.
               status={status === 'stopped' ? 'idle' : status}
-              streaming={streaming}
+              // Stop shows for the whole turn, tools and cards included.
+              streaming={Boolean(transcript?.turnActive) || streaming}
             />
           </div>
         ) : null}

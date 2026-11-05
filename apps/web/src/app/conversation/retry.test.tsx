@@ -259,7 +259,8 @@ it('resends a refused message with only its own restored upload, on the same row
     session_id: 'chat',
     text: 'Read my plan',
     input_id: expect.any(String),
-    attachments: [uploaded]
+    attachments: [uploaded],
+    interrupt: true
   })
   expect(second.input_id).not.toBe(first.input_id)
   // The retried row carries the new key before the daemon answers; no second row.
@@ -455,7 +456,8 @@ it('identity-equipped: retries an accepted turn without its consumed uploads or 
     session_id: 'chat',
     text: 'Read my plan',
     input_id: expect.any(String),
-    attachments: []
+    attachments: [],
+    interrupt: true
   })
   expect(submits()[1]!.input_id).not.toBe(row.inputId)
   expect(delivered[1]!.files).toEqual([])
