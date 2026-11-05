@@ -545,6 +545,34 @@ async fn provider_key_changes_refresh_tool_availability() {
 }
 
 #[tokio::test]
+async fn a_new_default_limit_refreshes_every_open_bot_list() {
+    let fixture = Fixture::new(false).await;
+    let mut admin = fixture.socket(&fixture.token).await;
+    admin
+        .send(Message::Text(
+            json!({"jsonrpc":"2.0","id":"limit","method":"hexbot.settings.set","params":{"patch":{"soul_char_limit":6000}}})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    let mut saw_event = false;
+    let mut saw_response = false;
+    while !saw_event || !saw_response {
+        let event = frame(&mut admin).await;
+        if event["id"] == "limit" {
+            assert_eq!(event["result"]["soul_char_limit"], 6000, "{event}");
+            saw_response = true;
+        }
+        if event["params"]["type"] == "hexbot.bots.changed" {
+            saw_event = true;
+        }
+    }
+    admin.close(None).await.unwrap();
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
 async fn websocket_mutation_events_owner_isolation_and_flat_replay() {
     let fixture = Fixture::new(false).await;
     db::open(&fixture.home)

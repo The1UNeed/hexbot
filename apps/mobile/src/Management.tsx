@@ -448,7 +448,9 @@ export function Management({
             approval_mode: bot.approval_mode ?? 'inherit',
             workdir: bot.workdir ?? '',
             dream_enabled: bot.dream_enabled,
-            notify: bot.notify ?? true
+            notify: bot.notify ?? true,
+            soul_char_limit: str(bot.soul_char_limit),
+            memory_char_limit: str(bot.memory_char_limit)
           }
         // The memory card shows the day it changed; the card opens without it if the read fails.
         if (bot) detail = await rpc('hexbot.memory.bot.get', { bot: bot.name }).catch(() => ({}))
@@ -735,13 +737,15 @@ export function Management({
       secureTextEntry={secret}
       // An empty row still reads as a field, as the desktop's placeholders do.
       placeholder={
-        /budget|turns_per/.test(key)
-          ? kind === 'room'
-            ? 'Daemon setting'
-            : 'No limit'
-          : kind === 'settings'
-            ? 'Not set'
-            : undefined
+        /_char_limit$/.test(key) && kind === 'bot'
+          ? 'Default'
+          : /budget|turns_per/.test(key)
+            ? kind === 'room'
+              ? 'Daemon setting'
+              : 'No limit'
+            : kind === 'settings'
+              ? 'Not set'
+              : undefined
       }
       autoCapitalize="none"
       autoCorrect={!secret && multiline}
@@ -835,7 +839,14 @@ export function Management({
             fallback_model: values.fallback_model || null,
             bot_daily_token_budget: num(values.bot_daily_token_budget),
             room_bot_turns_per_human_turn: num(values.room_bot_turns_per_human_turn),
-            room_budget_tokens_per_human_turn: num(values.room_budget_tokens_per_human_turn)
+            room_budget_tokens_per_human_turn: num(values.room_budget_tokens_per_human_turn),
+            // A daemon from before the limits has no such settings.
+            ...(typeof mobile.settings?.soul_char_limit === 'number'
+              ? {
+                  soul_char_limit: num(values.soul_char_limit),
+                  memory_char_limit: num(values.memory_char_limit)
+                }
+              : {})
           }
         })
       content = (
@@ -858,6 +869,15 @@ export function Management({
             {toggle('dream_enabled', 'Dreaming')}
             {field('dream_time', 'Dream time', false, '24-hour time on the daemon, such as 03:00')}
           </Group>
+          {typeof mobile.settings?.soul_char_limit === 'number' ? (
+            <Group
+              title="Limits"
+              footer="The most characters a bot's soul and memory can hold, from 500 to 20,000. Both sit in every message a bot sends, so longer ones cost more. A bot can have its own."
+            >
+              {field('soul_char_limit', 'Soul')}
+              {field('memory_char_limit', 'Memory')}
+            </Group>
+          ) : null}
           {typeof mobile.settings?.heartbeat_enabled === 'boolean' ? (
             <Group
               title="Heartbeat"
@@ -900,7 +920,14 @@ export function Management({
                 approval_mode: values.approval_mode,
                 workdir: values.workdir || null,
                 dream_enabled: values.dream_enabled,
-                notify: values.notify
+                notify: values.notify,
+                // Only a limit the user changed: a daemon from before the limits
+                // refuses them, and a limit the field can't show is kept.
+                ...Object.fromEntries(
+                  (['soul_char_limit', 'memory_char_limit'] as const)
+                    .filter(key => str(values[key]) !== str(bot[key]))
+                    .map(key => [key, num(values[key])])
+                )
               }
             : {})
         }
@@ -999,7 +1026,7 @@ export function Management({
               true,
               `${str(values.display_name) || 'The bot'} can edit its soul too and says when it does. Your chat takes changes after it summarises older messages.`,
               false,
-              4000
+              Number(mobile.settings?.soul_char_limit) || 4000
             )
           )}
           <Group title="Model" footer="Applies from the next message.">
@@ -1044,6 +1071,15 @@ export function Management({
                 {row('Dreaming history', 'dreams')}
                 {row('Scheduled jobs', 'jobs')}
               </Group>
+              {bot.soul_cap !== undefined ? (
+                <Group
+                  title="Limits"
+                  footer={`The most characters its soul and memory can hold, from 500 to 20,000. Leave one empty for the default in Settings: soul ${str(mobile.settings?.soul_char_limit) || '4000'}, memory ${str(mobile.settings?.memory_char_limit) || '2200'}.`}
+                >
+                  {field('soul_char_limit', 'Soul limit')}
+                  {field('memory_char_limit', 'Memory limit')}
+                </Group>
+              ) : null}
               {typeof mobile.settings?.heartbeat_enabled === 'boolean' ? (
                 <Group title="On its own">{row('Heartbeat', 'heartbeat')}</Group>
               ) : null}
@@ -1113,6 +1149,7 @@ export function Management({
       content = (
         <DocumentPanel
           about={aboutFile('soul', bot?.display_name ?? 'The bot')}
+          cap={(mobile.bots.find(b => b.name === bot?.name) ?? bot)?.soul_cap}
           fileName="SOUL.md"
           onChange={text => set('persona', text)}
           value={str(values.persona)}

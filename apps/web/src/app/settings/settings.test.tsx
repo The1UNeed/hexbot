@@ -13,6 +13,7 @@ import {
 import type { UpdateState } from '../../lib/bridge'
 import { pairWithDaemon } from '../../lib/connection'
 import type { DaemonInfo } from '../../lib/types'
+import { useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { useMe } from '../../stores/me'
 import { useSettings } from '../../stores/settings'
@@ -689,6 +690,41 @@ describe('settings', () => {
     fireEvent.change(name, { target: { value: '  Alex ' } })
     fireEvent.blur(name)
     expect(rename).toHaveBeenCalledWith('Alex')
+  })
+
+  it('sets the default soul and memory limits and tells the bots', async () => {
+    const patch = vi.fn().mockResolvedValue(undefined)
+    const refreshBots = vi.fn().mockResolvedValue(undefined)
+    useBots.setState({ refresh: refreshBots })
+    useSettings.setState({
+      patch,
+      refresh: vi.fn().mockResolvedValue(undefined),
+      settings: { memory_char_limit: 2200, soul_char_limit: 4000 } as never
+    })
+    useMe.setState({ me: { display_name: 'Admin', id: 'local' } })
+    render(<MemorySettings />)
+    const soul = screen.getByLabelText('Soul limit')
+    expect(soul).toHaveValue('4000')
+    expect(screen.getByLabelText('Memory limit')).toHaveValue('2200')
+    // A default can't be emptied; the field goes back to the number.
+    fireEvent.change(soul, { target: { value: '' } })
+    fireEvent.blur(soul)
+    expect(soul).toHaveValue('4000')
+    fireEvent.change(soul, { target: { value: '6000' } })
+    fireEvent.blur(soul)
+    await waitFor(() => expect(refreshBots).toHaveBeenCalled())
+    expect(patch).toHaveBeenCalledTimes(1)
+    expect(patch).toHaveBeenCalledWith({ soul_char_limit: 6000 })
+  })
+
+  it('leaves the limits out on daemons that have none', () => {
+    useSettings.setState({
+      refresh: vi.fn().mockResolvedValue(undefined),
+      settings: { dream_enabled: true, dream_time: '03:00' } as never
+    })
+    useMe.setState({ me: { display_name: 'Admin', id: 'local' } })
+    render(<MemorySettings />)
+    expect(screen.queryByLabelText('Soul limit')).toBeNull()
   })
 
   it('hides the name editor on older daemons', () => {

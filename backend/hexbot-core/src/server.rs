@@ -551,6 +551,16 @@ impl App {
             self.events
                 .emit(owner, None, "hexbot.heartbeat.changed", json!({}));
         }
+        // Bots carry the limits in effect, so a new default reaches every open
+        // app, whichever app or bot changed it.
+        if method == "hexbot.settings.set"
+            && p["patch"].as_object().is_some_and(|patch| {
+                patch.contains_key("soul_char_limit") || patch.contains_key("memory_char_limit")
+            })
+        {
+            self.events
+                .emit(owner, None, "hexbot.bots.changed", json!({}));
+        }
         // Each running turn lists the cards it still waits on, so a client
         // drops the ones it missed being settled. Opening a room restores them.
         if matches!(method, "hexbot.rooms.get" | "hexbot.rooms.list") {

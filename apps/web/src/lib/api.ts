@@ -686,6 +686,9 @@ export function botMemorySet(bot: string, memoryMd: string): Promise<BotMemory> 
   return rpcCall<BotMemory>('hexbot.memory.bot.set', { bot, memory_md: memoryMd })
 }
 
+/** A window event naming a bot whose memory a restored dream replaced, so open copies read it again. */
+export const MEMORY_RESTORED = 'hexbot:memory-restored'
+
 export function botNotesList(bot: string): Promise<BotNotes> {
   return rpcCall<BotNotes>('hexbot.memory.notes.list', { bot })
 }

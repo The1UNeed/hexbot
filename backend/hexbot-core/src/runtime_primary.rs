@@ -40,6 +40,8 @@ const BOT_FIELDS: &[&str] = &[
     "workdir",
     "dream_enabled",
     "notify",
+    "soul_char_limit",
+    "memory_char_limit",
 ];
 const JOB_FIELDS: &[&str] = &[
     "action",
@@ -68,6 +70,8 @@ const SETTINGS: &[&str] = &[
     "room_bot_turns_per_human_turn",
     "room_budget_tokens_per_human_turn",
     "bot_daily_token_budget",
+    "soul_char_limit",
+    "memory_char_limit",
 ];
 
 pub(super) fn descriptors() -> Vec<Value> {
@@ -94,7 +98,9 @@ pub(super) fn descriptors() -> Vec<Value> {
                     "approval_mode": { "type": "string", "enum": ["inherit", "manual", "smart", "off"], "description": "inherit follows Settings; smart is Auto; off is Bypass" },
                     "workdir": { "type": "string", "description": "A folder on this computer; an empty string returns the bot to the Settings workspace" },
                     "dream_enabled": { "type": "boolean" },
-                    "notify": { "type": "boolean" }
+                    "notify": { "type": "boolean" },
+                    "soul_char_limit": { "type": ["integer", "null"], "minimum": 500, "maximum": 20000, "description": "The most characters its soul may hold; null follows Settings" },
+                    "memory_char_limit": { "type": ["integer", "null"], "minimum": 500, "maximum": 20000, "description": "The most characters its memory may hold; null follows Settings" }
                 },
                 "required": ["action"]
             }
@@ -152,7 +158,7 @@ pub(super) fn descriptors() -> Vec<Value> {
                     "action": { "type": "string", "enum": ["get", "set", "skill", "connector"] },
                     "patch": {
                         "type": "object",
-                        "description": "With set: approval_mode (manual, smart or off), default_model and fallback_model (provider/model), workspace_dir, dream_enabled, dream_time (HH:MM), room_bot_turns_per_human_turn, room_budget_tokens_per_human_turn, bot_daily_token_budget"
+                        "description": "With set: approval_mode (manual, smart or off), default_model and fallback_model (provider/model), workspace_dir, dream_enabled, dream_time (HH:MM), room_bot_turns_per_human_turn, room_budget_tokens_per_human_turn, bot_daily_token_budget, soul_char_limit and memory_char_limit (500 to 20000 characters, the default for every bot without its own)"
                     },
                     "name": { "type": "string", "description": "With skill: the skill's name" },
                     "id": { "type": "string", "description": "With connector: the connector's id" },
@@ -195,6 +201,10 @@ fn compact_bot(bot: &Value, soul: bool) -> Value {
             "workdir",
             "dream_enabled",
             "notify",
+            "soul_char_limit",
+            "memory_char_limit",
+            "soul_cap",
+            "memory_cap",
             "status",
         ],
     );
@@ -661,6 +671,8 @@ fn setting_label(key: &str) -> &str {
         "room_bot_turns_per_human_turn" => "bot turns per message in rooms",
         "room_budget_tokens_per_human_turn" => "token budget per message in rooms",
         "bot_daily_token_budget" => "daily token budget for each bot",
+        "soul_char_limit" => "soul limit in characters",
+        "memory_char_limit" => "memory limit in characters",
         other => other,
     }
 }

@@ -1,6 +1,7 @@
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react'
 import { vi } from 'vitest'
 
+import { MEMORY_RESTORED } from '../../lib/api'
 import type { Bot, Message } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useSearch } from '../../stores/search'
@@ -8,6 +9,8 @@ import { useSections } from '../../stores/sections'
 import { useTranscripts } from '../../stores/transcripts'
 import { useUi } from '../../stores/ui'
 import { useVisuals } from '../../stores/visuals'
+
+import { useBotMemory } from './fingerprint'
 
 import { ProfilePanel } from './index'
 
@@ -200,6 +203,20 @@ describe('panel search', () => {
 })
 
 describe('Fingerprint', () => {
+  it('reads memory again after a dream is restored in its settings', async () => {
+    api.botMemoryGet.mockClear()
+    api.botMemoryGet
+      .mockResolvedValueOnce({ cap: 2200, memory_md: 'After the dream', updated_at: 1 })
+      .mockResolvedValueOnce({ cap: 2200, memory_md: 'Before the dream', updated_at: 2 })
+    const { result } = renderHook(() => useBotMemory('muse', true, 0))
+    await waitFor(() => expect(result.current[0]?.memory_md).toBe('After the dream'))
+    // Another bot's restore leaves this one alone.
+    act(() => void window.dispatchEvent(new CustomEvent(MEMORY_RESTORED, { detail: 'owl' })))
+    act(() => void window.dispatchEvent(new CustomEvent(MEMORY_RESTORED, { detail: 'muse' })))
+    await waitFor(() => expect(result.current[0]?.memory_md).toBe('Before the dream'))
+    expect(api.botMemoryGet).toHaveBeenCalledTimes(2)
+  })
+
   beforeEach(seed)
 
   it('shows soul and memory with the day each changed', async () => {

@@ -50,7 +50,16 @@ import {
   useUpdates
 } from '../../stores/updates'
 import { MemoryEditor } from '../bot-settings/memory'
-import { ChoiceRow, dividerClass, Group, Heading, Row } from '../bot-settings/shared'
+import {
+  ChoiceRow,
+  DEFAULT_MEMORY_LIMIT,
+  DEFAULT_SOUL_LIMIT,
+  dividerClass,
+  Group,
+  Heading,
+  LimitRow,
+  Row
+} from '../bot-settings/shared'
 import { ConfirmUpdate, installTarget } from '../confirm-update'
 
 import { ComputerSettings } from './computer'
@@ -148,12 +157,29 @@ export function MemorySettings() {
   const [about, setAbout] = useState<Awaited<ReturnType<typeof userMemoryGet>> | null>(null)
   const [aboutError, setAboutError] = useState<string | null>(null)
   const [nameError, setNameError] = useState<string | null>(null)
+  const [limitError, setLimitError] = useState<string | null>(null)
   useEffect(() => {
     void refresh()
     void userMemoryGet()
       .then(setAbout)
       .catch(cause => setAboutError(errorText(cause)))
   }, [refresh])
+
+  // Bots report the limits in effect, so a new default reaches them at once.
+  const setLimit = async (key: 'memory_char_limit' | 'soul_char_limit', limit: null | number) => {
+    if (limit === null) {
+      return
+    }
+
+    setLimitError(null)
+
+    try {
+      await patch({ [key]: limit })
+      await useBots.getState().refresh()
+    } catch (cause) {
+      setLimitError(errorText(cause))
+    }
+  }
 
   const rename = (value: string) => {
     const name = value.trim()
@@ -225,6 +251,30 @@ export function MemorySettings() {
             Your name, what you do, and how you like to be spoken to. Only you write this.
           </p>
         </div>
+        {settings && typeof settings.soul_char_limit === 'number' ? (
+          <div>
+            <Group
+              footer="Both sit in every message a bot sends to its model, so longer ones cost more. A bot can have its own in its settings."
+              title="Limits"
+            >
+              <LimitRow
+                description="The most characters a bot's soul can hold."
+                label="Soul limit"
+                onSave={limit => setLimit('soul_char_limit', limit)}
+                title="Soul"
+                value={settings.soul_char_limit ?? DEFAULT_SOUL_LIMIT}
+              />
+              <LimitRow
+                description="The most characters a bot's memory can hold."
+                label="Memory limit"
+                onSave={limit => setLimit('memory_char_limit', limit)}
+                title="Memory"
+                value={settings.memory_char_limit ?? DEFAULT_MEMORY_LIMIT}
+              />
+            </Group>
+            {limitError ? <ErrorLine>{limitError}</ErrorLine> : null}
+          </div>
+        ) : null}
         <Group title="Dreaming">
           <Row
             control={

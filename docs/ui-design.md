@@ -427,11 +427,13 @@ nested inside a card and no row carries more than one line of explanation.
 - Tabs in three groups: Profile, Soul, Model; Abilities (Memory, Tools,
   Connectors, Skills); Manage (Approvals, Heartbeat, Advanced).
 - Tabs: Profile (face, name, label, description), Soul
-  (full-height editor, template menu with a confirm, word count), Model
+  (full-height editor, template menu with a confirm, character count
+  against the soul limit, the bot's own limit below), Model
   (configured providers only, the provider's model list with the
   curated models on top, reasoning levels the model supports, context and
-  price when known), Memory (this bot's memory, its notes by day with one
-  editor for the chosen day, and dreaming; About you is
+  price when known), Memory (this bot's memory limit, its notes by day with
+  one editor for the chosen day, and dreaming; the memory itself is edited
+  from the side panel's Fingerprint tab; About you is
   shared and links to Settings, Memory), Tools (switches grouped as
   Computer, Senses, Working with others, plus the working directory),
   Connectors (below), Skills (installed skills with switches, grouped by

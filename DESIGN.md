@@ -37,8 +37,12 @@ more freedom and more capability than a hosted product can offer.
 
 - Each bot has two files: its soul (persona; the user and the bot both edit
   it, and the bot says so when it does) and its memory (short entries the
-  bot writes during chat, each ending with the month it was learned, capped
-  at 2,200 characters, injected every turn).
+  bot writes during chat, each ending with the month it was learned,
+  injected every turn). Both have a character limit, by default 4,000 for
+  the soul and 2,200 for memory. The user sets the defaults in Settings,
+  Memory, and can give a bot its own in its settings; the limit applies to
+  every write, the user's included. Both sit in every prompt, so the limits
+  stay between 500 and 20,000.
   Beside them sit its daily notes: one file a day, up to 4,000 characters,
   that the bot appends to at natural pauses and reads back by day. Notes
   are never injected; the dream folds what lasts into memory, and a day is

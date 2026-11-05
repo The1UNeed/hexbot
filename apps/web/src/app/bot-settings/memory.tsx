@@ -7,8 +7,6 @@ import { SkeletonLines } from '../../components/ui/skeleton'
 import { Switch } from '../../components/ui/switch'
 import { Textarea } from '../../components/ui/textarea'
 import {
-  botMemoryGet,
-  botMemorySet,
   type BotNotes,
   botNotesDelete,
   botNotesList,
@@ -18,21 +16,25 @@ import {
   dreamingRestore,
   dreamingRunNow,
   dreamingStatus,
+  MEMORY_RESTORED,
   NOTES_CHANGED
 } from '../../lib/api'
 import { cn } from '../../lib/cn'
 import type { Bot } from '../../lib/types'
 import { useChatSelection } from '../../lib/use-chat-selection'
 import { sectionsActions } from '../../stores/sections'
+import { useSettings } from '../../stores/settings'
 import { Markdown } from '../conversation'
 
 import {
   cardClass,
+  DEFAULT_MEMORY_LIMIT,
   dividerClass,
   errorText,
   formatTimestamp,
   Group,
   Heading,
+  LimitRow,
   Row,
   type SaveBot
 } from './shared'
@@ -170,41 +172,27 @@ export function MemoryTab(props: { bot: Bot; onSave: SaveBot }) {
 
 function BotMemoryTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   const botName = bot.name
-  const [memory, setMemory] = useState<Awaited<ReturnType<typeof botMemoryGet>> | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  useEffect(() => {
-    void botMemoryGet(botName)
-      .then(setMemory)
-      .catch(cause => setError(errorText(cause)))
-  }, [botName])
+  const fallback = useSettings(state => state.settings?.memory_char_limit) ?? DEFAULT_MEMORY_LIMIT
 
   return (
     <div>
-      <Heading description="What this bot has learned. It writes here on its own; dreaming tidies it up each day.">
+      <Heading description="What this bot has learned. You edit it from the Fingerprint tab beside the chat; here are its limit, its notes and dreaming.">
         Memory
       </Heading>
       <div className="space-y-8">
-        <div>
-          <p className="mb-2 px-1 text-[length:var(--text-meta)] font-medium text-muted">
-            This bot's memory
-          </p>
-          {error ? (
-            <p className="text-danger" role="alert">
-              {error}
-            </p>
-          ) : memory ? (
-            <MemoryEditor
-              cap={memory.cap}
-              label="Bot memory"
-              onSave={async value => setMemory(await botMemorySet(botName, value))}
-              placeholder="Nothing yet. The bot writes here as it learns."
-
-              value={memory.memory_md}
+        {/* A daemon from before memory limits reports none and can't set one. */}
+        {bot.memory_cap === undefined ? null : (
+          <Group>
+            <LimitRow
+              description={`Leave empty for the default in Settings, ${fallback.toLocaleString()} characters.`}
+              fallback={fallback}
+              label="Memory limit"
+              onSave={limit => onSave({ memory_char_limit: limit })}
+              title="Memory limit"
+              value={bot.memory_char_limit}
             />
-          ) : (
-            <SkeletonLines label="Loading memory" />
-          )}
-        </div>
+          </Group>
+        )}
         <NotesBlock bot={botName} />
         <Group>
           <Row
@@ -221,8 +209,8 @@ function BotMemoryTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
         </Group>
         <DreamingBlock
           bot={bot}
-          onRestored={memoryMd =>
-            setMemory(current => current && { ...current, memory_md: memoryMd })
+          onRestored={() =>
+            window.dispatchEvent(new CustomEvent(MEMORY_RESTORED, { detail: bot.name }))
           }
           onSave={onSave}
         />
