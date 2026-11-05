@@ -35,6 +35,7 @@ pub mod rooms;
 pub mod rpc;
 pub mod runtime;
 pub mod runtime_store;
+pub mod searxng;
 pub mod server;
 pub mod services;
 pub mod settings;

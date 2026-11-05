@@ -633,7 +633,7 @@ function PluginDetails({
         ) : null}
         {plugin.kind === 'connector' &&
         plugin.state !== 'not_set_up' &&
-        connector?.fields.length ? (
+        connector?.fields.some(field => field.set) ? (
           <Button
             onClick={() =>
               void confirm({ title: `Remove the keys for ${plugin.name}?` }).then(yes =>

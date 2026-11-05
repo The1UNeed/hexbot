@@ -72,6 +72,8 @@ export interface PluginFormField {
   label: string
   /** Where an MCP server takes it. */
   place?: 'env' | 'headers'
+  /** True when it may be left empty, as with a free provider's optional key. */
+  optional?: boolean
   /** The provider it belongs to, for a connector with several. */
   provider?: null | string
   secret?: boolean
@@ -105,7 +107,7 @@ export interface PluginForm {
   kind: 'plugin'
   name: string
   provider?: null | string
-  providers?: { id: string; label: string }[] | null
+  providers?: { description?: null | string; id: string; label: string }[] | null
 }
 
 /** What a plugin card answers with. */
@@ -326,6 +328,8 @@ export interface ConnectorField {
   hint: null | string
   key: string
   label: string
+  /** Leaving it empty is fine, as with a free provider's optional key. */
+  optional?: boolean
   /** Provider this field belongs to; null when every provider needs it. */
   provider?: null | string
   secret: boolean
@@ -335,6 +339,8 @@ export interface ConnectorField {
 
 export interface ConnectorProviderOption {
   configured: boolean
+  /** What to know before choosing it, such as needing no key. */
+  description?: null | string
   id: string
   label: string
 }

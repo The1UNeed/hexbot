@@ -52,7 +52,9 @@ export function PluginCard({
   const id = request.requestId
   const setup = form.action === 'setup'
   const fields = form.fields.filter(field => !field.provider || field.provider === provider)
-  const missing = setup && fields.some(field => !field.set && !values[field.key]?.trim())
+  const missing =
+    setup && fields.some(field => !field.optional && !field.set && !values[field.key]?.trim())
+  const about = form.providers?.find(option => option.id === provider)?.description
 
   // Settled only once the daemon took the answer; a failure keeps the form.
   const answer = async (choice: ApprovalChoice) => {
@@ -138,6 +140,11 @@ export function PluginCard({
                 )
               })}
             </View>
+          ) : null}
+          {about ? (
+            <Text tone="muted" variant="footnote">
+              {about}
+            </Text>
           ) : null}
           {fields.map((field, index) => (
             <CardField

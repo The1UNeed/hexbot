@@ -1499,6 +1499,7 @@ export function Management({
                 <ChoiceRow
                   key={p.id}
                   title={p.label}
+                  subtitle={p.description}
                   testID={`connector-provider-${p.id}`}
                   selected={values.provider === p.id}
                   onPress={() => set('provider', p.id)}
@@ -1552,7 +1553,9 @@ export function Management({
               })
               setNotice(str(result.message))
             })}
-            {action('Clear credentials', () => rpc('hexbot.connectors.clear', { id: c.id }), true)}
+            {c.fields.some(f => f.set)
+              ? action('Clear credentials', () => rpc('hexbot.connectors.clear', { id: c.id }), true)
+              : null}
             {c.mcp
               ? action(
                   'Remove MCP server',

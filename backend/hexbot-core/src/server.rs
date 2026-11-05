@@ -677,6 +677,7 @@ impl App {
         self.rooms.shutdown().await;
         self.dreaming.shutdown().await;
         self.runtime.shutdown().await;
+        crate::searxng::stop(&self.home).await;
     }
     fn addresses(&self) -> Vec<String> {
         settings::network(&self.home)

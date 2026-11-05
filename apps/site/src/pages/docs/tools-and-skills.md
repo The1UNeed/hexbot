@@ -42,7 +42,17 @@ You set up a connector in Settings, Plugins, or in Bot settings, Connectors, by 
 
 Notion and Airtable keys stay with the daemon. A bot reads and changes your workspace through Hexbot, which adds the key to each request; the bot never sees the key, and its commands never have it. It does not need your Notion or Airtable password. Reading runs in every approval mode. A change runs in Bypass, is checked first in Auto, and asks you in Manual. Notion only shows a bot the pages you connect to your integration: on the page, open **...**, then **Connections**.
 
-**Connected** means an authenticated probe answered. **Key saved** means Hexbot stored the key but has not verified it with a live probe. Use the connector's test action if a service stops working, and check its reported error before replacing credentials.
+**Connected** means an authenticated probe answered. **Key saved** means Hexbot stored the key but has not verified it with a live probe. **Ready** means the provider needs no key. Use the connector's test action if a service stops working, and check its reported error before replacing credentials.
+
+### Web search
+
+Web search works without an account. By default Hexbot runs SearXNG, a free search engine that asks Google, Bing and others for you, in Docker on the daemon computer: the first start downloads about 100 MB, and it listens only on that computer. It starts with your bots' first search and stops with the daemon. Hexbot uses whatever Docker is running there but never starts Docker for it. Until SearXNG runs, as on a server without Docker, searches go to Tavily's free tier, then Wikipedia. Settings, Plugins, Web search says which: **Ready · SearXNG**, or why it isn't running yet.
+
+You can choose another provider there. Wikipedia and Marginalia need no key: Wikipedia searches Wikipedia only; Marginalia finds the small, independent web, and its shared key is often busy, so ask Marginalia for a free key of your own. Tavily works without a key at lower limits. Exa, Brave, Firecrawl, Parallel and Keenable need yours. If you already run SearXNG, enter its URL under **Show advanced**; it must allow JSON results.
+
+To read a page, a bot uses the provider's own reader when it has one. Otherwise Hexbot fetches the page itself, with the same rules about private addresses as every other fetch, and turns it into text. A page that draws itself with JavaScript reads thin that way; the bot can open it in its computer instead.
+
+Removing the keys returns web search to SearXNG, and every bot keeps it. To keep SearXNG off the daemon computer, set `web.searxng.docker: off` in `~/.hexbot/config.yaml`.
 
 Your model provider and your connectors may bill separately. A model subscription does not include an image service or premium voice account.
 
