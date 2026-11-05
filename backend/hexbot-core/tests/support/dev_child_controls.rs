@@ -48,12 +48,16 @@ async fn record_with_budget(listener: &TcpListener, seconds: u64) -> (Value, Buf
     .expect("fixture readiness event")
 }
 async fn wait(child: &mut Child) -> i32 {
-    tokio::time::timeout(Duration::from_secs(20), child.wait())
+    // tokio's wait closes the child's input first, and the Dev host stops on
+    // end of input, which would race the root's own exit. A test that means
+    // to close it has taken it already.
+    let input = child.stdin.take();
+    let status = tokio::time::timeout(Duration::from_secs(20), child.wait())
         .await
         .expect("host deadline")
-        .unwrap()
-        .code()
-        .unwrap()
+        .unwrap();
+    drop(input);
+    status.code().unwrap()
 }
 fn assert_ended(processes: &[ProcessHandle]) {
     let snapshots: Vec<_> = processes.iter().map(ProcessHandle::snapshot).collect();

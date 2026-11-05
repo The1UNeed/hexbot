@@ -62,6 +62,8 @@ public class DevChildFixture {
                 string command="__dev-child test -- "+Q(args[2])+" tree "+port+" "+Q(args[2]);
                 var launched=Launch(args[3],command,mode=="break"); int host=(int)launched.pid;
                 var process=Process.GetProcessById(host);
+                // ExitCode needs the handle the object holds; one it never opened throws.
+                GC.KeepAlive(process.Handle);
                 writer.WriteLine("{\"role\":\"parent\",\"pid\":"+Process.GetCurrentProcess().Id+",\"host\":"+host+"}");
                 if(stream.ReadByte()!=1) return 93;
                 Check(ResumeThread(launched.thread)==1); CloseHandle(launched.thread); CloseHandle(launched.process);

@@ -311,7 +311,17 @@ fn auto_deletes_and_moves_workspace_files_but_never_git_or_secrets() {
     fs::write(f.workspace.join("src/old.txt"), "old").unwrap();
     fs::create_dir_all(f.workspace.join("old-dir")).unwrap();
     fs::write(f.workspace.join("old-dir/inner.txt"), "inner").unwrap();
+    fs::write(f.workspace.join("src/shell-old.txt"), "old").unwrap();
+    fs::create_dir_all(f.workspace.join("shell-old-dir")).unwrap();
+    fs::write(f.workspace.join("shell-old-dir/inner.txt"), "inner").unwrap();
     let policy = auto(&f);
+    // The same container with the bundled shell granted, as the daemon's
+    // policy names it.
+    let shell = bundled_shell();
+    let with_shell = Policy {
+        shell: shell.clone(),
+        ..policy.clone()
+    };
     let sid = container_sid(&policy);
     // Windows deletes or renames an entry for whoever its folder grants
     // delete child (DC), whatever the entry's own DACL says. No entry for the
@@ -383,14 +393,59 @@ fn auto_deletes_and_moves_workspace_files_but_never_git_or_secrets() {
         fs::read_to_string(f.workspace.join("src/renamed.txt")).unwrap(),
         "old"
     );
-    let removed = |command: &str, path: &str| {
-        let code = script(&f, &policy, command);
-        let left = f.workspace.join(path);
-        assert!(
-            !left.exists(),
-            "{command} exited {code} and left {path}: {}",
-            icacls(&left)
+    // The bundled shell, which runs every bot command, proves the same with
+    // rm, which deletes as DeleteFileW does. It runs first, so a cmd failure
+    // below has its verdict beside it.
+    if let Some(shell) = &shell {
+        let sh = |command: &str| said(&f, &with_shell, shell, &["sh", "-c", command]);
+        for command in [
+            "rm -f .env",
+            "mv .env src/",
+            "echo x > decoy.txt && mv -f decoy.txt .env",
+            "mv .git src/",
+            "rm -f .git/HEAD .git/config",
+            "rmdir .git/hooks",
+            "rm -rf .git",
+        ] {
+            sh(command);
+        }
+        assert_eq!(
+            fs::read_to_string(f.workspace.join(".env")).unwrap(),
+            "KEY=1"
         );
+        assert!(!f.workspace.join("src/.env").exists());
+        assert!(!f.workspace.join("src/.git").exists());
+        assert_eq!(
+            fs::read_to_string(f.workspace.join(".git/HEAD")).unwrap(),
+            "ref: refs/heads/main\n"
+        );
+        assert_eq!(
+            fs::read_to_string(f.workspace.join(".git/config")).unwrap(),
+            "[core]\n"
+        );
+        assert!(f.workspace.join(".git/hooks").is_dir());
+        let moved = sh("mv src/shell-old.txt src/shell-renamed.txt");
+        assert_eq!(
+            fs::read_to_string(f.workspace.join("src/shell-renamed.txt")).ok(),
+            Some("old".to_owned()),
+            "{moved}"
+        );
+        let removes = |command: &str, path: &str| {
+            let said = sh(command);
+            left_behind(&f, &with_shell, Some(shell), command, &said, path);
+        };
+        removes("rm src/shell-renamed.txt", "src/shell-renamed.txt");
+        removes("rm -r shell-old-dir", "shell-old-dir");
+        let made = sh("echo x > shell-fresh.txt");
+        assert!(made.starts_with("exit Some(0)"), "{made}");
+        removes("rm shell-fresh.txt", "shell-fresh.txt");
+        let made = sh("mkdir -p shell-tree/sub && echo x > shell-tree/sub/f.txt");
+        assert!(made.starts_with("exit Some(0)"), "{made}");
+        removes("rm -r shell-tree", "shell-tree");
+    }
+    let removed = |command: &str, path: &str| {
+        let said = said(&f, &policy, &cmd(), &["/d", "/c", command]);
+        left_behind(&f, &with_shell, shell.as_deref(), command, &said, path);
     };
     removed("del src\\renamed.txt", "src/renamed.txt");
     removed("rmdir /s /q old-dir", "old-dir");
@@ -408,6 +463,53 @@ fn auto_deletes_and_moves_workspace_files_but_never_git_or_secrets() {
     );
     removed("rmdir /s /q fresh-tree", "fresh-tree");
     removed("rmdir /s /q made", "made");
+}
+
+/// How a contained command exited and what it printed, through the helper the
+/// daemon runs commands with.
+fn said(f: &Fixture, policy: &Policy, program: &Path, arguments: &[&str]) -> String {
+    let output = helper_with(f, policy, program, arguments).output().unwrap();
+    format!(
+        "exit {:?}, stdout {:?}, stderr {:?}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout).trim(),
+        String::from_utf8_lossy(&output.stderr).trim()
+    )
+}
+
+/// Fails when `command` left `path`, with what tells the cases apart: the
+/// command's own words, the entry's ACL and attributes, what the bundled
+/// shell's rm says about the same entry inside the same container, and
+/// whether the user, outside it, can delete it at all.
+fn left_behind(
+    f: &Fixture,
+    policy: &Policy,
+    shell: Option<&Path>,
+    command: &str,
+    output: &str,
+    path: &str,
+) {
+    let left = f.workspace.join(path);
+    if !left.exists() {
+        return;
+    }
+    let acl = icacls(&left);
+    let attributes = Command::new(system("attrib.exe"))
+        .arg(&left)
+        .output()
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned());
+    let shell_rm = shell.map(|shell| {
+        let rm = said(f, policy, shell, &["sh", "-c", &format!("rm -rf '{path}'")]);
+        format!("{rm}; left: {}", left.exists())
+    });
+    let user = if left.is_dir() {
+        fs::remove_dir_all(&left)
+    } else {
+        fs::remove_file(&left)
+    };
+    panic!(
+        "{command} left {path}\n  it said: {output}\n  acl: {acl}\n  attrib: {attributes:?}\n  the shell's rm -rf inside: {shell_rm:?}\n  the user's own delete outside: {user:?}"
+    );
 }
 
 #[test]
