@@ -81,6 +81,26 @@ export function cleanCopiedHtml(fragment: DocumentFragment, breaks: boolean[]): 
   return holder.innerHTML
 }
 
+// What a selection inside one of these loses, because `cloneContents` copies
+// only what is inside it: a code block's lines, a link's address, emphasis.
+const KEEP_AROUND = 'a, b, code, del, em, i, pre, s, strong, sub, sup, u'
+
+function withContext(range: Range): Node {
+  const within = range.commonAncestorContainer
+  let copy: Node = range.cloneContents()
+  let around = (within instanceof Element ? within : within.parentElement)?.closest(KEEP_AROUND)
+
+  while (around) {
+    const wrap = around.cloneNode(false)
+
+    wrap.appendChild(copy)
+    copy = wrap
+    around = around.parentElement?.closest(KEEP_AROUND)
+  }
+
+  return copy
+}
+
 function editing(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
     return false
@@ -108,18 +128,8 @@ export function handleCopy(event: ClipboardEvent): void {
   for (let index = 0; index < selection.rangeCount; index += 1) {
     const range = selection.getRangeAt(index)
 
-    const within = range.commonAncestorContainer
-    // Part of a code block copies its text without the <pre> that keeps its
-    // lines and indents, so put one back.
-    const pre = (within instanceof Element ? within : within.parentElement)?.closest('pre')
-    const copy = pre ? document.createElement('pre') : fragment
-
     breaks.push(...shownBreaks(range))
-    copy.append(range.cloneContents())
-
-    if (copy !== fragment) {
-      fragment.append(copy)
-    }
+    fragment.append(withContext(range))
   }
 
   event.clipboardData.setData('text/plain', selection.toString())

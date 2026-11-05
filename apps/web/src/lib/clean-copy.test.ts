@@ -95,7 +95,38 @@ describe('handleCopy', () => {
 
     handleCopy(inCode.event)
 
-    expect(inCode.data.get('text/html')).toBe('<pre>a\nb</pre>')
+    expect(inCode.data.get('text/html')).toBe('<pre><code>a\nb</code></pre>')
+  })
+
+  it('keeps the link or emphasis around a selection inside it', () => {
+    document.body.innerHTML =
+      '<p>See <a class="underline" href="https://example.com">the <strong>whole</strong> scope</a>.</p>'
+
+    const link = document.querySelector('a')!
+    const range = document.createRange()
+
+    range.setStart(link.firstChild!, 1)
+    range.setEnd(link.lastChild!, 3)
+    document.getSelection()?.removeAllRanges()
+    document.getSelection()?.addRange(range)
+
+    const inLink = copyEvent()
+
+    handleCopy(inLink.event)
+
+    expect(inLink.data.get('text/html')).toBe(
+      '<a href="https://example.com">he <strong>whole</strong> sc</a>'
+    )
+
+    select(document.querySelector('strong')!.firstChild!)
+
+    const inBold = copyEvent()
+
+    handleCopy(inBold.event)
+
+    expect(inBold.data.get('text/html')).toBe(
+      '<a href="https://example.com"><strong>whole</strong></a>'
+    )
   })
 
   it('leaves copying from the composer to the browser', () => {
