@@ -1493,52 +1493,323 @@ fn meminfo(key: &str) -> Option<u64> {
     )
 }
 
-// The daemon runs on macOS and Linux only. These keep the module building
-// for the Windows security probe, which compiles the daemon without its
-// platform guard; there the host and process figures are simply missing.
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn read_processes() -> std::result::Result<Vec<RawProcess>, String> {
-    Err("Process sampling needs macOS or Linux".into())
-}
-
+// Windows has no Unix load average. Its CPU/RSS samples still use the same
+// process tree and history as macOS/Linux; the optional `load` field is absent.
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn load_average() -> Option<[f64; 3]> {
     None
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn hostname() -> Option<String> {
-    None
+#[cfg(windows)]
+use windows_collectors::{
+    cpu_model, disk, hostname, memory_available, memory_total, os_version, read_processes, uname,
+};
+
+#[cfg(any(windows, test))]
+fn windows_string(buffer: &[u16]) -> String {
+    let end = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+    String::from_utf16_lossy(&buffer[..end])
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn uname() -> (Option<String>, Option<String>) {
-    (None, None)
+#[cfg(any(windows, test))]
+fn windows_cpu_seconds(kernel: u64, user: u64) -> f64 {
+    (kernel as f64 + user as f64) / 10_000_000.
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn disk(_home: &Path) -> Option<(u64, u64)> {
-    None
-}
+/// Native collectors use query-only handles. No shell, WMI or extra process is
+/// needed for the five-second sampler. Structs follow the Windows SDK layouts.
+#[cfg(windows)]
+mod windows_collectors {
+    use super::{Path, RawProcess, windows_cpu_seconds, windows_string};
+    use std::{
+        ffi::c_void,
+        io,
+        os::windows::{
+            ffi::OsStrExt,
+            io::{AsRawHandle, FromRawHandle, OwnedHandle},
+        },
+    };
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn os_version() -> Option<String> {
-    None
-}
+    #[repr(C)]
+    struct ProcessEntry {
+        size: u32,
+        usage: u32,
+        pid: u32,
+        heap: usize,
+        module: u32,
+        threads: u32,
+        ppid: u32,
+        priority: i32,
+        flags: u32,
+        executable: [u16; 260],
+    }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn cpu_model() -> Option<String> {
-    None
-}
+    #[repr(C)]
+    #[derive(Default)]
+    struct ProcessMemory {
+        size: u32,
+        faults: u32,
+        peak_working_set: usize,
+        working_set: usize,
+        peak_paged_pool: usize,
+        paged_pool: usize,
+        peak_nonpaged_pool: usize,
+        nonpaged_pool: usize,
+        pagefile: usize,
+        peak_pagefile: usize,
+    }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn memory_total() -> Option<u64> {
-    None
-}
+    #[repr(C)]
+    #[derive(Default)]
+    struct MemoryStatus {
+        size: u32,
+        load: u32,
+        physical_total: u64,
+        physical_available: u64,
+        pagefile_total: u64,
+        pagefile_available: u64,
+        virtual_total: u64,
+        virtual_available: u64,
+        extended_available: u64,
+    }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn memory_available() -> Option<u64> {
-    None
+    #[repr(C)]
+    struct Version {
+        size: u32,
+        major: u32,
+        minor: u32,
+        build: u32,
+        platform: u32,
+        service_pack: [u16; 128],
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn CreateToolhelp32Snapshot(flags: u32, pid: u32) -> *mut c_void;
+        fn Process32FirstW(snapshot: *mut c_void, entry: *mut ProcessEntry) -> i32;
+        fn Process32NextW(snapshot: *mut c_void, entry: *mut ProcessEntry) -> i32;
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+        fn GetProcessTimes(
+            process: *mut c_void,
+            created: *mut u64,
+            exited: *mut u64,
+            kernel: *mut u64,
+            user: *mut u64,
+        ) -> i32;
+        fn K32GetProcessMemoryInfo(
+            process: *mut c_void,
+            counters: *mut ProcessMemory,
+            size: u32,
+        ) -> i32;
+        fn GetComputerNameExW(kind: u32, buffer: *mut u16, size: *mut u32) -> i32;
+        fn GlobalMemoryStatusEx(status: *mut MemoryStatus) -> i32;
+        fn GetDiskFreeSpaceExW(
+            path: *const u16,
+            available: *mut u64,
+            total: *mut u64,
+            free: *mut u64,
+        ) -> i32;
+    }
+
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn RtlGetVersion(version: *mut Version) -> i32;
+    }
+
+    #[link(name = "advapi32")]
+    unsafe extern "system" {
+        fn RegGetValueW(
+            key: *mut c_void,
+            subkey: *const u16,
+            value: *const u16,
+            flags: u32,
+            kind: *mut u32,
+            data: *mut c_void,
+            size: *mut u32,
+        ) -> i32;
+    }
+
+    /// The sentinel `CreateToolhelp32Snapshot` returns instead of a handle.
+    const INVALID_HANDLE_VALUE: *mut c_void = -1isize as *mut c_void;
+    /// `HKEY_LOCAL_MACHINE` for `RegGetValueW`, sign-extended as the SDK does.
+    const HKEY_LOCAL_MACHINE: *mut c_void = 0x80000002u32 as i32 as isize as *mut c_void;
+
+    fn handle(raw: *mut c_void) -> io::Result<OwnedHandle> {
+        if raw.is_null() || raw == INVALID_HANDLE_VALUE {
+            Err(io::Error::last_os_error())
+        } else {
+            // SAFETY: this is a valid, newly created handle, owned only here.
+            Ok(unsafe { OwnedHandle::from_raw_handle(raw) })
+        }
+    }
+
+    pub(super) fn read_processes() -> Result<Vec<RawProcess>, String> {
+        // TH32CS_SNAPPROCESS; OwnedHandle closes the snapshot on every exit.
+        let snapshot = handle(unsafe { CreateToolhelp32Snapshot(2, 0) })
+            .map_err(|e| format!("Process snapshot: {e}"))?;
+        // SAFETY: PROCESSENTRY32W is plain data; size tells Windows its layout.
+        let mut entry: ProcessEntry = unsafe { std::mem::zeroed() };
+        entry.size = std::mem::size_of::<ProcessEntry>() as u32;
+        let mut processes = Vec::new();
+        let mut more = unsafe { Process32FirstW(snapshot.as_raw_handle(), &mut entry) };
+        while more != 0 {
+            processes.push(RawProcess {
+                pid: entry.pid,
+                ppid: entry.ppid,
+                name: windows_string(&entry.executable),
+                rss: 0,
+                cpu_seconds: 0.,
+            });
+            more = unsafe { Process32NextW(snapshot.as_raw_handle(), &mut entry) };
+        }
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(18) {
+            // ERROR_NO_MORE_FILES
+            return Err(format!("Process enumeration: {error}"));
+        }
+        // Sample the whole table like /proc: the caller keeps the daemon
+        // subtree, and processes that cannot be opened, or exit during a
+        // sample, are skipped one by one.
+        Ok(processes
+            .iter()
+            .filter_map(|process| sample_process(process).ok())
+            .collect())
+    }
+
+    fn sample_process(process: &RawProcess) -> io::Result<RawProcess> {
+        // PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, without mutation rights.
+        let handle = handle(unsafe { OpenProcess(0x0410, 0, process.pid) })?;
+        let (mut created, mut exited, mut kernel, mut user) = (0, 0, 0, 0);
+        let mut memory = ProcessMemory {
+            size: std::mem::size_of::<ProcessMemory>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: the handle remains open and every output has the SDK layout.
+        if unsafe {
+            GetProcessTimes(
+                handle.as_raw_handle(),
+                &mut created,
+                &mut exited,
+                &mut kernel,
+                &mut user,
+            )
+        } == 0
+            || unsafe {
+                K32GetProcessMemoryInfo(
+                    handle.as_raw_handle(),
+                    &mut memory,
+                    std::mem::size_of::<ProcessMemory>() as u32,
+                )
+            } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(RawProcess {
+            rss: memory.working_set as u64,
+            cpu_seconds: windows_cpu_seconds(kernel, user),
+            ..process.clone()
+        })
+    }
+
+    pub(super) fn hostname() -> Option<String> {
+        let mut buffer = [0u16; 256];
+        let mut size = buffer.len() as u32;
+        // ComputerNameDnsHostname, rather than the truncated NetBIOS name.
+        (unsafe { GetComputerNameExW(1, buffer.as_mut_ptr(), &mut size) } != 0)
+            .then(|| windows_string(&buffer[..size as usize]))
+    }
+
+    fn version() -> Option<(u32, u32, u32)> {
+        // RtlGetVersion reports the real build regardless of app manifests.
+        let mut version = Version {
+            size: std::mem::size_of::<Version>() as u32,
+            major: 0,
+            minor: 0,
+            build: 0,
+            platform: 0,
+            service_pack: [0; 128],
+        };
+        (unsafe { RtlGetVersion(&mut version) } == 0).then_some((
+            version.major,
+            version.minor,
+            version.build,
+        ))
+    }
+
+    fn product(major: u32, minor: u32, build: u32) -> String {
+        // Windows 11 keeps the 10.0 version number; only the build differs.
+        if major == 10 {
+            let name = if build >= 22000 {
+                "Windows 11"
+            } else {
+                "Windows 10"
+            };
+            format!("{name} (build {build})")
+        } else {
+            format!("Windows {major}.{minor} (build {build})")
+        }
+    }
+
+    pub(super) fn uname() -> (Option<String>, Option<String>) {
+        (
+            version().map(|(_, _, build)| format!("build {build}")),
+            Some(std::env::consts::ARCH.into()),
+        )
+    }
+
+    pub(super) fn os_version() -> Option<String> {
+        version().map(|(major, minor, build)| product(major, minor, build))
+    }
+
+    pub(super) fn cpu_model() -> Option<String> {
+        let subkey = "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0\0"
+            .encode_utf16()
+            .collect::<Vec<_>>();
+        let value = "ProcessorNameString\0".encode_utf16().collect::<Vec<_>>();
+        let mut buffer = [0u16; 256];
+        let mut size = std::mem::size_of_val(&buffer) as u32;
+        // HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ. No expansion or shell parsing.
+        (unsafe {
+            RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                subkey.as_ptr(),
+                value.as_ptr(),
+                2,
+                std::ptr::null_mut(),
+                buffer.as_mut_ptr().cast(),
+                &mut size,
+            )
+        } == 0)
+            .then(|| windows_string(&buffer).trim().to_owned())
+    }
+
+    fn memory() -> Option<MemoryStatus> {
+        let mut status = MemoryStatus {
+            size: std::mem::size_of::<MemoryStatus>() as u32,
+            ..Default::default()
+        };
+        (unsafe { GlobalMemoryStatusEx(&mut status) } != 0).then_some(status)
+    }
+
+    pub(super) fn memory_total() -> Option<u64> {
+        memory().map(|m| m.physical_total)
+    }
+
+    pub(super) fn memory_available() -> Option<u64> {
+        memory().map(|m| m.physical_available)
+    }
+
+    pub(super) fn disk(home: &Path) -> Option<(u64, u64)> {
+        let path = home
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        let (mut available, mut total, mut free) = (0, 0, 0);
+        // The directory selects the home volume; available respects user quotas.
+        (unsafe { GetDiskFreeSpaceExW(path.as_ptr(), &mut available, &mut total, &mut free) } != 0)
+            .then_some((total, available))
+    }
 }
 
 /// Free, inactive, speculative and purgeable pages: what macOS can hand out
@@ -1590,6 +1861,15 @@ mod tests {
             cpu_seconds: 0.,
             name: format!("p{pid}"),
         }
+    }
+
+    #[test]
+    fn windows_counters_use_full_filetimes_and_decode_utf16_names() {
+        assert_eq!(windows_cpu_seconds(15_000_000, 5_000_000), 2.);
+        assert_eq!(windows_cpu_seconds(1 << 32, 1 << 32), 858.9934592);
+        assert_eq!(windows_string(&[0x0041, 0xd83e, 0xdd89, 0, 0x0042]), "A🦉");
+        assert_eq!(windows_string(&[0x03c0]), "π");
+        assert_eq!(windows_string(&[]), "");
     }
 
     #[test]

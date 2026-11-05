@@ -138,15 +138,7 @@ const COLUMNS: &[(&str, &str, &str)] = &[
 
 /// Open the explicitly selected database without running schema migrations.
 pub fn open(home: &Path) -> Result<Connection> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(home)?;
-        fs::set_permissions(home, fs::Permissions::from_mode(0o700))?;
-    }
+    crate::osutil::create_private_dir_all(home)?;
     let database = home.join("hexbot.db");
     if fs::symlink_metadata(&database).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
         return Err(Error::new(5200, "database must not be a symlink"));

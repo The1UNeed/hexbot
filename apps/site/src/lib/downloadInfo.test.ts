@@ -35,3 +35,14 @@ describe('describeDownload', () => {
     expect(describeDownload(`${updates}/full/linux/x64/latest-linux.yml`)).toBeNull()
   })
 })
+
+it('reads Windows NSIS editions and the CLI installer', () => {
+  for (const [edition, prefix] of [['full', 'Hexbot'], ['client', 'HexbotClient']]) {
+    expect(describeDownload(`${updates}/${edition}/win/x64/${prefix}-1.2.3-win-x64.exe`)).toEqual({
+      artifact: 'package', edition, os: 'win', arch: 'x64', format: 'exe', version: '1.2.3', channel: 'stable',
+    })
+  }
+  expect(describeDownload(`${updates}/install/1.2.3-nightly.20261102.1/hexbot-install-1.2.3-nightly.20261102.1-windows-x86_64.exe`)).toEqual({
+    artifact: 'installer', os: 'win', arch: 'x64', format: 'exe', version: '1.2.3-nightly.20261102.1', channel: 'nightly',
+  })
+})

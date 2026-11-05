@@ -1,4 +1,5 @@
 import { defineConfig } from 'electron-vite'
+import { appId } from '../../scripts/desktop/release-version.mjs'
 
 // Build-time constants for the main process, declared in src/global.d.ts.
 // The main process is built as an SSR bundle, where `import.meta.env.*` is
@@ -6,12 +7,24 @@ import { defineConfig } from 'electron-vite'
 export default defineConfig(({ mode }) => ({
   main: {
     define: {
+      // The shortcut identity electron-builder writes comes from dist.mjs,
+      // which sets HEXBOT_CHANNEL and HEXBOT_EDITION. Package through
+      // `node scripts/desktop/dist.mjs`; a direct electron-builder run keeps
+      // the dev channel here and would not match the installed shortcuts.
+      __HEXBOT_APP_ID__: JSON.stringify(
+        appId(
+          process.env.HEXBOT_CHANNEL ?? 'dev',
+          (process.env.HEXBOT_EDITION ?? (mode === 'client' ? 'client' : 'full')) === 'client'
+        )
+      ),
       __HEXBOT_CRASH_URL__: JSON.stringify(process.env.HEXBOT_CRASH_URL ?? ''),
       // Public PostHog project key for anonymous usage data; unset in dev, so dev sends nothing.
       __HEXBOT_POSTHOG_KEY__: JSON.stringify(process.env.HEXBOT_POSTHOG_KEY ?? ''),
       __HEXBOT_CHANNEL__: JSON.stringify(process.env.HEXBOT_CHANNEL ?? 'dev'),
       // 'full' bundles the daemon runtime; 'client' only connects to one.
-      __HEXBOT_EDITION__: JSON.stringify(process.env.HEXBOT_EDITION ?? (mode === 'client' ? 'client' : 'full'))
+      __HEXBOT_EDITION__: JSON.stringify(
+        process.env.HEXBOT_EDITION ?? (mode === 'client' ? 'client' : 'full')
+      )
     }
   },
   preload: {

@@ -3,6 +3,7 @@
 declare const __HEXBOT_CRASH_URL__: string
 declare const __HEXBOT_POSTHOG_KEY__: string
 declare const __HEXBOT_EDITION__: string
+declare const __HEXBOT_APP_ID__: string
 declare const __HEXBOT_CHANNEL__: 'stable' | 'nightly' | 'dev'
 
 // Vite inlines a `?raw` import as the file's text.

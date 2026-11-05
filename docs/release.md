@@ -53,21 +53,30 @@ Do not retry an already accepted build. Full setup is in
   Linux, POSIX bootstrap syntax and ShellCheck, service handoff, web, desktop,
   site, Connect, and the desktop script tests. Windowed installer typecheck
   and tests run when its package exists. Nothing is built until CI passes.
+  The native Windows tests run in their own workflows on pull requests
+  (`windows-contract.yml`, `windows-security.yml`; see `docs/testing.md`),
+  not in the release run.
 - `testflight` (nightly only) starts the Expo iOS build and TestFlight upload
   for the release commit, using `EXPO_TOKEN`, and waits for the result.
-- `build` makes six packages in parallel: full and client for macOS arm64,
-  macOS x64, and Linux x64, signed and notarized when the Apple secrets are
-  present.
-- `installer` builds `hexbot-install` for the same three targets. When
+- `build` makes eight packages in parallel: full and client for macOS arm64,
+  macOS x64, Linux x64, and Windows x64. macOS builds are signed and
+  notarized when the Apple secrets are present. Windows uses `windows-latest`
+  and `--win --x64` to build per-user NSIS EXEs for both editions. Without
+  credentials electron-builder skips Windows signing; no Windows signing
+  secrets are wired yet.
+- `installer` builds the CLI engine for all four targets, including
+  `hexbot-install.exe` with `x86_64-pc-windows-msvc` on Windows. Its uploaded
+  name is `hexbot-install-<version>-windows-x86_64.exe`. When
   `apps/installer/package.json` exists it also builds Hexbot Installer with
-  Tauri as a DMG or AppImage. macOS terminal binaries use the same Developer
+  Tauri as a DMG or AppImage on macOS and Linux only. Windows skips Tauri.
+  macOS terminal binaries use the same Developer
   ID certificate as the app and are notarized when the Apple API secrets
   exist. Tauri uses the same secrets; builds without a certificate are ad-hoc
   signed. Linux installs WebKitGTK 4.1 and the other Tauri build dependencies.
 - `publish` builds the update feed, uploads it to `updates.hexbot.app` when
   the R2 secrets are present, reads the feed back through the public URL to
   confirm it announces the new version, then creates the GitHub release with
-  every DMG, ZIP, AppImage, deb, blockmap and installer. It also builds
+  every EXE, DMG, ZIP, AppImage, deb, blockmap and installer. It also builds
   `install/<channel>.json` and `.txt` from the collected update tree, verifies
   the payloads, publishes versioned installers under `install/<version>/`,
   and rewrites the channel files with `no-cache`. The public install JSON
@@ -84,12 +93,21 @@ Do not retry an already accepted build. Full setup is in
   to `main` as `github-actions[bot]`. That push does not trigger CI, but it
   does trigger a production build of hexbot.app on Vercel (`docs/deploy.md`).
 
+The Windows package names are `Hexbot-<version>-win-x64.exe` and
+`HexbotClient-<version>-win-x64.exe`, each with an `.exe.blockmap`. Their
+feeds are `full/win/x64/{latest,nightly}.yml` and
+`client/win/x64/{latest,nightly}.yml`. Publishing uploads immutable packages,
+native ZIPs, installer binaries and signatures before mutable app feeds and
+install manifests. Finalize still downloads only macOS packages for casks;
+it writes Windows filenames into the site manifest without downloading them.
+
 `ci.yml` runs `scripts/desktop/release-smoke.mjs` on every push: the version
 resolution, feed, manifest, and cask scripts against synthetic packages, so
 a broken release script fails before tag day.
 
 Full packages bundle the native daemon, pinned Node and Pi, checksum-verified
-ripgrep and fd, web assets and skills. Targets are macOS arm64, macOS x64 and Linux x64. Both macOS jobs use
+ripgrep and fd, web assets and skills. Release targets are macOS arm64,
+macOS x64, Linux x64 and Windows x64. Both macOS jobs use
 the arm64 `macos-26` runner; the Intel job builds with Cargo's
 `x86_64-apple-darwin` target, downloads darwin-x64 Node and installs npm
 packages with `--cpu=x64 --os=darwin`. Rosetta runs the Intel runtime probe.
@@ -102,7 +120,14 @@ The pinned agent still loads extensions through jiti. Precompiling our extension
 alone would not remove that runtime dependency, so the loaders remain bundled.
 
 Native archives and SHA-256 manifests live under
-`daemon/native/<version>/<os>-<arch>/`. Every release also publishes
+`daemon/native/<version>/<os>-<arch>/`. Windows archives are ZIPs under
+`daemon/native/<version>/windows-x86_64/`, with `entrypoint: hexbot.exe`;
+macOS and Linux use `.tar.gz`. Windows archives come from the packaged
+`win-unpacked/resources/hexbot-native` tree. The install manifest requires
+Full, Client, Headless and CLI installer payloads for all four targets. Only
+Windows may omit `installerApp`, since its Tauri installer is deferred.
+`minInstaller` stays at `0.1.5-0` because the manifest schema is unchanged.
+Every release also publishes
 `daemon/hexbot-src-<version>.tar.gz` using `stage-python-src --native-transition`.
 A client asks an old Python service to update to the client's own version, so
 each version needs its own archive for as long as such services may exist.
@@ -245,9 +270,10 @@ node scripts/desktop/dist.mjs --mac --dir
      `v0.x.y-alpha.N` tag on the commit it built.
    - Or tag and push: `git tag v0.x.y-alpha.N && git push origin v0.x.y-alpha.N`.
 
-7. Watch the run: preflight, check, six package builds, three installer builds,
+7. Watch the run: preflight, check, eight package builds, four installer builds,
    publish, finalize. Confirm the GitHub release lists 4 package DMGs, 4 ZIPs,
-   2 AppImages and 2 debs. It also lists three terminal installers and, once
+   2 AppImages, 2 debs, and 2 Windows NSIS EXEs with blockmaps. It also lists
+   four CLI installers, including the Windows `.exe`, and, once
    the Tauri app exists, two installer DMGs and one installer AppImage.
    Confirm `finalize` pushed a commit to `main`.
 8. The site rebuilds on its own from the `finalize` commit (`docs/deploy.md`).
@@ -400,7 +426,9 @@ gh secret set APPLE_API_KEY_ID
 gh secret set APPLE_API_ISSUER
 ```
 
-Linux packages are not signed.
+Linux packages are not signed. Windows packages are also unsigned until a separate
+signing change wires credentials and refreshes packaged runtime hashes. The
+release workflow does not enable Windows ARM builds.
 
 The installers need no additional secrets or one-time setup. The installer
 job imports `CSC_LINK` into a temporary keychain and derives the Developer ID

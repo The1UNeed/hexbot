@@ -18,9 +18,6 @@ public class DevChildFixture {
         IntPtr environment, string cwd, ref Startup startup, out Information process);
     [DllImport("kernel32.dll", SetLastError=true)] static extern uint ResumeThread(IntPtr thread);
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
-    [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr CreateJobObject(IntPtr attributes, string name);
-    [DllImport("kernel32.dll", SetLastError=true)] static extern bool SetInformationJobObject(IntPtr job, int kind, ref uint info, uint size);
-    [DllImport("kernel32.dll", SetLastError=true)] static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
     [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct Startup {
         public uint size; public string reserved, desktop, title; public uint x,y,width,height,charsX,charsY,fill,flags;
         public ushort show, reservedSize; public IntPtr reservedBytes, input, output, error;
@@ -50,18 +47,17 @@ public class DevChildFixture {
         using(var socket=new TcpClient("127.0.0.1",port))
         using(var stream=socket.GetStream())
         using(var writer=new StreamWriter(stream,new UTF8Encoding(false),1024,true) {AutoFlush=true}) {
+            // In assignment mode the test has asked the host to refuse its root
+            // (HEXBOT_DEV_HOST_REFUSE_ASSIGNMENT). A job of this launcher's,
+            // even one with UI limits, cannot: Windows nests the host's job in it.
             if(mode=="parent" || mode=="break" || mode=="ctrlc" || mode=="assignment") {
-                IntPtr job=IntPtr.Zero;
-                if(mode=="assignment") {
-                    job=CreateJobObject(IntPtr.Zero,null); Check(job!=IntPtr.Zero);
-                    uint restrictions=0xff; Check(SetInformationJobObject(job,4,ref restrictions,4));
-                    Check(AssignProcessToJobObject(job,Process.GetCurrentProcess().Handle));
-                }
                 bool console=mode=="break" || mode=="ctrlc";
                 if(console) {Check(AllocConsole()); Check(SetConsoleCtrlHandler(handler,true));}
                 string command="__dev-child test -- "+Q(args[2])+" tree "+port+" "+Q(args[2]);
                 var launched=Launch(args[3],command,mode=="break"); int host=(int)launched.pid;
                 var process=Process.GetProcessById(host);
+                // ExitCode needs the handle the object holds; one it never opened throws.
+                GC.KeepAlive(process.Handle);
                 writer.WriteLine("{\"role\":\"parent\",\"pid\":"+Process.GetCurrentProcess().Id+",\"host\":"+host+"}");
                 if(stream.ReadByte()!=1) return 93;
                 Check(ResumeThread(launched.thread)==1); CloseHandle(launched.thread); CloseHandle(launched.process);

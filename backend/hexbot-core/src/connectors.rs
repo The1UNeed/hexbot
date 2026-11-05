@@ -364,11 +364,7 @@ fn mcp_cwd(home: &Path, bot: Option<&str>) -> Result<PathBuf> {
     }
     let path = home.join("runtime/mcp").join(bot.unwrap_or("probe"));
     fs::create_dir_all(&path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
-    }
+    crate::osutil::private_dir(&path)?;
     Ok(fs::canonicalize(path)?)
 }
 

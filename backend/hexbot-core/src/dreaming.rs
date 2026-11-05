@@ -1859,14 +1859,26 @@ impl Dreaming {
                 .join("scripts")
                 .join(supplied)
         };
-        let path = fs::canonicalize(path)?;
+        // On Windows the script path is judged by its text and drive first,
+        // after joining a relative name, so a network share, device, stream
+        // or reserved name is never opened.
+        #[cfg(windows)]
+        {
+            let plain = path
+                .to_str()
+                .ok_or(crate::windows_paths::sandbox::RELATIVE)
+                .and_then(crate::windows_paths::sandbox::local)
+                .map_err(|reason| Error::new(4302, format!("{reason}: {script}")))?;
+            crate::windows_sandbox::fixed_drive(&plain)?;
+        }
+        let path = crate::credentials::canonical(&path)?;
         let workspace = match workdir {
             Some(dir) => common::resolve_workdir(&self.home, dir)?,
             None => crate::native_tools::workdir(&self.home, bot)?,
         };
         let scripts = self.home.join("profiles").join(bot).join("scripts");
         if !path.starts_with(&workspace)
-            && !fs::canonicalize(&scripts).is_ok_and(|root| path.starts_with(root))
+            && !crate::credentials::canonical(&scripts).is_ok_and(|root| path.starts_with(root))
         {
             return Err(Error::new(
                 4302,
@@ -1876,11 +1888,35 @@ impl Dreaming {
         let cwd = workdir
             .map(PathBuf::from)
             .unwrap_or_else(|| workspace.clone());
-        let program = match path.extension().and_then(|s| s.to_str()) {
+        // Windows runs shell scripts, .bash ones too, in the runtime's BusyBox
+        // `sh` (the sandbox finds it), Python with the managed Python, and
+        // programs as themselves. Any other file has no interpreter there.
+        let extension = path.extension().and_then(|s| s.to_str()).map(|s| {
+            if cfg!(windows) {
+                s.to_ascii_lowercase()
+            } else {
+                s.to_owned()
+            }
+        });
+        let program = match extension.as_deref() {
             Some("sh" | "bash") => "bash".to_owned(),
-            Some("py") => common::managed_python(&self.home)
-                .to_string_lossy()
-                .into_owned(),
+            Some("py") => {
+                let python = common::managed_python(&self.home);
+                if cfg!(windows) && !python.is_absolute() {
+                    return Err(Error::new(
+                        4302,
+                        "Scheduled Python scripts on Windows need Hexbot's managed Python, which is not installed.",
+                    ));
+                }
+                python.to_string_lossy().into_owned()
+            }
+            Some("exe") if cfg!(windows) => path.to_string_lossy().into_owned(),
+            _ if cfg!(windows) => {
+                return Err(Error::new(
+                    4302,
+                    "Scheduled scripts on Windows must be .sh, .bash, .py or .exe files.",
+                ));
+            }
             _ => path.to_string_lossy().into_owned(),
         };
         let artifacts = self.home.join("profiles").join(bot).join("artifacts");
@@ -1909,16 +1945,20 @@ impl Dreaming {
         } else {
             crate::credentials::Confine::Workspace
         };
-        let mut command = crate::credentials::isolated_command(
+        // A script in the scripts folder is read from there.
+        let readable: Vec<PathBuf> = crate::credentials::canonical(&scripts)
+            .ok()
+            .filter(|root| path.starts_with(root))
+            .into_iter()
+            .collect();
+        let mut command = crate::credentials::script_command(
             &self.home,
             &program,
             &[workspace, artifacts],
             confine,
+            &readable,
         )?;
-        if matches!(
-            path.extension().and_then(|s| s.to_str()),
-            Some("sh" | "bash" | "py")
-        ) {
+        if matches!(extension.as_deref(), Some("sh" | "bash" | "py")) {
             command.arg(&path);
         }
         command.kill_on_drop(true).current_dir(cwd);
@@ -1926,6 +1966,9 @@ impl Dreaming {
         command
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
+        // Unix ends the script's process group on a timeout. Windows needs
+        // none: killing the sandbox helper closes its job, which ends the
+        // script's whole tree.
         #[cfg(unix)]
         command.process_group(0);
         let mut process = ScriptProcess(command.spawn()?);
@@ -2398,13 +2441,14 @@ fn validate_job(home: &Path, job: &Value) -> Result<()> {
         ));
     }
     if let Some(cwd) = job["workdir"].as_str().filter(|s| !s.is_empty()) {
+        // First, so Windows judges the path by its text before is_dir opens it.
+        common::check_workdir(home, cwd)?;
         if !Path::new(cwd).is_absolute() || !Path::new(cwd).is_dir() {
             return Err(Error::new(
                 4202,
                 "scheduled workdir must be an existing absolute directory",
             ));
         }
-        common::check_workdir(home, cwd)?;
     }
     if let Some(level) = job["reasoning_effort"].as_str().filter(|s| !s.is_empty())
         && !crate::pi::THINKING_LEVELS.contains(&level)

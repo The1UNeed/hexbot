@@ -17,7 +17,8 @@ more freedom and more capability than a hosted product can offer.
   pinned agent runtime and private extension in `backend/pi-runtime/`.
   `apps/desktop/` hosts the shared React bundle from `apps/web/`.
   `backend/python-handoff/` provides the service handoff.
-- Scope: macOS (Apple Silicon and Intel), Linux x86_64 (AppImage, .deb).
+- Scope: macOS (Apple Silicon and Intel), Linux x86_64 (AppImage, .deb),
+  Windows 10 or later, x64 only (installer .exe).
   No phone app. No import from unrelated agent installs. English UI.
   No telemetry until opt-in crash reports before public release.
 
@@ -258,16 +259,20 @@ more freedom and more capability than a hosted product can offer.
   shell command and code run, including full-access commands, and scheduled
   scripts refuse to run. Model review cannot replace this user approval;
   an explicit Allow for now can cover later shell requests.
-- Windows remains unsupported while its build and installation ports are
-  developed. Auto and Manual refuse local shell, code and Pi file tools before
-  approval, including `full_access`; scheduled scripts refuse in every mode.
-  Bypass retains Pi's Bash dialect without containment, requiring Bash on the
-  host. It does not change the tool to `cmd.exe`. Native refusal tests are a
-  prerequisite for further work, not evidence of a working sandbox. Windows
-  support and publishing require the containment tests in
-  [the Windows security contract](docs/windows-security.md). Auto/Manual
-  session-settings refusal also prevents normal chat settings/tool refresh; this
-  foundation does not provide working Windows Auto chat.
+- On Windows, Auto and Manual run commands in an AppContainer through the
+  daemon's own `hexbot sandbox exec`, one per policy, with no network and
+  only the working folder, outputs and runtime programs granted (read-only in
+  Manual). Pi's bash, the user's own commands and scheduled scripts run in
+  it; Pi's read tools judge each path before they open it, and its write
+  and edit go through the daemon's handle bridge. Shell commands and shell
+  scripts run in the POSIX shell (ash) of the busybox-w32 the runtime ships,
+  since Git for Windows' MSYS runtime cannot start in a container; they
+  refuse with a reason when that shell is missing or its probe fails. If the
+  startup probe fails, Auto and Manual refuse rather than ask. `full_access`
+  and the retired Python worker refuse in Auto and Manual, and Copilot in
+  every mode. Bypass retains Pi's Bash dialect without containment, requiring
+  Bash on the host. It does not change the tool to `cmd.exe`. See
+  [the Windows security contract](docs/windows-security.md).
 - Connected tools use Pi's built-in MCP through codemode. A section freezes
   server namespaces and tool declarations; a bot's chat takes changed ones at
   its next message, rebuilt once without the cache. Manual asks for every
@@ -397,9 +402,9 @@ more freedom and more capability than a hosted product can offer.
   binary, managed Python 3.11 for code tools and edge-tts for voice.
   The client-only edition installs no runtime.
 - The daemon installs as a user service (launchd on macOS, systemd user unit
-  on Linux), starts at login and keeps running when the app quits. A tray
-  item shows status. If the user declines, the daemon runs only while the
-  app is open.
+  on Linux, a logon task on Windows), starts at login and keeps running when
+  the app quits. A tray item shows status. If the user declines, the daemon
+  runs only while the app is open.
 - One installer, as a small windowed app (Hexbot Installer, Tauri) or
   `curl -fsSL https://hexbot.app/install.sh | sh`, offers Full, Client, and
   Headless, and fetches only the chosen option. Headless is the daemon alone:
@@ -408,9 +413,9 @@ more freedom and more capability than a hosted product can offer.
   the installer again updates, changes, or uninstalls; `~/.hexbot` stays.
 - Signed and notarized from milestone 1 with a Developer ID certificate and
   an App Store Connect API key from environment variables.
-- Update feed, downloads and docs at hexbot.app. GitHub Actions CI on macOS
-  and Linux runners; release builds on tags. Versions start at 0.1.0. One
-  stable channel; beta later.
+- Update feed, downloads and docs at hexbot.app. GitHub Actions CI on macOS,
+  Linux and Windows runners; release builds on tags. Versions start at 0.1.0.
+  One stable channel; beta later.
 - The native `hexbot` CLI provides `serve`, `setup`, `service`, `status`,
   `pair`, `bots`, `rooms`, `devices`, `connect` and `send`. Legacy core administration commands are not included.
 

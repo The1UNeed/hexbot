@@ -24,6 +24,7 @@ export const targets = [
   { key: 'mac-x64', os: 'mac', name: 'Mac (Intel)', pill: 'Intel (.dmg)' },
   { key: 'linux', os: 'linux', name: 'Linux', pill: 'AppImage' },
   { key: 'linux-deb', os: 'linux', name: 'Linux', pill: 'deb package' },
+  { key: 'win-x64', os: 'win', name: 'Windows (x64)', pill: 'x64 (.exe)' },
 ] as const
 
 let cached: Promise<Downloads | null> | undefined
@@ -33,17 +34,21 @@ export function loadDownloads(): Promise<Downloads | null> {
 
 async function load(): Promise<Downloads | null> {
   if (manifest.published === true) {
-    const rows = (edition: 'full' | 'client', m: { mac: Record<string, string>; linux: Record<string, string> }): Build[] => [
-      { label: 'macOS, Apple Silicon', url: `${updates}/${edition}/mac/arm64/${m.mac.arm64}` },
-      { label: 'macOS, Intel', url: `${updates}/${edition}/mac/x64/${m.mac.x64}` },
-      { label: 'Linux AppImage', url: `${updates}/${edition}/linux/x64/${m.linux.AppImage}` },
-      { label: 'Linux deb', url: `${updates}/${edition}/linux/x64/${m.linux.deb}` },
-    ]
     const { version } = manifest
-    return { channel: 'stable', version, built: `Version ${version}`, full: rows('full', manifest), client: rows('client', manifest.client) }
+    return { channel: 'stable', version, built: `Version ${version}`, full: stableBuilds('full', manifest), client: stableBuilds('client', manifest.client) }
   }
   const nightly = await nightlyDownloads()
   if (!nightly) return null
   const { version, full, client } = nightly
   return { channel: 'nightly', version, built: `Nightly build from ${nightlyDate(version) ?? version}`, full, client }
+}
+
+export function stableBuilds(edition: 'full' | 'client', m: { mac: Record<string, string>; linux: Record<string, string>; win?: { x64: string } }): Build[] {
+  return [
+    { label: 'macOS, Apple Silicon', url: `${updates}/${edition}/mac/arm64/${m.mac.arm64}` },
+    { label: 'macOS, Intel', url: `${updates}/${edition}/mac/x64/${m.mac.x64}` },
+    { label: 'Linux AppImage', url: `${updates}/${edition}/linux/x64/${m.linux.AppImage}` },
+    { label: 'Linux deb', url: `${updates}/${edition}/linux/x64/${m.linux.deb}` },
+    ...(m.win ? [{ label: 'Windows, x64', url: `${updates}/${edition}/win/x64/${m.win.x64}` }] : []),
+  ]
 }

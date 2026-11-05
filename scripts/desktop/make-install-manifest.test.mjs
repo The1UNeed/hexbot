@@ -11,7 +11,7 @@ import { appId } from './release-version.mjs'
 import { feedMetadataName } from './update-feed-utils.mjs'
 
 const hash = (contents, algorithm, encoding) => createHash(algorithm).update(contents).digest(encoding)
-const targets = [['macos-aarch64', 'mac', 'arm64'], ['macos-x86_64', 'mac', 'x64'], ['linux-x86_64', 'linux', 'x64']]
+const targets = [['macos-aarch64', 'mac', 'arm64'], ['macos-x86_64', 'mac', 'x64'], ['linux-x86_64', 'linux', 'x64'], ['windows-x86_64', 'win', 'x64']]
 
 async function fixture(t, channel = 'stable', version = '0.1.5-alpha.1', baseUrl = 'https://updates.hexbot.app') {
   const root = await mkdtemp(join(tmpdir(), 'hexbot-install-manifest-'))
@@ -23,7 +23,7 @@ async function fixture(t, channel = 'stable', version = '0.1.5-alpha.1', baseUrl
   for (const [target, os, arch] of targets) {
     for (const edition of ['full', 'client']) {
       const prefix = edition === 'full' ? 'Hexbot' : 'HexbotClient'
-      const name = os === 'mac' ? `${prefix}-${version}-mac-${arch}.zip` : `${prefix}-${version}-linux-x86_64.AppImage`
+      const name = os === 'mac' ? `${prefix}-${version}-mac-${arch}.zip` : os === 'win' ? `${prefix}-${version}-win-x64.exe` : `${prefix}-${version}-linux-x86_64.AppImage`
       const path = `${edition}/${os}/${arch}`
       const content = `${edition} ${target}`
       await put(`${path}/${name}`, content)
@@ -32,12 +32,13 @@ async function fixture(t, channel = 'stable', version = '0.1.5-alpha.1', baseUrl
       await put(`${path}/${feedMetadataName(channel, os)}`, `version: '${version}'\nfiles:\n${files}  - url: "${name}"\n    sha512: ${hash(content, 'sha512', 'base64')}\n    size: ${content.length}\npath: ${name}\n`)
     }
     const path = `daemon/native/${version}/${target}`
-    const filename = `hexbot-native-${version}-${target}.tar.gz`
+    const format = os === 'win' ? 'zip' : 'tar.gz'
+    const filename = `hexbot-native-${version}-${target}.${format}`
     await put(`${path}/${filename}`, target)
-    await put(`${path}/manifest.json`, JSON.stringify({ version, target, format: 'tar.gz', size: target.length,
+    await put(`${path}/manifest.json`, JSON.stringify({ version, target, format, entrypoint: os === 'win' ? 'hexbot.exe' : 'hexbot', size: target.length,
       sha256: hash(target, 'sha256', 'hex'), url: `${baseUrl}/${path}/${filename}` }))
-    await put(`install/${version}/hexbot-install-${version}-${target}`, target)
-    await put(`install/${version}/HexbotInstaller-${version}-${os === 'mac' ? `mac-${arch}.dmg` : 'linux-x86_64.AppImage'}`, target)
+    await put(`install/${version}/hexbot-install-${version}-${target}${os === 'win' ? '.exe' : ''}`, target)
+    if (os !== 'win') await put(`install/${version}/HexbotInstaller-${version}-${os === 'mac' ? `mac-${arch}.dmg` : 'linux-x86_64.AppImage'}`, target)
   }
   return { root, options: { channel, version } }
 }
@@ -53,18 +54,19 @@ test('install manifests cover every option, target and track with verified metad
     assert.deepEqual(Object.keys(manifest.targets), targets.map(([target]) => target))
     for (const [target, os] of targets) {
       const entry = manifest.targets[target]
-      assert.deepEqual(Object.keys(entry), ['full', 'client', 'headless', 'installer', 'installerApp'])
-      assert.equal(entry.full.format, os === 'mac' ? 'zip' : 'AppImage')
+      assert.deepEqual(Object.keys(entry), ['full', 'client', 'headless', 'installer', ...(os === 'win' ? [] : ['installerApp'])])
+      assert.equal(entry.full.format, os === 'mac' ? 'zip' : os === 'win' ? 'exe' : 'AppImage')
       assert.equal(entry.client.format, entry.full.format)
       assert.equal(entry.full.productName, channel === 'stable' ? 'Hexbot [alpha]' : 'Hexbot Nightly')
       assert.equal(entry.client.productName, channel === 'stable' ? 'Hexbot Client [alpha]' : 'Hexbot Client Nightly')
       assert.equal(entry.full.appId, channel === 'stable' ? 'app.hexbot.desktop' : 'app.hexbot.desktop.nightly')
       assert.equal(entry.client.appId, channel === 'stable' ? 'app.hexbot.client' : 'app.hexbot.client.nightly')
-      assert.equal(entry.headless.format, 'tar.gz')
+      assert.equal(entry.headless.format, os === 'win' ? 'zip' : 'tar.gz')
       assert.equal(entry.headless.manifest, `daemon/native/${version}/${target}/manifest.json`)
       assert.equal(entry.installer.sha256, hash(target, 'sha256', 'hex'))
       assert.equal(entry.installer.size, target.length)
-      assert.ok(entry.installerApp.url.endsWith(os === 'mac' ? '.dmg' : '.AppImage'))
+      if (os === 'win') assert.ok(entry.installer.url.endsWith(`hexbot-install-${version}-windows-x86_64.exe`))
+      else assert.ok(entry.installerApp.url.endsWith(os === 'mac' ? '.dmg' : '.AppImage'))
       for (const option of Object.values(entry)) {
         assert.ok(!option.path.startsWith('/') && !option.path.includes('://'))
         assert.equal(option.url, `https://mirror.example/updates/${option.path}`)
@@ -163,3 +165,17 @@ test('native path takes precedence when preparing a mirror install manifest', as
     }
   }
 })
+
+for (const option of ['full', 'client', 'headless', 'installer']) {
+  test(`Windows requires the ${option} payload without --allow-missing`, async t => {
+    const { root, options } = await fixture(t)
+    const paths = {
+      full: 'full/win/x64/latest.yml',
+      client: 'client/win/x64/latest.yml',
+      headless: `daemon/native/${options.version}/windows-x86_64/manifest.json`,
+      installer: `install/${options.version}/hexbot-install-${options.version}-windows-x86_64.exe`
+    }
+    await rm(join(root, paths[option]))
+    await assert.rejects(makeInstallManifest(root, options), /Missing install artifact/)
+  })
+}

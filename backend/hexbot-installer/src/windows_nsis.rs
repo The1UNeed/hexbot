@@ -79,24 +79,22 @@ pub(crate) fn check(
 }
 #[cfg(windows)]
 fn read(id: &str) -> io::Result<serde_json::Value> {
-    use std::{os::windows::process::CommandExt, process::Command};
+    use std::os::windows::process::CommandExt;
     let guid = IDENTITIES
         .iter()
         .find(|(known, _)| *known == id)
         .ok_or_else(invalid)?
         .1;
-    let output = Command::new(crate::windows_paths::system_program(
-        "WindowsPowerShell/v1.0/powershell.exe",
-    )?)
-    .args([
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        include_str!("windows-nsis-registration.ps1"),
-    ])
-    .env("HEXBOT_NSIS_GUID", guid)
-    .creation_flags(0x08000000)
-    .output()?;
+    let output = crate::windows_paths::system_powershell()?
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            include_str!("windows-nsis-registration.ps1"),
+        ])
+        .env("HEXBOT_NSIS_GUID", guid)
+        .creation_flags(0x08000000)
+        .output()?;
     if !output.status.success() || output.stdout.len() > 32768 {
         eprintln!(
             "NSIS registry read failed: status={}; stderr={:?}; stdoutBytes={}",

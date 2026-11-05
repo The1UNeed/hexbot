@@ -29,6 +29,7 @@ import { resolveWebDevUrl } from './dev-url'
 import { edition, hasRuntime, requireRuntime } from './edition'
 import { parseDeepLink } from './deep-link'
 import { notify } from './notify'
+import { setNotificationIdentity } from './notification-identity'
 import { pair, pairingReply, pairWithGrant, type GrantPairOptions, type PairOptions } from './pair'
 import { handoffWindowsService, installService, reconcileWindowsService, serviceStatus, uninstallService } from './service'
 import { createTray } from './tray'
@@ -49,6 +50,8 @@ import {
   updaterEvents,
   type UpdateState
 } from './updater'
+
+setNotificationIdentity(app, process.platform, __HEXBOT_APP_ID__)
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url))
 const rendererDirectory = join(currentDirectory, '../renderer')

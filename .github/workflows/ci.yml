@@ -224,6 +224,10 @@ jobs:
         run: HEXBOT_NATIVE_TEST_BUNDLE="$GITHUB_WORKSPACE/apps/desktop/resources/hexbot-native" pnpm --filter ./apps/desktop run test --run src/main/backend/native-bootstrap.test.ts
       # The search-tool tests launch the repository's pinned Pi.
       - run: npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund
+      - name: Install libarchive for Windows ZIP release fixtures
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libarchive-tools
       - name: Release script tests
         run: node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs
       # Runs the exact commands release.yml runs after a build (version

@@ -4,13 +4,21 @@
 import { detectTarget } from '../lib/detectPlatform'
 import { testflightUrl } from '../lib/downloads'
 
-const target = detectTarget({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints })
-const platform = target === 'linux' ? ' for Linux' : target === 'other' ? '' : ' for Mac'
-for (const label of document.querySelectorAll<HTMLElement>('[data-download-label]')) {
-  if (target === 'ios') {
-    label.textContent = 'Get the iPhone beta'
-    label.closest('a')?.setAttribute('href', testflightUrl)
-    continue
+async function labelDownloads() {
+  let hints: { architecture?: string; bitness?: string } | undefined
+  try {
+    const data = (navigator as Navigator & { userAgentData?: { getHighEntropyValues(hints: string[]): Promise<{ architecture?: string; bitness?: string }> } }).userAgentData
+    hints = await data?.getHighEntropyValues(['architecture', 'bitness'])
+  } catch { /* Use the user agent when hints are unavailable. */ }
+  const target = detectTarget({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints, ...hints })
+  const platform = target === 'linux' ? ' for Linux' : target === 'win-x64' ? ' for Windows x64' : target === 'other' ? '' : ' for Mac'
+  for (const label of document.querySelectorAll<HTMLElement>('[data-download-label]')) {
+    if (target === 'ios') {
+      label.textContent = 'Get the iPhone beta'
+      label.closest('a')?.setAttribute('href', testflightUrl)
+      continue
+    }
+    label.textContent = `Download${label.dataset.downloadLabel === 'nightly' ? ' nightly' : ''}${platform}`
   }
-  label.textContent = `Download${label.dataset.downloadLabel === 'nightly' ? ' nightly' : ''}${platform}`
 }
+void labelDownloads()

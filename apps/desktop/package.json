@@ -10,6 +10,8 @@
     "build": "pnpm --filter @hexbot/web run build && node ../../scripts/desktop/stage-runtime.mjs && electron-vite build && node scripts/copy-web.mjs && node ../../scripts/desktop/third-party-notices.mjs app --out resources/THIRD_PARTY_NOTICES",
     "build:client": "pnpm --filter @hexbot/web run build && electron-vite build --mode client && node scripts/copy-web.mjs && node ../../scripts/desktop/third-party-notices.mjs app --out resources/THIRD_PARTY_NOTICES",
     "dist:mac": "node ../../scripts/desktop/dist.mjs --mac",
+    "dist:win": "node ../../scripts/desktop/dist.mjs --win --x64",
+    "dist:win:client": "node ../../scripts/desktop/dist.mjs --client --win --x64",
     "dist:linux": "node ../../scripts/desktop/dist.mjs --linux",
     "dist:mac:client": "node ../../scripts/desktop/dist.mjs --client --mac",
     "dist:linux:client": "node ../../scripts/desktop/dist.mjs --client --linux",

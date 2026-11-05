@@ -1,0 +1,6 @@
+{
+  "version": "FRP-6075-g169694ebd",
+  "license": "GPL-2.0-only",
+  "file": "busybox.txt",
+  "note": "LICENSE from https://github.com/rmyorston/busybox-w32/tree/FRP-6075-g169694ebd, unchanged. Check it again whenever the BUSYBOX pin in scripts/desktop/native-runtime.mjs moves."
+}

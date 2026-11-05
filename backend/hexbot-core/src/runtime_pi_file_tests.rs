@@ -272,3 +272,88 @@ async fn private_pi_edit_commit_rechecks_live_mode_and_workdir_without_creating_
     assert_eq!(fs::read_to_string(path).unwrap(), "keep");
     runtime.shutdown().await;
 }
+#[tokio::test]
+async fn private_pi_file_refuses_configured_git_metadata() {
+    let (home, runtime, _) = setup();
+    fs::write(
+        home.path().join("profiles/owl/config.yaml"),
+        "tools:\n  enabled_toolsets: [file]\n",
+    )
+    .unwrap();
+    let s = runtime.open_session("alice", "owl", "first").await.unwrap();
+    let work = home.workspace().canonicalize().unwrap();
+    // A repository whose hooks live in an ordinary folder, and a worktree
+    // whose metadata is an ordinary folder its .git file links to. Written
+    // directly: the scan reads them itself, without git.
+    for dir in ["repo/.git/objects", "repo/.githooks", "meta/linked/objects"] {
+        fs::create_dir_all(work.join(dir)).unwrap();
+    }
+    fs::write(work.join("repo/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    fs::write(
+        work.join("repo/.git/config"),
+        "[core]\n\thooksPath = .githooks\n",
+    )
+    .unwrap();
+    fs::write(work.join("repo/.githooks/pre-commit"), "#!/bin/sh\n").unwrap();
+    fs::write(work.join("meta/linked/HEAD"), "ref: refs/heads/main\n").unwrap();
+    fs::create_dir_all(work.join("linked")).unwrap();
+    fs::write(work.join("linked/.git"), "gitdir: ../meta/linked\n").unwrap();
+    for (tool, operations) in [
+        ("write", &["write"][..]),
+        ("edit", &["edit_open", "edit_commit"]),
+    ] {
+        start(&runtime, &s, tool);
+        for path in [
+            work.join("repo/.githooks/pre-commit"),
+            work.join("repo/.githooks/post-merge"),
+            work.join("meta/linked/config"),
+        ] {
+            for operation in operations {
+                let mut request = args(&runtime, &s, &path, operation);
+                request["parent"] = json!(["0", "0"]);
+                let error = runtime.pi_file(&s, &event(&request), &request).unwrap_err();
+                assert!(
+                    error.message.contains("Git metadata is read-only"),
+                    "{operation} {}: {}",
+                    path.display(),
+                    error.message
+                );
+            }
+        }
+    }
+    assert_eq!(
+        fs::read_to_string(work.join("repo/.githooks/pre-commit")).unwrap(),
+        "#!/bin/sh\n"
+    );
+    assert!(!work.join("repo/.githooks/post-merge").exists());
+    assert!(!work.join("meta/linked/config").exists());
+    // An ordinary file in the same repository still writes.
+    start(&runtime, &s, "write");
+    let ordinary = work.join("repo/src/main.txt");
+    let request = args(&runtime, &s, &ordinary, "write");
+    runtime.pi_file(&s, &event(&request), &request).unwrap();
+    assert_eq!(fs::read_to_string(ordinary).unwrap(), "ordinary");
+    runtime.shutdown().await;
+}
+#[tokio::test]
+async fn private_pi_file_refuses_when_the_git_scan_cannot_finish() {
+    let (home, runtime, _) = setup();
+    fs::write(
+        home.path().join("profiles/owl/config.yaml"),
+        "tools:\n  enabled_toolsets: [file]\n",
+    )
+    .unwrap();
+    let s = runtime.open_session("alice", "owl", "first").await.unwrap();
+    let work = home.workspace().canonicalize().unwrap();
+    // More folders than the scan's budget: Git protection would be partial.
+    for i in 0..1001 {
+        fs::create_dir(work.join(format!("d{i}"))).unwrap();
+    }
+    start(&runtime, &s, "write");
+    let path = work.join("notes.txt");
+    let request = args(&runtime, &s, &path, "write");
+    let error = runtime.pi_file(&s, &event(&request), &request).unwrap_err();
+    assert!(error.message.contains("safety scan"), "{}", error.message);
+    assert!(!path.exists());
+    runtime.shutdown().await;
+}

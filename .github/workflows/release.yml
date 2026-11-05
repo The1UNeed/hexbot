@@ -11,11 +11,12 @@
 #            moved since the last nightly. Version <base>-nightly.<date>.<run>.
 #            Always a prerelease; the last 14 are kept.
 #
-# Both channels: six packages (full and client, for macOS arm64, macOS x64,
-# Linux x64) plus native daemon archives and installers, the update feed on
+# Both channels: eight packages (full and client, for macOS arm64, macOS x64,
+# Linux x64, Windows x64) plus native daemon archives and installers, the update feed on
 # updates.hexbot.app when the R2 secrets are present, and a GitHub release
 # with every package. Signing and notarization
 # happen when the Apple secrets are present and are skipped otherwise.
+# Windows packages are unsigned: electron-builder skips signing without credentials.
 #
 # Secrets (docs/release.md, "One-time setup"):
 #   HEXBOT_UPDATE_SIGNING_KEY                               required, Ed25519 PEM
@@ -163,7 +164,7 @@ jobs:
       fail-fast: false
       matrix:
         edition: [full, client]
-        build: [mac-arm64, mac-x64, linux-x64]
+        build: [mac-arm64, mac-x64, linux-x64, win-x64]
         include:
           # macOS 26 runners carry Xcode 26, whose actool compiles the layered
           # Icon Composer icon (scripts/desktop/dist.mjs). Both architectures
@@ -178,7 +179,13 @@ jobs:
           - build: linux-x64
             runner: ubuntu-22.04
             target: --linux --x64
+          - build: win-x64
+            runner: windows-latest
+            target: --win --x64
     runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 60
     env:
       CHANNEL: ${{ needs.preflight.outputs.channel }}
@@ -192,6 +199,28 @@ jobs:
           node-version: 26
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # The pinned BusyBox's build cache, keyed by its SHA-256 (BUSYBOX in
+      # scripts/desktop/native-runtime.mjs): frippery.org only fills it, so a
+      # release cannot be stopped by an outage after the first fetch.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: matrix.build == 'win-x64' && matrix.edition == 'full'
+        id: busybox
+        with:
+          path: node_modules/.cache/hexbot
+          key: busybox-6e263d154d8548d1eb936f65d1d8312c80df31c45974e48d6335e4dcc0f4f34c
+      - name: Stage the pinned BusyBox the Windows runtime ships
+        if: matrix.build == 'win-x64' && matrix.edition == 'full'
+        shell: pwsh
+        run: |
+          $directory = Join-Path $env:RUNNER_TEMP 'busybox'
+          node scripts/desktop/stage-busybox.mjs $directory
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot stage the pinned BusyBox' }
+          "HEXBOT_BUSYBOX_FILE=$(Join-Path $directory 'busybox.exe')" >> $env:GITHUB_ENV
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: matrix.build == 'win-x64' && matrix.edition == 'full' && steps.busybox.outputs.cache-hit != 'true'
+        with:
+          path: node_modules/.cache/hexbot
+          key: ${{ steps.busybox.outputs.cache-primary-key }}
       - name: Prepare the native compiler
         if: matrix.edition == 'full'
         run: |
@@ -275,6 +304,9 @@ jobs:
             [ "${#bundles[@]}" -eq 1 ]
             [ -d "${bundles[0]}" ]
             bundle="${bundles[0]}"
+          elif [ "$RUNNER_OS" = Windows ]; then
+            bundle=apps/desktop/release/win-unpacked/resources/hexbot-native
+            [ -d "$bundle" ]
           fi
           node scripts/desktop/make-native-update.mjs "$bundle" native-updates
       - uses: actions/upload-artifact@v7
@@ -287,6 +319,7 @@ jobs:
         with:
           name: ${{ matrix.edition }}-${{ matrix.build }}
           path: |
+            apps/desktop/release/*.exe
             apps/desktop/release/*.dmg
             apps/desktop/release/*.zip
             apps/desktop/release/*.AppImage
@@ -321,7 +354,15 @@ jobs:
             target: linux-x86_64
             app-suffix: linux-x86_64.AppImage
             bundles: appimage
+          - build: win-x64
+            runner: windows-latest
+            rust-target: x86_64-pc-windows-msvc
+            target: windows-x86_64
+            exe-suffix: .exe
     runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 60
     env:
       VERSION: ${{ needs.preflight.outputs.version }}
@@ -343,7 +384,7 @@ jobs:
           workspaces: backend/hexbot-installer
           key: installer-${{ matrix.build }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        if: hashFiles('apps/installer/package.json') != ''
+        if: runner.os != 'Windows' && hashFiles('apps/installer/package.json') != ''
         with:
           workspaces: apps/installer/src-tauri
           key: installer-app-${{ matrix.build }}
@@ -380,7 +421,8 @@ jobs:
           security import "$certificate" -k "$keychain" -f pkcs12 -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
           security list-keychains -d user -s "$keychain" "$HOME/Library/Keychains/login.keychain-db"
-          identity=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application:.*\)".*/\1/p' | head -n 1)
+          identities=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application:.*\)".*/\1/p')
+          identity=${identities%%$'\n'*}
           if [ -z "$identity" ]; then echo '::error::No Developer ID Application identity in CSC_LINK'; exit 1; fi
           certificate_base64=$(base64 < "$certificate" | tr -d '\r\n')
           {
@@ -405,14 +447,16 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/desktop/third-party-notices.mjs installer --out "$RUNNER_TEMP/hexbot-install-notices.txt"
-          node scripts/desktop/third-party-notices.mjs installer-app --out "$RUNNER_TEMP/installer-app-notices.txt"
+          if [ "$RUNNER_OS" != Windows ]; then
+            node scripts/desktop/third-party-notices.mjs installer-app --out "$RUNNER_TEMP/installer-app-notices.txt"
+          fi
       - name: Build the CLI installer
         run: |
           set -euo pipefail
           # build.rs embeds the notices; `hexbot-install --license` prints them.
           HEXBOT_THIRD_PARTY_NOTICES="$RUNNER_TEMP/hexbot-install-notices.txt" cargo build --release --locked --manifest-path backend/hexbot-installer/Cargo.toml --target '${{ matrix.rust-target }}'
           mkdir -p installer-artifacts
-          cp 'backend/hexbot-installer/target/${{ matrix.rust-target }}/release/hexbot-install' "installer-artifacts/hexbot-install-$VERSION-${{ matrix.target }}"
+          cp 'backend/hexbot-installer/target/${{ matrix.rust-target }}/release/hexbot-install${{ matrix.exe-suffix }}' "installer-artifacts/hexbot-install-$VERSION-${{ matrix.target }}${{ matrix.exe-suffix }}"
       - name: Sign and notarize the macOS CLI installer
         if: runner.os == 'macOS'
         run: |
@@ -430,7 +474,7 @@ jobs:
             node -e 'const fs=require("fs"); const result=JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/installer-notarize.json`)); if(result.status!=="Accepted") throw Error(`Installer notarization ${result.status}`)'
           fi
       - name: Build the windowed installer
-        if: hashFiles('apps/installer/package.json') != ''
+        if: runner.os != 'Windows' && hashFiles('apps/installer/package.json') != ''
         env:
           APPIMAGE_EXTRACT_AND_RUN: '1'
         run: |
@@ -488,7 +532,7 @@ jobs:
           mkdir -p dist/updates/daemon/native
           for native in artifacts/daemon-native-*; do
             cp -R "$native"/* dist/updates/daemon/native/
-            find "$native" -name '*.tar.gz' -exec cp {} release/daemon/ \;
+            find "$native" \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} release/daemon/ \;
           done
           cp artifacts/daemon-src/*.tar.gz release/daemon/
           cp artifacts/installer-*/* release/install/
@@ -505,7 +549,7 @@ jobs:
           missing=()
           if [ ! -f apps/installer/package.json ]; then missing=(--allow-missing); fi
           node scripts/desktop/make-install-manifest.mjs --channel "$CHANNEL" --version "$VERSION" dist/updates "${missing[@]}"
-          node --input-type=module -e 'import fs from "node:fs"; const m=JSON.parse(fs.readFileSync(`dist/updates/install/${process.env.CHANNEL}.json`)); for(const target of ["macos-aarch64","macos-x86_64","linux-x86_64"]) for(const option of ["full","client","headless","installer"]) if(!m.targets[target]?.[option]) throw Error(`Missing ${target}/${option}`)'
+          node --input-type=module -e 'import fs from "node:fs"; const m=JSON.parse(fs.readFileSync(`dist/updates/install/${process.env.CHANNEL}.json`)); for(const target of ["macos-aarch64","macos-x86_64","linux-x86_64","windows-x86_64"]) for(const option of ["full","client","headless","installer"]) if(!m.targets[target]?.[option]) throw Error(`Missing ${target}/${option}`)'
           find dist/updates -type f | sort
       # Daemons, installers, and the Python handoff install nothing without these
       # signatures. The step checks each one against packaging/update-signing-key.pub.
@@ -557,8 +601,8 @@ jobs:
           set -euo pipefail
           feed=$([ "$CHANNEL" = stable ] && echo latest || echo nightly)
           signed='import {readFileSync} from "node:fs"; import {releaseKeys, verifies} from "./scripts/desktop/update-signing.mjs"; const [manifest, signature] = process.argv.slice(1); if (!verifies(releaseKeys(), readFileSync(manifest), readFileSync(signature, "utf8"))) { console.error(`::error::${manifest} is not signed by the release key`); process.exit(1) }'
-          for path in full/mac/arm64/$feed-mac.yml full/mac/x64/$feed-mac.yml full/linux/x64/$feed-linux.yml \
-                      client/mac/arm64/$feed-mac.yml client/mac/x64/$feed-mac.yml client/linux/x64/$feed-linux.yml; do
+          for path in full/mac/arm64/$feed-mac.yml full/mac/x64/$feed-mac.yml full/linux/x64/$feed-linux.yml full/win/x64/$feed.yml \
+                      client/mac/arm64/$feed-mac.yml client/mac/x64/$feed-mac.yml client/linux/x64/$feed-linux.yml client/win/x64/$feed.yml; do
             url="https://updates.hexbot.app/$path"
             if curl -fsS --retry 5 --retry-delay 5 "$url" | grep -x "version: $VERSION" > /dev/null; then
               echo "ok  $url"
@@ -567,11 +611,11 @@ jobs:
               exit 1
             fi
           done
-          for target in macos-aarch64 macos-x86_64 linux-x86_64; do
+          for target in macos-aarch64 macos-x86_64 linux-x86_64 windows-x86_64; do
             url="https://updates.hexbot.app/daemon/native/$VERSION/$target/manifest.json"
             curl -fsS --retry 5 --retry-delay 5 "$url" > native-manifest.json
             curl -fsS --retry 5 --retry-delay 5 "$url.sig" > native-manifest.json.sig
-            node -e 'const fs=require("fs"); const m=JSON.parse(fs.readFileSync("native-manifest.json")); if(m.version!==process.env.VERSION || m.format!=="tar.gz") process.exit(1)'
+            node -e 'const fs=require("fs"); const m=JSON.parse(fs.readFileSync("native-manifest.json")); if(m.version!==process.env.VERSION || m.format!==(m.target==="windows-x86_64"?"zip":"tar.gz")) process.exit(1)'
             node --input-type=module -e "$signed" native-manifest.json native-manifest.json.sig
             echo "ok  $url"
           done
@@ -620,7 +664,7 @@ jobs:
           fi
           # The feed files stay on updates.hexbot.app; both editions write a
           # latest-linux.yml and GitHub asset names must be unique.
-          assets=(release/full/*.{dmg,zip,AppImage,deb,blockmap} release/client/*.{dmg,zip,AppImage,deb,blockmap} release/daemon/*.tar.gz release/install/*)
+          assets=(release/full/*.{exe,dmg,zip,AppImage,deb,blockmap} release/client/*.{exe,dmg,zip,AppImage,deb,blockmap} release/daemon/*.{tar.gz,zip} release/install/*)
           if [ "${#assets[@]}" -eq 0 ]; then echo '::error::No packages to upload'; exit 1; fi
           echo "Uploading ${#assets[@]} assets"
           gh release create "$TAG" --target "$GITHUB_SHA" --title "$title" "${notes_args[@]}" \

@@ -13,7 +13,10 @@ mod owned_python_acceptance;
 // `common::atomic_write` (tempfile persist). The candidate below is private to
 // this file: it closes the temp, clears only that owned temp's attributes,
 // publishes with std::fs::rename, and disables cleanup only after success.
-// These prove a mechanism; they do not identify the operation that failed in CI.
+// full-nightly identified the operation that failed in CI: the reinstalled
+// task daemon's readiness republication of native-running.json, while the
+// app's readiness probe was polling that file. The daemon now publishes its
+// records through std::fs::rename too.
 mod publication {
     use std::{
         fs,
@@ -182,6 +185,95 @@ mod publication {
             assert_eq!(sddl(&current_path), sddl(&candidate_path));
         }
         assert_eq!(entries(root.path()), ["candidate.json", "current.json"]);
+    }
+
+    // full-nightly: the reinstalled task's daemon exited with "replace
+    // native-running.json: Access is denied. (os error 5)" while the app's
+    // readiness probe polled that file. Hold every readiness record open with
+    // delete sharing, as Node, Rust and that probe do, through the startup.
+    #[tokio::test]
+    async fn daemon_starts_while_readers_hold_its_readiness_records() {
+        use std::time::Duration;
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("held records");
+        let record = home.join("runtime/native-running.json");
+        let state = home.join("serve-state.json");
+        fs::create_dir_all(home.join("runtime")).unwrap();
+        // A stopped task leaves both behind for the next daemon to replace.
+        fs::write(
+            &record,
+            br#"{"pid":1,"executable":"C:\\stale\\hexbot.exe"}"#,
+        )
+        .unwrap();
+        fs::write(&state, br#"{"host":"127.0.0.1","port":1}"#).unwrap();
+        let mut held = [reader(&record, SHARE_ALL), reader(&state, SHARE_ALL)];
+        let mut daemon = tokio::process::Command::new(env!("CARGO_BIN_EXE_hexbot"))
+            .args(["serve", "--host", "127.0.0.1", "--port", "0"])
+            .env("HEXBOT_HOME", &home)
+            .env("HEXBOT_PI_EXECUTABLE", root.path().join("unused pi.exe"))
+            .env("HEXBOT_SUPERVISOR", "desktop")
+            .env("HEXBOT_DESKTOP_CONTROL", "stdin-v1")
+            .env_remove("HERMES_HOME")
+            .env_remove("HEXBOT_PORT")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut stdout = BufReader::new(daemon.stdout.take().unwrap());
+        let ready = tokio::time::timeout(Duration::from_secs(60), async {
+            let mut line = String::new();
+            loop {
+                line.clear();
+                if stdout.read_line(&mut line).await.unwrap() == 0 {
+                    return None;
+                }
+                if let Some(port) = line.trim().strip_prefix("HERMES_BACKEND_READY port=") {
+                    return Some(port.parse::<u16>().unwrap());
+                }
+            }
+        })
+        .await
+        .expect("daemon readiness deadline");
+        let Some(port) = ready else {
+            panic!(
+                "Daemon exited before readiness: {:?}; stderr is inherited above",
+                daemon.wait().await.unwrap()
+            );
+        };
+        let running: serde_json::Value =
+            serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+        assert_eq!(running["pid"], daemon.id().unwrap());
+        let served: serde_json::Value = serde_json::from_slice(&fs::read(&state).unwrap()).unwrap();
+        assert_eq!(served["port"], port);
+        // The held readers keep the bytes they opened.
+        assert_eq!(
+            reread(&mut held[0]),
+            br#"{"pid":1,"executable":"C:\\stale\\hexbot.exe"}"#
+        );
+        assert_eq!(reread(&mut held[1]), br#"{"host":"127.0.0.1","port":1}"#);
+        drop(held);
+        daemon
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"HEXBOT_SHUTDOWN_V1\n")
+            .await
+            .unwrap();
+        let status = tokio::time::timeout(Duration::from_secs(30), daemon.wait())
+            .await
+            .expect("daemon shutdown deadline")
+            .unwrap();
+        assert_eq!(status.code(), Some(0));
+        for directory in [&home, &home.join("runtime")] {
+            let names = entries(directory);
+            assert!(
+                !names.iter().any(|name| name.ends_with(".tmp")),
+                "{names:?}"
+            );
+        }
     }
 }
 

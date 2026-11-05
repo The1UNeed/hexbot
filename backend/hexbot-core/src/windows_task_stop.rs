@@ -12,7 +12,7 @@ use std::{
         process::CommandExt,
     },
     path::{Component, Path},
-    process::{Command, Stdio},
+    process::Stdio,
     time::{Duration, Instant},
 };
 struct Engine {
@@ -179,20 +179,18 @@ fn query(file: &Path, home: &Path, operation: &str, deadline: Instant) -> io::Re
     }
     let mut stdout = tempfile::tempfile()?;
     let mut stderr = tempfile::tempfile()?;
-    let mut child = Command::new(crate::windows_paths::system_program(
-        "WindowsPowerShell/v1.0/powershell.exe",
-    )?)
-    .args([
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        &super::control(file, home, operation)?,
-    ])
-    .creation_flags(0x08000000)
-    .stdin(Stdio::null())
-    .stdout(stdout.try_clone()?)
-    .stderr(stderr.try_clone()?)
-    .spawn()?;
+    let mut child = crate::windows_paths::system_powershell()?
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &super::control(file, home, operation)?,
+        ])
+        .creation_flags(0x08000000)
+        .stdin(Stdio::null())
+        .stdout(stdout.try_clone()?)
+        .stderr(stderr.try_clone()?)
+        .spawn()?;
     let remaining = deadline.saturating_duration_since(Instant::now());
     let waited = if remaining.is_zero() {
         Ok(false)
@@ -269,6 +267,7 @@ mod tests {
     use std::{
         io::{BufRead, BufReader, Write},
         os::windows::io::AsHandle,
+        process::Command,
         sync::mpsc,
         thread,
     };

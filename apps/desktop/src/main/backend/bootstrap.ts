@@ -122,7 +122,7 @@ async function verifyNativeRuntime(
   const manifest = await readManifest(directory)
   if (manifest.version !== deps.appVersion || manifest.target !== `${deps.platform}-${deps.arch}`)
     throw new Error('Native runtime version or architecture does not match this app')
-  const required = [...(deps.platform === 'win32' ? ['hexbot.exe', 'hexbot-cli.exe', 'node.exe', 'pi/launch.mjs', 'pi/search-tools.mjs', 'bin/rg.exe', 'bin/fd.exe', 'web/index.html'] : ['hexbot', 'hexbot-core', 'node', 'pi/hexbot-pi']), 'pi/package-lock.json',
+  const required = [...(deps.platform === 'win32' ? ['hexbot.exe', 'hexbot-cli.exe', 'node.exe', 'pi/launch.mjs', 'pi/search-tools.mjs', 'bin/rg.exe', 'bin/fd.exe', 'bin/busybox.exe', 'web/index.html'] : ['hexbot', 'hexbot-core', 'node', 'pi/hexbot-pi']), 'pi/package-lock.json',
     'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js']
   if (!manifest.files || required.some(file => !manifest.files[file]))
     throw new Error('Native runtime manifest is incomplete')

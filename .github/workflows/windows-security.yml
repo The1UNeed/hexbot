@@ -1,4 +1,5 @@
-# Refusal tests only. This does not enable or publish Windows packages.
+# The Windows execution boundary under a standard user: what Auto and Manual
+# run in the AppContainer and what they refuse. This publishes nothing.
 name: Windows security boundary
 
 on:
@@ -13,6 +14,9 @@ on:
       - '.cargo/config.toml'
       - '.cargo/config'
       - 'scripts/dev/*windows-security*'
+      # The BusyBox pin and the script that stages it beside the daemon.
+      - 'scripts/desktop/native-runtime.mjs'
+      - 'scripts/desktop/stage-busybox.mjs'
       - '.github/workflows/windows-security.yml'
   pull_request:
     paths:
@@ -24,6 +28,9 @@ on:
       - '.cargo/config.toml'
       - '.cargo/config'
       - 'scripts/dev/*windows-security*'
+      # The BusyBox pin and the script that stages it beside the daemon.
+      - 'scripts/desktop/native-runtime.mjs'
+      - 'scripts/desktop/stage-busybox.mjs'
       - '.github/workflows/windows-security.yml'
 
 permissions:
@@ -40,9 +47,28 @@ jobs:
         with:
           node-version: '26.5.0'
       - run: npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund
+      # The pinned BusyBox's build cache, keyed by its SHA-256 (BUSYBOX in
+      # scripts/desktop/native-runtime.mjs): frippery.org only fills it.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: busybox
+        with:
+          path: node_modules/.cache/hexbot
+          key: busybox-6e263d154d8548d1eb936f65d1d8312c80df31c45974e48d6335e4dcc0f4f34c
+      - name: Stage the pinned BusyBox the Windows runtime ships
+        shell: pwsh
+        run: |
+          $directory = Join-Path $env:RUNNER_TEMP 'busybox'
+          node scripts/desktop/stage-busybox.mjs $directory
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot stage the pinned BusyBox' }
+          "HEXBOT_WINDOWS_STAGED_BUSYBOX=$(Join-Path $directory 'busybox.exe')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.busybox.outputs.cache-hit != 'true'
+        with:
+          path: node_modules/.cache/hexbot
+          key: ${{ steps.busybox.outputs.cache-primary-key }}
       - name: Exercise the real Pi extension without an administrator token
         shell: pwsh
-        run: ./scripts/dev/windows-security-standard-user.ps1 -Runtime (Resolve-Path backend/pi-runtime).Path
+        run: ./scripts/dev/windows-security-standard-user.ps1 -Runtime (Resolve-Path backend/pi-runtime).Path -Busybox "$env:HEXBOT_WINDOWS_STAGED_BUSYBOX"
 
   combined-refusal:
     name: Combined native Rust and Pi refusal under a standard user
@@ -50,56 +76,44 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '26.5.0'
       - run: rustup show active-toolchain
-      - name: Combine pinned sources and remove only the exact guard in a disposable copy
+      - name: Compile the actual Rust runtime boundary probe and the daemon it runs as the sandbox helper
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $env:HEXBOT_CI_GIT = (Get-Command git.exe).Source
-          $root = Join-Path $env:RUNNER_TEMP 'hexbot-native-refusal-source'
-          $routing = node scripts/dev/windows-security-inputs.mjs '${{ github.workspace }}' '${{ github.event.pull_request.head.sha || github.sha }}'
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot select immutable native inputs' }
-          Write-Host "Immutable native source routing: $routing"
-          $plan = $routing | ConvertFrom-Json
-          $arguments = @($root, $plan.buildSHA, $plan.securitySHA)
-          if ($plan.currentTree) { $arguments += '--current-tree' }
-          $record = node scripts/dev/prepare-windows-security.mjs @arguments
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot prepare exact combined source' }
-          $inputs = $record | ConvertFrom-Json
-          if ($inputs.sourceDir -ne $root -or $inputs.buildSHA -ne $plan.buildSHA -or $inputs.securitySHA -ne $plan.securitySHA) { throw 'Unexpected native source inputs' }
-          if ($plan.currentTree -and ($inputs.appliedSecurityPatch -or $inputs.guardedTree -ne $plan.guardedTree)) { throw 'Current source tree was not preserved' }
-          "HEXBOT_COMBINED_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          # The checkout used for production is still guarded and unchanged.
-          git diff --exit-code -- backend/hexbot-core/src/lib.rs
-          if ($LASTEXITCODE -ne 0) { throw 'Production platform guard changed' }
-      - name: Compile the actual Rust runtime refusal probe, without other unit-test fixtures
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $manifest = Join-Path $env:HEXBOT_COMBINED_ROOT 'backend/hexbot-core/Cargo.toml'
           $messages = Join-Path $env:RUNNER_TEMP 'hexbot-native-refusal-compiler.jsonl'
-          cargo test --locked --manifest-path $manifest --test windows_security --no-run --message-format=json | Out-File -FilePath $messages -Encoding utf8
-          if ($LASTEXITCODE -ne 0) { throw 'Combined native Rust probe did not compile' }
-          $artifact = @(Get-Content $messages | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'windows_security' -and $_.executable })
-          if ($artifact.Count -ne 1) { throw 'Expected one native test executable' }
+          cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test windows_security --no-run --message-format=json | Out-File -FilePath $messages -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { throw 'Native Rust probe did not compile' }
+          $artifacts = @(Get-Content $messages | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.reason -eq 'compiler-artifact' -and $_.executable })
+          $artifact = @($artifacts | Where-Object { $_.target.name -eq 'windows_security' })
+          $daemon = @($artifacts | Where-Object { $_.target.name -eq 'hexbot' -and $_.target.kind -contains 'bin' })
+          if ($artifact.Count -ne 1 -or $daemon.Count -ne 1) { throw 'Expected one native test executable and one daemon executable' }
           "HEXBOT_WINDOWS_PROBE=$($artifact[0].executable)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-      - name: Install the pinned production Pi runtime in the disposable source
+          "HEXBOT_WINDOWS_DAEMON=$($daemon[0].executable)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Install the pinned production Pi runtime
+        run: npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund
+      # The pinned BusyBox's build cache, keyed by its SHA-256 (BUSYBOX in
+      # scripts/desktop/native-runtime.mjs): frippery.org only fills it.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: busybox
+        with:
+          path: node_modules/.cache/hexbot
+          key: busybox-6e263d154d8548d1eb936f65d1d8312c80df31c45974e48d6335e4dcc0f4f34c
+      - name: Stage the pinned BusyBox the Windows runtime ships
         shell: pwsh
-        run: npm ci --prefix "$env:HEXBOT_COMBINED_ROOT/backend/pi-runtime" --ignore-scripts --no-audit --no-fund
+        run: |
+          $directory = Join-Path $env:RUNNER_TEMP 'busybox'
+          node scripts/desktop/stage-busybox.mjs $directory
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot stage the pinned BusyBox' }
+          "HEXBOT_WINDOWS_STAGED_BUSYBOX=$(Join-Path $directory 'busybox.exe')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.busybox.outputs.cache-hit != 'true'
+        with:
+          path: node_modules/.cache/hexbot
+          key: ${{ steps.busybox.outputs.cache-primary-key }}
       - name: Exercise production runtime gates as a standard local user
         shell: pwsh
-        run: ./scripts/dev/windows-security-standard-user.ps1 -Runtime "$env:HEXBOT_COMBINED_ROOT/backend/pi-runtime" -Probe "$env:HEXBOT_WINDOWS_PROBE"
-      - name: Remove the disposable source and all generated test executables
-        if: always()
-        shell: pwsh
-        run: |
-          if ($env:HEXBOT_COMBINED_ROOT -and (Test-Path $env:HEXBOT_COMBINED_ROOT)) {
-            git worktree remove --force $env:HEXBOT_COMBINED_ROOT
-            if ($LASTEXITCODE -ne 0) { throw 'Cannot remove disposable source' }
-          }
+        run: ./scripts/dev/windows-security-standard-user.ps1 -Runtime (Resolve-Path backend/pi-runtime).Path -Probe "$env:HEXBOT_WINDOWS_PROBE" -Hexbot "$env:HEXBOT_WINDOWS_DAEMON" -Busybox "$env:HEXBOT_WINDOWS_STAGED_BUSYBOX"

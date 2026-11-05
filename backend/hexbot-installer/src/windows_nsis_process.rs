@@ -159,6 +159,8 @@ fn inputs(destination: &Path, id: &str) -> crate::Result<(Vec<String>, &'static 
     Ok((spellings, executable))
 }
 
+/// Refuse to run the NSIS program `nsis` beside a process its pinned macro
+/// would stop: the preflight below.
 #[cfg(windows)]
 pub(crate) fn check(
     paths: &crate::Paths,
@@ -166,6 +168,36 @@ pub(crate) fn check(
     id: &str,
     nsis: &Path,
 ) -> crate::Result<()> {
+    preflight(paths, destination, id, nsis).map(|_| ())
+}
+
+/// [`check`], then the command that runs `nsis`. It names the modules of the
+/// PowerShell host the check probed, so the macro's own process checks load
+/// what the probes loaded and take the branch they took.
+#[cfg(windows)]
+pub(crate) fn checked_command(
+    paths: &crate::Paths,
+    destination: &Path,
+    id: &str,
+    nsis: &Path,
+) -> crate::Result<std::process::Command> {
+    let program = preflight(paths, destination, id, nsis)?;
+    let mut command = paths.command(nsis);
+    command.env(
+        "PSModulePath",
+        crate::windows_paths::powershell_modules(&program),
+    );
+    Ok(command)
+}
+
+/// The preflight, which returns the PowerShell host it probed.
+#[cfg(windows)]
+fn preflight(
+    paths: &crate::Paths,
+    destination: &Path,
+    id: &str,
+    nsis: &Path,
+) -> crate::Result<std::path::PathBuf> {
     let (mut spellings, image) = inputs(destination, id)?;
     // Resolve only the authenticated existing parent, never registry/process
     // strings or a missing EXE. An uncertain alias must not drop a predicate.
@@ -189,11 +221,17 @@ pub(crate) fn check(
     }
     let machine = machine(std::fs::File::open(nsis)?)?;
     let program = host(machine)?;
-    // Exactly the two separate pinned invocations, same inherited policy/env.
-    // No ExecutionPolicy flag or PowerShell preference is added by this check.
+    // Exactly the two separate pinned invocations, same inherited policy. No
+    // ExecutionPolicy flag or PowerShell preference is added by this check.
+    // The host loads its own modules, as NSIS's does (`checked_command`).
     let invoke = |script: &str| {
         let mut command = paths.command(&program);
-        command.args(["-NoProfile", "-NonInteractive", "-C", script]);
+        command
+            .env(
+                "PSModulePath",
+                crate::windows_paths::powershell_modules(&program),
+            )
+            .args(["-NoProfile", "-NonInteractive", "-C", script]);
         command
     };
     let available_probe = output(invoke(AVAILABLE_PROBE))?;
@@ -274,7 +312,7 @@ pub(crate) fn check(
             "This NSIS fallback cannot safely install or uninstall beside the live app or daemon under the current PowerShell policy. No process was stopped."
         });
     }
-    Ok(())
+    Ok(program)
 }
 
 #[cfg(windows)]

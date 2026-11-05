@@ -12,7 +12,7 @@ test('windowed installer release step handles bundle names with spaces on every 
   const source = await readFile(new URL('../../.github/workflows/release.yml', import.meta.url), 'utf8')
   const step = source.match(/- name: Build the windowed installer\n([\s\S]*?)(?=      - name:)/)?.[1]
   assert.ok(step)
-  assert.match(step, /if: hashFiles\('apps\/installer\/package.json'\) != ''/)
+  assert.match(step, /if: runner.os != 'Windows' && hashFiles\('apps\/installer\/package.json'\) != ''/)
   const script = step.split('        run: |\n')[1].replace(/^          /gm, '')
   const root = await mkdtemp(join(tmpdir(), 'hexbot-installer-release-'))
   t.after(() => rm(root, { recursive: true, force: true }))
@@ -66,4 +66,25 @@ test('release builds both installers with third-party notices', async () => {
   assert.match(notices, /third-party-notices\.mjs installer-app --out "\$RUNNER_TEMP\/installer-app-notices\.txt"/)
   const cli = source.match(/- name: Build the CLI installer\n([\s\S]*?)(?=      - name:)/)?.[1]
   assert.match(cli, /HEXBOT_THIRD_PARTY_NOTICES="\$RUNNER_TEMP\/hexbot-install-notices\.txt" cargo build --release/)
+})
+
+test('Windows CLI installer preserves its exe suffix and skips Tauri', async t => {
+  const source = await readFile(new URL('../../.github/workflows/release.yml', import.meta.url), 'utf8')
+  const installer = source.split('  installer:\n')[1].split('  publish:\n')[0]
+  assert.match(installer, /rust-target: x86_64-pc-windows-msvc\n            target: windows-x86_64\n            exe-suffix: \.exe/)
+  assert.match(installer, /defaults:\n      run:\n        shell: bash/)
+  const step = installer.match(/- name: Build the CLI installer\n([\s\S]*?)(?=      - name:)/)?.[1]
+  assert.ok(step)
+  const script = step.split('        run: |\n')[1].replace(/^          /gm, '')
+    .replaceAll('${{ matrix.rust-target }}', 'x86_64-pc-windows-msvc')
+    .replaceAll('${{ matrix.target }}', 'windows-x86_64')
+    .replaceAll('${{ matrix.exe-suffix }}', '.exe')
+  const root = await mkdtemp(join(tmpdir(), 'hexbot-windows-installer-release-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await mkdir(join(root, 'bin'))
+  await writeFile(join(root, 'bin/cargo'), `#!${process.execPath}\nimport fs from 'node:fs'; const dir='backend/hexbot-installer/target/x86_64-pc-windows-msvc/release'; fs.mkdirSync(dir, {recursive:true}); fs.writeFileSync(dir+'/hexbot-install.exe','engine');\n`, { mode: 0o755 })
+  await run('bash', ['-c', script], { cwd: root, env: { ...process.env, VERSION: '1.2.3', RUNNER_TEMP: root, PATH: `${join(root, 'bin')}:${process.env.PATH}` } })
+  assert.equal(await readFile(join(root, 'installer-artifacts/hexbot-install-1.2.3-windows-x86_64.exe'), 'utf8'), 'engine')
+  const tauri = installer.match(/- name: Build the windowed installer\n([\s\S]*?)(?=      - name:)/)?.[1]
+  assert.match(tauri, /if: runner.os != 'Windows'/)
 })

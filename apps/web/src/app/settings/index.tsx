@@ -1219,11 +1219,18 @@ export function ApprovalsSettings(): React.JSX.Element {
       {info?.approvals === 'sandbox' && info.sandbox === null ? (
         <Notice role="status">
           {info.platform === 'windows'
-            ? 'The Windows sandbox is unavailable, so Auto and Manual refuse local commands, code runs, and file tools, including approved full access, and scheduled scripts do not run. Bypass has no sandbox or credential protection.'
+            ? 'The Windows sandbox could not start, so Auto and Manual refuse local commands and file tools, and scheduled scripts do not run. Bypass has no sandbox or credential protection. Restart Hexbot to try again.'
             : 'No OS sandbox is available, so Manual and Auto ask before every shell command and code run. Install bubblewrap on the computer running the daemon, then restart the daemon to restore isolation.'}
         </Notice>
       ) : null}
-      <Group title="Mode">
+      <Group
+        footer={
+          info?.platform === 'windows' && info.sandbox === 'appcontainer'
+            ? 'On Windows, Auto and Manual run commands in BusyBox, a POSIX shell, not Bash. Bypass runs them in Git Bash.'
+            : undefined
+        }
+        title="Mode"
+      >
         <div aria-label="Approval mode" className={dividerClass} role="radiogroup">
           {approvalModes(role, settings?.approval_mode).map(mode => (
             <ChoiceRow
@@ -1340,8 +1347,15 @@ export function updateLabel(state: null | UpdateState): string {
     case 'installing':
       return `Installing version ${state.downloadedVersion}. Hexbot restarts when it is done.`
 
-    case 'error':
-      return `${state.errorContext === 'download' ? 'Download' : state.errorContext === 'install' ? 'Install' : 'Update check'} failed: ${state.message ?? 'unknown error'}`
+    case 'error': {
+      const step =
+        state.errorContext === 'download'
+          ? 'Download'
+          : state.errorContext === 'install'
+            ? 'Install'
+            : 'Update check'
+      return `${step} failed: ${state.message ?? 'unknown error'}`
+    }
 
     case 'up-to-date':
       return `Up to date.${checkedAtLabel(state.checkedAt)}`
