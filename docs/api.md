@@ -365,7 +365,11 @@ inside the Hexbot home, symlinks included.
 others (`DESIGN.md`, "The primary bot"). There is at most one per owner.
 
 - `hexbot.bots.list {all?}` → `{bots: [Bot]}`, the primary bot first, then by
-  `last_activity_at` desc.
+  `last_activity_at` desc. `last_activity_at` is the last message in the
+  bot's chat with you: yours when you send it (`prompt.submit` or
+  `session.steer`, which broadcast `hexbot.bots.changed`), the bot's when its
+  turn ends or a heartbeat message lands. Threads between bots, rooms, jobs,
+  heartbeat runs, dreams, and renaming or touching a section leave it.
 - `hexbot.bots.get {name}` → `{bot: Bot}`
 - `hexbot.bots.create {name, display_name?, title?, description?, persona?,
   provider, model, avatar?, face?}` → `{bot: Bot, section: Section}` (creates the

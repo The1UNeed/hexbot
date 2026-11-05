@@ -119,6 +119,15 @@ fn section_row(home: &Path, caller: &str, id: &str) -> Result<Value> {
     owner(home, caller, row["owner_id"].as_str().unwrap_or(""))?;
     Ok(row)
 }
+/// A bot's place in the list is the last message in its chat with you, yours
+/// or its own. Threads between bots, rooms, jobs, heartbeat runs and dreams
+/// have no chat row here and leave it where it is. True when it moved.
+pub(crate) fn stamp_chat_activity(conn: &Connection, section: &str, at: f64) -> Result<bool> {
+    Ok(conn.execute(
+        "UPDATE bots SET last_activity_at=?1 WHERE name=(SELECT bot FROM sections WHERE id=?2 AND peer_bot IS NULL AND purpose IS NULL)",
+        params![at, section],
+    )? > 0)
+}
 // The profile identifies old schemas without ownership columns. When a schema
 // or a current mapping does carry ownership, never cross that boundary, even
 // through a continuation whose parent points at the requested conversation.
@@ -1066,27 +1075,9 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
         )?;
     }
     tx.commit()?;
-    for (owner, bot, id) in doomed {
-        // Deleting stamps activity; this is not the bot's.
-        let deleted = conn
-            .query_row(
-                "SELECT last_activity_at FROM bots WHERE name=?",
-                [&bot],
-                |r| r.get::<_, Option<f64>>(0),
-            )
-            .optional()
-            .map_err(Error::from)
-            .and_then(|activity| {
-                let pending = delete_section(home, &owner, &id, true)?;
-                conn.execute(
-                    "UPDATE bots SET last_activity_at=? WHERE name=?",
-                    params![activity.flatten(), bot],
-                )?;
-                if let Some(error) = pending {
-                    return Err(error);
-                }
-                Ok(())
-            });
+    for (owner, _bot, id) in doomed {
+        let deleted =
+            delete_section(home, &owner, &id, true).and_then(|pending| pending.map_or(Ok(()), Err));
         if let Err(error) = deleted {
             eprintln!("Kept the sections not yet deleted: could not delete {id}: {error}");
             break;
@@ -2247,10 +2238,6 @@ fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<Op
                 caller,
             )?;
             crate::dreaming::heartbeat::forget_section(&tx, id)?;
-            tx.execute(
-                "UPDATE bots SET last_activity_at=? WHERE name=?",
-                params![now(), row["bot"].as_str()],
-            )?;
             #[cfg(all(test, unix))]
             section_delete_barrier(home, "before_commit")?;
             tx.commit()?;
@@ -2725,7 +2712,7 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
         | "hexbot.sections.touch"
         | "hexbot.sections.mark_read" => {
             let id = required(p, "id")?;
-            let row = section_row(home, caller, id)?;
+            section_row(home, caller, id)?;
             let now = now();
             let mut conn = db::open(home)?;
             let tx = conn.transaction()?;
@@ -2765,12 +2752,7 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
                     tx.execute("UPDATE sections SET done_at=NULL WHERE id=?", [id])?;
                 }
             }
-            if method != "hexbot.sections.mark_read" {
-                tx.execute(
-                    "UPDATE bots SET last_activity_at=? WHERE name=?",
-                    params![now, row["bot"].as_str()],
-                )?;
-            }
+            // None of these is a message: the bot keeps its place in the list.
             tx.commit()?;
             Ok(json!({"section":section(home,caller,id)?}))
         }

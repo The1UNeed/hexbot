@@ -6507,3 +6507,85 @@ async fn a_package_of_skills_set_up_through_a_bots_own_key_reads_as_ready_to_tha
     assert!(row.get("state").is_none(), "{row}");
     runtime.shutdown().await;
 }
+
+#[tokio::test]
+async fn only_messages_in_a_bots_chat_move_it_up_the_list() {
+    let (home, runtime, hub) = setup();
+    db::open(home.path())
+        .unwrap()
+        .execute_batch("INSERT INTO bots(name,owner_id) VALUES('fox','alice');INSERT INTO sections(id,bot,owner_id,title,peer_bot) VALUES('thread','owl','alice','Fox asks','fox');")
+        .unwrap();
+    let activity = || {
+        db::open(home.path())
+            .unwrap()
+            .query_row(
+                "SELECT last_activity_at FROM bots WHERE name='owl'",
+                [],
+                |r| r.get::<_, Option<f64>>(0),
+            )
+            .unwrap()
+    };
+    let mut events = hub.subscribe();
+    // A whole turn in a thread between bots leaves the bot where it is.
+    let thread = runtime
+        .call("alice", "hexbot.sections.open", &json!({"id":"thread"}))
+        .await
+        .unwrap()
+        .unwrap()["section"]["live_session_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":thread,"text":"hello"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while events.recv().await.unwrap().frame["params"]["type"] != "message.complete" {}
+    })
+    .await
+    .unwrap();
+    assert_eq!(activity(), None);
+    // Nor does an app touching or renaming its chat.
+    for (method, params) in [
+        ("hexbot.sections.touch", json!({"id":"first"})),
+        (
+            "hexbot.sections.rename",
+            json!({"id":"first","title":"Renamed"}),
+        ),
+    ] {
+        crate::catalog::call(home.path(), "alice", method, &params)
+            .unwrap()
+            .unwrap();
+    }
+    assert_eq!(activity(), None);
+    // Writing in its chat moves it at once, before any reply, and every app hears.
+    let id = open(&runtime).await;
+    runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":id,"text":"wait"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(activity().is_some());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.frame["params"]["type"] == "hexbot.bots.changed"
+                && event.frame["params"]["payload"]["name"] == "owl"
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    runtime.shutdown().await;
+}
