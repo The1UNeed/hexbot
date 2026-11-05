@@ -433,8 +433,16 @@ impl App {
                 "one_chat": true,
                 // `session.recall` takes back the owner's latest message in a chat.
                 "recall": true,
+                // `hexbot.sections.history` reads a chat without starting its bot.
+                "section_history": true,
                 "home": self.home
             })),
+            "hexbot.sections.history" => {
+                let (home, owner, p) = (self.home.clone(), owner.to_owned(), p.clone());
+                tokio::task::spawn_blocking(move || catalog::section_history(&home, &owner, &p))
+                    .await
+                    .map_err(|error| Error::new(5200, error.to_string()))?
+            }
             "hexbot.diagnostics.get" => {
                 let (home, owner, p) = (self.home.clone(), owner.to_owned(), p.clone());
                 let load = self.runtime.diagnostic_load();

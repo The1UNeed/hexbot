@@ -121,6 +121,15 @@ fn section_row(home: &Path, caller: &str, id: &str) -> Result<Value> {
     owner(home, caller, row["owner_id"].as_str().unwrap_or(""))?;
     Ok(row)
 }
+/// A section's stored history, without starting its bot. Apps read it ahead
+/// of time so a chat shows at once; `hexbot.sections.open` still makes it live.
+pub fn section_history(home: &Path, caller: &str, p: &Value) -> Result<Value> {
+    let id = required(p, "id")?;
+    section_row(home, caller, id)?;
+    let (messages, cursor, delta) =
+        crate::runtime_store::history_since(home, id, p["history_cursor"].as_str())?;
+    Ok(json!({"messages":messages,"history_cursor":cursor,"history_delta":delta}))
+}
 /// A bot's place in the list is the last message in its chat with you, yours
 /// or its own. Threads between bots, rooms, jobs, heartbeat runs and dreams
 /// have no chat row here and leave it where it is. True when it moved.

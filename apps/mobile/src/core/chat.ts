@@ -127,7 +127,15 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
   const sessionId = event.session_id ?? ''
   switch (event.type) {
     case 'message.start':
-      return { ...state, busy: true, streaming: '', interim: [], tools: [], error: null }
+      return {
+        ...state,
+        busy: true,
+        streaming: '',
+        interim: [],
+        tools: [],
+        error: null,
+        turnAt: state.messages.length
+      }
     case 'message.delta':
       return { ...state, busy: true, streaming: state.streaming + text }
     case 'message.interim':
@@ -139,17 +147,20 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
     case 'message.complete': {
       const parts = [...state.interim, text || state.streaming].filter(Boolean)
       if (!parts.length && state.tools.length) parts.push('')
+      const at = Math.min(state.turnAt ?? state.messages.length, state.messages.length)
       return {
         ...state,
+        turnAt: undefined,
         messages: [
-          ...state.messages,
+          ...state.messages.slice(0, at),
           ...parts.map((part, index): ChatMessage => ({
             id: `${sessionId}-${String((event as GatewayEvent & { seq?: number }).seq ?? state.messages.length)}-${index}`,
             role: 'assistant',
             text: part,
             createdAt: Date.now(),
             tools: index === parts.length - 1 ? state.tools : undefined
-          }))
+          })),
+          ...state.messages.slice(at)
         ],
         busy: false,
         streaming: '',
@@ -167,13 +178,13 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
       // Only the daemon's empty `checking` line ends the label; other status
       // lines leave it, since another review may still be running.
       if (p.kind === 'checking') return { ...state, checking: text, activity: text }
+      if (p.kind === 'idle' || p.kind === 'done' || p.kind === 'error' || p.kind === 'interrupted')
+        // The daemon says the turn ended after its last message, so nothing is running.
+        return { ...state, activity: state.checking || text, busy: false, turnAt: undefined }
       return {
         ...state,
         activity: state.checking || text,
-        busy:
-          p.kind === 'idle' || p.kind === 'done' || p.kind === 'error' || p.kind === 'interrupted'
-            ? false
-            : state.busy || p.kind === 'working' || p.kind === 'waiting'
+        busy: state.busy || p.kind === 'working' || p.kind === 'waiting'
       }
     case 'thinking.delta':
       return { ...state, activity: state.checking || text }

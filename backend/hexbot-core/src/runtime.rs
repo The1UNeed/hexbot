@@ -69,6 +69,9 @@ struct State {
     compacting: bool,
     closed: bool,
     interrupted: bool,
+    /// The owner's next message stopped this run. It ends without an error:
+    /// the owner moved on, so there is nothing to retry.
+    superseded: bool,
     /// Stop calls still cancelling dialogs, native tools or Pi itself.
     stops: usize,
     /// Stop recovery owns admission until retained Pi input has been resubmitted.
@@ -1270,6 +1273,7 @@ impl Runtime {
                 compacting: false,
                 closed: false,
                 interrupted: false,
+                superseded: false,
                 stops: 0,
                 recovering: false,
                 stop_epoch: 0,
@@ -2053,6 +2057,7 @@ impl Runtime {
                         state.output.clear();
                         state.error = None;
                         state.interrupted = false;
+                        state.superseded = false;
                         state.chain = chain.take().unwrap_or_default();
                         state.owner_run = !hidden;
                         // A background result that finds the section idle starts a turn
@@ -3049,15 +3054,42 @@ impl Runtime {
                         ));
                     }
                 };
+                // A message the owner sends while the bot works cuts its reply
+                // off, as Stop would, and starts the next turn with it. Input
+                // arriving during that Stop waits for it as queued input does;
+                // a `/compact` in progress finishes first.
+                // A message that would be refused anyway leaves the reply
+                // alone, and so does `/compact`, which waits for an idle bot.
+                let text = required(p, "text")?;
+                let interrupt = p["interrupt"] == true && p["display_kind"] != "hidden";
+                if interrupt {
+                    let compact = text.trim() == "/compact" || text.trim().starts_with("/compact ");
+                    let sendable = !compact
+                        && !text.trim().is_empty()
+                        && text.len() <= 1024 * 1024
+                        && recall::refuse_typed(text).is_ok();
+                    let working = {
+                        let state = s.state.lock().unwrap();
+                        let staged = uploads.as_ref().is_none_or(|ids| {
+                            ids.iter()
+                                .all(|id| state.staged.iter().any(|u| &u.id == id))
+                        });
+                        sendable && staged && state.busy && !state.compacting && !state.interrupted
+                    };
+                    if working {
+                        s.state.lock().unwrap().superseded = true;
+                        self.interrupt(&s, DEADLINE).await?;
+                    }
+                }
                 // Actual admission owns its own boundary after every wait; this
                 // initial landing must not prevent its configuration restart.
                 let admission = _landing.and_then(Landing::into_admission);
                 let result = self
                     .submit_admitted(
                         &s,
-                        required(p, "text")?,
+                        text,
                         p["display_kind"] == "hidden",
-                        p["queued"] == true,
+                        p["queued"] == true || interrupt,
                         None,
                         uploads.as_deref(),
                         admission,
@@ -5105,6 +5137,10 @@ impl Runtime {
                     if !state.display.is_empty() {
                         return Ok(());
                     }
+                    let superseded = std::mem::take(&mut state.superseded);
+                    if superseded && state.error.as_deref() == Some("The turn was interrupted") {
+                        state.error = None;
+                    }
                     if state.end_turn() {
                         self.reload(s);
                     }
@@ -5121,7 +5157,8 @@ impl Runtime {
                             .map_or_else(|| state.output.clone(), |end| end.text.clone()),
                         ending
                             .as_ref()
-                            .map_or_else(|| state.error.clone(), |end| end.error.clone()),
+                            .map_or_else(|| state.error.clone(), |end| end.error.clone())
+                            .filter(|e| !(superseded && e == "The turn was interrupted")),
                         std::mem::take(&mut state.pending),
                     )
                 };

@@ -1031,7 +1031,7 @@ function runTurn(identified: boolean) {
   expect(before.approvals).toHaveLength(1)
   expect(before.clarifies).toHaveLength(1)
   expect(before.checking).toBe('Checking this step')
-  expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible()
+  expectWorkingButton()
 
   return () => {
     const after = useTranscripts.getState().bySession.chat!
@@ -1055,8 +1055,16 @@ function runTurn(identified: boolean) {
     }
 
     expect(after.turnActive).toBe(true)
-    expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible()
+    expectWorkingButton()
   }
+}
+
+/** A running turn shows Stop, or Send while the field holds a message (that cuts the reply off). */
+function expectWorkingButton() {
+  const draft = (screen.getByRole('textbox', { name: 'Message' }) as HTMLTextAreaElement).value
+  const files = screen.queryAllByRole('button', { name: /^Remove / }).length
+  expect(screen.getByRole('button', { name: draft.trim() || files ? 'Send' : 'Stop' })).toBeVisible()
+  expect(screen.queryByRole('button', { name: draft.trim() || files ? 'Stop' : 'Send' })).toBeNull()
 }
 
 it.each([true, false])(
@@ -1113,7 +1121,8 @@ it('sends only the uploads of the files still selected after an upload fails', a
     session_id: 'chat',
     text: 'Read my plan',
     input_id: expect.any(String),
-    attachments: ['srv-2']
+    attachments: ['srv-2'],
+    interrupt: true
   })
   expect(delivered[0]!.files).toEqual(['plan.txt'])
   expect(staged.has('srv-1')).toBe(true)
@@ -1289,7 +1298,8 @@ it.each(['message.complete', 'error'] as const)(
       session_id: 'chat',
       text: 'Read my plan',
       input_id: expect.any(String),
-      attachments: []
+      attachments: [],
+      interrupt: true
     })
     expect(submits()[1]!.input_id).not.toBe(original.inputId)
     expect(delivered[1]!.files).toEqual([])
@@ -1734,7 +1744,8 @@ it('keeps a refused request on its own row and uploads across the read for an ea
     session_id: 'chat',
     text: 'Also read my notes',
     input_id: expect.any(String),
-    attachments: [upload]
+    attachments: [upload],
+    interrupt: true
   })
   expect(submits()[2]!.input_id).not.toBe(submits()[1]!.input_id)
   expect(delivered[1]!.files).toEqual(['notes.txt'])
@@ -1914,3 +1925,32 @@ it.each([
     expect(screen.getByRole('button', { name: 'Remove follow-up.txt' })).toBeVisible()
   }
 )
+
+it('turns Stop into Send once you type while the bot works, and that message cuts the reply off', async () => {
+  await mount()
+  expect(await screen.findByText('Earlier reply')).toBeVisible()
+  const field = screen.getByRole('textbox', { name: 'Message' })
+  await waitFor(() => expect(field).toBeEnabled())
+  act(() => {
+    const ids = { turn_id: 'running', message_id: 'running-fragment' }
+    routeEvent({ type: 'message.start', session_id: 'chat', payload: ids } as GatewayEvent)
+    routeEvent({
+      type: 'tool.start',
+      session_id: 'chat',
+      payload: { ...ids, tool_id: 'running-tool', name: 'read_file', args: { path: 'a.txt' } }
+    } as GatewayEvent)
+  })
+  expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Send' })).toBeNull()
+  fireEvent.change(field, { target: { value: 'Use b.txt instead' } })
+  expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(() => expect(submits()).toHaveLength(1))
+  expect(submits()[0]).toEqual({
+    session_id: 'chat',
+    text: 'Use b.txt instead',
+    input_id: expect.any(String),
+    attachments: [],
+    interrupt: true
+  })
+})

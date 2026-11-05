@@ -23,8 +23,14 @@ data model. The native transport and event projection live in
 
 ## Core methods the client calls directly
 
-- Chat: `prompt.submit {session_id, text, attachments?, input_id?}`,
+- Chat: `prompt.submit {session_id, text, attachments?, input_id?, interrupt?}`,
   `session.interrupt`, `session.steer {session_id, text, input_id?}`.
+  A `prompt.submit` while the bot works answers 4002, unless it sets
+  `interrupt: true`: then the running reply stops first, as
+  `session.interrupt` would, and the message starts the next run once Stop
+  finishes. A `/compact` in progress finishes first, and a `/compact` sent
+  this way is still refused while the bot works. The web and mobile apps
+  send every message from the composer this way.
   `session.steer` steers a healthy busy run. During Stop or manual compaction
   it waits before staging input; when idle it starts a fresh run. Close or
   process exit rejects a waiting steer with a session error.
@@ -603,7 +609,8 @@ returned by `open`.
   such as while it was offline, drops the unanswered cards it showed before
   the read that are not listed, and ends a turn it showed when `busy` is
   false. Answered cards and anything received during the read stay. The web
-  app reads a chat again each time it opens it and after a reconnect. The
+  app reads a chat again each time it opens it and after a reconnect, with
+  the cursor of the history it holds, so an unchanged chat costs no rows. The
   three fields come from one moment.
   A missing catalog section returns code `4204`. Ordinary web bot-chat routes
   resolve the daemon's canonical chat before opening history, displaying it,
@@ -613,7 +620,15 @@ returned by `open`.
   returns the same ID. Late replies from an obsolete route or daemon do not
   redirect the current view.
 
-Both history methods always return an opaque `history_cursor`. Keep it with
+- `hexbot.sections.history {id, history_cursor?}` → `{messages: [Message],
+  history_cursor: string, history_delta: boolean}`: the section's stored
+  history, read without starting its bot, so it carries no `busy`, cards or
+  live session. Apps read every bot's chat ahead with it and keep it current,
+  so switching to a bot shows its chat at once; `hexbot.sections.open` still
+  makes the chat live before input. Owner-only; a missing section returns
+  `4204`. Daemons that have it say `section_history: true` in `hexbot.info`.
+
+All three history methods always return an opaque `history_cursor`. Keep it with
 exactly the displayed snapshot for that conversation on that daemon, then send
 it with the next read. If `history_delta` is true, append `messages` in order;
 an unchanged conversation returns an empty array. If false, replace the entire

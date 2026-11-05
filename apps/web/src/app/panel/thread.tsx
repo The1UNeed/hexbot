@@ -101,7 +101,10 @@ function ThreadMessage({ bot, message, name }: { bot?: Bot; message: Message; na
                   key={index}
                 >
                   <div className="hex-prose">
-                    <Markdown text={text} />
+                    <Markdown
+                      streaming={message.streaming && index === bubbles.length - 1}
+                      text={text}
+                    />
                   </div>
                 </div>
               ))}

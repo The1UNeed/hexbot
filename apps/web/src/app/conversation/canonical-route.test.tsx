@@ -145,6 +145,8 @@ beforeEach(() => {
     daemon: { one_chat: true } as DaemonInfo
   })
   useBots.setState({ byName: { owl: { name: 'owl', display_name: 'Owl' } as Bot }, loaded: true })
+  // Histories held from the previous test's daemon would show at once.
+  useSections.getState().reset()
   useSections.setState({
     byId: { old, canonical },
     idsByBot: { owl: ['old', 'canonical'] },
