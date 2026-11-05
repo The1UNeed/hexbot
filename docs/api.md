@@ -316,13 +316,16 @@ available, whatever its saved toolsets say; bots run code and browse there.
 offered. `tools` only reports available tools,
 and a tool that isn't available is never offered to a model; a frozen section
 that still lists one gets an error when calling it.
-Provider key changes broadcast `hexbot.bots.changed` to every user so paired
-clients refresh tool availability. Speech calls check the requested provider
+Provider key changes and finished sign-ins broadcast `hexbot.bots.changed` to
+every user so paired clients refresh tool availability and
+`provider_connected`. Speech calls check the requested provider
 when it overrides the default.
 `provider` is stored as given; `provider_connected` judges it by what the
 name resolves to, so `claude`, `codex` and `openai` count as their
-providers. The primary bot's tools store the connected provider's id from
-`hexbot.providers.list`, whatever name the bot used.
+providers, and a custom endpoint by its name or `custom:<name>`. A provider
+signed in outside Hexbot through its own tool, such as Copilot ACP, counts
+until the user turns it off. The primary bot's tools store the connected
+provider's id from `hexbot.providers.list`, whatever name the bot used.
 `provider_connected` is whether the bot's `provider` has a key or sign-in
 right now, and null for a bot with no provider of its own. While it is
 false, the apps show a card above the chat's composer that asks for a new

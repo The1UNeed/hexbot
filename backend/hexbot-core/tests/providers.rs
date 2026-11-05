@@ -1,4 +1,4 @@
-use hexbot_core::{common, db, providers, settings};
+use hexbot_core::{common, db, providers, server::App, settings};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -7,6 +7,7 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 
 fn setup() -> tempfile::TempDir {
@@ -136,6 +137,83 @@ async fn removing_a_provider_disconnects_it_and_drops_the_defaults_on_it() {
         .await
         .unwrap();
     assert!(settings::get(h).unwrap()["default_model"].is_null());
+}
+#[test]
+fn custom_endpoints_and_external_sign_ins_count_as_connected() {
+    let home = setup();
+    let h = home.path();
+    common::write_config(
+        h,
+        &json!({"providers":{"work":{"api":"https://example.test/v1","api_key":"custom-secret","models":["work-model"]}}}),
+    )
+    .unwrap();
+    assert!(providers::connected(h, "work").unwrap());
+    assert!(providers::connected(h, "custom:work").unwrap());
+    assert!(!providers::connected(h, "custom:play").unwrap());
+    // Copilot ACP signs in through its own CLI, which the daemon cannot see;
+    // it counts until the user turns it off.
+    assert!(providers::connected(h, "copilot-acp").unwrap());
+    providers::clear_key(h, "copilot-acp").unwrap();
+    assert!(!providers::connected(h, "copilot-acp").unwrap());
+}
+#[tokio::test]
+async fn a_finished_sign_in_tells_the_apps_the_bots_changed() {
+    let home = setup();
+    let h = home.path();
+    let (base, _count, server) = auth_server("ok").await;
+    common::write_config(
+        h,
+        &json!({"provider_auth":{"openai-codex":{"issuer":base}}}),
+    )
+    .unwrap();
+    let app = App::new(
+        h.to_owned(),
+        "127.0.0.1:0".parse().unwrap(),
+        h.join("pi.cjs"),
+        None,
+    )
+    .unwrap();
+    let mut events = app.events.subscribe();
+    let login = app
+        .call(
+            "local",
+            "hexbot.providers.login_start",
+            &json!({"provider":"codex"}),
+        )
+        .await
+        .unwrap();
+    let id = login["login_id"].as_str().unwrap().to_owned();
+    let status = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let value = app
+                .call(
+                    "local",
+                    "hexbot.providers.login_poll",
+                    &json!({"login_id":id}),
+                )
+                .await
+                .unwrap();
+            if value["status"] != "pending" {
+                return value;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(status["status"], "done", "{status}");
+    let event = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.frame["params"]["type"] == "hexbot.bots.changed" {
+                return event;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(event.frame["params"]["type"], "hexbot.bots.changed");
+    server.abort();
 }
 #[tokio::test]
 async fn guards_provider_mutations_and_rejects_invalid_keys() {

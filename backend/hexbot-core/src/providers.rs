@@ -662,10 +662,21 @@ pub fn list_providers(home: &Path) -> Result<Value> {
 pub fn connected(home: &Path, name: &str) -> Result<bool> {
     let slug = canonical_provider(name);
     match profiles().iter().find(|p| p["name"] == slug) {
+        // Signed in outside Hexbot, through the provider's own tool: the
+        // daemon only knows when the user turned it off.
+        Some(p) if string(p, "auth_type") == "external_process" => {
+            Ok(read_json(&home.join("providers-disabled.json"))?[slug.as_str()] != true)
+        }
         Some(p) => configured(home, p),
+        // A custom endpoint answers to its name and to custom:<name>.
         None => Ok(custom_profiles(&common::read_config(home)?)
             .iter()
-            .any(|p| p["name"] == slug)),
+            .any(|p| {
+                p["name"] == slug
+                    || p["aliases"]
+                        .as_array()
+                        .is_some_and(|aliases| aliases.iter().any(|alias| alias == &slug))
+            })),
     }
 }
 fn catalog_models(slug: &str) -> Vec<String> {

@@ -735,13 +735,16 @@ impl App {
         Ok(id)
     }
     fn changed(&self, owner: &str, method: &str, p: &Value, result: &Value) {
+        // A finished sign-in connects a provider as a key does, so every bot
+        // on it says so again.
         if matches!(
             method,
             "hexbot.providers.set_key"
                 | "hexbot.providers.clear_key"
                 | "model.save_key"
                 | "model.disconnect"
-        ) {
+        ) || (method == "hexbot.providers.login_poll" && result["status"] == "done")
+        {
             self.events
                 .emit(owner, None, "hexbot.bots.changed", json!({}));
             return;
