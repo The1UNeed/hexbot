@@ -244,6 +244,12 @@ struct Output {
 async fn run_docker(docker: &Path, args: &[&str], wait: Duration) -> Result<Output> {
     let mut cmd = tokio::process::Command::new(docker);
     crate::credentials::desktop_environment(&mut cmd);
+    // Where the daemon's Docker is, which the desktop environment leaves out.
+    for name in ["DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG"] {
+        if let Ok(value) = std::env::var(name) {
+            cmd.env(name, value);
+        }
+    }
     cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

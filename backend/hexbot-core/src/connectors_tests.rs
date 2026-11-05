@@ -1182,3 +1182,19 @@ async fn web_search_is_free_out_of_the_box_and_stays_on_without_keys() {
     assert!(!tools.contains(&"web_extract".to_owned()), "{tools:?}");
     server.abort();
 }
+
+#[tokio::test]
+async fn settings_name_the_web_search_the_bots_use() {
+    let home = setup();
+    // Nothing chosen, a SearXNG URL and an Exa key saved: search picks Exa.
+    fs::write(
+        home.path().join(".env"),
+        "SEARXNG_URL=\"http://127.0.0.1:1\"\nEXA_API_KEY=\"exa-key\"\n",
+    )
+    .unwrap();
+    let env = common::env_values(home.path()).unwrap();
+    let cfg = common::read_config(home.path()).unwrap();
+    assert_eq!(crate::native_tools::web_backend(&cfg, &env, false), "exa");
+    let row = connectors::get(home.path(), None, "web_search").unwrap();
+    assert_eq!(row["provider"], "exa");
+}

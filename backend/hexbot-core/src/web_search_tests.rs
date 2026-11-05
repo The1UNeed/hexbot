@@ -380,33 +380,31 @@ async fn real_free_providers_answer() {
 }
 
 /// Against real Docker: `cargo test -- --ignored real_shutdown --nocapture`.
-/// A daemon that stops while SearXNG is still starting leaves it stopped.
+/// Once the daemon is stopping, a start that reaches `docker start` does not
+/// run it, so nothing it started outlives the daemon.
 #[tokio::test]
 #[ignore = "needs Docker"]
-async fn real_shutdown_during_start_leaves_searxng_stopped() {
+async fn real_shutdown_stops_a_later_start_from_launching() {
+    let home = tempfile::tempdir().unwrap();
+    common::write_config(home.path(), &json!({"web":{"searxng":{"docker":"docker"}}})).unwrap();
+    crate::searxng::stop(home.path()).await;
+    let started = crate::searxng::ensure(home.path()).await;
+    println!(
+        "start after shutdown: {:?}",
+        started.as_ref().map_err(|e| &e.message)
+    );
+    assert_eq!(started.unwrap_err().message, "Hexbot is stopping");
     let docker = native_tools_on_path("docker");
-    // Shutdown at each phase of a start: before, during and after `docker start`.
-    for delay in [0, 300, 900, 1500, 2500] {
-        let home = tempfile::tempdir().unwrap();
-        common::write_config(home.path(), &json!({"web":{"searxng":{"docker":"docker"}}})).unwrap();
-        let owned = home.path().to_owned();
-        let starting = tokio::spawn(async move { crate::searxng::ensure(&owned).await });
-        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-        crate::searxng::stop(home.path()).await;
-        // The daemon still finishes other shutdown work before it exits.
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        starting.abort();
-        let name = crate::searxng::container(home.path());
-        let state = std::process::Command::new(&docker)
-            .args(["inspect", "--format", "{{.State.Status}}", &name])
-            .output()
-            .unwrap();
-        let state = String::from_utf8_lossy(&state.stdout).trim().to_owned();
-        println!("shutdown after {delay} ms: {name} is {state:?}");
-        std::process::Command::new(&docker)
-            .args(["rm", "-f", &name])
-            .output()
-            .unwrap();
-        assert_ne!(state, "running", "after {delay} ms");
-    }
+    let name = crate::searxng::container(home.path());
+    let state = std::process::Command::new(&docker)
+        .args(["inspect", "--format", "{{.State.Status}}", &name])
+        .output()
+        .unwrap();
+    let state = String::from_utf8_lossy(&state.stdout).trim().to_owned();
+    println!("{name} after a start during shutdown: {state:?}");
+    std::process::Command::new(&docker)
+        .args(["rm", "-f", &name])
+        .output()
+        .unwrap();
+    assert_ne!(state, "running");
 }

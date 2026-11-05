@@ -159,21 +159,24 @@ fn selected(home: &Path, spec: &Value) -> Result<Option<Value>> {
             return Ok(Some(p.clone()));
         }
     }
-    for p in &providers {
-        let keys = strings(&p["keys"]);
-        let found = if keys.is_empty() {
-            // A provider that needs no key counts once one of its own
-            // settings is saved, such as a Tavily key or a SearXNG URL.
-            let mut any = false;
-            for key in provider_fields(spec, p) {
-                any |= value(home, None, &key)?.is_some();
+    if spec["id"] == "web_search" {
+        // In the order the search itself picks (`native_tools::web_backend`).
+        for (backend, key) in crate::native_tools::WEB_BY_KEY {
+            if value(home, None, key)?.is_some()
+                && let Some(p) = providers.iter().find(|p| {
+                    strings(&p["selection"])
+                        .get(2)
+                        .is_some_and(|b| b == backend)
+                })
+            {
+                return Ok(Some(p.clone()));
             }
-            any
-        } else {
-            has_keys(home, None, &keys)?
-        };
-        if found {
-            return Ok(Some(p.clone()));
+        }
+    } else {
+        for p in &providers {
+            if has_keys(home, None, &strings(&p["keys"]))? {
+                return Ok(Some(p.clone()));
+            }
         }
     }
     Ok(spec["default_provider"]
@@ -970,10 +973,11 @@ async fn probe_free_search(home: &Path, bot: Option<&str>, provider: &Value) -> 
                 false,
             );
         }
-        // A first start downloads SearXNG; it runs on if the test stops waiting.
+        // A first start downloads SearXNG; it runs on after the test stops
+        // waiting, which it does before the apps' 30-second request deadline.
         let owned = home.to_owned();
         let task = tokio::spawn(async move { crate::searxng::ensure(&owned).await });
-        return match tokio::time::timeout(Duration::from_secs(90), task).await {
+        return match tokio::time::timeout(Duration::from_secs(25), task).await {
             Ok(Ok(Ok(_))) => (
                 json!({"ok":true,"message":"SearXNG is running on this computer."}),
                 true,

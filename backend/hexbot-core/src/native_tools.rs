@@ -617,6 +617,18 @@ mod deletion_tests;
 mod web_search_tests;
 /// Search services that cannot read pages; `web_extract` uses another.
 const SEARCH_ONLY: [&str; 5] = ["brave", "brave-free", "searxng", "wikipedia", "marginalia"];
+/// With no provider chosen, the first of these whose key or URL is saved.
+/// Settings reads the same order (`connectors::selected`).
+pub(crate) const WEB_BY_KEY: [(&str, &str); 8] = [
+    ("tavily", "TAVILY_API_KEY"),
+    ("exa", "EXA_API_KEY"),
+    ("parallel", "PARALLEL_API_KEY"),
+    ("keenable", "KEENABLE_API_KEY"),
+    ("firecrawl", "FIRECRAWL_API_KEY"),
+    ("searxng", "SEARXNG_URL"),
+    ("brave-free", "BRAVE_SEARCH_API_KEY"),
+    ("marginalia", "MARGINALIA_API_KEY"),
+];
 /// The service web search (or, with `extract`, page reading) uses: the one
 /// chosen, else the first whose key is saved, else the SearXNG Hexbot runs
 /// for search and the built-in reader for pages.
@@ -637,16 +649,7 @@ pub(crate) fn web_backend(
     if selected != "auto" && !selected.is_empty() && !(extract && SEARCH_ONLY.contains(&selected)) {
         return selected.to_owned();
     }
-    for (backend, key) in [
-        ("tavily", "TAVILY_API_KEY"),
-        ("exa", "EXA_API_KEY"),
-        ("parallel", "PARALLEL_API_KEY"),
-        ("keenable", "KEENABLE_API_KEY"),
-        ("firecrawl", "FIRECRAWL_API_KEY"),
-        ("searxng", "SEARXNG_URL"),
-        ("brave-free", "BRAVE_SEARCH_API_KEY"),
-        ("marginalia", "MARGINALIA_API_KEY"),
-    ] {
+    for (backend, key) in WEB_BY_KEY {
         if !credential(env, key).is_empty() && !(extract && SEARCH_ONLY.contains(&backend)) {
             return backend.to_owned();
         }
