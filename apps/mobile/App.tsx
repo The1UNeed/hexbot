@@ -209,9 +209,6 @@ function MobileApp({ children }: { children?: ReactNode }) {
   const [botPage, setBotPage] = useState<string | null>(null)
   const [addDaemon, setAddDaemon] = useState(false)
   const [panels, setPanels] = useState<Panel[]>([])
-  // A profile or settings page over the chat: what lands in it is not seen yet.
-  const { setChatCovered } = mobile
-  useEffect(() => setChatCovered(panels.length > 0), [panels.length, setChatCovered])
   const [switcherOpen, setSwitcherOpen] = useState(false)
   const [switching, setSwitching] = useState<string | null>(null)
   const [demo, setDemo] = useState(false)
@@ -1350,6 +1347,11 @@ function MobileApp({ children }: { children?: ReactNode }) {
       />
     ) : null
   const column = demoBot ? chat : opening || (route && !demo ? chat : null)
+  // A profile or settings page over the chat, or another chat opening in its
+  // place: what lands in it is not seen yet.
+  const { setChatCovered } = mobile
+  const covered = panels.length > 0 || !!opening
+  useEffect(() => setChatCovered(covered), [covered, setChatCovered])
   // Also cancels a chat still opening, so it does not open after you left.
   const closeChat = () => {
     if (demo) setBotPage(null)
