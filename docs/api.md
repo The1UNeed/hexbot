@@ -325,7 +325,8 @@ name resolves to, so `claude`, `codex` and `openai` count as their
 providers, and a custom endpoint by its name or `custom:<name>`. A provider
 whose sign-in the daemon cannot see, Copilot ACP through its CLI, Bedrock
 through the AWS SDK, Vertex through Google application credentials, counts
-until the user turns it off. A bot's own key, sign-in, or endpoint in its
+until the user turns it off, and the Qwen CLI's sign-in, which the daemon
+imports to run a bot, counts too. A bot's own key, sign-in, or endpoint in its
 profile counts for that bot, as does a key inline in the daemon's model
 config that the bot inherits. The primary bot's tools store the connected
 provider's id from `hexbot.providers.list`, whatever name the bot used.

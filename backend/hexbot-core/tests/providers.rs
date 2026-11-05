@@ -202,6 +202,20 @@ fn custom_endpoints_and_external_sign_ins_count_as_connected() {
     )
     .unwrap();
     assert!(providers::connected(h, Some(&plain), "openrouter").unwrap());
+    // The Qwen CLI's sign-in, imported when the bot runs, counts as well.
+    let creds = h.join("qwen-creds.json");
+    fs::write(
+        &creds,
+        r#"{"access_token":"qwen-token","refresh_token":"r"}"#,
+    )
+    .unwrap();
+    common::write_config(
+        h,
+        &json!({"provider_auth":{"qwen-oauth":{"auth_file":creds.to_string_lossy()}}}),
+    )
+    .unwrap();
+    assert!(providers::connected(h, None, "qwen-oauth").unwrap());
+    assert!(providers::connected(h, Some(&plain), "qwen-oauth").unwrap());
 }
 #[tokio::test]
 async fn a_finished_sign_in_tells_the_apps_the_bots_changed() {

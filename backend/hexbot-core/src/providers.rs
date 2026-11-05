@@ -697,6 +697,18 @@ pub fn connected(home: &Path, profile_home: Option<&Path>, name: &str) -> Result
     if configured(home, p)? {
         return Ok(true);
     }
+    // The Qwen CLI's own sign-in, which the daemon imports to run the bot.
+    if slug == "qwen-oauth" {
+        let state = import_qwen(home)?;
+        let tokens = if state["tokens"].is_object() {
+            &state["tokens"]
+        } else {
+            &state
+        };
+        if !string(tokens, "access_token").is_empty() {
+            return Ok(true);
+        }
+    }
     // A key inline in the model config, the bot's own or the daemon's that
     // it inherits. A root model in the older one-line form has no key.
     let mut model = root["model"].clone();
