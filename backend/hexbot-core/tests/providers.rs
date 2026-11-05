@@ -194,6 +194,14 @@ fn custom_endpoints_and_external_sign_ins_count_as_connected() {
     .unwrap();
     assert!(providers::connected(h, None, "openrouter").unwrap());
     assert!(providers::connected(h, Some(&plain), "openrouter").unwrap());
+    // A root model in the older one-line form leaves the bot's own key to count.
+    common::write_config(h, &json!({"model":"custom/model"})).unwrap();
+    common::write_config(
+        &plain,
+        &json!({"model":{"provider":"openrouter","default":"openai/gpt-5.6","api_key":"sk-bot"}}),
+    )
+    .unwrap();
+    assert!(providers::connected(h, Some(&plain), "openrouter").unwrap());
 }
 #[tokio::test]
 async fn a_finished_sign_in_tells_the_apps_the_bots_changed() {

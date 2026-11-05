@@ -698,8 +698,11 @@ pub fn connected(home: &Path, profile_home: Option<&Path>, name: &str) -> Result
         return Ok(true);
     }
     // A key inline in the model config, the bot's own or the daemon's that
-    // it inherits.
+    // it inherits. A root model in the older one-line form has no key.
     let mut model = root["model"].clone();
+    if !model.is_object() {
+        model = json!({});
+    }
     if let Some(overrides) = profile_cfg["model"].as_object() {
         for (key, value) in overrides {
             model[key] = value.clone();
