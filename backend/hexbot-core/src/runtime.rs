@@ -3059,6 +3059,9 @@ impl Runtime {
                         input_id,
                     )
                     .await?;
+                if p["display_kind"] != "hidden" {
+                    self.chat_sent(&s);
+                }
                 if p["display_kind"] != "hidden"
                     && crate::catalog::adopt_section_title(
                         &self.home,
@@ -3088,7 +3091,11 @@ impl Runtime {
                 self.interrupt(&s, DEADLINE).await?;
                 Ok(json!({"status":"interrupted"}))
             }
-            "session.steer" => self.steer(&s, required(p, "text")?, input_id).await,
+            "session.steer" => {
+                let steered = self.steer(&s, required(p, "text")?, input_id).await?;
+                self.chat_sent(&s);
+                Ok(steered)
+            }
             "session.recall" => self.recall(&s, p).await,
             "session.close" => Ok(json!({"closed":self.close_stored(caller,&s.stored).await?})),
             "session.save" => Ok(json!({"saved":true,"stored_session_id":s.stored})),
@@ -3187,11 +3194,22 @@ impl Runtime {
             "UPDATE sections SET updated_at=?,done_at=? WHERE id=?",
             params![now, now, s.stored],
         )?;
-        conn.execute(
-            "UPDATE bots SET last_activity_at=? WHERE name=?",
-            params![now, s.bot],
-        )?;
+        crate::catalog::stamp_chat_activity(&conn, &s.stored, now)?;
         Ok(())
+    }
+    /// You wrote in a bot's chat: it moves to the top of every app's list now,
+    /// not when its reply ends.
+    fn chat_sent(&self, s: &Live) {
+        let moved = db::open(&self.home)
+            .and_then(|conn| crate::catalog::stamp_chat_activity(&conn, &s.stored, common::now()));
+        match moved {
+            Ok(true) => {
+                self.events
+                    .emit(&s.owner, None, "hexbot.bots.changed", json!({"name":s.bot}));
+            }
+            Ok(false) => {}
+            Err(error) => eprintln!("Activity of {} not stamped: {}", s.bot, error.message),
+        }
     }
 
     fn incident(&self, s: &Live, text: &str) {

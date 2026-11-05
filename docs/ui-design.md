@@ -141,7 +141,8 @@ with Viewport Segments place both poses on the exact halves.
 
 - Header: a window-drag strip (padded for the macOS traffic lights) with one
   row: the search pill and a round glass "+" menu (New bot, New room). No app name. The selected row is a white card on the canvas.
-- List: bots and rooms in one list, ordered by last activity. A bot row is
+- List: bots and rooms in one list, newest message first, the primary bot
+  pinned on top. A bot moves up when you or it writes in its chat. A bot row is
   its face (40px), name, the latest message in its chat (yours or the bot's,
   as one plain line; the bot's label until the chat has one), and a status dot
   on the face (see "Status colours"). No times. A pencil replaces the

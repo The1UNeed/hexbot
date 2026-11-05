@@ -328,6 +328,10 @@ fn post(
         )?;
         return Err(error);
     }
+    // The message is in the chat: the bot moves up with it.
+    if let Err(error) = crate::catalog::stamp_chat_activity(&conn, &section, now) {
+        eprintln!("Activity of {bot} not stamped: {}", error.message);
+    }
     events.emit(
         owner,
         None,
@@ -1142,6 +1146,36 @@ mod tests {
         assert!(take_context(home.path(), "local", "s-b").unwrap().is_none());
         // Another section's ids change nothing here.
         acknowledge(home.path(), "s-b", &json!(["a"])).unwrap();
+    }
+
+    #[test]
+    fn a_message_posted_in_the_chat_moves_the_bot_up_the_list() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        db::open(home.path())
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);
+                 INSERT INTO bots(name,owner_id,last_activity_at) VALUES('owl','alice',1);",
+            )
+            .unwrap();
+        notice(
+            home.path(),
+            &EventHub::new(),
+            "alice",
+            "owl",
+            "The computer is down.",
+        )
+        .unwrap();
+        let activity: f64 = db::open(home.path())
+            .unwrap()
+            .query_row(
+                "SELECT last_activity_at FROM bots WHERE name='owl'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(activity > 1.0, "{activity}");
     }
 
     #[test]
