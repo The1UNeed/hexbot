@@ -42,7 +42,7 @@ const emit=v=>process.stdout.write(JSON.stringify(v)+'\n');
 let pending;
 function complete(text){emit({type:'message_update',assistantMessageEvent:{type:'text_delta',delta:text}});emit({type:'message_end',message:{role:'assistant',content:[{type:'text',text}],model:'test-model',provider:'test',usage:{input:11,output:4,cacheRead:2,cacheWrite:0,cost:{total:.01}},stopReason:'stop'}});emit({type:'agent_end'});emit({type:'agent_settled'});}
 rl.on('line',line=>{const c=JSON.parse(line);if(c.type==='extension_ui_response'){complete(c.value==='deny'?'Denied':'Approved');return;}emit({type:'response',id:c.id,command:c.type,success:true,data:c.type==='get_available_models'?{models:[{id:'test-model',provider:'test'},{id:'costly',provider:'test',cost:{input:21,output:101}}]}:{}});
-if(c.type==='prompt'){emit({type:'agent_start'});emit({type:'message_end',message:{role:'user',content:c.message}});if(c.message==='approval'){emit({type:'extension_ui_request',id:'approval-1',method:'select',title:'__HEXBOT_APPROVAL__'+JSON.stringify({tool:'bash',command:'pwd',reason:'Run command'}),options:['once','session','deny']});}else if(c.message==='batch'){emit({type:'extension_ui_request',id:'batch-1',method:'input',title:'__HEXBOT_CLARIFY__'+JSON.stringify({questions:[{qid:'color',question:'Color?',choices:['red','blue']},{qid:'shape',question:'Shape?'}]})});}else if(c.message==='waiting'){}else if(c.message==='streaming'){pending='streaming';}else if(c.message==='fail'){emit({type:'message_end',message:{role:'assistant',content:[],model:'test-model',provider:'test',stopReason:'error',errorMessage:'Provider down'}});emit({type:'agent_end'});emit({type:'agent_settled'});}else complete('Reply: '+c.message);}
+if(c.type==='prompt'){emit({type:'agent_start'});emit({type:'message_end',message:{role:'user',content:c.message}});if(c.message==='approval'){emit({type:'extension_ui_request',id:'approval-1',method:'select',title:'__HEXBOT_APPROVAL__'+JSON.stringify({tool:'bash',command:'pwd',reason:'Run command'}),options:['once','session','deny']});}else if(c.message==='batch'){emit({type:'extension_ui_request',id:'batch-1',method:'input',title:'__HEXBOT_CLARIFY__'+JSON.stringify({questions:[{qid:'color',question:'Color?',choices:['red','blue']},{qid:'shape',question:'Shape?'}]})});}else if(c.message==='waiting'){}else if(c.message==='computer'){emit({type:'tool_execution_start',toolCallId:'computer-1',toolName:'computer_use',args:{action:'screenshot'}});}else if(c.message==='streaming'){pending='streaming';}else if(c.message==='fail'){emit({type:'message_end',message:{role:'assistant',content:[],model:'test-model',provider:'test',stopReason:'error',errorMessage:'Provider down'}});emit({type:'agent_end'});emit({type:'agent_settled'});}else complete('Reply: '+c.message);}
 if(c.type==='abort'){if(pending==='streaming'){pending=undefined;emit({type:'message_end',message:{role:'assistant',content:[],model:'test-model',provider:'test',stopReason:'aborted'}});}emit({type:'agent_settled'});}
 });
 "##).unwrap();
@@ -1834,6 +1834,36 @@ async fn background_runs_do_not_mark_the_bot_working() {
     );
     runtime.shutdown().await;
     let _ = (job.await, asking.await);
+}
+/// The user watches the bots' computer, so a scheduled job that acts on it
+/// makes the bot look busy until the run ends, though nothing else about the
+/// job shows.
+#[tokio::test]
+async fn a_background_run_on_the_computer_marks_the_bot_working() {
+    let home = setup();
+    let hub = EventHub::new();
+    let mut events = hub.subscribe();
+    let runtime = Runtime::new(home.path().into(), hub, fake_pi(home.path())).unwrap();
+    let job = {
+        let runtime = runtime.clone();
+        tokio::spawn(async move {
+            runtime
+                .run_hidden_job("alice", "owl", "cron-1", "computer", &json!({}))
+                .await
+        })
+    };
+    next_kind(&mut events, "tool.start").await;
+    // Clients read the bot again once the run reaches the computer.
+    assert_eq!(
+        next_kind(&mut events, "hexbot.bots.changed").await["payload"]["name"],
+        "owl"
+    );
+    let status = runtime.status_for_bot("alice", "owl").unwrap();
+    assert_eq!(status["status"], "working");
+    assert_eq!(status["status_detail"]["text"], "Using the computer");
+    assert!(status["status_detail"]["section_id"].is_null());
+    runtime.shutdown().await;
+    let _ = job.await;
 }
 /// Only a message from the owner answers a failed turn when it starts, and only
 /// that section's private failure. A hidden run (background results, rooms,

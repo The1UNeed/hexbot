@@ -143,6 +143,21 @@ describe('ProfilePanel', () => {
     expect(screen.queryByText('Running ls')).toBeNull()
   })
 
+  it('shows a bot clicked in the roster while its chat opens, then the chat it lands on', () => {
+    seed([], false)
+    useBots.setState({ byName: { scout: bot, muse: { ...bot, display_name: 'Muse', name: 'muse' } } })
+    render(<ProfilePanel />)
+    expect(screen.getByPlaceholderText('What Scout is for')).toBeVisible()
+
+    act(() => useUi.setState({ openingShown: 'muse' }))
+    expect(screen.getByPlaceholderText('What Muse is for')).toBeVisible()
+    expect(screen.queryByPlaceholderText('What Scout is for')).toBeNull()
+
+    // The click came to nothing: the chat shown before is back.
+    act(() => useUi.setState({ openingShown: null }))
+    expect(screen.getByPlaceholderText('What Scout is for')).toBeVisible()
+  })
+
   it('says how to fill an empty Library', () => {
     seed([], false)
     render(<ProfilePanel />)

@@ -22,6 +22,7 @@ import { useMe } from '../../stores/me'
 import { roomFailure, roomStatus, useRooms } from '../../stores/rooms'
 import { useSearch } from '../../stores/search'
 import { useTranscripts } from '../../stores/transcripts'
+import { useUi } from '../../stores/ui'
 
 import { AskingRow, AskRows } from './asking-row'
 import { ClarifyCard } from './clarify-card'
@@ -380,13 +381,15 @@ export function RoomConversation() {
 
   // Presence, not the room object: every read mark stores a fresh room.
   const present = Boolean(room)
+  // Hidden behind a clicked bot's loading face, the room is not being read.
+  const hidden = useUi(state => state.openingBot !== null)
   useEffect(() => {
     const seq = events.at(-1)?.seq
 
-    if (seq && present) {
+    if (seq && present && !hidden) {
       void useRooms.getState().markRead(roomId, seq)
     }
-  }, [events, present, roomId])
+  }, [events, hidden, present, roomId])
   useEffect(() => {
     if (atBottom.current) {
       void bottom.current?.scrollIntoView({ block: 'end' })

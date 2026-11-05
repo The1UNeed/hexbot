@@ -48,6 +48,7 @@ import {
 } from '../../stores/sections'
 import { useSettings } from '../../stores/settings'
 import { useTranscripts } from '../../stores/transcripts'
+import { useUi } from '../../stores/ui'
 import { rememberedTab } from '../bot-settings'
 import { type LiveMood, liveMoodsOf } from '../conversation/steps'
 import { UpdatePill } from '../update-pill'
@@ -404,6 +405,12 @@ export function RosterColumn() {
   const newModel = newModels.find(item => item.id === newBot.model)
   const [focused, setFocused] = useState<string | null>(null)
   const root = useRef<HTMLDivElement>(null)
+  // The chat column shows the clicked bot opening, not the chat it leaves.
+  useEffect(() => {
+    useUi.getState().setOpeningBot(asking)
+
+    return () => useUi.getState().setOpeningBot(null)
+  }, [asking])
   useEffect(() => {
     if (!useBots.getState().loaded) {
       void useBots.getState().refresh()
@@ -427,11 +434,14 @@ export function RosterColumn() {
   // seen it, so the daemon still wakes the phone about it.
   const pageVisible = usePageVisible()
 
+  // A chat hidden behind another bot's loading face has not been seen either.
+  const hidden = Boolean(asking && asking !== params.bot)
+
   useEffect(() => {
-    if (params.section && activeSectionDoneAt && pageVisible) {
+    if (params.section && activeSectionDoneAt && pageVisible && !hidden) {
       void sectionsMarkRead(params.section).catch(() => undefined)
     }
-  }, [activeSectionDoneAt, pageVisible, params.section])
+  }, [activeSectionDoneAt, hidden, pageVisible, params.section])
   const streamingSessions = useTranscripts(state => state.bySession)
 
   const liveSections = useMemo(() => liveSectionsOf(streamingSessions), [streamingSessions])

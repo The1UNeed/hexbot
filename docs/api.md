@@ -339,8 +339,10 @@ clears it.
 reverse order), folded by the daemon from live session state, room turns,
 room `waiting.human` events, and open incidents. Only a bot's chat and its
 room sessions make it `working`; heartbeats, scheduled jobs, dreams, CLI runs
-and subagents never do, though one waiting on the user still makes it
-`needs_you`. `status_detail` is
+and subagents do only once their run acts on the bots' computer, until it
+ends (`status_detail.text` "Using the computer", no section or room), and one
+waiting on the user still makes it `needs_you`. The first `computer_use` call
+of a run sends `hexbot.bots.changed {name}`. `status_detail` is
 `{text, section_id, room_id, session_id, since, action, in_chat}` where `action` is
 null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`. A stopped
 bot's `in_chat` is true when the failure has no room and no conversation of
