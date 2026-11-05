@@ -370,7 +370,10 @@ function MobileApp({ children }: { children?: ReactNode }) {
   const shownChat = useRef<string | null>(null)
   const openKey = chatKey ?? (demo ? botPage : null)
   const [selected, setSelected] = useState<'chat' | 'settings' | 'library' | null>(null)
+  // The row tapped beside the iOS list whose chat the daemon has not named yet.
+  const [asked, setAsked] = useState<ConversationSummary | null>(null)
   useEffect(() => {
+    if (openKey) setAsked(null)
     if (openKey && openKey !== shownChat.current) {
       if (Platform.OS === 'ios') {
         setSelected('chat')
@@ -1259,6 +1262,25 @@ function MobileApp({ children }: { children?: ReactNode }) {
       }}
     />
   ) : null
+  // A chat tapped beside the list, while the daemon names it: its face
+  // loading, as an open chat shows while its history arrives.
+  const opening =
+    asked && !route && !demo ? (
+      <ChatScreen
+        key={`${asked.kind}-${asked.id}`}
+        title={asked.name}
+        face={asked.face}
+        items={[]}
+        opening
+        onSend={() => {}}
+        onApprove={() => {}}
+        sendDisabledReason="Opening conversation"
+        error={mobile.error}
+        onDismissError={() => mobile.setError(null)}
+        onRetry={() => openConversation(asked)}
+      />
+    ) : null
+  const column = demoBot ? chat : route && !demo ? chat : opening
   const settingsScreen = (
     <SettingsScreen
       daemon={daemon}
@@ -1342,6 +1364,8 @@ function MobileApp({ children }: { children?: ReactNode }) {
     const shown = selected === 'chat' ? openChatRow || 'chat' : selected
     if (key === null || key !== shown) setPanels([])
     setSelected(row ? 'chat' : (key as 'settings' | 'library' | null))
+    // Until the daemon names the chat, its face loads in the column.
+    setAsked(row && key !== openChatRow ? row : null)
     if (row && key !== openChatRow) openConversation(row)
   }
   const openRoomFromPanel = (room: Room) => {
@@ -1401,7 +1425,8 @@ function MobileApp({ children }: { children?: ReactNode }) {
       Platform.OS === 'ios' ? select('settings') : router.navigate('/settings'),
     onOpenLibrary: () => (Platform.OS === 'ios' ? select('library') : router.navigate('/bots')),
     onSwitchDaemon: saved.length > 1 ? () => setSwitcherOpen(true) : undefined,
-    selected: selected === 'chat' ? openChatRow || null : selected,
+    selected:
+      selected === 'chat' ? openChatRow || (asked && `${asked.kind}-${asked.id}`) : selected,
     onReconnect: reconnect,
     refreshing,
     onRefresh: demo ? undefined : refresh,
@@ -1409,10 +1434,10 @@ function MobileApp({ children }: { children?: ReactNode }) {
   }
   const screens: AppScreens = {
     homeProps,
-    chatProps: chat?.props ?? null,
+    chatProps: column?.props ?? null,
     selected: selected === 'chat' ? openChatRow || 'chat' : selected,
     select,
-    chat: demoBot ? chat : route && !demo ? chat : null,
+    chat: column,
     settings: settingsScreen,
     library: libraryScreen,
     onChatClosed: closeChat,
@@ -1474,7 +1499,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
           </View>
           {connection ? <View style={StyleSheet.absoluteFill}>{connection}</View> : null}
           {/* A bot's chat shows its own loading: the bot's face and "Opening conversation". */}
-          {mobile.loading && mobile.active && route?.kind !== 'section' ? (
+          {mobile.loading && mobile.active && route?.kind !== 'section' && !opening ? (
             <View
               pointerEvents="none"
               style={{ position: 'absolute', top: 70, alignSelf: 'center' }}

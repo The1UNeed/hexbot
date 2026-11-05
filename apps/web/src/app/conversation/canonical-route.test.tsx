@@ -993,3 +993,43 @@ it.each([
   await waitFor(() => expect(calls('prompt.submit')).toHaveLength(1))
   expect(calls('prompt.submit')[0]![1].session_id).toBe(action === 'upgrade' ? 'canonical' : 'old')
 })
+
+it('shows a bot clicked in the roster opening, not the chat it leaves, until its chat opens', async () => {
+  const yakChat = section('yak-chat', { bot: 'yak' })
+  call.mockImplementation((method: string, input: Record<string, unknown>) =>
+    method === 'hexbot.sections.create' && input.bot === 'yak'
+      ? Promise.resolve({ section: yakChat })
+      : method === 'hexbot.sections.list' && input.bot === 'yak'
+        ? Promise.resolve({ sections: [yakChat] })
+        : reply(method, input)
+  )
+  const view = await mount('/b/owl/s/canonical')
+  const left = await screen.findByText('canonical history')
+
+  // The roster asks the daemon for Yak's chat.
+  await act(async () => useUi.getState().setOpeningBot('yak'))
+  expect(screen.getByRole('status', { name: "Opening yak's chat" })).toBeInTheDocument()
+  expect(left.closest('[inert]')).not.toBeNull()
+
+  // It comes to nothing: the chat it left is back as it was.
+  await act(async () => useUi.getState().setOpeningBot(null))
+  expect(screen.queryByRole('status', { name: "Opening yak's chat" })).toBeNull()
+  expect(left.closest('[inert]')).toBeNull()
+
+  // Found: the roster lets go as it navigates, and the face stays until Yak's chat renders.
+  await act(async () => useUi.getState().setOpeningBot('yak'))
+  await act(async () => {
+    const going = view.router.navigate({
+      to: '/b/$bot/s/$section',
+      params: { bot: 'yak', section: 'yak-chat' }
+    })
+
+    useUi.getState().setOpeningBot(null)
+    await going
+  })
+  await waitFor(() => expect(view.router.state.location.pathname).toBe('/b/yak/s/yak-chat'))
+  // The chat it left is never shown again on its way out.
+  const leaving = screen.queryByText('canonical history')
+  expect(leaving === null || leaving.closest('[inert]') !== null).toBe(true)
+  await waitFor(() => expect(screen.queryByText('canonical history')).toBeNull())
+})
