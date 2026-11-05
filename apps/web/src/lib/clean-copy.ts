@@ -81,21 +81,36 @@ export function cleanCopiedHtml(fragment: DocumentFragment, breaks: boolean[]): 
   return holder.innerHTML
 }
 
-// What a selection inside one of these loses, because `cloneContents` copies
-// only what is inside it: a code block's lines, a link's address, emphasis.
+// `cloneContents` copies only what is inside the element a selection shares,
+// so it loses that element and its ancestors. Put back what carries meaning:
+// a list, table or quote when the selection spans its items or rows...
+const HOLDS = 'blockquote, ol, table, tbody, tfoot, thead, tr, ul'
+// ...and any code block, link or emphasis it sits in.
 const KEEP_AROUND = 'a, b, code, del, em, i, pre, s, strong, sub, sup, u'
+
+function wrapIn(around: Element, copy: Node): Node {
+  const wrap = around.cloneNode(false)
+
+  wrap.appendChild(copy)
+
+  return wrap
+}
 
 function withContext(range: Range): Node {
   const within = range.commonAncestorContainer
   let copy: Node = range.cloneContents()
-  let around = (within instanceof Element ? within : within.parentElement)?.closest(KEEP_AROUND)
+  let around = within instanceof Element ? within : within.parentElement
+
+  while (around?.matches(HOLDS)) {
+    copy = wrapIn(around, copy)
+    around = around.parentElement
+  }
+
+  around = around?.closest(KEEP_AROUND) ?? null
 
   while (around) {
-    const wrap = around.cloneNode(false)
-
-    wrap.appendChild(copy)
-    copy = wrap
-    around = around.parentElement?.closest(KEEP_AROUND)
+    copy = wrapIn(around, copy)
+    around = around.parentElement?.closest(KEEP_AROUND) ?? null
   }
 
   return copy

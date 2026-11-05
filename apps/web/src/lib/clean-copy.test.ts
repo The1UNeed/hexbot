@@ -129,6 +129,32 @@ describe('handleCopy', () => {
     )
   })
 
+  it('keeps the list around the items a selection spans, but not around words from one', () => {
+    document.body.innerHTML = '<ol start="3"><li>one</li><li>two</li><li>three</li></ol>'
+
+    const items = document.querySelectorAll('li')
+    const range = document.createRange()
+
+    range.setStart(items[0]!.firstChild!, 1)
+    range.setEnd(items[1]!.firstChild!, 3)
+    document.getSelection()?.removeAllRanges()
+    document.getSelection()?.addRange(range)
+
+    const across = copyEvent()
+
+    handleCopy(across.event)
+
+    expect(across.data.get('text/html')).toBe('<ol start="3"><li>ne</li><li>two</li></ol>')
+
+    select(items[2]!.firstChild!)
+
+    const words = copyEvent()
+
+    handleCopy(words.event)
+
+    expect(words.data.get('text/html')).toBe('three')
+  })
+
   it('leaves copying from the composer to the browser', () => {
     document.body.innerHTML = '<textarea>hello</textarea><p>picked</p>'
     select(document.querySelector('p')!)
