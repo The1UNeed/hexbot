@@ -733,6 +733,38 @@ describe('recall and closing an error in a bot chat', () => {
     expect(hook.result.current.chat.busy).toBe(false)
   })
 
+  it('keeps a reply that was running when the chat opened working when a follow-up is refused', async () => {
+    daemonWith([bot])
+    const base = state.request.getMockImplementation()!
+    state.request.mockImplementation(async (method: string, params: Record<string, unknown> = {}) => {
+      if (method === 'hexbot.sections.open')
+        return { ...(await reply(method, params)), busy: true, messages: [{ role: 'user', content: 'Write an essay' }] }
+      if (method === 'prompt.submit') throw Object.assign(new Error('session is compacting'), { code: 4002 })
+      return base(method, params)
+    })
+    const hook = await connected()
+    await act(async () => { await hook.result.current.openSection(bot) })
+    expect(hook.result.current.chat.busy).toBe(true)
+    await act(async () => { await hook.result.current.send('/compact').catch(() => {}) })
+    expect(hook.result.current.chat.busy).toBe(true)
+    act(() => state.event({ type: 'message.complete', session_id: 'live-owl-chat', payload: { text: 'Bridges are' } }))
+    act(() => state.event({ type: 'status.update', session_id: 'live-owl-chat', payload: { kind: 'idle', text: '' } }))
+    expect(hook.result.current.chat.busy).toBe(false)
+  })
+
+  it('does not keep a finished turn working when a later message is refused', async () => {
+    const hook = await chat()
+    act(() => state.event({ type: 'message.start', session_id: 'live-owl-chat', payload: {} }))
+    act(() => state.event({ type: 'status.update', session_id: 'live-owl-chat', payload: { kind: 'interrupted', text: '' } }))
+    const base = state.request.getMockImplementation()!
+    state.request.mockImplementation(async (method: string, params: Record<string, unknown> = {}) => {
+      if (method === 'prompt.submit') throw Object.assign(new Error('attachment not found: gone; attach it again'), { code: 4204 })
+      return base(method, params)
+    })
+    await act(async () => { await hook.result.current.send('Use this file').catch(() => {}) })
+    expect(hook.result.current.chat.busy).toBe(false)
+  })
+
   it('names a message from the history by its row when it has no input id', async () => {
     const hook = await chat()
     state.request.mockImplementation(async (method: string, params: Record<string, unknown> = {}) => {

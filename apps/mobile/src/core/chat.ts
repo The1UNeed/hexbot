@@ -178,13 +178,13 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
       // Only the daemon's empty `checking` line ends the label; other status
       // lines leave it, since another review may still be running.
       if (p.kind === 'checking') return { ...state, checking: text, activity: text }
+      if (p.kind === 'idle' || p.kind === 'done' || p.kind === 'error' || p.kind === 'interrupted')
+        // The daemon says the turn ended after its last message, so nothing is running.
+        return { ...state, activity: state.checking || text, busy: false, turnAt: undefined }
       return {
         ...state,
         activity: state.checking || text,
-        busy:
-          p.kind === 'idle' || p.kind === 'done' || p.kind === 'error' || p.kind === 'interrupted'
-            ? false
-            : state.busy || p.kind === 'working' || p.kind === 'waiting'
+        busy: state.busy || p.kind === 'working' || p.kind === 'waiting'
       }
     case 'thinking.delta':
       return { ...state, activity: state.checking || text }

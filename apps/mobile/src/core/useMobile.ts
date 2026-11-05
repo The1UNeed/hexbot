@@ -297,10 +297,13 @@ export function useMobile() {
             : (await rpc<{ status: string }>('session.status', { session_id: restoredLiveId }))
                 .status === 'working'
         if (sequence !== openSequence.current) return
+        const messages = historyMessages(result.messages)
         let snapshot: ChatState = {
           ...emptyChat(),
           busy,
-          messages: historyMessages(result.messages)
+          messages,
+          // A reply already running when the chat opened lands after these rows.
+          ...(busy && { turnAt: messages.length })
         }
         // The snapshot goes first: an answer or Stop that arrived while it loaded is newer.
         if (result.pending_clarify)
