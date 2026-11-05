@@ -525,6 +525,8 @@ export interface DaemonInfo {
   one_chat?: true
   /** True once `session.recall` takes back your latest message in a chat; absent on older daemons. */
   recall?: true
+  /** True once `hexbot.sections.history` reads a chat without starting its bot; absent on older daemons. */
+  section_history?: true
   /** Input, run and assistant fragment correlation metadata; absent on older daemons. */
   transcript_identity?: boolean
   /** How the daemon can update itself when asked; absent on older daemons. */

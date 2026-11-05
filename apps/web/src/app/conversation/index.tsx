@@ -7,6 +7,8 @@ import {
   type CSSProperties,
   isValidElement,
   memo,
+  type ReactElement,
+  startTransition,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -137,9 +139,24 @@ export function ConnectedToolsNotice({ sectionId }: { sectionId: string }) {
 const dayKey = (time: number) => new Date(toMillis(time)).toDateString()
 
 /** "Today 9:13 PM", "Yesterday 4:02 PM", or "12 Aug 2:10 PM". */
+// Making a formatter costs more than formatting; a chat formats a date per message.
+const formatters = new Map<string, Intl.DateTimeFormat>()
+
+const formatter = (options: Intl.DateTimeFormatOptions) => {
+  const key = JSON.stringify(options)
+  let found = formatters.get(key)
+
+  if (!found) {
+    found = new Intl.DateTimeFormat(undefined, options)
+    formatters.set(key, found)
+  }
+
+  return found
+}
+
 export function dayLabel(time: number, now = Date.now()): string {
   const date = new Date(toMillis(time))
-  const clock = new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(date)
+  const clock = formatter({ timeStyle: 'short' }).format(date)
   const today = new Date(now)
   const yesterday = new Date(now - 86_400_000)
 
@@ -151,7 +168,7 @@ export function dayLabel(time: number, now = Date.now()): string {
     return `Yesterday ${clock}`
   }
 
-  const day = new Intl.DateTimeFormat(undefined, {
+  const day = formatter({
     day: 'numeric',
     month: 'short',
     ...(date.getFullYear() === today.getFullYear() ? {} : { year: 'numeric' })
@@ -330,16 +347,35 @@ const remarkPlugins: Options['remarkPlugins'] = [
 
 const rehypePlugins: Options['rehypePlugins'] = [rehypeKatex]
 
+/**
+ * Parsed messages by text, newest last. Switching back to a chat draws its
+ * messages without parsing them again; the elements hold no state of their own.
+ */
+const parsed = new Map<string, ReactElement>()
+const PARSED = 400
+
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
-  return (
-    <ReactMarkdown
-      components={markdownComponents}
-      rehypePlugins={rehypePlugins}
-      remarkPlugins={remarkPlugins}
-    >
-      {mathDelimiters(text)}
-    </ReactMarkdown>
-  )
+  let element = parsed.get(text)
+
+  if (element) {
+    parsed.delete(text)
+  } else {
+    // react-markdown's sync renderer is a plain function of its options.
+    element = ReactMarkdown({
+      children: mathDelimiters(text),
+      components: markdownComponents,
+      rehypePlugins,
+      remarkPlugins
+    })
+
+    if (parsed.size >= PARSED) {
+      parsed.delete(parsed.keys().next().value!)
+    }
+  }
+
+  parsed.set(text, element)
+
+  return element
 })
 
 /**
@@ -1756,6 +1792,10 @@ function useHeight<T extends HTMLElement>(): [React.RefObject<T | null>, number]
   return [ref, height]
 }
 
+/** Messages drawn when a chat opens, and how many more each Load earlier adds. */
+const FIRST_PAINT = 10
+const PAGE = 60
+
 function BotConversation() {
   const params = useParams({ strict: false }) as { bot?: string; section?: string }
   const navigate = useNavigate()
@@ -1860,23 +1900,66 @@ function BotConversation() {
     }
   }, [params.bot])
   const [lightbox, setLightbox] = useState<string | null>(null)
-  const [historyWindow, setWindow] = useState({ section: params.section, count: 60 })
-  const visible = historyWindow.section === params.section ? historyWindow.count : 60
+  // A chat opens on its newest messages, so switching paints in one frame;
+  // the rest of the first page follows without holding up input.
+  const [historyWindow, setWindow] = useState({ section: params.section, count: FIRST_PAINT })
+  const visible = historyWindow.section === params.section ? historyWindow.count : FIRST_PAINT
 
   if (historyWindow.section !== params.section) {
-    setWindow({ section: params.section, count: 60 })
+    setWindow({ section: params.section, count: FIRST_PAINT })
   }
 
-  const earlierAnchor = useRef<{ height: number; top: number } | null>(null)
+  // Where the reader was before older messages went in above, in the chat it was taken in.
+  const earlierAnchor = useRef<{ height: number; section?: string; top: number } | null>(null)
+
+  useEffect(() => {
+    if (visible >= PAGE) {
+      return
+    }
+
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    // After the frame that shows the chat.
+    const frame = requestAnimationFrame(() => {
+      timer = setTimeout(() => {
+        const node = viewport.current
+
+        if (node) {
+          earlierAnchor.current = {
+            height: node.scrollHeight,
+            section: params.section,
+            top: node.scrollTop
+          }
+        }
+
+        startTransition(() =>
+          setWindow(window =>
+            window.section === params.section && window.count < PAGE
+              ? { section: params.section, count: PAGE }
+              : window
+          )
+        )
+      })
+    })
+
+    return () => {
+      cancelAnimationFrame(frame)
+      clearTimeout(timer)
+    }
+  }, [params.section, visible])
 
   const loadEarlier = () => {
     const node = viewport.current
 
     if (node) {
-      earlierAnchor.current = { height: node.scrollHeight, top: node.scrollTop }
+      earlierAnchor.current = {
+        height: node.scrollHeight,
+        section: params.section,
+        top: node.scrollTop
+      }
     }
 
-    setWindow({ section: params.section, count: visible + 60 })
+    setWindow({ section: params.section, count: Math.max(visible, PAGE) + PAGE })
   }
 
   const [atBottom, setAtBottom] = useState(true)
@@ -1885,7 +1968,7 @@ function BotConversation() {
     const node = viewport.current
     const anchor = earlierAnchor.current
 
-    if (node && anchor) {
+    if (node && anchor && anchor.section === params.section) {
       node.scrollTop = anchor.top + node.scrollHeight - anchor.height
     }
 
@@ -1926,7 +2009,8 @@ function BotConversation() {
   const jumpIndex = jump ? messages.findIndex(message => message.id === jump.id) : -1
 
   if (jumpIndex >= 0 && messages.length - jumpIndex > visible) {
-    setWindow({ section: params.section, count: messages.length - jumpIndex + 20 })
+    // At least a page, so filling the first page later cannot move the jump.
+    setWindow({ section: params.section, count: Math.max(PAGE, messages.length - jumpIndex + 20) })
   }
 
   const approvals = useMemo(() => transcript?.approvals ?? [], [transcript?.approvals])
@@ -2779,8 +2863,11 @@ function BotConversation() {
             ) : null}
           </div>
         ) : (
-          <div className={cn(transcriptClass, 'hex-fade')} key={params.section}>
-            {messages.length > visible ? <LoadEarlierMessages onClick={loadEarlier} /> : null}
+          <div className={transcriptClass} key={params.section}>
+            {/* Not while the first page fills in, or it flashes at the top. */}
+            {messages.length > Math.max(visible, PAGE) ? (
+              <LoadEarlierMessages onClick={loadEarlier} />
+            ) : null}
             {timeline.map((item, position) => {
               if (item.kind === 'clarify') {
                 return (

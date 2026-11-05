@@ -647,15 +647,43 @@ export interface SectionOpened {
   /** Every approval and question still waiting at this read; older daemons leave it out. */
   pending_requests?: string[]
   section: Section
+  /** Send it with the next read of this chat to get only what came after; older daemons leave it out. */
+  history_cursor?: string
+  /** True when `messages` follow the rows the cursor was sent with; false means the whole history. */
+  history_delta?: boolean
 }
 
-export function sectionsOpen(id: string): Promise<SectionOpened> {
-  return rpcCall<SectionOpened>('hexbot.sections.open', { id })
+/** With the cursor of the rows this app holds, the daemon sends only the rows after them. */
+export function sectionsOpen(id: string, historyCursor?: string): Promise<SectionOpened> {
+  return rpcCall<SectionOpened>('hexbot.sections.open', {
+    id,
+    ...(historyCursor && { history_cursor: historyCursor })
+  })
+}
+
+export interface SectionHistory {
+  history_cursor: string
+  history_delta: boolean
+  messages: HistoryRow[]
+}
+
+/** A chat's stored history without starting its bot (`section_history` daemons). */
+export function sectionsHistory(id: string, historyCursor?: string): Promise<SectionHistory> {
+  return rpcCall<SectionHistory>('hexbot.sections.history', {
+    id,
+    ...(historyCursor && { history_cursor: historyCursor })
+  })
 }
 
 /** A full durable read; cache synchronization remains compatible with older daemons. */
-export function sessionHistory(sessionId: string): Promise<{ messages: HistoryRow[] }> {
-  return rpcCall('session.history', { session_id: sessionId })
+export function sessionHistory(
+  sessionId: string,
+  historyCursor?: string
+): Promise<{ history_cursor?: string; history_delta?: boolean; messages: HistoryRow[] }> {
+  return rpcCall('session.history', {
+    session_id: sessionId,
+    ...(historyCursor && { history_cursor: historyCursor })
+  })
 }
 
 export function sectionsMarkRead(id: string): Promise<{ section: Section }> {

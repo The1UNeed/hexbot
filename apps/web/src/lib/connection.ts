@@ -22,6 +22,7 @@ import {
 } from '@hermes/shared'
 
 import { botsActions } from '../stores/bots'
+import { prefetchChats } from '../stores/chat-prefetch'
 import { connectionActions, invalidateConnectionReads } from '../stores/connection'
 import { useHeartbeat } from '../stores/heartbeat'
 import { useMe } from '../stores/me'
@@ -652,6 +653,11 @@ export class ConnectionSupervisor {
         useMe.getState().refresh(),
         sectionsActions().refresh()
       ])
+
+      // Every bot's chat comes over in the background, so switching shows it at once.
+      if (current()) {
+        prefetchChats()
+      }
     })
 
     try {
