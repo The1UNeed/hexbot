@@ -1262,25 +1262,6 @@ function MobileApp({ children }: { children?: ReactNode }) {
       }}
     />
   ) : null
-  // A chat tapped beside the list, while the daemon names it: its face
-  // loading, as an open chat shows while its history arrives.
-  const opening =
-    asked && !route && !demo ? (
-      <ChatScreen
-        key={`${asked.kind}-${asked.id}`}
-        title={asked.name}
-        face={asked.face}
-        items={[]}
-        opening
-        onSend={() => {}}
-        onApprove={() => {}}
-        sendDisabledReason="Opening conversation"
-        error={mobile.error}
-        onDismissError={() => mobile.setError(null)}
-        onRetry={() => openConversation(asked)}
-      />
-    ) : null
-  const column = demoBot ? chat : route && !demo ? chat : opening
   const settingsScreen = (
     <SettingsScreen
       daemon={daemon}
@@ -1341,6 +1322,27 @@ function MobileApp({ children }: { children?: ReactNode }) {
             ? null
             : `bot-${route.bot.name}`
         : null
+  // A chat tapped beside the list, while the daemon names it: its face
+  // loading, as an open chat shows while its history arrives, in place of
+  // the chat open before it.
+  const askedRow = asked && `${asked.kind}-${asked.id}`
+  const opening =
+    asked && askedRow !== openChatRow && !demo ? (
+      <ChatScreen
+        key={`${asked.kind}-${asked.id}`}
+        title={asked.name}
+        face={asked.face}
+        items={[]}
+        opening
+        onSend={() => {}}
+        onApprove={() => {}}
+        sendDisabledReason="Opening conversation"
+        error={mobile.error}
+        onDismissError={() => mobile.setError(null)}
+        onRetry={() => openConversation(asked)}
+      />
+    ) : null
+  const column = demoBot ? chat : opening || (route && !demo ? chat : null)
   // Also cancels a chat still opening, so it does not open after you left.
   const closeChat = () => {
     if (demo) setBotPage(null)
@@ -1426,7 +1428,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
     onOpenLibrary: () => (Platform.OS === 'ios' ? select('library') : router.navigate('/bots')),
     onSwitchDaemon: saved.length > 1 ? () => setSwitcherOpen(true) : undefined,
     selected:
-      selected === 'chat' ? openChatRow || (asked && `${asked.kind}-${asked.id}`) : selected,
+      selected === 'chat' ? (opening && askedRow) || openChatRow || null : selected,
     onReconnect: reconnect,
     refreshing,
     onRefresh: demo ? undefined : refresh,
