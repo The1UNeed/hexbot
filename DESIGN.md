@@ -76,6 +76,9 @@ more freedom and more capability than a hosted product can offer.
   the soul. What a job asks to remember is a proposal; the bot's next dream reviews it
   as an untrusted suggestion and keeps or drops it. Soul changes need the
   user.
+- A bot that schedules a job says so in its reply, and each run's result is
+  posted in its chat with a notification, unless the user asked for no
+  notifications (the job's `notify`). Jobs made in the app stay quiet.
 
 ### Rooms
 

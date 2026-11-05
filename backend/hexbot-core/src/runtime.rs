@@ -4489,6 +4489,10 @@ impl Runtime {
                 if args["action"] == "create" && args["workdir"].is_null() {
                     args["workdir"] = self.session_settings(s)?["cwd"].clone();
                 }
+                // A job a bot schedules reports back unless the user asked for quiet.
+                if args["action"] == "create" && args["notify"].is_null() {
+                    args["notify"] = json!(true);
+                }
                 crate::dreaming::tool_call(&self.home, &s.owner, &s.bot, &args).await
             }
             "memory" => {
