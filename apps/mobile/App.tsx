@@ -33,6 +33,8 @@ import {
   type HomeScreenProps,
   LibraryScreen,
   ModelSummary,
+  ProviderGoneCard,
+  providerGone,
   SearchSheet,
   SettingsScreen,
   type ApprovalChoice,
@@ -1228,6 +1230,12 @@ function MobileApp({ children }: { children?: ReactNode }) {
             }}
           />
         </View>
+      }
+      notice={
+        // The bot's provider is gone: ask for a new model before the next message.
+        !route.section.peer_bot && providerGone(route.bot) ? (
+          <ProviderGoneCard bot={route.bot} models={mobile.models} rpc={mobile.rpc} />
+        ) : undefined
       }
       onAttach={() => act(attach)}
       onOpenComputer={

@@ -165,16 +165,121 @@ async fn primary_bot_manages_other_bots_and_always_asks_before_deleting() {
     }
     assert!(config["prompt"].as_str().unwrap().contains("# Primary bot"));
 
+    // A bot runs only on a provider the user has connected; the primary bot
+    // never assumes one. Clearing a key pins a provider as not connected
+    // whatever the shell's environment holds.
+    app.call(
+        "local",
+        "hexbot.providers.clear_key",
+        &json!({"provider":"openrouter"}),
+    )
+    .await
+    .unwrap();
+    app.call(
+        "local",
+        "hexbot.providers.set_key",
+        &json!({"provider":"anthropic","key":"sk-test"}),
+    )
+    .await
+    .unwrap();
+    let create_owl =
+        json!({"action":"create","name":"owl","display_name":"Owl","title":"Research"});
+    // No model named and no default in Settings: the bot has to ask.
+    let (asked, reply) = call_tool(&app, &live, "hexbot_bots", create_owl.clone(), "deny").await;
+    assert!(!asked);
+    assert!(
+        reply.contains("Ask the user which provider and model")
+            && reply.contains("Anthropic (anthropic)"),
+        "{reply}"
+    );
+    assert!(!exists(&h, "owl"));
     let (asked, reply) = call_tool(
         &app,
         &live,
         "hexbot_bots",
-        json!({"action":"create","name":"owl","display_name":"Owl","title":"Research"}),
+        json!({"action":"create","name":"owl","display_name":"Owl","provider":"openrouter","model":"anthropic/claude-sonnet-4"}),
+        "deny",
+    )
+    .await;
+    assert!(!asked);
+    assert!(
+        reply.contains("openrouter isn't connected") && reply.contains("Anthropic (anthropic)"),
+        "{reply}"
+    );
+    assert!(!exists(&h, "owl"));
+    let (asked, reply) = call_tool(
+        &app,
+        &live,
+        "hexbot_settings",
+        json!({"action":"set","patch":{"default_model":"openrouter/anthropic/claude-sonnet-4"}}),
+        "once",
+    )
+    .await;
+    assert!(!asked);
+    assert!(reply.contains("openrouter isn't connected"), "{reply}");
+    assert!(
+        app.call("local", "hexbot.settings.get", &json!({}))
+            .await
+            .unwrap()["default_model"]
+            .is_null()
+    );
+    app.call(
+        "local",
+        "hexbot.settings.set",
+        &json!({"patch":{"default_model":"anthropic/claude-fable-5-1"}}),
+    )
+    .await
+    .unwrap();
+
+    // The list shows what the bot may choose from; a new bot takes the default.
+    let (asked, reply) =
+        call_tool(&app, &live, "hexbot_bots", json!({"action":"list"}), "deny").await;
+    assert!(!asked);
+    assert!(
+        reply.contains("\"id\":\"anthropic\"")
+            && reply.contains("\"default_model\":\"anthropic/claude-fable-5-1\""),
+        "{reply}"
+    );
+    let (asked, reply) = call_tool(&app, &live, "hexbot_bots", create_owl, "deny").await;
+    assert!(!asked, "{reply}");
+    assert!(exists(&h, "owl"), "{reply}");
+    let owl = app
+        .call("local", "hexbot.bots.get", &json!({"name":"owl"}))
+        .await
+        .unwrap();
+    assert_eq!(owl["bot"]["provider"], "anthropic");
+    assert_eq!(owl["bot"]["model"], "claude-fable-5-1");
+    // A connected provider by any of its names; it lands as its id.
+    let (asked, reply) = call_tool(
+        &app,
+        &live,
+        "hexbot_bots",
+        json!({"action":"update","name":"owl","provider":"claude","model":"claude-opus-4"}),
         "deny",
     )
     .await;
     assert!(!asked, "{reply}");
-    assert!(exists(&h, "owl"), "{reply}");
+    let owl = app
+        .call("local", "hexbot.bots.get", &json!({"name":"owl"}))
+        .await
+        .unwrap();
+    assert_eq!(owl["bot"]["provider"], "anthropic");
+    assert_eq!(owl["bot"]["model"], "claude-opus-4");
+    let (asked, reply) = call_tool(
+        &app,
+        &live,
+        "hexbot_settings",
+        json!({"action":"set","patch":{"fallback_model":"claude/claude-haiku-4"}}),
+        "once",
+    )
+    .await;
+    assert!(asked, "{reply}");
+    assert_eq!(
+        app.call("local", "hexbot.settings.get", &json!({}))
+            .await
+            .unwrap()["fallback_model"],
+        "anthropic/claude-haiku-4"
+    );
 
     let (asked, reply) =
         call_tool(&app, &live, "hexbot_bots", json!({"action":"list"}), "deny").await;

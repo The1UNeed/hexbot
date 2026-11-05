@@ -193,6 +193,28 @@ pub fn update(home: &Path, caller: &str, patch: &Value) -> Result<Value> {
     Ok(settings)
 }
 
+/// Drops the default and fallback model when they ran on a provider the user
+/// just removed, so nothing still points at it; apps then ask for a new one.
+pub fn forget_provider(home: &Path, caller: &str, provider: &str) -> Result<bool> {
+    let slug = crate::providers::canonical_provider(provider);
+    let settings = get(home)?;
+    let mut patch = serde_json::Map::new();
+    for key in ["default_model", "fallback_model"] {
+        if settings[key]
+            .as_str()
+            .and_then(|choice| choice.split_once('/'))
+            .is_some_and(|(p, _)| crate::providers::canonical_provider(p) == slug)
+        {
+            patch.insert(key.into(), Value::Null);
+        }
+    }
+    if patch.is_empty() {
+        return Ok(false);
+    }
+    update(home, caller, &Value::Object(patch))?;
+    Ok(true)
+}
+
 fn routes(home: &Path, user: &str) -> Result<BTreeMap<String, BTreeSet<String>>> {
     let conn = db::open(home)?;
     let mut result: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();

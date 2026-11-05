@@ -90,6 +90,7 @@ import { FileCard } from './file-card'
 import { filesOf, type FileTarget, mimeOf, openFile } from './file-tab'
 import { MediaView } from './media'
 import { PluginCard } from './plugin-card'
+import { providerGone, ProviderGoneCard } from './provider-gone-card'
 import { RoomConversation } from './room'
 import { useSearchJump } from './search-jump'
 import { SignInCard } from './sign-in-card'
@@ -2947,6 +2948,7 @@ function BotConversation() {
       <div className="absolute inset-x-0 bottom-0 z-20" ref={composerBox}>
         {composer ? (
           <div className="relative mx-auto max-w-[52rem] px-1">
+            {providerGone(bot) ? <ProviderGoneCard bot={bot} /> : null}
             <Composer
               bot={bot}
               draftVersion={draftVersion}

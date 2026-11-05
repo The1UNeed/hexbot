@@ -657,6 +657,17 @@ pub fn list_providers(home: &Path) -> Result<Value> {
     });
     Ok(json!({"providers":rows}))
 }
+/// Whether a provider has a key or sign-in right now, by any of its names.
+/// A custom provider counts as connected while its endpoint is configured.
+pub fn connected(home: &Path, name: &str) -> Result<bool> {
+    let slug = canonical_provider(name);
+    match profiles().iter().find(|p| p["name"] == slug) {
+        Some(p) => configured(home, p),
+        None => Ok(custom_profiles(&common::read_config(home)?)
+            .iter()
+            .any(|p| p["name"] == slug)),
+    }
+}
 fn catalog_models(slug: &str) -> Vec<String> {
     let mut models = profiles()
         .iter()
@@ -1903,7 +1914,12 @@ pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<
                     common::required(p, "provider")?,
                     common::required(p, "key")?,
                 ),
-                "hexbot.providers.clear_key" => clear_key(home, common::required(p, "provider")?),
+                "hexbot.providers.clear_key" => {
+                    let provider = common::required(p, "provider")?;
+                    let result = clear_key(home, provider)?;
+                    crate::settings::forget_provider(home, caller, provider)?;
+                    Ok(result)
+                }
                 "hexbot.providers.login_start" => {
                     login_start(home, caller, common::required(p, "provider")?).await
                 }
@@ -1933,6 +1949,7 @@ pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<
                 "model.disconnect" => {
                     let slug = canonical_provider(common::required(p, "slug")?);
                     clear_key(home, &slug)?;
+                    crate::settings::forget_provider(home, caller, &slug)?;
                     Ok(json!({"slug":slug,"name":profile(&slug)?["display_name"],"disconnected":true}))
                 }
                 _ => unreachable!(),

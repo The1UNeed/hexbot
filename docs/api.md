@@ -295,7 +295,7 @@ mutation methods check ownership.
 ### Bots
 
 Bot shape: `{name, display_name, title, description, primary, persona, tools: [string], available_tools: [string], skills: [string],
-provider, model, reasoning_effort | null, avatar: {mime, data} | null, face: {shape, color} | null,
+provider, provider_connected | null, model, reasoning_effort | null, avatar: {mime, data} | null, face: {shape, color} | null,
 created_at, updated_at, last_activity_at,
 owner_id, dream_enabled, notify, approval_mode, workdir | null,
 soul_char_limit | null, memory_char_limit | null, soul_cap, memory_cap,
@@ -319,6 +319,15 @@ that still lists one gets an error when calling it.
 Provider key changes broadcast `hexbot.bots.changed` to every user so paired
 clients refresh tool availability. Speech calls check the requested provider
 when it overrides the default.
+`provider` is stored as given; `provider_connected` judges it by what the
+name resolves to, so `claude`, `codex` and `openai` count as their
+providers. The primary bot's tools store the connected provider's id from
+`hexbot.providers.list`, whatever name the bot used.
+`provider_connected` is whether the bot's `provider` has a key or sign-in
+right now, and null for a bot with no provider of its own. While it is
+false, the apps show a card above the chat's composer that asks for a new
+provider and model, before the user types; `hexbot.bots.update` with both
+clears it.
 
 `status` is `idle`, `working`, `needs_you`, or `stopped` (priority in that
 reverse order), folded by the daemon from live session state, room turns,
@@ -1415,6 +1424,10 @@ and [provider setup guide](https://hexbot.app/docs/providers/).
   store in `auth.json`, read by `backend/hexbot-core/src/providers.rs`. `label` is the provider's display
   name, never the raw slug.
 - `hexbot.providers.set_key {provider, key}` / `hexbot.providers.clear_key {provider}`.
+  Clearing a key, like `model.disconnect`, also sets `default_model` and
+  `fallback_model` to null when they were on that provider, so nothing still
+  points at it; bots on it keep their model and say so with
+  `provider_connected`.
   Key changes and completed sign-ins refresh existing Pi credential copies.
   Open sections use the updated credentials on their next provider request.
   Disconnect removes the provider from those copies, including bots that are idle.

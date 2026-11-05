@@ -1,4 +1,4 @@
-use hexbot_core::{common, db, providers};
+use hexbot_core::{common, db, providers, settings};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -91,6 +91,51 @@ async fn credentials_reach_profiles_without_leaking_to_clients() {
             0o600
         );
     }
+}
+#[tokio::test]
+async fn removing_a_provider_disconnects_it_and_drops_the_defaults_on_it() {
+    let home = setup();
+    let h = home.path();
+    // Clearing pins a provider off whatever the shell's environment holds.
+    providers::clear_key(h, "openrouter").unwrap();
+    assert!(!providers::connected(h, "openrouter").unwrap());
+    assert!(!providers::connected(h, "nowhere").unwrap());
+    providers::set_key(h, "openrouter", "sk-test").unwrap();
+    assert!(providers::connected(h, "openrouter").unwrap());
+    assert!(providers::connected(h, "OpenRouter").unwrap());
+    providers::set_key(h, "anthropic", "sk-ant").unwrap();
+    settings::update(
+        h,
+        "local",
+        &json!({"default_model":"openrouter/anthropic/claude-sonnet-4","fallback_model":"anthropic/claude-haiku-4"}),
+    )
+    .unwrap();
+    call(
+        h,
+        "local",
+        "hexbot.providers.clear_key",
+        json!({"provider":"openrouter"}),
+    )
+    .await
+    .unwrap();
+    let after = settings::get(h).unwrap();
+    assert!(after["default_model"].is_null());
+    assert_eq!(after["fallback_model"], "anthropic/claude-haiku-4");
+    assert!(!providers::connected(h, "openrouter").unwrap());
+    // The other way in, from the model picker, does the same.
+    settings::update(h, "local", &json!({"default_model":"claude/claude-opus-4"})).unwrap();
+    call(h, "local", "model.disconnect", json!({"slug":"anthropic"}))
+        .await
+        .unwrap();
+    let after = settings::get(h).unwrap();
+    assert!(after["default_model"].is_null());
+    assert!(after["fallback_model"].is_null());
+    // A default by any of the provider's names goes with it too.
+    settings::update(h, "local", &json!({"default_model":"claude/claude-opus-4"})).unwrap();
+    call(h, "local", "model.disconnect", json!({"slug":"anthropic"}))
+        .await
+        .unwrap();
+    assert!(settings::get(h).unwrap()["default_model"].is_null());
 }
 #[tokio::test]
 async fn guards_provider_mutations_and_rejects_invalid_keys() {

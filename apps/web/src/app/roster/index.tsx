@@ -336,13 +336,22 @@ export function RosterColumn() {
 
     void useSettings.getState().refreshProviders()
     void useSettings.getState().refresh()
-    const [provider, ...rest] = (settings?.default_model ?? '').split('/')
+  }, [botDialog])
+
+  useEffect(() => {
+    if (!botDialog) {
+      return
+    }
+
+    // A default on a provider since removed is no start for a new bot.
+    const [provider = '', ...rest] = (settings?.default_model ?? '').split('/')
+    const usable = configuredProviders.some(item => item.id === provider)
     setNewBot(value => ({
       ...value,
-      model: value.model || rest.join('/'),
-      provider: value.provider || provider || ''
+      model: value.model || (usable ? rest.join('/') : ''),
+      provider: value.provider || (usable ? provider : '')
     }))
-  }, [botDialog, settings?.default_model])
+  }, [botDialog, configuredProviders, settings?.default_model])
   // Each open starts at the default level, which the collapsed summary implies.
   useEffect(() => {
     if (botDialog) {

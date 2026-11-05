@@ -1462,6 +1462,12 @@ fn shape_bot(
     let name = row["name"].as_str().unwrap_or("");
     let cfg = config(home, name)?;
     let limits = crate::memory::MemoryStore::new(home.to_path_buf());
+    // Apps ask for a new provider and model while this is false, before the
+    // user types; a bot without a provider of its own has nothing to lose.
+    let provider_connected = match cfg["model"]["provider"].as_str().filter(|p| !p.is_empty()) {
+        Some(provider) => Value::Bool(crate::providers::connected(home, provider)?),
+        None => Value::Null,
+    };
     let sections = list_sections(home, caller, &json!({"bot":name,"include_archived":true}))?;
     let recent = sections
         .iter()
@@ -1569,6 +1575,7 @@ fn shape_bot(
         "status": status,
         "status_detail": detail,
         "provider": cfg["model"]["provider"],
+        "provider_connected": provider_connected,
         "model": cfg["model"]
             .as_str()
             .map(Value::from)
