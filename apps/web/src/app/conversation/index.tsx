@@ -354,7 +354,14 @@ const rehypePlugins: Options['rehypePlugins'] = [rehypeKatex]
 const parsed = new Map<string, ReactElement>()
 const PARSED = 400
 
-export const Markdown = memo(function Markdown({ text }: { text: string }) {
+export const Markdown = memo(function Markdown({
+  streaming = false,
+  text
+}: {
+  /** Text still being written: each revision is drawn once, so none is kept. */
+  streaming?: boolean
+  text: string
+}) {
   let element = parsed.get(text)
 
   if (element) {
@@ -367,6 +374,10 @@ export const Markdown = memo(function Markdown({ text }: { text: string }) {
       rehypePlugins,
       remarkPlugins
     })
+
+    if (streaming) {
+      return element
+    }
 
     if (parsed.size >= PARSED) {
       parsed.delete(parsed.keys().next().value!)
