@@ -338,8 +338,9 @@ notice. Working and idle draw the plain pill.
   `lib/search.ts`, which the mobile app shares.
 - Four tabs in a segmented control:
   - Details: the description, a card with Model (opens Bot settings, Model)
-    and the "Notify me" switch (native notifications when this bot stops or
-    needs you), a card of doors into Bot settings (Soul, Memory, Tools,
+    and the "Notify me" switch (notifications on the app, browser and phone
+    when this bot replies, stops or needs you; in a browser that has not
+    allowed notifications, an "Allow in this browser" row under it), a card of doors into Bot settings (Soul, Memory, Tools,
     Connectors, Skills), and "Bot settings" for the tab last used.
   - Library: the visuals the bot drew (each opens beside the chat), then
     images (a three-column grid) and files shared in the section, newest

@@ -114,7 +114,8 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-it('requests one background-only native reply notification even when Chromium reports visible', async () => {
+/** Owl's chat on screen with a reply streaming in, and the app's notify spy. */
+const streamingChat = async () => {
   const notify = vi.fn()
   vi.stubGlobal('hexbot', { notify })
   expect(document.hidden).toBe(false)
@@ -145,9 +146,21 @@ it('requests one background-only native reply notification even when Chromium re
   // Observe the component's committed streaming state, not just a store field.
   expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible()
   expect(notify).not.toHaveBeenCalled()
+
+  return notify
+}
+
+const complete = (payload: Record<string, unknown> = {}) =>
   act(() => {
-    routeEvent({ type: 'message.complete', session_id: 'chat', payload: {} } as GatewayEvent)
+    routeEvent({ type: 'message.complete', session_id: 'chat', payload } as GatewayEvent)
   })
+
+/** Let effects that would notify run. */
+const settled = () => act(async () => await new Promise(resolve => setTimeout(resolve, 20)))
+
+it('requests one background-only native reply notification even when Chromium reports visible', async () => {
+  const notify = await streamingChat()
+  complete()
   await waitFor(() =>
     expect(notify).toHaveBeenCalledExactlyOnceWith({
       backgroundOnly: true,
@@ -160,6 +173,52 @@ it('requests one background-only native reply notification even when Chromium re
     useBots.setState({ byName: { owl: { name: 'owl', display_name: 'Owl renamed' } as Bot } })
   )
   expect(notify).toHaveBeenCalledOnce()
+})
+
+it('stays quiet about a reply when the bot’s Notify me is off', async () => {
+  const notify = await streamingChat()
+  act(() =>
+    useBots.setState({
+      byName: { owl: { name: 'owl', display_name: 'Owl', notify: false } as Bot }
+    })
+  )
+  complete()
+  await settled()
+  expect(notify).not.toHaveBeenCalled()
+})
+
+it('leaves a failed turn to its Stopped notification', async () => {
+  const notify = await streamingChat()
+  complete({ error: 'The model request failed' })
+  await settled()
+  expect(notify).not.toHaveBeenCalled()
+})
+
+it('notifies once when the turn ends, not when a card closes its first bubble', async () => {
+  const notify = await streamingChat()
+  act(() => {
+    routeEvent({
+      type: 'clarify.request',
+      session_id: 'chat',
+      payload: { request_id: 'q1', question: 'Which day?' }
+    } as GatewayEvent)
+  })
+  await settled()
+  expect(notify).not.toHaveBeenCalled()
+  act(() => {
+    routeEvent({ type: 'message.start', session_id: 'chat', payload: {} } as GatewayEvent)
+    routeEvent({
+      type: 'message.delta',
+      session_id: 'chat',
+      payload: { text: 'Friday it is.' }
+    } as GatewayEvent)
+  })
+  complete()
+  await waitFor(() =>
+    expect(notify).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ backgroundOnly: true, body: 'Friday it is.' })
+    )
+  )
 })
 
 it.each([false, true])(

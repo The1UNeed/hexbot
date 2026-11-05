@@ -1950,7 +1950,7 @@ async fn handle_request(
         Err(error) => json!({"jsonrpc":"2.0","id":id,"error":error.rpc_value()}),
     })
 }
-/// A phone's push token, for heartbeat messages. Only the calling device's own
+/// A phone's push token, for heartbeat messages and unread replies. Only the calling device's own
 /// row changes; a null token stops pushes to it.
 fn set_push(home: &std::path::Path, owner: &str, device: &str, p: &Value) -> Result<Value> {
     // Only a string sets it and only null clears it; anything else is a mistake.

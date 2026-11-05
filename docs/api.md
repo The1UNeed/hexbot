@@ -671,10 +671,16 @@ context of its own; the meter belongs to bot sections.
   kept. `hexbot.bots.delete` purges the bot's owned history, including retained
   sections whose catalog rows have already gone.
 - `hexbot.sections.touch {id}` is internal; activity is stamped by the plugin
-  on `message.complete`. It also sets the section's `done_at`.
+  on `message.complete`. It leaves `done_at` alone: the daemon sets it when the
+  turn ends, before `message.complete`, so a touch cannot undo a read made on
+  another device.
 - `hexbot.sections.mark_read {id}` → `{section: Section}` clears `done_at`:
   the user has seen the finished work. Broadcasts `hexbot.sections.changed`,
-  so the green dot clears on every device.
+  so the green dot clears on every device. Clients call it only while the chat
+  is on screen: a reply in a bot's chat that is still unread 30 seconds after
+  it finished wakes the owner's phones (see `hexbot.devices.set_push`). A
+  failed or stopped turn, a thread between bots, an archived chat and a bot
+  whose Notify me is off wake nothing.
 
 ### Memory
 
@@ -1398,7 +1404,8 @@ and [provider setup guide](https://hexbot.app/docs/providers/).
 - `hexbot.devices.revoke {id}` → `{revoked: true}`
 - `hexbot.devices.set_push {token, platform}` → `{ok: true}` stores the
   calling device's Expo push token (`ExponentPushToken[...]`) and platform
-  (`ios` or `android`) for heartbeat message pushes; `{token: null}` stops them. Only
+  (`ios` or `android`) for pushes about heartbeat messages and unread replies
+  in a bot's chat; `{token: null}` stops them. Only
   the calling connection's own paired device changes.
 
 ### Local daemon identity

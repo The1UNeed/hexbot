@@ -409,6 +409,10 @@ try {
       exact: true
     })
   ).toBeVisible({ timeout: 30000 })
+  // Read as it landed on screen, so the daemon does not wake this phone about it.
+  await expect
+    .poll(async () => (await owl()).sections_recent?.[0]?.done_at ?? null, { timeout: 10000 })
+    .toBe(null)
   await page.screenshot({ path: path.join(artifacts, 'chat.png') })
   await page.getByTestId('chat-input').fill('Ask two questions')
   await page.getByTestId('chat-send').click()

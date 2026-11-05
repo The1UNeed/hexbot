@@ -200,7 +200,7 @@ export interface Bot {
   last_activity_at: null | number
   model: null | string
   dream_enabled: boolean
-  /** Native notifications when the bot stops or needs the user. */
+  /** Notifications when the bot replies, stops or needs the user, on every device. */
   notify?: boolean
   name: string
   owner_id: string

@@ -522,7 +522,8 @@ async fn daemon_request(
     }
     result
 }
-/// Asks Hex Connect to wake the owner's phones about a heartbeat message. `targets` are
+/// Asks Hex Connect to wake the owner's phones about a heartbeat message or an
+/// unread reply. `targets` are
 /// `{token, device}`; the push carries only the section and the device id to
 /// open it from, never the message: chat stays off Connect. Returns the tokens
 /// the push service no longer knows, for the caller to forget, and the receipt

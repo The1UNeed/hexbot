@@ -82,6 +82,8 @@ export function useMobile() {
   const [loadingEarlier, setLoadingEarlier] = useState(false)
   const session = useRef<MobileSession | null>(null)
   const routeRef = useRef<ChatRoute | null>(null)
+  /** A profile or settings page is over the open chat, so what lands there is unseen. */
+  const chatCovered = useRef(false)
   const liveId = useRef<string | null>(null)
   // A reconnect cannot restore an old owner row until canonical lookup succeeds.
   const ownerPending = useRef(false)
@@ -350,6 +352,24 @@ export function useMobile() {
   syncChatRef.current = syncChat
   const refreshRef = useRef(refresh)
   refreshRef.current = refresh
+  /** Marks the open chat read while it is on screen: the app in front, no page over it. */
+  const readOpenChat = useCallback(() => {
+    const target = routeRef.current
+    if (target?.kind !== 'section' || chatCovered.current || AppState.currentState !== 'active')
+      return
+    void rpc('hexbot.sections.mark_read', { id: target.section.id }).catch(() => {})
+  }, [rpc])
+  /** A page went over the open chat, or came off it; what landed meanwhile is seen now. */
+  const setChatCovered = useCallback(
+    (covered: boolean) => {
+      if (chatCovered.current === covered) return
+      chatCovered.current = covered
+      if (!covered) readOpenChat()
+    },
+    [readOpenChat]
+  )
+  const readRef = useRef(readOpenChat)
+  readRef.current = readOpenChat
   const onEvent = useCallback(
     (event: GatewayEvent) => {
       const target = routeRef.current
@@ -416,6 +436,8 @@ export function useMobile() {
           return
         }
         if (!event.session_id || event.session_id !== liveId.current) return
+        // Read as it lands on screen, so the daemon does not wake this phone about it.
+        if (event.type === 'message.complete') readOpenChat()
         if (event.type === 'message.complete' && straddling.current === event.session_id) {
           // Part of this turn was already in the history; the history now has all of it.
           straddling.current = null
@@ -433,7 +455,7 @@ export function useMobile() {
         setChat(c => reduceChat(c, event))
       }
     },
-    [rpc]
+    [rpc, readOpenChat]
   )
   const acknowledgedApprovals = useRef(new Set<string>())
   useEffect(() => {
@@ -559,7 +581,10 @@ export function useMobile() {
       if (daemon) await activate(daemon)
     })().catch(e => setError(errorText(e)))
     const subscription = AppState.addEventListener('change', state => {
-      if (state === 'active') void session.current?.connect().catch(e => setError(errorText(e)))
+      if (state === 'active') {
+        void session.current?.connect().catch(e => setError(errorText(e)))
+        readRef.current()
+      }
       else if (state === 'background') session.current?.suspend()
     })
     return () => {
@@ -883,6 +908,7 @@ export function useMobile() {
     route,
     chat,
     loading,
+    setChatCovered,
     /** The open chat's history is still on its way. */
     opening: route?.kind === 'section' && readId !== route.section.id,
     hasEarlier,

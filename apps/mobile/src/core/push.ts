@@ -4,7 +4,8 @@ import { Platform } from 'react-native'
 import type { Rpc } from './types'
 
 /**
- * Lets the daemon wake this phone when a bot's heartbeat posts in its chat.
+ * Lets the daemon wake this phone when a bot's heartbeat posts in its chat, or
+ * a reply in a bot's chat is still unread a while after it finished.
  * The push goes through Hex Connect and carries no message text, only the
  * chat to open. Skipped without an EAS project, where Expo cannot issue a
  * token, and when the user says no.

@@ -200,9 +200,16 @@ name}` (other files) or `pdf.attach`. Stop: `session.interrupt`.
 Closing the app window keeps its page and daemon connection alive in both
 editions. Full keeps an app-owned daemon running; Client keeps receiving
 notifications from its remote daemon. Chromium keeps its default background
-throttling. Reply completions request a background-only native notification;
-the main process checks whether the window is hidden or minimized at delivery
-time. Browser reply notifications use the page's visibility.
+throttling. The end of a turn in the open chat requests one background-only
+native notification with the turn's last words, unless the turn failed (its
+Stopped notification says so) or the bot's Notify me is off; the main process
+checks whether the window is hidden or minimized at delivery time. Every
+notification goes through `lib/notify.ts`, which shortens the text to 1,000
+characters; a browser tab shows its own only while hidden, and clicking it
+opens the chat. A browser asks for permission when Notify me is turned on, or
+from Allow on the profile and the Heartbeat tab. A chat is marked read only
+while the page is visible, so a closed window leaves a reply unread for the
+phone push.
 macOS hides the window as before. Windows hides it to the tray, or minimizes
 if tray setup fails. Linux always minimizes, because a tray object does not
 prove that the desktop displays an icon, including on GNOME without a tray
@@ -224,7 +231,7 @@ Exposed by the preload with contextIsolation on:
 - `daemon.localToken()` reads `~/.hexbot/local-device.token`.
 - `pair(host, port, code, deviceName)` performs the password-login from
   the main process and returns the device token.
-- `notify({title, body, sectionId, backgroundOnly?})` shows a native notification;
+- `notify({title, body, sectionId?, backgroundOnly?})` shows a native notification;
   background-only requests stay silent while the window is visible and not
   minimized. Clicking focuses the window and navigates.
 - `openExternal(url)`, `pickFiles()`.

@@ -4,8 +4,8 @@ import { useEffect, useRef, useState } from 'react'
 import { Button } from '../../components/ui/button'
 import { Switch } from '../../components/ui/switch'
 import { Textarea } from '../../components/ui/textarea'
-import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
+import { useBrowserNotifications } from '../../lib/notify'
 import type { Bot, HeartbeatRun } from '../../lib/types'
 import { useHeartbeat } from '../../stores/heartbeat'
 import { useSettings } from '../../stores/settings'
@@ -59,9 +59,7 @@ export function HeartbeatTab({ bot }: { bot: Bot }) {
   const [removing, setRemoving] = useState(false)
   const [error, setError] = useState<null | string>(null)
 
-  const [permission, setPermission] = useState(() =>
-    typeof Notification === 'undefined' ? 'unsupported' : Notification.permission
-  )
+  const browser = useBrowserNotifications()
 
   useEffect(() => {
     void refresh(bot.name)
@@ -174,21 +172,16 @@ export function HeartbeatTab({ bot }: { bot: Bot }) {
             title="Run one now"
           />
           {/* Browsers notify only from HTTPS or this computer, not a LAN address. */}
-          {!getBridge() && permission !== 'unsupported' && !window.isSecureContext ? (
+          {browser.insecure ? (
             <Row
               description="Browsers show notifications only for HTTPS pages. Open Hexbot through Hex Connect, use the Hexbot app, or let your phone notify you."
               title="No notifications in this browser"
             />
           ) : null}
-          {!getBridge() && permission === 'default' && window.isSecureContext ? (
+          {browser.askable ? (
             <Row
               control={
-                <Button
-                  onClick={() =>
-                    void Notification.requestPermission().then(result => setPermission(result))
-                  }
-                  size="sm"
-                >
+                <Button onClick={() => void browser.ask()} size="sm">
                   Allow
                 </Button>
               }

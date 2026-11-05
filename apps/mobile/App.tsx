@@ -209,6 +209,9 @@ function MobileApp({ children }: { children?: ReactNode }) {
   const [botPage, setBotPage] = useState<string | null>(null)
   const [addDaemon, setAddDaemon] = useState(false)
   const [panels, setPanels] = useState<Panel[]>([])
+  // A profile or settings page over the chat: what lands in it is not seen yet.
+  const { setChatCovered } = mobile
+  useEffect(() => setChatCovered(panels.length > 0), [panels.length, setChatCovered])
   const [switcherOpen, setSwitcherOpen] = useState(false)
   const [switching, setSwitching] = useState<string | null>(null)
   const [demo, setDemo] = useState(false)

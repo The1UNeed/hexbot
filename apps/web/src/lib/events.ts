@@ -44,7 +44,6 @@ import type {
 import { holdHeartbeatMessage, transcriptNotify, useTranscripts } from '../stores/transcripts'
 import { useUi } from '../stores/ui'
 
-import { getBridge } from './bridge'
 import type { HexbotRpcClient } from './rpc'
 import type {
   ApprovalChoice,
@@ -56,11 +55,6 @@ import type {
   SessionInfo,
   Usage
 } from './types'
-
-/** A browser notification asks the app shell to open a section (routes/__root.tsx). */
-export const OPEN_SECTION_EVENT = 'hexbot:open-section'
-/** Under the app's notification limit (apps/desktop, `hexbot:notify`). */
-const NOTIFY_BODY = 1_000
 
 export interface EventRouterDeps {
   refreshBots?: () => void
@@ -211,26 +205,7 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
 
       if (whole && botNotifies(bot)) {
         const title = useBots.getState().byName[bot]?.display_name ?? bot
-        // A notification shows a few lines; the whole message is in the chat.
-        const body = whole.length > NOTIFY_BODY ? `${whole.slice(0, NOTIFY_BODY - 1)}…` : whole
-        // The app notifies even with its window closed. A browser tab has no app
-        // to go through, so it shows its own while in the background.
-        transcriptNotify({ body, sectionId, title })
-
-        if (
-          !getBridge() &&
-          document.hidden &&
-          'Notification' in window &&
-          Notification.permission === 'granted'
-        ) {
-          new Notification(title, { body }).onclick = () => {
-            window.focus()
-
-            if (sectionId) {
-              window.dispatchEvent(new CustomEvent(OPEN_SECTION_EVENT, { detail: sectionId }))
-            }
-          }
-        }
+        transcriptNotify({ body: whole, sectionId, title })
       }
 
       return
