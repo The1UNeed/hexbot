@@ -408,11 +408,14 @@ export function RosterColumn() {
   // seen it, so the daemon still wakes the phone about it.
   const pageVisible = usePageVisible()
 
+  // A chat hidden behind another bot's loading face has not been seen either.
+  const hidden = Boolean(asking && asking !== params.bot)
+
   useEffect(() => {
-    if (params.section && activeSectionDoneAt && pageVisible) {
+    if (params.section && activeSectionDoneAt && pageVisible && !hidden) {
       void sectionsMarkRead(params.section).catch(() => undefined)
     }
-  }, [activeSectionDoneAt, pageVisible, params.section])
+  }, [activeSectionDoneAt, hidden, pageVisible, params.section])
   const streamingSessions = useTranscripts(state => state.bySession)
 
   const liveSections = useMemo(() => liveSectionsOf(streamingSessions), [streamingSessions])

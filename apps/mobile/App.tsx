@@ -372,6 +372,10 @@ function MobileApp({ children }: { children?: ReactNode }) {
   const [selected, setSelected] = useState<'chat' | 'settings' | 'library' | null>(null)
   // The row tapped beside the iOS list whose chat the daemon has not named yet.
   const [asked, setAsked] = useState<ConversationSummary | null>(null)
+  // A lookup that ends without opening a chat, such as a dismissed chooser, lets go.
+  useEffect(() => {
+    if (asked && !mobile.loading && !mobile.error && !mobile.choosing) setAsked(null)
+  }, [asked, mobile.loading, mobile.error, mobile.choosing])
   useEffect(() => {
     if (openKey) setAsked(null)
     if (openKey && openKey !== shownChat.current) {
@@ -1337,6 +1341,9 @@ function MobileApp({ children }: { children?: ReactNode }) {
         onSend={() => {}}
         onApprove={() => {}}
         sendDisabledReason="Opening conversation"
+        // Nothing typed here could be kept: the chat that opens starts its own draft.
+        draft=""
+        onDraftChange={() => {}}
         error={mobile.error}
         onDismissError={() => mobile.setError(null)}
         onRetry={() => openConversation(asked)}

@@ -130,6 +130,54 @@ describe('reading a room', () => {
 
     expect(marks).toBeLessThanOrEqual(2)
   })
+
+  it('does not mark a room read while a clicked bot opens in front of it', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const room = { id: 'r1', members: [], name: 'Lab', owner_id: 'local' } as unknown as Room
+
+    const message = (seq: number) =>
+      ({
+        actor_id: 'local',
+        actor_kind: 'human',
+        created_at: seq,
+        kind: 'message.user',
+        payload: { text: `hi ${seq}` },
+        room_id: 'r1',
+        seq
+      }) as RoomEvent
+
+    useRooms.setState({ byId: { r1: room }, eventsByRoom: {}, liveTurnsByRoom: {}, order: ['r1'] })
+
+    const call = vi.fn((method: string) =>
+      Promise.resolve(method === 'hexbot.rooms.log' ? { events: [message(1)] } : { room: { ...room } })
+    )
+
+    setActiveRpc({ call } as never)
+    render(<RoomConversation />)
+    await waitFor(() =>
+      expect(call).toHaveBeenCalledWith('hexbot.rooms.mark_read', { id: 'r1', seq: 1 })
+    )
+
+    // A bot is clicked; a message arrives in the room behind its loading face.
+    await act(async () => useUi.setState({ openingBot: 'owl' }))
+    await act(async () =>
+      useRooms.setState(state => ({
+        eventsByRoom: { ...state.eventsByRoom, r1: [...(state.eventsByRoom.r1 ?? []), message(2)] }
+      }))
+    )
+
+    for (let flush = 0; flush < 10; flush++) {
+      await act(async () => {})
+    }
+
+    expect(call).not.toHaveBeenCalledWith('hexbot.rooms.mark_read', { id: 'r1', seq: 2 })
+
+    // The click came to nothing: the room is back in view, and read.
+    await act(async () => useUi.setState({ openingBot: null }))
+    await waitFor(() =>
+      expect(call).toHaveBeenCalledWith('hexbot.rooms.mark_read', { id: 'r1', seq: 2 })
+    )
+  })
 })
 
 describe('approvals and questions in a room', () => {
