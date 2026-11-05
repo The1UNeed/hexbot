@@ -662,6 +662,7 @@ pub fn list_providers(home: &Path) -> Result<Value> {
 /// count too, as `prepare_pi_config_locked` gives them to Pi.
 pub fn connected(home: &Path, profile_home: Option<&Path>, name: &str) -> Result<bool> {
     let slug = canonical_provider(name);
+    let root = common::read_config(home)?;
     let profile_cfg = profile_home
         .map(common::read_config)
         .transpose()?
@@ -669,7 +670,7 @@ pub fn connected(home: &Path, profile_home: Option<&Path>, name: &str) -> Result
     let Some(p) = profiles().iter().find(|p| p["name"] == slug) else {
         // A custom endpoint answers to its name and to custom:<name>. The
         // bot's own endpoints replace the daemon's.
-        let mut cfg = common::read_config(home)?;
+        let mut cfg = root;
         for key in ["providers", "custom_providers"] {
             if profile_cfg.get(key).is_some() {
                 cfg[key] = profile_cfg[key].clone();
@@ -685,22 +686,32 @@ pub fn connected(home: &Path, profile_home: Option<&Path>, name: &str) -> Result
     if read_json(&home.join("providers-disabled.json"))?[slug.as_str()] == true {
         return Ok(false);
     }
-    // Signed in outside Hexbot, through the provider's own tool: the daemon
-    // only knows when the user turned it off.
-    if string(p, "auth_type") == "external_process" {
+    // Signed in outside Hexbot, through the provider's own tool or SDK: the
+    // daemon only knows when the user turned it off.
+    if matches!(
+        string(p, "auth_type"),
+        "external_process" | "aws_sdk" | "vertex"
+    ) {
         return Ok(true);
     }
     if configured(home, p)? {
         return Ok(true);
     }
-    let Some(dir) = profile_home else {
-        return Ok(false);
-    };
-    let inline = canonical_provider(string(&profile_cfg["model"], "provider")) == slug
-        && profile_cfg["model"]["api_key"]
-            .as_str()
-            .is_some_and(|s| !s.is_empty());
-    Ok(inline || configured(dir, p)?)
+    // A key inline in the model config, the bot's own or the daemon's that
+    // it inherits.
+    let mut model = root["model"].clone();
+    if let Some(overrides) = profile_cfg["model"].as_object() {
+        for (key, value) in overrides {
+            model[key] = value.clone();
+        }
+    }
+    let inline = canonical_provider(string(&model, "provider")) == slug
+        && model["api_key"].as_str().is_some_and(|s| !s.is_empty());
+    Ok(inline
+        || profile_home
+            .map(|dir| configured(dir, p))
+            .transpose()?
+            .unwrap_or(false))
 }
 fn catalog_models(slug: &str) -> Vec<String> {
     let mut models = profiles()

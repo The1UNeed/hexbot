@@ -174,6 +174,26 @@ fn custom_endpoints_and_external_sign_ins_count_as_connected() {
     )
     .unwrap();
     assert!(providers::connected(h, Some(&profile), "openrouter").unwrap());
+    // Bedrock and Vertex sign in through their SDKs, likewise out of sight.
+    assert!(providers::connected(h, None, "bedrock").unwrap());
+    assert!(providers::connected(h, Some(&profile), "vertex").unwrap());
+    providers::clear_key(h, "bedrock").unwrap();
+    assert!(!providers::connected(h, None, "bedrock").unwrap());
+    // A key inline in the daemon's model config reaches a bot without its own.
+    common::write_config(
+        h,
+        &json!({"model":{"provider":"openrouter","default":"openai/gpt-5.6","api_key":"sk-root"}}),
+    )
+    .unwrap();
+    let plain = h.join("profiles/plain");
+    fs::create_dir_all(&plain).unwrap();
+    common::write_config(
+        &plain,
+        &json!({"model":{"provider":"openrouter","default":"openai/gpt-5.6"}}),
+    )
+    .unwrap();
+    assert!(providers::connected(h, None, "openrouter").unwrap());
+    assert!(providers::connected(h, Some(&plain), "openrouter").unwrap());
 }
 #[tokio::test]
 async fn a_finished_sign_in_tells_the_apps_the_bots_changed() {
