@@ -3,7 +3,7 @@ import { channel } from 'node:diagnostics_channel'
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, lstat, stat, rename, rm, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, cp, mkdir, mkdtemp, readFile, readdir, realpath, lstat, stat, rename, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isDeepStrictEqual, promisify } from 'node:util'
@@ -116,14 +116,38 @@ export const BUSYBOX = Object.freeze({
   sha256: '6e263d154d8548d1eb936f65d1d8312c80df31c45974e48d6335e4dcc0f4f34c',
   source: 'https://frippery.org/files/busybox/busybox-w32-FRP-6075-g169694ebd.tgz'
 })
-// Download the pinned BusyBox into `bin` as busybox.exe. A wrong checksum
-// leaves nothing behind; `download` writes a file and returns its SHA-256.
-export async function stageBusybox(bin, download = (url, dest) => retryDownload(() => downloadTool(url, dest))) {
+// Builds keep the pinned BusyBox here between runs, so only a build with an
+// empty cache needs frippery.org. CI restores this folder from its own cache.
+export const BUSYBOX_CACHE = join(root, 'node_modules/.cache/hexbot')
+const fileSha256 = async path => createHash('sha256').update(await readFile(path)).digest('hex')
+const pinnedDownload = (url, dest) => retryDownload(() => downloadTool(url, dest))
+// The cached copy of the pinned BusyBox, downloaded first when it is missing
+// or damaged. `download` writes a file and returns its SHA-256; a wrong
+// checksum leaves nothing behind.
+export async function cacheBusybox(cache = BUSYBOX_CACHE, { download = pinnedDownload, pin = BUSYBOX } = {}) {
+  const name = basename(pin.url)
+  const cached = join(cache, name)
+  if (await fileSha256(cached).catch(() => undefined) === pin.sha256) return cached
+  await mkdir(cache, { recursive: true })
+  const partial = join(cache, `.${name}-${process.pid}.download`)
+  try {
+    if (await download(pin.url, partial) !== pin.sha256) throw new Error(`${name} checksum mismatch`)
+    await rename(partial, cached)
+  } finally { await rm(partial, { force: true }) }
+  return cached
+}
+// Stage the pinned BusyBox into `bin` as busybox.exe, from `file` when the
+// build was handed a copy (HEXBOT_BUSYBOX_FILE), which never downloads, and
+// otherwise from the cache. The staged bytes are checked against the pin, so
+// a wrong copy leaves nothing behind.
+export async function stageBusybox(bin, { file, cache, download, pin = BUSYBOX } = {}) {
+  const source = file ?? await cacheBusybox(cache, { download, pin })
   await mkdir(bin, { recursive: true })
   const executable = join(bin, 'busybox.exe')
   const partial = join(bin, `.busybox-${process.pid}.download`)
   try {
-    if (await download(BUSYBOX.url, partial) !== BUSYBOX.sha256) throw new Error(`${basename(BUSYBOX.url)} checksum mismatch`)
+    await copyFile(source, partial)
+    if (await fileSha256(partial) !== pin.sha256) throw new Error(`${basename(pin.url)} checksum mismatch: ${source}`)
     await rename(partial, executable)
   } finally { await rm(partial, { force: true }) }
   return executable
@@ -265,7 +289,9 @@ export async function stageNativeRuntime({
   arch = process.env.HEXBOT_BUILD_ARCH || process.arch,
   nodeExecutable,
   notices = runtimeNotices,
-  download = (url, dest) => retryDownload(() => downloadTool(url, dest)),
+  download = pinnedDownload,
+  // A copy of the pinned BusyBox to stage instead of the cached download.
+  busybox = process.env.HEXBOT_BUSYBOX_FILE || undefined,
   copy = copyNativeRuntime,
   run = (command, args, options) => execute(command, args, { ...options, maxBuffer: 32 * 1024 * 1024 })
 } = {}) {
@@ -305,7 +331,10 @@ export async function stageNativeRuntime({
     })
     // The shell Windows commands run in inside the sandbox; the other
     // platforms' sandboxes run the system's.
-    if (windows) await stageBusybox(join(staging, 'bin'), download)
+    if (windows) {
+      await stageBusybox(join(staging, 'bin'), { file: busybox, download })
+      console.log('Staged BusyBox:', JSON.stringify({ version: BUSYBOX.version, from: busybox ?? BUSYBOX_CACHE }))
+    }
     const beforeBytes = await directoryBytes(pi)
     await pruneRuntimeDependencies(join(pi, 'node_modules'), platform, arch)
     const afterBytes = await directoryBytes(pi)

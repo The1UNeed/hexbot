@@ -3,8 +3,9 @@ import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative, sep } from 'node:path'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { toolAsset } from '../../apps/desktop/src/main/backend/tools.ts'
 import { feedMetadataName } from './update-feed-utils.mjs'
@@ -99,6 +100,41 @@ test('Windows CI builds the production source and never publishes its probes', a
   assert(release.includes('runner: windows-latest'))
   assert(release.includes('target: --win --x64'))
   assert(release.includes('build: [mac-arm64, mac-x64, linux-x64, win-x64]'))
+})
+
+test('Windows CI stages BusyBox from a cache under its pin, and Full builds package that copy', async () => {
+  const { BUSYBOX, BUSYBOX_CACHE } = await import('./native-runtime.mjs')
+  const cache = relative(fileURLToPath(new URL('../..', import.meta.url)), BUSYBOX_CACHE).split(sep).join('/')
+  assert.equal(cache, 'node_modules/.cache/hexbot')
+  // Only Full builds and the shell probes stage BusyBox; client builds skip
+  // stage-runtime.mjs (apps/desktop `build:client`).
+  for (const [file, staging] of [
+    ['.github/workflows/windows-contract.yml', ['sandbox', 'native-runtime', 'full-nightly']],
+    ['.github/workflows/windows-security.yml', ['refusal', 'combined-refusal']],
+  ]) {
+    const ci = await readFile(file, 'utf8')
+    const section = ci.slice(ci.search(/^jobs:\r?$/m))
+    const boundaries = [...section.matchAll(/^  ([a-z][a-z0-9-]*):\r?$/gm)]
+    const jobs = Object.fromEntries(boundaries.map((match, index) =>
+      [match[1], section.slice(match.index, boundaries[index + 1]?.index ?? section.length)]))
+    assert.deepEqual(Object.keys(jobs).filter(name => jobs[name].includes('stage-busybox.mjs')), staging, file)
+    for (const name of staging) {
+      const job = jobs[name]
+      const restore = job.indexOf('- uses: actions/cache/restore@'), stage = job.indexOf('node scripts/desktop/stage-busybox.mjs $directory'), save = job.indexOf('- uses: actions/cache/save@')
+      assert(restore >= 0 && restore < stage && stage < save, `${file} ${name}: restore, stage, then save the cache`)
+      assert.deepEqual(job.match(/key: busybox-.*$/gm), [`key: busybox-${BUSYBOX.sha256}`], `${file} ${name}: keyed by the pin`)
+      assert.equal(job.split('\n').filter(line => line.trim() === `path: ${cache}`).length, 2, `${file} ${name}: one cache folder`)
+      assert(job.includes("if: steps.busybox.outputs.cache-hit != 'true'"), `${file} ${name}: saves only a cold cache`)
+      assert(job.includes('key: ${{ steps.busybox.outputs.cache-primary-key }}'), `${file} ${name}: saves the key it restored`)
+    }
+    if (!file.endsWith('windows-contract.yml')) continue
+    // Full packaging takes the staged copy and never downloads its own.
+    for (const [name, build] of [['native-runtime', 'node scripts/desktop/dist.mjs --win --x64 --channel stable'], ['full-nightly', 'node scripts/desktop/windows-nightly-nsis-probe.mjs full']]) {
+      const exported = jobs[name].indexOf(`"HEXBOT_BUSYBOX_FILE=$(Join-Path $directory 'busybox.exe')" >> $env:GITHUB_ENV`)
+      assert(exported >= 0 && exported < jobs[name].indexOf(build), `${name}: BusyBox is staged before the Full build`)
+    }
+    assert(!jobs.sandbox.includes('HEXBOT_BUSYBOX_FILE'))
+  }
 })
 
 test('Tauri Windows resource icon reproduces the existing installer art', async () => {

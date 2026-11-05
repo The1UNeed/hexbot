@@ -488,7 +488,15 @@ weeks npm packages wait (`minimumReleaseAge`). frippery.org deletes builds
 about three years after release, so the pin must move before then. Staging
 writes it as `bin/busybox.exe`, which `setup` and the app's bootstrap require
 on Windows, and CI stages the same file beside the test daemon with
-`scripts/desktop/stage-busybox.mjs`.
+`scripts/desktop/stage-busybox.mjs`. Staging takes the file from
+`HEXBOT_BUSYBOX_FILE` when that names a copy, without downloading anything,
+and otherwise from the build cache in `node_modules/.cache/hexbot`, which
+downloads it from frippery.org only when it holds no good copy. Every copy is
+checked against the digest above, so a wrong one fails the build instead of
+shipping. CI restores that cache with `actions/cache` under the key
+`busybox-<SHA-256>`, saves it when it was empty, and hands the copy to the
+Full builds in `HEXBOT_BUSYBOX_FILE`, so CI needs frippery.org only when the
+cache is cold.
 
 The 49f native run checked merge `0b6cb125` with the exact 49f source tree. It
 passed the initial MSVC and task/PATH/CLI checks, then failed the final staging

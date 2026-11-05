@@ -5,11 +5,12 @@ import { once } from 'node:events'
 import { existsSync } from 'node:fs'
 import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { test } from 'node:test'
+import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { archiveProgram, extractWindowsArchive, installTool, toolAsset } from '../../apps/desktop/src/main/backend/tools.ts'
-import { inventoryNativeRuntime, copyNativeRuntime, publishWindowsRuntime, publishNativeRuntime, createNativeArchive, extractStandaloneNode, launchers, nativeTarget, stageNativeRuntime, stageBusybox, rustTarget, pruneRuntimeDependencies, directoryBytes, standaloneNode, retryDownload, BUSYBOX, NODE_VERSION, NODE_SHA256 } from './native-runtime.mjs'
+import { inventoryNativeRuntime, copyNativeRuntime, publishWindowsRuntime, publishNativeRuntime, createNativeArchive, extractStandaloneNode, launchers, nativeTarget, stageNativeRuntime, stageBusybox, cacheBusybox, rustTarget, pruneRuntimeDependencies, directoryBytes, standaloneNode, retryDownload, BUSYBOX, BUSYBOX_CACHE, NODE_VERSION, NODE_SHA256 } from './native-runtime.mjs'
 const exec = promisify(execFile)
 async function captureArchiveCommand(program, argv, cwd) {
   const child = spawn(program, argv, { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -115,20 +116,62 @@ test('BusyBox is pinned to one official 64-bit Unicode busybox-w32 build and its
   assert.ok(Object.isFrozen(BUSYBOX))
 })
 
-test('the Windows runtime stages the pinned BusyBox and keeps nothing a wrong checksum downloaded', async () => {
+// Synthetic bytes stand in for the pinned build under a pin naming their own
+// digest: the real download and checksum run natively in CI
+// (scripts/desktop/stage-busybox.mjs).
+const busyboxPin = bytes => ({ ...BUSYBOX, sha256: createHash('sha256').update(bytes).digest('hex') })
+const busyboxDownload = (bytes, urls) => async (url, destination) => {
+  urls.push(url); await writeFile(destination, bytes); return createHash('sha256').update(bytes).digest('hex')
+}
+const noDownload = async () => { throw new Error('BusyBox was downloaded') }
+
+test('the Windows runtime stages the pinned BusyBox through the build cache and keeps nothing a wrong checksum downloaded', async () => {
   const root = await mkdtemp(join(tmpdir(), 'hexbot busybox π 中文 & '))
   try {
-    const bin = join(root, 'bin'), urls = []
-    const download = bytes => async (url, destination) => { urls.push(url); await writeFile(destination, bytes); return createHash('sha256').update(bytes).digest('hex') }
-    await assert.rejects(stageBusybox(bin, download('tampered')), /busybox-w64u-.*\.exe checksum mismatch/)
-    assert.deepEqual(await readdir(bin), [])
-    // A synthetic file whose digest stands in for the pinned one: the real
-    // download and its checksum run natively (scripts/desktop/stage-busybox.mjs).
-    const pinned = async (url, destination) => { urls.push(url); await writeFile(destination, 'pinned busybox'); return BUSYBOX.sha256 }
-    assert.equal(await stageBusybox(bin, pinned), join(bin, 'busybox.exe'))
+    const bin = join(root, 'bin'), cache = join(root, 'cache'), urls = []
+    const pin = busyboxPin('pinned busybox'), cached = join(cache, basename(BUSYBOX.url))
+    await assert.rejects(stageBusybox(bin, { cache, download: busyboxDownload('tampered', urls), pin }), /busybox-w64u-.*\.exe checksum mismatch/)
+    assert.deepEqual(await readdir(cache), [])
+    assert.equal(existsSync(bin), false)
+    assert.equal(await stageBusybox(bin, { cache, download: busyboxDownload('pinned busybox', urls), pin }), join(bin, 'busybox.exe'))
     assert.equal(await readFile(join(bin, 'busybox.exe'), 'utf8'), 'pinned busybox')
     assert.deepEqual(await readdir(bin), ['busybox.exe'])
-    assert.deepEqual(urls, [BUSYBOX.url, BUSYBOX.url])
+    assert.deepEqual(await readdir(cache), [basename(BUSYBOX.url)])
+    // A later build stages the cached copy without the network.
+    const again = join(root, 'again')
+    await stageBusybox(again, { cache, download: noDownload, pin })
+    assert.equal(await readFile(join(again, 'busybox.exe'), 'utf8'), 'pinned busybox')
+    // A damaged cached copy is downloaded again, never staged.
+    await writeFile(cached, 'damaged busybox')
+    await stageBusybox(again, { cache, download: busyboxDownload('pinned busybox', urls), pin })
+    assert.equal(await readFile(join(again, 'busybox.exe'), 'utf8'), 'pinned busybox')
+    assert.equal(await readFile(cached, 'utf8'), 'pinned busybox')
+    assert.deepEqual(await readdir(cache), [basename(BUSYBOX.url)])
+    assert.deepEqual(urls, [BUSYBOX.url, BUSYBOX.url, BUSYBOX.url])
+    assert.equal(await cacheBusybox(cache, { download: noDownload, pin }), cached)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('a BusyBox the build was handed is checked and staged without the cache or a download', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hexbot handed busybox π 中文 & '))
+  try {
+    const cache = join(root, 'cache'), file = join(root, 'handed busybox.exe'), pin = busyboxPin('pinned busybox')
+    await writeFile(file, 'pinned busybox')
+    const bin = join(root, 'bin')
+    assert.equal(await stageBusybox(bin, { file, cache, download: noDownload, pin }), join(bin, 'busybox.exe'))
+    assert.equal(await readFile(join(bin, 'busybox.exe'), 'utf8'), 'pinned busybox')
+    assert.equal(existsSync(cache), false)
+    // A wrong or missing copy fails the build instead of downloading another.
+    const refused = join(root, 'refused')
+    await writeFile(file, 'another busybox')
+    await assert.rejects(stageBusybox(refused, { file, cache, download: noDownload, pin }), /busybox-w64u-.*\.exe checksum mismatch: .*handed busybox\.exe/)
+    assert.deepEqual(await readdir(refused), [])
+    await assert.rejects(stageBusybox(refused, { file: join(root, 'missing.exe'), cache, download: noDownload, pin }), { code: 'ENOENT' })
+    assert.deepEqual(await readdir(refused), [])
+    assert.equal(existsSync(cache), false)
+    // The real pin refuses the synthetic bytes, wherever they come from.
+    await assert.rejects(stageBusybox(refused, { file, cache, download: noDownload }), /checksum mismatch/)
+    assert.equal(BUSYBOX_CACHE, join(fileURLToPath(new URL('../..', import.meta.url)), 'node_modules/.cache/hexbot'))
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 

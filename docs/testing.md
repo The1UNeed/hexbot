@@ -490,9 +490,11 @@ the native controls.
 The shell checks in those suites need the runtime's BusyBox beside the
 daemon binary they test. Both workflows stage the pinned one there with
 `node scripts/desktop/stage-busybox.mjs <daemon folder>/bin` and name it in
-`HEXBOT_WINDOWS_BUSYBOX`, so a missing shell fails them. Run locally without
-it, `windows_sandbox` prints `SKIPPED (no bundled shell)` and skips those
-checks, and `windows_security` expects shell scripts to refuse.
+`HEXBOT_WINDOWS_BUSYBOX`, so a missing shell fails them. The script keeps the
+download in `node_modules/.cache/hexbot`, which the workflows restore from
+their cache under the pin's SHA-256. Run locally without it, `windows_sandbox`
+prints `SKIPPED (no bundled shell)` and skips those checks, and
+`windows_security` expects shell scripts to refuse.
 
 On macOS or Linux, check that the daemon still compiles for Windows:
 

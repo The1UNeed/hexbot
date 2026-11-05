@@ -311,12 +311,13 @@ Residual risks:
 - **MSYS programs.** Git for Windows' MSYS programs, Git Bash and the tools
   in its `usr\bin` such as `less`, cannot start in a container. `git` itself
   can, but a hook or alias that needs Git's own `sh` fails.
-- **The shell is a third-party binary.** Every Windows build downloads
-  BusyBox from frippery.org at its pinned checksum and fails while that site
-  is down; the pin must move before frippery.org deletes the build, about
-  three years after its release. Some antivirus software flags busybox.exe,
-  and Windows Security scans every copy the shell starts, which slows
-  commands that start many processes.
+- **The shell is a third-party binary.** A Windows build takes BusyBox at its
+  pinned checksum from `HEXBOT_BUSYBOX_FILE` or its build cache, and fails
+  while frippery.org is down only when it has neither (a first build, or a
+  cold CI cache); the pin must move before frippery.org deletes the build,
+  about three years after its release. Some antivirus software flags
+  busybox.exe, and Windows Security scans every copy the shell starts, which
+  slows commands that start many processes.
 - **No memory or CPU caps.** The job limits only the number of processes.
 - **Policy size.** A policy is one command-line argument. A workspace with
   very many protected files refuses rather than drop protections.

@@ -85,6 +85,13 @@ jobs:
           if ($probe.Count -ne 1 -or $daemon.Count -ne 1) { throw 'Expected one sandbox test and one daemon executable' }
           "HEXBOT_SANDBOX_PROBE=$($probe[0].executable)" >> $env:GITHUB_ENV
           "HEXBOT_SANDBOX_DAEMON=$($daemon[0].executable)" >> $env:GITHUB_ENV
+      # The pinned BusyBox's build cache, keyed by its SHA-256 (BUSYBOX in
+      # scripts/desktop/native-runtime.mjs): frippery.org only fills it.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: busybox
+        with:
+          path: node_modules/.cache/hexbot
+          key: busybox-6e263d154d8548d1eb936f65d1d8312c80df31c45974e48d6335e4dcc0f4f34c
       - name: Stage the pinned BusyBox the Windows runtime ships
         shell: pwsh
         run: |
@@ -92,6 +99,11 @@ jobs:
           node scripts/desktop/stage-busybox.mjs $directory
           if ($LASTEXITCODE -ne 0) { throw 'Cannot stage the pinned BusyBox' }
           "HEXBOT_SANDBOX_BUSYBOX=$(Join-Path $directory 'busybox.exe')" >> $env:GITHUB_ENV
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.busybox.outputs.cache-hit != 'true'
+        with:
+          path: node_modules/.cache/hexbot
+          key: ${{ steps.busybox.outputs.cache-primary-key }}
       - name: Run the sandbox as a standard user
         shell: pwsh
         run: ./scripts/dev/windows-sandbox-standard-user.ps1 -Probe $env:HEXBOT_SANDBOX_PROBE -Hexbot $env:HEXBOT_SANDBOX_DAEMON -Busybox $env:HEXBOT_SANDBOX_BUSYBOX
@@ -111,6 +123,25 @@ jobs:
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
       - run: rustup show active-toolchain
       - run: pnpm install --frozen-lockfile
+      # The pinned BusyBox's build cache, keyed by its SHA-256 (BUSYBOX in
+      # scripts/desktop/native-runtime.mjs): frippery.org only fills it.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: busybox
+        with:
+          path: node_modules/.cache/hexbot
+          key: busybox-6e263d154d8548d1eb936f65d1d8312c80df31c45974e48d6335e4dcc0f4f34c
+      - name: Stage the pinned BusyBox the Full runtime ships
+        shell: pwsh
+        run: |
+          $directory = Join-Path $env:RUNNER_TEMP 'busybox'
+          node scripts/desktop/stage-busybox.mjs $directory
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot stage the pinned BusyBox' }
+          "HEXBOT_BUSYBOX_FILE=$(Join-Path $directory 'busybox.exe')" >> $env:GITHUB_ENV
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.busybox.outputs.cache-hit != 'true'
+        with:
+          path: node_modules/.cache/hexbot
+          key: ${{ steps.busybox.outputs.cache-primary-key }}
       - name: Check the native daemon and real launcher regressions
         run: cargo clippy --locked --manifest-path backend/hexbot-core/Cargo.toml --lib --bins -- -D warnings
       - name: Run native Unicode, junction, service logs and security regressions
@@ -232,5 +263,24 @@ jobs:
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
       - run: rustup show active-toolchain
       - run: pnpm install --frozen-lockfile
+      # The pinned BusyBox's build cache, keyed by its SHA-256 (BUSYBOX in
+      # scripts/desktop/native-runtime.mjs): frippery.org only fills it.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: busybox
+        with:
+          path: node_modules/.cache/hexbot
+          key: busybox-6e263d154d8548d1eb936f65d1d8312c80df31c45974e48d6335e4dcc0f4f34c
+      - name: Stage the pinned BusyBox the Full runtime ships
+        shell: pwsh
+        run: |
+          $directory = Join-Path $env:RUNNER_TEMP 'busybox'
+          node scripts/desktop/stage-busybox.mjs $directory
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot stage the pinned BusyBox' }
+          "HEXBOT_BUSYBOX_FILE=$(Join-Path $directory 'busybox.exe')" >> $env:GITHUB_ENV
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.busybox.outputs.cache-hit != 'true'
+        with:
+          path: node_modules/.cache/hexbot
+          key: ${{ steps.busybox.outputs.cache-primary-key }}
       - name: Verify the real Nightly Full NSIS identity without publishing
         run: node scripts/desktop/windows-nightly-nsis-probe.mjs full
