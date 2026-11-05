@@ -19,6 +19,8 @@ use tokio::{
     sync::oneshot,
     time::{Instant, timeout_at},
 };
+// Set by tests: the host refuses its root as a failed job assignment would.
+const REFUSE_ASSIGNMENT: &str = "HEXBOT_DEV_HOST_REFUSE_ASSIGNMENT";
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn GetCurrentProcess() -> *mut c_void;
@@ -123,7 +125,16 @@ async fn host(args: &[String]) -> io::Result<i32> {
     if !matches!(admissible, Ok(true)) || ended.load(Ordering::SeqCst) {
         return Ok(reap(&mut child, 3).await);
     }
-    if let Err(error) = job.assign_and_resume(&child) {
+    // Windows nests this new, empty job inside any job the root already
+    // belongs to, and would refuse only if this job had UI limits, which it
+    // never has. So no launcher can make the assignment fail; the launcher
+    // tests ask for a refusal here to prove a refused root is killed unresumed.
+    let assigned = if std::env::var_os(REFUSE_ASSIGNMENT).is_some() {
+        Err(io::Error::other(format!("{REFUSE_ASSIGNMENT} is set")))
+    } else {
+        job.assign_and_resume(&child)
+    };
+    if let Err(error) = assigned {
         eprintln!("Dev host job assignment failed: {error}");
         drop(job);
         return Ok(reap(&mut child, 126).await);
