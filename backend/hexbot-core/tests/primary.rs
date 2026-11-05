@@ -249,6 +249,44 @@ async fn primary_bot_manages_other_bots_and_always_asks_before_deleting() {
         .unwrap();
     assert_eq!(owl["bot"]["provider"], "anthropic");
     assert_eq!(owl["bot"]["model"], "claude-fable-5-1");
+    // A provider alone takes the default's model when the default is on it,
+    // and on any other provider the model has to be named.
+    let (asked, reply) = call_tool(
+        &app,
+        &live,
+        "hexbot_bots",
+        json!({"action":"create","name":"wren","display_name":"Wren","provider":"claude"}),
+        "deny",
+    )
+    .await;
+    assert!(!asked, "{reply}");
+    let wren = app
+        .call("local", "hexbot.bots.get", &json!({"name":"wren"}))
+        .await
+        .unwrap();
+    assert_eq!(wren["bot"]["provider"], "anthropic");
+    assert_eq!(wren["bot"]["model"], "claude-fable-5-1");
+    app.call("local", "hexbot.bots.delete", &json!({"name":"wren"}))
+        .await
+        .unwrap();
+    app.call(
+        "local",
+        "hexbot.providers.set_key",
+        &json!({"provider":"openai","key":"sk-test"}),
+    )
+    .await
+    .unwrap();
+    let (asked, reply) = call_tool(
+        &app,
+        &live,
+        "hexbot_bots",
+        json!({"action":"create","name":"finch","display_name":"Finch","provider":"openai"}),
+        "deny",
+    )
+    .await;
+    assert!(!asked);
+    assert!(reply.contains("No model chosen for openai-api"), "{reply}");
+    assert!(!exists(&h, "finch"));
     // A connected provider by any of its names; it lands as its id.
     let (asked, reply) = call_tool(
         &app,

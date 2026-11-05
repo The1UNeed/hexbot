@@ -18,7 +18,7 @@ pub(super) const GUIDANCE: &str = r###"
 
 # Primary bot
 You also look after the user's Hexbot, from your own chat only:
-- hexbot_bots: list, create, change and delete bots. Check the list first; it also shows the providers the user has connected and the default model from Settings. Give a new bot a clear purpose, a soul for it, and only the tools it needs. A bot runs only on a connected provider, never one you assume. A new bot without a model takes the default from Settings; when there is none, or the user wants another, ask which provider and model to use before creating. Tell the user what changed when you edit another bot's soul.
+- hexbot_bots: list, create, change and delete bots. Check the list first; it also shows the providers the user has connected and the default model from Settings. Give a new bot a clear purpose, a soul for it, and only the tools it needs. A bot runs only on a connected provider, never one you assume. A new bot without a model takes the default from Settings when it is on the bot's provider; when it is not, there is none, or the user wants another, ask which provider and model to use before creating. Tell the user what changed when you edit another bot's soul.
 - hexbot_rooms: rooms and their members.
 - hexbot_jobs: scheduled work for any bot.
 - hexbot_settings: settings, skills and connectors.
@@ -80,7 +80,7 @@ pub(super) fn descriptors() -> Vec<Value> {
         json!({
             "name": "hexbot_bots",
             "label": "Bots",
-            "description": "List, read, create, change and delete the user's bots. list also returns providers, the ones the user has connected, and default_model from Settings. get returns a bot's soul. create needs name (lowercase letters, digits, - or _) and display_name; without provider and model it takes the default model from Settings, and is refused when there is none, so ask the user. update changes only the fields given; tools and skills replace the whole list. Deleting a bot, or setting approval_mode or workdir, asks the user first.",
+            "description": "List, read, create, change and delete the user's bots. list also returns providers, the ones the user has connected, and default_model from Settings. get returns a bot's soul. create needs name (lowercase letters, digits, - or _) and display_name; without a model it takes the default model from Settings when that is on its provider, or no provider is given, and is refused otherwise, so ask the user. update changes only the fields given; tools and skills replace the whole list. Deleting a bot, or setting approval_mode or workdir, asks the user first.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -326,7 +326,7 @@ impl Runtime {
 
     /// A bot runs only on a provider the user has connected; the primary bot
     /// never assumes one. A new bot without a model takes the default from
-    /// Settings, and without that the bot has to ask the user.
+    /// Settings when that is on its provider; otherwise the bot has to ask.
     async fn choose_model(&self, owner: &str, action: &str, patch: &mut Value) -> Result<()> {
         for key in ["provider", "model"] {
             if patch[key].as_str().is_some_and(|v| v.trim().is_empty()) {
@@ -334,8 +334,15 @@ impl Runtime {
             }
         }
         let providers = self.connected_providers(owner).await?;
-        if action == "create" && patch.get("provider").is_none() {
-            if patch.get("model").is_some() {
+        if let Some(provider) = patch["provider"].as_str().map(str::to_owned) {
+            patch["provider"] = json!(check_connected(&providers, &provider)?);
+        }
+        if action != "create" {
+            return Ok(());
+        }
+        let provider = patch["provider"].as_str().map(str::to_owned);
+        if patch.get("model").is_some() {
+            if provider.is_none() {
                 return Err(Error::new(
                     4202,
                     format!(
@@ -344,13 +351,28 @@ impl Runtime {
                     ),
                 ));
             }
-            let settings = self
-                .dispatch(owner, "hexbot.settings.get", json!({}))
-                .await?;
-            let Some((provider, model)) = settings["default_model"]
-                .as_str()
-                .and_then(|s| s.split_once('/'))
-            else {
+            return Ok(());
+        }
+        // No model named: the default from Settings, when it is on the chosen
+        // provider or none was chosen. A provider alone would leave the bot
+        // to Pi's own default.
+        let settings = self
+            .dispatch(owner, "hexbot.settings.get", json!({}))
+            .await?;
+        let default = settings["default_model"]
+            .as_str()
+            .and_then(|s| s.split_once('/'));
+        match (provider, default) {
+            (None, Some((provider, model))) => {
+                patch["provider"] = json!(check_connected(&providers, provider)?);
+                patch["model"] = json!(model);
+            }
+            (Some(id), Some((provider, model)))
+                if crate::providers::canonical_provider(provider) == id =>
+            {
+                patch["model"] = json!(model);
+            }
+            (None, None) => {
                 return Err(Error::new(
                     4202,
                     format!(
@@ -358,12 +380,15 @@ impl Runtime {
                         provider_choices(&providers)
                     ),
                 ));
-            };
-            patch["provider"] = json!(provider);
-            patch["model"] = json!(model);
-        }
-        if let Some(provider) = patch["provider"].as_str().map(str::to_owned) {
-            patch["provider"] = json!(check_connected(&providers, &provider)?);
+            }
+            (Some(id), _) => {
+                return Err(Error::new(
+                    4202,
+                    format!(
+                        "No model chosen for {id}. Ask the user which model on {id} the bot should use."
+                    ),
+                ));
+            }
         }
         Ok(())
     }

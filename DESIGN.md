@@ -125,10 +125,10 @@ more freedom and more capability than a hosted product can offer.
   Network, service, and billing settings and every credential stay with
   the user.
 - It puts a bot only on a provider the user has connected, never one it
-  assumes. A new bot without a model takes the default model from Settings;
-  when there is none, the tool refuses and the bot asks the user which
-  provider and model to use. The same holds for the default and fallback
-  models in Settings.
+  assumes. A new bot without a model takes the default model from Settings
+  when that is on the bot's provider, or no provider was named; otherwise
+  the tool refuses and the bot asks the user which provider and model to
+  use. The same holds for the default and fallback models in Settings.
 - Its tools and guidance are frozen with its chat like any other change of
   tools, so a bot made primary takes them with its next message, which
   misses the prompt cache once.
