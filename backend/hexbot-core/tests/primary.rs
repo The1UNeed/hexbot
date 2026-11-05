@@ -361,6 +361,11 @@ async fn primary_bot_manages_other_bots_and_always_asks_before_deleting() {
     .await
     .unwrap();
     assert_eq!(changed["bot"], "owl");
+    let owl_jobs = app
+        .call("local", "hexbot.jobs.list", &json!({"bot":"owl"}))
+        .await
+        .unwrap();
+    assert_eq!(owl_jobs["jobs"][0]["notify"], true, "{owl_jobs}");
 
     // A job's working folder asks like a bot's.
     let (asked, reply) = call_tool(

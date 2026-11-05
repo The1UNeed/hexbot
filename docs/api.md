@@ -864,7 +864,7 @@ broadcast `hexbot.jobs.changed`.
 
 - `hexbot.jobs.list {bot, include_disabled?}` returns `{jobs}`.
 - `hexbot.jobs.create {bot, name?, prompt?, schedule, script?, workdir?, model?,
-  provider?, reasoning_effort?, skills?, repeat?}` returns `{job}`. Jobs need
+  provider?, reasoning_effort?, skills?, repeat?, notify?}` returns `{job}`. Jobs need
   instructions or a script. Wall-clock schedules use the daemon's timezone.
 - `hexbot.jobs.update {bot, job_id, ...changes}` returns `{job}`.
 - `hexbot.jobs.pause {bot, job_id}` / `hexbot.jobs.resume {bot, job_id}` return `{job}`.
@@ -873,7 +873,17 @@ broadcast `hexbot.jobs.changed`.
 
 The daemon enforces unattended approval rules and script workspace restrictions.
 The mobile app displays the last status, error and up to 12,000 characters of output
-stored on the daemon. Jobs do not send push notifications.
+stored on the daemon.
+
+A job with `notify: true` posts each finished run in the bot's chat, like a
+heartbeat message: `**<name>** finished.` and up to 4,000 characters of its
+output, or `**<name>** did not finish: <error>`. It sends
+`hexbot.heartbeat.message` and the same phone push, so the bot's Notify me
+switch silences it on devices. A monitor run with nothing new posts nothing.
+Jobs a bot creates with `cronjob_manage` or `hexbot_jobs` default to
+`notify: true`, and the bot tells the user what it scheduled; it sets `false`
+when the user asks for no notifications. Jobs the user creates from an app
+default to off.
 
 Scheduled jobs and their delegates cannot call `message_bot`. Jobs use Auto
 when the bot's approval mode is Bypass; Manual remains Manual. Scheduled

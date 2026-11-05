@@ -4460,6 +4460,17 @@ async fn scheduled_jobs_keep_the_creating_sections_workdir() {
         result["job"]["workdir"],
         json!(fs::canonicalize(workdir).unwrap())
     );
+    // A job a bot schedules reports back unless it was asked to stay quiet.
+    assert_eq!(result["job"]["notify"], true);
+    let quiet = runtime
+        .tool(
+            &section,
+            "cronjob_manage",
+            &json!({"action":"create","schedule":"every 1h","prompt":"check","notify":false}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(quiet["job"]["notify"], false);
     runtime.shutdown().await;
 }
 

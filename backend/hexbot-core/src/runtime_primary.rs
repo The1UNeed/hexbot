@@ -53,6 +53,7 @@ const JOB_FIELDS: &[&str] = &[
     "enabled_toolsets",
     "workdir",
     "reasoning_effort",
+    "notify",
 ];
 const ROOM_FIELDS: &[&str] = &["id", "name", "members", "main_bot", "approval_mode"];
 /// Daemon settings the primary bot may change. Network, service and billing
@@ -120,7 +121,7 @@ pub(super) fn descriptors() -> Vec<Value> {
         json!({
             "name": "hexbot_jobs",
             "label": "Scheduled jobs",
-            "description": "Create and manage scheduled jobs for any of the user's bots. Actions: create, list, update, pause, resume, remove, run. Each job runs as that bot in a fresh session and saves its output locally. Removing a job, or setting its workdir, asks the user first.",
+            "description": "Create and manage scheduled jobs for any of the user's bots. Actions: create, list, update, pause, resume, remove, run. Each job runs as that bot in a fresh session and saves its output locally. When you create one, tell the user what you scheduled, for which bot, and when it first runs. With notify on, the default, each run's result is posted in that bot's chat and notifies the user; set notify to false when the user asks for no notifications, and say nothing about the job unless they ask. Removing a job, or setting its workdir, asks the user first.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -135,7 +136,8 @@ pub(super) fn descriptors() -> Vec<Value> {
                     "skills": strings,
                     "enabled_toolsets": strings,
                     "workdir": { "type": "string" },
-                    "reasoning_effort": { "type": "string" }
+                    "reasoning_effort": { "type": "string" },
+                    "notify": { "type": "boolean", "description": "Post each run's result in the bot's chat and notify the user. Defaults to true when you create a job." }
                 },
                 "required": ["bot", "action"]
             }
@@ -537,6 +539,10 @@ impl Runtime {
                 }
                 if job["repeat"] == 0 {
                     job["repeat"] = Value::Null;
+                }
+                // A job a bot schedules reports back unless the user asked for quiet.
+                if action == "create" && job["notify"].is_null() {
+                    job["notify"] = json!(true);
                 }
                 job["bot"] = json!(bot);
                 let method = format!("hexbot.jobs.{action}");
