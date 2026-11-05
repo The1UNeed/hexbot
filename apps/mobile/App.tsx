@@ -886,8 +886,8 @@ function MobileApp({ children }: { children?: ReactNode }) {
       })
       return
     }
-    // A thread takes one message at a time; rooms queue messages themselves.
-    if (mobile.route?.kind === 'section' && mobile.chat.busy) return
+    // In a chat, a message sent while the bot works cuts its reply off and goes
+    // next; rooms queue messages themselves.
     const previous = draft
     setDraft('')
     act(async () => {
@@ -1052,7 +1052,6 @@ function MobileApp({ children }: { children?: ReactNode }) {
     busy: mobile.chat.busy,
     waiting: mobile.chat.busy && !mobile.chat.streaming ? { label: 'Working' } : undefined,
     onSend: send,
-    sendWhileBusy: route?.kind === 'room' || mobile.chat.questions.length > 0,
     draft,
     onDraftChange: setDraft,
     onStop: () => act(mobile.stop),

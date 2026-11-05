@@ -23,8 +23,14 @@ data model. The native transport and event projection live in
 
 ## Core methods the client calls directly
 
-- Chat: `prompt.submit {session_id, text, attachments?, input_id?}`,
+- Chat: `prompt.submit {session_id, text, attachments?, input_id?, interrupt?}`,
   `session.interrupt`, `session.steer {session_id, text, input_id?}`.
+  A `prompt.submit` while the bot works answers 4002, unless it sets
+  `interrupt: true`: then the running reply stops first, as
+  `session.interrupt` would, and the message starts the next run once Stop
+  finishes. A `/compact` in progress finishes first, and a `/compact` sent
+  this way is still refused while the bot works. The web and mobile apps
+  send every message from the composer this way.
   `session.steer` steers a healthy busy run. During Stop or manual compaction
   it waits before staging input; when idle it starts a fresh run. Close or
   process exit rejects a waiting steer with a session error.

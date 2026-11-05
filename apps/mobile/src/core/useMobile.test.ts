@@ -528,7 +528,7 @@ it('holds owner input through reconnect lookup failure and retries the canonical
   await act(async () => { await state.ready() })
   expect(hook.result.current.liveSessionId()).toBe('live-owl-chat')
   await act(async () => { await hook.result.current.send('after retry') })
-  expect(state.request).toHaveBeenCalledWith('prompt.submit', expect.objectContaining({ session_id: 'live-owl-chat', text: 'after retry' }))
+  expect(state.request).toHaveBeenCalledWith('prompt.submit', expect.objectContaining({ session_id: 'live-owl-chat', text: 'after retry', interrupt: true }))
   expect(state.request.mock.calls.some(([method, params]) => method === 'prompt.submit' && params.text.includes('early'))).toBe(false)
 })
 it.each(['room', 'bot', 'back', 'daemon', 'unmount'] as const)(
@@ -716,6 +716,52 @@ describe('recall and closing an error in a bot chat', () => {
     expect(text).toBe('Hello')
     expect(state.request).toHaveBeenCalledWith('session.recall', { session_id: 'live-owl-chat', input_id: 'message' })
     expect(hook.result.current.chat.messages).toEqual([])
+    expect(hook.result.current.chat.busy).toBe(false)
+  })
+
+  it('keeps a running reply working when a follow-up is refused', async () => {
+    const hook = await chat()
+    act(() => state.event({ type: 'message.start', session_id: 'live-owl-chat', payload: {} }))
+    state.request.mockImplementation(async (method: string, params: Record<string, unknown> = {}) => {
+      if (method === 'prompt.submit') throw Object.assign(new Error('attachment not found: gone; attach it again'), { code: 4204 })
+      return reply(method, params)
+    })
+    await act(async () => { await hook.result.current.send('Use this file').catch(() => {}) })
+    expect(hook.result.current.chat.busy).toBe(true)
+    expect(hook.result.current.chat.messages).toEqual([])
+    act(() => state.event({ type: 'message.complete', session_id: 'live-owl-chat', payload: { text: 'Done' } }))
+    expect(hook.result.current.chat.busy).toBe(false)
+  })
+
+  it('keeps a reply that was running when the chat opened working when a follow-up is refused', async () => {
+    daemonWith([bot])
+    const base = state.request.getMockImplementation()!
+    state.request.mockImplementation(async (method: string, params: Record<string, unknown> = {}) => {
+      if (method === 'hexbot.sections.open')
+        return { ...(await reply(method, params)), busy: true, messages: [{ role: 'user', content: 'Write an essay' }] }
+      if (method === 'prompt.submit') throw Object.assign(new Error('session is compacting'), { code: 4002 })
+      return base(method, params)
+    })
+    const hook = await connected()
+    await act(async () => { await hook.result.current.openSection(bot) })
+    expect(hook.result.current.chat.busy).toBe(true)
+    await act(async () => { await hook.result.current.send('/compact').catch(() => {}) })
+    expect(hook.result.current.chat.busy).toBe(true)
+    act(() => state.event({ type: 'message.complete', session_id: 'live-owl-chat', payload: { text: 'Bridges are' } }))
+    act(() => state.event({ type: 'status.update', session_id: 'live-owl-chat', payload: { kind: 'idle', text: '' } }))
+    expect(hook.result.current.chat.busy).toBe(false)
+  })
+
+  it('does not keep a finished turn working when a later message is refused', async () => {
+    const hook = await chat()
+    act(() => state.event({ type: 'message.start', session_id: 'live-owl-chat', payload: {} }))
+    act(() => state.event({ type: 'status.update', session_id: 'live-owl-chat', payload: { kind: 'interrupted', text: '' } }))
+    const base = state.request.getMockImplementation()!
+    state.request.mockImplementation(async (method: string, params: Record<string, unknown> = {}) => {
+      if (method === 'prompt.submit') throw Object.assign(new Error('attachment not found: gone; attach it again'), { code: 4204 })
+      return base(method, params)
+    })
+    await act(async () => { await hook.result.current.send('Use this file').catch(() => {}) })
     expect(hook.result.current.chat.busy).toBe(false)
   })
 

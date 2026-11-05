@@ -63,10 +63,8 @@ export interface ChatScreenProps {
   items: ChatItem[]
   /** A bot is working but has not written anything yet. */
   waiting?: { label?: string | null; who?: FaceSource | null } | null
-  /** A turn is running; the composer offers Stop. */
+  /** A turn is running; the composer offers Stop, which becomes Send once there is text. */
   busy?: boolean
-  /** Keep Send next to Stop while busy, for rooms and for answering a question. */
-  sendWhileBusy?: boolean
 
   onSend: (text: string) => void
   onStop?: () => void
@@ -839,7 +837,6 @@ function Composer({
   onSend,
   onStop,
   sendDisabledReason,
-  sendWhileBusy,
   title
 }: ChatScreenProps & { bottom: number }) {
   const theme = useTheme()
@@ -928,7 +925,7 @@ function Composer({
             testID="chat-input"
             value={text}
           />
-          {busy && onStop ? (
+          {busy && onStop && !canSend ? (
             <IconButton
               accessibilityLabel="Stop"
               icon="stop"
@@ -940,7 +937,7 @@ function Composer({
               variant="filled"
             />
           ) : null}
-          {!busy || (sendWhileBusy && text.trim()) ? (
+          {!busy || canSend || !onStop ? (
             <IconButton
               accessibilityLabel="Send"
               disabled={!canSend}
