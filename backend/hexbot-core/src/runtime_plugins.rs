@@ -414,6 +414,7 @@ impl Runtime {
                         "provider": f["provider"],
                         "set": f["set"],
                         "hint": f["hint"],
+                        "optional": f["optional"] == true,
                     })
                 })
                 .collect::<Vec<_>>();
@@ -421,7 +422,7 @@ impl Runtime {
                 form["providers"] = json!(
                     providers
                         .iter()
-                        .map(|p| json!({"id": p["id"], "label": p["label"]}))
+                        .map(|p| json!({"id": p["id"], "label": p["label"], "description": p["description"]}))
                         .collect::<Vec<_>>()
                 );
                 form["provider"] = match &plugin["provider"] {
@@ -633,7 +634,7 @@ pub(super) fn answer(form: &Value, p: &Value) -> Result<Value> {
         }
         if !value.is_empty() {
             values.insert(key.to_owned(), json!(value));
-        } else if setup && field["set"] != true {
+        } else if setup && field["set"] != true && field["optional"] != true {
             return Err(Error::new(
                 4202,
                 format!("Enter the {}.", field["label"].as_str().unwrap_or(key)),

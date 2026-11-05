@@ -1041,22 +1041,45 @@ that contain symlinks. Browser private-URL settings use the same merge.
 A tool that belongs to a connector (`web_search`, `web_extract`,
 `image_generate`, `video_generate`, `x_search`, the Home Assistant tools) is
 left out of every session's tool schema until that connector is `ready`.
-The core alone would offer some of them without a key (its keyless web search
-tier, or an xAI model key); `connectors.gate_tools` adds the "set up" condition
-to each tool's core availability check when the plugin registers. Onboarding
-offers the search and media connectors before the first bot is created
+The core alone would offer some of them without a key (an xAI model key);
+`connectors.gate_tools` adds the "set up" condition to each tool's core
+availability check when the plugin registers. Onboarding offers the search
+and media connectors before the first bot is created
 (`hexbot.connectors.setup` without a `bot`).
 
+A provider whose catalog entry lists no `keys` is set up as soon as it is
+chosen. Web search is `ready` out of the box: its `default_provider` is
+SearXNG, which the daemon runs itself (`searxng.rs`) in whatever Docker
+answers on its computer, as the container `hexbot-searxng-<hash of the home>`
+from a pinned image, published on a localhost port Docker picks. The settings
+go in with `docker cp`, so no folder has to be shared with the engine's VM.
+It starts with the first web search, or with `hexbot.connectors.setup` or
+`test`, and stops with the daemon; the daemon never starts a container engine
+for it. Each start removes the containers this computer made for homes that no
+longer exist (labels `app.hexbot.home` and `app.hexbot.host`). Until it
+answers, `web_search` uses Tavily's keyless tier, then Wikipedia. `web.searxng.docker` in
+config.yaml names the Docker CLI, or `off` keeps SearXNG off this computer.
+The other providers that need no key are Tavily (a key raises its limits),
+Wikipedia, and Marginalia (the shared `public` key, or the user's own). When
+the provider in use cannot read pages and no reading service has a key,
+`web_extract` uses the built-in reader: the daemon fetches each page under the same private-address
+rules and turns its HTML into Markdown, preferring `<main>` or `<article>`.
+
 Connector shape: `{id, name, description, group, icon, scope, ready, state, state_text,
-providers | null, provider | null, fields: [{key, provider, label, help, url,
-secret, advanced, set, hint}], enabled_for_bot | null, enabled_bots: [string],
+providers: [{id, label, description, configured}] | null, provider | null,
+fields: [{key, provider, label, help, url, secret, advanced, optional?, set,
+hint}], enabled_for_bot | null, enabled_bots: [string],
 last_error | null, mcp?: {name, transport, tool_count, test_failed, running}}`. `state` is
 `not_set_up`, `ready`, or `error`; `icon` is a Simple Icons slug or `glyph:*`.
 `fields` carries every provider's fields, each tagged with its `provider`
 (`null` = common to all), so a client can show the right ones before a choice
-is saved. `state_text` says "Connected" only after a probe answered (Notion,
-Airtable, ElevenLabs, Home Assistant, xAI make one small authenticated GET);
-connectors with only an offline check say "Key saved". A failed probe keeps
+is saved. `optional` fields, such as a free provider's own key, may stay
+empty. `state_text` says "Connected" only after a probe answered (Notion,
+Airtable, ElevenLabs, Home Assistant, xAI make one small authenticated GET;
+a web search that needs no key runs one search); connectors with only an
+offline check say "Key saved", and a provider that needs no key says "Ready".
+For the SearXNG the daemon runs, it adds why it is not running yet, such as
+"Ready · SearXNG (Docker isn't running)". A failed probe keeps
 the row in `error` with the probe's message until the next successful setup
 or a clear.
 
@@ -1071,7 +1094,8 @@ or a clear.
 - `hexbot.connectors.test {id, bot?}` → `{ok, message, tool_count?}`. A successful
   connected-server probe counts all tool pages and saves `tool_count`. The connector
   list reports the last probe count, or null when untested.
-- `hexbot.connectors.clear {id, bot?, bot_only?}` → `{connector}`.
+- `hexbot.connectors.clear {id, bot?, bot_only?}` → `{connector}`. Clearing
+  web search returns it to its free default, and it stays on for every bot.
 - `hexbot.connectors.set_for_bot {id, bot, enabled}` → `{connector}`. A
   connector that is not `ready` for the bot can be turned off but not on:
   4209, "Set up NAME before giving it to a bot."

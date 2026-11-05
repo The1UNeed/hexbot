@@ -51,25 +51,78 @@ async fn catalog_shapes_and_errors_match_clients() {
             "home_assistant"
         ]
     );
+    let providers = rows[0]["providers"].as_array().unwrap();
     assert_eq!(
-        rows[0]["providers"][2],
-        json!({"id":"brave","label":"Brave Search","configured":false})
+        providers
+            .iter()
+            .map(|p| p["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "searxng",
+            "tavily",
+            "wikipedia",
+            "marginalia",
+            "exa",
+            "brave",
+            "firecrawl",
+            "parallel",
+            "keenable"
+        ]
     );
     assert_eq!(
-        rows[0]["fields"][0],
-        json!({"key":"EXA_API_KEY","provider":"exa","label":"Exa API key","help":"Exa API key for AI-native web search and contents","url":"https://exa.ai/","secret":true,"advanced":false,"set":false,"hint":null})
+        providers[5],
+        json!({"id":"brave","label":"Brave Search","description":null,"configured":false})
     );
+    assert!(
+        providers[0]["description"]
+            .as_str()
+            .unwrap()
+            .contains("Docker")
+    );
+    let fields = rows[0]["fields"].as_array().unwrap();
+    assert_eq!(
+        fields.iter().find(|f| f["key"] == "EXA_API_KEY").unwrap(),
+        &json!({"key":"EXA_API_KEY","provider":"exa","label":"Exa API key","help":"Exa API key for AI-native web search and contents","url":"https://exa.ai/","secret":true,"advanced":false,"set":false,"hint":null})
+    );
+    // The free providers' settings are optional; the paid ones' keys are not.
+    for field in fields {
+        let free =
+            ["searxng", "tavily", "marginalia"].contains(&field["provider"].as_str().unwrap());
+        assert_eq!(field["optional"] == true, free, "{field}");
+    }
     for row in rows {
         assert_eq!(row["scope"], "daemon");
-        assert_eq!(row["state"], "not_set_up");
         assert!(row["enabled_for_bot"].is_boolean());
         assert!(row["last_error"].is_null());
+        if row["id"] == "web_search" {
+            // Free by default: SearXNG, which this test home cannot run.
+            assert_eq!(row["state"], "ready");
+            assert_eq!(row["provider"], "searxng");
+            assert_eq!(row["state_text"], "Ready · SearXNG (needs Docker)");
+            assert_eq!(row["enabled_for_bot"], true);
+        } else {
+            assert_eq!(row["state"], "not_set_up");
+        }
     }
+    let test = rpc(
+        home.path(),
+        "hexbot.connectors.test",
+        json!({"id":"web_search"}),
+    )
+    .await;
+    assert_eq!(test["ok"], true);
+    assert!(
+        test["message"]
+            .as_str()
+            .unwrap()
+            .ends_with("Until it runs, bots search with Tavily and Wikipedia."),
+        "{test}"
+    );
     assert_eq!(
         rpc(
             home.path(),
             "hexbot.connectors.test",
-            json!({"id":"web_search"})
+            json!({"id":"image_gen"})
         )
         .await,
         json!({"ok":false,"message":"Choose a provider first."})
@@ -1034,4 +1087,114 @@ fn an_invalid_connected_server_does_not_disable_healthy_entries() {
     assert!(entries[0]["error"].as_str().unwrap().contains("bad"));
     assert_eq!(entries[1]["config"]["command"], "node");
     assert_ne!(entries[1]["config"]["cwd"], "/tmp/untrusted");
+}
+
+#[tokio::test]
+async fn web_search_is_free_out_of_the_box_and_stays_on_without_keys() {
+    let home = setup();
+    // Every bot with the web toolset, which bots have by default, gets it.
+    assert!(connectors::tool_available(home.path(), "owl", "web_search").unwrap());
+    let row = connectors::get(home.path(), None, "web_search").unwrap();
+    assert_eq!(row["enabled_bots"], json!(["fox", "owl"]));
+    let names = |tools: Vec<Value>| {
+        tools
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>()
+    };
+    assert!(
+        names(crate::native_tools::descriptors(home.path(), "owl").unwrap())
+            .contains(&"web_search".to_owned())
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let app = Router::new()
+        .route(
+            "/w/api.php",
+            get(|| async {
+                axum::Json(json!({"query":{"search":[{"title":"Rust","snippet":"Fast"}]}}))
+            }),
+        )
+        .route(
+            "/search",
+            post(|| async {
+                axum::Json(
+                    json!({"results":[{"title":"T","url":"https://t.example/","content":"c"}]}),
+                )
+            }),
+        );
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    fs::write(
+        home.path().join(".env"),
+        format!("WIKIPEDIA_URL=\"{origin}\"\nTAVILY_BASE_URL=\"{origin}\"\n"),
+    )
+    .unwrap();
+
+    // A provider that needs no key sets up with no values; its test searches.
+    let set = rpc(
+        home.path(),
+        "hexbot.connectors.setup",
+        json!({"id":"web_search","provider":"wikipedia"}),
+    )
+    .await;
+    assert_eq!(set["test"], json!({"ok":true,"message":"Connected."}));
+    assert_eq!(set["connector"]["state_text"], "Connected · Wikipedia");
+    assert_eq!(
+        common::read_config(home.path()).unwrap()["web"]["backend"],
+        "wikipedia"
+    );
+    // An optional key sent alone picks the provider it belongs to.
+    rpc(
+        home.path(),
+        "hexbot.connectors.setup",
+        json!({"id":"web_search","values":{"TAVILY_API_KEY":"tvly-key"}}),
+    )
+    .await;
+    assert_eq!(
+        common::read_config(home.path()).unwrap()["web"]["backend"],
+        "tavily"
+    );
+    // Removing the keys goes back to SearXNG and leaves every bot its search.
+    rpc(
+        home.path(),
+        "hexbot.connectors.clear",
+        json!({"id":"web_search"}),
+    )
+    .await;
+    let row = connectors::get(home.path(), None, "web_search").unwrap();
+    assert_eq!(row["provider"], "searxng");
+    assert_eq!(row["state"], "ready");
+    assert_eq!(row["enabled_bots"], json!(["fox", "owl"]));
+    // A paid provider without its key is not set up, and the tools go
+    // until it is.
+    let exa = rpc(
+        home.path(),
+        "hexbot.connectors.setup",
+        json!({"id":"web_search","provider":"exa"}),
+    )
+    .await;
+    assert_eq!(exa["test"]["ok"], false);
+    assert_eq!(exa["connector"]["state"], "not_set_up");
+    assert!(!connectors::tool_available(home.path(), "owl", "web_search").unwrap());
+    let tools = names(crate::native_tools::descriptors(home.path(), "owl").unwrap());
+    assert!(!tools.contains(&"web_search".to_owned()), "{tools:?}");
+    assert!(!tools.contains(&"web_extract".to_owned()), "{tools:?}");
+    server.abort();
+}
+
+#[tokio::test]
+async fn settings_name_the_web_search_the_bots_use() {
+    let home = setup();
+    // Nothing chosen, a SearXNG URL and an Exa key saved: search picks Exa.
+    fs::write(
+        home.path().join(".env"),
+        "SEARXNG_URL=\"http://127.0.0.1:1\"\nEXA_API_KEY=\"exa-key\"\n",
+    )
+    .unwrap();
+    let env = common::env_values(home.path()).unwrap();
+    let cfg = common::read_config(home.path()).unwrap();
+    assert_eq!(crate::native_tools::web_backend(&cfg, &env, false), "exa");
+    let row = connectors::get(home.path(), None, "web_search").unwrap();
+    assert_eq!(row["provider"], "exa");
 }

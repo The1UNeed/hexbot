@@ -3,7 +3,12 @@ import { ArrowRight, ArrowUp, Plus } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { UsageDataSummary } from '../app/settings/privacy'
-import { ConnectorFields, connectorValues } from '../components/connector-fields'
+import {
+  connectorFieldMissing,
+  ConnectorFields,
+  connectorFieldsFor,
+  connectorValues
+} from '../components/connector-fields'
 import { isSubscription, ProviderPanel, supportsApiKey } from '../components/provider-panel'
 import { Avatar } from '../components/ui/avatar'
 import { Button } from '../components/ui/button'
@@ -1047,6 +1052,16 @@ function ToolPanel({
   const [error, setError] = useState<string | null>(null)
   const sending = connectorValues(connector, provider, values)
 
+  // A free provider needs nothing typed; one already in use, nothing new.
+  const unchanged =
+    Object.keys(sending).length === 0 &&
+    provider === connector.provider &&
+    connector.state === 'ready'
+
+  const blocked =
+    unchanged ||
+    connectorFieldsFor(connector, provider).some(field => connectorFieldMissing(field, values))
+
   const save = async () => {
     setBusy(true)
     setError(null)
@@ -1097,7 +1112,7 @@ function ToolPanel({
         busy={busy}
         className="justify-self-end"
         data-testid={`onboarding-tool-save-${connector.id}`}
-        disabled={Object.keys(sending).length === 0}
+        disabled={blocked}
         type="submit"
         variant="primary"
       >

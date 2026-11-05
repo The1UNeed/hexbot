@@ -592,4 +592,84 @@ describe('onboarding', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     expect(onContinue).toHaveBeenCalledOnce()
   })
+
+  it('picks a free web search with nothing to type', async () => {
+    const search = {
+      description: 'Search the web and read pages.',
+      enabled_bots: [],
+      enabled_for_bot: null,
+      fields: [
+        {
+          advanced: true,
+          help: '',
+          hint: null,
+          key: 'SEARXNG_URL',
+          label: 'Your own SearXNG URL (optional)',
+          optional: true,
+          provider: 'searxng',
+          secret: false,
+          set: false,
+          url: null
+        }
+      ],
+      group: 'search',
+      icon: 'glyph:search',
+      id: 'web_search',
+      last_error: null,
+      name: 'Web search',
+      provider: 'searxng',
+      providers: [
+        {
+          configured: false,
+          description: "Free, no key. Hexbot runs it in Docker on the daemon's computer.",
+          id: 'searxng',
+          label: 'SearXNG'
+        },
+        {
+          configured: false,
+          description: 'Free, no key. Searches Wikipedia only.',
+          id: 'wikipedia',
+          label: 'Wikipedia'
+        }
+      ],
+      scope: 'daemon',
+      state: 'ready',
+      state_text: 'Ready · SearXNG'
+    }
+
+    const call = vi.fn((method: string) =>
+      Promise.resolve(
+        method === 'hexbot.connectors.list'
+          ? { connectors: [search] }
+          : {
+              connector: { ...search, provider: 'wikipedia', state_text: 'Connected · Wikipedia' },
+              test: { message: 'Connected.', ok: true }
+            }
+      )
+    )
+
+    setActiveRpc({ call } as never)
+    render(<ToolsStep onContinue={vi.fn()} onError={vi.fn()} />)
+
+    // Ready out of the box, and nothing to save until the provider changes.
+    expect(await screen.findByText(/Hexbot runs it in Docker/)).toBeVisible()
+    expect(screen.getByText('Ready · SearXNG')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Save and test' })).toBeDisabled()
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'Provider' }))
+    const wikipedia = await screen.findByRole('option', { name: 'Wikipedia' })
+    // Base UI commits only a highlighted item, as a pointer over it would be.
+    fireEvent.mouseMove(wikipedia)
+    fireEvent.click(wikipedia)
+    expect(await screen.findByText('Free, no key. Searches Wikipedia only.')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Save and test' }))
+    await waitFor(() =>
+      expect(call).toHaveBeenCalledWith('hexbot.connectors.setup', {
+        id: 'web_search',
+        provider: 'wikipedia',
+        values: {}
+      })
+    )
+    expect(await screen.findByText('Connected · Wikipedia')).toBeVisible()
+  })
 })

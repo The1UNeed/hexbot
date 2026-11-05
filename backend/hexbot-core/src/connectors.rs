@@ -144,6 +144,8 @@ fn write_all(home: &Path, section: &str, key: &str, value: Value) -> Result<()> 
     }
     Ok(())
 }
+/// The provider in use: the one chosen, else the first whose key or setting
+/// is saved, else the connector's default (SearXNG for web search).
 fn selected(home: &Path, spec: &Value) -> Result<Option<Value>> {
     let config = read_config(home)?;
     let providers = spec["providers"].as_array().cloned().unwrap_or_default();
@@ -157,12 +159,47 @@ fn selected(home: &Path, spec: &Value) -> Result<Option<Value>> {
             return Ok(Some(p.clone()));
         }
     }
-    for p in providers {
-        if has_keys(home, None, &strings(&p["keys"]))? {
-            return Ok(Some(p));
+    if spec["id"] == "web_search" {
+        // In the order the search itself picks (`native_tools::web_backend`).
+        for (backend, key) in crate::native_tools::WEB_BY_KEY {
+            if value(home, None, key)?.is_some()
+                && let Some(p) = providers.iter().find(|p| {
+                    strings(&p["selection"])
+                        .get(2)
+                        .is_some_and(|b| b == backend)
+                })
+            {
+                return Ok(Some(p.clone()));
+            }
+        }
+    } else {
+        for p in &providers {
+            if has_keys(home, None, &strings(&p["keys"]))? {
+                return Ok(Some(p.clone()));
+            }
         }
     }
-    Ok(None)
+    Ok(spec["default_provider"]
+        .as_str()
+        .and_then(|id| providers.into_iter().find(|p| p["id"] == id)))
+}
+/// The fields that belong to one provider alone.
+fn provider_fields(spec: &Value, provider: &Value) -> Vec<String> {
+    spec["fields"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|f| f["provider"] == provider["id"])
+        .filter_map(|f| f["key"].as_str().map(str::to_owned))
+        .collect()
+}
+/// Whether a connector works for `bot` (or the daemon): its provider needs
+/// no key, as the free web searches do, or every key it needs is saved.
+fn set_up_for(home: &Path, bot: Option<&str>, spec: &Value, required: &[String]) -> Result<bool> {
+    if required.is_empty() && selected(home, spec)?.is_some() {
+        return Ok(true);
+    }
+    has_keys(home, bot, required)
 }
 fn has_keys(home: &Path, bot: Option<&str>, keys: &[String]) -> Result<bool> {
     for k in keys {
@@ -537,7 +574,7 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
         let id = s["id"].as_str().unwrap();
         let provider = selected(home, &s)?;
         let required = required_keys(home, &s)?;
-        let ready = has_keys(home, bot, &required)?;
+        let ready = set_up_for(home, bot, &s, &required)?;
         let last = if ready { last_test(home, id)? } else { None };
         let err = incidents.iter().find(|i| i["connector"] == id);
         let (state, mut state_text) = if let Some(err) = err {
@@ -568,6 +605,8 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
                 "ready",
                 if last.as_ref().is_some_and(|v| v["probed"] == true) {
                     "Connected"
+                } else if required.is_empty() {
+                    "Ready"
                 } else {
                     "Key saved"
                 }
@@ -580,6 +619,12 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
             && let Some(p) = &provider
         {
             state_text.push_str(&format!(" · {}", p["label"].as_str().unwrap_or("")));
+            // The SearXNG Hexbot runs: starting, or why it is not running.
+            if p["id"] == "searxng"
+                && let Some(note) = crate::searxng::note(home)
+            {
+                state_text.push_str(&format!(" ({note})"));
+            }
         }
         let mut fields = s["fields"].as_array().unwrap().clone();
         for field in &mut fields {
@@ -598,7 +643,7 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
         let providers = if let Some(ps) = s["providers"].as_array() {
             let mut result = vec![];
             for p in ps {
-                result.push(json!({"id":p["id"],"label":p["label"],"configured":has_keys(home,None,&strings(&p["keys"]))?}));
+                result.push(json!({"id":p["id"],"label":p["label"],"description":p["description"],"configured":has_keys(home,None,&strings(&p["keys"]))?}));
             }
             json!(result)
         } else {
@@ -612,7 +657,7 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
         // On for a bot but waiting for its key: kept, and given once set up.
         let mut waiting_bots = vec![];
         for n in &names {
-            if has_keys(home, Some(n), &required)? {
+            if set_up_for(home, Some(n), &s, &required)? {
                 ready_bots.push(n.clone());
                 if enabled(home, n, id)? {
                     bots.push(n.clone())
@@ -822,6 +867,14 @@ async fn probe(home: &Path, id: &str, bot: Option<&str>) -> Result<Value> {
         return Ok(result);
     }
     let s = spec(id)?;
+    if id == "web_search"
+        && let Some(provider) = selected(home, &s)?
+        && strings(&provider["keys"]).is_empty()
+    {
+        let (result, probed) = probe_free_search(home, bot, &provider).await;
+        save_test(home, id, &result, probed)?;
+        return Ok(result);
+    }
     let keys = required_keys(home, &s)?;
     if keys.is_empty() {
         return Ok(json!({"ok":false,"message":"Choose a provider first."}));
@@ -906,6 +959,43 @@ async fn probe(home: &Path, id: &str, bot: Option<&str>) -> Result<Value> {
     };
     save_test(home, id, &result, true)?;
     Ok(result)
+}
+/// Test a web search that needs no key with one real search. The SearXNG
+/// Hexbot runs starts first; until it runs, bots search with Tavily and
+/// Wikipedia, and the answer says so. Returns the result and whether a
+/// service answered.
+async fn probe_free_search(home: &Path, bot: Option<&str>, provider: &Value) -> (Value, bool) {
+    const FALLBACK: &str = "Until it runs, bots search with Tavily and Wikipedia.";
+    if provider["id"] == "searxng" && crate::searxng::chosen(home) {
+        if !crate::searxng::wanted(home) {
+            return (
+                json!({"ok":true,"message":format!("SearXNG needs Docker on the daemon's computer. {FALLBACK}")}),
+                false,
+            );
+        }
+        // A first start downloads SearXNG; it runs on after the test stops
+        // waiting, which it does before the apps' 30-second request deadline.
+        let owned = home.to_owned();
+        let task = tokio::spawn(async move { crate::searxng::ensure(&owned).await });
+        return match tokio::time::timeout(Duration::from_secs(25), task).await {
+            Ok(Ok(Ok(_))) => (
+                json!({"ok":true,"message":"SearXNG is running on this computer."}),
+                true,
+            ),
+            Ok(Ok(Err(e))) => (
+                json!({"ok":true,"message":format!("SearXNG did not start: {}. {FALLBACK}", e.message)}),
+                false,
+            ),
+            _ => (
+                json!({"ok":true,"message":format!("SearXNG is still starting. {FALLBACK}")}),
+                false,
+            ),
+        };
+    }
+    match crate::native_tools::test_search(home, bot).await {
+        Ok(()) => (json!({"ok":true,"message":"Connected."}), true),
+        Err(e) => (json!({"ok":false,"message":e.message}), true),
+    }
 }
 /// The bots a plugin goes to after the caller picks `value`, a list of bot
 /// names they own. Bots in `current` that belong to someone else stay.
@@ -1084,8 +1174,20 @@ async fn dispatch(home: &Path, caller: &str, method: &str, p: &Value) -> Result<
                 let chosen = if let Some(name) = p["provider"].as_str().filter(|s| !s.is_empty()) {
                     ps.iter().find(|p| p["id"] == name).cloned()
                 } else {
+                    // The provider whose keys were sent, then one whose own
+                    // optional setting was, then the one in use.
                     ps.iter()
-                        .find(|p| strings(&p["keys"]).iter().all(|k| values.contains_key(k)))
+                        .find(|p| {
+                            let keys = strings(&p["keys"]);
+                            !keys.is_empty() && keys.iter().all(|k| values.contains_key(k))
+                        })
+                        .or_else(|| {
+                            ps.iter().find(|p| {
+                                provider_fields(&s, p)
+                                    .iter()
+                                    .any(|k| values.contains_key(k))
+                            })
+                        })
                         .cloned()
                         .or(selected(home, &s)?)
                 };
@@ -1165,9 +1267,12 @@ async fn dispatch(home: &Path, caller: &str, method: &str, p: &Value) -> Result<
                     let a = strings(&p["selection"]);
                     write_all(home, &a[0], &a[1], Value::Null)?;
                 }
-                for bot in names(home)? {
-                    if enabled(home, &bot, id)? {
-                        set_enabled(home, &bot, id, false)?;
+                // Web search goes back to its free default and stays on.
+                if id != "web_search" || get(home, None, id)?["ready"] != true {
+                    for bot in names(home)? {
+                        if enabled(home, &bot, id)? {
+                            set_enabled(home, &bot, id, false)?;
+                        }
                     }
                 }
             }
@@ -1809,7 +1914,7 @@ pub fn tool_available(home: &Path, bot: &str, tool: &str) -> Result<bool> {
     for spec in catalog() {
         if strings(&spec["tools"]).iter().any(|name| name == tool) {
             return Ok(enabled(home, bot, spec["id"].as_str().unwrap())?
-                && has_keys(home, Some(bot), &required_keys(home, &spec)?)?);
+                && set_up_for(home, Some(bot), &spec, &required_keys(home, &spec)?)?);
         }
     }
     Ok(true)

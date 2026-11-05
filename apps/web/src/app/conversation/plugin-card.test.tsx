@@ -130,6 +130,44 @@ describe('plugin card', () => {
     )
   })
 
+  it('lets an optional key stay empty and says what the provider is', async () => {
+    const search: PluginForm = {
+      ...notion,
+      fields: [
+        {
+          key: 'TAVILY_API_KEY',
+          label: 'Tavily API key (optional)',
+          optional: true,
+          provider: 'tavily',
+          set: false
+        }
+      ],
+      icon: 'glyph:search',
+      id: 'connector:web_search',
+      name: 'Web search',
+      provider: 'tavily',
+      providers: [
+        {
+          description: 'Free without a key, with lower limits.',
+          id: 'tavily',
+          label: 'Tavily'
+        },
+        { id: 'exa', label: 'Exa' }
+      ]
+    }
+
+    render(<ApprovalCard approval={cardFor(search)} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
+    expect(screen.getByText('Free without a key, with lower limits.')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
+    await waitFor(() =>
+      expect(approvalRespond).toHaveBeenCalledWith('s-1', 'ap-1', 'once', {
+        provider: 'tavily',
+        values: {}
+      })
+    )
+  })
+
   it('shows what an install runs, and its keys, and nothing else', async () => {
     const install: PluginForm = {
       action: 'install',

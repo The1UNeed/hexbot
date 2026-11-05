@@ -52,7 +52,7 @@ export const toolGroups: ToolGroup[] = [
     title: 'Plugins',
     summary: 'Opt in, with your own account. Set one up once in Settings, Plugins, then choose the bots that get it.',
     tools: [
-      { name: 'Web search', does: 'Search the web and read pages.', note: 'Exa, Tavily, Brave, Firecrawl, Parallel, Keenable, or your own SearXNG' },
+      { name: 'Web search', does: 'Search the web and read pages.', note: 'Free out of the box with SearXNG, which Hexbot runs for you, or Tavily, Wikipedia or Marginalia. Exa, Brave, Firecrawl, Parallel and Keenable with your key' },
       { name: 'Image generation', does: 'Make and edit images.', note: 'FAL or Krea' },
       { name: 'Video generation', does: 'Generate short clips.', note: 'FAL' },
       { name: 'Voice', does: 'Speak replies aloud.', note: 'ElevenLabs, OpenAI, or Mistral' },
