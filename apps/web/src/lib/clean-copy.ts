@@ -108,8 +108,18 @@ export function handleCopy(event: ClipboardEvent): void {
   for (let index = 0; index < selection.rangeCount; index += 1) {
     const range = selection.getRangeAt(index)
 
+    const within = range.commonAncestorContainer
+    // Part of a code block copies its text without the <pre> that keeps its
+    // lines and indents, so put one back.
+    const pre = (within instanceof Element ? within : within.parentElement)?.closest('pre')
+    const copy = pre ? document.createElement('pre') : fragment
+
     breaks.push(...shownBreaks(range))
-    fragment.append(range.cloneContents())
+    copy.append(range.cloneContents())
+
+    if (copy !== fragment) {
+      fragment.append(copy)
+    }
   }
 
   event.clipboardData.setData('text/plain', selection.toString())

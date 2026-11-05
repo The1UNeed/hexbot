@@ -81,6 +81,21 @@ describe('handleCopy', () => {
     handleCopy(part.event)
 
     expect(part.data.get('text/html')).toBe('ex<br>12 Main Str')
+
+    // Lines from inside a code block keep the <pre> that holds them.
+    const code = document.querySelector('code')!.firstChild!
+    const lines = document.createRange()
+
+    lines.setStart(code, 0)
+    lines.setEnd(code, 3)
+    document.getSelection()?.removeAllRanges()
+    document.getSelection()?.addRange(lines)
+
+    const inCode = copyEvent()
+
+    handleCopy(inCode.event)
+
+    expect(inCode.data.get('text/html')).toBe('<pre>a\nb</pre>')
   })
 
   it('leaves copying from the composer to the browser', () => {
