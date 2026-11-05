@@ -294,6 +294,8 @@ it also installs over SSH when nobody is signed in at the screen.
   owner-scoped events, replay sequence numbers, and replay epochs preserve the
   existing client contract. LAN setting changes restart the listener and close
   clients with a reconnect signal. A home lock prevents competing daemons.
+  Checks take that lock for a moment, so a starting daemon retries it for
+  three seconds before it refuses the home.
 - YAML edits preserve unmanaged values and comments. Credentials are inherited
   per bot and are not exposed in client responses or model event streams.
 

@@ -118,7 +118,17 @@ fn finish_native_transition(home: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The app's readiness probe, `hexbot service`, setup and the installer check
+/// the home lock by taking it for a moment. Only a process that keeps it owns
+/// the home, so a starting daemon gives a check three seconds to let go.
+const HOME_LOCK_ATTEMPTS: u32 = 60;
+
 fn lock_home(home: &Path) -> Result<std::fs::File> {
+    lock_home_with(home, || {
+        std::thread::sleep(std::time::Duration::from_millis(50))
+    })
+}
+fn lock_home_with(home: &Path, mut pause: impl FnMut()) -> Result<std::fs::File> {
     std::fs::create_dir_all(home)?;
     let path = home.join("native-daemon.lock");
     let mut options = std::fs::OpenOptions::new();
@@ -129,8 +139,19 @@ fn lock_home(home: &Path) -> Result<std::fs::File> {
         options.mode(0o600);
     }
     let mut file = options.open(path)?;
-    if file.try_lock().is_err() {
-        return Err(Error::new(4208, "a daemon already owns this home"));
+    let mut attempt = 1;
+    loop {
+        match file.try_lock() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock) if attempt < HOME_LOCK_ATTEMPTS => {
+                attempt += 1;
+                pause();
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(Error::new(4208, "a daemon already owns this home"));
+            }
+            Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
+        }
     }
     refuse_legacy_listener(home)?;
     file.set_len(0)?;
@@ -665,6 +686,43 @@ mod tests {
         assert!(lock_home(home.path()).is_ok());
         drop(listener);
         assert!(lock_home(home.path()).is_ok());
+    }
+    #[test]
+    fn a_lock_check_does_not_stop_a_starting_daemon_but_an_owner_does() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("native-daemon.lock");
+        // The app's readiness probe takes the free lock for a moment while a
+        // service daemon starts, as in the full-nightly run of `e0e30404`.
+        let check = std::fs::File::create(&path).unwrap();
+        check.lock().unwrap();
+        let mut check = Some(check);
+        let mut pauses = 0;
+        let daemon = lock_home_with(home.path(), || {
+            pauses += 1;
+            drop(check.take());
+        })
+        .unwrap();
+        assert_eq!(pauses, 1);
+        let other = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        assert!(matches!(
+            other.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+        drop(daemon);
+        // A process that keeps the lock owns the home.
+        other.lock().unwrap();
+        let mut pauses = 0;
+        let error = lock_home_with(home.path(), || pauses += 1).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("a daemon already owns this home")
+        );
+        assert_eq!(pauses, HOME_LOCK_ATTEMPTS - 1);
     }
     #[cfg(unix)]
     #[test]

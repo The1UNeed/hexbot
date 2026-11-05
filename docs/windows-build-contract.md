@@ -540,6 +540,16 @@ its running record after HTTP startup so event-based observers can check
 again. It publishes its running record and serve-state.json with std's
 rename, which replaces a file every reader opened with delete sharing; a
 failed republication is logged, never fatal.
+A probe that finds the lock range free holds it for a moment, as
+`hexbot service`, setup and the installer's checks do. A starting daemon
+therefore retries its home lock for three seconds before it refuses the home;
+only a process that keeps the lock owns it. A real I/O error is reported as
+itself, never as another daemon. The full-nightly run of merge `e0e30404`
+(`21e72e73`) timed out at its first real service install for this reason. The
+CLI had proved the home idle and started the task. The task daemon made one
+lock attempt while the app's readiness probe held the free range, and exited
+with "a daemon already owns this home" before readiness. The scheduler retries
+a failed task only after a minute, past the app's 30-second wait.
 The task fixture also binds that process to the verified scheduler instance and
 excludes prior desktop/task PIDs. The a305 native run failed before either
 repair because its old fixture accepted an exited PID from a retained record;
