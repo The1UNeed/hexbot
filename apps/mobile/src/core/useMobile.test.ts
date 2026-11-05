@@ -860,6 +860,16 @@ describe('switching to a bot read ahead', () => {
     state.request.mockImplementation(ahead)
   })
 
+  it('reads only the first few chats ahead after a cold start, since each read is a whole history', async () => {
+    const many = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map(name => ({ name, display_name: name }) as Bot)
+    state.request.mockImplementation(async (method: string, params: Record<string, unknown> = {}) =>
+      method === 'hexbot.bots.list' ? { bots: many } : ahead(method, params))
+    await connected()
+    await vi.waitFor(() => expect(historyReads().length).toBe(5))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(historyReads().map(([, params]) => params.id)).toEqual(['a-chat', 'b-chat', 'c-chat', 'd-chat', 'e-chat'])
+  })
+
   it('shows the chat at once and opens it with the cursor of what it holds', async () => {
     const hook = await connected()
     await vi.waitFor(() => expect(historyReads().length).toBe(2))

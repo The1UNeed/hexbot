@@ -82,6 +82,18 @@ export function prefetchOrder(bots: Bot[]): Bot[] {
   return [...bots.filter(bot => bot.primary), ...bots.filter(bot => !bot.primary)]
 }
 
+/** The primary bot and the next few, as many chats as stay whole. */
+export const READ_AHEAD = WHOLE + 1
+
+/**
+ * The bots whose chats are read ahead. With no cursor a read is the whole
+ * history, so after a cold start only the bots a person reaches for first are
+ * read; a chat already held reads only what is new, so it is always kept current.
+ */
+export function readAhead(bots: Bot[], holds: (bot: Bot) => boolean): Bot[] {
+  return prefetchOrder(bots).filter((bot, index) => index < READ_AHEAD || holds(bot))
+}
+
 /** A bot that wrote, or finished working, has something new in its chat. */
 export const fingerprint = (bot: Bot) =>
   `${bot.last_activity_at ?? ''}:${bot.status ?? ''}:${(bot.sections_recent ?? [])

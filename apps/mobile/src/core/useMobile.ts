@@ -21,6 +21,7 @@ import {
   fingerprint,
   keep,
   prefetchOrder,
+  readAhead,
   type HeldRows,
   type HistoryRead
 } from './chat-cache'
@@ -419,7 +420,11 @@ export function useMobile() {
       const info = infoRef.current
       if (!info?.section_history || !info.one_chat || current?.client.connectionState !== 'open')
         return
-      const queue = prefetchOrder(list).filter(
+      const holds = (bot: Bot) => {
+        const chat = named.current.get(bot.name)
+        return Boolean(chat && heldRows(chat.id))
+      }
+      const queue = readAhead(list, holds).filter(
         bot => prefetched.current.get(bot.name) !== fingerprint(bot)
       )
       const rank = new Map(prefetchOrder(list).map((bot, index) => [bot.name, index]))

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { afterRead, cursorFor, fingerprint, keep, newestPart, prefetchOrder, type HeldRows } from './chat-cache'
+import { afterRead, cursorFor, fingerprint, keep, newestPart, prefetchOrder, READ_AHEAD, readAhead, type HeldRows } from './chat-cache'
 import type { Bot } from './types'
 
 const row = (text: string) => ({ role: 'assistant', row_id: text, text })
@@ -57,5 +57,12 @@ describe('a chat held for switching', () => {
     expect(prefetchOrder([bot('a'), bot('b', { primary: true }), bot('c')]).map(b => b.name)).toEqual(['b', 'a', 'c'])
     expect(fingerprint(bot('a'))).not.toBe(fingerprint(bot('a', { last_activity_at: 2 })))
     expect(fingerprint(bot('a'))).not.toBe(fingerprint(bot('a', { status: 'working' })))
+  })
+
+  it('reads ahead the primary bot and the next few, plus any chat it already holds', () => {
+    const bots = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'].map(name => ({ name, primary: name === 'f' }) as Bot)
+    const names = readAhead(bots, bot => bot.name === 'h').map(bot => bot.name)
+    expect(names).toEqual(['f', 'a', 'b', 'c', 'd', 'h'])
+    expect(names.length).toBe(READ_AHEAD + 1)
   })
 })
