@@ -335,7 +335,10 @@ const memoryWrites = (messages: TranscriptMessage[]) =>
  * Search, beside Close, looks through the whole chat.
  */
 export function ProfilePanel(): React.JSX.Element {
-  const selected = useUi(state => state.lastSection)
+  const remembered = useUi(state => state.lastSection)
+  // A bot clicked in the roster shows here while its chat opens, as in the chat column.
+  const opening = useUi(state => state.openingShown)
+  const selected = opening ? { bot: opening, section: null } : remembered
   const bot = useBots(state => (selected?.bot ? state.byName[selected.bot] : undefined))
   const updateBot = useBots(state => state.update)
   const closePanel = useUi(state => state.toggleRightPanel)

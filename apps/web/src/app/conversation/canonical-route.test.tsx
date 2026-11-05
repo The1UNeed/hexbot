@@ -1010,11 +1010,14 @@ it('shows a bot clicked in the roster opening, not the chat it leaves, until its
   await act(async () => useUi.getState().setOpeningBot('yak'))
   expect(screen.getByRole('status', { name: "Opening yak's chat" })).toBeInTheDocument()
   expect(left.closest('[inert]')).not.toBeNull()
+  // The profile panel follows.
+  expect(useUi.getState().openingShown).toBe('yak')
 
   // It comes to nothing: the chat it left is back as it was.
   await act(async () => useUi.getState().setOpeningBot(null))
   expect(screen.queryByRole('status', { name: "Opening yak's chat" })).toBeNull()
   expect(left.closest('[inert]')).toBeNull()
+  expect(useUi.getState().openingShown).toBeNull()
 
   // Found: the roster lets go as it navigates, and the face stays until Yak's chat renders.
   await act(async () => useUi.getState().setOpeningBot('yak'))
@@ -1032,4 +1035,5 @@ it('shows a bot clicked in the roster opening, not the chat it leaves, until its
   const leaving = screen.queryByText('canonical history')
   expect(leaving === null || leaving.closest('[inert]') !== null).toBe(true)
   await waitFor(() => expect(screen.queryByText('canonical history')).toBeNull())
+  expect(useUi.getState().openingShown).toBeNull()
 })

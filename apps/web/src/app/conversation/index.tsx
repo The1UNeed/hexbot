@@ -3007,6 +3007,13 @@ export function ConversationColumn() {
 
   const opening = held && held.bot !== params.bot ? held.bot : null
 
+  // The profile panel shows the bot opening here, and lets go with it.
+  useEffect(() => {
+    useUi.getState().setOpeningShown(opening)
+
+    return () => useUi.getState().setOpeningShown(null)
+  }, [opening])
+
   return (
     <div className="relative h-full">
       <div className={cn('h-full', opening && 'invisible')} inert={Boolean(opening)}>

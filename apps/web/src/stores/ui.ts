@@ -39,6 +39,8 @@ export interface UiState {
   lastSection: LastSection | null
   /** The bot clicked in the roster whose chat the daemon has not named yet. */
   openingBot: null | string
+  /** That bot, while the chat column shows it opening; the profile panel follows. */
+  openingShown: null | string
   openThread: (thread: ThreadRef) => void
   /** A finished ask learned the thread's id: fill it in if that thread is open. */
   resolveThread: (bot: string, peer: string, sectionId: string) => void
@@ -50,6 +52,7 @@ export interface UiState {
   setComputerQuality: (quality: ComputerQuality) => void
   setLastSection: (value: LastSection | null) => void
   setOpeningBot: (bot: null | string) => void
+  setOpeningShown: (bot: null | string) => void
   setSidebarWidth: (width: number) => void
   setSounds: (on: boolean) => void
   setTheme: (theme: ThemePreference) => void
@@ -73,6 +76,7 @@ export const useUi = create<UiState>()(
       computerQuality: 'auto',
       lastSection: null,
       openingBot: null,
+      openingShown: null,
       panelTab: 'details',
       rightPanelOpen: true,
       sidebarWidth: 280,
@@ -118,6 +122,10 @@ export const useUi = create<UiState>()(
 
       setOpeningBot(openingBot) {
         set({ openingBot })
+      },
+
+      setOpeningShown(openingShown) {
+        set({ openingShown })
       },
 
       openThread(thread) {
