@@ -2984,7 +2984,67 @@ function BotConversation() {
 }
 
 export function ConversationColumn() {
-  const params = useParams({ strict: false }) as { room?: string }
+  const params = useParams({ strict: false }) as { bot?: string; room?: string; section?: string }
+  const router = useRouter()
+  const shown = `${params.bot}/${params.section}/${params.room}`
+  const asked = useUi(state => state.openingBot)
+  // A bot clicked in the roster opens here once the daemon names its chat.
+  // Until then its face loads, as on the phone; the chat it leaves waits
+  // unseen, so it cannot show up in the meantime and stays as it was if the
+  // click comes to nothing. The roster lets go as it navigates, so the face
+  // stays until the new route renders.
+  const [held, setHeld] = useState<null | { bot: string; path: string; shown: string }>(null)
 
-  return params.room ? <RoomConversation /> : <BotConversation />
+  if (asked && held?.bot !== asked) {
+    setHeld({ bot: asked, path: router.history.location.pathname, shown })
+  } else if (
+    !asked &&
+    held &&
+    (shown !== held.shown || router.history.location.pathname === held.path)
+  ) {
+    setHeld(null)
+  }
+
+  const opening = held && held.bot !== params.bot ? held.bot : null
+
+  // The profile panel shows the bot opening here, and lets go with it.
+  useEffect(() => {
+    useUi.getState().setOpeningShown(opening)
+
+    return () => useUi.getState().setOpeningShown(null)
+  }, [opening])
+
+  return (
+    <div className="relative h-full">
+      <div className={cn('h-full', opening && 'invisible')} inert={Boolean(opening)}>
+        {params.room ? <RoomConversation /> : <BotConversation />}
+      </div>
+      {opening ? <OpeningChat name={opening} /> : null}
+    </div>
+  )
+}
+
+function OpeningChat({ name: botName }: { name: string }) {
+  const bot = useBot(botName)
+  const name = bot?.display_name ?? botName
+
+  return (
+    <div className="absolute inset-0 bg-background">
+      <div
+        aria-label={`Opening ${name}'s chat`}
+        className="hex-fade grid h-full place-content-center [animation-delay:150ms]"
+        role="status"
+      >
+        <Avatar {...botFace(bot)} mood="loading" name={name} size="xl" />
+      </div>
+      <header className="hex-drag pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center px-24 pt-2.5">
+        <div className="hex-glass flex h-9 max-w-[min(100%_-_7rem,30rem)] min-w-0 items-center gap-2 rounded-full pr-4 pl-1.5">
+          <Avatar {...botFace(bot)} name={name} size="sm" />
+          <span className="shrink-0 truncate text-[length:var(--text-secondary)] font-semibold">
+            {name}
+          </span>
+        </div>
+      </header>
+    </div>
+  )
 }

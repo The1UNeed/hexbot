@@ -808,6 +808,17 @@ describe('mobile history critical path', () => {
     expect(state.request).not.toHaveBeenCalledWith('hexbot.sections.mark_read', { id: 'owl-chat' })
   })
 
+  it('leaves a room message unread while the room is covered, and reads it when it is back', async () => {
+    const hook = await connected()
+    await act(async () => { await hook.result.current.openRoom(room) })
+    const reads = () => state.request.mock.calls.filter(([m, p]) => m === 'hexbot.rooms.mark_read' && p.seq === 4).length
+    act(() => hook.result.current.setChatCovered(true))
+    act(() => state.event({ type: 'hexbot.rooms.event', payload: { room_id: 'room', event: { room_id: 'room', seq: 4, kind: 'message.user', actor_kind: 'human', actor_id: 'local', payload: { text: 'Behind the page' } } } }))
+    expect(reads()).toBe(0)
+    act(() => hook.result.current.setChatCovered(false))
+    expect(reads()).toBe(1)
+  })
+
   it('starts room metadata alongside its log and finishes opening before the read receipt', async () => {
     const hook = await connected()
     const log = pause('hexbot.rooms.log')

@@ -364,9 +364,14 @@ export function useMobile() {
     (covered: boolean) => {
       if (chatCovered.current === covered) return
       chatCovered.current = covered
-      if (!covered) readOpenChat()
+      if (covered) return
+      readOpenChat()
+      const target = routeRef.current
+      const seq = roomEvents.current.at(-1)?.seq
+      if (target?.kind === 'room' && seq)
+        void rpc('hexbot.rooms.mark_read', { id: target.room.id, seq }).catch(() => {})
     },
-    [readOpenChat]
+    [readOpenChat, rpc]
   )
   const readRef = useRef(readOpenChat)
   readRef.current = readOpenChat
@@ -409,9 +414,11 @@ export function useMobile() {
           const incoming = p.event as RoomEvent
           if (!incoming || roomEvents.current.some(e => e.seq === incoming.seq)) return
           roomEvents.current.push(incoming)
-          void rpc('hexbot.rooms.mark_read', { id: target.room.id, seq: incoming.seq }).catch(
-            () => {}
-          )
+          // Read as it lands, unless a page or another chat covers the room.
+          if (!chatCovered.current)
+            void rpc('hexbot.rooms.mark_read', { id: target.room.id, seq: incoming.seq }).catch(
+              () => {}
+            )
         }
         setChat(c =>
           reduceRoom(
