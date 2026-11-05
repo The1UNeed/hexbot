@@ -886,3 +886,110 @@ describe('mobile history critical path', () => {
     expect(hook.result.current.error).toBeNull()
   })
 })
+describe('switching to a bot read ahead', () => {
+  let install = 'first-daemon'
+  const said = (text: string) => ({ role: 'assistant', row_id: text, text })
+  const ahead = async (method: string, params: Record<string, unknown> = {}) => {
+    if (method === 'hexbot.info') return { one_chat: true, section_history: true, install_id: install }
+    if (method === 'hexbot.sections.history' || method === 'hexbot.sections.open')
+      return {
+        ...(method === 'hexbot.sections.open' && { section: section(String(params.id)) }),
+        messages: [said(`${install} ${params.id}`)],
+        history_cursor: `${install}:1`,
+        history_delta: false
+      }
+    return reply(method, params)
+  }
+  const historyReads = () => state.request.mock.calls.filter(([name]) => name === 'hexbot.sections.history')
+  beforeEach(() => {
+    install = 'first-daemon'
+    state.request.mockImplementation(ahead)
+  })
+
+  it('reads only the first few chats ahead after a cold start, since each read is a whole history', async () => {
+    const many = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map(name => ({ name, display_name: name }) as Bot)
+    state.request.mockImplementation(async (method: string, params: Record<string, unknown> = {}) =>
+      method === 'hexbot.bots.list' ? { bots: many } : ahead(method, params))
+    await connected()
+    await vi.waitFor(() => expect(historyReads().length).toBe(5))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(historyReads().map(([, params]) => params.id)).toEqual(['a-chat', 'b-chat', 'c-chat', 'd-chat', 'e-chat'])
+  })
+
+  it('shows the chat at once and opens it with the cursor of what it holds', async () => {
+    const hook = await connected()
+    await vi.waitFor(() => expect(historyReads().length).toBe(2))
+    const held = pause('hexbot.sections.open')
+    let opening!: Promise<void>
+    await act(async () => {
+      opening = hook.result.current.openSection(bot)
+      await held.called
+    })
+    // Shown while the bot starts; sending still waits for the open.
+    expect(hook.result.current.chat.messages.map(m => m.text)).toEqual(['first-daemon owl-chat'])
+    expect(hook.result.current.opening).toBe(true)
+    expect(state.request).toHaveBeenCalledWith('hexbot.sections.open', {
+      id: 'owl-chat',
+      history_cursor: 'first-daemon:1'
+    })
+    await act(async () => {
+      held.resolve({ section: section('owl-chat'), messages: [said('new')], history_cursor: 'c2', history_delta: true })
+      await opening
+    })
+    expect(hook.result.current.chat.messages.map(m => m.text)).toEqual(['first-daemon owl-chat', 'new'])
+  })
+
+  it('reads what a chat missed when you leave it after it changed, and never draws the older rows', async () => {
+    const hook = await connected()
+    await vi.waitFor(() => expect(historyReads().length).toBe(2))
+    await act(async () => { await hook.result.current.openSection(bot) })
+    // The bot answers while the chat is open.
+    await act(async () => {
+      state.event({ type: 'message.complete', session_id: 'live-owl-chat', payload: { text: 'Answer' } })
+    })
+    const missed = pause('hexbot.sections.history', params => params.id === 'owl-chat')
+    await act(async () => { await hook.result.current.openRoom(room) })
+    await missed.called
+    expect(state.request).toHaveBeenCalledWith('hexbot.sections.history', {
+      id: 'owl-chat',
+      history_cursor: 'first-daemon:1'
+    })
+    // Back before that read lands: the held rows lack the answer, so none are drawn.
+    const opened = pause('hexbot.sections.open')
+    let opening!: Promise<void>
+    await act(async () => {
+      opening = hook.result.current.openSection(bot)
+      await opened.called
+    })
+    expect(hook.result.current.chat.messages).toEqual([])
+    await act(async () => {
+      opened.resolve({ section: section('owl-chat'), messages: [said('Answer')], history_cursor: 'c2', history_delta: true })
+      await opening
+    })
+    expect(hook.result.current.chat.messages.map(m => m.text)).toEqual(['first-daemon owl-chat', 'Answer'])
+  })
+
+  it('never shows or sends what it held for another daemon at the same address', async () => {
+    const hook = await connected()
+    await vi.waitFor(() => expect(historyReads().length).toBe(2))
+    install = 'second-daemon'
+    const reconnected = deferred<void>()
+    // The other daemon's own read ahead waits, so only the held rows could show.
+    state.request.mockImplementation((method: string, params: Record<string, unknown> = {}) =>
+      method === 'hexbot.sections.history' ? reconnected.promise : ahead(method, params))
+    await act(async () => { await state.ready() })
+    const held = pause('hexbot.sections.open')
+    let opening!: Promise<void>
+    await act(async () => {
+      opening = hook.result.current.openSection(bot)
+      await held.called
+    })
+    expect(hook.result.current.chat.messages).toEqual([])
+    expect(state.request).toHaveBeenLastCalledWith('hexbot.sections.open', { id: 'owl-chat' })
+    await act(async () => {
+      held.resolve({ section: section('owl-chat'), messages: [said('second')], history_cursor: 's1', history_delta: false })
+      await opening
+    })
+    expect(hook.result.current.chat.messages.map(m => m.text)).toEqual(['second'])
+  })
+})

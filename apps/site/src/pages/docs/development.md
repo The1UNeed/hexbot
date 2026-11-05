@@ -76,8 +76,10 @@ The website runs on port 4321 and Connect on port 3000. Developing the website d
 
 ## Read conversation history
 
-For a custom client, `hexbot.sections.open {id}` and `session.history
-{session_id}` return `messages`, an opaque `history_cursor`, and `history_delta`.
+For a custom client, `hexbot.sections.open {id}`, `session.history
+{session_id}` and `hexbot.sections.history {id}` return `messages`, an opaque
+`history_cursor`, and `history_delta`. `hexbot.sections.history` reads a chat
+without starting its bot, for showing it before it opens.
 Save the cursor with that conversation's displayed messages on that daemon and
 send it as `history_cursor` on the next read. When `history_delta` is true,
 append the returned messages; an unchanged conversation returns none. When it

@@ -256,6 +256,11 @@ export interface TranscriptsState {
   sessionInfo: (sessionId: string, info: SessionInfo) => void
   sessionUsage: (sessionId: string, usage: Usage) => void
   setSectionId: (sessionId: string, sectionId: string) => void
+  /**
+   * A read found no rows newer than the ones shown: what it says about the
+   * turn and the cards still applies, as `open` would apply it, and the messages stay.
+   */
+  settle: (sessionId: string, sectionId: string, snapshot: OpenSnapshot) => void
   statusUpdate: (sessionId: string, status: StatusLine) => void
   thinkingDelta: (sessionId: string, text: string) => void
   toolComplete: (sessionId: string, payload: ToolCompletePayload) => void
@@ -783,6 +788,18 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
 
     setSectionId(sessionId, sectionId) {
       update(sessionId, transcript => ({ ...transcript, sectionId }))
+    },
+
+    settle(sessionId, sectionId, snapshot) {
+      if (!get().bySession[sessionId]) {
+        return
+      }
+
+      update(sessionId, transcript => {
+        const next = reconcile(transcript, snapshot)
+
+        return { ...next, sectionId, clarifies: next.clarifies.filter(clarifyWaiting) }
+      })
     },
 
     drop(sessionId) {
