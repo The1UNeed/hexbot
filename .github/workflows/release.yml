@@ -199,6 +199,28 @@ jobs:
           node-version: 26
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # The pinned BusyBox's build cache, keyed by its SHA-256 (BUSYBOX in
+      # scripts/desktop/native-runtime.mjs): frippery.org only fills it, so a
+      # release cannot be stopped by an outage after the first fetch.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: matrix.build == 'win-x64' && matrix.edition == 'full'
+        id: busybox
+        with:
+          path: node_modules/.cache/hexbot
+          key: busybox-6e263d154d8548d1eb936f65d1d8312c80df31c45974e48d6335e4dcc0f4f34c
+      - name: Stage the pinned BusyBox the Windows runtime ships
+        if: matrix.build == 'win-x64' && matrix.edition == 'full'
+        shell: pwsh
+        run: |
+          $directory = Join-Path $env:RUNNER_TEMP 'busybox'
+          node scripts/desktop/stage-busybox.mjs $directory
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot stage the pinned BusyBox' }
+          "HEXBOT_BUSYBOX_FILE=$(Join-Path $directory 'busybox.exe')" >> $env:GITHUB_ENV
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: matrix.build == 'win-x64' && matrix.edition == 'full' && steps.busybox.outputs.cache-hit != 'true'
+        with:
+          path: node_modules/.cache/hexbot
+          key: ${{ steps.busybox.outputs.cache-primary-key }}
       - name: Prepare the native compiler
         if: matrix.edition == 'full'
         run: |
