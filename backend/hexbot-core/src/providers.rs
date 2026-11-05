@@ -657,6 +657,79 @@ pub fn list_providers(home: &Path) -> Result<Value> {
     });
     Ok(json!({"providers":rows}))
 }
+/// Whether a provider has a key or sign-in right now, by any of its names.
+/// With a bot's profile, the bot's own key, sign-in, or endpoint in it
+/// count too, as `prepare_pi_config_locked` gives them to Pi.
+pub fn connected(home: &Path, profile_home: Option<&Path>, name: &str) -> Result<bool> {
+    let slug = canonical_provider(name);
+    let root = common::read_config(home)?;
+    let profile_cfg = profile_home
+        .map(common::read_config)
+        .transpose()?
+        .unwrap_or_else(|| json!({}));
+    let Some(p) = profiles().iter().find(|p| p["name"] == slug) else {
+        // A custom endpoint answers to its name and to custom:<name>. The
+        // bot's own endpoints replace the daemon's.
+        let mut cfg = root;
+        for key in ["providers", "custom_providers"] {
+            if profile_cfg.get(key).is_some() {
+                cfg[key] = profile_cfg[key].clone();
+            }
+        }
+        return Ok(custom_profiles(&cfg).iter().any(|p| {
+            p["name"] == slug
+                || p["aliases"]
+                    .as_array()
+                    .is_some_and(|aliases| aliases.iter().any(|alias| alias == &slug))
+        }));
+    };
+    if read_json(&home.join("providers-disabled.json"))?[slug.as_str()] == true {
+        return Ok(false);
+    }
+    // Signed in outside Hexbot, through the provider's own tool or SDK: the
+    // daemon only knows when the user turned it off.
+    if matches!(
+        string(p, "auth_type"),
+        "external_process" | "aws_sdk" | "vertex"
+    ) {
+        return Ok(true);
+    }
+    if configured(home, p)? {
+        return Ok(true);
+    }
+    // The Qwen CLI's own sign-in, which the daemon imports to run the bot.
+    // That file belongs to the CLI: one it cannot read is no sign-in, and
+    // never fails the bot list.
+    if slug == "qwen-oauth" {
+        let state = import_qwen(home).unwrap_or_default();
+        let tokens = if state["tokens"].is_object() {
+            &state["tokens"]
+        } else {
+            &state
+        };
+        if !string(tokens, "access_token").is_empty() {
+            return Ok(true);
+        }
+    }
+    // A key inline in the model config, the bot's own or the daemon's that
+    // it inherits. A root model in the older one-line form has no key.
+    let mut model = root["model"].clone();
+    if !model.is_object() {
+        model = json!({});
+    }
+    if let Some(overrides) = profile_cfg["model"].as_object() {
+        for (key, value) in overrides {
+            model[key] = value.clone();
+        }
+    }
+    let inline = canonical_provider(string(&model, "provider")) == slug
+        && model["api_key"].as_str().is_some_and(|s| !s.is_empty());
+    Ok(inline
+        || profile_home
+            .map(|dir| configured(dir, p))
+            .transpose()?
+            .unwrap_or(false))
+}
 fn catalog_models(slug: &str) -> Vec<String> {
     let mut models = profiles()
         .iter()
@@ -1903,7 +1976,12 @@ pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<
                     common::required(p, "provider")?,
                     common::required(p, "key")?,
                 ),
-                "hexbot.providers.clear_key" => clear_key(home, common::required(p, "provider")?),
+                "hexbot.providers.clear_key" => {
+                    let provider = common::required(p, "provider")?;
+                    let result = clear_key(home, provider)?;
+                    crate::settings::forget_provider(home, caller, provider)?;
+                    Ok(result)
+                }
                 "hexbot.providers.login_start" => {
                     login_start(home, caller, common::required(p, "provider")?).await
                 }
@@ -1933,6 +2011,7 @@ pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<
                 "model.disconnect" => {
                     let slug = canonical_provider(common::required(p, "slug")?);
                     clear_key(home, &slug)?;
+                    crate::settings::forget_provider(home, caller, &slug)?;
                     Ok(json!({"slug":slug,"name":profile(&slug)?["display_name"],"disconnected":true}))
                 }
                 _ => unreachable!(),

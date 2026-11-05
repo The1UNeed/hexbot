@@ -295,6 +295,27 @@ function BotRow({
   )
 }
 
+/**
+ * What the new-bot form starts on: a choice from an earlier open while its
+ * provider is still connected, else the default from Settings while its
+ * provider is. A provider since removed is no start for a new bot.
+ */
+export function startingModel(
+  value: { model: string; provider: string },
+  providers: readonly { id: string }[],
+  defaultModel: null | string | undefined
+): { model: string; provider: string } {
+  const connected = (id: string) => providers.some(item => item.id === id)
+
+  if (value.provider && connected(value.provider)) {
+    return { model: value.model, provider: value.provider }
+  }
+
+  const [provider = '', ...rest] = (defaultModel ?? '').split('/')
+
+  return connected(provider) ? { model: rest.join('/'), provider } : { model: '', provider: '' }
+}
+
 export function RosterColumn() {
   const params = useParams({ strict: false }) as { bot?: string; section?: string }
   const navigate = useNavigate()
@@ -337,13 +358,18 @@ export function RosterColumn() {
 
     void useSettings.getState().refreshProviders()
     void useSettings.getState().refresh()
-    const [provider, ...rest] = (settings?.default_model ?? '').split('/')
+  }, [botDialog])
+
+  useEffect(() => {
+    if (!botDialog) {
+      return
+    }
+
     setNewBot(value => ({
       ...value,
-      model: value.model || rest.join('/'),
-      provider: value.provider || provider || ''
+      ...startingModel(value, configuredProviders, settings?.default_model)
     }))
-  }, [botDialog, settings?.default_model])
+  }, [botDialog, configuredProviders, settings?.default_model])
   // Each open starts at the default level, which the collapsed summary implies.
   useEffect(() => {
     if (botDialog) {

@@ -122,6 +122,8 @@ export interface ChatScreenProps {
   focus?: { id: string; nonce: number } | null
   /** Under the empty state of a new chat, such as the model it will use. */
   intro?: ReactNode
+  /** A card above the composer the chat needs answered before the next message, such as a new model. */
+  notice?: ReactNode
 }
 
 type Entry = ChatItem | { id: string; kind: 'waiting' }
@@ -496,7 +498,10 @@ function ChatBody(props: ChatScreenProps) {
           ) : null}
         </View>
       ) : (
-        <Composer {...props} bottom={bottom} busy={busy} />
+        <>
+          {props.notice ? <View style={styles.modelNotice}>{props.notice}</View> : null}
+          <Composer {...props} bottom={bottom} busy={busy} />
+        </>
       )}
     </>
   )
@@ -987,6 +992,7 @@ const styles = StyleSheet.create({
     paddingVertical: 24
   },
   error: { paddingHorizontal: 12, paddingTop: 6 },
+  modelNotice: { paddingHorizontal: 12, paddingTop: 6 },
   file: {
     alignItems: 'center',
     borderRadius: 12,

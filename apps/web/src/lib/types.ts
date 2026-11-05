@@ -212,6 +212,11 @@ export interface Bot {
   /** The one bot that looks after the others; it can't be deleted. Older daemons leave it out. */
   primary?: boolean
   provider: null | string
+  /**
+   * Whether `provider` has a key or sign-in right now; null without a provider.
+   * False means the chat asks for a new model before the next message. Older daemons leave it out.
+   */
+  provider_connected?: boolean | null
   /** How hard the model thinks; null means Pi's default, medium. */
   reasoning_effort?: null | ReasoningEffort
   sections_recent: Section[]

@@ -45,6 +45,54 @@ fn a_bot_can_be_created_with_a_reasoning_level() {
     assert_eq!(created["bot"]["reasoning_effort"], "low");
 }
 #[test]
+fn a_bot_says_whether_its_provider_is_connected() {
+    let home = setup();
+    let h = home.path();
+    // Clearing pins the provider off whatever the shell's environment holds.
+    hexbot_core::providers::clear_key(h, "openai").unwrap();
+    let created = create(h);
+    assert_eq!(created["bot"]["provider_connected"], false);
+    hexbot_core::providers::set_key(h, "openai", "sk-test").unwrap();
+    let bot = call(
+        h,
+        "alice",
+        "hexbot.bots.get",
+        json!({"name":"research-owl"}),
+    )["bot"]
+        .clone();
+    assert_eq!(bot["provider_connected"], true);
+    hexbot_core::providers::clear_key(h, "openai").unwrap();
+    let listed = call(h, "alice", "hexbot.bots.list", json!({}))["bots"].clone();
+    assert_eq!(listed[0]["provider_connected"], false);
+    let plain = call(h, "alice", "hexbot.bots.create", json!({"name":"plain"}));
+    assert!(plain["bot"]["provider_connected"].is_null());
+    // A provider by any of its names: connected is judged by what it resolves to.
+    let named = call(
+        h,
+        "alice",
+        "hexbot.bots.create",
+        json!({"name":"named","provider":"claude","model":"claude-opus-4"}),
+    );
+    assert_eq!(named["bot"]["provider_connected"], false);
+    hexbot_core::providers::set_key(h, "anthropic", "sk-ant").unwrap();
+    let bot = call(h, "alice", "hexbot.bots.get", json!({"name":"named"}))["bot"].clone();
+    assert_eq!(bot["provider_connected"], true);
+    // A bot's own endpoint, in its profile, counts for that bot.
+    let local = call(
+        h,
+        "alice",
+        "hexbot.bots.create",
+        json!({"name":"local","provider":"custom:lab","model":"lab-model"}),
+    );
+    assert_eq!(local["bot"]["provider_connected"], false);
+    let profile = catalog::profile(h, "local").unwrap();
+    let mut cfg = hexbot_core::common::read_config(&profile).unwrap();
+    cfg["providers"] = json!({"lab":{"api":"https://lab.test/v1","api_key":"lab-secret"}});
+    hexbot_core::common::write_config(&profile, &cfg).unwrap();
+    let bot = call(h, "alice", "hexbot.bots.get", json!({"name":"local"}))["bot"].clone();
+    assert_eq!(bot["provider_connected"], true);
+}
+#[test]
 fn lifecycle_preserves_memory_and_reopens_archived_sections() {
     let home = setup();
     let h = home.path();
