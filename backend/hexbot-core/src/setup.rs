@@ -1,23 +1,29 @@
 //! Standalone native runtime and managed code tools installation.
+#[cfg(not(windows))]
 use crate::install_ownership::{WRAPPER_MARKER, shell_quote};
 use crate::{Error, Result, common, services};
 use serde::Deserialize;
 use serde_json::{Value, json};
+#[cfg(not(windows))]
+use std::io::Write;
 use std::{
     collections::BTreeMap,
     fs,
     future::Future,
-    io::Write,
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
+#[cfg(not(windows))]
 use tokio::process::Command;
 
+#[cfg(any(windows, test))]
+#[path = "setup_python.rs"]
+mod python;
 #[cfg(unix)]
 #[path = "setup_selection.rs"]
 mod selection;
 
 const VOICE_REQUIREMENTS: &str = include_str!("../assets/edge-tts.requirements.txt");
+#[cfg(not(windows))]
 const REQUIRED_FILES: &[&str] = &[
     "hexbot",
     "hexbot-core",
@@ -27,11 +33,37 @@ const REQUIRED_FILES: &[&str] = &[
     "pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
 ];
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+#[cfg(windows)]
+const REQUIRED_FILES: &[&str] = &[
+    "hexbot.exe",
+    "hexbot-cli.exe",
+    "node.exe",
+    "pi/launch.mjs",
+    "pi/search-tools.mjs",
+    "bin/rg.exe",
+    "bin/fd.exe",
+    "web/index.html",
+    "pi/package-lock.json",
+    "pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js",
+];
+#[cfg(not(windows))]
+fn entrypoint() -> &'static str {
+    if cfg!(windows) {
+        "hexbot.exe"
+    } else {
+        "hexbot"
+    }
+}
+
 fn target() -> String {
     format!(
         "{}-{}",
         if cfg!(target_os = "macos") {
             "darwin"
+        } else if cfg!(windows) {
+            "win32"
         } else {
             "linux"
         },
@@ -47,12 +79,29 @@ fn target() -> String {
 struct Manifest {
     version: String,
     target: String,
+    #[cfg(windows)]
+    #[serde(rename = "builtAt")]
+    built_at: u64,
     files: BTreeMap<String, String>,
 }
 fn verify_runtime(directory: &Path) -> Result<Manifest> {
+    verify_runtime_for(directory, &crate::version())
+}
+#[cfg(any(windows, test))]
+pub(crate) fn verify_runtime_version(directory: &Path, version: &str) -> Result<()> {
+    verify_runtime_for(directory, version).map(|_| ())
+}
+fn verify_runtime_for(directory: &Path, version: &str) -> Result<Manifest> {
     let manifest: Manifest = serde_json::from_slice(&fs::read(directory.join("manifest.json"))?)
         .map_err(|e| Error::new(5243, format!("Invalid native runtime manifest: {e}")))?;
-    if manifest.version != crate::version() || manifest.target != target() {
+    #[cfg(windows)]
+    if manifest.built_at == 0 {
+        return Err(Error::new(
+            5243,
+            "Native Windows runtime is missing its source chronology",
+        ));
+    }
+    if manifest.version != version || manifest.target != target() {
         return Err(Error::new(
             5243,
             "Native runtime version or architecture does not match this daemon",
@@ -137,7 +186,22 @@ fn activate(home: &Path, source: &Path, emit: &impl Fn(&str, &str)) -> Result<()
     copy_runtime(&source, staging.path(), &source, &mut Vec::new())?;
     verify_runtime(staging.path())?;
     emit("activate", "Activating the native runtime");
-    services::publish_native(&native, &manifest.version, staging.path(), "hexbot", None)?;
+    #[cfg(not(windows))]
+    services::publish_native(
+        &native,
+        &manifest.version,
+        staging.path(),
+        entrypoint(),
+        None,
+    )?;
+    #[cfg(windows)]
+    services::publish_setup_native(
+        &native,
+        &manifest.version,
+        staging.path(),
+        &serde_json::from_slice(&fs::read(staging.path().join("manifest.json"))?)
+            .map_err(|e| Error::new(5243, e.to_string()))?,
+    )?;
     Ok(())
 }
 
@@ -168,10 +232,41 @@ fn tool_asset(tool: &str, target: &str) -> Result<Asset> {
     let directory = format!("{}{triple}", release.name);
     Ok(Asset {
         version: release.version.clone(),
-        url: format!("{}/{directory}.tar.gz", release.url),
+        url: format!(
+            "{}/{directory}.{}",
+            release.url,
+            if cfg!(windows) { "zip" } else { "tar.gz" }
+        ),
         directory,
         sha256: sha256.clone(),
     })
+}
+// Native CI calls the actual private installer with a local verified ZIP.
+#[cfg(all(windows, debug_assertions))]
+pub async fn windows_contract_install_uv(home: &Path, archive: &Path) -> Result<PathBuf> {
+    let asset = Asset {
+        version: "native-contract".into(),
+        directory: String::new(),
+        url: "local-contract".into(),
+        sha256: services::file_sha256(archive)?,
+    };
+    install_tool(
+        home,
+        "uv",
+        &asset,
+        |_, destination| async move {
+            fs::copy(archive, destination)?;
+            Ok(())
+        },
+        &|_, _| {},
+    )
+    .await
+}
+// Native CI drives the production Windows Python pass directly, as `hexbot
+// setup` does after activation, in a disposable home.
+#[cfg(all(windows, debug_assertions))]
+pub async fn windows_contract_code_tools(home: &Path, emit: &impl Fn(&str, &str)) -> Result<()> {
+    install_code_runtime(home, emit).await
 }
 async fn download_tool(url: String, destination: PathBuf) -> Result<()> {
     services::download(&url, &destination, 256 * 1024 * 1024, true).await
@@ -188,7 +283,7 @@ where
     Fut: Future<Output = Result<()>>,
 {
     let bin = home.join("bin");
-    let executable = bin.join(tool);
+    let executable = bin.join(format!("{tool}{}", if cfg!(windows) { ".exe" } else { "" }));
     let receipt = bin.join(format!("{tool}-version"));
     let recorded: Value = fs::read(&receipt)
         .ok()
@@ -212,8 +307,16 @@ where
     }
     let extracted = staging.path().join("extracted");
     fs::create_dir(&extracted)?;
+    #[cfg(windows)]
+    crate::native_zip::extract_zip(&archive, &extracted, 512 * 1024 * 1024)?;
+    #[cfg(not(windows))]
     services::extract_archive(&archive, &extracted, 512 * 1024 * 1024)?;
-    let source = extracted.join(&asset.directory).join(tool);
+    let source = if cfg!(windows) {
+        extracted.join(format!("{tool}.exe"))
+    } else {
+        extracted.join(&asset.directory).join(tool)
+    };
+    #[cfg(unix)]
     fs::set_permissions(&source, fs::Permissions::from_mode(0o755))?;
     fs::rename(source, &executable)?;
     common::atomic_write(
@@ -224,13 +327,19 @@ where
     )?;
     Ok(executable)
 }
+#[cfg(not(windows))]
 async fn run_uv(home: &Path, uv: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new(uv)
+    let mut command = Command::new(uv);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000); // Noninteractive GUI bootstrap child.
+    let output = command
         .args(args)
         .current_dir(home.join("runtime"))
         .env("UV_PYTHON_INSTALL_DIR", home.join("python"))
         .env("UV_PYTHON_BIN_DIR", home.join("bin"))
         .env("UV_CACHE_DIR", home.join("runtime/uv-cache"))
+        // Copy newly provisioned packages instead of linking them to uv's cache.
+        .env("UV_LINK_MODE", "copy")
         .stdin(std::process::Stdio::null())
         .kill_on_drop(true)
         .output()
@@ -253,6 +362,7 @@ async fn run_uv(home: &Path, uv: &Path, args: &[&str]) -> Result<String> {
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
+#[cfg(not(windows))]
 fn remove_file(path: &Path) -> Result<()> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -260,11 +370,13 @@ fn remove_file(path: &Path) -> Result<()> {
         Err(e) => Err(e.into()),
     }
 }
+#[cfg(not(windows))]
 fn voice_current(home: &Path) -> bool {
     home.join("bin/edge-tts").exists()
         && fs::read_to_string(home.join("runtime/tools/edge-tts.requirements.txt"))
             .is_ok_and(|text| text == VOICE_REQUIREMENTS)
 }
+#[cfg(not(windows))]
 async fn install_code_runtime(home: &Path, emit: &impl Fn(&str, &str)) -> Result<()> {
     fs::create_dir_all(home.join("bin"))?;
     fs::create_dir_all(home.join("runtime"))?;
@@ -349,6 +461,7 @@ async fn install_code_runtime(home: &Path, emit: &impl Fn(&str, &str)) -> Result
     }
     Ok(())
 }
+#[cfg(not(windows))]
 fn link_cli(home: &Path, user_home: &Path, emit: &impl Fn(&str, &str)) -> Result<()> {
     let executable = home.join("runtime/native-executable");
     if !executable.is_file() {
@@ -426,11 +539,20 @@ pub async fn run(home: &Path, args: &[String]) -> Result<()> {
             println!("{message}");
         }
     };
-    let user_home = PathBuf::from(
-        std::env::var_os("HOME").ok_or_else(|| Error::new(4200, "HOME is required"))?,
-    );
+    let user_home =
+        crate::osutil::user_home().ok_or_else(|| Error::new(4200, "User home is required"))?;
     fs::create_dir_all(home)?;
     let home = home.canonicalize()?;
+    #[cfg(windows)]
+    if let Some(owner) =
+        crate::windows_cli::preflight_owner(&user_home.join(".local/bin/hexbot.exe"))?
+        && owner.canonicalize()? != home
+    {
+        return Err(Error::new(
+            4208,
+            "Existing CLI configuration belongs to another installation",
+        ));
+    }
     if args.iter().any(|a| a == "--activate") {
         let executable = std::env::current_exe()?.canonicalize()?;
         let source = executable
@@ -446,7 +568,7 @@ pub async fn run(home: &Path, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     fn runtime(root: &Path) {
@@ -594,8 +716,29 @@ mod tests {
         fs::write(&receipt, "old").unwrap();
         assert!(!voice_current(home.path()));
     }
+    #[test]
+    fn code_setup_waits_for_the_home_lock_before_checking_receipts() {
+        // Other tests spawn children concurrently. Isolate this raw flock
+        // assertion so a fork cannot briefly retain this test's descriptor.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "setup::tests::code_setup_lock_fixture",
+                "--nocapture",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
     #[tokio::test]
-    async fn code_setup_waits_for_the_home_lock_before_checking_receipts() {
+    #[ignore = "isolated activation-lock descriptor lifetime fixture"]
+    async fn code_setup_lock_fixture() {
         let home = tempfile::tempdir().unwrap();
         fs::create_dir_all(home.path().join("runtime/tools")).unwrap();
         let lock = services::activation_lock(&home.path().join("runtime")).unwrap();
@@ -615,13 +758,17 @@ mod tests {
         )
         .unwrap();
         drop(lock);
-        install.await.unwrap();
-        // The guard is released even on the receipt fast path.
+        install.as_mut().await.unwrap();
+        // Check completion before retiring the pinned future too: its local
+        // guard must already be gone, not merely released by the future Drop.
         use std::os::fd::AsRawFd;
         let contender = fs::File::open(home.path().join("runtime/activate.lock")).unwrap();
+        let result = unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        let error = (result != 0).then(std::io::Error::last_os_error);
+        drop(install);
         assert_eq!(
-            unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-            0
+            result, 0,
+            "fast-path activation lock did not release: {error:?}"
         );
     }
     #[tokio::test]
@@ -636,6 +783,7 @@ mod tests {
             &uv,
             r#"#!/bin/sh
 set -eu
+test "$UV_LINK_MODE" = copy
 case "$1" in
     venv) for last do :; done; mkdir -p "$last/bin" ;;
     pip) touch tools/edge-tts/bin/edge-tts ;;
@@ -707,6 +855,14 @@ esac
         let executable = install_tool(home.path(), "uv", &asset, download, &|_, _| {})
             .await
             .unwrap();
+        // Desktop's native fixtures and binDir() rely on this exact location.
+        assert_eq!(
+            executable,
+            home.path()
+                .join("bin")
+                .join(if cfg!(windows) { "uv.exe" } else { "uv" })
+        );
+        assert!(home.path().join("bin/uv-version").is_file());
         install_tool(
             home.path(),
             "uv",
@@ -730,4 +886,80 @@ esac
             .unwrap();
         assert_eq!(fs::read(executable).unwrap(), content);
     }
+}
+
+#[cfg(windows)]
+async fn install_code_runtime(home: &Path, emit: &impl Fn(&str, &str)) -> Result<()> {
+    let asset = tool_asset("uv", &target())?;
+    python::provision(
+        home,
+        emit,
+        &mut python::Processes,
+        |home| async move { install_tool(&home, "uv", &asset, download_tool, emit).await },
+        VOICE_REQUIREMENTS,
+    )
+    .await
+}
+#[cfg(any(windows, test))]
+fn legacy_cli(home: &Path, bin: &Path) -> Result<Option<PathBuf>> {
+    let path = bin.join("hexbot.ps1");
+    match fs::symlink_metadata(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Ok(_) if crate::windows_service::owned(&path, home) => Ok(Some(path)),
+        Err(e) => Err(e.into()),
+        _ => Err(Error::new(
+            4208,
+            "An unrelated hexbot.ps1 shadows the native CLI; left it alone",
+        )),
+    }
+}
+#[cfg(all(test, unix))]
+mod legacy_tests {
+    use super::*;
+    #[test]
+    fn legacy_cli_preflight_refuses_foreign_links_and_directories_without_writes() {
+        let home = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let bin = home.path().join(".local/bin");
+        fs::create_dir_all(&bin).unwrap();
+        let path = bin.join("hexbot.ps1");
+        assert!(legacy_cli(home.path(), &bin).unwrap().is_none());
+        for contents in ["foreign", "# Hexbot owned home: invalid"] {
+            fs::write(&path, contents).unwrap();
+            assert!(legacy_cli(home.path(), &bin).is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), contents);
+        }
+        fs::remove_file(&path).unwrap();
+        crate::windows_service::write_owned_script(&path, other.path(), false).unwrap();
+        assert!(legacy_cli(home.path(), &bin).is_err());
+        fs::remove_file(&path).unwrap();
+        for target in [home.path().join("missing"), home.path().to_owned()] {
+            std::os::unix::fs::symlink(target, &path).unwrap();
+            assert!(legacy_cli(home.path(), &bin).is_err());
+            fs::remove_file(&path).unwrap();
+        }
+        crate::windows_service::write_owned_script(&path, home.path(), false).unwrap();
+        assert_eq!(legacy_cli(home.path(), &bin).unwrap(), Some(path));
+        assert_eq!(fs::read_dir(&bin).unwrap().count(), 1);
+    }
+}
+#[cfg(windows)]
+fn link_cli(home: &Path, user_home: &Path, emit: &impl Fn(&str, &str)) -> Result<()> {
+    let bin = user_home.join(".local/bin");
+    let legacy = legacy_cli(home, &bin)?;
+    let selected = services::selected_native_executable(home)?;
+    let cli = crate::windows_cli::install(&selected.with_file_name("hexbot-cli.exe"), home, &bin)?;
+    crate::windows_cli::register_path(&cli)?;
+    if let Some(legacy) = legacy {
+        legacy_cli(home, &bin)?; // Never unlink an unrelated replacement.
+        fs::remove_file(legacy)?;
+    }
+    emit(
+        "link",
+        &format!(
+            "CLI installed at {}. New terminals can run hexbot from PATH.",
+            cli.display()
+        ),
+    );
+    Ok(())
 }

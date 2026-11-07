@@ -1,14 +1,14 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-// electron-updater reads `${channel}-${os}.yml`. The stable channel is called
+// Windows reads `${channel}.yml`; macOS/Linux append the OS. Stable is called
 // `latest` on the wire (electron-updater's default); nightly is `nightly`.
 export const feedChannels = { stable: 'latest', nightly: 'nightly' }
 
 export function feedMetadataName(channel, os) {
   const wire = feedChannels[channel]
   if (!wire) throw new Error(`Unknown channel "${channel}". Use stable or nightly.`)
-  return `${wire}-${os}.yml`
+  return os === 'win' ? `${wire}.yml` : `${wire}-${os}.yml`
 }
 
 export async function writeFeedMetadata(destination, channel, os, contents) {

@@ -26,7 +26,7 @@ export async function prepareSearchTools(source, agentDirectory, log = message =
   if (!agentDirectory) throw new Error('PI_CODING_AGENT_DIR is required')
   const bin = join(agentDirectory, 'bin')
   await mkdir(bin, { recursive: true })
-  for (const tool of ['rg', 'fd']) {
+  for (const tool of process.platform === 'win32' ? ['rg.exe', 'fd.exe'] : ['rg', 'fd']) {
     const wanted = await fingerprint(join(source, tool))
     if (!wanted) throw new Error(`Verified ${tool} is missing from ${source}`)
     const destination = join(bin, tool)
@@ -34,7 +34,7 @@ export async function prepareSearchTools(source, agentDirectory, log = message =
     const staging = join(bin, `.${tool}-${process.pid}-${Date.now()}`)
     try {
       await copyFile(join(source, tool), staging)
-      await chmod(staging, 0o755)
+      if (process.platform !== 'win32') await chmod(staging, 0o755)
       await rename(staging, destination)
     } catch (error) {
       await rm(staging, { force: true }).catch(() => undefined)

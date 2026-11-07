@@ -11,7 +11,7 @@ export async function makeNativeUpdate(bundle, output) {
   const path = ['daemon', 'native', metadata.version, target]
   const directory = join(output, ...path)
   await mkdir(directory, { recursive: true })
-  const filename = `hexbot-native-${metadata.version}-${target}.tar.gz`
+  const filename = `hexbot-native-${metadata.version}-${target}.${metadata.target === 'win32-x64' ? 'zip' : 'tar.gz'}`
   const manifest = await createNativeArchive(bundle, join(directory, filename))
   manifest.path = [...path, filename].join('/')
   manifest.url = `https://updates.hexbot.app/${manifest.path}`

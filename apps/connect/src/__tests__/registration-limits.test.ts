@@ -15,6 +15,9 @@ afterEach(() => { vi.unstubAllEnvs(); vi.useRealTimers(); });
 
 describe("registration limits", () => {
   it("caps concurrent starts in the shared store and rejects before lookup or insertion", async () => {
+    // Keep this concurrency test in one window even when CI crosses a minute.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-23T04:45:59.919Z"));
     const store = new MemoryStore();
     setRuntimeForTests({ store, tunnels: new FakeTunnelProvider() });
     const results = await Promise.all(Array.from({ length: 30 }, () => POST(request())));

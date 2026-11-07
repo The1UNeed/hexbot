@@ -118,6 +118,8 @@ app as `Hexbot (dev)` instead (it runs the daemon itself). Its window, app
 menus, Dock, and app switcher use this name and the blue icon from the
 `apps/desktop/build/icon-dev.icon` bundle. Its data stays in the checkout's
 `.hexbot` directory.
+On Windows, `pnpm dev` runs Vite and electron-vite without stdin, so Vite's
+keyboard shortcuts are unavailable.
 On macOS, `scripts/dev/electron-launcher.mjs` creates an ad-hoc signed copy
 of Electron under `apps/desktop/.electron-runtime/` with a bundle id unique
 to the checkout and edition. The installed Electron dependency stays unchanged.
@@ -183,7 +185,9 @@ notice with no buttons until the app closes and reopens on the new version.
 Every check, download, and failure is written to `<home>/logs/desktop.log`.
 A nightly install ignores a stable version in the bucket and the other way
 round; switching tracks in Settings runs a check on the new track at once,
-with downgrades allowed.
+with downgrades allowed. Windows has no published build or feed; how a track
+switch behaves in its local and CI probe builds is an open Windows gate
+(`docs/windows-build-contract.md`).
 
 ### Updating a daemon from a client
 

@@ -8,12 +8,11 @@
 | --- | --- |
 | `release-version.mjs` | Resolves channel and version (tag must match `package.json`; nightly is `<next>-nightly.<date>.<run>`) and the product name and app id per channel. Prints GitHub Actions outputs. |
 | `set-version.mjs <version>` | Writes `apps/desktop/package.json`, also read by Rust at build time. |
+| `pnpm-command.mjs` | Resolves the pnpm entrypoint shared by dist and its real CLI startup probe. |
 | `dist.mjs --mac\|--linux [--client] [--channel stable\|nightly\|dev]` | Builds one package. The channel sets the product name (`Hexbot [alpha]`, `Hexbot Nightly`, `Hexbot (dev)`) and app id. |
 | `stage-runtime.mjs`, `native-runtime.mjs`, `native-build.mjs` | Build Rust for the target, bundle Node and locked agent dependencies, prune unused files and verify the result. |
 | `make-native-update.mjs` | Write a relocatable archive and SHA-256 manifest under `daemon/native/<version>/<target>/`. |
 | `stage-python-src.mjs`, `python-src-manifest.mjs` | Stage only `backend/python-handoff/` and transition metadata for the service handoff. `--native-transition` remains accepted. |
-| `mac-sign.cjs` | Keeps the bundled Node entitlement separate from Electron during Developer ID signing. |
-| `after-pack.cjs` | Ad-hoc signs macOS builds when no Developer ID is configured, so they launch on Apple Silicon. |
 | `make-update-feed.mjs --channel stable\|nightly [--version v] [--client] <builder-output> [feed-root]` | Builds the `updates.hexbot.app` tree: artifacts plus `latest-*.yml` or `nightly-*.yml`. |
 | `make-install-manifest.mjs --channel stable\|nightly --version V <updates-root> [--base-url URL] [--allow-missing]` | Reads app feeds, native manifests and installer artifacts, verifies payloads, and writes `install/<channel>.json` and `.txt`. |
 | `finalize-release.mjs <version> <full-dir> <client-dir>` | Rewrites the website downloads manifest and both Homebrew casks after a stable release. |
@@ -120,3 +119,9 @@ Source staging copies only `pyproject.toml`, `uv.lock`, the Python files in
 assets never enter `resources/hexbot-src`. Both staging CLI forms always write
 the transition marker. This is only the service handoff described
 in `docs/release.md`.
+
+Electron-builder source hooks live in `apps/desktop/scripts/`: `mac-sign.cjs`
+scopes the bundled Node entitlement during Developer ID signing; `after-pack.cjs`
+ad-hoc signs unsigned macOS apps and writes the Windows app ownership marker.
+Keeping these entrypoints inside the desktop project preserves hook containment
+even when package-manager discovery does not identify the repository root.

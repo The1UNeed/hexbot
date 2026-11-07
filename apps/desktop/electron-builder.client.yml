@@ -8,6 +8,8 @@ artifactName: HexbotClient-${version}-${os}-${arch}.${ext}
 linux:
   executableName: hexbot-client
   artifactName: HexbotClient-${version}-linux-${arch}.${ext}
+win:
+  executableName: HexbotClient
 deb:
   desktop:
     entry:

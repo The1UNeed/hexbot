@@ -6,8 +6,8 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import test from 'node:test'
-import macSign from './mac-sign.cjs'
-import afterPack from './after-pack.cjs'
+import macSign from '../../apps/desktop/scripts/mac-sign.cjs'
+import afterPack from '../../apps/desktop/scripts/after-pack.cjs'
 
 const run = promisify(execFile)
 

@@ -1,0 +1,1568 @@
+#![cfg(windows)]
+//! Exercise the actual generated launchers with Windows PowerShell 5.1.
+#[path = "../src/install_paths.rs"]
+mod install_ownership;
+#[path = "support/windows_process_handle.rs"]
+mod process_handle;
+#[path = "support/task_readiness.rs"]
+mod task_readiness;
+#[path = "../src/windows_node_path.rs"]
+mod windows_node_path;
+#[path = "../src/windows_paths.rs"]
+mod windows_paths;
+#[path = "../src/windows_task.rs"]
+mod windows_task;
+#[path = "../src/windows_terminal.rs"]
+mod windows_terminal;
+use hexbot_core::{system_service, windows_cli};
+use serde_json::json;
+use std::os::windows::process::CommandExt;
+use std::{fs, path::Path, process::Command};
+
+fn powershell(script: &str) -> std::process::Output {
+    Command::new(windows_paths::system_program("WindowsPowerShell/v1.0/powershell.exe").unwrap())
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .output()
+        .unwrap()
+}
+fn quote(path: &Path) -> String {
+    format!("'{}'", path.display().to_string().replace('\'', "''"))
+}
+
+#[test]
+fn task_principal_ownership_uses_exact_resolved_windows_sids() {
+    let output = powershell(&format!(
+        r#"{}
+$ErrorActionPreference='Stop'
+$owner=[Security.Principal.WindowsIdentity]::GetCurrent()
+$sid=$owner.User.Value
+$account=$owner.Name
+foreach($identity in @($sid,$account,[Environment]::UserName)) {{
+    $resolved=Resolve-HexbotTaskSid $identity
+    if($resolved -cne $sid) {{ throw 'Own SID/account representation did not resolve to the exact owner SID' }}
+    [Console]::WriteLine((@{{identity=$identity;resolvedSid=$resolved}}|ConvertTo-Json -Compress))
+}}
+$foreignSid='S-1-5-18'
+if($sid -ceq $foreignSid) {{ throw 'Probe requires a user, not LocalSystem' }}
+$foreignName=[Security.Principal.SecurityIdentifier]::new($foreignSid).Translate([Security.Principal.NTAccount]).Value
+foreach($identity in @($foreignSid,$foreignName,('Hexbot-no-such-user-'+[Guid]::NewGuid().ToString()),'', 'not a valid SID')) {{
+    if((Resolve-HexbotTaskSid $identity) -ceq $sid) {{ throw 'Foreign or unresolvable principal was accepted' }}
+}}
+if($null -ne (Resolve-HexbotTaskSid ('Hexbot-no-such-user-'+[Guid]::NewGuid().ToString()))) {{ throw 'Unresolvable principal must fail closed' }}
+# Run the actual ownership gate with controlled task definitions, without
+# needing permission to register a task for another Windows account.
+$expectedSid=$sid
+$expectedPowerShell=Join-Path ([Environment]::GetFolderPath('System')) 'WindowsPowerShell\v1.0\powershell.exe'
+$expectedArguments='-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\fixture\daemon.ps1"'
+$expectedOwner='Hexbot owned home: "C:\fixture home"'
+$allowLegacy=$false;$operation='state';$taskName='fixture'
+$control=[ScriptBlock]::Create(@'
+{}
+'@)
+function New-Object([string]$ComObject) {{
+    if($ComObject -cne 'Schedule.Service') {{ throw 'Unexpected fixture COM object' }}
+    return $script:fixtureService
+}}
+foreach($case in @('sid','account','unqualified','foreign','unknown','program','arguments','home','count')) {{
+    $action=[pscustomobject]@{{Path=$expectedPowerShell;Arguments=$expectedArguments}}
+    $actions=[pscustomobject]@{{Count=1;Entry=$action}}
+    $actions|Add-Member ScriptMethod Item {{param($index) $this.Entry}}
+    $definition=[pscustomobject]@{{Actions=$actions;Principal=[pscustomobject]@{{UserId=$sid}};RegistrationInfo=[pscustomobject]@{{Description=$expectedOwner}}}}
+    $script:fixtureTask=[pscustomobject]@{{Definition=$definition;State=3}}
+    $script:fixtureFolder=[pscustomobject]@{{}}
+    $script:fixtureFolder|Add-Member ScriptMethod GetTask {{param($name) $script:fixtureTask}}
+    $script:fixtureService=[pscustomobject]@{{}}
+    $script:fixtureService|Add-Member ScriptMethod Connect {{}}
+    $script:fixtureService|Add-Member ScriptMethod GetFolder {{param($path) $script:fixtureFolder}}
+    switch($case) {{
+        'account' {{$definition.Principal.UserId=$account}}
+        'unqualified' {{$definition.Principal.UserId=[Environment]::UserName}}
+        'foreign' {{$definition.Principal.UserId=$foreignSid}}
+        'unknown' {{$definition.Principal.UserId='Hexbot-no-such-user-'+[Guid]::NewGuid().ToString()}}
+        'program' {{$action.Path='C:\foreign\powershell.exe'}}
+        'arguments' {{$action.Arguments+=' -foreign'}}
+        'home' {{$definition.RegistrationInfo.Description='Hexbot owned home: "C:\another home"'}}
+        'count' {{$actions.Count=2}}
+    }}
+    $accepted=$true
+    try {{$result=& $control}} catch {{
+        $accepted=$false
+        if($_.Exception.Message -notmatch 'another installation|home ownership context') {{throw}}
+    }}
+    if($accepted -ne ($case -in @('sid','account','unqualified'))) {{throw "Incorrect task ownership result for $case"}}
+    if($accepted -and $result -ne 3) {{throw 'Owned task state was not returned'}}
+}}
+[Console]::WriteLine('SID, qualified and unqualified owner names accepted; foreign and unresolved identities refused')
+"#,
+        include_str!("../assets/windows-task-identity.ps1"),
+        include_str!("../assets/windows-task-control.ps1")
+    ));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    eprintln!("{}", String::from_utf8_lossy(&output.stdout));
+}
+
+#[test]
+fn launchers_resolve_unicode_and_junctions_before_executing() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("Jos\u{e9} state");
+    let native = home.join("runtime/native");
+    let inside = native.join("good");
+    let outside = root.path().join("outside");
+    for dir in [&inside, &outside, &home.join("logs")] {
+        fs::create_dir_all(dir).unwrap();
+    }
+    let fixture = outside.join("hexbot.exe");
+    let marker = root.path().join("executed.txt");
+    let source = format!(
+        r#"public class Probe {{ public static int Main(string[] args) {{ System.IO.File.WriteAllText(@"{}", System.String.Join("\n", args)); return 17; }} }}"#,
+        marker.display().to_string().replace('"', "\"\"")
+    );
+    let compile = powershell(&format!(
+        "Add-Type -TypeDefinition '{}' -OutputAssembly {} -OutputType ConsoleApplication",
+        source.replace('\'', "''"),
+        quote(&fixture)
+    ));
+    assert!(
+        compile.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compile.stderr)
+    );
+    fs::copy(&fixture, inside.join("hexbot.exe")).unwrap();
+    let alias = root.path().join("home junction");
+    let linked = native.join("linked-build");
+    for (link, target) in [(&alias, &home), (&linked, &outside)] {
+        let output = powershell(&format!(
+            "New-Item -ItemType Junction -Path {} -Target {} | Out-Null",
+            quote(link),
+            quote(target)
+        ));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let bin = root.path().join("cli-bin");
+    let forwarder =
+        windows_cli::install(Path::new(env!("CARGO_BIN_EXE_hexbot-cli")), &alias, &bin).unwrap();
+    for service in [false, true] {
+        let launcher = root
+            .path()
+            .join(if service { "task.ps1" } else { "cli.ps1" });
+        // The generated script has a lexical junction home; selection contains
+        // its canonical Unicode target. Both canonical operands must agree.
+        system_service::write_owned_script(&launcher, &alias, service).unwrap();
+        for (selected, allowed) in [
+            (inside.join("hexbot.exe"), true),
+            (linked.join("hexbot.exe"), false),
+        ] {
+            fs::write(home.join("runtime/native-current.json"), json!({"executable":if allowed { selected.canonicalize().unwrap() } else { selected.clone() }}).to_string()).unwrap();
+            if !service {
+                let output = Command::new(&forwarder)
+                    .args(["space arg", "a&b", "quote\"arg", "%PATH%", "!"])
+                    .output()
+                    .unwrap();
+                if allowed {
+                    assert_eq!(
+                        output.status.code(),
+                        Some(17),
+                        "native CLI stderr={}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                } else {
+                    assert!(!output.status.success());
+                }
+                assert_eq!(marker.exists(), allowed, "native CLI containment");
+                if allowed {
+                    assert_eq!(
+                        fs::read_to_string(&marker).unwrap(),
+                        "space arg\na&b\nquote\"arg\n%PATH%\n!"
+                    );
+                    fs::remove_file(&marker).unwrap();
+                    let path = format!(
+                        "{};{}",
+                        bin.display(),
+                        std::env::var("PATH").unwrap_or_default()
+                    );
+                    for (program, arguments) in [
+                        (
+                            windows_paths::system_program("cmd.exe").unwrap(),
+                            vec!["/D", "/S", "/C"],
+                        ),
+                        (
+                            windows_paths::system_program("WindowsPowerShell/v1.0/powershell.exe")
+                                .unwrap(),
+                            vec![
+                                "-NoProfile",
+                                "-NonInteractive",
+                                "-ExecutionPolicy",
+                                "Restricted",
+                                "-Command",
+                                "hexbot version; exit $LASTEXITCODE",
+                            ],
+                        ),
+                    ] {
+                        let mut command = Command::new(&program);
+                        command.args(&arguments).env("PATH", &path);
+                        // cmd.exe has its own command-line grammar. This is a
+                        // fixed trusted command, with no interpolated paths/args.
+                        if program.file_name().unwrap() == "cmd.exe" {
+                            command.raw_arg("hexbot version");
+                        }
+                        eprintln!(
+                            "shell probe program={program:?} args={arguments:?} raw_cmd=hexbot version home={alias:?} selected={selected:?}"
+                        );
+                        let output = command.output().unwrap();
+                        eprintln!(
+                            "shell probe status={} stdout={} stderr={}",
+                            output.status,
+                            String::from_utf8_lossy(&output.stdout),
+                            String::from_utf8_lossy(&output.stderr)
+                        );
+                        assert_eq!(
+                            output.status.code(),
+                            Some(17),
+                            "{}",
+                            String::from_utf8_lossy(&output.stderr)
+                        );
+                        assert_eq!(fs::read_to_string(&marker).unwrap(), "version");
+                        fs::remove_file(&marker).unwrap();
+                    }
+                }
+            }
+            let output = powershell(&format!(
+                "& {} version; exit $LASTEXITCODE",
+                quote(&launcher)
+            ));
+            if allowed {
+                assert_eq!(
+                    output.status.code(),
+                    Some(17),
+                    "service={service}, stderr={}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            } else {
+                assert!(!output.status.success());
+            }
+            assert_eq!(
+                marker.exists(),
+                allowed,
+                "service={service}, stderr={}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            if allowed {
+                fs::remove_file(&marker).unwrap();
+            }
+        }
+    }
+    // Exercise an actual short-name alias where the volume provides one. Some
+    // Windows volumes disable 8.3 creation; report that fact without inventing
+    // an alias or counting it as native short-name evidence.
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetShortPathNameW(long: *const u16, short: *mut u16, length: u32) -> u32;
+    }
+    let long: Vec<_> = home.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut short = vec![0u16; 32768];
+    let length = unsafe { GetShortPathNameW(long.as_ptr(), short.as_mut_ptr(), short.len() as u32) }
+        as usize;
+    assert!(
+        length > 0 && length < short.len(),
+        "{}",
+        std::io::Error::last_os_error()
+    );
+    let short = std::path::PathBuf::from(std::ffi::OsString::from_wide(&short[..length]));
+    if short != home {
+        eprintln!("native 8.3 home alias={short:?}");
+        let short_forwarder = windows_cli::install(
+            Path::new(env!("CARGO_BIN_EXE_hexbot-cli")),
+            &short,
+            &root.path().join("short-bin"),
+        )
+        .unwrap();
+        for service in [false, true] {
+            let launcher = root.path().join(if service {
+                "short-task.ps1"
+            } else {
+                "short-cli.ps1"
+            });
+            system_service::write_owned_script(&launcher, &short, service).unwrap();
+            for (selected, allowed) in [
+                (inside.join("hexbot.exe"), true),
+                (linked.join("hexbot.exe"), false),
+            ] {
+                fs::write(
+                    home.join("runtime/native-current.json"),
+                    json!({"executable": selected}).to_string(),
+                )
+                .unwrap();
+                let output = if service {
+                    powershell(&format!(
+                        "& {} version; exit $LASTEXITCODE",
+                        quote(&launcher)
+                    ))
+                } else {
+                    Command::new(&short_forwarder)
+                        .arg("version")
+                        .output()
+                        .unwrap()
+                };
+                if allowed {
+                    assert_eq!(
+                        output.status.code(),
+                        Some(17),
+                        "8.3 stderr={}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                } else {
+                    assert!(!output.status.success());
+                }
+                assert_eq!(
+                    marker.exists(),
+                    allowed,
+                    "8.3 containment service={service}"
+                );
+                if allowed {
+                    fs::remove_file(&marker).unwrap();
+                }
+            }
+        }
+    } else {
+        eprintln!(
+            "Native volume supplies no distinct 8.3 home alias; short-name launch is unproved on this volume"
+        );
+    }
+    // Junctions are directory links, never recursively clean their targets.
+    fs::remove_dir(&linked).unwrap();
+    fs::remove_dir(&alias).unwrap();
+}
+
+#[tokio::test]
+async fn logs_follow_both_streams_after_append_creation_and_rotation() {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("state");
+    fs::create_dir_all(home.join("logs")).unwrap();
+    fs::write(home.join("logs/service.log"), "ready\n").unwrap();
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_hexbot"))
+        .args(["service", "logs", "-f"])
+        .env("HEXBOT_HOME", &home)
+        .env("HOME", root.path())
+        .env("USERPROFILE", root.path())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    async fn next(lines: &mut tokio::io::Lines<BufReader<tokio::process::ChildStdout>>) -> String {
+        tokio::time::timeout(std::time::Duration::from_secs(15), lines.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .expect("follower exited")
+    }
+    assert_eq!(next(&mut lines).await, "ready"); // observable readiness, no sleeps
+    fs::write(home.join("logs/service-error.log"), "new stderr\n").unwrap();
+    assert_eq!(next(&mut lines).await, "new stderr");
+    fs::rename(home.join("logs/service.log"), home.join("logs/service.old")).unwrap();
+    fs::write(home.join("logs/service.log"), "rotated stdout\n").unwrap();
+    assert_eq!(next(&mut lines).await, "rotated stdout");
+    use std::io::Write;
+    fs::OpenOptions::new()
+        .append(true)
+        .open(home.join("logs/service-error.log"))
+        .unwrap()
+        .write_all(b"appended stderr\n")
+        .unwrap();
+    assert_eq!(next(&mut lines).await, "appended stderr");
+    child.kill().await.unwrap();
+    child.wait().await.unwrap();
+    let snapshot = Command::new(env!("CARGO_BIN_EXE_hexbot"))
+        .args(["service", "logs"])
+        .env("HEXBOT_HOME", &home)
+        .output()
+        .unwrap();
+    assert!(snapshot.status.success());
+    let text = String::from_utf8(snapshot.stdout).unwrap();
+    assert!(text.contains("rotated stdout"));
+    assert!(text.contains("appended stderr"));
+    assert!(
+        !Command::new(env!("CARGO_BIN_EXE_hexbot"))
+            .args(["service", "logs", "--wrong"])
+            .env("HEXBOT_HOME", &home)
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
+#[test]
+#[ignore = "changes PATH only on an explicitly disposable native CI user"]
+fn user_path_registration_preserves_existing_entries_and_removes_only_its_own() {
+    assert_eq!(
+        std::env::var("HEXBOT_WINDOWS_PATH_PROBE").as_deref(),
+        Ok("1")
+    );
+    assert_ne!(std::env::var("HEXBOT_CLI_NO_PATH").as_deref(), Ok("1"));
+    let query = r#"[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); $k = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment'); try { @{value=[string]$k.GetValue('Path','',[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames); exists=($k.GetValueNames() -contains 'Path'); kind=$(if ($k.GetValueNames() -contains 'Path') { [int]$k.GetValueKind('Path') } else { 2 })} | ConvertTo-Json -Compress } finally { $k.Dispose() }"#;
+    let output = powershell(query);
+    assert!(output.status.success());
+    let before: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    struct Restore(serde_json::Value);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let text = self.0.to_string().replace('\'', "''");
+            let output = powershell(&format!(
+                "$v = '{text}' | ConvertFrom-Json; $k = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment'); try {{ if ($v.exists) {{ $k.SetValue('Path', [string]$v.value, [Microsoft.Win32.RegistryValueKind][int]$v.kind) }} else {{ $k.DeleteValue('Path', $false) }} }} finally {{ $k.Dispose() }}"
+            ));
+            assert!(output.status.success());
+        }
+    }
+    let _restore = Restore(before.clone());
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("state");
+    fs::create_dir(&home).unwrap();
+    let bin = root.path().join("Jos\u{e9} CLI with spaces");
+    let cli =
+        windows_cli::install(Path::new(env!("CARGO_BIN_EXE_hexbot-cli")), &home, &bin).unwrap();
+    windows_cli::register_path(&cli).unwrap();
+    let added: serde_json::Value = serde_json::from_slice(&powershell(query).stdout).unwrap();
+    assert!(
+        added["value"]
+            .as_str()
+            .unwrap()
+            .split(';')
+            .any(|p| p == bin.to_str().unwrap())
+    );
+    windows_cli::register_path(&cli).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&powershell(query).stdout).unwrap(),
+        added
+    );
+    windows_cli::remove(&cli, &home).unwrap();
+    let after: serde_json::Value = serde_json::from_slice(&powershell(query).stdout).unwrap();
+    assert_eq!(after["value"], before["value"]);
+    if before["exists"] == true {
+        assert_eq!(after["kind"], before["kind"]);
+    }
+    // setup must reject a foreign/reparse legacy launcher BEFORE creating a
+    // forwarder, sidecar, PATH intent or registry entry. Owned migration works.
+    for case in ["foreign", "other-home", "directory", "junction", "owned"] {
+        let user = root.path().join(format!("legacy {case}"));
+        let state = user.join("state");
+        let native = state.join("runtime/native/build");
+        let bin = user.join(".local/bin");
+        fs::create_dir_all(&native).unwrap();
+        fs::create_dir_all(&bin).unwrap();
+        fs::copy(env!("CARGO_BIN_EXE_hexbot"), native.join("hexbot.exe")).unwrap();
+
+        fs::copy(
+            env!("CARGO_BIN_EXE_hexbot-cli"),
+            native.join("hexbot-cli.exe"),
+        )
+        .unwrap();
+        fs::write(
+            state.join("runtime/native-current.json"),
+            json!({"executable":native.join("hexbot.exe")}).to_string(),
+        )
+        .unwrap();
+        let legacy = bin.join("hexbot.ps1");
+        match case {
+            "foreign" => fs::write(&legacy, "foreign bytes").unwrap(),
+            "other-home" => system_service::write_owned_script(&legacy, &home, false).unwrap(),
+            "directory" => fs::create_dir(&legacy).unwrap(),
+            "junction" => {
+                let output = powershell(&format!(
+                    "New-Item -ItemType Junction -Path {} -Target {} | Out-Null",
+                    quote(&legacy),
+                    quote(&home)
+                ));
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            _ => system_service::write_owned_script(&legacy, &state, false).unwrap(),
+        }
+        let old = fs::read(&legacy).ok();
+        let output = Command::new(env!("CARGO_BIN_EXE_hexbot"))
+            .args(["setup", "--no-code-tools", "--json"])
+            .env("HEXBOT_HOME", &state)
+            .env("USERPROFILE", &user)
+            .env("HOME", &user)
+            .env_remove("HEXBOT_CLI_NO_PATH")
+            .output()
+            .unwrap();
+        let forwarder = bin.join("hexbot.exe");
+        if case == "owned" {
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(!legacy.exists());
+            assert!(windows_cli::owned(&forwarder, &state));
+            windows_cli::remove(&forwarder, &state).unwrap();
+        } else {
+            assert!(!output.status.success());
+            assert!(!forwarder.exists() && !forwarder.with_extension("json").exists());
+            assert_eq!(fs::read_dir(&bin).unwrap().count(), 1);
+            assert_eq!(fs::read(&legacy).ok(), old);
+            if case == "junction" {
+                fs::remove_dir(&legacy).unwrap();
+            }
+        }
+        let unchanged: serde_json::Value =
+            serde_json::from_slice(&powershell(query).stdout).unwrap();
+        assert_eq!(unchanged, before, "legacy {case} changed persistent PATH");
+    }
+    // Exercise the real metadata/registry interruption boundaries, followed by
+    // either a repair (including the CLI reinstall step) or direct uninstall.
+    for boundary in [
+        "before-intent",
+        "after-intent",
+        "after-registry",
+        "after-commit",
+    ] {
+        for repair in [false, true] {
+            let bin = root.path().join(format!("Jos\u{e9} {boundary} {repair}"));
+            let source = Path::new(env!("CARGO_BIN_EXE_hexbot-cli"));
+            let cli = windows_cli::install(source, &home, &bin).unwrap();
+            assert!(windows_cli::register_path_interruption_probe(&cli, boundary).is_err());
+            assert!(
+                windows_cli::remove(&cli, root.path()).is_err(),
+                "foreign home claimed CLI"
+            );
+            if repair {
+                windows_cli::install(source, &home, &bin).unwrap();
+                windows_cli::register_path(&cli).unwrap();
+                let ownership: serde_json::Value =
+                    serde_json::from_slice(&fs::read(cli.with_extension("json")).unwrap()).unwrap();
+                assert_eq!(ownership["pathAdded"], true);
+            } else if boundary == "after-registry" {
+                fs::remove_file(&cli).unwrap(); // partial uninstall still recovers the journal
+            }
+            windows_cli::remove(&cli, &home).unwrap();
+            assert!(!cli.with_extension("json").exists());
+            let restored: serde_json::Value =
+                serde_json::from_slice(&powershell(query).stdout).unwrap();
+            assert_eq!(
+                restored["value"], before["value"],
+                "{boundary} repair={repair}"
+            );
+            assert_eq!(restored["exists"], before["exists"]);
+        }
+    }
+    // An entry present before registration belongs to the user, even when the
+    // entry was installed by another tool. Never claim/delete it.
+    let bin = root.path().join("preexisting user CLI");
+    let cli =
+        windows_cli::install(Path::new(env!("CARGO_BIN_EXE_hexbot-cli")), &home, &bin).unwrap();
+    let mut preexisting = before.clone();
+    preexisting["value"] = serde_json::json!(if before["value"].as_str().unwrap().is_empty() {
+        bin.display().to_string()
+    } else {
+        format!("{};{}", before["value"].as_str().unwrap(), bin.display())
+    });
+    preexisting["exists"] = serde_json::json!(true);
+    let text = preexisting.to_string().replace('\'', "''");
+    let output = powershell(&format!(
+        "$v='{text}'|ConvertFrom-Json;$k=[Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment');try{{$k.SetValue('Path',[string]$v.value,[Microsoft.Win32.RegistryValueKind][int]$v.kind)}}finally{{$k.Dispose()}}"
+    ));
+    assert!(output.status.success());
+    windows_cli::register_path(&cli).unwrap();
+    let ownership: serde_json::Value =
+        serde_json::from_slice(&fs::read(cli.with_extension("json")).unwrap()).unwrap();
+    assert_eq!(ownership["pathAdded"], false);
+    assert!(ownership["pathIntent"].is_null());
+    windows_cli::remove(&cli, &home).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&powershell(query).stdout).unwrap(),
+        preexisting
+    );
+    // A concurrent edit to a pending snapshot is ambiguous. Preserve both
+    // user PATH and the journal instead of attributing the edit to Hexbot.
+    let bin = root.path().join("pending concurrent edit");
+    let cli =
+        windows_cli::install(Path::new(env!("CARGO_BIN_EXE_hexbot-cli")), &home, &bin).unwrap();
+    assert!(windows_cli::register_path_interruption_probe(&cli, "after-intent").is_err());
+    let pending = fs::read(cli.with_extension("json")).unwrap();
+    let mut changed = preexisting.clone();
+    changed["value"] = serde_json::json!(format!(
+        "{};unrelated-user-entry",
+        changed["value"].as_str().unwrap()
+    ));
+    for value in [&changed, &preexisting] {
+        let text = value.to_string().replace('\'', "''");
+        assert!(powershell(&format!("$v='{text}'|ConvertFrom-Json;$k=[Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment');try{{$k.SetValue('Path',[string]$v.value,[Microsoft.Win32.RegistryValueKind][int]$v.kind)}}finally{{$k.Dispose()}}")).status.success());
+        if value == &changed {
+            assert!(windows_cli::register_path(&cli).is_err());
+            assert!(windows_cli::remove(&cli, &home).is_err());
+            assert_eq!(fs::read(cli.with_extension("json")).unwrap(), pending);
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&powershell(query).stdout).unwrap(),
+                changed
+            );
+        }
+    }
+    windows_cli::remove(&cli, &home).unwrap();
+}
+
+#[test]
+#[ignore = "requires an isolated Windows CI user with no existing Hexbot task"]
+fn interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent() {
+    assert_eq!(
+        std::env::var("HEXBOT_WINDOWS_SERVICE_PROBE").as_deref(),
+        Ok("1")
+    );
+    let absent = powershell(
+        "$s=New-Object -ComObject 'Schedule.Service'; $s.Connect(); $tasks=@($s.GetFolder('\\').GetTasks(0) | Where-Object {$_.Name -like 'Hexbot-daemon-*'}); if ($tasks.Count) { throw 'Expected an isolated user with no Hexbot task' }",
+    );
+    assert!(
+        absent.status.success(),
+        "{}",
+        String::from_utf8_lossy(&absent.stderr)
+    );
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("Jos\u{e9} state");
+    fs::create_dir_all(&home).unwrap();
+    let file = root.path().join("AppData/Local/Hexbot/daemon.ps1");
+    system_service::write_owned_script(&file, &home, true).unwrap();
+    fs::write(file.with_extension("xml"), "interrupted task creation").unwrap();
+    let orphan = Command::new(env!("CARGO_BIN_EXE_hexbot"))
+        .args(["service", "status", "--json"])
+        .env("HEXBOT_HOME", &home)
+        .env("HEXBOT_SERVICE_ROOT", root.path())
+        .env_remove("HEXBOT_SERVICE_NO_LOAD")
+        .output()
+        .unwrap();
+    assert!(
+        orphan.status.success(),
+        "{}",
+        String::from_utf8_lossy(&orphan.stderr)
+    );
+    let status: serde_json::Value = serde_json::from_slice(&orphan.stdout).unwrap();
+    eprintln!("Actual orphan script service status before cleanup: {status}");
+    assert_eq!(status["installed"], false);
+    assert_eq!(status["running"], false);
+    assert_eq!(status["recoverable"], true);
+    assert_eq!(status["scheduler_checked"], true);
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_hexbot"))
+            .args(["service", "uninstall"])
+            .env("HEXBOT_HOME", &home)
+            .env("HEXBOT_SERVICE_ROOT", root.path())
+            .env_remove("HEXBOT_SERVICE_NO_LOAD")
+            .output()
+            .unwrap()
+    };
+    let output = run();
+    assert!(
+        output.status.success(),
+        "status={} stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!file.exists());
+    assert!(!file.with_extension("xml").exists());
+    // An unrelated script is never removed even when the named task is absent.
+    fs::write(&file, "foreign script").unwrap();
+    let output = run();
+    assert!(!output.status.success());
+    assert_eq!(fs::read_to_string(&file).unwrap(), "foreign script");
+    fs::remove_file(&file).unwrap();
+    system_service::write_owned_script(&file, &home, true).unwrap();
+    let sid = powershell("[Security.Principal.WindowsIdentity]::GetCurrent().User.Value");
+    assert!(sid.status.success());
+    let sid = String::from_utf8(sid.stdout).unwrap().trim().to_owned();
+    let name = format!("Hexbot-daemon-{sid}");
+    struct TaskCleanup(String);
+    impl Drop for TaskCleanup {
+        fn drop(&mut self) {
+            let output = powershell(&format!(
+                "$s=New-Object -ComObject 'Schedule.Service';$s.Connect();try{{$t=$s.GetFolder('\\').GetTask('{}');if([int]$t.State -eq 4 -or [int]$t.State -eq 2){{$t.Stop(0)}};$s.GetFolder('\\').DeleteTask($t.Name,0)}}catch{{$e=$_.Exception;while($e.InnerException){{$e=$e.InnerException}};if($e.HResult -ne -2147024894){{throw}}}}",
+                self.0
+            ));
+            assert!(
+                output.status.success(),
+                "Cannot remove owned foreign-action fixture: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+    let register = powershell(&format!(
+        "$s=New-Object -ComObject 'Schedule.Service';$s.Connect();$t=$s.NewTask(0);$t.Principal.UserId='{sid}';$t.Principal.LogonType=3;$t.Principal.RunLevel=0;$a=$t.Actions.Create(0);$a.Path={};$a.Arguments='/D /C exit 0';$s.GetFolder('\\').RegisterTaskDefinition('{name}',$t,2,$null,$null,3) | Out-Null",
+        quote(&windows_paths::system_program("cmd.exe").unwrap())
+    ));
+    assert!(
+        register.status.success(),
+        "{}",
+        String::from_utf8_lossy(&register.stderr)
+    );
+    let cleanup = TaskCleanup(name.clone());
+    let output = run();
+    assert!(
+        !output.status.success(),
+        "Uninstall claimed a foreign task action"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let diagnostic = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("Hexbot task ownership diagnostic: "))
+        .unwrap_or_else(|| panic!("Missing bounded ownership diagnostic: {stderr}"));
+    let diagnostic: serde_json::Value = serde_json::from_str(diagnostic).unwrap();
+    assert_eq!(diagnostic["reason"], "principal/action mismatch");
+    assert_eq!(diagnostic["program"]["matches"], false);
+    assert_eq!(diagnostic["arguments"]["actual"]["value"], "/D /C exit 0");
+    assert_eq!(diagnostic["principal"]["expected"]["value"], sid);
+    assert_eq!(diagnostic["principal"]["resolved"]["value"], sid);
+    assert_eq!(diagnostic["principal"]["matches"], true);
+    for field in ["program", "arguments", "principal", "home"] {
+        for side in ["actual", "expected"] {
+            assert!(diagnostic[field][side]["value"].as_str().unwrap().len() <= 2048);
+            assert!(diagnostic[field][side]["type"].is_string());
+        }
+    }
+    assert!(system_service::owned(&file, &home));
+    let query = powershell(&format!(
+        "$s=New-Object -ComObject 'Schedule.Service';$s.Connect();$s.GetFolder('\\').GetTask('{name}') | Out-Null"
+    ));
+    assert!(query.status.success(), "Foreign task was deleted");
+    // Inert foreign action and all files must survive the installer call.
+    // Query BEFORE the assertion/Drop, so fixture cleanup cannot masquerade
+    // as an installer deletion. No task Stop/Run occurs in this branch.
+    let bounded =
+        |bytes: &[u8]| String::from_utf8_lossy(&bytes[..bytes.len().min(8192)]).into_owned();
+    let snapshot = || {
+        let output = powershell(&format!(
+            "$ErrorActionPreference='Stop';[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$s=New-Object -ComObject 'Schedule.Service';$s.Connect();$t=$s.GetFolder('\\').GetTask('{name}');$d=$t.Definition;$a=$d.Actions.Item(1);@{{name=$t.Name;state=[int]$t.State;count=$d.Actions.Count;program=$a.Path;arguments=$a.Arguments;principal=$d.Principal.UserId;description=$d.RegistrationInfo.Description;xml=$t.Xml}}|ConvertTo-Json -Compress"
+        ));
+        json!({"success":output.status.success(),"status":output.status.code(),"definition":serde_json::from_slice::<serde_json::Value>(&output.stdout).ok(),"stderr":bounded(&output.stderr)})
+    };
+    let task_before = snapshot();
+    assert_eq!(
+        task_before["success"], true,
+        "Initial foreign task snapshot failed: {task_before}"
+    );
+    let script_before = fs::read(&file).unwrap();
+    let xml = file.with_extension("xml");
+    fs::write(&xml, "owned XML sentinel").unwrap();
+    let receipt = home.join("install.json");
+    let receipt_bytes=json!({"option":"headless","channel":"stable","version":"1.2.3","paths":[],"installedAt":"fixture"}).to_string().into_bytes();
+    fs::write(&receipt, &receipt_bytes).unwrap();
+    let uninstall_sentinel = home.join("runtime/native/protected/keep.exe");
+    fs::create_dir_all(uninstall_sentinel.parent().unwrap()).unwrap();
+    fs::write(&uninstall_sentinel, b"owned runtime sentinel").unwrap();
+
+    let run_installer = || {
+        Command::new(std::env::var_os("HEXBOT_WINDOWS_INSTALLER").expect("native installer"))
+            .args(["--uninstall", "--yes", "--json"])
+            .env("HEXBOT_HOME", &home)
+            .env("HOME", root.path())
+            .env("USERPROFILE", root.path())
+            .env("HEXBOT_SERVICE_ROOT", root.path())
+            .env_remove("HEXBOT_SERVICE_NO_LOAD")
+            .output()
+            .unwrap()
+    };
+    let refused_installer = run_installer();
+    let task_after = snapshot();
+    eprintln!(
+        "Installer foreign task refusal: status={} stdout={} stderr={} taskBefore={} taskAfter={} scriptUnchanged={} xmlUnchanged={} receiptUnchanged={} runtimeUnchanged={}",
+        refused_installer.status,
+        bounded(&refused_installer.stdout),
+        bounded(&refused_installer.stderr),
+        bounded(&serde_json::to_vec(&task_before).unwrap()),
+        bounded(&serde_json::to_vec(&task_after).unwrap()),
+        fs::read(&file).ok().as_ref() == Some(&script_before),
+        fs::read(&xml).ok().as_deref() == Some(b"owned XML sentinel"),
+        fs::read(&receipt).ok().as_ref() == Some(&receipt_bytes),
+        fs::read(&uninstall_sentinel).ok().as_deref() == Some(b"owned runtime sentinel")
+    );
+    assert_eq!(
+        task_after, task_before,
+        "Installer changed the disposable foreign task before fixture cleanup"
+    );
+    assert_eq!(fs::read(&file).unwrap(), script_before);
+    assert_eq!(fs::read(&xml).unwrap(), b"owned XML sentinel");
+    assert_eq!(fs::read(&receipt).unwrap(), receipt_bytes);
+    assert_eq!(
+        fs::read(&uninstall_sentinel).unwrap(),
+        b"owned runtime sentinel"
+    );
+    assert!(
+        !refused_installer.status.success(),
+        "Installer must report nonzero refusal for a foreign task"
+    );
+    let events = String::from_utf8(refused_installer.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert!(
+        events.iter().any(|event| event["stage"] == "error"
+            && event["message"]
+                .as_str()
+                .is_some_and(|text| text.contains("another installation"))),
+        "Missing JSON ownership refusal: {events:?}"
+    );
+    assert!(!events.iter().any(|event| event["stage"] == "done"));
+
+    // Change uses the same destructive-action gate as Uninstall. Discovery
+    // deliberately hides this stopped foreign definition; that cannot authorize
+    // a Client replacement, a network request, or an implicit task removal.
+    let app = root.path().join("installer apps/app.hexbot.desktop");
+    fs::create_dir_all(app.join("resources")).unwrap();
+    fs::write(app.join("Hexbot.exe"), "owned Full fixture").unwrap();
+    fs::write(app.join("resources/app.asar"), "damaged ordinary package").unwrap();
+    fs::write(
+        app.join(".hexbot-app.json"),
+        br#"{"appId":"app.hexbot.desktop"}"#,
+    )
+    .unwrap();
+    for from in ["headless", "full"] {
+        let source_receipt = json!({"option":from,"channel":"stable","version":"1.2.3","paths":[if from=="full" { &app } else { &uninstall_sentinel }],"installedAt":"fixture"}).to_string().into_bytes();
+        fs::write(&receipt, &source_receipt).unwrap();
+        let output =
+            Command::new(std::env::var_os("HEXBOT_WINDOWS_INSTALLER").expect("native installer"))
+                .args(["--client", "--stable", "--yes", "--json"])
+                .env("HEXBOT_HOME", &home)
+                .env("HOME", root.path())
+                .env("USERPROFILE", root.path())
+                .env("HEXBOT_SERVICE_ROOT", root.path())
+                .env(
+                    "HEXBOT_INSTALL_APPS_DIR",
+                    root.path().join("installer apps"),
+                )
+                .env("HEXBOT_UPDATE_URL", "http://127.0.0.1:1")
+                .env_remove("HEXBOT_SERVICE_NO_LOAD")
+                .output()
+                .unwrap();
+        let after = snapshot();
+        eprintln!(
+            "Installer {from}->Client foreign task refusal: status={} stdout={} stderr={} taskBefore={} taskAfter={}",
+            output.status,
+            bounded(&output.stdout),
+            bounded(&output.stderr),
+            bounded(&serde_json::to_vec(&task_before).unwrap()),
+            bounded(&serde_json::to_vec(&after).unwrap())
+        );
+        assert_eq!(
+            after, task_before,
+            "Change modified the stopped foreign task"
+        );
+        assert!(
+            !output.status.success(),
+            "Change reported success for a foreign task"
+        );
+        let events = String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert!(
+            events.iter().any(|p| p["stage"] == "error"
+                && p["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("another installation"))),
+            "{events:?}"
+        );
+        assert!(!events.iter().any(|p| matches!(
+            p["stage"].as_str(),
+            Some("download" | "install" | "remove" | "done")
+        )));
+        assert_eq!(fs::read(&receipt).unwrap(), source_receipt);
+        assert_eq!(fs::read(&file).unwrap(), script_before);
+        assert_eq!(fs::read(&xml).unwrap(), b"owned XML sentinel");
+        assert_eq!(
+            fs::read(&uninstall_sentinel).unwrap(),
+            b"owned runtime sentinel"
+        );
+        assert_eq!(
+            fs::read(app.join("Hexbot.exe")).unwrap(),
+            b"owned Full fixture"
+        );
+        assert_eq!(
+            fs::read(app.join("resources/app.asar")).unwrap(),
+            b"damaged ordinary package"
+        );
+        assert_eq!(
+            fs::read(app.join(".hexbot-app.json")).unwrap(),
+            br#"{"appId":"app.hexbot.desktop"}"#
+        );
+    }
+    // Remove only our synthetic Full payload before the original Headless
+    // Uninstall control; foreign-refusal assertions above precede this cleanup.
+    fs::remove_dir_all(&app).unwrap();
+    fs::write(&receipt, &receipt_bytes).unwrap();
+
+    // Only this explicit fixture cleanup removes the inert foreign definition.
+    drop(cleanup);
+    let owned_removal = run_installer();
+    eprintln!(
+        "Installer owned-script/no-task removal: status={} stdout={} stderr={}",
+        owned_removal.status,
+        bounded(&owned_removal.stdout),
+        bounded(&owned_removal.stderr)
+    );
+    assert!(owned_removal.status.success());
+    assert!(!file.exists());
+    assert!(!xml.exists());
+    assert!(!receipt.exists());
+    assert!(!uninstall_sentinel.exists());
+    // A real task keeps its own home binding after its script disappears.
+    // Use the actual daemon so install/repair must stop its old process and
+    // release the home lock before replacing and running the task again.
+    let native = home.join("runtime/native/build");
+    fs::create_dir_all(&native).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_hexbot"), native.join("hexbot.exe")).unwrap();
+    let node = std::path::PathBuf::from(
+        std::env::var_os("HEXBOT_WINDOWS_SERVICE_NODE").expect("trusted running CI Node"),
+    );
+    assert!(node.is_absolute() && node.is_file());
+    fs::copy(&node, native.join("node.exe")).unwrap();
+    let pi = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../pi-runtime/node_modules/@earendil-works/pi-coding-agent/dist/cli.js")
+        .canonicalize()
+        .expect("locked real Pi npm ci");
+    fs::create_dir_all(native.join("pi")).unwrap();
+    let url = url::Url::from_file_path(&pi).unwrap();
+    fs::write(
+        native.join("pi/launch.mjs"),
+        format!("await import({});\n", json!(url.as_str())),
+    )
+    .unwrap();
+    fs::write(native.join("manifest.json"), "{}").unwrap();
+    let pi_version = Command::new(native.join("node.exe"))
+        .arg(windows_node_path::node_path(&native.join("pi/launch.mjs")).unwrap())
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert!(
+        pi_version.status.success(),
+        "Real pinned Pi preflight: status={} stdout={} stderr={}",
+        pi_version.status,
+        bounded(&pi_version.stdout),
+        bounded(&pi_version.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&pi_version.stdout).trim(), "1.0.1");
+
+    fs::write(
+        home.join("runtime/native-current.json"),
+        json!({"executable":native.join("hexbot.exe")}).to_string(),
+    )
+    .unwrap();
+    let expected_pid = std::cell::Cell::new(0u32);
+    let service = |owner: &Path, action: &str| {
+        Command::new(env!("CARGO_BIN_EXE_hexbot"))
+            .args(
+                [
+                    "service",
+                    action,
+                    if action == "status" { "--json" } else { "" },
+                ]
+                .into_iter()
+                .filter(|s| !s.is_empty()),
+            )
+            .env("HEXBOT_HOME", owner)
+            .env(
+                "HEXBOT_WINDOWS_EXPECTED_TASK_PID",
+                expected_pid.get().to_string(),
+            )
+            .env("HEXBOT_SERVICE_ROOT", root.path())
+            .env_remove("HEXBOT_SERVICE_NO_LOAD")
+            .output()
+            .unwrap()
+    };
+    let ready = |excluded: &[u32]| -> process_handle::ProcessHandle {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let observe = |once: bool| -> Option<task_readiness::Witness> {
+            let budget = deadline
+                .saturating_duration_since(std::time::Instant::now())
+                .as_millis();
+            assert!(budget > 0, "Task readiness exhausted its overall deadline");
+            let output = powershell(&format!(
+                "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$env:HEXBOT_HOME={};$excluded=@({});$once=${once};$budget={budget};\n$null = . {{ {} }}\n{}\n{}",
+                quote(&home),
+                excluded
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+                windows_task::control(&file, &home, "state").unwrap(),
+                include_str!("../assets/windows-runtime-selection.ps1"),
+                include_str!("support/task_readiness.ps1")
+            ));
+            if !output.status.success() {
+                let diagnostic =
+                    powershell(&windows_task::control(&file, &home, "diagnose").unwrap());
+                // The daemon's own startup error lands in the per-launch logs.
+                // Bounded in memory; a diagnostic error never replaces this failure.
+                let tail = |name: &str| -> std::io::Result<String> {
+                    use std::io::{Read, Seek, SeekFrom};
+                    let path = home.join("logs").join(name);
+                    if !fs::symlink_metadata(&path)?.is_file() {
+                        return Err(std::io::Error::other("not an ordinary file"));
+                    }
+                    let mut file = fs::File::open(&path)?;
+                    let length = file.metadata()?.len();
+                    file.seek(SeekFrom::Start(length.saturating_sub(8192)))?;
+                    let mut bytes = Vec::with_capacity(8192);
+                    file.take(8192).read_to_end(&mut bytes)?;
+                    Ok(String::from_utf8_lossy(&bytes).into_owned())
+                };
+                panic!(
+                    "Task readiness: status={} stdout={} stderr={}; homeIdle={:?}; diagnostic={} stderr={}; serviceLog={:?}; serviceErrorLog={:?}",
+                    output.status,
+                    bounded(&output.stdout),
+                    bounded(&output.stderr),
+                    windows_task::home_idle(&home),
+                    bounded(&diagnostic.stdout),
+                    bounded(&diagnostic.stderr),
+                    tail("service.log"),
+                    tail("service-error.log")
+                );
+            }
+            serde_json::from_slice(&output.stdout).unwrap()
+        };
+        loop {
+            let proof = observe(false).unwrap();
+            assert!(proof.ready(excluded), "Invalid readiness proof: {proof:?}");
+            let Ok(handle) = process_handle::ProcessHandle::try_open(proof.pid) else {
+                continue;
+            };
+            let Some(fresh) = observe(true) else { continue };
+            if proof.retained(&fresh, &handle.created().unwrap(), handle.alive())
+                && !windows_task::home_idle(&home).unwrap()
+            {
+                eprintln!(
+                    "Task ready retained identity: {proof:?}; kernel={}",
+                    handle.snapshot()
+                );
+                return handle;
+            }
+        }
+    };
+    // Direct CLI install must not race an app-owned daemon when no task
+    // exists. Wait for real readiness while its home lock is held.
+    use std::io::{BufRead, BufReader, Write};
+    let mut desktop = Command::new(native.join("hexbot.exe"))
+        .args(["serve", "--host", "127.0.0.1", "--port", "0"])
+        .env("HEXBOT_HOME", &home)
+        .env("HEXBOT_SUPERVISOR", "desktop")
+        .env("HEXBOT_DESKTOP_CONTROL", "stdin-v1")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(desktop.stdout.take().unwrap());
+    let mut line = String::new();
+    loop {
+        assert!(
+            lines.read_line(&mut line).unwrap() > 0,
+            "Occupied-home daemon exited before readiness: {:?}; stderr is inherited above",
+            desktop.try_wait().unwrap()
+        );
+        if line.starts_with("HERMES_BACKEND_READY") {
+            break;
+        }
+        line.clear();
+    }
+    let desktop_pid = desktop.id();
+    let desktop_record: serde_json::Value =
+        serde_json::from_slice(&fs::read(home.join("runtime/native-running.json")).unwrap())
+            .unwrap();
+    let desktop_handle = process_handle::ProcessHandle::open(desktop_pid);
+    eprintln!(
+        "Desktop fixture readiness: pid={desktop_pid}; record={desktop_record}; kernel={}",
+        desktop_handle.snapshot()
+    );
+    assert!(desktop_handle.alive());
+    assert_eq!(desktop_record["pid"], desktop_pid);
+    let refused = service(&home, "install");
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("Stop the daemon"));
+    assert!(!file.exists());
+    assert!(!file.with_extension("xml").exists());
+    let status = service(&home, "status");
+    assert!(status.status.success());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&status.stdout).unwrap()["installed"],
+        false
+    );
+    desktop
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"HEXBOT_SHUTDOWN_V1\n")
+        .unwrap();
+    assert_eq!(desktop.wait().unwrap().code(), Some(0));
+    assert!(!desktop_handle.alive());
+    let retained_record: serde_json::Value =
+        serde_json::from_slice(&fs::read(home.join("runtime/native-running.json")).unwrap())
+            .unwrap();
+    assert_eq!(retained_record["pid"], desktop_pid);
+    eprintln!(
+        "Exited desktop retained record control: pid={desktop_pid}; kernel={}",
+        desktop_handle.snapshot()
+    );
+    system_service::write_owned_script(&file, &home, true).unwrap();
+    let orphan = service(&home, "status");
+    assert!(orphan.status.success());
+    let orphan: serde_json::Value = serde_json::from_slice(&orphan.stdout).unwrap();
+    assert_eq!(orphan["installed"], false);
+    assert_eq!(orphan["recoverable"], true);
+    eprintln!(
+        "Task recovery stage: initial install from recoverable script; home={home:?} script={file:?}"
+    );
+    let output = service(&home, "install");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _task_cleanup = TaskCleanup(name.clone());
+    let first_handle = ready(&[desktop_pid]);
+    let first_pid = first_handle.pid;
+    expected_pid.set(first_pid);
+    let lifetime = |stage: &str, handle: &process_handle::ProcessHandle| {
+        let diagnostic = powershell(&windows_task::control(&file, &home, "diagnose").unwrap());
+        eprintln!(
+            "Task lifetime: {}",
+            json!({"stage":stage,"initialProcess":handle.snapshot(),
+            "rustHomeIdle":format!("{:?}",windows_task::home_idle(&home)),
+            "diagnosticStatus":diagnostic.status.code(),
+            "diagnostic":serde_json::from_slice::<serde_json::Value>(&diagnostic.stdout).ok(),
+            "stderr":bounded(&diagnostic.stderr)})
+        );
+    };
+    lifetime("initial-ready", &first_handle);
+    assert!(first_handle.alive());
+    eprintln!("Task recovery stage: initial daemon ready pid={first_pid}; removing owned script");
+    fs::remove_file(&file).unwrap();
+    eprintln!("Task recovery stage: status after script removal");
+    let status = service(&home, "status");
+    assert!(
+        status.status.success(),
+        "{}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&status.stdout).unwrap()["installed"],
+        true
+    );
+    let other = root.path().join("other home");
+    fs::create_dir(&other).unwrap();
+    for action in ["status", "uninstall"] {
+        assert!(
+            !service(&other, action).status.success(),
+            "Another home claimed the missing-script task"
+        );
+    }
+    // Control: missing-script repair with an untouched running definition.
+    // It must reap the actual old PID and release the home before replacement.
+    lifetime("before-plain-missing-script-repair", &first_handle);
+    assert!(
+        first_handle.alive(),
+        "Plain repair must begin with a live old daemon"
+    );
+    assert!(
+        !windows_task::home_idle(&home).unwrap(),
+        "Plain repair must begin with the old daemon holding its home"
+    );
+    let plain = service(&home, "install");
+    lifetime("after-plain-missing-script-repair", &first_handle);
+    assert!(
+        plain.status.success(),
+        "plain missing-script repair: status={} stdout={} stderr={}",
+        plain.status,
+        bounded(&plain.stdout),
+        bounded(&plain.stderr)
+    );
+    assert!(
+        !first_handle.alive(),
+        "Service repair returned before the old daemon exited: {}",
+        first_handle.snapshot()
+    );
+    assert_eq!(
+        first_handle.snapshot()["exitCode"],
+        0,
+        "Plain service repair did not shut down gracefully"
+    );
+    first_handle.wait();
+    let first_handle = ready(&[desktop_pid, first_pid]);
+    let first_pid = first_handle.pid;
+    expected_pid.set(first_pid);
+    assert!(first_handle.alive());
+    fs::remove_file(&file).unwrap();
+    lifetime("before-live-definition-replacement", &first_handle);
+    // Losing the description as well loses proof. Exact SID/action/path alone
+    // must not authorize either repair or removal. Restore only our fixture.
+    let unbound = powershell(&format!(
+        r#"$s=New-Object -ComObject 'Schedule.Service';$s.Connect();$f=$s.GetFolder('\');$t=$f.GetTask('{name}').Definition;$owner=$t.RegistrationInfo.Description;try{{$t.RegistrationInfo.Description='';$null=$f.RegisterTaskDefinition('{name}',$t,6,$null,$null,3);$env:HEXBOT_HOME={};$env:HEXBOT_SERVICE_ROOT={}; & {} service status --json;if($LASTEXITCODE -eq 0){{throw 'Unbound task was claimed'}}}}finally{{$t.RegistrationInfo.Description=$owner;$null=$f.RegisterTaskDefinition('{name}',$t,6,$null,$null,3)}}"#,
+        quote(&home),
+        quote(root.path()),
+        quote(Path::new(env!("CARGO_BIN_EXE_hexbot")))
+    ));
+    assert!(
+        unbound.status.success(),
+        "{}",
+        String::from_utf8_lossy(&unbound.stderr)
+    );
+    lifetime(
+        "after-live-definition-restoration-before-repair",
+        &first_handle,
+    );
+    assert!(
+        first_handle.alive(),
+        "Definition replacement itself ended the fixture daemon; not a successful repair"
+    );
+    assert!(
+        !windows_task::home_idle(&home).unwrap(),
+        "Definition repair must begin with the old daemon holding its home"
+    );
+    let output = service(&home, "install");
+    lifetime("after-definition-repair", &first_handle);
+    assert!(
+        output.status.success(),
+        "definition-replacement repair: status={} stdout={} stderr={}",
+        output.status,
+        bounded(&output.stdout),
+        bounded(&output.stderr)
+    );
+    assert!(
+        !first_handle.alive(),
+        "Service repair returned before the old daemon exited: {}",
+        first_handle.snapshot()
+    );
+    assert_eq!(
+        first_handle.snapshot()["exitCode"],
+        0,
+        "Definition repair did not shut down gracefully"
+    );
+    first_handle.wait();
+    let next_handle = ready(&[desktop_pid, first_pid]);
+    let next_pid = next_handle.pid;
+    assert_ne!(next_pid, first_pid);
+    assert!(powershell(&format!("if(Get-Process -Id {first_pid} -ErrorAction SilentlyContinue){{throw 'Old task daemon survived repair'}}")).status.success());
+    let stopped = service(&home, "stop");
+    eprintln!(
+        "Explicit stop returned: status={} stdout={} stderr={} kernel={} homeIdle={:?}",
+        stopped.status,
+        bounded(&stopped.stdout),
+        bounded(&stopped.stderr),
+        next_handle.snapshot(),
+        windows_task::home_idle(&home)
+    );
+    lifetime("after-explicit-stop", &next_handle);
+    assert!(stopped.status.success());
+    assert!(!next_handle.alive());
+    assert_eq!(next_handle.snapshot()["exitCode"], 0);
+    assert!(windows_task::home_idle(&home).unwrap());
+    fs::remove_dir_all(home.join("logs")).unwrap();
+    fs::write(home.join("logs"), "foreign log path").unwrap();
+    let before_selection = fs::read(home.join("runtime/native-current.json")).unwrap();
+    let mut refused_logs = Command::new(
+        windows_paths::system_program("WindowsPowerShell/v1.0/powershell.exe").unwrap(),
+    )
+    .args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+    ])
+    .arg(&file)
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::piped())
+    .spawn()
+    .unwrap();
+    let refused_handle = process_handle::ProcessHandle::open(refused_logs.id());
+    if !refused_handle.exits_within(10000) {
+        refused_logs.kill().unwrap();
+        refused_logs.wait().unwrap();
+        panic!("Invalid log path started or blocked the service script");
+    }
+    let refusal = refused_logs.wait_with_output().unwrap();
+    eprintln!(
+        "Native log-path refusal: status={} stderr={}",
+        refusal.status,
+        bounded(&refusal.stderr)
+    );
+    assert!(!refusal.status.success());
+    assert!(String::from_utf8_lossy(&refusal.stderr).contains("ordinary directory/file"));
+    assert_eq!(fs::read(home.join("logs")).unwrap(), b"foreign log path");
+    assert_eq!(
+        fs::read(home.join("runtime/native-current.json")).unwrap(),
+        before_selection
+    );
+    assert!(windows_task::home_idle(&home).unwrap());
+    fs::remove_file(home.join("logs")).unwrap();
+    let mut previous = next_pid;
+    for action in ["start", "restart"] {
+        let output = service(&home, action);
+        assert!(
+            output.status.success(),
+            "{action} after missing logs: {}",
+            bounded(&output.stderr)
+        );
+        let process = ready(&[desktop_pid, previous]);
+        expected_pid.set(process.pid);
+        assert!(home.join("logs/service.log").is_file());
+        assert!(home.join("logs/service-error.log").is_file());
+        eprintln!(
+            "Native per-launch logs {action}: process={}",
+            process.snapshot()
+        );
+        if action == "start" {
+            // The same shared boundary used by core commands and installer
+            // removal is also exercised directly, with the retained witness.
+            let stopped = windows_task::stop(&file, &home);
+            lifetime("after-shared-stop", &process);
+            assert!(stopped.is_ok(), "Shared Stop failed: {stopped:?}");
+        } else {
+            assert!(service(&home, "stop").status.success());
+        }
+        assert!(!process.alive());
+        assert_eq!(process.snapshot()["exitCode"], 0);
+        assert!(windows_task::home_idle(&home).unwrap());
+        let stopped = service(&home, "status");
+        assert!(stopped.status.success());
+        let stopped: serde_json::Value = serde_json::from_slice(&stopped.stdout).unwrap();
+        assert_eq!(
+            stopped["installed"], true,
+            "A valid stopped task is installed"
+        );
+        assert_eq!(stopped["running"], false);
+        assert_eq!(stopped["recoverable"], false);
+        previous = process.pid;
+        fs::remove_dir_all(home.join("logs")).unwrap();
+    }
+    fs::remove_file(&file).unwrap();
+    // Removal authenticates the task independently of runtime selection.
+    // Quarantine the binary and corrupt the pointer; no repair/network is needed.
+    fs::rename(native.join("hexbot.exe"), native.join("quarantined.exe")).unwrap();
+    fs::write(
+        home.join("runtime/native-current.json"),
+        "{ damaged selection",
+    )
+    .unwrap();
+    let installer =
+        std::env::var_os("HEXBOT_WINDOWS_INSTALLER").expect("native installer engine executable");
+    let removed = Command::new(&installer)
+        .args(["--uninstall", "--yes", "--json"])
+        .env("HEXBOT_HOME", &home)
+        .env("HOME", root.path())
+        .env("USERPROFILE", root.path())
+        .env("HEXBOT_SERVICE_ROOT", root.path())
+        .env_remove("HEXBOT_SERVICE_NO_LOAD")
+        .output()
+        .unwrap();
+    assert!(
+        removed.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&removed.stdout),
+        String::from_utf8_lossy(&removed.stderr)
+    );
+    // Engine detection/removal must reach the same verified remaining task.
+    let missing = powershell(&format!(
+        "$s=New-Object -ComObject 'Schedule.Service';$s.Connect();try{{$null=$s.GetFolder('\\').GetTask('{name}');throw 'Owned task was not removed'}}catch{{$e=$_.Exception;while($e.InnerException){{$e=$e.InnerException}};if($e.HResult -ne -2147024894){{throw}}}}"
+    ));
+    assert!(
+        missing.status.success(),
+        "{}",
+        String::from_utf8_lossy(&missing.stderr)
+    );
+    // Restore only this fixture's trusted runtime, then exercise the actual
+    // installer against a LIVE task rather than just the stopped damaged case.
+    fs::create_dir_all(native.join("pi")).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_hexbot"), native.join("hexbot.exe")).unwrap();
+    fs::copy(&node, native.join("node.exe")).unwrap();
+    fs::write(
+        native.join("pi/launch.mjs"),
+        format!("await import({});\n", json!(url.as_str())),
+    )
+    .unwrap();
+    fs::write(native.join("manifest.json"), "{}").unwrap();
+    fs::write(
+        home.join("runtime/native-current.json"),
+        json!({"executable":native.join("hexbot.exe")}).to_string(),
+    )
+    .unwrap();
+    let installed = service(&home, "install");
+    assert!(
+        installed.status.success(),
+        "Live installer control setup: {}",
+        bounded(&installed.stderr)
+    );
+    let live = ready(&[desktop_pid, previous, next_pid]);
+    expected_pid.set(live.pid);
+    assert!(live.alive());
+    assert!(!windows_task::home_idle(&home).unwrap());
+    let removed = Command::new(&installer)
+        .args(["--uninstall", "--yes", "--json"])
+        .env("HEXBOT_HOME", &home)
+        .env("HOME", root.path())
+        .env("USERPROFILE", root.path())
+        .env("HEXBOT_SERVICE_ROOT", root.path())
+        .env_remove("HEXBOT_SERVICE_NO_LOAD")
+        .output()
+        .unwrap();
+    eprintln!(
+        "Live task installer returned: status={} stdout={} stderr={} retainedKernel={} homeIdle={:?}",
+        removed.status,
+        bounded(&removed.stdout),
+        bounded(&removed.stderr),
+        live.snapshot(),
+        windows_task::home_idle(&home)
+    );
+    lifetime("after-live-installer-removal", &live);
+    assert!(removed.status.success());
+    assert!(
+        !live.alive(),
+        "Installer removal returned before daemon OS exit"
+    );
+    assert_eq!(live.snapshot()["exitCode"], 0);
+    assert!(windows_task::home_idle(&home).unwrap());
+    assert!(!file.exists());
+    assert!(!home.join("runtime/native").exists());
+    drop(_task_cleanup); // Already-removed owned tasks are an idempotent cleanup.
+}
+
+#[test]
+fn terminal_answer_round_trips_utf8_after_a_legacy_console_code_page() {
+    // Actual System32 Windows PowerShell, actual Console.ReadLine and the
+    // production answer script/decoder. A StringReader supplies deterministic
+    // interactive text without injecting keys into the runner's console.
+    let text = "  中文 José 🦊 ";
+    let prefix = format!(
+        "[Console]::OutputEncoding=[Text.Encoding]::GetEncoding(437);[Console]::SetIn([IO.StringReader]::new('{}'));",
+        text.replace('\'', "''")
+    );
+    let control = powershell(&format!("{prefix}[Console]::ReadLine()"));
+    assert!(control.status.success());
+    assert_ne!(String::from_utf8_lossy(&control.stdout).trim(), text.trim());
+    let output = powershell(&format!("{prefix}{}", windows_terminal::READ_LINE));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!output.stdout.starts_with(&[0xef, 0xbb, 0xbf]));
+    assert_eq!(
+        windows_terminal::answer(&output).as_deref(),
+        Some(text.trim())
+    );
+    for (script, expected) in [
+        (
+            "[Console]::SetIn([IO.StringReader]::new(''));".to_owned()
+                + windows_terminal::READ_LINE,
+            Some(String::new()),
+        ),
+        (
+            "[Console]::SetIn([IO.StringReader]::new(('x'*65537)));".to_owned()
+                + windows_terminal::READ_LINE,
+            None,
+        ),
+        ("exit 7".to_owned(), None),
+    ] {
+        assert_eq!(windows_terminal::answer(&powershell(&script)), expected);
+    }
+}
+
+#[test]
+fn config_only_cli_preflight_precedes_setup_activation_and_provisioning() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let root = tempfile::tempdir().unwrap();
+    for case in [
+        "foreign",
+        "malformed",
+        "directory",
+        "junction",
+        "unreadable",
+        "owned",
+    ] {
+        let user = root.path().join(case);
+        let home = user.join("state");
+        let other = user.join("other/state");
+        let bin = user.join(".local/bin");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&other).unwrap();
+        fs::create_dir_all(&bin).unwrap();
+        let cli = bin.join("hexbot.exe");
+        let config = cli.with_extension("json");
+        let record = |owner: &Path| {
+            json!({"schema":1,"home":owner,"hashes":["a".repeat(64)],"pathAdded":false}).to_string()
+        };
+        match case {
+            "foreign" => fs::write(&config, record(&other)).unwrap(),
+            "malformed" => fs::write(&config, "invalid").unwrap(),
+            "directory" => fs::create_dir(&config).unwrap(),
+            "junction" => {
+                let result = powershell(&format!(
+                    "New-Item -ItemType Junction -Path {} -Target {} | Out-Null",
+                    quote(&config),
+                    quote(&other)
+                ));
+                assert!(
+                    result.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&result.stderr)
+                );
+            }
+            _ => fs::write(&config, record(&home)).unwrap(),
+        }
+        let before = fs::read(&config).ok();
+        let held = (case == "unreadable").then(|| {
+            fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(&config)
+                .unwrap()
+        });
+        if case == "owned" {
+            assert_eq!(
+                windows_cli::preflight_owner(&cli).unwrap(),
+                Some(home.clone())
+            );
+            windows_cli::install(Path::new(env!("CARGO_BIN_EXE_hexbot-cli")), &home, &bin).unwrap();
+            assert!(windows_cli::owned(&cli, &home));
+            continue;
+        }
+        let output = Command::new(env!("CARGO_BIN_EXE_hexbot"))
+            .args(["setup", "--activate", "--json"])
+            .env("HEXBOT_HOME", &home)
+            .env("HOME", &user)
+            .env("USERPROFILE", &user)
+            .output()
+            .unwrap();
+        eprintln!(
+            "config-only setup {case}: status={} stdout={} stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!output.status.success());
+        drop(held);
+        assert!(!cli.exists());
+        assert!(!home.join("runtime").exists());
+        assert!(!home.join("python").exists());
+        assert_eq!(fs::read(&config).ok(), before);
+        assert_eq!(fs::read_dir(&bin).unwrap().count(), 1);
+        if case == "junction" {
+            fs::remove_dir(&config).unwrap();
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+#[path = "support/dev_child_controls.rs"]
+mod dev_child_controls;

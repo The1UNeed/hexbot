@@ -4,10 +4,15 @@ import { dirname, join, delimiter } from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 
-import { binDir, hexbotExecutable, hexbotHome } from './backend/paths'
+import { binDir, canonicalRuntimePath, hexbotExecutable, hexbotHome } from './backend/paths'
+import { runningDaemon } from './backend/manager'
 import { launchdPlist, systemdUnit, type ServiceFileOptions } from './service-files'
 
 const exec = promisify(execFile)
+type Run = (command: string, args: string[], options?: { env?: NodeJS.ProcessEnv; windowsHide?: boolean }) => Promise<unknown>
+const windowsOptions = (): { env: NodeJS.ProcessEnv; windowsHide: boolean } => ({
+  windowsHide: true, env: { ...process.env, HEXBOT_HOME: hexbotHome(), HEXBOT_SERVICE_ROOT: homedir() }
+})
 const servicePath = (): string =>
   process.platform === 'darwin'
     ? join(homedir(), 'Library', 'LaunchAgents', 'app.hexbot.daemon.plist')
@@ -19,7 +24,11 @@ const options = (): ServiceFileOptions => ({
   logDir: join(hexbotHome(), 'logs')
 })
 
-export async function installService(): Promise<void> {
+export async function installService(targetPlatform = process.platform, run: Run = exec): Promise<void> {
+  if (targetPlatform === 'win32') {
+    await run(hexbotExecutable(), ['service', 'install'], windowsOptions())
+    return
+  }
   const file = servicePath()
   await mkdir(dirname(file), { recursive: true })
   await mkdir(join(hexbotHome(), 'logs'), { recursive: true })
@@ -41,8 +50,12 @@ const launchdDomains = (): string[] => [`gui/${process.getuid!()}`, `user/${proc
 
 export async function uninstallService(
   file = servicePath(), targetPlatform = process.platform,
-  run: (command: string, args: string[]) => Promise<unknown> = exec
+  run: Run = exec
 ): Promise<void> {
+  if (targetPlatform === 'win32') {
+    await run(hexbotExecutable(), ['service', 'uninstall'], windowsOptions())
+    return
+  }
   if (targetPlatform === 'darwin') {
     let stopped = false
     for (const domain of launchdDomains()) {
@@ -63,10 +76,49 @@ export async function uninstallService(
   await rm(file, { force: true })
 }
 
+// CLI status/restart use the same SID, action and home ownership gate as
+// Headless. Never restart an unknown task or an already-current daemon.
+export async function reconcileWindowsService(targetPlatform = process.platform, run: Run = exec): Promise<number | undefined> {
+  if (targetPlatform !== 'win32') return undefined
+  const status = await serviceStatus(undefined, targetPlatform, run)
+  if (!status.installed || !status.running) return undefined
+  const record = await runningDaemon()
+  if (!record) return undefined
+  if (record.executable === canonicalRuntimePath(hexbotExecutable())) return undefined
+  // Install also repairs a missing script after the scheduler/home/PID checks.
+  await run(hexbotExecutable(), ['service', 'install'], windowsOptions())
+  return record.pid
+}
+
+async function windowsServiceStatus(run: Run): Promise<{ installed: boolean; running: boolean }> {
+  const output = await run(hexbotExecutable(), ['service', 'status', '--json'], windowsOptions()) as { stdout: string }
+  const status = JSON.parse(output.stdout) as { installed: boolean; running: boolean }
+  if (typeof status.installed !== 'boolean' || typeof status.running !== 'boolean' || (status.running && !status.installed))
+    throw new Error('Windows service ownership status is invalid')
+  return { installed: status.installed, running: status.running }
+}
+
+// Called only for the manager's owned intent, inside its transition queue.
+// Status is strict here: read-only UI fallback must never authorize a handoff.
+export async function handoffWindowsService(stopOwned: () => Promise<void>, run: Run = exec): Promise<boolean> {
+  const before = await windowsServiceStatus(run)
+  await stopOwned()
+  if (!before.installed) return false
+  const after = await windowsServiceStatus(run)
+  if (!after.installed) return false
+  if (!after.running) await installService('win32', run)
+  return true
+}
+
 export async function serviceStatus(
   file = servicePath(), targetPlatform = process.platform,
-  run: (command: string, args: string[]) => Promise<unknown> = exec
+  run: Run = exec
 ): Promise<{ installed: boolean; running: boolean }> {
+  if (targetPlatform === 'win32') {
+    try {
+      return await windowsServiceStatus(run)
+    } catch { return { installed: false, running: false } }
+  }
   if (targetPlatform === 'darwin') {
     const content = await readFile(file, 'utf8').catch(() => '')
     const homes = [...content.matchAll(/<key>HEXBOT_HOME<\/key>\s*<string>([^<]*)<\/string>/g)]
@@ -112,7 +164,7 @@ async function removeLegacyRuntime(home: string): Promise<void> {
 // Rewrite only the service for this home, once the native bundle is verified.
 export async function migrateLegacyService(
   file = servicePath(), targetPlatform = process.platform,
-  config = options(), run: (command: string, args: string[]) => Promise<unknown> = exec
+  config = options(), run: Run = exec
 ): Promise<void> {
   const old = await readFile(file, 'utf8').catch((error: NodeJS.ErrnoException) => {
     if (error.code === 'ENOENT') return ''
