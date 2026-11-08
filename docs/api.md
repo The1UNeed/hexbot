@@ -77,7 +77,7 @@ data model. The native transport and event projection live in
   PDFs render one at a time at 150 dpi. Each page must fit within 8192 pixels
   on either side; larger pages return 4018 without staging a cropped image.
   Standard paper sizes through A0 keep their original 150 dpi output.
-  Linux renderer children have a 512 MiB heap/data limit, 120 CPU seconds,
+  Linux renderer children have a 1 GiB heap/data limit, 120 CPU seconds,
   and a per-file output cap that fits the image request budget; core dumps
   are disabled. Existing lower process limits stay lower. These are not a
   filesystem sandbox or an aggregate disk quota. macOS has the raster and

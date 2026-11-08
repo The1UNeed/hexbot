@@ -337,6 +337,19 @@ try {
   // A bot's message in the open chat; the list under it shows the latest too.
   const message = (text, options) =>
     page.getByTestId(/^chat-message-/).getByText(text, options)
+  // Reopened chats start at the newest row. Scroll the inverted, virtualized
+  // transcript before asking it to show the first reply from this long chat.
+  const firstReply = () =>
+    expect(async () => {
+      await page
+        .getByTestId('chat-transcript')
+        .evaluate(node => node.scrollTo(0, node.scrollHeight))
+      await expect(
+        message('Your daemon received this from mobile. The connection is working.', {
+          exact: true
+        })
+      ).toBeVisible({ timeout: 1000 })
+    }).toPass({ timeout: 30000 })
   // The stack's own back button, named after the list it returns to.
   const back = () => page.getByLabel('Chats, back', { exact: true }).click()
   page = await context.newPage()
@@ -882,11 +895,7 @@ try {
   await page.getByTestId('management-sheet-close').click()
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
   await page.getByTestId('bot-row-owl').click()
-  await expect(
-    message('Your daemon received this from mobile. The connection is working.', {
-      exact: true
-    })
-  ).toBeVisible({ timeout: 30000 })
+  await firstReply()
   await page.locator('[data-testid^="visual-open-"]').first().click()
   await expect(page.frameLocator('iframe').getByText('42 completed tasks')).toBeVisible()
   await page.getByTestId('visual-sheet-close').click()
@@ -900,11 +909,7 @@ try {
   await page.locator('[data-testid^="connection-saved-"]').first().click()
   await expect(page.getByTestId('bot-row-owl')).toBeVisible({ timeout: 30000 })
   await page.getByTestId('bot-row-owl').click()
-  await expect(
-    message('Your daemon received this from mobile. The connection is working.', {
-      exact: true
-    })
-  ).toBeVisible({ timeout: 30000 })
+  await firstReply()
   assert(
     modelRequests.length >= 2,
     'The real Pi process must call the streaming model for chat and room'
