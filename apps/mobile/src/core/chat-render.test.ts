@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import * as Clipboard from 'expo-clipboard'
 import { createElement, type ReactNode } from 'react'
+import { ActionSheetIOS } from 'react-native'
 import { afterEach, expect, it, vi } from 'vitest'
 import { chatActions, ChatScreen } from '../screens/ChatScreen'
 import type { ChatScreenProps } from '../screens/ChatScreen'
@@ -12,15 +14,24 @@ vi.mock('react-native', async () => {
   const { createElement } = await import('react')
   const view = ({ children }: { children?: ReactNode }) => createElement('div', null, children)
   return {
-    View: view, ScrollView: view, Pressable: view, Text: view,
-    Image: () => null, TextInput: () => null,
+    View: view, ScrollView: view, Text: view, Image: () => null,
+    // A long press, as a context menu: the one gesture the DOM has for it.
+    Pressable: ({ children, onLongPress, testID }: { children?: ReactNode; onLongPress?: () => void; testID?: string }) =>
+      createElement('div', { 'data-testid': testID, onContextMenu: onLongPress }, children),
+    // Only the sheet's read-only text shows what it holds.
+    TextInput: ({ testID, value }: { testID?: string; value?: string }) =>
+      testID === 'select-text-body' ? createElement('div', { 'data-testid': testID }, value) : null,
+    ActionSheetIOS: { showActionSheetWithOptions: vi.fn() },
+    Alert: { alert: vi.fn() },
     StyleSheet: { create: (styles: unknown) => styles },
+    Platform: { OS: 'ios' },
     useWindowDimensions: () => ({ width: 390, height: 844 }),
     FlatList: ({ data, renderItem }: { data: { id: string }[]; renderItem: (input: unknown) => ReactNode }) =>
       createElement('div', null, data.map((item, index) => createElement('div', { key: item.id }, renderItem({ item, index }))))
   }
 })
 vi.mock('@expo/vector-icons', () => ({ Ionicons: () => null }))
+vi.mock('expo-clipboard', () => ({ setStringAsync: vi.fn() }))
 vi.mock('../ui/PluginIcon', () => ({ PluginIcon: () => null }))
 // The players are native views; this checks which file each message hands them.
 vi.mock('../screens/MediaAttachment', async () => {
@@ -43,7 +54,9 @@ vi.mock('../ui', async () => {
     Button: () => null, IconButton: () => null, Banner: () => null,
     useKeyboardVisible: () => false, useTheme: () => ({}),
     bubbleFill: () => 'grey', faceColor: () => null, faceWash: () => 'grey', withAlpha: () => 'grey', radius: {}, mono: 'monospace',
-    Field: () => null, HIT: 44
+    Field: () => null, HIT: 44,
+    ModalSheet: ({ children, testID, visible }: { children?: ReactNode; testID?: string; visible: boolean }) =>
+      visible ? createElement('div', { 'data-testid': testID }, children) : null
   }
 })
 afterEach(cleanup)
@@ -162,4 +175,41 @@ it('plays the pictures, videos and audio files a message carries, and shows any 
     '.txt',
     'Text'
   ])
+})
+
+it('a long press on a message copies it whole or opens it to select any part', () => {
+  const menu = vi.mocked(ActionSheetIOS.showActionSheetWithOptions)
+  const recall = vi.fn()
+  const items: ChatItem[] = [
+    { kind: 'message', id: 'mine', role: 'user', text: 'When is **it** due?' },
+    {
+      kind: 'message', id: 'reply', role: 'bot',
+      text: 'The [Biology final draft](https://school.example/a/1) is due **November 24**.\n\nNotion still shows November 20.'
+    }
+  ]
+  render(createElement(ChatScreen, {
+    title: 'School', face: { name: 'School' }, items, onSend: vi.fn(), onApprove: vi.fn(),
+    renderMessageText: item => createElement('span', null, item.text), recallId: 'mine', onRecall: recall
+  }))
+  const plain = 'The Biology final draft (https://school.example/a/1) is due November 24.\n\nNotion still shows November 20.'
+
+  fireEvent.contextMenu(screen.getByTestId('chat-message-reply'))
+  expect(menu.mock.lastCall?.[0]).toMatchObject({ options: ['Copy', 'Select text', 'Cancel'], cancelButtonIndex: 2 })
+  act(() => menu.mock.lastCall?.[1](0))
+  expect(Clipboard.setStringAsync).toHaveBeenLastCalledWith(plain)
+
+  // Every paragraph in one place, as the bubble reads.
+  expect(screen.queryByTestId('select-text')).toBeNull()
+  act(() => menu.mock.lastCall?.[1](1))
+  expect(screen.getByTestId('select-text-body').textContent).toBe(plain)
+
+  // Your own words are copied as you wrote them, and the latest can still be recalled.
+  fireEvent.contextMenu(screen.getByTestId('chat-message-mine'))
+  expect(menu.mock.lastCall?.[0]).toMatchObject({ options: ['Copy', 'Select text', 'Recall', 'Cancel'], destructiveButtonIndex: 2 })
+  act(() => menu.mock.lastCall?.[1](0))
+  expect(Clipboard.setStringAsync).toHaveBeenLastCalledWith('When is **it** due?')
+  act(() => menu.mock.lastCall?.[1](2))
+  expect(recall).toHaveBeenCalledWith('mine')
+  act(() => menu.mock.lastCall?.[1](3))
+  expect(recall).toHaveBeenCalledTimes(1)
 })

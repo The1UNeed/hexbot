@@ -13,12 +13,15 @@ vi.mock('react-native', async () => {
     View: view, ScrollView: view, Pressable: view, Text: view,
     Image: () => null, TextInput: () => null,
     StyleSheet: { create: (styles: unknown) => styles },
+    Platform: { OS: 'ios' },
     useWindowDimensions: () => ({ width: 390, height: 844 }),
     FlatList: ({ data, renderItem }: { data: { id: string }[]; renderItem: (input: unknown) => ReactNode }) =>
       createElement('div', null, data.map((item, index) => createElement('div', { key: item.id }, renderItem({ item, index }))))
   }
 })
 vi.mock('@expo/vector-icons', () => ({ Ionicons: () => null }))
+vi.mock('expo-clipboard', () => ({ setStringAsync: vi.fn() }))
+vi.mock('../screens/SelectTextSheet', () => ({ SelectTextSheet: () => null }))
 vi.mock('../ui/PluginIcon', () => ({ PluginIcon: () => null }))
 vi.mock('../screens/MediaAttachment', () => ({ MediaAttachment: () => null }))
 vi.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ bottom: 0 }) }))
