@@ -169,6 +169,34 @@ test('bubblewrap masks SSH private keys and leaves public SSH files readable', n
   assert.equal(result.stdout, 'done\n');
 });
 
+test('confined Linux commands can fork and start threads with a bounded namespace process limit', needsBubblewrap, async t => {
+  const {spawnSync} = await import('node:child_process');
+  const {readlinkSync} = await import('node:fs');
+  const root = mkdtempSync(join(tmpdir(), 'hexbot-bwrap-processes-'));
+  t.after(() => rmSync(root, {recursive:true, force:true}));
+  const home = join(root, 'home'), work = join(root, 'work');
+  mkdirSync(home); mkdirSync(work);
+  const script = `import os,resource,json,subprocess,threading
+soft,hard=resource.getrlimit(resource.RLIMIT_NPROC)
+subprocess.run(['/bin/true'],check=True)
+t=threading.Thread(target=lambda:None);t.start();t.join()
+try:
+ resource.setrlimit(resource.RLIMIT_NPROC,(hard+1,hard+1))
+ denied=False
+except (ValueError,OSError):
+ denied=True
+print(json.dumps({'soft':soft,'hard':hard,'denied':denied,'uid':os.getuid(),'userns':os.readlink('/proc/self/ns/user')}))`;
+  const command = `/usr/bin/python3 -c '${script.replaceAll("'", "'\\''")}'`;
+  const result = spawnSync('/bin/bash', ['--noprofile','--norc','-p','-c',isolatedCommand(command, home, [], [work])], {cwd:work, encoding:'utf8'});
+  assert.equal(result.status, 0, result.stderr);
+  const actual = JSON.parse(result.stdout);
+  assert.equal(actual.uid, process.getuid());
+  assert.equal(actual.soft, actual.hard);
+  assert.equal(actual.hard, 512);
+  assert.equal(actual.denied, true);
+  assert.notEqual(actual.userns, readlinkSync('/proc/self/ns/user'));
+});
+
 test('walk skips heavy trees while policy still covers their names', {skip:process.platform !== 'darwin'}, t => {
   const home=mkdtempSync(join(tmpdir(),'hexbot-walk-'));
   t.after(()=>rmSync(home,{recursive:true,force:true}));

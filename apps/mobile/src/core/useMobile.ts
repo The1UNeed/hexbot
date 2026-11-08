@@ -98,6 +98,7 @@ export function useMobile() {
   // A reconnect cannot restore an old owner row until canonical lookup succeeds.
   const ownerPending = useRef(false)
   const roomEvents = useRef<RoomEvent[]>([])
+  const readRef = useRef(() => {})
   const loadingEvents = useRef<GatewayEvent[] | null>(null)
   const openSequence = useRef(0)
   // Navigation starts before canonical lookup; history sync has its own sequence.
@@ -300,8 +301,7 @@ export function useMobile() {
         const updated = { kind: 'room' as const, room }
         routeRef.current = updated
         setRoute(updated)
-        if (events.length)
-          void rpc('hexbot.rooms.mark_read', { id, seq: events.at(-1)!.seq }).catch(() => {})
+        if (events.length) readRef.current()
       } finally {
         if (sequence === openSequence.current) loadingEvents.current = null
       }
@@ -403,7 +403,7 @@ export function useMobile() {
         const newRoute: ChatRoute = { ...target, section }
         routeRef.current = newRoute
         setRoute(newRoute)
-        void rpc('hexbot.sections.mark_read', { id: target.section.id }).catch(() => {})
+        readRef.current()
         return
       } finally {
         if (sequence === openSequence.current) loadingEvents.current = null
@@ -491,25 +491,24 @@ export function useMobile() {
   /** Marks the open chat read while it is on screen: the app in front, no page over it. */
   const readOpenChat = useCallback(() => {
     const target = routeRef.current
-    if (target?.kind !== 'section' || chatCovered.current || AppState.currentState !== 'active')
-      return
-    void rpc('hexbot.sections.mark_read', { id: target.section.id }).catch(() => {})
+    if (!target || chatCovered.current || AppState.currentState !== 'active') return
+    if (target.kind === 'section')
+      void rpc('hexbot.sections.mark_read', { id: target.section.id }).catch(() => {})
+    else {
+      const last = roomEvents.current.at(-1)
+      if (last)
+        void rpc('hexbot.rooms.mark_read', { id: target.room.id, seq: last.seq }).catch(() => {})
+    }
   }, [rpc])
   /** A page went over the open chat, or came off it; what landed meanwhile is seen now. */
   const setChatCovered = useCallback(
     (covered: boolean) => {
       if (chatCovered.current === covered) return
       chatCovered.current = covered
-      if (covered) return
-      readOpenChat()
-      const target = routeRef.current
-      const seq = roomEvents.current.at(-1)?.seq
-      if (target?.kind === 'room' && seq)
-        void rpc('hexbot.rooms.mark_read', { id: target.room.id, seq }).catch(() => {})
+      if (!covered) readOpenChat()
     },
-    [readOpenChat, rpc]
+    [readOpenChat]
   )
-  const readRef = useRef(readOpenChat)
   readRef.current = readOpenChat
   const onEvent = useCallback(
     (event: GatewayEvent) => {
@@ -550,11 +549,7 @@ export function useMobile() {
           const incoming = p.event as RoomEvent
           if (!incoming || roomEvents.current.some(e => e.seq === incoming.seq)) return
           roomEvents.current.push(incoming)
-          // Read as it lands, unless a page or another chat covers the room.
-          if (!chatCovered.current)
-            void rpc('hexbot.rooms.mark_read', { id: target.room.id, seq: incoming.seq }).catch(
-              () => {}
-            )
+          readOpenChat()
         }
         setChat(c =>
           reduceRoom(
@@ -574,8 +569,7 @@ export function useMobile() {
             const [id, text] = [p.row_id, p.text]
             changed.current.add(target.section.id)
             setChat(c => heartbeatMessage(c, id, text))
-            // Seen as it arrived, so it is read.
-            void rpc('hexbot.sections.mark_read', { id: target.section.id }).catch(() => {})
+            readOpenChat()
           }
           return
         }
@@ -868,6 +862,7 @@ export function useMobile() {
     if (!target || !text) throw new Error('Enter a message or attach a file.')
     if (target.kind === 'section' && (target.section.peer_bot || !liveId.current))
       throw new Error('Open your chat before sending.')
+    const generation = navigation.current
     const messageId = Crypto.randomUUID()
     // A daemon with transcript identity keys the message, so Recall can name it.
     const inputId = infoRef.current?.transcript_identity ? messageId : undefined
@@ -910,14 +905,14 @@ export function useMobile() {
       const error = /attachment not found/i.test(errorText(e))
         ? new Error('A file was removed from the daemon before sending. Send again.')
         : e
-      setChat(c => ({
-        ...c,
-        messages: c.messages.filter(m => m.id !== messageId),
-        // A refused follow-up leaves a reply that is still running as it was.
-        busy:
-          target.kind === 'room' ? Object.keys(c.turns).length > 0 : c.turnAt !== undefined,
-        error: errorText(error)
-      }))
+      // A late failure belongs to the conversation that sent it.
+      if (generation === navigation.current)
+        setChat(c => ({
+          ...c,
+          messages: c.messages.filter(m => m.id !== messageId),
+          busy: target.kind === 'room' ? Object.keys(c.turns).length > 0 : c.turnAt !== undefined,
+          error: errorText(error)
+        }))
       throw error
     }
   }

@@ -38,6 +38,8 @@ For file work, set **Working directory** in Bot settings, Tools to the project f
 
 If you connect remotely, files and commands still belong to the daemon computer. Attach a file from your device when the bot needs to read it. Images can be up to 25 MiB; PDFs, videos, audio and other files can be up to 45 MiB each. A video or audio file you send plays in the chat, and so do the voice replies, clips and files your bots make or share.
 
+PDF pages render at 150 dpi and must fit within 8,192 pixels on either side. Standard paper sizes, including A0, keep that quality. Larger pages are refused.
+
 ## Next tasks
 
 - Keep talking in the bot's [chat](/docs/bots-and-sections/); it summarises older messages as it grows and keeps what matters in memory.

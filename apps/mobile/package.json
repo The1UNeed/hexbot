@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "lint": "eslint src app App.tsx",
-    "check": "pnpm run typecheck && pnpm run test && pnpm run lint && node ../../scripts/desktop/third-party-notices.mjs mobile --check",
+    "check": "pnpm run typecheck && pnpm run test && node --test scripts/smoke-*.test.mjs && pnpm run lint && node ../../scripts/desktop/third-party-notices.mjs mobile --check",
     "export": "expo export --platform all",
     "testflight": "eas workflow:run .eas/workflows/testflight.yml --non-interactive --wait",
     "testflight:upload": "eas workflow:run .eas/workflows/testflight-upload.yml --non-interactive --wait",

@@ -79,8 +79,12 @@ export const usePasswords = create<PasswordsState>((set, get) => {
     },
 
     async remove(id) {
+      const current = connectionRead()
       await passwordsDelete(id)
-      set(state => ({ logins: state.logins.filter(item => item.id !== id) }))
+
+      if (current()) {
+        set(state => ({ logins: state.logins.filter(item => item.id !== id) }))
+      }
     },
 
     reset() {
@@ -89,7 +93,13 @@ export const usePasswords = create<PasswordsState>((set, get) => {
     },
 
     async save(input) {
+      const current = connectionRead()
       const { login } = await passwordsSave(input)
+
+      if (!current()) {
+        return login
+      }
+
       put(login)
 
       if (!get().store) {
@@ -100,8 +110,12 @@ export const usePasswords = create<PasswordsState>((set, get) => {
     },
 
     async setBots(id, bots) {
+      const current = connectionRead()
       const { login } = await passwordsSetBots(id, bots)
-      put(login)
+
+      if (current()) {
+        put(login)
+      }
     }
   }
 })

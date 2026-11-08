@@ -10,6 +10,7 @@ import { Switch } from '../../components/ui/switch'
 import { connectorsTest } from '../../lib/api'
 import { cn } from '../../lib/cn'
 import type { Bot, Connector, ConnectorGroup } from '../../lib/types'
+import { useConnection } from '../../stores/connection'
 import { useConnectors, useConnectorsForBot } from '../../stores/connectors'
 
 import { ConnectorSetupSheet } from './connector-setup'
@@ -32,6 +33,7 @@ const FILTERS: { id: Filter; label: (bot: Bot) => string }[] = [
 ]
 
 export function ConnectorsTab({ bot, initialConnector }: { bot: Bot; initialConnector?: string }) {
+  const connects = useConnection(state => state.connects)
   const connectors = useConnectorsForBot(bot.name)
   const loading = useConnectors(state => state.loading)
   const storeError = useConnectors(state => state.error)
@@ -47,7 +49,7 @@ export function ConnectorsTab({ bot, initialConnector }: { bot: Bot; initialConn
   const [error, setError] = useState<string | null>(null)
   useEffect(() => {
     void refresh(bot.name)
-  }, [bot.name, refresh])
+  }, [bot.name, connects, refresh])
   useEffect(() => setSheet(initialConnector ?? null), [initialConnector])
 
   const visible = useMemo(() => {

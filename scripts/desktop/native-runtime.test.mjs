@@ -6,11 +6,23 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { promisify } from 'node:util'
 import { toolAsset } from '../../apps/desktop/src/main/backend/tools.ts'
+import { pdfFixture } from './fixtures/pdf-runtime.mjs'
 import { createNativeArchive, launchers, nativeTarget, stageNativeRuntime, rustTarget, pruneRuntimeDependencies, directoryBytes, standaloneNode, retryDownload, NODE_VERSION, NODE_SHA256 } from './native-runtime.mjs'
 const exec = promisify(execFile)
 test('target supports both desktop architectures and Linux arm64', () => {
   for (const os of ['darwin', 'linux']) for (const arch of ['x64', 'arm64']) assert.equal(nativeTarget(os, arch), `${os}-${arch}`)
   assert.throws(() => nativeTarget('win32', 'x64'), /Unsupported/)
+})
+test('release staging rejects missing versions before invoking build tools', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'hexbot-stage-version-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await mkdir(join(root, 'apps/desktop'), { recursive: true })
+  let calls = 0
+  for (const channel of ['stable', 'nightly']) for (const metadata of [{}, { version: '' }, { version: '1.2.3;invalid' }]) {
+    await writeFile(join(root, 'apps/desktop/package.json'), JSON.stringify(metadata))
+    await assert.rejects(stageNativeRuntime({ repository: root, channel, run: async () => { calls++ } }), /release version is required/)
+  }
+  assert.equal(calls, 0)
 })
 test('launchers preserve arguments and resolve paths containing spaces', async () => {
   const root = await mkdtemp(join(tmpdir(), 'hexbot native '))
@@ -46,11 +58,19 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
     await writeFile(join(root, 'backend/pi-runtime/package-lock.json'), '{}')
     await writeFile(join(root, `backend/hexbot-core/target/${rustTarget(process.platform, process.arch)}/release/hexbot`), 'daemon')
     const node = join(root, 'node'); await writeFile(node, 'node')
+    const pdfAssetsDirectory = join(root, 'pdf-assets')
+    await pdfFixture(pdfAssetsDirectory, { arch: process.arch, helper: false })
     const calls = []
     let noticed
     const thirdParty = async options => { noticed = options; return 'third-party notices\n' }
-    const result = await stageNativeRuntime({ repository: root, nodeExecutable: node, notices: thirdParty, download: async url => ['rg', 'fd'].map(tool => toolAsset(tool, process.platform, process.arch)).find(asset => asset.url === url).sha256, run: async (command, args, options) => {
+    const result = await stageNativeRuntime({ repository: root, nodeExecutable: node, pdfAssetsDirectory, notices: thirdParty, download: async url => ['rg', 'fd'].map(tool => toolAsset(tool, process.platform, process.arch)).find(asset => asset.url === url).sha256, run: async (command, args, options) => {
       calls.push({ command, args })
+      if (command.endsWith('/macos/build.sh')) {
+        const binary = Buffer.alloc(16)
+        binary.writeUInt32LE(0xfeedfacf)
+        binary.writeUInt32LE(process.arch === 'arm64' ? 0x100000c : 0x1000007, 4)
+        await writeFile(args[0], binary)
+      }
       if (command === 'tar') {
         const file = join(args[args.indexOf('-C') + 1], args.at(-1))
         await mkdir(join(file, '..'), { recursive: true }); await writeFile(file, 'verified tool')
@@ -65,6 +85,10 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
     const manifest = JSON.parse(await readFile(join(result.destination, 'manifest.json'), 'utf8'))
     assert.equal(manifest.piVersion, '1.0.1'); assert.equal(manifest.version, '1.2.3')
     assert.match(manifest.files['hexbot-core'], /^[a-f0-9]{64}$/)
+    if (process.platform === 'darwin') {
+      assert.equal(manifest.pdfVm, 1)
+      assert.equal(Object.keys(manifest.files).filter(file => file.startsWith('pdf/')).length, 9)
+    } else assert.equal(manifest.pdfVm, undefined)
     for (const file of ['bin/rg', 'bin/fd', 'pi/search-tools.mjs']) assert.match(manifest.files[file], /^[a-f0-9]{64}$/)
     assert(Number.isSafeInteger(manifest.builtAt) && manifest.builtAt > 0)
     const cargo = calls.find(c => c.command === 'cargo').args
@@ -79,14 +103,16 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
     assert.match(noticed.nodeModules, /\/pi\/node_modules$/)
     assert.deepEqual(noticed.targets, [rustTarget(process.platform, process.arch)])
     assert.equal(noticed.node.version, '22.20.0')
-    assert.equal(await readFile(join(result.destination, 'THIRD_PARTY_NOTICES'), 'utf8'), 'third-party notices\n')
+    const runtimeNotices = await readFile(join(result.destination, 'THIRD_PARTY_NOTICES'), 'utf8')
+    assert(runtimeNotices.startsWith('third-party notices\n'))
+    assert.equal(runtimeNotices.includes('INCOMPLETE'), process.platform === 'darwin')
     // Headless installs and daemon updates unpack this archive.
     const archive = join(root, 'native.tar.gz')
     await createNativeArchive(result.destination, archive)
     const unpacked = join(root, 'unpacked'); await mkdir(unpacked)
     await exec('tar', ['-xzf', archive, '-C', unpacked])
     for (const [file, bytes] of Object.entries(notices)) assert.deepEqual(await readFile(join(unpacked, file)), bytes)
-    assert.equal(await readFile(join(unpacked, 'THIRD_PARTY_NOTICES'), 'utf8'), 'third-party notices\n')
+    assert.equal(await readFile(join(unpacked, 'THIRD_PARTY_NOTICES'), 'utf8'), runtimeNotices)
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 

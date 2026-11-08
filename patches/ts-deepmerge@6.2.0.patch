@@ -1,0 +1,42 @@
+diff --git a/cjs/index.js b/cjs/index.js
+--- a/cjs/index.js
++++ b/cjs/index.js
+@@ -11,12 +11,16 @@
+     }
+     return false;
+ };
++const UNSAFE_KEYS = new Set([
++    "__proto__", "constructor", "prototype", "toString", "valueOf",
++    "hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable", "toLocaleString",
++]);
+ const merge = (...objects) => objects.reduce((result, current) => {
+     if (Array.isArray(current)) {
+         throw new TypeError("Arguments provided to ts-deepmerge must be objects, not arrays.");
+     }
+     Object.keys(current).forEach((key) => {
+-        if (["__proto__", "constructor", "prototype"].includes(key)) {
++        if (UNSAFE_KEYS.has(key)) {
+             return;
+         }
+         if (Array.isArray(result[key]) && Array.isArray(current[key])) {
+diff --git a/esm/index.js b/esm/index.js
+--- a/esm/index.js
++++ b/esm/index.js
+@@ -9,12 +9,16 @@
+     }
+     return false;
+ };
++const UNSAFE_KEYS = new Set([
++    "__proto__", "constructor", "prototype", "toString", "valueOf",
++    "hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable", "toLocaleString",
++]);
+ const merge = (...objects) => objects.reduce((result, current) => {
+     if (Array.isArray(current)) {
+         throw new TypeError("Arguments provided to ts-deepmerge must be objects, not arrays.");
+     }
+     Object.keys(current).forEach((key) => {
+-        if (["__proto__", "constructor", "prototype"].includes(key)) {
++        if (UNSAFE_KEYS.has(key)) {
+             return;
+         }
+         if (Array.isArray(result[key]) && Array.isArray(current[key])) {

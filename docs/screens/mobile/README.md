@@ -28,8 +28,15 @@ API 36. They predate the chat list; the screens below are unchanged by it.
 | --- | --- | --- |
 | ![Web preview supported reasoning choices](web-model-menu.png) | ![Android native message](android-chat.png) | ![Android returns to pairing after revocation](android-revoked-device-dark.png) |
 
-Retake the chat list, a chat and a room on an iOS simulator and an Android
-emulator; these have only browser captures so far.
+The native chat below was captured on 2026-11-05 with an iPhone 17 Pro
+simulator on iOS 26.5, a disposable Rust daemon, pinned Pi and a local streaming
+model fixture. The conversation is synthetic. This predates the latest main
+integration and does not verify iPad or physical-device behavior.
+
+![Native iPhone chat receiving the local fixture's reply](audit-native-reply.png)
+
+Retake the chat list and a room on iOS and Android, and the Android chat;
+those captures above remain browser-only or from the older native build.
 
 See [the mobile README](../../../apps/mobile/README.md) and
 [testing instructions](../../testing.md) to reproduce the checks. CI uploads

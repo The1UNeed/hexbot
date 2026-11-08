@@ -71,6 +71,35 @@ data model. The native transport and event projection live in
   Larger attachments return 4202 with the size limit. Browser clients check
   before reading or uploading. WebSocket frames and in-flight request bytes
   are capped at 64 MiB per connection.
+  Rendered PDF output is bounded while streaming from the renderer, before
+  encoding it for the bot. No temporary PNG files are produced; oversized
+  output returns 4018.
+  PDFs render one at a time at 150 dpi. Each page must fit within 8192 pixels
+  on either side; larger pages return 4018 without staging a cropped image.
+  Standard paper sizes through A0 keep their original 150 dpi output.
+  Linux renderer children have a 512 MiB heap/data limit, 120 CPU seconds,
+  and a per-file output cap that fits the image request budget; core dumps
+  are disabled. Existing lower process limits stay lower. These are not a
+  filesystem sandbox or an aggregate disk quota. macOS has the raster and
+  concurrency guards. By default macOS instead runs Poppler in a disposable
+  Linux VM with 768 MiB guest RAM, one vCPU, no network or host mounts,
+  and verified read-only assets. That bounds the PDF parser and guest
+  descendants, not total host RSS: Virtualization framework overhead and the
+  daemon's bounded output and encoding allocations are additional.
+  Missing or damaged VM assets fail with installer Update or repair guidance;
+  there is no automatic fallback. Intel under Rosetta on Apple silicon requires
+  the native Apple silicon Full or Headless runtime. Windows daemons do not render PDF pages.
+  Advanced `attachments.pdf_backend: host` explicitly selects host execution
+  and permits a custom `attachments.pdf_renderer`; macOS host mode has no
+  enforced parser memory limit. Explicit `vm` is rejected on other platforms.
+  On Unix, cancellation, timeout and excessive output stop the renderer's
+  process group and wait for its direct child. This includes ordinary wrappers
+  that spawn a decoder and wait; deliberately detached sessions are outside
+  that cleanup boundary.
+  Closing a session prevents staging but lets an accepted render finish within
+  its deadline; that upload then returns 4001.
+  Explicit PDF page numbers range from 1 through 2,147,483,647. Larger values
+  return 4015 before the renderer is started.
 - Files beside the chat: `hexbot.files.read {session_id, path}` →
   `{path, name, size, modified, version, mime, text? | data_url?}` and
   `hexbot.files.write {session_id, path, text, version?}` → `{path, size,
@@ -790,6 +819,8 @@ context of its own; the meter belongs to bot sections.
 Every bot's 30-minute run through its checklist, `HEARTBEAT.md` in its
 profile (`DESIGN.md`, "Heartbeat"). The setting `heartbeat_enabled` turns it
 on or off for every bot through `hexbot.settings.set`.
+Checklist reads require a regular UTF-8 file of at most 4000 characters.
+Symlinks and special files are refused; a missing file gets the placeholder.
 
 - `hexbot.heartbeat.status {bot}` → `{enabled, every_minutes, bot, text, cap,
   empty, running, next_run_at, recent: [{id, bot, kind, started_at,
@@ -952,8 +983,8 @@ created_at, updated_at, last_activity_at, archived_at, members}`. Member rows
 include `display_name` for bots and for the owner, and keep `left_at` after
 departure so old transcripts retain their identities.
 `limits` is `{bot_turns_per_human_turn?, budget_tokens_per_human_turn?}`,
-each a whole number or null (use the system setting); other keys are
-rejected with 4202. Rooms saved by earlier builds may still hold
+each a whole number from 0 through 9,223,372,036,854,775,807, or null (use
+the system setting); other keys are rejected with 4202. Rooms saved by earlier builds may still hold
 `room_bot_turns_per_human_turn` or `room_budget_tokens_per_human_turn` in
 `limits`; those keys are ignored, so such a room uses the system settings
 until its limits are saved again. Only the owner uses a room (4302 otherwise),
@@ -962,7 +993,8 @@ and its bots run as the owner.
 - `hexbot.rooms.list {include_archived?}` → `{rooms: [Room]}`
 - `hexbot.rooms.get {id}` → `{room: Room}`
 - `hexbot.rooms.create {name, members: [bot], main_bot?, limits?, approval_mode?}`
-  → `{room: Room}`
+  → `{room: Room}`. Every member must be an existing bot owned by the caller;
+  missing bots return 4205, including when added with `add_member`.
 - `hexbot.rooms.update {id, name?, main_bot?, limits?, approval_mode?}` → `{room}`
 - `hexbot.rooms.add_member {id, bot}` / `hexbot.rooms.remove_member {id, bot,
   keep_room?}` → `{room}`. Removing the last bot deletes the room; with

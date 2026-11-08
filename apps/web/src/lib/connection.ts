@@ -24,8 +24,11 @@ import {
 import { botsActions } from '../stores/bots'
 import { prefetchChats } from '../stores/chat-prefetch'
 import { connectionActions, invalidateConnectionReads } from '../stores/connection'
+import { useConnectors } from '../stores/connectors'
 import { useHeartbeat } from '../stores/heartbeat'
 import { useMe } from '../stores/me'
+import { usePasswords } from '../stores/passwords'
+import { usePlugins } from '../stores/plugins'
 import { useRooms } from '../stores/rooms'
 import { sectionsActions } from '../stores/sections'
 import { settingsActions } from '../stores/settings'
@@ -358,6 +361,8 @@ export class ConnectionSupervisor {
   private rosterDaemon: string | null = null
   private attempt = 0
   private client: HexbotRpcClient | null = null
+  /** Owned from socket creation, including before gateway.ready arrives. */
+  private openingClient: HexbotRpcClient | null = null
   private connectedAt = 0
   private detach: (() => void) | null = null
   /** Bumped on every start/stop so a late async open cannot win a race. */
@@ -435,6 +440,8 @@ export class ConnectionSupervisor {
 
     this.detach?.()
     this.detach = null
+    this.openingClient?.close()
+    this.openingClient = null
     this.client?.close()
     this.client = null
     setActiveRpc(null)
@@ -519,7 +526,7 @@ export class ConnectionSupervisor {
       onSocketClose: event => {
         // 4401/4403 are the gateway's auth close codes; treat them the same
         // as a 401 on the ticket mint.
-        if (event.code === 4401 || event.code === 4403) {
+        if (generation === this.generation && (event.code === 4401 || event.code === 4403)) {
           this.revoked = true
         }
 
@@ -528,27 +535,65 @@ export class ConnectionSupervisor {
       socketFactory: this.deps.socketFactory
     })
 
+    this.openingClient = client
+
+    let readyTimer: ReturnType<typeof setTimeout> | undefined
+
+    let offReady = () => {}
+
+    let offState = () => {}
+
     const ready = new Promise<ReadyPayload>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        off()
+      readyTimer = setTimeout(() => {
         reject(new UnreachableError('The daemon did not send gateway.ready.'))
       }, READY_TIMEOUT_MS)
 
-      const off = client.subscribe<ReadyPayload>('gateway.ready', event => {
-        clearTimeout(timer)
-        off()
+      offReady = client.subscribe<ReadyPayload>('gateway.ready', event => {
         resolve(event.payload ?? {})
+      })
+
+      offState = client.onState(state => {
+        if (state === 'closed' || state === 'error') {
+          reject(
+            this.revoked
+              ? new UnauthorizedError()
+              : new UnreachableError('The connection closed before gateway.ready.')
+          )
+        }
       })
     })
 
-    await client.connect()
+    let payload: ReadyPayload
 
-    const payload = await ready
+    try {
+      // Observe both failures immediately so a failed socket cannot leave an
+      // unhandled gateway.ready timeout or an orphaned connection behind.
+      const handshake = await Promise.all([client.connect(), ready])
+      payload = handshake[1]
+    } catch (error) {
+      client.close()
+
+      throw this.revoked ? new UnauthorizedError() : error
+    } finally {
+      clearTimeout(readyTimer)
+      offReady()
+      offState()
+
+      if (this.openingClient === client) {
+        this.openingClient = null
+      }
+    }
 
     if (generation !== this.generation) {
       client.close()
 
       return
+    }
+
+    if (client.connectionState !== 'open') {
+      throw this.revoked
+        ? new UnauthorizedError()
+        : new UnreachableError('The connection closed during the handshake.')
     }
 
     this.client = client
@@ -613,6 +658,8 @@ export class ConnectionSupervisor {
 
         if (this.rosterDaemon && info?.install_id !== this.rosterDaemon) {
           clearPersonalState()
+          // The independent settings read below belonged to the old install.
+          void settingsActions().refresh().catch(() => undefined)
         }
 
         this.rosterDaemon = info?.install_id ?? null
@@ -651,7 +698,10 @@ export class ConnectionSupervisor {
         botsActions().refresh(),
         useRooms.getState().refresh(),
         useMe.getState().refresh(),
-        sectionsActions().refresh()
+        sectionsActions().refresh(),
+        useConnectors.getState().refreshAll(),
+        usePasswords.getState().loaded ? usePasswords.getState().refresh() : Promise.resolve(),
+        usePlugins.getState().loaded ? usePlugins.getState().refresh() : Promise.resolve()
       ])
 
       // Every bot's chat comes over in the background, so switching shows it at once.

@@ -196,7 +196,7 @@ verifies the bundle, copies it only when it must publish it, and selects it
 under `activate.lock`. It installs no code tools, CLI wrapper or service. The app
 passes a temporary manifest describing its bundled bytes. Version, target,
 `builtAt` and the file list must match the bundle's manifest. On macOS only the
-hashes of `node`, `hexbot-core`, `bin/rg` and `bin/fd`, which signing changes, may
+hashes of `node`, `hexbot-core`, `bin/rg`, `bin/fd` and `pdf/hexbot-pdf-vm`, which signing changes, may
 differ; on Linux every hash must match. Rust verifies the source, writes the
 effective manifest only into the staged copy, and verifies the copy again.
 Required executable files must be readable and executable by the effective user,
@@ -222,6 +222,79 @@ Local native package verification does not publish:
 ```sh
 node scripts/desktop/dist.mjs --mac --dir
 ```
+
+### macOS PDF VM assets
+
+New Full and Headless runtimes carry the same native PDF VM helper and guest in
+`pdf/`, with outer capability marker `pdfVm: 1`. Client packages carry neither.
+The nine files are `hexbot-pdf-vm`, `manifest.json`, `kernel`, `initramfs`,
+`rootfs`, `kernel.provenance.json`, `PROVENANCE.json`, `THIRD_PARTY_NOTICES` and
+`SOURCES.json`. Every file is covered by the outer runtime manifest. The inner
+manifest contains exactly the three guest asset hashes and its architecture.
+
+Staging checks fixed filenames, regular files, hashes, byte caps and the helper's
+Mach-O architecture. The helper alone receives the public virtualization
+entitlement. App signing leaves the app manifest intact; native update archives
+refresh the helper hash in their own copy and preserve the signed executable
+bytes. The installer checks the payload before activating Headless or replacing
+a Full app, including Update or repair. A damaged payload leaves the existing
+install and receipt in place. Missing assets require repair, with no host-renderer
+fallback or first-PDF asset download.
+
+For a local macOS Dev package, build the guest from the checked source recipe on
+a native Linux builder, then explicitly provide its owned output directory:
+
+```sh
+HEXBOT_PDF_ASSETS_DIRECTORY=/absolute/owned/pdf-assets \
+  node scripts/desktop/dist.mjs --mac --dir
+```
+
+Dev accepts prototype assets only with the incomplete source/license flags and
+explicit `INCOMPLETE` notices. Stable and Nightly require release-ready records,
+complete notices, and a real corresponding-source companion archive. Those
+release inputs must match the exact owned source snapshot, release version and
+architecture. Each target requires a matching native Linux guest build and native
+macOS VZ/PDF qualification. Cross-compiling a helper does not establish native
+VM execution. Intel-on-Rosetta PDF use requires the
+Apple silicon Full or Headless package; an Intel helper cannot boot its guest
+on Apple silicon.
+
+The controlled release graph builds each guest on a matching native Linux
+runner through `build-pdf-guest.mjs`. Its owned container has 6 GiB RAM, two CPUs,
+256 PIDs, disabled core dumps and no extra privileges or host mounts. Source
+checks in normal CI do not require prebuilt private artifacts. The producer
+refuses prototype locks or missing reviewed builder/package pins before doing
+release work. Each architecture uses its reviewed digest-pinned builder image.
+Retain actual native build and qualification evidence for the exact final assets.
+
+The builder preserves the exact worker and helper sources, repository license
+and notice. It records the authenticated kernel configuration while building,
+then runs `collect-sources.py --require-rust-signatures` with that configuration,
+the release version and native target's immutable URL. Trusted GPG verifies the
+pinned Rust source archives with an isolated keyring. The content and full notice
+checks in `finalize-assets.py` create a new `/pdf-assets` directory only after
+verification succeeds. Dev skips this source collection and retains its accurate
+prototype records. Source collection and notice verification require Python 3.12
+or newer; Mac release jobs explicitly install Python 3.13.
+
+Complete source production puts the companion in
+`/pdf-sources/<SOURCES.archive.file>` beside `/pdf-assets` in the builder.
+`SOURCES.json` records its filename, SHA-256, bytes and immutable versioned HTTPS
+URL; `PROVENANCE.sourceArchive` must match it. The producer verifies the actual
+archive contents with the guest source verifier before artifact upload. True
+completion flags without the archive and its enumerated source materials do
+not pass. Outstanding source and license reviews still block release.
+
+Full's Mac build receives both artifacts. The native archive step copies the
+verified companion beside the runtime archive, records it as `pdfSources` in the
+signed update manifest, and publishes both through the existing immutable R2
+upload. R2 configuration is required: GitHub-only publication is refused for
+these packages. The publisher verifies each local companion, uploads the sources
+first and checks their public URLs, exact byte lengths and streaming SHA-256 before uploading binaries
+or mutable feeds. Retain the source companion wherever its matching binary remains
+available. No source archive is downloaded to render a PDF. A reviewed local
+release staging run can supply the companion through
+`HEXBOT_PDF_SOURCE_ARCHIVE`; this is not a private path requirement for CI.
 
 ## Cut a stable release
 

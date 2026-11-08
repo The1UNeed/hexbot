@@ -50,7 +50,14 @@ struct Manifest {
     files: BTreeMap<String, String>,
 }
 fn verify_runtime(directory: &Path) -> Result<Manifest> {
-    let manifest: Manifest = serde_json::from_slice(&fs::read(directory.join("manifest.json"))?)
+    #[cfg(target_os = "macos")]
+    let raw = crate::pdf_runtime::manifest(directory)?;
+    #[cfg(not(target_os = "macos"))]
+    let raw: Value = serde_json::from_slice(&fs::read(directory.join("manifest.json"))?)
+        .map_err(|e| Error::new(5243, format!("Invalid native runtime manifest: {e}")))?;
+    #[cfg(target_os = "macos")]
+    crate::pdf_runtime::verify(directory, &raw)?;
+    let manifest: Manifest = serde_json::from_value(raw)
         .map_err(|e| Error::new(5243, format!("Invalid native runtime manifest: {e}")))?;
     if manifest.version != crate::version() || manifest.target != target() {
         return Err(Error::new(
@@ -461,11 +468,11 @@ mod tests {
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
             files.insert(file.to_string(), services::file_sha256(&path).unwrap());
         }
-        fs::write(
-            root.join("manifest.json"),
-            json!({"version":crate::version(),"target":target(),"files":files}).to_string(),
-        )
-        .unwrap();
+        let mut manifest = json!({"version":crate::version(),"target":target(),"files":files});
+        if cfg!(target_os = "macos") {
+            crate::pdf_runtime::fixture(root, &mut manifest);
+        }
+        fs::write(root.join("manifest.json"), manifest.to_string()).unwrap();
     }
     #[test]
     fn activation_verifies_copies_and_links_a_synthetic_runtime() {

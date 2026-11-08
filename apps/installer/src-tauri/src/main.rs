@@ -157,7 +157,13 @@ fn detection() -> hexbot_installer::Result<Detection> {
                 .receipt
                 .as_ref()
                 .map(|r| r.version.clone())
-                .or_else(|| installed.apps.iter().find_map(|a| a.version.clone())),
+                .or_else(|| {
+                    installed
+                        .apps
+                        .iter()
+                        .filter(|a| a.option == option)
+                        .find_map(|a| a.version.clone())
+                }),
             service: installed.service,
             apps: installed.apps.clone(),
         }),
@@ -251,29 +257,14 @@ async fn change(
     .await
 }
 
-/// Update or repair: the installed option again, from its own track. Installs
-/// found without a receipt (older packages) take the same path as the terminal.
+/// Update or repair: the installed option again, from its own track.
 #[tauri::command]
 async fn repair(
     busy: State<'_, Busy>,
     on_progress: Channel<Progress>,
 ) -> CommandResult<InstallResult> {
     let _claim = busy.claim()?;
-    blocking(move || {
-        let engine = Installer::from_env()?;
-        let mut progress = forward(on_progress);
-        let installed = engine.detect()?;
-        if installed.receipt.is_some() {
-            return engine.repair(&mut progress);
-        }
-        let option = installed.option().ok_or("Hexbot is not installed.")?;
-        let track = match installed.track() {
-            Some(track) => track,
-            None => hexbot_installer::default_track(&engine.base_url)?,
-        };
-        engine.apply(option, track, &mut progress)
-    })
-    .await
+    blocking(move || Installer::from_env()?.repair(&mut forward(on_progress))).await
 }
 
 #[tauri::command]

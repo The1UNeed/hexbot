@@ -303,7 +303,8 @@ def handoff(argv=None) -> None:
         if (selected["version"] == version and candidate.resolve().is_relative_to(home / "runtime/native")
                 and candidate.is_file() and (home / "runtime/native-executable").resolve() == candidate.resolve()):
             executable = candidate
-    except (OSError, KeyError, ValueError):
+    except (OSError, KeyError, ValueError, RuntimeError):
+        # Python 3.11/3.12 report cached symlink loops as RuntimeError.
         pass
     arguments = sys.argv[1:] if argv is None else argv
     if executable is None:

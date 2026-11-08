@@ -316,6 +316,12 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
         repository: 'https://github.com/Keats/jsonwebtoken'
       },
       {
+        license: 'ISC AND (Apache-2.0 OR ISC)',
+        name: 'AWS-LC for Rust',
+        packages: ['aws-lc-rs'],
+        repository: 'https://github.com/aws/aws-lc-rs'
+      },
+      {
         license: 'Apache-2.0 AND ISC',
         name: 'ring',
         packages: ['ring'],

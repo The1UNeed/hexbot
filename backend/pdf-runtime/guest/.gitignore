@@ -1,0 +1,5 @@
+/target/
+/assets/
+/build/
+
+/__pycache__/

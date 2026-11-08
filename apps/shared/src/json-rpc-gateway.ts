@@ -188,7 +188,16 @@ export class JsonRpcGatewayClient {
 
     this.setState('connecting')
 
-    const socket = this.options.socketFactory?.(wsUrl) ?? new WebSocket(wsUrl)
+    let socket: WebSocketLike
+
+    try {
+      socket = this.options.socketFactory?.(wsUrl) ?? new WebSocket(wsUrl)
+    } catch (error) {
+      this.setState('error')
+
+      throw error
+    }
+
     this.socket = socket
     this.stopHeartbeat()
 
@@ -227,6 +236,7 @@ export class JsonRpcGatewayClient {
 
         socket.removeEventListener('open', onOpen)
         socket.removeEventListener('error', onError)
+        socket.removeEventListener('close', onClose)
       }
 
       const onOpen = () => {
@@ -251,12 +261,24 @@ export class JsonRpcGatewayClient {
 
         settled = true
         cleanup()
+        this.invalidateSocket(socket, new Error(this.options.connectErrorMessage))
         this.setState('error')
         reject(new Error(this.options.connectErrorMessage))
       }
 
+      const onClose = () => {
+        if (settled) {
+          return
+        }
+
+        settled = true
+        cleanup()
+        reject(new Error(this.options.closedErrorMessage))
+      }
+
       socket.addEventListener('open', onOpen, { once: true })
       socket.addEventListener('error', onError, { once: true })
+      socket.addEventListener('close', onClose, { once: true })
 
       if (this.options.connectTimeoutMs > 0) {
         timer = setTimeout(() => {

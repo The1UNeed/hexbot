@@ -79,6 +79,9 @@ pub fn app_artifact_for_track(
     if target.is_macos() {
         let source = root.join(format!("{name}.app"));
         bundle(&source, &id);
+        if option == InstallOption::Full {
+            pdf_runtime_fixture(&source.join("Contents/Resources/hexbot-native"), target);
+        }
         assert!(
             Command::new("/usr/bin/ditto")
                 .args(["-c", "-k", "--keepParent"])
@@ -218,6 +221,12 @@ esac
     header.set_mode(0o755);
     header.set_cksum();
     tar.append_data(&mut header, "hexbot", &bytes[..]).unwrap();
+    let payload = tempfile::tempdir().unwrap();
+    pdf_runtime_fixture(payload.path(), Target::detect().unwrap());
+    tar.append_dir_all("pdf", payload.path().join("pdf"))
+        .unwrap();
+    tar.append_path_with_name(payload.path().join("manifest.json"), "manifest.json")
+        .unwrap();
     tar.into_inner().unwrap().finish().unwrap();
     let bytes = fs::read(&archive).unwrap();
     Artifact {
@@ -230,6 +239,62 @@ esac
         product_name: None,
         app_id: None,
     }
+}
+
+pub fn pdf_runtime_fixture(directory: &Path, target: Target) {
+    let pdf = directory.join("pdf");
+    fs::create_dir_all(&pdf).unwrap();
+    let arch = if target == Target::MacosX86_64 {
+        "x86_64"
+    } else {
+        "aarch64"
+    };
+    let mut files = serde_json::Map::new();
+    for name in ["kernel", "initramfs", "rootfs"] {
+        fs::write(pdf.join(name), name).unwrap();
+        files.insert(
+            name.into(),
+            format!("{:x}", Sha256::digest(name.as_bytes())).into(),
+        );
+    }
+    fs::write(
+        pdf.join("manifest.json"),
+        serde_json::json!({"version":1,"architecture":arch,"files":files}).to_string(),
+    )
+    .unwrap();
+    for name in ["kernel.provenance.json", "PROVENANCE.json", "SOURCES.json"] {
+        fs::write(
+            pdf.join(name),
+            serde_json::json!({"version":1,"architecture":arch}).to_string(),
+        )
+        .unwrap();
+    }
+    fs::write(pdf.join("THIRD_PARTY_NOTICES"), "isolated fixture notices").unwrap();
+    let mut helper = 0xfeedfacfu32.to_le_bytes().to_vec();
+    helper.extend(
+        if target == Target::MacosX86_64 {
+            0x1000007u32
+        } else {
+            0x100000cu32
+        }
+        .to_le_bytes(),
+    );
+    executable(&pdf.join("hexbot-pdf-vm"), &helper);
+    let hashes: serde_json::Map<String, serde_json::Value> = fs::read_dir(&pdf)
+        .unwrap()
+        .map(|entry| {
+            let path = entry.unwrap().path();
+            (
+                format!("pdf/{}", path.file_name().unwrap().to_str().unwrap()),
+                format!("{:x}", Sha256::digest(fs::read(path).unwrap())).into(),
+            )
+        })
+        .collect();
+    fs::write(
+        directory.join("manifest.json"),
+        serde_json::json!({"pdfVm":1,"files":hashes}).to_string(),
+    )
+    .unwrap();
 }
 
 pub struct Server {

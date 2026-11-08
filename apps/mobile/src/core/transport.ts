@@ -5,6 +5,12 @@ import { createProof, thumbprint, base64url, verifyIdentity } from './proof'
 import { proofKey } from './storage'
 import { daemonAddress, CONNECT_ORIGIN } from './links'
 import type { SavedDaemon, ConnectDaemon } from './types'
+const deviceName = () =>
+  Platform.OS === 'ios'
+    ? Platform.isPad ? 'Hexbot on iPad' : 'Hexbot on iPhone'
+    : 'Hexbot on Android'
+export const connectSignInUrl = (state: string) =>
+  `${CONNECT_ORIGIN}/connect/authorize?state=${encodeURIComponent(state)}&device=${encodeURIComponent(deviceName())}`
 export class RevokedError extends Error {
   constructor() {
     super('This device was revoked. Pair it again to connect.')
@@ -71,7 +77,7 @@ export async function pair(
       headers: { 'Content-Type': 'application/json', ...(await proofHeaders('POST', url)) },
       body: JSON.stringify({
         code: code.trim(),
-        device_name: Platform.OS === 'ios' ? 'Hexbot on iPhone' : 'Hexbot on Android',
+        device_name: deviceName(),
         platform: Platform.OS
       })
     }
@@ -133,7 +139,7 @@ export async function connectGrant(
       },
       body: JSON.stringify({
         provider: 'hexbot',
-        username: Platform.OS === 'ios' ? 'Hexbot on iPhone' : 'Hexbot on Android',
+        username: deviceName(),
         password
       })
     }

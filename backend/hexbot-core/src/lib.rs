@@ -28,6 +28,8 @@ pub mod native_product_tools;
 pub mod native_tools;
 pub mod osutil;
 pub mod passwords;
+#[cfg(any(target_os = "macos", all(test, unix)))]
+mod pdf_runtime;
 pub mod pi;
 pub mod plugins;
 pub mod provider_acp;

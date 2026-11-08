@@ -507,7 +507,7 @@ export function sandboxProfile(home: string, outputs: string[] = [], workspace?:
 export function bwrapArguments(home: string, outputs: string[] = [], workspace?: string[], searchRoots: string[] = workspace ?? []): string[] {
   const {roots, paths, writable, denied} = layout(home, outputs);
   const confine = workspace && confined(workspace);
-  const args = confine ? ['--die-with-parent', '--new-session', '--unshare-pid', '--unshare-net', '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', '--tmpfs', '/run', '--tmpfs', '/tmp'] : ['--die-with-parent', '--unshare-pid', '--bind', '/', '/', '--proc', '/proc'];
+  const args = confine ? ['--die-with-parent', '--unshare-user', '--new-session', '--unshare-pid', '--unshare-net', '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', '--tmpfs', '/run', '--tmpfs', '/tmp'] : ['--die-with-parent', '--unshare-pid', '--bind', '/', '/', '--proc', '/proc'];
   if (confine) for (const path of confine.writable) if (path !== '/tmp') args.push('--bind', path, path);
   if (confine) for (const path of [...new Set(searchRoots.filter(existsSync).map(p => realpathSync(p)))]) {
     if (!confine.writable.some(root => path === root || path.startsWith(root + '/'))) args.push('--ro-bind', path, path);
@@ -533,12 +533,12 @@ export function bwrapArguments(home: string, outputs: string[] = [], workspace?:
   for (const path of paths) if (existsSync(path)) args.push(...(statSync(path).isDirectory() ? ['--tmpfs', path, '--remount-ro', path] : ['--ro-bind', '/dev/null', path]));
   return args;
 }
-// Neither sandbox caps process creation, so a workspace command may start at
-// most this many more processes than you already run: a fork bomb stops there.
+// Linux uses this total task budget inside its private user namespace.
+// macOS adds this many processes to the user's existing process count.
 export const PROCESS_HEADROOM = 512;
 export function processLimit(): number | undefined {
-  // Linux charges the limit per thread, macOS per process.
-  const listed = spawnSync('ps', [...process.platform === 'linux' ? ['-L'] : [], '-U', String(process.getuid?.() ?? ''), '-o', 'pid='], {encoding: 'utf8', timeout: 5000});
+  if (process.platform === 'linux') return PROCESS_HEADROOM;
+  const listed = spawnSync('ps', ['-U', String(process.getuid?.() ?? ''), '-o', 'pid='], {encoding: 'utf8', timeout: 5000});
   return listed.status === 0 ? listed.stdout.split('\n').filter(Boolean).length + PROCESS_HEADROOM : undefined;
 }
 export function isolatedCommand(command: string, home: string, outputs: string[] = [], workspace?: string[], searchRoots: string[] = workspace ?? []): string {

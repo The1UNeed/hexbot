@@ -19,7 +19,7 @@ serde_yaml = "=0.9.34"
 dotenvy = "=0.15.7"
 tempfile = "=3.27.0"
 thiserror = "=2.0.20"
-tokio = { version = "=1.53.1", features = ["io-util", "macros", "process", "rt-multi-thread", "sync", "time", "net", "signal"] }
+tokio = { version = "=1.53.3", features = ["io-util", "macros", "process", "rt-multi-thread", "sync", "time", "net", "signal"] }
 axum = { version = "=0.8.9", features = ["ws"] }
 tower-http = { version = "=0.6.11", features = ["fs"] }
 futures-util = "=0.3.34"
@@ -32,7 +32,7 @@ rand = "=0.8.8"
 reqwest = { version = "=0.12.28", default-features = false, features = ["json", "rustls-tls"] }
 url = "=2.5.8"
 chrono = "=0.4.45"
-jsonwebtoken = { version = "=10.3.0", features = ["rust_crypto"] }
+jsonwebtoken = { version = "=10.3.0", features = ["aws_lc_rs"] }
 tar = "=0.4.46"
 flate2 = "=1.1.10"
 tokio-tungstenite = { version = "=0.29.0", features = ["connect", "rustls-tls-webpki-roots"] }
@@ -47,3 +47,7 @@ path = "src/daemon.rs"
 
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.189"
+
+[target.'cfg(windows)'.dependencies]
+# Use the crate's bundled assembly objects when a Windows builder has no NASM.
+aws-lc-rs = { version = "=1.19.0", features = ["prebuilt-nasm"] }

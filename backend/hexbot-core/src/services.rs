@@ -2461,6 +2461,24 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
             "updated daemon version does not match request",
         ));
     }
+    #[cfg(target_os = "macos")]
+    {
+        let bundled = crate::pdf_runtime::manifest(staging.path())?;
+        let staged_target = format!(
+            "darwin-{}",
+            if cfg!(target_arch = "aarch64") {
+                "arm64"
+            } else {
+                "x64"
+            }
+        );
+        if bundled["version"] != version
+            || (bundled["target"] != target && bundled["target"] != staged_target)
+        {
+            return Err(Error::new(5243, crate::pdf_runtime::REPAIR));
+        }
+        crate::pdf_runtime::verify(staging.path(), &bundled)?;
+    }
     publish_native(
         &native,
         version,

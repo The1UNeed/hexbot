@@ -19,6 +19,10 @@ import {
 } from '../lib/api'
 import type { Device, ModelOption, NetworkInfo, Provider, Settings } from '../lib/types'
 
+import { connectionRead } from './connection'
+
+let latest = 0
+
 export interface SettingsState {
   clearProviderKey: (provider: string) => Promise<void>
   devices: Device[]
@@ -49,66 +53,116 @@ export const useSettings = create<SettingsState>((set, get) => ({
   settings: null,
 
   async refresh() {
+    const current = connectionRead()
+    const mine = ++latest
     set({ error: null, loading: true })
 
     try {
-      set({ loading: false, settings: await settingsGet() })
+      const settings = await settingsGet()
+
+      if (current()) {
+        set({ settings })
+      }
     } catch (error) {
-      set({ error: error instanceof Error ? error.message : String(error), loading: false })
+      if (current()) {
+        set({ error: error instanceof Error ? error.message : String(error) })
+      }
+    } finally {
+      if (mine === latest) {
+        set({ loading: false })
+      }
     }
   },
 
   async patch(patch) {
-    set({ settings: await settingsSet(patch) })
+    const current = connectionRead()
+    const settings = await settingsSet(patch)
+
+    if (current()) {
+      set({ settings })
+    }
   },
 
   async refreshProviders() {
+    const current = connectionRead()
     const { providers } = await providersList()
 
-    set({ providers })
+    if (current()) {
+      set({ providers })
+    }
   },
 
   async setProviderKey(provider, key) {
+    const current = connectionRead()
     await providersSetKey(provider, key)
-    await get().refreshProviders()
+
+    if (current()) {
+      await get().refreshProviders()
+    }
   },
 
   async clearProviderKey(provider) {
+    const current = connectionRead()
     await providersClearKey(provider)
-    await get().refreshProviders()
-    // The daemon drops a default or fallback model that ran on it.
-    await get().refresh()
+
+    if (current()) {
+      // Removing the provider also drops its default and fallback models.
+      await Promise.all([get().refreshProviders(), get().refresh()])
+    }
   },
 
   async refreshModels(provider) {
+    const current = connectionRead()
     const result = await modelsList(provider)
 
-    set({ models: { all: result.all ?? [], curated: result.curated ?? [] } })
+    if (current()) {
+      set({ models: { all: result.all ?? [], curated: result.curated ?? [] } })
+    }
   },
 
   async refreshNetwork() {
-    set({ network: await networkGet() })
+    const current = connectionRead()
+    const network = await networkGet()
+
+    if (current()) {
+      set({ network })
+    }
   },
 
   async setLanEnabled(enabled) {
-    set({ network: await networkSet(enabled) })
-    await get().refresh()
+    const current = connectionRead()
+    const network = await networkSet(enabled)
+
+    if (current()) {
+      set({ network })
+      await get().refresh()
+    }
   },
 
   async refreshDevices() {
+    const current = connectionRead()
+
     try {
       const { devices } = await devicesList()
 
-      set({ devices })
+      if (current()) {
+        set({ devices })
+      }
     } catch {
       // Pairing lands with milestone 2; an older daemon answers -32601.
-      set({ devices: [] })
+      if (current()) {
+        set({ devices: [] })
+      }
     }
   },
 
   async revokeDevice(id) {
+    const current = connectionRead()
     await devicesRevoke(id)
-    await get().refreshDevices()
+
+    if (current()) {
+      await get().refreshDevices()
+    }
   }
 }))
 

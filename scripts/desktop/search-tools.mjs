@@ -1,7 +1,8 @@
 // Pi prefers its managed bin directory to PATH. Replace old downloads before
 // loading Pi, using only the tools verified by staging or the dev installer.
 import { createHash } from 'node:crypto'
-import { chmod, copyFile, lstat, mkdir, readFile, realpath, rename, rm } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { access, chmod, copyFile, lstat, mkdir, readFile, realpath, rename, rm } from 'node:fs/promises'
 import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -13,7 +14,8 @@ async function fingerprint(path) {
 
 async function matches(path, wanted) {
   const actual = await fingerprint(path).catch(() => undefined)
-  return actual?.size === wanted.size && actual.sha256 === wanted.sha256
+  if (actual?.size !== wanted.size || actual.sha256 !== wanted.sha256) return false
+  return access(path, constants.X_OK).then(() => true, () => false)
 }
 
 async function onPath(tool, wanted, path = process.env.PATH ?? '') {

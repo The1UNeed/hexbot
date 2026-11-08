@@ -50,6 +50,7 @@ pub(crate) fn with_tombstone<T>(home: &Path, work: impl FnOnce() -> Result<T>) -
         Err(std::sync::TryLockError::WouldBlock)
     ) {
         crate::native_product_tools::deletion_tests::deletion_waiting(home);
+        crate::catalog::update_tests::blocked(home);
     }
     let _guard: RwLockWriteGuard<'_, ()> = boundary
         .write()

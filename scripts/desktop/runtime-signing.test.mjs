@@ -11,7 +11,7 @@ const run = promisify(execFile)
 async function verifyMinimumMacOS(bundle, plist) {
   const floor = (await run('plutil', ['-extract', 'LSMinimumSystemVersion', 'raw', plist])).stdout.trim()
   const parts = version => version.split('.').map(Number)
-  for (const name of ['node', 'hexbot-core', 'bin/rg', 'bin/fd']) {
+  for (const name of ['node', 'hexbot-core', 'bin/rg', 'bin/fd', 'pdf/hexbot-pdf-vm']) {
     const { stdout } = await run('vtool', ['-show-build', join(bundle, name)])
     // LC_BUILD_VERSION reports minos; older x64 binaries carry LC_VERSION_MIN_MACOSX.
     const minimum = /minos (\d+(?:\.\d+)*)/.exec(stdout)?.[1] ?? /LC_VERSION_MIN_MACOSX[\s\S]*?version (\d+(?:\.\d+)*)/.exec(stdout)?.[1]
@@ -70,15 +70,16 @@ test('packaged macOS apps launch with their shipped signatures and entitlements'
       const details = await run('codesign', ['-dv', app])
       const developerId = !details.stderr.includes('Signature=adhoc')
       if (process.env.CSC_LINK || process.env.CSC_NAME) assert.ok(developerId, 'Developer ID signature missing')
-      const inspect = async (file, unsignedMemory = false) => {
+      const inspect = async (file, unsignedMemory = false, virtualization = false) => {
         await run('codesign', ['--verify', '--strict', file])
         const signature = await run('codesign', ['-dv', file])
         if (developerId) {
           assert.match(signature.stderr, /flags=.*\bruntime\b/)
           assert.match(signature.stderr, /TeamIdentifier=(?!not set)\S+/)
-          const entitlements = await run('codesign', ['-d', '--entitlements', ':-', file])
-          assert.equal(/<key>com\.apple\.security\.cs\.allow-unsigned-executable-memory<\/key>\s*<true\s*\/>/.test(entitlements.stdout), unsignedMemory, file)
         }
+        const entitlements = await run('codesign', ['-d', '--entitlements', ':-', file])
+        if (developerId) assert.equal(/<key>com\.apple\.security\.cs\.allow-unsigned-executable-memory<\/key>\s*<true\s*\/>/.test(entitlements.stdout), unsignedMemory, file)
+        assert.equal(/<key>com\.apple\.security\.virtualization<\/key>\s*<true\s*\/>/.test(entitlements.stdout), virtualization, file)
       }
       await inspect(app)
       for (const helper of await readdir(join(app, 'Contents/Frameworks'))) {
@@ -95,6 +96,7 @@ test('packaged macOS apps launch with their shipped signatures and entitlements'
       for (const tool of ['rg', 'fd']) await inspect(join(bundle, 'bin', tool))
       await inspect(join(bundle, 'node'), true)
       await inspect(join(bundle, 'hexbot-core'))
+      await inspect(join(bundle, 'pdf/hexbot-pdf-vm'), false, true)
       const node = await run(join(bundle, 'node'), ['-e', 'let n=0; for(let i=0;i<1e6;i++) n+=i; console.log(n)'], { env })
       assert.equal(node.stdout.trim(), '499999500000')
       const manifest = JSON.parse(await readFile(join(bundle, 'manifest.json'), 'utf8'))
@@ -105,9 +107,9 @@ test('packaged macOS apps launch with their shipped signatures and entitlements'
       const update = await makeNativeUpdate(bundle, join(home, 'updates'))
       const extracted = await mkdtemp(join(home, 'self-update-'))
       await run('tar', ['-xzf', join(update.directory, update.filename), '-C', extracted])
-      for (const file of ['node', 'hexbot-core']) {
+      for (const file of ['node', 'hexbot-core', 'pdf/hexbot-pdf-vm']) {
         assert.deepEqual(await readFile(join(extracted, file)), await readFile(join(bundle, file)))
-        await inspect(join(extracted, file), file === 'node')
+        await inspect(join(extracted, file), file === 'node', file === 'pdf/hexbot-pdf-vm')
       }
     }
   } finally { await rm(home, { recursive: true, force: true }) }

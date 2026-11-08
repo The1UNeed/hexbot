@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryStore } from "@/lib/store";
 import { FakeTunnelProvider } from "@/lib/tunnels";
 import { setRuntimeForTests } from "@/lib/runtime";
@@ -23,6 +23,16 @@ const verifier = "v".repeat(64);
 const params = (daemonId: string, redirectUri: string) => ({ daemon: daemonId, state: "nonce-1", code_challenge: pkceChallenge(verifier), redirect_uri: redirectUri });
 
 describe("browser sign-in", () => {
+  it.each(["daemon", "state", "code_challenge", "redirect_uri"])("rejects repeated %s parameters before store lookup", async field => {
+    const { daemon, user } = await registeredDaemon();
+    const getDaemon = vi.spyOn(store, "getDaemon");
+    const valid = params(daemon.id, `http://127.0.0.1:${daemon.ingressPort}/auth/callback`);
+    const input = { ...valid, [field]: [valid[field as keyof typeof valid], valid[field as keyof typeof valid]] };
+    expect((await startBrowserSignIn(input, { store, userId: user.id, deviceName: "Browser", fakeTunnels: true })).kind).toBe("invalid");
+    expect(store.grantCodes).toHaveLength(0);
+    expect(getDaemon).not.toHaveBeenCalled();
+  });
+
   it("asks a signed-out visitor to sign in, and refuses another user's daemon", async () => {
     const { daemon } = await registeredDaemon();
     const redirectUri = `http://127.0.0.1:${daemon.ingressPort}/auth/callback`;

@@ -13,10 +13,10 @@ import { createHash } from 'node:crypto'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { existsSync } from 'node:fs'
-import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, realpath, writeFile } from 'node:fs/promises'
 import net from 'node:net'
 import { homedir } from 'node:os'
-import { delimiter, dirname, resolve } from 'node:path'
+import { basename, delimiter, dirname, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { downloadTool, installTool } from '../../apps/desktop/src/main/backend/tools.ts'
 
@@ -31,6 +31,19 @@ const desktop = args.includes('--desktop')
 export function validateDevArgs(args) {
   if (args.some(arg => arg === '--backend' || arg.startsWith('--backend=')))
     throw new Error('--backend was removed; pnpm dev uses the native daemon')
+}
+
+export async function validateDevHome(home, liveHome = resolve(homedir(), '.hexbot')) {
+  const canonical = async path => {
+    try { return await realpath(path) } catch (error) {
+      if (error.code !== 'ENOENT' || dirname(path) === path) throw error
+      return resolve(await canonical(dirname(path)), basename(path))
+    }
+  }
+  const [selected, live] = await Promise.all([canonical(resolve(home)), canonical(resolve(liveHome))])
+  if (selected === live || selected.startsWith(`${live}${sep}`))
+    throw new Error('Refusing to run a dev daemon against ~/.hexbot, the live install')
+  return selected
 }
 
 export function derivePorts(path) {
@@ -146,6 +159,7 @@ let stopping = false
 function stop(code = 0) {
   if (stopping) return
   stopping = true
+  process.exitCode = code
   // Kill only the PIDs we started (AGENTS.md, "Killing by pattern").
   for (const child of children) {
     if (child.exitCode !== null) continue
@@ -164,9 +178,7 @@ process.on('SIGTERM', () => stop())
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
     validateDevArgs(args)
-    const home = resolve(option('--home') ?? resolve(repositoryRoot, '.hexbot'))
-    if (home === resolve(homedir(), '.hexbot'))
-      throw new Error('Refusing to run a dev daemon against ~/.hexbot, the live install')
+    const home = await validateDevHome(resolve(option('--home') ?? resolve(repositoryRoot, '.hexbot')))
     await mkdir(home, { recursive: true })
     const hexbot = resolve(repositoryRoot, 'backend/hexbot-core/target/debug/hexbot')
     const pi = resolve(repositoryRoot, 'backend/pi-runtime/node_modules/.bin/pi')

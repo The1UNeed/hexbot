@@ -23,7 +23,9 @@ async function fetchJson(url: string): Promise<unknown | null> {
   const response = await fetch(url, { signal: AbortSignal.timeout(10_000) })
   if (response.status === 404) return null
   if (!response.ok) throw new Error(`${url}: ${response.status}`)
-  return response.json()
+  const manifest: unknown = await response.json()
+  if (manifest === null) throw new Error(`${url}: invalid install manifest`)
+  return manifest
 }
 
 type Manifest = { schema?: unknown; channel?: unknown; version?: unknown; targets?: Record<string, { installerApp?: { url?: unknown; size?: unknown } }> }
@@ -46,7 +48,7 @@ export function readManifest(manifest: unknown, track: Track): Installers | null
 export async function installers(load: Load = fetchJson): Promise<Installers | null> {
   try {
     const stable = await load(`${updates}/install/stable.json`)
-    const result = stable ? readManifest(stable, 'stable') : readManifest(await load(`${updates}/install/nightly.json`), 'nightly')
+    const result = stable !== null ? readManifest(stable, 'stable') : readManifest(await load(`${updates}/install/nightly.json`), 'nightly')
     if (!result) console.warn('No Hexbot Installer in the install manifest, offering the packages alone.')
     return result
   } catch (error) {

@@ -287,7 +287,11 @@ async fn input(prompt: String) -> Result<String> {
             .read(true)
             .custom_flags(libc::O_NONBLOCK)
             .open(std::ffi::OsStr::from_bytes(name.to_bytes()))?;
-        let terminal = tokio::io::unix::AsyncFd::new(terminal)?;
+        // SAFETY: This newly opened File is moved into AsyncFd. Its valid,
+        // open descriptor is never duplicated, closed, or replaced while
+        // registered, and File::as_raw_fd stays unchanged until drop.
+        let terminal = unsafe { tokio::io::unix::AsyncFd::register(terminal) }
+            .map_err(std::io::Error::from)?;
         let read = async {
             let mut bytes = Vec::new();
             loop {

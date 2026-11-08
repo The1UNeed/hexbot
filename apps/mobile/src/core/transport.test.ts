@@ -3,8 +3,9 @@ import { ed25519 } from '@noble/curves/ed25519'
 import { utf8ToBytes } from '@noble/hashes/utils'
 import { DeviceProofError, type JsonRpcGatewayClient } from '@hermes/shared'
 import { base64url, decodeBase64url, thumbprint } from './proof'
-import { connectGrant, openGateway, pair, request, RevokedError } from './transport'
-vi.mock('react-native', () => ({ Platform: { OS: 'ios' } }))
+import { connectGrant, connectSignInUrl, openGateway, pair, request, RevokedError } from './transport'
+const platform = vi.hoisted(() => ({ OS: 'ios', isPad: false }))
+vi.mock('react-native', () => ({ Platform: platform }))
 vi.mock('expo-crypto', () => ({
   randomUUID: () => 'fresh-request',
   getRandomBytes: (n: number) => new Uint8Array(n).fill(9)
@@ -14,8 +15,29 @@ const json = (value: unknown, status = 200) =>
   new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } })
 const decode = (jwt: string) =>
   JSON.parse(new TextDecoder().decode(decodeBase64url(jwt.split('.')[1])))
-beforeEach(() => vi.restoreAllMocks())
+beforeEach(() => {
+  vi.restoreAllMocks()
+  platform.OS = 'ios'
+  platform.isPad = false
+})
 describe('mobile authentication boundary', () => {
+  it.each(['pairing', 'Connect', 'Connect sign-in'] as const)('names an iPad correctly during %s', async method => {
+    platform.isPad = true
+    if (method === 'Connect sign-in') {
+      const url = new URL(connectSignInUrl('state&next'))
+      expect(url.searchParams.get('device')).toBe('Hexbot on iPad')
+      expect(url.searchParams.get('state')).toBe('state&next')
+      return
+    }
+    const fetcher = vi.fn(async (url: string) => url.endsWith('/grant')
+      ? json({ grant: 'grant', daemon: { host: 'owl.example', port: 443, tls: true } })
+      : json({ device_token: 'hxb_device', device_id: 'ipad', daemon_name: 'Owl' }))
+    vi.stubGlobal('fetch', fetcher)
+    if (method === 'pairing') await pair('https://owl.example', '123456')
+    else await connectGrant({ id: 'owl', tunnel_hostname: 'owl.example', identity_key: null, online: true }, 'session')
+    const body = JSON.parse(String(vi.mocked(fetch).mock.calls.at(-1)![1]!.body))
+    expect(body[method === 'pairing' ? 'device_name' : 'username']).toBe('Hexbot on iPad')
+  })
   it('retains credentials for device proof failures and distinguishes revocation', async () => {
     vi.stubGlobal(
       'fetch',

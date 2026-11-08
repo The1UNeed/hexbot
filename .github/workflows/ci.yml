@@ -43,14 +43,14 @@ jobs:
       # on Linux, and both suites branch on whether it works. Ubuntu 24.04
       # confines unprivileged user namespaces with AppArmor and the apt package
       # ships no profile, so a fresh install fails the daemon's probe; this is
-      # the profile the install docs give users. The final probe is the
-      # daemon's own, so a sandbox that cannot start fails here, not as a
+      # the profile the install docs give users. The final probe also requires
+      # the private user namespace used by confined commands, so setup fails here, not as a
       # skipped test.
       - name: Install bubblewrap, the Linux sandbox
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends bubblewrap
-          probe() { bwrap --die-with-parent --unshare-pid --ro-bind / / --proc /proc -- /usr/bin/env true; }
+          probe() { bwrap --die-with-parent --unshare-user --unshare-pid --ro-bind / / --proc /proc -- /usr/bin/env true; }
           if ! probe 2>/dev/null; then
             printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' 'profile bwrap /usr/bin/bwrap flags=(unconfined) {' '  userns,' '}' | sudo tee /etc/apparmor.d/bwrap
             sudo apparmor_parser -r /etc/apparmor.d/bwrap
@@ -196,6 +196,9 @@ jobs:
           cargo clippy --locked --manifest-path backend/hexbot-installer/Cargo.toml --all-targets -- -D warnings
           cargo test --locked --manifest-path apps/installer/src-tauri/Cargo.toml
           cargo clippy --locked --manifest-path apps/installer/src-tauri/Cargo.toml --all-targets -- -D warnings
+      - name: PDF VM helper boundary tests
+        if: ${{ !cancelled() && steps.ready.outcome == 'success' }}
+        run: xcrun swift test --package-path backend/pdf-runtime/macos --scratch-path "$RUNNER_TEMP/pdf-vm-swift"
       - name: Electron Full and Client lifecycle
         if: ${{ !cancelled() && steps.ready.outcome == 'success' }}
         run: |
@@ -228,6 +231,20 @@ jobs:
           HEXBOT_TEST_PI="$GITHUB_WORKSPACE/backend/pi-runtime/node_modules/.bin/pi" cargo test --locked --test runtime_recovery -- --ignored
           HEXBOT_TEST_PI="$GITHUB_WORKSPACE/backend/pi-runtime/node_modules/.bin/pi" cargo test --locked --lib actual_pi_ -- --ignored
           HEXBOT_TEST_PI="$GITHUB_WORKSPACE/backend/pi-runtime/node_modules/.bin/pi" cargo test --locked --test room_incidents -- --ignored
+
+  pdf-guest:
+    name: PDF guest source checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: backend/pdf-runtime/guest
+      - run: cargo test --locked --manifest-path backend/pdf-runtime/guest/Cargo.toml -- --test-threads=1
+      - run: cargo clippy --locked --manifest-path backend/pdf-runtime/guest/Cargo.toml --all-targets -- -D warnings
+      - run: python3 -m unittest discover -s backend/pdf-runtime/guest -p 'test_*.py' -v
 
   python-handoff:
     name: Python service handoff

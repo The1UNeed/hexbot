@@ -23,3 +23,4 @@ mac:
     - Resources/hexbot-native/hexbot-core
     - Resources/hexbot-native/bin/rg
     - Resources/hexbot-native/bin/fd
+    - Resources/hexbot-native/pdf/hexbot-pdf-vm

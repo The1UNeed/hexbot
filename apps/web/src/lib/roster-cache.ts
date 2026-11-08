@@ -1,11 +1,15 @@
 /** The authorized daemon's roster and recent room logs. Never restored before auth. */
 import { botCacheRead, selectBotList, useBots } from '../stores/bots'
 import { useComputer } from '../stores/computer'
+import { invalidateConnectionReads } from '../stores/connection'
+import { useConnectors } from '../stores/connectors'
+import { useHeartbeat } from '../stores/heartbeat'
 import { useMe } from '../stores/me'
 import { usePasswords } from '../stores/passwords'
 import { usePlugins } from '../stores/plugins'
 import { applyLog, LOG_PAGE, recentRooms, roomCacheRead, useRooms } from '../stores/rooms'
 import { sectionCacheRead, useSections } from '../stores/sections'
+import { useSettings } from '../stores/settings'
 import { useTranscripts } from '../stores/transcripts'
 
 import {
@@ -41,14 +45,26 @@ const restingBot = (bot: Bot): Bot => ({
 const restingRoom = (room: Room): Room => ({ ...room, turns: [] })
 
 export function clearPersonalState(): void {
+  invalidateConnectionReads()
   useBots.getState().reset()
   useSections.getState().reset()
   useRooms.getState().reset()
-  useMe.setState({ me: null })
+  useMe.setState({ me: null, usageSupported: null })
   useTranscripts.getState().dropAll()
   useComputer.setState({ error: null, read: null, status: null })
   usePlugins.getState().reset()
   usePasswords.getState().reset()
+  useConnectors.setState({ byBot: {}, error: null, loading: false })
+  useHeartbeat.setState({ byBot: {}, errors: {} })
+  useSettings.setState({
+    devices: [],
+    error: null,
+    loading: false,
+    models: { all: [], curated: [] },
+    network: null,
+    providers: [],
+    settings: null
+  })
 }
 
 export async function restoreRoster(scope: null | string): Promise<void> {

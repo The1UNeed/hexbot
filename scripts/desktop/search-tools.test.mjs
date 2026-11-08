@@ -42,6 +42,9 @@ test('packaged Pi replaces stale managed downloads with shipped tools before loa
     await prepareSearchTools(join(root, 'bin'), agent)
     const after = await Promise.all(['rg', 'fd'].map(tool => stat(join(agent, 'bin', tool))))
     assert.deepEqual(after.map(item => [item.ino, item.mtimeMs]), before.map(item => [item.ino, item.mtimeMs]))
+    await chmod(join(agent, 'bin/rg'), 0o644)
+    await prepareSearchTools(join(root, 'bin'), agent)
+    assert.equal((await stat(join(agent, 'bin/rg'))).mode & 0o111, 0o111)
     await writeFile(join(agent, 'bin/rg'), 'tampered again')
     await prepareSearchTools(join(root, 'bin'), agent)
     assert.equal(await readFile(join(agent, 'bin/rg'), 'utf8'), 'pinned rg')
@@ -57,7 +60,10 @@ test('a copy that fails leaves Pi the verified tool on PATH instead of blocking 
     const agent = join(root, 'bot/pi')
     await mkdir(join(agent, 'bin'), { recursive: true })
     await mkdir(join(root, 'bin'))
-    for (const tool of ['rg', 'fd']) await writeFile(join(root, 'bin', tool), `pinned ${tool}`)
+    for (const tool of ['rg', 'fd']) {
+      await writeFile(join(root, 'bin', tool), `pinned ${tool}`)
+      await chmod(join(root, 'bin', tool), 0o755)
+    }
     await chmod(join(agent, 'bin'), 0o555)
     const notes = []
     process.env.PATH = [join(root, 'bin'), path ?? ''].join(delimiter)

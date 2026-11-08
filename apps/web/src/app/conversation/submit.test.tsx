@@ -170,7 +170,7 @@ it.each(['durable-id', 'replacement-id'])(
     expect(
       useTranscripts.getState().bySession[id]?.messages.filter(message => message.role === 'user')
     ).toHaveLength(1)
-    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('')
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue(''))
   }
 )
 

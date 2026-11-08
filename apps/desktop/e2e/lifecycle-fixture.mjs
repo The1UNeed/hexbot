@@ -8,6 +8,9 @@ import { createTray } from '../src/main/tray'
 
 if (!process.env.HEXBOT_HOME) throw new Error('Lifecycle fixture needs a disposable home')
 app.setPath('userData', join(process.env.HEXBOT_HOME, 'desktop-data'))
+// The fixture closes its last window before testing tray Quit. Suppress
+// Electron's default quit so that the tray action still has a live app.
+app.on('window-all-closed', () => {})
 
 void app.whenReady().then(async () => {
   const lifecycle = new WindowLifecycle()

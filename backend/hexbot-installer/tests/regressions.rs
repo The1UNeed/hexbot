@@ -459,6 +459,136 @@ fn publish_options(root: &Path, engine: &Installer) {
     publish(root, "stable", &manifest);
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn damaged_pdf_payloads_refuse_repair_before_replacing_full_or_headless() {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    use std::os::unix::fs::PermissionsExt as _;
+    for option in [InstallOption::Full, InstallOption::Headless] {
+        for damage in ["missing", "hash", "architecture", "execute"] {
+            if damage == "execute" && unsafe { libc::geteuid() } == 0 {
+                continue;
+            }
+            let root = tempfile::tempdir().unwrap();
+            let mut engine = engine(root.path());
+            engine.target = Target::detect().unwrap();
+            let server = Server::new(root.path());
+            engine.base_url = server.base.clone();
+            publish_options(root.path(), &engine);
+            engine.apply(option, Track::Stable, &mut |_| {}).unwrap();
+            let before = fs::read(engine.paths.receipt()).unwrap();
+            let installed_pdf = if option == InstallOption::Full {
+                Some(
+                    read_receipt(&engine.paths.receipt())
+                        .unwrap()
+                        .unwrap()
+                        .paths[0]
+                        .join("Contents/Resources/hexbot-native/pdf/rootfs"),
+                )
+            } else {
+                None
+            };
+            let installed_bytes = installed_pdf.as_ref().map(|path| fs::read(path).unwrap());
+            let calls = fs::read(engine.paths.home.join("calls")).ok();
+            let mut manifest = fetch_manifest(&server.base, Track::Stable).unwrap();
+            let mut artifact = manifest.artifact(engine.target, option).unwrap().clone();
+            let scratch = tempfile::tempdir().unwrap();
+            let payload = if option == InstallOption::Headless {
+                let payload = scratch.path().join("native");
+                hexbot_installer::extract_native(&root.path().join("native.tar.gz"), &payload)
+                    .unwrap();
+                payload
+            } else {
+                root.path().join(format!(
+                    "{}.app/Contents/Resources/hexbot-native",
+                    artifact.product_name.as_deref().unwrap()
+                ))
+            };
+            match damage {
+                "missing" => fs::remove_file(payload.join("pdf/rootfs")).unwrap(),
+                "hash" => fs::write(payload.join("pdf/rootfs"), "damaged guest").unwrap(),
+                "execute" => fs::set_permissions(
+                    payload.join("pdf/hexbot-pdf-vm"),
+                    fs::Permissions::from_mode(0o401),
+                )
+                .unwrap(),
+                _ => {
+                    let helper = payload.join("pdf/hexbot-pdf-vm");
+                    let mut header = 0xfeedfacfu32.to_le_bytes().to_vec();
+                    let wrong_cpu: u32 = if engine.target == Target::MacosAarch64 {
+                        0x1000007
+                    } else {
+                        0x100000c
+                    };
+                    header.extend(wrong_cpu.to_le_bytes());
+                    fs::write(&helper, &header).unwrap();
+                    let path = payload.join("manifest.json");
+                    let mut outer: serde_json::Value =
+                        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                    outer["files"]["pdf/hexbot-pdf-vm"] =
+                        format!("{:x}", sha2::Sha256::digest(&header)).into();
+                    fs::write(path, outer.to_string()).unwrap();
+                }
+            }
+            if option == InstallOption::Headless {
+                let archive = root.path().join("native.tar.gz");
+                let gzip = flate2::write::GzEncoder::new(
+                    fs::File::create(&archive).unwrap(),
+                    flate2::Compression::default(),
+                );
+                let mut tar = tar::Builder::new(gzip);
+                tar.append_dir_all(".", &payload).unwrap();
+                tar.into_inner().unwrap().finish().unwrap();
+                let bytes = fs::read(archive).unwrap();
+                artifact.size = bytes.len() as u64;
+                artifact.sha256 = Some(format!("{:x}", sha2::Sha256::digest(&bytes)));
+                manifest
+                    .targets
+                    .get_mut(&engine.target.to_string())
+                    .unwrap()
+                    .headless = Some(artifact);
+            } else {
+                let archive = root.path().join("full.zip");
+                fs::remove_file(&archive).unwrap();
+                assert!(
+                    Command::new("/usr/bin/ditto")
+                        .args(["-c", "-k", "--keepParent"])
+                        .arg(
+                            root.path()
+                                .join(format!("{}.app", artifact.product_name.as_deref().unwrap()))
+                        )
+                        .arg(&archive)
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+                let bytes = fs::read(archive).unwrap();
+                artifact.size = bytes.len() as u64;
+                artifact.sha512 = Some(
+                    base64::engine::general_purpose::STANDARD.encode(sha2::Sha512::digest(&bytes)),
+                );
+                manifest
+                    .targets
+                    .get_mut(&engine.target.to_string())
+                    .unwrap()
+                    .full = Some(artifact);
+            }
+            publish(root.path(), Track::Stable, &manifest);
+            assert_eq!(
+                engine.repair(&mut |_| {}).unwrap_err().to_string(),
+                "The PDF VM runtime is missing or damaged. Update or repair Hexbot with the installer."
+            );
+            assert_eq!(fs::read(engine.paths.receipt()).unwrap(), before);
+            assert_eq!(
+                installed_pdf.as_ref().map(|path| fs::read(path).unwrap()),
+                installed_bytes
+            );
+            assert_eq!(fs::read(engine.paths.home.join("calls")).ok(), calls);
+        }
+    }
+}
+
 #[test]
 fn foreign_and_legacy_services_do_not_block_apps_or_become_headless() {
     for executable in [
@@ -560,6 +690,71 @@ fn only_owned_service_or_wrapper_infers_headless_without_receipt() {
         engine.detect().unwrap().option(),
         Some(InstallOption::Headless)
     );
+}
+
+#[test]
+fn repair_supports_receiptless_installs_in_the_engine_and_terminal() {
+    for option in [
+        InstallOption::Headless,
+        InstallOption::Client,
+        InstallOption::Full,
+    ] {
+        for track in [Track::Stable, Track::Nightly] {
+            let root = tempfile::tempdir().unwrap();
+            let mut engine = engine(root.path());
+            engine.target = Target::detect().unwrap();
+            let server = Server::new(root.path());
+            engine.base_url = server.base.clone();
+            fs::create_dir_all(root.path().join("install")).unwrap();
+            let artifact = if option == InstallOption::Headless {
+                native_artifact(root.path(), &server.base)
+            } else {
+                app_artifact_for_track(
+                    root.path(),
+                    &server.base,
+                    option,
+                    engine.target,
+                    track == Track::Nightly,
+                )
+            };
+            let mut artifacts = Artifacts::default();
+            match option {
+                InstallOption::Headless => artifacts.headless = Some(artifact),
+                InstallOption::Client => artifacts.client = Some(artifact),
+                InstallOption::Full => artifacts.full = Some(artifact),
+            }
+            publish(
+                root.path(),
+                track,
+                &Manifest {
+                    schema: 1,
+                    channel: track,
+                    version: "0.0.1".into(),
+                    min_installer: "0.0.1".into(),
+                    targets: std::collections::BTreeMap::from([(
+                        engine.target.to_string(),
+                        artifacts,
+                    )]),
+                },
+            );
+            engine.apply(option, track, &mut |_| {}).unwrap();
+            fs::remove_file(engine.paths.receipt()).unwrap();
+            if option == InstallOption::Headless {
+                fs::remove_file(engine.paths.hexbot_home.join("lan-on")).unwrap();
+            }
+            let repaired = engine.repair(&mut |_| {}).unwrap();
+            assert_eq!(repaired.receipt.option, option);
+            assert_eq!(repaired.receipt.channel, track);
+            fs::remove_file(engine.paths.receipt()).unwrap();
+            success(cli(&engine.paths, &server.base, &["--repair", "--json"]));
+            let receipt = read_receipt(&engine.paths.receipt()).unwrap().unwrap();
+            assert_eq!(receipt.option, option);
+            assert_eq!(receipt.channel, track);
+            if option == InstallOption::Headless {
+                assert!(!engine.paths.hexbot_home.join("lan-on").exists());
+            }
+        }
+    }
 }
 
 #[test]

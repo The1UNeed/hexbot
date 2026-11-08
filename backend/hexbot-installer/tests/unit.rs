@@ -1,8 +1,8 @@
 mod common;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use hexbot_installer::{
-    Artifact, InstallOption, Manifest, Receipt, Target, Track, detect_at, extract_native,
-    read_receipt, verify_file,
+    Artifact, InstallOption, Installed, InstalledApp, Manifest, Receipt, Target, Track, detect_at,
+    extract_native, read_receipt, verify_file,
 };
 use sha2::{Digest, Sha256, Sha512};
 use std::{fs, io::Write};
@@ -95,6 +95,48 @@ fn receipt_round_trip_and_legacy_detection_are_isolated() {
     assert!(!detect_at(&paths, target).unwrap().service);
     fs::write(paths.receipt(), "not json").unwrap();
     assert!(read_receipt(&paths.receipt()).is_err());
+}
+
+#[test]
+fn receiptless_detection_uses_the_selected_options_track() {
+    for full_track in [Track::Stable, Track::Nightly] {
+        let app = |option, track| InstalledApp {
+            path: std::path::PathBuf::new(),
+            option,
+            app_id: format!(
+                "app.hexbot.{}{}",
+                if option == InstallOption::Full {
+                    "desktop"
+                } else {
+                    "client"
+                },
+                if track == Track::Nightly {
+                    ".nightly"
+                } else {
+                    ""
+                },
+            ),
+            version: None,
+            managed_by_dpkg: false,
+        };
+        let client_track = if full_track == Track::Stable {
+            Track::Nightly
+        } else {
+            Track::Stable
+        };
+        let mut installed = Installed {
+            apps: vec![
+                app(InstallOption::Client, client_track),
+                app(InstallOption::Full, full_track),
+            ],
+            ..Default::default()
+        };
+        for _ in 0..2 {
+            assert_eq!(installed.option(), Some(InstallOption::Full));
+            assert_eq!(installed.track(), Some(full_track));
+            installed.apps.reverse();
+        }
+    }
 }
 
 #[test]

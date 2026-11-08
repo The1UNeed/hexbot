@@ -19,6 +19,12 @@ pnpm dev
 pnpm dev --desktop
 ```
 
+JWT verification uses AWS-LC through `jsonwebtoken`. Source builds need a C/C++
+compiler, including both macOS architectures and Linux. Windows builds enable
+AWS-LC's bundled NASM objects when NASM is unavailable. The crypto library is
+linked into the daemon; installed Full and Headless packages need no compiler.
+Client-only packages contain no daemon or crypto runtime.
+
 The development runner builds Rust, installs the locked Pi dependency, and uses
 this checkout's `.hexbot` directory. To start only the daemon against disposable
 state:
@@ -41,11 +47,32 @@ on Apple Silicon with Rosetta for the runtime probe.
 `../python-handoff/` provides the service handoff for existing
 Python background services. It is not called by the Rust daemon. Python code execution is a language tool and still needs a Python interpreter; browser,
 voice, and desktop tools likewise use their configured command-line dependencies.
-PDF attachments use Poppler's `pdftoppm`, as in the former daemon, to render
-selected pages for the model. Install Poppler on standalone daemon hosts.
+PDF attachments use the bundled Linux VM on macOS, without host Poppler.
+Full and Headless runtimes include its native helper and verified guest assets.
+Missing, damaged or unsupported assets fail with installer Update or repair
+guidance; there is no automatic host fallback. Source builds select an absolute
+trusted `HEXBOT_PDF_RUNTIME_DIR` containing `hexbot-pdf-vm`, `manifest.json`,
+`kernel`, `initramfs` and `rootfs`. The VM backend never searches PATH or downloads
+assets during rendering. An Intel daemon running under Rosetta on Apple silicon
+must be replaced with Apple silicon Full or Headless. PDF page rendering on Windows daemons
+is unsupported. Linux continues to use host `pdftoppm` from Poppler.
+
+Advanced deployments can explicitly set `attachments.pdf_backend: host` in the
+daemon's `config.yaml` to use host Poppler or an existing
+`attachments.pdf_renderer` executable. On macOS this opts out of the VM boundary.
+The `vm` backend is macOS-only; unknown or wrongly typed backend values fail
+configuration validation. A legacy `pdf_renderer` alone does not enable host
+execution on macOS.
 The native CLI implements Hexbot commands. Legacy core administration commands are not part of the native CLI.
 
 ## Standalone installation
+
+Confined Linux tools require bubblewrap with user namespaces. Namespace-local
+process accounting needs upstream Linux 5.14 or later, or a vendor backport.
+Older kernels count all tasks for the host UID against the fixed 512-task cap,
+so unrelated programs can prevent commands from starting. Legacy-kernel
+compatibility remains unverified. Run the daemon
+as your own user, since root bypasses Linux's process limit.
 
 From an extracted native runtime, run `./hexbot setup --activate` to verify and
 copy the bundle into `$HEXBOT_HOME/runtime/native`, select it, install managed

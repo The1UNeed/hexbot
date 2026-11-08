@@ -3,6 +3,7 @@ mod detect;
 #[path = "../../hexbot-core/src/install_ownership.rs"]
 mod install_ownership;
 mod installed_version;
+mod pdf_runtime;
 mod safety;
 mod types;
 #[path = "../../hexbot-core/src/update_path.rs"]
@@ -214,9 +215,15 @@ impl Installer {
     }
 
     pub fn repair(&self, progress: &mut ProgressCallback<'_>) -> Result<InstallResult> {
-        let receipt = read_receipt(&self.paths.receipt())?
-            .ok_or("No install receipt was found. Choose an option to install.")?;
-        self.apply(receipt.option, receipt.channel, progress)
+        let installed = self.detect()?;
+        let option = installed
+            .option()
+            .ok_or("Hexbot is not installed. Choose an option to install.")?;
+        let track = match installed.track() {
+            Some(track) => track,
+            None => default_track(&self.base_url)?,
+        };
+        self.apply(option, track, progress)
     }
 
     pub fn change(
@@ -432,6 +439,7 @@ impl Installer {
             let unpacked = staging.path().join("native");
             progress(Progress::new("extract", "Extracting the daemon."));
             extract_native(&download, &unpacked)?;
+            pdf_runtime::validate(&unpacked, self.target, false)?;
             let binary = unpacked.join("hexbot");
             // The daemon may have activated a newer runtime since the check above.
             let activation = self.lock_activation(progress)?;
@@ -568,6 +576,13 @@ impl Installer {
             .collect();
         if bundles.len() != 1 {
             return fail("The archive must contain one app with the expected app id.");
+        }
+        if app_option(id) == Some(InstallOption::Full) {
+            pdf_runtime::validate(
+                &bundles[0].join("Contents/Resources/hexbot-native"),
+                self.target,
+                true,
+            )?;
         }
         let directory = self.paths.install_apps_dir(self.target)?;
         let destination = directory.join(format!("{name}.app"));

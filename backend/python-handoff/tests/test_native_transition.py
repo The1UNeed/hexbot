@@ -379,6 +379,40 @@ class NativeTransitionTests(unittest.TestCase):
                 transition.handoff(["version"])
             install.assert_called_once_with(self.home, self.version)
 
+    def test_cyclic_cached_runtime_links_fall_back_to_verified_install(self):
+        runtime = self.home / "runtime"
+        native = runtime / "native"
+        native.mkdir(parents=True)
+        source = self.root / "source"
+        (source / "hexbot").mkdir(parents=True)
+        (source / transition.MARKER).write_text(json.dumps({"version": self.version}))
+        candidate = native / "hexbot"
+        stable = runtime / "native-executable"
+        verified_install = transition.install
+        for cyclic in (candidate, stable):
+            candidate.unlink(missing_ok=True)
+            stable.unlink(missing_ok=True)
+            if cyclic == candidate:
+                candidate.symlink_to(candidate.name)
+                stable.symlink_to(candidate)
+            else:
+                candidate.write_text("validated runtime")
+                stable.symlink_to(stable.name)
+            (runtime / "native-current.json").write_text(json.dumps({
+                "version": self.version, "executable": str(candidate),
+            }))
+            with self.subTest(cyclic=cyclic.name), \
+                 patch.object(transition, "__file__", str(source / "hexbot/native_transition.py")), \
+                 patch.object(transition, "install", side_effect=lambda home, version: verified_install(
+                     home, version, download=self.download, keys=(TEST_KEY,))) as install, \
+                 patch.object(transition.os, "execv") as execute:
+                transition.handoff(["version"])
+                install.assert_called_once_with(self.home, self.version)
+                repaired = stable.resolve()
+                self.assertTrue(repaired.is_file())
+                self.assertTrue(repaired.is_relative_to(native))
+                execute.assert_called_once_with(str(repaired), [str(repaired), "version"])
+
     def test_failed_native_install_keeps_serve_retrying_and_fails_version_probe(self):
         source = self.root / "source"
         package = source / "hexbot"
