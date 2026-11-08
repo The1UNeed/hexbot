@@ -10,7 +10,7 @@ import {
   View
 } from 'react-native'
 
-import { type OpenedFile, type Preview, previewOf, TABLE_ROWS } from '../core/files'
+import { type OpenedFile, type Preview, previewOf, TABLE_COLUMNS } from '../core/files'
 import { fileCopy, mediaUri } from '../core/media'
 import { MarkdownText } from '../MarkdownText'
 import { PdfFrame } from '../PdfFrame'
@@ -133,9 +133,11 @@ function PreviewBody({
       return (
         <>
           <Table rows={preview.rows} />
-          {preview.more ? (
+          {preview.rows.length < preview.total || preview.columns > TABLE_COLUMNS ? (
             <Text style={styles.more} tone="muted" variant="footnote">
-              Showing the first {TABLE_ROWS} rows of {TABLE_ROWS + preview.more}.
+              Showing {preview.rows.length} of {preview.total} rows and{' '}
+              {Math.min(preview.columns, TABLE_COLUMNS)} of {preview.columns} columns. {botName}{' '}
+              can read all of it.
             </Text>
           ) : null}
         </>

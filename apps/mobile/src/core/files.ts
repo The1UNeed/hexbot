@@ -13,14 +13,18 @@ export interface OpenedFile {
 
 /** How a file's preview shows it. */
 export type Preview =
-  | { kind: 'table'; rows: string[][]; more: number }
+  | { kind: 'table'; rows: string[][]; total: number; columns: number }
   | { kind: 'markdown'; text: string }
   | { kind: 'text'; text: string; more: boolean }
   | { kind: 'image' | 'video' | 'audio' | 'pdf' }
   | { kind: 'none' }
 
-/** Rows a table preview shows; a phone gains nothing from more. */
+/** Rows a table preview shows at most; a phone gains nothing from more. */
 export const TABLE_ROWS = 500
+/** Columns a table preview shows at most. */
+export const TABLE_COLUMNS = 40
+/** Cells a table preview draws at most, so a wide file still opens quickly. */
+export const TABLE_CELLS = 10_000
 /** Characters a text preview shows; one Text this long still lays out quickly. */
 export const TEXT_CHARS = 60_000
 
@@ -34,7 +38,16 @@ export function previewOf(file: OpenedFile): Preview {
     if (ext === 'csv' || ext === 'tsv') {
       const rows = parseDelimited(file.text, ext === 'tsv' ? '\t' : ',')
       if (rows.length) {
-        return { kind: 'table', rows: rows.slice(0, TABLE_ROWS), more: Math.max(0, rows.length - TABLE_ROWS) }
+        const columns = Math.max(...rows.map(row => row.length))
+        const shown = Math.min(columns, TABLE_COLUMNS)
+        return {
+          kind: 'table',
+          rows: rows
+            .slice(0, Math.min(TABLE_ROWS, Math.floor(TABLE_CELLS / shown)))
+            .map(row => row.slice(0, shown)),
+          total: rows.length,
+          columns
+        }
       }
     }
     if (ext === 'md' || ext === 'markdown') return { kind: 'markdown', text: file.text }

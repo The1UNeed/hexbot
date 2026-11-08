@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 
-import { parseDelimited, previewOf, splitName, TABLE_ROWS, TEXT_CHARS } from './files'
+import { parseDelimited, previewOf, splitName, TABLE_CELLS, TABLE_COLUMNS, TABLE_ROWS, TEXT_CHARS } from './files'
 
 it('reads quoted fields with commas, quotes and line breaks', () => {
   const text = '﻿Qty,Part,Note\r\n15,"Joint motors","XL330, ""family"""\n\n1,Battery,"two\nlines"\n'
@@ -22,13 +22,23 @@ it('shows CSV as a table, Markdown formatted and other text as it is', () => {
       ['a', 'b'],
       ['1', '2']
     ],
-    more: 0
+    total: 2,
+    columns: 2
   })
   const long = Array.from({ length: TABLE_ROWS + 3 }, (_, i) => String(i)).join('\n')
-  expect(previewOf({ mime: 'text/csv', name: 'big.CSV', text: long })).toMatchObject({
-    kind: 'table',
-    more: 3
+  const tall = previewOf({ mime: 'text/csv', name: 'big.CSV', text: long })
+  expect(tall).toMatchObject({ kind: 'table', total: TABLE_ROWS + 3 })
+  expect(tall.kind === 'table' && tall.rows.length).toBe(TABLE_ROWS)
+  // A wide file keeps to the column and cell limits, however few rows it has.
+  const wide = previewOf({
+    mime: 'text/csv',
+    name: 'wide.csv',
+    text: Array.from({ length: 500 }, () => Array(2000).fill('x').join(',')).join('\n')
   })
+  if (wide.kind !== 'table') throw new Error('expected a table')
+  expect(wide.rows[0]).toHaveLength(TABLE_COLUMNS)
+  expect(wide.rows.length * TABLE_COLUMNS).toBeLessThanOrEqual(TABLE_CELLS)
+  expect([wide.total, wide.columns]).toEqual([500, 2000])
   expect(previewOf({ mime: 'text/markdown', name: 'notes.md', text: '# Hi' }).kind).toBe('markdown')
   expect(previewOf({ mime: 'text/plain', name: 'main.rs', text: 'x'.repeat(TEXT_CHARS + 1) })).toMatchObject({
     kind: 'text',
