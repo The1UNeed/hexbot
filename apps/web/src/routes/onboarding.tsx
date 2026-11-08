@@ -7,6 +7,7 @@ import {
   connectorFieldMissing,
   ConnectorFields,
   connectorFieldsFor,
+  connectorSignInMissing,
   connectorValues
 } from '../components/connector-fields'
 import { isSubscription, ProviderPanel, supportsApiKey } from '../components/provider-panel'
@@ -1055,6 +1056,9 @@ function ToolPanel({
   const [provider, setProvider] = useState(connector.provider ?? connector.providers?.[0]?.id)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [signedIn, setSignedIn] = useState(false)
+  const [renewing, setRenewing] = useState(false)
+  const onSignedIn = useCallback(() => setSignedIn(true), [])
   const sending = connectorValues(connector, provider, values)
 
   // A free provider needs nothing typed; one already in use, nothing new.
@@ -1062,6 +1066,12 @@ function ToolPanel({
     Object.keys(sending).length === 0 &&
     provider === connector.provider &&
     connector.state === 'ready'
+
+  const needsSignIn = connectorSignInMissing(
+    connector.providers?.find(item => item.id === provider),
+    signedIn,
+    renewing
+  )
 
   const blocked =
     unchanged ||
@@ -1104,8 +1114,12 @@ function ToolPanel({
         connector={connector}
         invalid={Boolean(error)}
         onProviderChange={setProvider}
+        onRenewingChange={setRenewing}
+        onSignedIn={onSignedIn}
         onValuesChange={setValues}
         provider={provider}
+        renewing={renewing}
+        signedIn={signedIn}
         values={values}
       />
       {error ? (
@@ -1113,22 +1127,25 @@ function ToolPanel({
           {error}
         </p>
       ) : null}
-      <Button
-        busy={busy}
-        className="justify-self-end"
-        data-testid={`onboarding-tool-save-${connector.id}`}
-        disabled={blocked}
-        type="submit"
-        variant="primary"
-      >
-        Save and test
-      </Button>
+      {/* One primary button: the sign-in first, then this. */}
+      {needsSignIn ? null : (
+        <Button
+          busy={busy}
+          className="justify-self-end"
+          data-testid={`onboarding-tool-save-${connector.id}`}
+          disabled={blocked}
+          type="submit"
+          variant="primary"
+        >
+          Save and test
+        </Button>
+      )}
     </form>
   )
 }
 
 /** The tools that need an account: a bot can only use the ones set up here. */
-const SETUP_TOOL_GROUPS = new Set(['media', 'search'])
+const SETUP_TOOL_GROUPS = new Set(['search', 'social_home', 'work'])
 
 export function ToolsStep({
   onContinue,

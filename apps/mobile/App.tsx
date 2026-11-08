@@ -1112,6 +1112,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
     attachments,
     onRemoveAttachment: removeAttachment,
     onApprove: approve,
+    rpc: mobile.rpc,
     onOpenVisual: openVisual,
     onOpenFile: route?.kind === 'section' ? setFile : undefined,
     sendDisabledReason: uploading

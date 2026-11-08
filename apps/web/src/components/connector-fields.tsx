@@ -1,8 +1,10 @@
-import { useState } from 'react'
+import { Check } from 'lucide-react'
+import { useCallback, useState } from 'react'
 
 import { cn } from '../lib/cn'
 import type { Connector } from '../lib/types'
 
+import { ProviderPanel } from './provider-panel'
 import { Input } from './ui/input'
 import { Select } from './ui/select'
 
@@ -13,6 +15,18 @@ export function connectorFieldsFor(connector: Connector, provider?: string) {
   return connector.fields.filter(
     field => !field.provider || !provider || field.provider === provider
   )
+}
+
+/**
+ * Whether the chosen provider still waits for its subscription sign-in:
+ * until it is done, there is nothing to connect or test.
+ */
+export function connectorSignInMissing(
+  option: { configured?: boolean; sign_in?: null | string } | undefined,
+  signedIn: boolean,
+  renewing = false
+) {
+  return Boolean(option?.sign_in) && (renewing || (!option?.configured && !signedIn))
 }
 
 /** A field the user still has to fill in: not optional and not saved yet. */
@@ -39,6 +53,88 @@ export function connectorValues(
   )
 }
 
+/** Whose sign-in page opens, for the button: shorter than the provider label. */
+const SIGN_IN_NAMES: Record<string, string> = { 'xai-oauth': 'xAI' }
+
+/**
+ * A provider that works through a subscription the user signs in to, such
+ * as SuperGrok for X search, instead of a key. `grant` is the model
+ * provider whose sign-in it shares.
+ */
+export function SubscriptionSignIn({
+  configured,
+  grant,
+  label,
+  onRenewingChange,
+  onSignedIn,
+  renewing: renewingProp,
+  size
+}: {
+  configured: boolean
+  grant: string
+  label: string
+  /** The parent hides its own button while a sign-in is renewed. */
+  onRenewingChange?: (renewing: boolean) => void
+  onSignedIn?: () => Promise<void> | void
+  renewing?: boolean
+  size?: 'sm'
+}) {
+  // Signing in again renews a sign-in that expired or was revoked.
+  const [ownRenewing, setOwnRenewing] = useState(false)
+  const renewing = renewingProp ?? ownRenewing
+  const setRenewing = onRenewingChange ?? setOwnRenewing
+
+  const done = useCallback(async () => {
+    setRenewing(false)
+    await onSignedIn?.()
+  }, [onSignedIn, setRenewing])
+
+  if (configured && !renewing) {
+    return (
+      <p className="flex items-center gap-2 text-secondary text-success">
+        <Check size={14} /> Signed in.
+        <button
+          className="text-muted underline hover:text-foreground"
+          onClick={() => setRenewing(true)}
+          type="button"
+        >
+          Sign in again
+        </button>
+      </p>
+    )
+  }
+
+  const panel = (
+    <ProviderPanel
+      intro={false}
+      onConfigured={done}
+      provider={{
+        auth_type: 'oauth_device_code',
+        configured: false,
+        id: grant,
+        label: SIGN_IN_NAMES[grant] ?? label,
+        models_source: ''
+      }}
+      size={size}
+    />
+  )
+
+  return configured && renewing ? (
+    <div className="grid justify-items-start gap-2">
+      {panel}
+      <button
+        className="text-secondary text-muted underline hover:text-foreground"
+        onClick={() => setRenewing(false)}
+        type="button"
+      >
+        Keep the current sign-in
+      </button>
+    </div>
+  ) : (
+    panel
+  )
+}
+
 /**
  * A connector's provider choice and credential fields, straight from the
  * catalog entry. Used by the bot settings sheet and by onboarding.
@@ -47,21 +143,33 @@ export function ConnectorFields({
   connector,
   invalid = false,
   onProviderChange,
+  onRenewingChange,
+  onSignedIn,
   onValuesChange,
   provider,
+  renewing,
+  signedIn = false,
   values
 }: {
   connector: Connector
   invalid?: boolean
   onProviderChange: (provider: string) => void
+  /** While a sign-in is renewed, the parent hides its own button. */
+  onRenewingChange?: (renewing: boolean) => void
+  /** After a subscription sign-in finishes, to read the connector again. */
+  onSignedIn?: () => Promise<void> | void
   onValuesChange: (values: Record<string, string>) => void
   provider?: string
+  renewing?: boolean
+  /** A sign-in finished here that the connector does not show yet. */
+  signedIn?: boolean
   values: Record<string, string>
 }) {
   const [showAdvanced, setShowAdvanced] = useState(false)
   const forProvider = connectorFieldsFor(connector, provider)
   const fields = forProvider.filter(field => showAdvanced || !field.advanced)
-  const about = connector.providers?.find(item => item.id === provider)?.description
+  const chosen = connector.providers?.find(item => item.id === provider)
+  const about = chosen?.description
 
   return (
     <>
@@ -72,7 +180,9 @@ export function ConnectorFields({
             label="Provider"
             onValueChange={onProviderChange}
             options={connector.providers.map(item => ({
-              label: item.configured ? `${item.label} · connected` : item.label,
+              label: item.configured
+                ? `${item.label} · ${item.sign_in ? 'signed in' : 'connected'}`
+                : item.label,
               value: item.id
             }))}
             placeholder="Choose a provider"
@@ -82,6 +192,17 @@ export function ConnectorFields({
             <span className="mt-1 block text-[length:var(--text-meta)] text-muted">{about}</span>
           ) : null}
         </label>
+      ) : null}
+      {chosen?.sign_in ? (
+        <SubscriptionSignIn
+          configured={chosen.configured || signedIn}
+          grant={chosen.sign_in}
+          key={chosen.id}
+          label={chosen.label}
+          onRenewingChange={onRenewingChange}
+          onSignedIn={onSignedIn}
+          renewing={renewing}
+        />
       ) : null}
       {fields.map(field => (
         <label className="block" key={field.key}>

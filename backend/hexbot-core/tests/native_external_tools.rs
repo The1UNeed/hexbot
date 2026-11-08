@@ -109,15 +109,15 @@ fn setup(base: &str) -> tempfile::TempDir {
     let home = tempfile::tempdir().unwrap();
     db::migrate(home.path()).unwrap();
     db::open(home.path()).unwrap().execute_batch("INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0),('bob','Bob','member',0);INSERT INTO bots(name,owner_id) VALUES('owl','alice'),('fox','bob');").unwrap();
-    fs::write(home.path().join(".env"),format!("XAI_API_KEY='root-x-key'\nXAI_BASE_URL='{base}'\nHASS_TOKEN='root-ha-key'\nHASS_URL='{base}'\nFAL_KEY='root-fal-key'\nFAL_QUEUE_URL='{base}'\n")).unwrap();
+    fs::write(home.path().join(".env"),format!("XAI_API_KEY='root-x-key'\nXAI_BASE_URL='{base}'\nHEXBOT_X_API_BASE_URL='{base}'\n")).unwrap();
     for bot in ["owl", "fox"] {
         let profile = home.path().join("profiles").join(bot);
         fs::create_dir_all(&profile).unwrap();
-        common::write_config(&profile,&json!({"tools":{"enabled_toolsets":["x_search","homeassistant","video_gen"]},"x_search":{"model":"fixture-model","retries":0,"reasoning_effort":"high"}})).unwrap();
+        common::write_config(&profile,&json!({"tools":{"enabled_toolsets":["x_search"]},"x_search":{"model":"fixture-model","retries":0,"reasoning_effort":"high"}})).unwrap();
     }
     fs::write(
         home.path().join("profiles/owl/.env"),
-        "XAI_API_KEY='owl-x-key'\nHASS_TOKEN='owl-ha-key'\nFAL_KEY='owl-fal-key'\n",
+        "XAI_API_KEY='owl-x-key'\n",
     )
     .unwrap();
     home
@@ -308,313 +308,6 @@ async fn x_search_oauth_only_credentials_are_advertised_and_used() {
     assert_eq!(mock.calls()[0].authorization, "Bearer owl-oauth-token");
 }
 #[tokio::test]
-async fn home_assistant_preserves_filters_state_service_fields_and_json_string_data() {
-    let mock = Mock::new().await;
-    let home = setup(&mock.base);
-    mock.reply("GET","/api/states",json!([{"entity_id":"light.kitchen","state":"on","attributes":{"friendly_name":"Kitchen main"}},{"entity_id":"light.bedroom","state":"off","attributes":{"friendly_name":"Bedroom lamp"}},{"entity_id":"sensor.kitchen","state":"21","attributes":{"friendly_name":"Kitchen temperature"}}]));
-    assert_eq!(
-        call(
-            home.path(),
-            "owl",
-            "ha_list_entities",
-            json!({"domain":"light","area":"KITCHEN"})
-        )
-        .await
-        .unwrap(),
-        json!({"result":{"count":1,"entities":[{"entity_id":"light.kitchen","state":"on","friendly_name":"Kitchen main"}]}})
-    );
-    let state = json!({"entity_id":"light.kitchen","state":"on","attributes":{"brightness":42}});
-    mock.reply("GET", "/api/states/light.kitchen", state.clone());
-    assert_eq!(
-        call(
-            home.path(),
-            "owl",
-            "ha_get_state",
-            json!({"entity_id":"light.kitchen"})
-        )
-        .await
-        .unwrap(),
-        json!({"result":state})
-    );
-    mock.reply("GET","/api/services",json!([{"domain":"light","services":{"turn_on":{"description":"Light on","fields":{"brightness":{"description":"Brightness level","example":42}}}}},{"domain":"switch","services":{"toggle":{"description":"Toggle"}}}]));
-    assert_eq!(
-        call(
-            home.path(),
-            "owl",
-            "ha_list_services",
-            json!({"domain":"light"})
-        )
-        .await
-        .unwrap(),
-        json!({"result":{"count":1,"domains":[{"domain":"light","services":{"turn_on":{"description":"Light on","fields":{"brightness":"Brightness level"}}}}]}})
-    );
-    mock.reply(
-        "POST",
-        "/api/services/light/turn_on",
-        json!([{"entity_id":"light.kitchen","state":"on"}]),
-    );
-    let out=call(home.path(),"owl","ha_call_service",json!({"domain":"light","service":"turn_on","entity_id":"light.kitchen","data":"{\"brightness\":128,\"entity_id\":\"light.other\"}"})).await.unwrap();
-    assert_eq!(
-        out,
-        json!({"result":{"success":true,"service":"light.turn_on","affected_entities":[{"entity_id":"light.kitchen","state":"on"}]}})
-    );
-    let calls = mock.calls();
-    assert_eq!(calls.len(), 4);
-    assert!(calls.iter().all(|c| c.authorization == "Bearer owl-ha-key"));
-    assert_eq!(
-        calls[3].body,
-        json!({"brightness":128,"entity_id":"light.kitchen"})
-    );
-}
-#[tokio::test]
-async fn home_assistant_blocks_execution_domains_and_traversal_before_requests() {
-    let mock = Mock::new().await;
-    let home = setup(&mock.base);
-    for domain in [
-        "shell_command",
-        "command_line",
-        "python_script",
-        "pyscript",
-        "hassio",
-        "rest_command",
-    ] {
-        assert_eq!(
-            call(
-                home.path(),
-                "owl",
-                "ha_call_service",
-                json!({"domain":domain,"service":"run"})
-            )
-            .await
-            .unwrap_err()
-            .code,
-            4302
-        );
-    }
-    for args in [
-        json!({"domain":"shell_command/../light","service":"turn_on"}),
-        json!({"domain":"light","service":"../turn_on"}),
-        json!({"domain":"Light","service":"turn_on"}),
-        json!({"domain":"light","service":"turn_on","entity_id":"sensor.%2fconfig"}),
-        json!({"domain":"light","service":"turn_on","data":"[]"}),
-        json!({"domain":"light","service":"turn_on","data":"broken json"}),
-    ] {
-        assert_eq!(
-            call(home.path(), "owl", "ha_call_service", args)
-                .await
-                .unwrap_err()
-                .code,
-            4200
-        );
-    }
-    for id in ["../config", "light.a/../../config", "light.%2fconfig"] {
-        assert_eq!(
-            call(home.path(), "owl", "ha_get_state", json!({"entity_id":id}))
-                .await
-                .unwrap_err()
-                .code,
-            4200
-        );
-    }
-    assert!(mock.calls().is_empty());
-}
-#[tokio::test]
-async fn home_assistant_rejects_invalid_responses_and_uses_root_fallback_credentials() {
-    let mock = Mock::new().await;
-    let home = setup(&mock.base);
-    mock.reply("GET", "/api/states", json!({"unexpected":"object"}));
-    assert_eq!(
-        call(home.path(), "fox", "ha_list_entities", json!({}))
-            .await
-            .unwrap_err()
-            .message,
-        "Home Assistant returned invalid states"
-    );
-    assert_eq!(mock.calls()[0].authorization, "Bearer root-ha-key");
-    mock.raw(
-        "GET",
-        "/api/services",
-        StatusCode::FORBIDDEN,
-        "private provider text",
-    );
-    let error = call(home.path(), "owl", "ha_list_services", json!({}))
-        .await
-        .unwrap_err();
-    assert!(error.message.contains("403"));
-    assert!(!error.message.contains("private"));
-}
-const VIDEO_ENDPOINT: &str = "/fal-ai/pixverse/v6/text-to-video";
-#[tokio::test]
-async fn fal_video_submits_scoped_payload_and_polls_same_origin_queue() {
-    let mock = Mock::new().await;
-    let home = setup(&mock.base);
-    mock.reply("POST",VIDEO_ENDPOINT,json!({"request_id":"request-1","status_url":format!("{}/queue/request-1/status",mock.base),"response_url":format!("{}/queue/request-1/result",mock.base)}));
-    mock.reply(
-        "GET",
-        "/queue/request-1/status",
-        json!({"status":"COMPLETED"}),
-    );
-    mock.reply(
-        "GET",
-        "/queue/request-1/result",
-        json!({"video":{"url":"https://cdn.example.test/video.mp4"}}),
-    );
-    let out=call(home.path(),"owl","video_generate",json!({"prompt":"A calm lake","duration":99,"resolution":"1080p","audio":false,"negative_prompt":"blur","seed":3})).await.unwrap();
-    assert_eq!(out["success"], true);
-    assert_eq!(out["video"], "https://cdn.example.test/video.mp4");
-    assert_eq!(out["model"], "pixverse-v6");
-    assert_eq!(out["modality"], "text");
-    assert_eq!(out["provider"], "fal");
-    let calls = mock.calls();
-    assert_eq!(calls.len(), 3);
-    assert!(calls.iter().all(|c| c.authorization == "Key owl-fal-key"));
-    assert_eq!(calls[0].body["prompt"], "A calm lake");
-    assert_eq!(calls[0].body["duration"], "15");
-    assert_eq!(calls[0].body["generate_audio"], false);
-    assert_eq!(calls[0].body["negative_prompt"], "blur");
-    assert_eq!(calls[0].body["seed"], 3);
-    assert!(!out.to_string().contains("owl-fal-key"));
-}
-#[tokio::test]
-async fn fal_video_keeps_a_copy_in_the_bots_artifacts_for_the_chat() {
-    let mock = Mock::new().await;
-    let home = setup(&mock.base);
-    let env = home.path().join("profiles/owl/.env");
-    let mut text = fs::read_to_string(&env).unwrap();
-    text.push_str("HERMES_ALLOW_PRIVATE_URLS='true'\n");
-    fs::write(&env, text).unwrap();
-    let clip = format!("{}/files/clip.mp4", mock.base);
-    mock.reply("POST", VIDEO_ENDPOINT, json!({"video":{"url":clip}}));
-    mock.raw("GET", "/files/clip.mp4", StatusCode::OK, "fake mp4 bytes");
-    let out = call(
-        home.path(),
-        "owl",
-        "video_generate",
-        json!({"prompt":"A calm lake"}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(out["video"], clip);
-    let path = Path::new(out["file_path"].as_str().unwrap());
-    assert!(path.starts_with(home.path().join("profiles/owl/artifacts/videos")));
-    assert_eq!(path.extension().unwrap(), "mp4");
-    assert_eq!(fs::read_to_string(path).unwrap(), "fake mp4 bytes");
-    assert_eq!(out["media"], format!("MEDIA:{}", path.display()));
-}
-#[tokio::test]
-async fn fal_video_uses_model_capabilities_for_images_and_optional_upscale() {
-    let mock = Mock::new().await;
-    let home = setup(&mock.base);
-    let models: Value = serde_json::from_str(include_str!("../src/fal_video_models.json")).unwrap();
-    let image_endpoint = format!(
-        "/{}",
-        models["minimax-h3"]["image_endpoint"].as_str().unwrap()
-    );
-    mock.reply(
-        "POST",
-        &image_endpoint,
-        json!({"video":{"url":"https://cdn.example.test/original.mp4"}}),
-    );
-    mock.reply(
-        "POST",
-        "/fal-ai/seedvr/upscale/video",
-        json!({"video":{"url":"https://cdn.example.test/upscaled.mp4"}}),
-    );
-    let out=call(home.path(),"fox","video_generate",json!({"prompt":"Animate clouds","model":"minimax-h3","image_url":"data:image/png;base64,aW1hZ2U=","duration":99,"resolution":"1080p","aspect_ratio":"9:16","seed":6,"upscale":true})).await.unwrap();
-    assert_eq!(out["video"], "https://cdn.example.test/upscaled.mp4");
-    assert_eq!(out["upscaled"], true);
-    assert_eq!(out["modality"], "image");
-    let calls = mock.calls();
-    assert_eq!(calls[0].authorization, "Key root-fal-key");
-    assert_eq!(calls[0].body["duration"], 15);
-    assert_eq!(calls[0].body["resolution"], "2K");
-    assert!(calls[0].body.get("seed").is_none());
-    assert!(calls[0].body.get("aspect_ratio").is_none());
-    assert_eq!(
-        calls[1].body["video_url"],
-        "https://cdn.example.test/original.mp4"
-    );
-}
-#[tokio::test]
-async fn fal_video_refuses_foreign_queue_urls_and_malformed_request_ids() {
-    let mock = Mock::new().await;
-    let foreign = Mock::new().await;
-    let home = setup(&mock.base);
-    for submitted in [
-        json!({"request_id":"request-1","response_url":format!("{}/stolen",foreign.base),"status_url":format!("{}/status",mock.base)}),
-        json!({"request_id":"request-1","response_url":format!("{}/result",mock.base),"status_url":format!("{}/stolen",foreign.base)}),
-        json!({"request_id":"../admin"}),
-        json!({"request_id":"a%2fadmin"}),
-        json!({"request_id":"a?secret"}),
-        json!({"request_id":"request-1","response_url":mock.base.replace("http://","http://attacker:password@"),"status_url":format!("{}/status",mock.base)}),
-    ] {
-        mock.reply("POST", VIDEO_ENDPOINT, submitted);
-        assert!(
-            call(
-                home.path(),
-                "owl",
-                "video_generate",
-                json!({"prompt":"test"})
-            )
-            .await
-            .is_err()
-        );
-    }
-    assert!(foreign.calls().is_empty());
-    assert!(mock.calls().iter().all(|c| c.path == VIDEO_ENDPOINT));
-}
-#[tokio::test]
-async fn fal_video_fails_for_queue_failure_and_missing_video_and_rejects_unknown_model() {
-    let mock = Mock::new().await;
-    let home = setup(&mock.base);
-    for args in [
-        json!({"prompt":"test","model":"../../admin"}),
-        json!({"prompt":"test","operation":"edit"}),
-        json!({"prompt":"test","video_url":"https://example.test/video"}),
-    ] {
-        assert_eq!(
-            call(home.path(), "owl", "video_generate", args)
-                .await
-                .unwrap_err()
-                .code,
-            4200
-        );
-    }
-    assert!(mock.calls().is_empty());
-    mock.reply("POST", VIDEO_ENDPOINT, json!({"request_id":"r"}));
-    let status = format!("{VIDEO_ENDPOINT}/requests/r/status");
-    mock.reply(
-        "GET",
-        &status,
-        json!({"status":"FAILED","error":"private details"}),
-    );
-    assert_eq!(
-        call(
-            home.path(),
-            "owl",
-            "video_generate",
-            json!({"prompt":"test"})
-        )
-        .await
-        .unwrap_err()
-        .message,
-        "Video generation failed"
-    );
-    mock.reply("POST", VIDEO_ENDPOINT, json!({"video":{}}));
-    assert_eq!(
-        call(
-            home.path(),
-            "owl",
-            "video_generate",
-            json!({"prompt":"test"})
-        )
-        .await
-        .unwrap_err()
-        .message,
-        "FAL returned no video"
-    );
-}
-#[tokio::test]
 async fn external_tool_disablement_and_active_identity_are_enforced() {
     let mock = Mock::new().await;
     let home = setup(&mock.base);
@@ -638,7 +331,7 @@ async fn external_tool_disablement_and_active_identity_are_enforced() {
         .execute("UPDATE users SET disabled_at=1 WHERE id='bob'", [])
         .unwrap();
     assert_eq!(
-        call(home.path(), "fox", "ha_list_entities", json!({}))
+        call(home.path(), "fox", "x_search", json!({"query":"q"}))
             .await
             .unwrap_err()
             .code,
@@ -652,10 +345,157 @@ async fn external_tools_require_ownership() {
     let mock = Mock::new().await;
     let home = setup(&mock.base);
     let denied =
-        native_external_tools::call(home.path(), "bob", "owl", "ha_list_entities", json!({}))
+        native_external_tools::call(home.path(), "bob", "owl", "x_search", json!({"query":"q"}))
             .await
             .unwrap()
             .unwrap_err();
     assert_eq!(denied.code, 4302);
     assert!(mock.calls().is_empty());
+}
+
+fn choose(home: &Path, provider: &str) {
+    let mut cfg = common::read_config(home).unwrap();
+    cfg["x_search"]["provider"] = json!(provider);
+    common::write_config(home, &cfg).unwrap();
+}
+
+#[tokio::test]
+async fn x_api_search_sends_the_query_with_handles_and_returns_posts() {
+    let mock = Mock::new().await;
+    let home = setup(&mock.base);
+    fs::write(
+        home.path().join(".env"),
+        format!("X_BEARER_TOKEN='root-x-bearer'\nHEXBOT_X_API_BASE_URL='{}'\n", mock.base),
+    )
+    .unwrap();
+    fs::write(home.path().join("profiles/owl/.env"), "").unwrap();
+    choose(home.path(), "x_api");
+    assert!(connectors::tool_available(home.path(), "owl", "x_search").unwrap());
+    let today = chrono::Utc::now().date_naive();
+    mock.reply(
+        "GET",
+        "/2/tweets/search/recent",
+        json!({
+            "data":[
+                {"id":"11","text":"Love it","author_id":"1","created_at":"2026-11-07T10:00:00.000Z","public_metrics":{"like_count":3}},
+                {"id":"12","text":"Meh","author_id":"9","created_at":"2026-11-06T10:00:00.000Z"}
+            ],
+            "includes":{"users":[{"id":"1","username":"alice","name":"Alice"}]},
+            "meta":{"result_count":2}
+        }),
+    );
+    let out = call(
+        home.path(),
+        "owl",
+        "x_search",
+        json!({"query":" product reactions ","allowed_x_handles":["@alice","bob"],"from_date":today.to_string(),"enable_image_understanding":true}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["provider"], "x_api");
+    assert_eq!(out["archive"], false);
+    assert_eq!(out["posts"][0]["url"], "https://x.com/alice/status/11");
+    assert_eq!(out["posts"][1]["url"], "https://x.com/i/status/12");
+    assert_eq!(
+        out["citations"],
+        json!(["https://x.com/alice/status/11", "https://x.com/i/status/12"])
+    );
+    assert_eq!(
+        out["answer"],
+        "@alice (2026-11-07): Love it\nhttps://x.com/alice/status/11\n\n@unknown (2026-11-06): Meh\nhttps://x.com/i/status/12"
+    );
+    assert!(out["note"].is_string());
+    let calls = mock.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].method, Method::GET);
+    assert_eq!(calls[0].authorization, "Bearer root-x-bearer");
+    let url = reqwest::Url::parse(&format!("http://x{}", calls[0].path)).unwrap();
+    let params = url
+        .query_pairs()
+        .into_owned()
+        .collect::<std::collections::HashMap<_, _>>();
+    assert_eq!(
+        params["query"],
+        "(product reactions) (from:alice OR from:bob)"
+    );
+    assert_eq!(params["start_time"], format!("{today}T00:00:00Z"));
+    assert!(!params.contains_key("end_time"));
+    assert_eq!(params["max_results"], "20");
+    assert!(!out.to_string().contains("root-x-bearer"));
+}
+
+#[tokio::test]
+async fn x_api_search_goes_to_the_archive_for_old_dates_and_explains_refusals() {
+    let mock = Mock::new().await;
+    let home = setup(&mock.base);
+    fs::write(
+        home.path().join(".env"),
+        format!("X_BEARER_TOKEN='root-x-bearer'\nHEXBOT_X_API_BASE_URL='{}'\n", mock.base),
+    )
+    .unwrap();
+    choose(home.path(), "x_api");
+    mock.reply("GET", "/2/tweets/search/all", json!({"meta":{"result_count":0}}));
+    let out = call(
+        home.path(),
+        "owl",
+        "x_search",
+        json!({"query":"launch OR release","excluded_x_handles":["spam"],"from_date":"2024-01-01","to_date":"2024-01-31"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["archive"], true);
+    assert_eq!(out["answer"], "No posts matched.");
+    let path = &mock.calls()[0].path;
+    assert!(path.starts_with("/2/tweets/search/all?"));
+    assert!(path.contains("start_time=2024-01-01T00%3A00%3A00Z"));
+    assert!(path.contains("end_time=2024-02-01T00%3A00%3A00Z"));
+    // The exclusion covers both sides of the OR.
+    assert!(path.contains("query=%28launch+OR+release%29+-from%3Aspam"), "{path}");
+    for (status, text) in [
+        (StatusCode::UNAUTHORIZED, "X refused the bearer token"),
+        (StatusCode::PAYMENT_REQUIRED, "no credits left"),
+        (StatusCode::TOO_MANY_REQUESTS, "rate limit"),
+    ] {
+        mock.raw("GET", "/2/tweets/search/recent", status, "{}");
+        let err = call(home.path(), "owl", "x_search", json!({"query":"q"}))
+            .await
+            .unwrap_err();
+        assert!(err.message.contains(text), "{}", err.message);
+    }
+}
+
+#[tokio::test]
+async fn x_search_uses_the_chosen_xai_credential() {
+    let mock = Mock::new().await;
+    let home = setup(&mock.base);
+    fs::write(home.path().join("profiles/owl/auth.json"),json!({"providers":{"xai-oauth":{"access_token":"owl-oauth-token","refresh_token":"unused-refresh","expires_at":common::now()+3600.0}}}).to_string()).unwrap();
+    for _ in 0..3 {
+        mock.reply("POST", "/responses", json!({"output_text":"answer"}));
+    }
+    // With nothing chosen, the key comes first, as before.
+    let out = call(home.path(), "owl", "x_search", json!({"query":"q"}))
+        .await
+        .unwrap();
+    assert_eq!(out["credential_source"], "xai");
+    choose(home.path(), "supergrok");
+    let out = call(home.path(), "owl", "x_search", json!({"query":"q"}))
+        .await
+        .unwrap();
+    assert_eq!(out["credential_source"], "xai-oauth");
+    // Fox has no sign-in of its own, so the subscription is not set up for it.
+    assert!(!connectors::tool_available(home.path(), "fox", "x_search").unwrap());
+    choose(home.path(), "xai");
+    let out = call(home.path(), "owl", "x_search", json!({"query":"q"}))
+        .await
+        .unwrap();
+    assert_eq!(out["credential_source"], "xai");
+    let auth = mock
+        .calls()
+        .iter()
+        .map(|c| c.authorization.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        auth,
+        ["Bearer owl-x-key", "Bearer owl-oauth-token", "Bearer owl-x-key"]
+    );
 }

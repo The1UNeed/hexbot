@@ -412,7 +412,7 @@ explicit skill paths even with `--no-skills`; its `/skill:name` commands load
 bodies directly, bypassing daemon grants. Its generated skill prompt is also
 replaced by the private extension's `before_agent_start` handler. Scheduled
 jobs resolve their explicitly requested skills through the same live grants.
-Notion and Airtable connectors toggle grants without making private copies.
+The Notion connector toggles grants without making private copies.
 
 ## Verification
 

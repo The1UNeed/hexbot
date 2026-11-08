@@ -49,7 +49,7 @@ const GUIDE: &str = r###"Work through the checklist above, one item at a time. L
 - If nothing does, do not call it. Staying quiet is the usual outcome.
 - Do not repeat what you already posted unless it changed or became urgent.
 - When an item is settled for good (the reply came, the flight landed), take it off the checklist with hexbot_heartbeat and say so. Change nothing else in the checklist; the user and your chat decide what you watch.
-- Notion and Airtable are read with hexbot_connector_read: their skills (skill_view) describe the API; skip their shell and install steps.
+- Notion is read with hexbot_connector_read: its skill (skill_view) describes the API; skip its shell and install steps.
 
 Finish with one line per item on what you found. It is kept as this heartbeat's log and is not shown to the user."###;
 

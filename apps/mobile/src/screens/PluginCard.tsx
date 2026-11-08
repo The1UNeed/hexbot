@@ -1,12 +1,14 @@
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import { Pressable, StyleSheet, View } from 'react-native'
 
 import { pluginFormIcon } from '../../../web/src/lib/plugin-icons'
 import type { PluginForm } from '../../../web/src/lib/types'
+import type { Rpc } from '../core/types'
 import { Button, mono, radius, Text, useTheme } from '../ui'
 import { PluginIcon } from '../ui/PluginIcon'
 
 import { CardField, CardStatus, ConnectCard, cardStyles } from './ConnectCard'
+import { SubscriptionSignIn } from './SubscriptionSignIn'
 import type { ApprovalChoice, ApprovalRequestView, CardAnswer } from './types'
 
 const VERBS: Record<PluginForm['action'], string> = {
@@ -31,7 +33,8 @@ export function PluginCard({
   form,
   joined,
   onAnswer,
-  request
+  request,
+  rpc
 }: {
   form: PluginForm
   joined?: boolean
@@ -41,6 +44,8 @@ export function PluginCard({
     answer?: CardAnswer
   ) => Promise<unknown> | void
   request: ApprovalRequestView
+  /** For a subscription sign-in, such as SuperGrok for X search. */
+  rpc?: Rpc
 }) {
   const theme = useTheme()
   const [open, setOpen] = useState(form.action !== 'setup')
@@ -48,13 +53,23 @@ export function PluginCard({
   const [provider, setProvider] = useState(form.provider ?? form.providers?.[0]?.id ?? null)
   const [sent, setSent] = useState<ApprovalChoice | null>(null)
   const [busy, setBusy] = useState(false)
+  const [signedIn, setSignedIn] = useState(false)
+  const [renewing, setRenewing] = useState(false)
+  const onSignedIn = useCallback(() => setSignedIn(true), [])
   const decided = request.decision ?? sent
   const id = request.requestId
   const setup = form.action === 'setup'
   const fields = form.fields.filter(field => !field.provider || field.provider === provider)
+  const chosen = form.providers?.find(option => option.id === provider)
+  // A subscription waits for its sign-in; there is nothing to connect before
+  // it. Without rpc the card cannot sign in, so the daemon's test says so.
+  const needsSignIn = Boolean(
+    rpc && chosen?.sign_in && (renewing || (!chosen.configured && !signedIn))
+  )
   const missing =
-    setup && fields.some(field => !field.optional && !field.set && !values[field.key]?.trim())
-  const about = form.providers?.find(option => option.id === provider)?.description
+    needsSignIn ||
+    (setup && fields.some(field => !field.optional && !field.set && !values[field.key]?.trim()))
+  const about = chosen?.description
 
   // Settled only once the daemon took the answer; a failure keeps the form.
   const answer = async (choice: ApprovalChoice) => {
@@ -146,6 +161,20 @@ export function PluginCard({
               {about}
             </Text>
           ) : null}
+          {chosen?.sign_in && rpc ? (
+            <SubscriptionSignIn
+              configured={Boolean(chosen.configured) || signedIn}
+              grant={chosen.sign_in}
+              key={chosen.id}
+              label={chosen.label}
+              onRenewingChange={setRenewing}
+              onSignedIn={onSignedIn}
+              renewing={renewing}
+              rpc={rpc}
+              style={cardStyles.button}
+              testID={`plugin-${id}-sign-in`}
+            />
+          ) : null}
           {fields.map((field, index) => (
             <CardField
               autoFocus={setup && index === 0}
@@ -160,14 +189,17 @@ export function PluginCard({
             />
           ))}
           <View style={cardStyles.actions}>
-            <Button
-              busy={busy}
-              disabled={missing}
-              label={VERBS[form.action]}
-              onPress={() => void answer('once')}
-              style={cardStyles.button}
-              testID={`plugin-${id}-submit`}
-            />
+            {/* One primary button: Sign in first, then this. */}
+            {needsSignIn ? null : (
+              <Button
+                busy={busy}
+                disabled={missing}
+                label={VERBS[form.action]}
+                onPress={() => void answer('once')}
+                style={cardStyles.button}
+                testID={`plugin-${id}-submit`}
+              />
+            )}
             <Button
               disabled={busy}
               label="Not now"

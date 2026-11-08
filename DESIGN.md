@@ -159,8 +159,8 @@ more freedom and more capability than a hosted product can offer.
   soul, `skill_view`, `hexbot_notify`, `hexbot_heartbeat`,
   `hexbot_connector_read`, `web_search` and `web_extract`; of Pi's, read,
   grep, find and ls. Connector tools still ask before changing anything, and
-  nobody can answer. Notion and Airtable work through skills that describe
-  their API, and no shell has their keys, so the daemon makes the requests
+  nobody can answer. Notion works through a skill that describes its
+  API, and no shell has its key, so the daemon makes the requests
   with the bot's key, which the model never sees: `hexbot_connector_read`
   for reads (GET, and Notion's search and queries) and, outside heartbeats,
   `hexbot_connector_write` for changes, which Auto reviews and Manual asks

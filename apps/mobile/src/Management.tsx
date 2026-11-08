@@ -26,6 +26,7 @@ import {
 } from './ui'
 import { Licenses } from './Licenses'
 import { ModelPill, useCurrentModel } from './screens/ModelMenu'
+import { SubscriptionSignIn } from './screens/SubscriptionSignIn'
 import {
   type Bot,
   type Connector,
@@ -126,7 +127,7 @@ const TOOLS: { key: string; label: string; description: string }[] = [
   {
     key: 'voice',
     label: 'Voice',
-    description: 'Speak replies with the built-in voice. Premium voice is a connector.'
+    description: 'Speak replies with the built-in voice.'
   },
   {
     key: 'message_bots',
@@ -557,7 +558,12 @@ export function Management({
         ).connectors as unknown as RowData[]
         break
       case 'connector':
-        fields = { provider: str(panel?.data?.provider) }
+        // As on the web: the provider in use, else the first one.
+        fields = {
+          provider:
+            str(panel?.data?.provider) ||
+            str((panel?.data?.providers as RowData[] | undefined)?.[0]?.id)
+        }
         break
       case 'plugins':
         data = pluginRows(await rpc<PluginsList>('hexbot.plugins.list')) as unknown as RowData[]
@@ -1734,6 +1740,10 @@ export function Management({
         setNotice(`Finish signing in on the ${accountName} page.`)
         await Linking.openURL(str(login.url))
       }
+      const chosen = c.providers?.find(p => p.id === values.provider)
+      // A subscription waits for its sign-in, or its renewal; there is nothing to save before it.
+      const renewing = values.renewing === true
+      const needsSignIn = Boolean(chosen?.sign_in) && (renewing || !chosen?.configured)
       content = (
         <>
           <Text tone="muted">{c.description}</Text>
@@ -1831,13 +1841,39 @@ export function Management({
                 <ChoiceRow
                   key={p.id}
                   title={p.label}
-                  subtitle={p.description}
+                  subtitle={[p.configured ? (p.sign_in ? 'Signed in' : 'Connected') : '', p.description]
+                    .filter(Boolean)
+                    .join(' · ')}
                   testID={`connector-provider-${p.id}`}
                   selected={values.provider === p.id}
                   onPress={() => set('provider', p.id)}
                 />
               ))}
             </Group>
+          ) : null}
+          {chosen?.sign_in ? (
+            <SubscriptionSignIn
+              configured={chosen.configured}
+              grant={chosen.sign_in}
+              key={chosen.id}
+              label={chosen.label}
+              onRenewingChange={value => set('renewing', value)}
+              renewing={renewing}
+              onSignedIn={() =>
+                onNavigate({
+                  ...panel!,
+                  data: {
+                    ...panel!.data,
+                    provider: chosen.id,
+                    providers: c.providers!.map(p =>
+                      p.id === chosen.id ? { ...p, configured: true } : p
+                    )
+                  }
+                })
+              }
+              rpc={rpc}
+              testID="connector-sign-in"
+            />
           ) : null}
           {c.fields
             .filter(f => !f.provider || f.provider === values.provider)
@@ -1866,17 +1902,26 @@ export function Management({
                 }
               />
             ) : null}
-            {action(account ? 'Save your own OAuth client' : 'Save credentials', () =>
-              rpc('hexbot.connectors.setup', {
-                id: c.id,
-                provider: values.provider || undefined,
-                ...(bot ? { bot: bot.name } : {}),
-                values: Object.fromEntries(
-                  c.fields
-                    .filter(f => values[f.key] !== undefined && values[f.key] !== '')
-                    .map(f => [f.key, values[f.key]])
-                )
-              })
+            {action(
+              account
+                ? 'Save your own OAuth client'
+                : chosen?.sign_in
+                  ? 'Use subscription'
+                  : 'Save credentials',
+              () =>
+                rpc('hexbot.connectors.setup', {
+                  id: c.id,
+                  provider: values.provider || undefined,
+                  ...(bot ? { bot: bot.name } : {}),
+                  values: Object.fromEntries(
+                    c.fields
+                      .filter(f => values[f.key] !== undefined && values[f.key] !== '')
+                      .map(f => [f.key, values[f.key]])
+                  )
+                }),
+              false,
+              '',
+              needsSignIn
             )}
             {action('Test connector', async () => {
               const result = await rpc('hexbot.connectors.test', {
@@ -2000,7 +2045,7 @@ export function Management({
         <>
           <Group
             title="Connectors"
-            footer="Services Hexbot supports. Keys are stored once on this daemon."
+            footer="Services Hexbot supports. Keys and sign-ins are stored once on this daemon."
           >
             {plugins.filter(p => p.kind === 'connector' && p.category !== 'mcp').map(item)}
           </Group>

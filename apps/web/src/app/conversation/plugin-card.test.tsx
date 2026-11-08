@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, vi } from 'vitest'
 
-import { approvalRespond } from '../../lib/api'
+import { approvalRespond, providersLoginStart } from '../../lib/api'
 import type { ApprovalRequest, PluginForm } from '../../lib/types'
 import { useTranscripts } from '../../stores/transcripts'
 
@@ -10,7 +10,8 @@ import { ApprovalCard } from './index'
 vi.mock('../../lib/api', async importOriginal => ({
   ...(await importOriginal()),
   approvalReceived: vi.fn().mockResolvedValue({}),
-  approvalRespond: vi.fn().mockResolvedValue({ resolved: true })
+  approvalRespond: vi.fn().mockResolvedValue({ resolved: true }),
+  providersLoginStart: vi.fn()
 }))
 
 const notion: PluginForm = {
@@ -217,5 +218,77 @@ describe('plugin card', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Enter the Notion API key.')
     expect(screen.getByLabelText('Notion API key')).toBeVisible()
+  })
+
+  it('offers X search through a subscription sign-in, a key, or the X API', async () => {
+    const xSearch: PluginForm = {
+      action: 'setup',
+      bot: 'HexBot',
+      fields: [
+        { key: 'XAI_API_KEY', label: 'xAI API key', provider: 'xai', secret: true },
+        { key: 'X_BEARER_TOKEN', label: 'X API bearer token', provider: 'x_api', secret: true }
+      ],
+      icon: 'x',
+      id: 'connector:x_search',
+      kind: 'plugin',
+      name: 'X search',
+      provider: 'supergrok',
+      providers: [
+        { configured: false, id: 'supergrok', label: 'SuperGrok or X Premium+', sign_in: 'xai-oauth' },
+        { id: 'xai', label: 'xAI API' },
+        { id: 'x_api', label: 'X API' }
+      ]
+    }
+
+    vi.mocked(providersLoginStart).mockResolvedValue({
+      code: 'ABCD-1234',
+      login_id: 'login-1',
+      message: '',
+      provider: 'xai-oauth',
+      status: 'pending',
+      url: 'https://accounts.x.ai/device'
+    })
+    vi.spyOn(window, 'open').mockReturnValue(null)
+    render(<ApprovalCard approval={cardFor(xSearch)} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
+    // The subscription needs no key: only the sign-in shows.
+    expect(screen.queryByLabelText('xAI API key')).toBeNull()
+    // One primary button: nothing to connect until the sign-in is done.
+    expect(screen.queryByRole('button', { name: 'Connect' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in with xAI' }))
+    await waitFor(() => expect(providersLoginStart).toHaveBeenCalledWith('xai-oauth'))
+    expect(await screen.findByTestId('login-code')).toHaveTextContent('ABCD-1234')
+    fireEvent.click(screen.getByRole('radio', { name: 'X API' }))
+    expect(screen.getByLabelText('X API bearer token')).toBeVisible()
+    expect(screen.queryByRole('button', { name: /Sign in with/ })).toBeNull()
+  })
+
+  it('connects a subscription already signed in, and can sign in again', () => {
+    const signedIn: PluginForm = {
+      action: 'setup',
+      bot: 'HexBot',
+      fields: [],
+      icon: 'x',
+      id: 'connector:x_search',
+      kind: 'plugin',
+      name: 'X search',
+      provider: 'supergrok',
+      providers: [
+        { configured: true, id: 'supergrok', label: 'SuperGrok or X Premium+', sign_in: 'xai-oauth' },
+        { id: 'x_api', label: 'X API' }
+      ]
+    }
+
+    render(<ApprovalCard approval={cardFor(signedIn)} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
+    expect(screen.getByText('Signed in.')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Connect' })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in again' }))
+    expect(screen.getByRole('button', { name: 'Sign in with xAI' })).toBeVisible()
+    // While renewing, the sign-in is the one primary button.
+    expect(screen.queryByRole('button', { name: 'Connect' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Keep the current sign-in' }))
+    expect(screen.getByText('Signed in.')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Connect' })).toBeEnabled()
   })
 })

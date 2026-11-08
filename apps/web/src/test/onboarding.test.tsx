@@ -560,7 +560,13 @@ describe('onboarding', () => {
     const call = vi.fn((method: string) =>
       Promise.resolve(
         method === 'hexbot.connectors.list'
-          ? { connectors: [tool({}), tool({ group: 'work', id: 'notion', name: 'Notion' })] }
+          ? {
+              connectors: [
+                tool({}),
+                tool({ group: 'work', id: 'notion', name: 'Notion' }),
+                tool({ group: 'social_home', id: 'x_search', name: 'X search' })
+              ]
+            }
           : {
               connector: tool({ state: 'ready', state_text: 'Key saved · Tavily' }),
               test: { message: 'Key saved.', ok: true }
@@ -573,9 +579,10 @@ describe('onboarding', () => {
     const onContinue = vi.fn()
     render(<ToolsStep onContinue={onContinue} onError={vi.fn()} />)
 
-    // Web search is open already; work connectors wait for bot settings.
+    // Web search is open already; every connector that needs an account is offered.
     const key = await screen.findByLabelText('Tavily API key')
-    expect(screen.queryByText('Notion')).not.toBeInTheDocument()
+    expect(screen.getByText('X search')).toBeVisible()
+    expect(screen.getByText('Notion')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Skip for now' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Save and test' })).toBeDisabled()
 

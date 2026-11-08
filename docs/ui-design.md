@@ -459,8 +459,8 @@ nested inside a card and no row carries more than one line of explanation.
   Advanced (Delete bot with the
   type-the-name confirmation).
 - Connectors: a search pill, filter chips (All, On for this bot, Needs
-  setup), and rows grouped as Search and browsing, Images and voice,
-  Notes and work, Social and home, MCP servers. Each row: a 28 px icon
+  setup), and rows grouped as Search and browsing, Notes and work,
+  Social, MCP servers. Each row: a 28 px icon
   (Simple Icons brand glyph in white on the brand colour, or a neutral
   glyph for rows that front several providers), name, state in words,
   one-line description, and one control: "Set up" when the daemon has no

@@ -526,6 +526,53 @@ describe('connectors page', () => {
     expect(screen.getByLabelText('X search for Scout')).toBeChecked()
   })
 
+  const xSearch = (configured: boolean) =>
+    connector({
+      fields: [],
+      id: 'x_search',
+      name: 'X search',
+      providers: [
+        { configured, id: 'supergrok', label: 'SuperGrok or X Premium+', sign_in: 'xai-oauth' },
+        { configured: false, id: 'x_api', label: 'X API' }
+      ]
+    })
+
+  it('asks for the X search subscription sign-in before anything else', async () => {
+    fakeRpc({ 'hexbot.connectors.list': () => ({ connectors: [xSearch(false)] }) })
+    render(<ConnectorsTab bot={bot} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Set up' }))
+    // Not signed in: the sign-in is the one primary button.
+    expect(await screen.findByRole('button', { name: 'Sign in with xAI' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Connect and test' })).toBeNull()
+    // The sign-in is the daemon's: there is no value to keep for one bot.
+    expect(screen.queryByLabelText('Bot only')).toBeNull()
+  })
+
+  it('connects X search with a subscription already signed in', async () => {
+    const call = fakeRpc({
+      'hexbot.connectors.list': () => ({ connectors: [xSearch(true)] }),
+      'hexbot.connectors.setup': () => ({
+        connector: xSearch(true),
+        test: { message: 'Signed in.', ok: true }
+      })
+    })
+
+    render(<ConnectorsTab bot={bot} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Set up' }))
+    expect(await screen.findByText('Signed in.')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Connect and test' }))
+    await waitFor(() =>
+      expect(call).toHaveBeenCalledWith('hexbot.connectors.setup', {
+        bot: 'scout',
+        bot_only: false,
+        enable_for_bot: true,
+        id: 'x_search',
+        provider: 'supergrok',
+        values: {}
+      })
+    )
+  })
+
   it('keeps the set-up sheet open with the message when the test fails', async () => {
     const call = fakeRpc({
       'hexbot.connectors.list': () => ({ connectors: [connector({})] }),

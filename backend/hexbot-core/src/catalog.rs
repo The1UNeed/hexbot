@@ -1976,7 +1976,6 @@ fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
                     "file",
                     "web",
                     "vision",
-                    "image_gen",
                     "tts",
                     "skills",
                     "todo",
