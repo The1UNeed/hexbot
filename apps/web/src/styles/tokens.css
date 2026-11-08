@@ -294,6 +294,14 @@ body {
   background: transparent;
 }
 
+/* A list that scrolls with no bar beside it: the chat list. */
+.hex-no-scrollbar {
+  scrollbar-width: none;
+}
+.hex-no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 /*
  * Liquid glass, after iOS: a clear fill that blurs and saturates what
  * scrolls under it, and a hairline specular rim that catches light on the

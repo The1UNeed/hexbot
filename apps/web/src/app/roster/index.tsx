@@ -601,7 +601,7 @@ export function RosterColumn() {
           />
         </div>
       </header>
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 py-1">
+      <div className="hex-no-scrollbar min-h-0 flex-1 overflow-y-auto px-2 py-1">
         {needsPrimary(ordered) ? (
           <PrimaryChoice
             bots={ordered}
