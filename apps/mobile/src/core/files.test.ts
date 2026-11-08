@@ -46,6 +46,11 @@ it('shows CSV as a table, Markdown formatted and other text as it is', () => {
     columns: 2
   })
   expect(previewOf({ mime: 'text/markdown', name: 'notes.md', text: '# Hi' }).kind).toBe('markdown')
+  expect(previewOf({ mime: 'text/markdown', name: 'long.md', text: 'x'.repeat(TEXT_CHARS + 1) })).toMatchObject({
+    kind: 'markdown',
+    text: 'x'.repeat(TEXT_CHARS),
+    more: true
+  })
   expect(previewOf({ mime: 'text/plain', name: 'main.rs', text: 'x'.repeat(TEXT_CHARS + 1) })).toMatchObject({
     kind: 'text',
     more: true

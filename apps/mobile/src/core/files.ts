@@ -14,7 +14,7 @@ export interface OpenedFile {
 /** How a file's preview shows it. */
 export type Preview =
   | { kind: 'table'; rows: string[][]; total: number; columns: number }
-  | { kind: 'markdown'; text: string }
+  | { kind: 'markdown'; text: string; more: boolean }
   | { kind: 'text'; text: string; more: boolean }
   | { kind: 'image' | 'video' | 'audio' | 'pdf' }
   | { kind: 'none' }
@@ -51,9 +51,8 @@ export function previewOf(file: OpenedFile): Preview {
         }
       }
     }
-    if (ext === 'md' || ext === 'markdown') return { kind: 'markdown', text: file.text }
     return {
-      kind: 'text',
+      kind: ext === 'md' || ext === 'markdown' ? 'markdown' : 'text',
       text: file.text.slice(0, TEXT_CHARS),
       more: file.text.length > TEXT_CHARS
     }

@@ -144,9 +144,16 @@ function PreviewBody({
       )
     case 'markdown':
       return (
-        <View style={[styles.page, { backgroundColor: theme.surface }]} testID="file-markdown">
-          <MarkdownText text={preview.text} />
-        </View>
+        <>
+          <View style={[styles.page, { backgroundColor: theme.surface }]} testID="file-markdown">
+            <MarkdownText text={preview.text} />
+          </View>
+          {preview.more ? (
+            <Text style={styles.more} tone="muted" variant="footnote">
+              Showing the start of the file. {botName} can read all of it.
+            </Text>
+          ) : null}
+        </>
       )
     case 'text':
       return (
