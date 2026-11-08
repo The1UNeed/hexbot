@@ -584,6 +584,7 @@ type ProviderRowState = { busy: boolean; draft: string; open: boolean; result: n
 const idleRow: ProviderRowState = { busy: false, draft: '', open: false, result: null }
 
 export function ProvidersSettings(): React.JSX.Element {
+  const connects = useConnection(state => state.connects)
   const providers = useSettings(state => state.providers)
   const refresh = useSettings(state => state.refreshProviders)
   const setKey = useSettings(state => state.setProviderKey)
@@ -591,7 +592,7 @@ export function ProvidersSettings(): React.JSX.Element {
   const [query, setQuery] = useState('')
   useEffect(() => {
     void refresh()
-  }, [refresh])
+  }, [connects, refresh])
 
   const needle = query.trim().toLowerCase()
 

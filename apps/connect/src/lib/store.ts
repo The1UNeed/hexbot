@@ -137,6 +137,9 @@ export class MemoryStore implements Store {
 }
 
 type DbRow = Record<string, unknown>;
+// URL path segments and browser sign-in queries are untrusted. PostgreSQL UUID
+// columns reject malformed strings instead of treating them as missing records.
+const isRecordId = (id: string) => typeof id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
 const date = (value: unknown): Date | null => value ? new Date(String(value)) : null;
 const daemonRow = (r: DbRow): Daemon => ({ id: String(r.id), userId: String(r.user_id), name: String(r.name), slug: String(r.slug), tunnelId: String(r.tunnel_id), tunnelHostname: String(r.tunnel_hostname), ingressPort: Number(r.ingress_port ?? 9119), tokenHash: String(r.token_hash), identityKey: r.identity_key == null ? null : String(r.identity_key), createdAt: new Date(String(r.created_at)), lastSeenAt: date(r.last_seen_at), revokedAt: date(r.revoked_at) });
 const sessionRow = (r: DbRow): ClientSession => ({ id: String(r.id), userId: String(r.user_id), tokenHash: String(r.token_hash), deviceName: String(r.device_name), createdAt: new Date(String(r.created_at)), lastSeenAt: date(r.last_seen_at), revokedAt: date(r.revoked_at) });
@@ -183,7 +186,7 @@ export class NeonStore implements Store {
   async releaseRegistration(id: string, { userId, at }: RegistrationClaim) { await this.sql`UPDATE registrations SET user_id=NULL, approved_at=NULL WHERE id=${id} AND user_id=${userId} AND approved_at=${at.toISOString()} AND daemon_id IS NULL`; }
   async consumeRegistration(id: string) { const rows = await this.sql`UPDATE registrations SET consumed_at=now() WHERE id=${id} AND consumed_at IS NULL RETURNING id`; return rows.length === 1; }
   async createDaemon(i: Omit<Daemon, "id" | "identityKey" | "createdAt" | "lastSeenAt" | "revokedAt">) { const rows = await this.sql`INSERT INTO daemons (user_id,name,slug,tunnel_id,tunnel_hostname,ingress_port,token_hash) VALUES (${i.userId},${i.name},${i.slug},${i.tunnelId},${i.tunnelHostname},${i.ingressPort},${i.tokenHash}) RETURNING *`; return daemonRow(rows[0] as DbRow); }
-  async getDaemon(id: string) { const rows = await this.sql`SELECT * FROM daemons WHERE id=${id} LIMIT 1`; return rows[0] ? daemonRow(rows[0] as DbRow) : null; }
+  async getDaemon(id: string) { if (!isRecordId(id)) return null; const rows = await this.sql`SELECT * FROM daemons WHERE id=${id} LIMIT 1`; return rows[0] ? daemonRow(rows[0] as DbRow) : null; }
   async listDaemons(uid: string, includeRemoving = false) { return (await this.sql`SELECT * FROM daemons WHERE user_id=${uid} AND (revoked_at IS NULL OR (${includeRemoving} AND tunnel_id <> '')) ORDER BY created_at`).map(r => daemonRow(r as DbRow)); }
   async findDaemonByTokenHash(h: string) { const rows = await this.sql`SELECT * FROM daemons WHERE token_hash=${h} LIMIT 1`; return rows[0] ? daemonRow(rows[0] as DbRow) : null; }
   // Only this separate write names the new column. SELECT * and registration INSERT work before migration.
@@ -199,7 +202,7 @@ export class NeonStore implements Store {
   async findClientSessionByTokenHash(h: string) { const rows = await this.sql`SELECT * FROM client_sessions WHERE token_hash=${h} LIMIT 1`; return rows[0] ? sessionRow(rows[0] as DbRow) : null; }
   async listClientSessions(uid: string) { return (await this.sql`SELECT * FROM client_sessions WHERE user_id=${uid} AND revoked_at IS NULL ORDER BY created_at`).map(r => sessionRow(r as DbRow)); }
   async touchClientSession(id: string, at: Date) { await this.sql`UPDATE client_sessions SET last_seen_at=${at.toISOString()} WHERE id=${id}`; }
-  async revokeClientSession(id: string, uid: string, at: Date) { const rows = await this.sql`UPDATE client_sessions SET revoked_at=${at.toISOString()} WHERE id=${id} AND user_id=${uid} AND revoked_at IS NULL RETURNING id`; return rows.length === 1; }
+  async revokeClientSession(id: string, uid: string, at: Date) { if (!isRecordId(id)) return false; const rows = await this.sql`UPDATE client_sessions SET revoked_at=${at.toISOString()} WHERE id=${id} AND user_id=${uid} AND revoked_at IS NULL RETURNING id`; return rows.length === 1; }
   async approveClientAuthorization(i: Omit<ClientAuthorization, "id" | "createdAt" | "consumedAt">) {
     await this.sql`DELETE FROM client_authorizations WHERE expires_at < ${new Date(Date.now() - GRANT_CODE_RETENTION_MS).toISOString()}`;
     const rows = await this.sql`INSERT INTO client_authorizations (challenge,user_id,device_name,expires_at) VALUES (${i.challenge},${i.userId},${i.deviceName},${i.expiresAt.toISOString()}) ON CONFLICT (challenge) DO UPDATE SET device_name=EXCLUDED.device_name, expires_at=EXCLUDED.expires_at WHERE client_authorizations.user_id=EXCLUDED.user_id AND client_authorizations.consumed_at IS NULL RETURNING id`;

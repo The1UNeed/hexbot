@@ -1,7 +1,7 @@
 import pins from '../../../../../backend/hexbot-core/assets/code-tools.json' with { type: 'json' }
 import { createHash } from 'node:crypto'
 import { createWriteStream } from 'node:fs'
-import { chmod, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { chmod, lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -65,7 +65,10 @@ export async function installTool(tool: Tool, deps: ToolInstallDeps, onInstall?:
   const hash = async (path: string): Promise<string> => createHash('sha256').update(await readFile(path)).digest('hex')
   const recorded = await readFile(receipt, 'utf8').then(JSON.parse).catch(() => undefined) as { version?: string; sha256?: string } | undefined
   if (deps.exists(executable) && recorded?.version === asset.version &&
-      recorded.sha256 === await hash(executable)) return executable
+      (await lstat(executable)).isFile() && recorded.sha256 === await hash(executable)) {
+    await chmod(executable, 0o755)
+    return executable
+  }
   onInstall?.()
   await mkdir(deps.binDirectory, { recursive: true })
   await mkdir(deps.stagingDirectory, { recursive: true })

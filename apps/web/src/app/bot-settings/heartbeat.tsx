@@ -7,6 +7,7 @@ import { Textarea } from '../../components/ui/textarea'
 import { cn } from '../../lib/cn'
 import { useBrowserNotifications } from '../../lib/notify'
 import type { Bot, HeartbeatRun } from '../../lib/types'
+import { useConnection } from '../../stores/connection'
 import { useHeartbeat } from '../../stores/heartbeat'
 import { useSettings } from '../../stores/settings'
 
@@ -46,6 +47,7 @@ function outcome(run: HeartbeatRun): string {
 
 /** A bot's heartbeat: its checklist, when it runs, and what came of it. */
 export function HeartbeatTab({ bot }: { bot: Bot }) {
+  const connects = useConnection(state => state.connects)
   const enabled = useSettings(state => state.settings?.heartbeat_enabled ?? true)
   const patch = useSettings(state => state.patch)
   const status = useHeartbeat(state => state.byBot[bot.name])
@@ -63,7 +65,7 @@ export function HeartbeatTab({ bot }: { bot: Bot }) {
 
   useEffect(() => {
     void refresh(bot.name)
-  }, [bot.name, refresh])
+  }, [bot.name, connects, refresh])
 
   // The bot may change its checklist from its chat while this is open.
   // What you have typed and not saved yet stays.

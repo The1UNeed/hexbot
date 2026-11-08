@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { existsSync } from 'node:fs'
@@ -17,7 +17,9 @@ const bundleFiles = [
   'node',
   'pi/hexbot-pi',
   'pi/package-lock.json',
-  'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js'
+  'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js',
+  ...['hexbot-pdf-vm', 'manifest.json', 'kernel', 'initramfs', 'rootfs', 'kernel.provenance.json',
+    'PROVENANCE.json', 'THIRD_PARTY_NOTICES', 'SOURCES.json'].map(file => `pdf/${file}`)
 ]
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex')
 
@@ -32,10 +34,15 @@ async function fixture() {
     await writeFile(join(source, file), file)
     files[file] = sha256(file)
   }
+  const pdfManifest = JSON.stringify({ version: 1, architecture: 'aarch64',
+    files: Object.fromEntries(['kernel', 'initramfs', 'rootfs'].map(file => [file, files[`pdf/${file}`]])) })
+  await writeFile(join(source, 'pdf/manifest.json'), pdfManifest)
+  files['pdf/manifest.json'] = sha256(pdfManifest)
+  await chmod(join(source, 'pdf/hexbot-pdf-vm'), 0o755)
   const bundle = async (version: string, builtAt?: number): Promise<void> =>
     writeFile(
       join(source, 'manifest.json'),
-      JSON.stringify({ version, target: 'darwin-arm64', files, builtAt })
+      JSON.stringify({ version, target: 'darwin-arm64', pdfVm: 1, files, builtAt })
     )
   const commands: { command: string; args: string[] }[] = []
   const run: BootstrapDeps['run'] = async (command, args, _options, onLine) => {
@@ -117,6 +124,47 @@ async function fixture() {
 }
 
 describe('native runtime bootstrap', () => {
+  it.skipIf(process.platform === 'win32' || process.geteuid?.() === 0)('refuses an owned 0401 PDF helper before activation', async () => {
+    const f = await fixture()
+    try {
+      await f.bundle('1.0.0', 100)
+      await chmod(join(f.source, 'pdf/hexbot-pdf-vm'), 0o401)
+      await expect(performBootstrap(f.options('1.0.0'))).rejects.toThrow(/PDF VM runtime/)
+      expect(f.commands.some(item => item.args.includes('--select-runtime'))).toBe(false)
+      expect(f.downloads).toEqual([])
+    } finally { await f.close() }
+  })
+
+  it('refuses missing PDF capability or assets before selecting a runtime', async () => {
+    const f = await fixture()
+    try {
+      for (const damage of ['marker', 'entry', 'bytes']) {
+        await f.bundle('1.0.0', 100)
+        const path = join(f.source, 'manifest.json')
+        const manifest = JSON.parse(await readFile(path, 'utf8'))
+        if (damage === 'marker') delete manifest.pdfVm
+        if (damage === 'entry') delete manifest.files['pdf/rootfs']
+        if (damage === 'bytes') await writeFile(join(f.source, 'pdf/rootfs'), 'damaged')
+        await writeFile(path, JSON.stringify(manifest))
+        await expect(performBootstrap(f.options('1.0.0'))).rejects.toThrow(/PDF VM|checksum/)
+        expect(f.commands.some(item => item.args.includes('--select-runtime'))).toBe(false)
+        expect(f.downloads).toEqual([])
+      }
+    } finally { await f.close() }
+  })
+
+  it('keeps only the signed PDF helper authoritative while checking the guest image', async () => {
+    const f = await fixture()
+    try {
+      await f.bundle('1.0.0', 100)
+      await writeFile(join(f.source, 'pdf/hexbot-pdf-vm'), 'signed PDF helper')
+      const activation = await performBootstrap(f.options('1.0.0'))
+      const installed = JSON.parse(await readFile(join(dirname(activation!.executable), 'manifest.json'), 'utf8'))
+      expect(installed.files['pdf/hexbot-pdf-vm']).toBe(sha256('signed PDF helper'))
+      expect(installed.pdfVm).toBe(1)
+    } finally { await f.close() }
+  })
+
   it('passes only authoritative effective hashes to runtime-only setup and cleans scratch', async () => {
     const f = await fixture()
     try {

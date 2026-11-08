@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 import { cargoPackages, installedPackages, noticeEntries, reactNativeNotices, renderNotices, toolPackages } from './third-party-notices.mjs'
 
 const apache = readFile(new URL('../../LICENSE', import.meta.url), 'utf8')
@@ -93,6 +94,38 @@ test('crates come from every target, without build scripts, proc macros or Hexbo
   const crates = await cargoPackages('Cargo.toml', { targets: ['aarch64-apple-darwin', 'x86_64-unknown-linux-gnu'], run })
   assert.deepEqual(crates.map(item => item.name).sort(), ['linked', 'mac-only'])
   assert.equal(crates[0].source, `https://crates.io/crates/${crates[0].name}/1.0.0`)
+})
+
+test('vendored glib keeps its license and source without including other local crates', async t => {
+  const { root } = await fixture(t)
+  const manifest = fileURLToPath(new URL('../../third_party/rust/glib/Cargo.toml', import.meta.url))
+  const item = (name, manifest_path) => ({
+    id: name, name, version: name === 'glib' ? '0.18.5' : '1.0.0', license: 'MIT',
+    authors: ['The gtk-rs Project Developers'], source: null, manifest_path, targets: [{ kind: ['lib'] }]
+  })
+  const packages = [
+    item('hexbot', join(root, 'Cargo.toml')),
+    item('hexbot-installer', join(root, 'engine/Cargo.toml')),
+    item('another-path-crate', join(root, 'glib/Cargo.toml')),
+    item('glib', manifest)
+  ]
+  const metadata = {
+    workspace_members: ['hexbot'], packages,
+    resolve: { nodes: packages.map(item => ({
+      id: item.id,
+      deps: item.id === 'hexbot' ? packages.slice(1).map(item => ({ pkg: item.id, dep_kinds: [{ kind: null }] })) : []
+    })) }
+  }
+  const crates = await cargoPackages('Cargo.toml', {
+    targets: ['x86_64-unknown-linux-gnu'], run: async () => ({ stdout: JSON.stringify(metadata) })
+  })
+  assert.deepEqual(crates.map(item => item.name), ['glib'])
+  assert.equal(crates[0].source, 'https://crates.io/crates/glib/0.18.5')
+  const notices = await noticeEntries(crates)
+  const text = renderNotices('Installer', notices)
+  assert.match(text, /https:\/\/crates\.io\/crates\/glib\/0\.18\.5/)
+  assert.match(text, /Copyrights in the gtk-rs Project project are retained by their contributors/)
+  assert.match(text, /Permission is hereby granted|STANDARD LICENSE: MIT/)
 })
 
 test('a program the runtime carries lists its own crate and builds with its release features', async t => {

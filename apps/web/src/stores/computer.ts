@@ -15,7 +15,7 @@ import {
 } from '../lib/api'
 import type { ComputerQuality, ComputerSize, ComputerStatus } from '../lib/types'
 
-import { useConnection } from './connection'
+import { connectionRead, useConnection } from './connection'
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
@@ -38,14 +38,14 @@ export interface ComputerStoreState {
 
 export const useComputer = create<ComputerStoreState>(set => {
   const run = async (request: () => Promise<ComputerStatus>) => {
-    const target = useConnection.getState().target
+    const current = connectionRead()
 
     try {
       set({ error: null })
       const result = await request()
 
       // An answer from a daemon the app has since left describes another computer.
-      if (useConnection.getState().target !== target) {
+      if (!current()) {
         return false
       }
 
@@ -53,7 +53,9 @@ export const useComputer = create<ComputerStoreState>(set => {
 
       return true
     } catch (error) {
-      set({ error: message(error) })
+      if (current()) {
+        set({ error: message(error) })
+      }
 
       return false
     }
@@ -90,10 +92,16 @@ export const useComputer = create<ComputerStoreState>(set => {
       await run(() => computerStep(step))
     },
     async view(control, quality) {
+      const current = connectionRead()
+
       try {
-        return (await computerView(control, quality)).path
+        const { path } = await computerView(control, quality)
+
+        return current() ? path : null
       } catch (error) {
-        set({ error: message(error) })
+        if (current()) {
+          set({ error: message(error) })
+        }
 
         return null
       }

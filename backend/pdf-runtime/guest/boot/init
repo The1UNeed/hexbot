@@ -1,0 +1,19 @@
+#!/bin/busybox sh
+# Trusted image boot only. No request bytes or host-supplied commands reach sh.
+trap '/bin/busybox poweroff -f' EXIT
+set -eu
+/bin/busybox --install -s /bin
+mount -t proc -o ro,nosuid,nodev,noexec proc /proc
+mount -t sysfs -o ro,nosuid,nodev,noexec sysfs /sys
+mount -t devtmpfs -o nosuid devtmpfs /dev
+modprobe virtio_mmio
+modprobe virtio_pci
+modprobe virtio_blk
+modprobe vmw_vsock_virtio_transport
+modprobe ext4
+mkdir -p /sysroot
+mount -t ext4 -o ro /dev/vda /sysroot
+mount -o move /dev /sysroot/dev
+mount -o move /proc /sysroot/proc
+mount -o move /sys /sysroot/sys
+exec switch_root /sysroot /sbin/hexbot-pdf-worker

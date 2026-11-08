@@ -4,7 +4,13 @@ use std::io::Read;
 use std::os::unix::{ffi::OsStrExt, fs::OpenOptionsExt};
 
 const LIMIT: u64 = 1024 * 1024;
-const SIGNED_MACHO: &[&str] = &["node", "hexbot-core", "bin/rg", "bin/fd"];
+const SIGNED_MACHO: &[&str] = &[
+    "node",
+    "hexbot-core",
+    "bin/rg",
+    "bin/fd",
+    "pdf/hexbot-pdf-vm",
+];
 
 fn read_manifest(path: &Path) -> Result<Value> {
     let file = fs::OpenOptions::new()
@@ -45,6 +51,7 @@ const EXECUTABLE_FILES: &[&str] = &[
     "pi/hexbot-pi",
     "bin/rg",
     "bin/fd",
+    "pdf/hexbot-pdf-vm",
 ];
 fn verify_executable(path: &Path) -> Result<()> {
     let name = std::ffi::CString::new(path.as_os_str().as_bytes())
@@ -73,6 +80,11 @@ fn verify_executable(path: &Path) -> Result<()> {
 }
 
 fn verify_bytes(directory: &Path, manifest: &Value) -> Result<()> {
+    verify_bytes_inner(directory, manifest, false)
+}
+fn verify_bytes_inner(directory: &Path, manifest: &Value, legacy: bool) -> Result<()> {
+    #[cfg(not(target_os = "macos"))]
+    let _ = legacy;
     if manifest["target"] != target()
         || manifest["version"]
             .as_str()
@@ -83,6 +95,10 @@ fn verify_bytes(directory: &Path, manifest: &Value) -> Result<()> {
             5243,
             "Runtime identity or source chronology is invalid",
         ));
+    }
+    #[cfg(target_os = "macos")]
+    if !legacy || manifest.get("pdfVm").is_some() {
+        crate::pdf_runtime::verify(directory, manifest)?;
     }
     let root = directory.canonicalize()?;
     for (file, digest) in files(manifest)? {
@@ -166,6 +182,8 @@ fn newer_nightly(candidate: &str, selected: &str) -> bool {
 enum Selected {
     Missing,
     Verified(PathBuf, Value),
+    #[cfg(target_os = "macos")]
+    Legacy,
     Damaged(Option<Value>),
 }
 
@@ -181,6 +199,24 @@ fn selected(native: &Path) -> Selected {
         let executable = pointer.canonicalize()?;
         let record = read_manifest(&record)?;
         let mut manifest = read_manifest(&executable.with_file_name("manifest.json"))?;
+        #[cfg(target_os = "macos")]
+        if manifest.get("pdfVm").is_none()
+            && (manifest["files"]
+                .as_object()
+                .is_some_and(|files| files.keys().any(|key| key.starts_with("pdf/")))
+                || !matches!(fs::symlink_metadata(executable.with_file_name("pdf")), Err(error) if error.kind() == std::io::ErrorKind::NotFound))
+        {
+            // Losing a modern capability marker is damage, not a legacy install.
+            return Err(Error::new(4212, crate::pdf_runtime::REPAIR));
+        }
+        #[cfg(target_os = "macos")]
+        if manifest
+            .get("pdfVm")
+            .is_some_and(|value| value.as_u64() != Some(1))
+        {
+            // An unknown capability format is not an exact-byte repair of ours.
+            return Err(Error::new(4212, crate::pdf_runtime::REPAIR));
+        }
         if !executable.starts_with(native)
             || !executable.is_file()
             // Only the bundle's hashed launcher is a daemon entrypoint.
@@ -230,8 +266,14 @@ fn selected(native: &Path) -> Selected {
         Ok((executable, manifest))
     };
     match verify() {
-        Ok((path, manifest)) => match verify_bytes(path.parent().unwrap(), &manifest) {
-            Ok(()) => Selected::Verified(path, manifest),
+        Ok((path, manifest)) => match verify_bytes_inner(path.parent().unwrap(), &manifest, true) {
+            Ok(()) => {
+                #[cfg(target_os = "macos")]
+                if manifest.get("pdfVm").is_none() {
+                    return Selected::Legacy;
+                }
+                Selected::Verified(path, manifest)
+            }
             Err(_) => Selected::Damaged(Some(manifest)),
         },
         Err(_) => Selected::Damaged(None),
@@ -242,6 +284,7 @@ fn select(home: &Path, source: &Path, manifest: &Value) -> Result<PathBuf> {
     fs::create_dir_all(home)?;
     let native = services::native_directory(home)?;
     let source = source.canonicalize()?;
+    verify_bytes(&source, manifest)?;
     if native.starts_with(&source) {
         return Err(Error::new(
             5243,
@@ -258,6 +301,10 @@ fn select(home: &Path, source: &Path, manifest: &Value) -> Result<PathBuf> {
     }
     let floor = services::native_chronology_floor(&native, true)?;
     let at = manifest["builtAt"].as_u64().unwrap_or(0);
+    #[cfg(target_os = "macos")]
+    if matches!(selection, Selected::Legacy) && at <= floor {
+        return Err(Error::new(4212, crate::pdf_runtime::REPAIR));
+    }
     if let Selected::Damaged(Some(current)) = &selection
         && (at != floor
             || current["builtAt"] != floor
@@ -358,7 +405,10 @@ mod tests {
                 json!(services::file_sha256(&path).unwrap()),
             );
         }
-        let manifest = json!({"version":version,"target":target(),"builtAt":at,"files":hashes});
+        let mut manifest = json!({"version":version,"target":target(),"builtAt":at,"files":hashes});
+        if cfg!(target_os = "macos") {
+            crate::pdf_runtime::fixture(root.path(), &mut manifest);
+        }
         fs::write(root.path().join("manifest.json"), manifest.to_string()).unwrap();
         (root, manifest)
     }
@@ -669,3 +719,125 @@ mod handoff_tests;
 #[cfg(test)]
 #[path = "setup_selection_entrypoint_tests.rs"]
 mod entrypoint_tests;
+
+#[cfg(all(test, target_os = "macos"))]
+mod pdf_migration_tests {
+    use super::{tests::bundle, *};
+
+    fn legacy(home: &Path) -> PathBuf {
+        let (source, manifest) = bundle("0.1.5", 200);
+        let executable = select(home, source.path(), &manifest).unwrap();
+        let path = executable.with_file_name("manifest.json");
+        let mut old = read_manifest(&path).unwrap();
+        old.as_object_mut().unwrap().remove("pdfVm");
+        old["files"]
+            .as_object_mut()
+            .unwrap()
+            .retain(|key, _| !key.starts_with("pdf/"));
+        fs::write(&path, old.to_string()).unwrap();
+        fs::remove_dir_all(executable.with_file_name("pdf")).unwrap();
+        let record = home.join("runtime/native-current.json");
+        let mut identity = read_manifest(&record).unwrap();
+        identity["files"] = old["files"].clone();
+        fs::write(record, identity.to_string()).unwrap();
+        executable
+    }
+
+    #[test]
+    fn legacy_pdf_runtime_upgrades_only_above_the_chronology_floor() {
+        let home = tempfile::tempdir().unwrap();
+        let old = legacy(home.path());
+        let native = services::native_directory(home.path()).unwrap();
+        assert!(matches!(selected(&native), Selected::Legacy));
+        for at in [199, 200] {
+            let (candidate, manifest) = bundle("0.1.6", at);
+            assert_eq!(
+                select(home.path(), candidate.path(), &manifest)
+                    .unwrap_err()
+                    .code,
+                4212
+            );
+            assert_eq!(
+                services::selected_native_executable(home.path()).unwrap(),
+                old
+            );
+        }
+        let (candidate, manifest) = bundle("0.1.6", 201);
+        let new = select(home.path(), candidate.path(), &manifest).unwrap();
+        assert_ne!(new, old);
+        crate::pdf_runtime::verify(new.parent().unwrap(), &manifest).unwrap();
+        assert!(matches!(selected(&native), Selected::Verified(_, _)));
+    }
+
+    #[test]
+    fn damaged_or_future_pdf_capabilities_are_never_legacy_or_reused() {
+        let home = tempfile::tempdir().unwrap();
+        let (source, manifest) = bundle("0.1.6", 200);
+        let executable = select(home.path(), source.path(), &manifest).unwrap();
+        let native = services::native_directory(home.path()).unwrap();
+        fs::write(executable.with_file_name("pdf").join("rootfs"), b"damaged").unwrap();
+        assert!(matches!(selected(&native), Selected::Damaged(_)));
+        let (candidate, manifest) = bundle("0.1.7", 201);
+        assert_eq!(
+            select(home.path(), candidate.path(), &manifest)
+                .unwrap_err()
+                .code,
+            4212
+        );
+        let mut future = manifest.clone();
+        future["pdfVm"] = json!(2);
+        assert!(select(home.path(), candidate.path(), &future).is_err());
+        assert_eq!(
+            services::selected_native_executable(home.path()).unwrap(),
+            executable
+        );
+    }
+
+    #[test]
+    fn future_selected_pdf_capability_requires_explicit_repair() {
+        let home = tempfile::tempdir().unwrap();
+        let (source, manifest) = bundle("0.1.6", 200);
+        let executable = select(home.path(), source.path(), &manifest).unwrap();
+        let path = executable.with_file_name("manifest.json");
+        let mut future = read_manifest(&path).unwrap();
+        future["pdfVm"] = json!(2);
+        fs::write(path, future.to_string()).unwrap();
+        let native = services::native_directory(home.path()).unwrap();
+        assert!(matches!(selected(&native), Selected::Damaged(None)));
+        let (candidate, manifest) = bundle("0.1.6", 200);
+        assert_eq!(
+            select(home.path(), candidate.path(), &manifest)
+                .unwrap_err()
+                .code,
+            4212
+        );
+        assert_eq!(
+            services::selected_native_executable(home.path()).unwrap(),
+            executable
+        );
+    }
+
+    #[test]
+    fn modern_pdf_runtime_with_only_its_marker_removed_is_damaged() {
+        let home = tempfile::tempdir().unwrap();
+        let (source, manifest) = bundle("0.1.6", 200);
+        let executable = select(home.path(), source.path(), &manifest).unwrap();
+        let path = executable.with_file_name("manifest.json");
+        let mut damaged = read_manifest(&path).unwrap();
+        damaged.as_object_mut().unwrap().remove("pdfVm");
+        fs::write(path, damaged.to_string()).unwrap();
+        let native = services::native_directory(home.path()).unwrap();
+        assert!(matches!(selected(&native), Selected::Damaged(None)));
+        let (candidate, manifest) = bundle("0.1.7", 201);
+        assert_eq!(
+            select(home.path(), candidate.path(), &manifest)
+                .unwrap_err()
+                .code,
+            4212
+        );
+        assert_eq!(
+            services::selected_native_executable(home.path()).unwrap(),
+            executable
+        );
+    }
+}

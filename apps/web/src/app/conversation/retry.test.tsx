@@ -1198,6 +1198,9 @@ it('keeps a newer upload busy when an earlier send finishes', async () => {
   })
   fireEvent.change(field, { target: { value: 'And my notes' } })
   fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  // FileReader may still be preparing the bytes. Exercise the overlap only
+  // once the second upload has actually started.
+  await waitFor(() => expect(attaches).toBe(1))
   await act(async () => gate!.resolve())
   await waitFor(() => expect(delivered).toHaveLength(1))
   fireEvent.keyDown(field, { key: 'Enter' })

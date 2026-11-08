@@ -120,18 +120,6 @@ fn append_with_conn(
     )
 }
 
-fn accessible_bot(home: &Path, caller: &str, bot: &str) -> Result<()> {
-    identifier(bot)?;
-    let owner: Option<String> = db::open(home)?
-        .query_row("SELECT owner_id FROM bots WHERE name=?", [bot], |r| {
-            r.get(0)
-        })
-        .optional()?;
-    if owner.is_some_and(|owner| owner != caller) {
-        return Err(Error::new(4302, "not the owner"));
-    }
-    Ok(())
-}
 fn strings(p: &Value, key: &str) -> Result<Vec<String>> {
     match p.get(key) {
         None | Some(Value::Null) => Ok(vec![]),
@@ -195,7 +183,7 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
                 }
                 let mut bots = strings(p, "members")?;
                 for bot in &bots {
-                    accessible_bot(home, caller, bot)?;
+                    bot_owner(home, caller, bot)?;
                 }
                 bots.sort();
                 bots.dedup();
@@ -296,7 +284,7 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
                 // ordered after deletion must report room not found.
                 get_with_conn(&tx, caller, room)?;
                 let bot = required(p, "bot")?;
-                accessible_bot(home, caller, bot)?;
+                bot_owner(home, caller, bot)?;
                 tx.execute(
                     "INSERT INTO room_members VALUES (?,'bot',?,?,?,NULL,0) ON CONFLICT(room_id,member_kind,member_id) DO UPDATE SET left_at=NULL,added_by=excluded.added_by,added_at=excluded.added_at,last_read_seq=0",
                     params![room, bot, caller, now()],
@@ -1330,7 +1318,7 @@ fn validate_limits(p: &Value) -> Result<()> {
             matches!(
                 key.as_str(),
                 "bot_turns_per_human_turn" | "budget_tokens_per_human_turn"
-            ) && (value.is_null() || value.as_u64().is_some())
+            ) && (value.is_null() || value.as_i64().is_some_and(|n| n >= 0))
         })
     });
     if !valid {

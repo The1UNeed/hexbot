@@ -101,23 +101,36 @@ pub(crate) fn file_descriptor() -> Value {
 }
 
 fn path(home: &Path, bot: &str) -> Result<PathBuf> {
-    Ok(crate::catalog::profile(home, bot)?.join(FILE))
+    let path = crate::catalog::profile(home, bot)?.join(FILE);
+    if fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(Error::new(4202, "HEARTBEAT.md must not be a symlink."));
+    }
+    Ok(path)
 }
 
 /// The bot's checklist. A bot without one gets the placeholder, written so
 /// the file is there to open beside its soul.
 pub(crate) fn read(home: &Path, bot: &str) -> Result<String> {
     let path = path(home, bot)?;
-    match fs::read_to_string(&path) {
-        Ok(text) => Ok(text),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            if path.parent().is_some_and(Path::is_dir) {
-                common::atomic_write(&path, PLACEHOLDER.as_bytes())?;
-            }
-            Ok(PLACEHOLDER.to_owned())
+    if !path.try_exists()? {
+        if path.parent().is_some_and(Path::is_dir) {
+            common::atomic_write(&path, PLACEHOLDER.as_bytes())?;
         }
-        Err(error) => Err(error.into()),
+        return Ok(PLACEHOLDER.to_owned());
     }
+    let text = common::read_regular_text(&path, FILE_CAP * 4)?;
+    check_size(&text)?;
+    Ok(text)
+}
+
+fn check_size(text: &str) -> Result<()> {
+    if text.chars().count() > FILE_CAP {
+        return Err(Error::new(
+            4202,
+            format!("Keep HEARTBEAT.md under {FILE_CAP} characters."),
+        ));
+    }
+    Ok(())
 }
 
 /// Replaces the checklist. Open Heartbeat tabs follow the change.
@@ -128,12 +141,7 @@ pub(crate) fn write(
     bot: &str,
     text: &str,
 ) -> Result<()> {
-    if text.chars().count() > FILE_CAP {
-        return Err(Error::new(
-            4202,
-            format!("Keep HEARTBEAT.md under {FILE_CAP} characters."),
-        ));
-    }
+    check_size(text)?;
     common::atomic_write(&path(home, bot)?, text.as_bytes())?;
     events.emit(owner, None, "hexbot.heartbeat.changed", json!({"bot":bot}));
     Ok(())
@@ -1049,6 +1057,66 @@ mod tests {
         );
         write(home.path(), &events, "local", "owl", "- Has Sam replied?").unwrap();
         assert_eq!(read(home.path(), "owl").unwrap(), "- Has Sam replied?");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_checklist_cannot_follow_external_or_dangling_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let home = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let profile = home.path().join("profiles/owl");
+        fs::create_dir_all(&profile).unwrap();
+        let source = outside.path().join("private.txt");
+        fs::write(&source, "private text").unwrap();
+        let checklist = profile.join(FILE);
+        let events = EventHub::new();
+        for target in [&source, &outside.path().join("missing.txt")] {
+            symlink(target, &checklist).unwrap();
+            assert!(read(home.path(), "owl").is_err());
+            assert!(write(home.path(), &events, "local", "owl", "new checklist").is_err());
+            assert!(
+                fs::symlink_metadata(&checklist)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+            fs::remove_file(&checklist).unwrap();
+        }
+        assert_eq!(fs::read_to_string(source).unwrap(), "private text");
+    }
+
+    #[test]
+    fn checklist_reads_enforce_the_character_and_byte_limits() {
+        let home = tempfile::tempdir().unwrap();
+        let profile = home.path().join("profiles/owl");
+        fs::create_dir_all(&profile).unwrap();
+        let checklist = profile.join(FILE);
+        let at_limit = "🦉".repeat(FILE_CAP);
+        fs::write(&checklist, &at_limit).unwrap();
+        assert_eq!(read(home.path(), "owl").unwrap(), at_limit);
+        for text in ["x".repeat(FILE_CAP + 1), "🦉".repeat(FILE_CAP + 1)] {
+            fs::write(&checklist, text).unwrap();
+            assert!(read(home.path(), "owl").is_err());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_checklist_is_refused_without_waiting_for_a_writer() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let home = tempfile::tempdir().unwrap();
+        let profile = home.path().join("profiles/owl");
+        fs::create_dir_all(&profile).unwrap();
+        let path = std::ffi::CString::new(profile.join(FILE).as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        let started = std::time::Instant::now();
+        let error = read(home.path(), "owl").unwrap_err();
+        assert_eq!(error.code, 4202);
+        assert!(error.message.contains("regular file"));
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]

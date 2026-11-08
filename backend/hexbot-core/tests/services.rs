@@ -256,8 +256,16 @@ async fn native_archive_child() {
             "node": format!("{:x}", Sha256::digest(b"signed node")),
             "hexbot-core": format!("{:x}", Sha256::digest(b"signed daemon"))
         });
-        let metadata =
-            serde_json::to_vec(&json!({"version":"9.8.7","builtAt":1,"files":files})).unwrap();
+        #[cfg(target_os = "macos")]
+        let (files, pdf_entries) = pdf_archive_entries(files);
+        let metadata = json!({"version":"9.8.7","builtAt":1,"target":format!("{}-{}",std::env::consts::OS,std::env::consts::ARCH),"files":files});
+        #[cfg(target_os = "macos")]
+        let metadata = {
+            let mut value = metadata;
+            value["pdfVm"] = json!(1);
+            value
+        };
+        let metadata = serde_json::to_vec(&metadata).unwrap();
         for (name, bytes) in [
             ("manifest.json", metadata.as_slice()),
             ("node", b"signed node".as_slice()),
@@ -268,6 +276,16 @@ async fn native_archive_child() {
             header.set_size(bytes.len() as u64);
             header.set_cksum();
             archive.append_data(&mut header, name, bytes).unwrap();
+        }
+        #[cfg(target_os = "macos")]
+        for (name, bytes) in pdf_entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_mode(0o700);
+            header.set_size(bytes.len() as u64);
+            header.set_cksum();
+            archive
+                .append_data(&mut header, name, bytes.as_slice())
+                .unwrap();
         }
         if unsafe_link {
             let mut header = tar::Header::new_gnu();
@@ -540,6 +558,71 @@ async fn native_update_child() {
     .unwrap()
     .unwrap();
     assert_eq!(result["accepted"], true);
+    #[cfg(target_os = "macos")]
+    {
+        let result = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let result =
+                    services::call(home.path(), "local", "hexbot.update.status", &json!({}))
+                        .await
+                        .unwrap()
+                        .unwrap();
+                if result["status"] == "failed" {
+                    break result;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            result["message"]
+                .as_str()
+                .unwrap()
+                .contains("Update or repair")
+        );
+        assert!(!home.path().join("runtime/native-current.json").exists());
+        assert!(services::take_restart(home.path()).await.unwrap().is_none());
+
+        // A bare binary cannot supply the required PDF runtime. Retry with a
+        // signed archive that satisfies the production bundle verifier.
+        let (files, mut entries) = pdf_archive_entries(json!({
+            "hexbot": format!("{:x}", Sha256::digest(binary))
+        }));
+        let metadata = json!({"version":"9.8.7","builtAt":1,
+            "target":format!("{}-{}",std::env::consts::OS,std::env::consts::ARCH),
+            "pdfVm":1,"files":files});
+        entries.push(("hexbot".into(), binary.to_vec()));
+        entries.push((
+            "manifest.json".into(),
+            serde_json::to_vec(&metadata).unwrap(),
+        ));
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        for (name, bytes) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_mode(0o700);
+            header.set_size(bytes.len() as u64);
+            header.set_cksum();
+            archive
+                .append_data(&mut header, name, bytes.as_slice())
+                .unwrap();
+        }
+        let archive = archive.into_inner().unwrap().finish().unwrap();
+        *mock.data.manifest.lock().await = json!({"version":"9.8.7","builtAt":1,
+            "target":metadata["target"],"path":"binary","format":"tar.gz",
+            "entrypoint":"hexbot","sha256":format!("{:x}",Sha256::digest(&archive))});
+        *mock.data.binary.lock().await = archive;
+        services::call(
+            home.path(),
+            "local",
+            "hexbot.update.request",
+            &json!({"version":"9.8.7"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    }
     let path = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if let Some(path) = services::take_restart(home.path()).await.unwrap() {
@@ -951,4 +1034,45 @@ async fn registration_with_old_connect_retries_its_strict_poll_schema() {
             .unwrap()["public_key"]
     );
     services::shutdown(home.path()).await.unwrap();
+}
+
+#[cfg(target_os = "macos")]
+fn pdf_archive_entries(mut files: Value) -> (Value, Vec<(String, Vec<u8>)>) {
+    use sha2::{Digest, Sha256};
+    let arm = std::env::consts::ARCH == "aarch64";
+    let cpu = if arm {
+        0x0100_000c_u32
+    } else {
+        0x0100_0007_u32
+    };
+    let mut entries = vec![(
+        "pdf/hexbot-pdf-vm".to_string(),
+        [vec![0xcf, 0xfa, 0xed, 0xfe], cpu.to_le_bytes().to_vec()].concat(),
+    )];
+    let mut assets = serde_json::Map::new();
+    for name in [
+        "kernel",
+        "initramfs",
+        "rootfs",
+        "kernel.provenance.json",
+        "PROVENANCE.json",
+        "THIRD_PARTY_NOTICES",
+        "SOURCES.json",
+    ] {
+        let bytes = name.as_bytes().to_vec();
+        if ["kernel", "initramfs", "rootfs"].contains(&name) {
+            assets.insert(name.into(), json!(format!("{:x}", Sha256::digest(&bytes))));
+        }
+        entries.push((format!("pdf/{name}"), bytes));
+    }
+    entries.push((
+        "pdf/manifest.json".into(),
+        json!({"version":1,"architecture":if arm {"aarch64"} else {"x86_64"},"files":assets})
+            .to_string()
+            .into_bytes(),
+    ));
+    for (name, bytes) in &entries {
+        files[name] = json!(format!("{:x}", Sha256::digest(bytes)));
+    }
+    (files, entries)
 }

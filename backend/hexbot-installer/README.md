@@ -13,7 +13,9 @@ the receipt, daemon status JSON when available, and warnings.
 `fetch_manifest(base, track)` and `default_track(base)` fetch metadata only.
 `Manifest::artifact(target, option)` exposes the selected download size before
 installation. `apply` fetches only that option's payload. `repair` uses the
-receipt's option and track with the current manifest version. Receipts are
+receipt's option and track with the current manifest version. Without a receipt,
+it repairs the detected install, using its app track or the default track for
+Headless. Receipts are
 written atomically after successful operations. If a later step fails, the
 previous receipt is retained; files already installed by setup may remain.
 Status is best-effort after installation. Headless repair preserves the LAN
@@ -49,6 +51,17 @@ replacing the previous bundle. Linux installs write an executable AppImage
 and desktop entry; icon extraction is skipped and reported as a warning.
 Detected deb installs must be removed with the package manager before a
 change or uninstall. Installer operations do not run sudo.
+
+Mac Full and Headless payloads include the native PDF VM helper and guest. The
+engine requires the `pdfVm: 1` capability, checks all nine PDF files and size
+limits, and checks the helper architecture before replacing an
+app or running setup. Update or repair follows the same path. Missing or damaged
+assets report an actionable repair error while retaining the previous receipt
+and install. Client and Linux installation behavior is unchanged. Source/license
+completion is enforced during controlled release staging; rendering never
+downloads a guest or corresponding-source archive. Headless verifies every PDF
+hash. Full permits the helper hash to change during app signing; its guest
+assets and metadata still require exact hashes.
 
 Uninstall keeps bot data unless `remove_data` is true. It removes the active
 runtime launcher and selection file so retained runtime caches are not

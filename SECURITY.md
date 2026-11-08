@@ -53,7 +53,19 @@ Windows releases. See [the remaining Windows requirements](docs/windows-security
 - Auto runs shell commands and Python code in a workspace sandbox. macOS uses
   `sandbox-exec` to deny inbound and outbound network access, writes outside
   the workspace, and reads of protected credential paths. Linux uses bubblewrap
-  with private network and process namespaces and masked credential paths.
+  with private user, network and process namespaces and masked credential paths.
+  Confined Linux commands require user namespaces and fail if one cannot start.
+  For an ordinary nonroot daemon user, the 512-task limit is installed before
+  interpreter startup hooks. Namespace-local accounting requires upstream
+  Linux 5.14 or later, or a vendor backport of its
+  [user namespace rlimit accounting](https://github.com/torvalds/linux/commit/c54b245d011855ea91c5beff07f1db74143ce614).
+  With that accounting, unrelated tasks in containers sharing the host UID
+  do not consume this budget, and descendant user namespaces retain the
+  ancestor's limit. Older kernels retain global UID accounting: unrelated tasks
+  can exhaust the fixed limit and prevent commands from starting. Legacy-kernel
+  compatibility has not been verified.
+  Root and initial-namespace resource capabilities bypass Linux's process limit;
+  inherited outer limits and system resource exhaustion can still prevent startup.
   Writable roots include the working directory, daemon-selected artifact and
   attachment folders, and temporary folders. On macOS these include shared `/tmp`.
   Runtime selection (`runtime/native-current.json`) and managed executables in
@@ -318,3 +330,35 @@ or pull requests. Third-party service vulnerabilities belong with those provider
 The coordinated disclosure window is 90 days from the report or until a fix is
 released, whichever comes first. Reporters are credited in release notes unless
 they request anonymity. Keep reproduction details private while a fix is prepared.
+
+## PDF attachments
+
+On macOS, PDF attachments default to a disposable Linux VM with 768 MiB guest
+RAM, one vCPU, no network interface, no host directory or file mounts, and
+verified read-only kernel, initramfs and root filesystem assets. This bounds
+Poppler and its guest descendants. It does not claim total host RSS is at most
+768 MiB: Virtualization framework overhead and the daemon's separately bounded
+PNG output and encoding allocations are additional. The helper reads a bounded
+regular temporary PDF without following its final symlink and streams bytes
+over a private virtio socket. Only bounded PNG bytes return. The daemon still
+validates PNG framing, CRCs, dimensions and encoded size before staging files.
+The existing 120-second deadline, one-render reservation and owned process
+cleanup apply to the helper and its VM lifecycle.
+
+The runtime is selected beside the native daemon, never through PATH or a
+first-use network download. Source builds may explicitly select an absolute
+trusted `HEXBOT_PDF_RUNTIME_DIR`. The daemon resolves these paths before
+starting the VM helper with an empty environment, excluding provider keys and
+loader hooks. Explicit host renderers retain their existing environment. Missing, damaged or unsupported runtimes fail
+with installer Update or repair guidance. Intel builds under Rosetta on Apple
+silicon require the native Apple silicon Full or Headless runtime. A verified
+legacy runtime lacking `pdfVm: 1` cannot satisfy a new app; replacement preserves
+the recorded chronology floor and existing explicit repair policy.
+
+Advanced deployments can explicitly select `attachments.pdf_backend: host`
+and an optional `attachments.pdf_renderer` in the daemon config. This opts out
+of VM isolation on macOS, which then has no enforced PDF parser memory limit.
+A legacy renderer override alone does not select host execution. Linux keeps
+its native Poppler path and existing process limits; PDF page rendering on
+Windows daemons and explicit VM selection on unsupported platforms fail instead
+of falling back.

@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { promisify } from 'node:util'
 import { makeNativeUpdate } from './make-native-update.mjs'
+import { pdfFixture } from './fixtures/pdf-runtime.mjs'
 
 const run = promisify(execFile)
 
@@ -15,7 +16,8 @@ test('native updater manifests use Rust targets and checksummed relocatable arch
   try {
     const bundle = join(root, 'bundle'); await mkdir(bundle)
     await writeFile(join(bundle, 'hexbot'), '#!/bin/sh\nexit 0\n')
-    await writeFile(join(bundle, 'manifest.json'), JSON.stringify({ version: '1.2.3-nightly.20260924.1', target: 'darwin-arm64' }))
+    const pdf = await pdfFixture(join(bundle, 'pdf'))
+    await writeFile(join(bundle, 'manifest.json'), JSON.stringify({ version: '1.2.3-nightly.20260924.1', target: 'darwin-arm64', pdfVm: 1, files: pdf.runtimeFiles }))
     const result = await makeNativeUpdate(bundle, join(root, 'updates'))
     assert.equal(result.manifest.target, 'macos-aarch64')
     assert.equal(result.manifest.entrypoint, 'hexbot')
@@ -39,7 +41,7 @@ test('release archives the signed app runtime on both macOS targets and the stag
   const script = step[1].replace(/^          /gm, '')
   const root = await mkdtemp(join(tmpdir(), 'hexbot-release-native-'))
   try {
-    for (const file of ['make-native-update.mjs', 'native-runtime.mjs', 'native-build.mjs', 'third-party-notices.mjs']) {
+    for (const file of ['make-native-update.mjs', 'native-runtime.mjs', 'native-build.mjs', 'third-party-notices.mjs', 'pdf-runtime.mjs']) {
       await mkdir(join(root, 'scripts/desktop'), { recursive: true })
       await cp(new URL(file, import.meta.url), join(root, 'scripts/desktop', file))
     }
@@ -55,10 +57,12 @@ test('release archives the signed app runtime on both macOS targets and the stag
       await rm(join(root, 'apps/desktop/release'), { recursive: true, force: true })
       for (const [bundle, signature] of [[staged, 'unsigned'], [packaged.replace('mac-arm64', target === 'darwin-x64' ? 'mac' : 'mac-arm64'), 'signed']]) {
         await mkdir(bundle, { recursive: true })
-        await writeFile(join(bundle, 'manifest.json'), JSON.stringify({ version: '1.2.3', target, builtAt: 123, files: Object.fromEntries(['node', 'hexbot-core'].map(file => [file, createHash('sha256').update(`unsigned ${target} ${file}`).digest('hex')])) }))
+        const pdf = target.startsWith('darwin') ? await pdfFixture(join(bundle, 'pdf'), { arch: target.split('-')[1] }) : undefined
+        await writeFile(join(bundle, 'manifest.json'), JSON.stringify({ version: '1.2.3', target, builtAt: 123, ...(pdf ? { pdfVm: 1 } : {}),
+          files: { ...Object.fromEntries(['node', 'hexbot-core'].map(file => [file, createHash('sha256').update(`unsigned ${target} ${file}`).digest('hex')])), ...pdf?.runtimeFiles } }))
         for (const file of ['node', 'hexbot-core']) await writeFile(join(bundle, file), `${signature} ${target} ${file}`)
       }
-      await run('bash', ['-c', script], { cwd: root, env: { ...process.env, RUNNER_OS: runner } })
+      await run('bash', ['-c', script], { cwd: root, env: { ...process.env, RUNNER_OS: runner, CHANNEL: 'dev' } })
       const updateTarget = target.replace('darwin', 'macos').replace('arm64', 'aarch64').replace('x64', 'x86_64')
       const directory = join(root, 'native-updates/daemon/native/1.2.3', updateTarget)
       const archive = join(directory, `hexbot-native-1.2.3-${updateTarget}.tar.gz`)

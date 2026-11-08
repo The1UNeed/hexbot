@@ -9,7 +9,7 @@ import { hashToken, randomToken } from "./tokens";
  * with a one-time code, which the daemon exchanges (with its verifier and its own
  * token) for a login grant. Codes are useless to anyone who only sees the URL.
  */
-export interface BrowserSignInParams { daemon?: string; state?: string; code_challenge?: string; redirect_uri?: string }
+export interface BrowserSignInParams { daemon?: string | string[]; state?: string | string[]; code_challenge?: string | string[]; redirect_uri?: string | string[] }
 export const GRANT_CODE_TTL_MS = 5 * 60_000;
 const challengeShape = /^[A-Za-z0-9_-]{43}$/;
 
@@ -24,6 +24,7 @@ export async function startBrowserSignIn(
   { store, userId, deviceName, fakeTunnels }: { store: Store; userId: string | null; deviceName: string; fakeTunnels: boolean },
 ): Promise<BrowserSignInResult> {
   const { daemon: daemonId = "", state = "", code_challenge: challenge = "", redirect_uri: redirectUri = "" } = params;
+  if (typeof daemonId !== "string" || typeof state !== "string" || typeof challenge !== "string" || typeof redirectUri !== "string") return { kind: "invalid", message: "The sign-in request is incomplete. Start again from the daemon." };
   const daemon = daemonId ? await store.getDaemon(daemonId) : null;
   if (!daemon || daemon.revokedAt) return { kind: "invalid", message: "This daemon is not registered with Connect. Run hexbot connect on it first." };
   if (!state || state.length > 256 || !challengeShape.test(challenge)) return { kind: "invalid", message: "The sign-in request is incomplete. Start again from the daemon." };

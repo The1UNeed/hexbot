@@ -155,9 +155,39 @@ jobs:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: pnpm mobile:testflight --ref "$GITHUB_SHA"
 
+  pdf-runtime:
+    name: Build PDF guest ${{ matrix.architecture }}
+    needs: [preflight, check]
+    if: needs.preflight.outputs.build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: aarch64
+            runner: ubuntu-24.04-arm
+          - architecture: x86_64
+            runner: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      # The producer refuses prototype locks, missing native package/image pins,
+      # incomplete notices and absent/unverified corresponding sources. It uses
+      # one bounded native container without host mounts or extra privileges.
+      - name: Build and verify the guest and complete source companion
+        run: node scripts/desktop/build-pdf-guest.mjs '${{ matrix.architecture }}' "$RUNNER_TEMP/pdf-output" '${{ needs.preflight.outputs.channel }}' '${{ needs.preflight.outputs.version }}'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pdf-runtime-${{ matrix.architecture }}
+          path: ${{ runner.temp }}/pdf-output/
+          if-no-files-found: error
+
   build:
     name: Build ${{ matrix.edition }} ${{ matrix.build }}
-    needs: [preflight, check]
+    needs: [preflight, check, pdf-runtime]
     if: needs.preflight.outputs.build == 'true'
     strategy:
       fail-fast: false
@@ -204,6 +234,24 @@ jobs:
           key: ${{ matrix.build }}
       - name: Set the release version
         run: node scripts/desktop/set-version.mjs "$VERSION"
+      - name: Receive the matching PDF guest and source companion
+        if: matrix.edition == 'full' && runner.os == 'macOS'
+        uses: actions/download-artifact@v7
+        with:
+          name: pdf-runtime-${{ matrix.build == 'mac-arm64' && 'aarch64' || 'x86_64' }}
+          path: ${{ runner.temp }}/pdf-runtime
+      - uses: actions/setup-python@v6
+        if: matrix.edition == 'full' && runner.os == 'macOS'
+        with:
+          python-version: '3.13'
+      - name: Select the verified PDF build inputs
+        if: matrix.edition == 'full' && runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          echo "HEXBOT_PDF_ASSETS_DIRECTORY=$RUNNER_TEMP/pdf-runtime/assets" >> "$GITHUB_ENV"
+          archive=$(node -p 'JSON.parse(require("fs").readFileSync(process.env.RUNNER_TEMP + "/pdf-runtime/assets/SOURCES.json")).archive.file')
+          [ -f "$RUNNER_TEMP/pdf-runtime/$archive" ]
+          echo "HEXBOT_PDF_SOURCE_ARCHIVE=$RUNNER_TEMP/pdf-runtime/$archive" >> "$GITHUB_ENV"
       - name: Prepare macOS signing
         if: runner.os == 'macOS'
         env:
@@ -476,6 +524,11 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 26
+      - name: Require public PDF source hosting
+        if: env.HAS_R2 != 'true'
+        run: |
+          echo '::error::R2 is required before publishing Full or Headless packages with immutable PDF source URLs.'
+          exit 1
       - uses: actions/download-artifact@v8
         with:
           path: artifacts
@@ -525,6 +578,8 @@ jobs:
           AWS_ENDPOINT_URL: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
         run: |
           set -euo pipefail
+          # Source URLs must work before any binary or mutable feed is published.
+          node scripts/desktop/publish-pdf-sources.mjs dist/updates "$VERSION" "$R2_BUCKET"
           # Packages first (their names carry the version, so they never
           # change once uploaded), then the feed files that point at them.
           aws s3 sync dist/updates "s3://$R2_BUCKET/" --exclude '*.yml' --exclude 'install/stable.json' --exclude 'install/stable.txt' --exclude 'install/nightly.json' --exclude 'install/nightly.txt' --no-progress \

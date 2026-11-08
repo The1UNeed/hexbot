@@ -30,6 +30,10 @@ test('custom signing scopes unsigned executable memory to bundled Node', async (
       assert.equal(node.hardenedRuntime, true)
       assert.equal(node.timestamp, true)
       assert.match(await readFile(node.entitlements, 'utf8'), /allow-unsigned-executable-memory/)
+      const pdf = options.optionsForFile(join(app, 'Contents/Resources/hexbot-native/pdf/hexbot-pdf-vm'))
+      const pdfEntitlements = await readFile(pdf.entitlements, 'utf8')
+      assert.match(pdfEntitlements, /com\.apple\.security\.virtualization/)
+      assert.doesNotMatch(pdfEntitlements, /allow-unsigned-executable-memory/)
       assert.doesNotMatch(await readFile(resolve('apps/desktop/entitlements.mac.plist'), 'utf8'), /allow-unsigned-executable-memory/)
     }
   })
@@ -51,9 +55,15 @@ test('ad-hoc Electron bundles launch without hardened library validation', { ski
   const electron = require('electron')
   const app = join(root, 'Hexbot.app')
   await cp(resolve(dirname(electron), '../..'), app, { recursive: true, verbatimSymlinks: true })
+  const pdf = join(app, 'Contents/Resources/hexbot-native/pdf/hexbot-pdf-vm')
+  await mkdir(dirname(pdf), { recursive: true })
+  await cp(process.execPath, pdf)
   await afterPack.default({ electronPlatformName: 'darwin', appOutDir: root, packager: { appInfo: { productFilename: 'Hexbot' } } })
   const details = await run('codesign', ['-dv', app])
   assert.doesNotMatch(details.stderr, /flags=.*\bruntime\b/)
+  const pdfEntitlements = await run('codesign', ['-d', '--entitlements', ':-', pdf])
+  assert.match(pdfEntitlements.stdout, /com\.apple\.security\.virtualization/)
+  await run('codesign', ['--verify', '--deep', '--strict', app])
   const result = await run(join(app, 'Contents/MacOS/Electron'), ['-e', 'console.log("app launched")'], {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
   })
@@ -88,6 +98,9 @@ test('electron-builder applies the custom entitlements to signed app contents', 
     const native = join(app, 'Contents/Resources/hexbot-native')
     await mkdir(native)
     await cp(process.execPath, join(native, 'node'))
+    const pdf = join(native, 'pdf/hexbot-pdf-vm')
+    await mkdir(dirname(pdf), { recursive: true })
+    await cp(process.execPath, pdf)
     await macSign.default({
       app, platform: 'darwin', identity: '-', identityValidation: false,
       version: require('electron/package.json').version, preAutoEntitlements: false,
@@ -99,11 +112,12 @@ test('electron-builder applies the custom entitlements to signed app contents', 
       platformSpecificBuildOptions: {}
     })
     for (const [file, unsignedMemory] of [[app, false], [join(native, 'node'), true],
-      [join(app, 'Contents/Frameworks/Electron Helper.app'), false]]) {
+      [join(app, 'Contents/Frameworks/Electron Helper.app'), false], [pdf, false]]) {
       const details = await run('codesign', ['-dv', file])
       assert.match(details.stderr, /flags=.*\bruntime\b/)
       const entitlements = await run('codesign', ['-d', '--entitlements', ':-', file])
       assert.equal(/<key>com\.apple\.security\.cs\.allow-unsigned-executable-memory<\/key>\s*<true\s*\/>/.test(entitlements.stdout), unsignedMemory)
+      assert.equal(/com\.apple\.security\.virtualization/.test(entitlements.stdout), file === pdf)
     }
   } finally { await rm(root, { recursive: true, force: true }) }
 })

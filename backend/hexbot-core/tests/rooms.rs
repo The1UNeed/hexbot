@@ -105,6 +105,39 @@ fn responders_obey_mentions_and_wait_for_humans() {
         .is_empty()
     );
 }
+
+#[test]
+fn missing_bots_cannot_create_or_join_a_room() {
+    let h = setup();
+    let room = create(&h);
+    let before = call(&h, "get", json!({"id":room}));
+    for (method, params) in [
+        (
+            "hexbot.rooms.create",
+            json!({"name":"Broken","members":["owl","missing"],"main_bot":"missing"}),
+        ),
+        (
+            "hexbot.rooms.add_member",
+            json!({"id":room,"bot":"missing"}),
+        ),
+    ] {
+        assert_eq!(
+            rooms::call(h.path(), "alice", method, &params)
+                .unwrap()
+                .unwrap_err()
+                .code,
+            4205
+        );
+    }
+    assert_eq!(
+        call(&h, "list", json!({}))["rooms"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(call(&h, "get", json!({"id":room})), before);
+}
 #[tokio::test]
 async fn main_bot_stays_out_of_messages_for_another_bot() {
     let h = setup();
@@ -357,20 +390,25 @@ async fn room_limits_use_the_saved_keys_and_cannot_lift_deployment_budgets() {
         json!({"room_bot_turns_per_human_turn":1}),
         json!({"bot_turns_per_human_turn":-1}),
         json!({"budget_tokens_per_human_turn":1.5}),
+        json!({"budget_tokens_per_human_turn":u64::MAX}),
+        json!({"bot_turns_per_human_turn":i64::MAX as u64 + 1}),
         json!([]),
     ] {
-        assert_eq!(
-            rooms::call(
-                h.path(),
-                "alice",
-                "hexbot.rooms.update",
-                &json!({"id":room,"limits":limits})
-            )
-            .unwrap()
-            .unwrap_err()
-            .code,
-            4202
-        );
+        for (method, params) in [
+            ("hexbot.rooms.update", json!({"id":room,"limits":limits})),
+            (
+                "hexbot.rooms.create",
+                json!({"name":"R","members":["owl"],"limits":limits}),
+            ),
+        ] {
+            assert_eq!(
+                rooms::call(h.path(), "alice", method, &params)
+                    .unwrap()
+                    .unwrap_err()
+                    .code,
+                4202
+            );
+        }
     }
     assert_eq!(
         rooms::call(
@@ -383,6 +421,12 @@ async fn room_limits_use_the_saved_keys_and_cannot_lift_deployment_budgets() {
         .unwrap_err()
         .code,
         4202
+    );
+    let largest =
+        json!({"bot_turns_per_human_turn":i64::MAX,"budget_tokens_per_human_turn":i64::MAX});
+    assert_eq!(
+        call(&h, "update", json!({"id":room,"limits":largest}))["room"]["limits"],
+        largest
     );
     // The per-message token budget saved by room settings is enforced.
     call(

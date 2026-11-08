@@ -1,6 +1,10 @@
 # Auto-generated files — collapse diffs and exclude from language stats
 pnpm-lock.yaml linguist-generated=true
 
+# Preserve upstream whitespace in vendored source and patch context.
+third_party/rust/glib/** -whitespace
+patches/*.patch -whitespace
+
 # Enforce LF for scripts that run inside Linux containers.
 # Without this, Windows checkout converts to CRLF and breaks `exec` in the
 # container entrypoint with "no such file or directory".

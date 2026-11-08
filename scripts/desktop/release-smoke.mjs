@@ -21,6 +21,7 @@ import { finalizeRelease } from './finalize-release.mjs'
 import { MIN_INSTALLER } from './make-install-manifest.mjs'
 import { setVersion } from './set-version.mjs'
 import { signUpdates, testKey, testPublicKey, verifies } from './update-signing.mjs'
+import { pdfFixture } from './fixtures/pdf-runtime.mjs'
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const scripts = join(repositoryRoot, 'scripts/desktop')
@@ -169,11 +170,13 @@ try {
       await mkdir(bundle, { recursive: true })
       await mkdir(install, { recursive: true })
       await writeFile(join(bundle, 'hexbot'), target)
+      const pdf = buildTarget.startsWith('darwin') ? await pdfFixture(join(bundle, 'pdf'), { arch: buildTarget.split('-')[1] }) : undefined
       await writeFile(join(bundle, 'manifest.json'), JSON.stringify({
-        version, target: buildTarget, builtAt: 1,
-        files: { hexbot: createHash('sha256').update(target).digest('hex') }
+        version, target: buildTarget, builtAt: 1, ...(pdf ? { pdfVm: 1 } : {}),
+        files: { hexbot: createHash('sha256').update(target).digest('hex'), ...pdf?.runtimeFiles }
       }))
-      await run(process.execPath, [join(scripts, 'make-native-update.mjs'), bundle, feedRoot])
+      await run(process.execPath, [join(scripts, 'make-native-update.mjs'), bundle, feedRoot],
+        { env: { ...process.env, HEXBOT_CHANNEL: 'dev' } })
       const native = JSON.parse(await readFile(join(feedRoot, 'daemon/native', version, target, 'manifest.json'), 'utf8'))
       assert.equal(native.path, `daemon/native/${version}/${target}/hexbot-native-${version}-${target}.tar.gz`)
       await writeFile(join(install, `hexbot-install-${version}-${target}`), target)

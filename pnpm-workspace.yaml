@@ -25,6 +25,15 @@ ignoredBuiltDependencies:
 # desktop postinstall into node_modules and never enters the store.
 sideEffectsCache: false
 
+# Security backports retain the dependency APIs Expo and the build tools use.
+patchedDependencies:
+  deepmerge@4.3.1: patches/deepmerge@4.3.1.patch
+  glob@10.5.0: patches/glob@10.5.0.patch
+  glob@13.0.6: patches/glob@13.0.6.patch
+  minimatch@9.0.9: patches/minimatch@9.0.9.patch
+  minimatch@10.2.6: patches/minimatch@10.2.6.patch
+  ts-deepmerge@6.2.0: patches/ts-deepmerge@6.2.0.patch
+
 overrides:
   lodash: 4.18.1
   yauzl: ^3.3.1
@@ -56,7 +65,7 @@ overrides:
   # eas-cli pins these exactly; its latest release still pins the old ones.
   ajv@^8: 8.20.0
   diff@^7: 8.0.4
-  joi@^17: 17.13.8
+  joi@^17: 17.13.9
   minimatch@^5: 5.1.9
   uuid@<11: 11.1.1
   yaml@^2: 2.9.0
@@ -69,6 +78,7 @@ minimumReleaseAgeExclude:
   - devalue@5.9.3
   - seroval@1.6.11
   - node-forge@1.4.2
+  - joi@17.13.9
   # Already locked by #146; any re-resolve trips the age gate until 2026-11-02.
   - browserslist@4.29.4
   - sharp@0.35.5

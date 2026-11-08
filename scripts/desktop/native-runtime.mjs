@@ -9,6 +9,7 @@ import { promisify } from 'node:util'
 import { nativeBuildEnvironment } from './native-build.mjs'
 import { downloadTool, installTool } from '../../apps/desktop/src/main/backend/tools.ts'
 import { runtimeNotices } from './third-party-notices.mjs'
+import { PDF_RUNTIME_FILES, stagePdfRuntime, validatePdfRuntime } from './pdf-runtime.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const execute = promisify(execFile)
@@ -91,13 +92,13 @@ export async function directoryBytes(directory) {
 }
 // Node 22 LTS is the newest line whose macOS builds run on macOS 11; Node 23
 // and later need macOS 13.5, above the app's macOS 12 floor. Pi needs 22.19.
-export const NODE_VERSION = '22.23.3'
-// nodejs.org/dist/v22.23.3/SHASUMS256.txt (the .tar.gz archives). Update these with NODE_VERSION.
+export const NODE_VERSION = '22.23.4'
+// nodejs.org/dist/v22.23.4/SHASUMS256.txt (the .tar.gz archives). Update these with NODE_VERSION.
 export const NODE_SHA256 = Object.freeze({
-  'darwin-arm64': '23b25245dcfb9af7262f8ff142e9e2e0af025368117329e7a7458a51e5922f53',
-  'darwin-x64': '8a677b0219178efd6eb0e475457c4afb452b521a92f6e67845a73bd85727f2a8',
-  'linux-arm64': '5ced2d48d1d7198739b7f86804de0171aefb6823b684b12341d3321afc3cb0b2',
-  'linux-x64': '1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af'
+  'darwin-arm64': 'c9e1dbc748b33ed2d14f42445191ecaf14c56259c7a9a26d0042c49ec2b66428',
+  'darwin-x64': 'efcc2b0db6f94bf53eddb038fe2b370277a042bd29e4f19b8f8e23598795b819',
+  'linux-arm64': 'f7a1e486dbc8b286847815b477d4fb5e9fb963ed4489c3e1588853d685f589f9',
+  'linux-x64': 'b8492284c76a54baf58d61668dd0e41ee0fc98adabf9503d30f05d08f55b4406'
 })
 // nodejs.org and GitHub sometimes cut a release build's download short.
 // Each attempt starts over; a wrong checksum is never retried.
@@ -135,6 +136,9 @@ export async function stageNativeRuntime({
   platform = process.env.HEXBOT_BUILD_PLATFORM || process.platform,
   arch = process.env.HEXBOT_BUILD_ARCH || process.arch,
   nodeExecutable,
+  pdfAssetsDirectory = process.env.HEXBOT_PDF_ASSETS_DIRECTORY,
+  pdfSourceArchive = process.env.HEXBOT_PDF_SOURCE_ARCHIVE,
+  channel = process.env.HEXBOT_CHANNEL || 'dev',
   notices = runtimeNotices,
   download = (url, dest) => retryDownload(() => downloadTool(url, dest)),
   run = (command, args, options) => execute(command, args, { ...options, maxBuffer: 32 * 1024 * 1024 })
@@ -143,6 +147,8 @@ export async function stageNativeRuntime({
   nativeBuildEnvironment([platform === 'darwin' ? '--mac' : '--linux', `--${arch}`])
   const triple = rustTarget(platform, arch)
   const metadata = JSON.parse(await readFile(join(repository, 'apps/desktop/package.json'), 'utf8'))
+  if (channel !== 'dev' && (typeof metadata.version !== 'string' || !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(metadata.version)))
+    throw new Error('A release version is required before staging a native runtime')
   const piPackage = JSON.parse(await readFile(join(repository, 'backend/pi-runtime/package.json'), 'utf8'))
   const piVersion = piPackage.dependencies['@earendil-works/pi-coding-agent']
   if (!/^\d+\.\d+\.\d+$/.test(piVersion)) throw new Error('Pi must have an exact version')
@@ -156,6 +162,15 @@ export async function stageNativeRuntime({
     // Hexbot's own license and notices ship in the app, Headless, and update
     // archives; THIRD_PARTY_NOTICES below covers what the runtime includes.
     for (const file of ['LICENSE', 'NOTICE']) await cp(join(repository, file), join(staging, file))
+    const pdf = platform === 'darwin' ? await stagePdfRuntime({
+      repository, destination: join(staging, 'pdf'), arch, assetsDirectory: pdfAssetsDirectory,
+      sourceArchivePath: pdfSourceArchive, channel, version: metadata.version, run,
+      verifySources: async path => run('python3', [join(repository, 'backend/pdf-runtime/guest/verify-sources.py'),
+        '--archive', path, '--sources', join(pdfAssetsDirectory, 'SOURCES.json'),
+        '--notices', join(pdfAssetsDirectory, 'THIRD_PARTY_NOTICES'),
+        '--lock', join(repository, 'backend/pdf-runtime/guest/assets.lock.json'), '--arch', arch === 'arm64' ? 'aarch64' : 'x86_64',
+        '--version', metadata.version])
+    }) : undefined
     const pi = join(staging, 'pi')
     await mkdir(pi)
     for (const file of ['package.json', 'package-lock.json'])
@@ -185,9 +200,11 @@ export async function stageNativeRuntime({
       } finally { await rm(download, { recursive: true, force: true }) }
     }
     // Third-party licenses for everything above; web/ carries the web app's own.
-    await writeFile(join(staging, 'THIRD_PARTY_NOTICES'), await notices({
+    const thirdPartyNotices = await notices({
       repository, nodeModules: join(pi, 'node_modules'), targets: [triple], node: { version: nodeVersion, license }
-    }))
+    })
+    await writeFile(join(staging, 'THIRD_PARTY_NOTICES'), thirdPartyNotices +
+      (pdf ? `\n\nPDF VM guest runtime\n\n${await readFile(join(staging, 'pdf/THIRD_PARTY_NOTICES'), 'utf8')}\n` : ''))
     await cp(join(repository, 'apps/web/dist'), join(staging, 'web'), { recursive: true })
     await cp(join(repository, 'skills'), join(staging, 'skills'), { recursive: true, dereference: true })
     const scripts = launchers()
@@ -197,15 +214,16 @@ export async function stageNativeRuntime({
     const files = {}
     for (const file of ['hexbot', 'hexbot-core', 'node', 'pi/hexbot-pi', 'pi/package-lock.json', 'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js', 'web/index.html', 'bin/rg', 'bin/fd', 'pi/search-tools.mjs'])
       files[file] = createHash('sha256').update(await readFile(join(staging, file))).digest('hex')
+    Object.assign(files, pdf?.files)
     // The app keeps whichever installed runtime was built from newer source,
     // across Stable and Nightly (apps/desktop/src/main/backend/bootstrap.ts).
     const commit = await execute('git', ['log', '-1', '--format=%ct'], { cwd: repository }).catch(() => ({ stdout: '' }))
     const builtAt = Number(commit.stdout.trim()) || Math.floor(Date.now() / 1000)
-    await writeFile(join(staging, 'manifest.json'), `${JSON.stringify({ version: metadata.version, target, piVersion, nodeVersion, builtAt, files }, null, 2)}\n`)
+    await writeFile(join(staging, 'manifest.json'), `${JSON.stringify({ version: metadata.version, target, piVersion, nodeVersion, builtAt, ...(pdf ? { pdfVm: 1 } : {}), files }, null, 2)}\n`)
     await run(join(staging, 'node'), [join(pi, 'node_modules/@earendil-works/pi-coding-agent/dist/cli.js'), '--version'], { cwd: staging })
     await rm(destination, { recursive: true, force: true })
     await rename(staging, destination)
-    return { destination, version: metadata.version, target, piVersion, beforeBytes, afterBytes }
+    return { destination, version: metadata.version, target, piVersion, beforeBytes, afterBytes, ...(pdf?.archive ? { pdfSourceArchive: pdf.archive } : {}) }
   } finally {
     await rm(staging, { recursive: true, force: true })
   }
@@ -221,10 +239,22 @@ export async function createNativeArchive(directory, destination) {
   const staging = await mkdtemp(join(dirname(destination), 'hexbot-native.archive-'))
   let unpackedSize
   try {
+    const sourceManifest = JSON.parse(await readFile(join(directory, 'manifest.json'), 'utf8'))
+    if (sourceManifest.pdfVm === 1)
+      await validatePdfRuntime(join(directory, 'pdf'), sourceManifest.target.split('-')[1])
     await cp(directory, staging, { recursive: true, dereference: true })
     // Signing changes Mach-O bytes. Refresh the archive's manifest, leaving the
     // signed app bundle untouched.
     const metadata = JSON.parse(await readFile(join(staging, 'manifest.json'), 'utf8'))
+    if (metadata.pdfVm === 1) {
+      const arch = metadata.target.split('-')[1]
+      const pdf = await validatePdfRuntime(join(staging, 'pdf'), arch)
+      if (PDF_RUNTIME_FILES.some(name => !metadata.files?.[`pdf/${name}`]))
+        throw new Error('Native runtime manifest does not cover the complete PDF VM runtime')
+      for (const [file, hash] of Object.entries(pdf.files))
+        if (file !== 'pdf/hexbot-pdf-vm' && metadata.files[file] !== hash)
+          throw new Error(`PDF VM runtime changed after staging: ${file}`)
+    }
     for (const file of Object.keys(metadata.files ?? {})) {
       if (file.startsWith('/') || file.includes('\\') || file.split('/').some(part => !part || part === '.' || part === '..'))
         throw new Error('Invalid native runtime manifest path')

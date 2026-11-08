@@ -81,6 +81,7 @@ export const usePlugins = create<PluginsState>((set, get) => {
     },
 
     async setBots(plugin, bots, keepWaiting = true) {
+      const current = connectionRead()
       const key = `${plugin.kind}:${plugin.id}`
 
       // Show the switch where the user put it while the daemon catches up.
@@ -93,30 +94,46 @@ export const usePlugins = create<PluginsState>((set, get) => {
           keepWaiting ? withWaiting(plugin, bots) : bots
         )
       } catch (error) {
-        replace(key, plugin)
+        if (current()) {
+          replace(key, plugin)
+        }
 
         throw error
       }
 
       // Giving a package or a skill can change other rows; read them all again.
-      await get().refresh()
+      if (current()) {
+        await get().refresh()
+      }
     },
 
     async install(input) {
+      const current = connectionRead()
       await pluginsInstall(input)
-      await get().refresh()
+
+      if (current()) {
+        await get().refresh()
+      }
     },
 
     async configure(plugin, change) {
+      const current = connectionRead()
       await pluginsConfigure(plugin.kind, plugin.id, change)
-      await get().refresh()
+
+      if (current()) {
+        await get().refresh()
+      }
     },
 
     async remove(plugin) {
+      const current = connectionRead()
       await pluginsRemove(plugin.id)
-      set(state => ({
-        plugins: state.plugins.filter(item => item.kind !== plugin.kind || item.id !== plugin.id)
-      }))
+
+      if (current()) {
+        set(state => ({
+          plugins: state.plugins.filter(item => item.kind !== plugin.kind || item.id !== plugin.id)
+        }))
+      }
     }
   }
 })

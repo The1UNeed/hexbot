@@ -211,7 +211,8 @@ impl Installed {
 
     pub fn track(&self) -> Option<Track> {
         self.receipt.as_ref().map(|r| r.channel).or_else(|| {
-            self.apps.first().and_then(|a| {
+            let option = self.option()?;
+            self.apps.iter().find(|a| a.option == option).and_then(|a| {
                 if a.app_id.ends_with(".dev") {
                     None
                 } else if a.app_id.ends_with(".nightly") {

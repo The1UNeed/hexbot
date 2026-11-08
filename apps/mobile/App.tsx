@@ -82,7 +82,7 @@ import type { OpenedFile } from './src/core/files'
 import { mixHex } from '../web/src/app/conversation/visual'
 import { CONNECT_ORIGIN, parseConnectCallback } from './src/core/links'
 import { clearConnectSession, loadConnectSession, saveConnectSession } from './src/core/storage'
-import { connectGrant, request, RevokedError } from './src/core/transport'
+import { connectGrant, connectSignInUrl, request, RevokedError } from './src/core/transport'
 import type { Bot, ConnectDaemon, Room, Section } from './src/core/types'
 WebBrowser.maybeCompleteAuthSession()
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e))
@@ -250,6 +250,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
     >()
   )
   const [uploading, setUploading] = useState(false)
+  const conversationGeneration = useRef(0)
   const [questionAnswer, setQuestionAnswer] = useState('')
   const [questionChoices, setQuestionChoices] = useState<string[]>([])
   const [refreshing, setRefreshing] = useState(false)
@@ -333,12 +334,14 @@ function MobileApp({ children }: { children?: ReactNode }) {
     })().catch(e => mobileRef.current.setError(messageOf(e)))
   }, [nativeUrl, callback])
   useEffect(() => {
+    conversationGeneration.current++
     setVisual(null)
     setFile(null)
     setDraft('')
     setAttachments([])
     attachmentData.current.clear()
     setQuestion(null)
+    setUploading(false)
   }, [
     mobile.route?.kind === 'section'
       ? mobile.route.section.id
@@ -456,7 +459,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
         'hexbot.connect-pending',
         JSON.stringify({ state, at: Date.now() })
       )
-      const url = `${CONNECT_ORIGIN}/connect/authorize?state=${encodeURIComponent(state)}&device=${encodeURIComponent(Platform.OS === 'ios' ? 'Hexbot on iPhone' : 'Hexbot on Android')}`
+      const url = connectSignInUrl(state)
       if (Platform.OS === 'web') {
         throw new Error(
           'Hex Connect sign-in uses the installed iOS or Android app. Use local pairing for this browser preview.'
@@ -488,8 +491,9 @@ function MobileApp({ children }: { children?: ReactNode }) {
     if (mobile.route?.kind !== 'section') return
     const sessionId = mobile.liveSessionId()
     if (!sessionId) throw new Error('Open this chat again before attaching a file.')
+    const generation = conversationGeneration.current
     const asset = await pickFile()
-    if (!asset) return
+    if (!asset || generation !== conversationGeneration.current) return
     const image = imageMime(asset.name, asset.mimeType)
     const pdf = asset.mimeType === 'application/pdf' || asset.name.toLowerCase().endsWith('.pdf')
     if (image && asset.bytes > 25 * 1024 * 1024)
@@ -896,6 +900,9 @@ function MobileApp({ children }: { children?: ReactNode }) {
     // In a chat, a message sent while the bot works cuts its reply off and goes
     // next; rooms queue messages themselves.
     const previous = draft
+    const generation = conversationGeneration.current
+    const current = () => generation === conversationGeneration.current
+    const sendingFiles = new Map(attachmentData.current)
     setDraft('')
     act(async () => {
       const daemonId = mobile.active?.id
@@ -903,23 +910,26 @@ function MobileApp({ children }: { children?: ReactNode }) {
       setUploading(true)
       try {
         const ids: string[] = []
-        for (const asset of attachmentData.current.values()) {
+        for (const asset of sendingFiles.values()) {
+          if (!current()) return
           if (!asset.upload || asset.upload.session !== sessionId) {
             const reply = await mobile.rpc<{ id?: string; path?: string }>(asset.method, {
               ...asset.params,
               session_id: sessionId
             })
+            if (!current()) return
             asset.upload = { session: sessionId, id: reply.id, path: reply.path }
             if (sessionId) mobile.stage(sessionId)
           }
           if (asset.upload.id) ids.push(asset.upload.id)
         }
+        if (!current()) return
         if (
           daemonId !== mobileRef.current.active?.id ||
           sessionId !== mobileRef.current.liveSessionId()
         )
           throw new Error('The conversation changed. Open it again before sending.')
-        const files = attachmentData.current.size
+        const files = sendingFiles.size
         // Daemons older than upload ids send every staged file.
         const named = ids.length === files
         await mobile
@@ -930,21 +940,24 @@ function MobileApp({ children }: { children?: ReactNode }) {
             // The daemon's copy, so a file you just sent previews before the chat reloads.
             attachments.map(file => ({
               ...file,
-              path: attachmentData.current.get(file.id)?.upload?.path ?? file.path
+              path: sendingFiles.get(file.id)?.upload?.path ?? file.path
             }))
           )
           .catch((e: unknown) => {
             // The next Send uploads the files again; the daemon drops the copies it holds.
-            if (named) for (const asset of attachmentData.current.values()) asset.upload = undefined
+            if (current() && named)
+              for (const asset of sendingFiles.values()) asset.upload = undefined
             throw e
           })
-        setAttachments([])
-        attachmentData.current.clear()
+        if (!current()) return
+        setAttachments(list => list.filter(file => !sendingFiles.has(file.id)))
+        for (const id of sendingFiles.keys()) attachmentData.current.delete(id)
       } catch (e) {
-        setDraft(previous || text)
+        if (!current()) return
+        setDraft(typed => typed || previous || text)
         throw e
       } finally {
-        setUploading(false)
+        if (current()) setUploading(false)
       }
     })
   }

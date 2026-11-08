@@ -75,6 +75,92 @@ async fn next_kind(
     .await
     .unwrap()
 }
+
+async fn completed_turn(
+    events: &mut tokio::sync::broadcast::Receiver<hexbot_core::events::Event>,
+    session: &Value,
+    home: &Path,
+    stored: &str,
+    input: &str,
+) -> Value {
+    tokio::time::timeout(Duration::from_secs(25), async {
+        let mut turns = vec![];
+        loop {
+            let params = events.recv().await.unwrap().frame["params"].clone();
+            if &params["session_id"] != session {
+                continue;
+            }
+            let payload = &params["payload"];
+            if params["type"] == "message.start"
+                && let Some(turn) = payload["turn_id"].as_str()
+            {
+                turns.push(turn.to_owned());
+            } else if params["type"] == "message.complete" && payload["status"] == "complete" {
+                let history = runtime_store::history(home, stored).unwrap();
+                let turn = history
+                    .iter()
+                    .find(|message| message["input_id"] == input)
+                    .and_then(|message| message["turn_id"].as_str());
+                if let Some(turn) = turn
+                    && turns.iter().any(|started| started == turn)
+                    && turns.last().map(String::as_str) == payload["turn_id"].as_str()
+                {
+                    return payload.clone();
+                }
+            }
+        }
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn completed_turn_waiter_ignores_stale_status_and_other_sessions() {
+    let home = setup();
+    runtime_store::append(
+        home.path(),
+        "section-a",
+        json!({"role":"user","text":"current input","input_id":"input","turn_id":"initial"}),
+    )
+    .unwrap();
+    let hub = EventHub::new();
+    let mut events = hub.subscribe();
+    let live = json!("live");
+    let waiting = completed_turn(&mut events, &live, home.path(), "section-a", "input");
+    tokio::pin!(waiting);
+    let emit = |session: &str, kind: &str, payload| {
+        hub.emit("alice", Some(session), kind, payload);
+    };
+    emit("live", "status.update", json!({"kind":"idle"}));
+    emit("other", "message.start", json!({"turn_id":"other"}));
+    emit("live", "message.start", json!({"turn_id":"previous"}));
+    emit(
+        "other",
+        "message.complete",
+        json!({"turn_id":"other","status":"complete"}),
+    );
+    emit(
+        "live",
+        "message.complete",
+        json!({"turn_id":"previous","status":"complete"}),
+    );
+    assert!(futures_util::poll!(waiting.as_mut()).is_pending());
+    emit("live", "message.start", json!({"turn_id":"initial"}));
+    emit("live", "message.start", json!({"turn_id":"fallback"}));
+    emit(
+        "live",
+        "message.complete",
+        json!({"turn_id":"initial","status":"complete"}),
+    );
+    assert!(futures_util::poll!(waiting.as_mut()).is_pending());
+    emit(
+        "live",
+        "message.complete",
+        json!({"turn_id":"fallback","status":"complete"}),
+    );
+    assert_eq!(waiting.await["turn_id"], "fallback");
+}
+
 #[tokio::test]
 async fn chat_stream_history_restart_and_owner_isolation() {
     let home = setup();
@@ -773,16 +859,17 @@ async fn actual_pi_todo_and_fallback_reminders_do_not_block_dreams() {
             ),
             SPEECH.to_owned(),
         ] {
+            let input = uuid::Uuid::new_v4().to_string();
             runtime
                 .call(
                     "alice",
                     "prompt.submit",
-                    &json!({"session_id":live,"text":text}),
+                    &json!({"session_id":live,"text":text,"input_id":input}),
                 )
                 .await
                 .unwrap()
                 .unwrap();
-            wait(&mut events, "status.update", |p| p["kind"] == "idle").await;
+            completed_turn(&mut events, &live, h, &id, &input).await;
         }
         if scheduled {
             runtime.close_stored("alice", &id).await.unwrap();
@@ -844,7 +931,20 @@ async fn actual_pi_todo_and_fallback_reminders_do_not_block_dreams() {
             .filter(|r| r.contains("pending proposal"))
             .collect::<Vec<_>>();
         assert_eq!(dream.len(), 1);
-        assert!(dream[0].contains(SPEECH), "{}", dream[0]);
+        let history = runtime_store::history(h, &id).unwrap();
+        let speech_at = history
+            .iter()
+            .find(|message| message["role"] == "user" && message["text"] == SPEECH)
+            .and_then(|message| message["timestamp"].as_f64())
+            .expect("the submitted speech must be in native history");
+        let until = (changed["dream"]["started_at"].as_f64().unwrap() * 1000.).floor() / 1000.;
+        // Dreams read [since, until) at whole-millisecond boundaries. A fast
+        // last turn may land at the cutoff and belongs to the next dream.
+        assert_eq!(
+            dream[0].contains(SPEECH),
+            speech_at < until,
+            "scheduled={scheduled}, speech_at={speech_at}, until={until}"
+        );
         assert_eq!(
             conn.query_row(
                 "SELECT count(*) FROM memory_proposals WHERE consumed_at IS NULL",
@@ -1264,12 +1364,13 @@ fn one_page_pdf() -> Vec<u8> {
     pdf
 }
 #[tokio::test]
+#[cfg(unix)]
 async fn pdf_renderer_preserves_images_page_ranges_and_errors() {
     use base64::Engine;
     let home = setup();
     let renderer = home.path().join("pdftoppm.cjs");
     fs::write(&renderer,r#"#!/usr/bin/env node
-const fs=require('node:fs');const a=process.argv.slice(2);fs.writeFileSync(__dirname+'/render-args.json',JSON.stringify(a));if(!fs.readFileSync(a[7],'utf8').includes('startxref'))process.exit(1);fs.writeFileSync(a[8]+'-2.png',Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aX1cAAAAASUVORK5CYII=','base64'));
+const fs=require('node:fs');const a=process.argv.slice(2);fs.writeFileSync(__dirname+'/render-args.json',JSON.stringify(a));if(!fs.readFileSync(a.at(-1),'utf8').includes('startxref'))process.exit(1);process.stdout.write(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=','base64'));
 "#).unwrap();
     #[cfg(unix)]
     {
@@ -1278,7 +1379,10 @@ const fs=require('node:fs');const a=process.argv.slice(2);fs.writeFileSync(__dir
     }
     fs::write(
         home.path().join("config.yaml"),
-        format!("attachments:\n  pdf_renderer: {}\n", renderer.display()),
+        format!(
+            "attachments:\n  pdf_backend: host\n  pdf_renderer: {}\n",
+            renderer.display()
+        ),
     )
     .unwrap();
     let runtime = Runtime::new(home.path().into(), EventHub::new(), fake_pi(home.path())).unwrap();
@@ -1300,7 +1404,18 @@ const fs=require('node:fs');const a=process.argv.slice(2);fs.writeFileSync(__dir
             .as_array()
             .unwrap()[..]
     );
-    for (first, last, code) in [(0, 1, 4015), (2, 1, 4015), (1, 26, 4019)] {
+    assert_eq!(
+        &args.as_array().unwrap()[7..11],
+        &json!(["-W", "8193", "-H", "8193"]).as_array().unwrap()[..]
+    );
+    for (first, last, code) in [
+        (0_u64, 1_u64, 4015),
+        (2, 1, 4015),
+        (1, 26, 4019),
+        (i32::MAX as u64 + 1, i32::MAX as u64 + 1, 4015),
+        (4_294_967_297, 4_294_967_297, 4015),
+        (1, 4_294_967_297, 4015),
+    ] {
         p["first_page"] = json!(first);
         p["last_page"] = json!(last);
         assert_eq!(
@@ -1316,7 +1431,7 @@ const fs=require('node:fs');const a=process.argv.slice(2);fs.writeFileSync(__dir
     fs::write(
         home.path().join("config.yaml"),
         format!(
-            "attachments:\n  pdf_renderer: {}\n",
+            "attachments:\n  pdf_backend: host\n  pdf_renderer: {}\n",
             home.path().join("missing-renderer").display()
         ),
     )

@@ -92,11 +92,37 @@ async function launch(directory, name) {
 }
 async function quit(app, source = 'app') {
   const child = processes.get(app)
-  // Register both rejection handlers before triggering exit. Native Quit can
-  // dispose the debug connection before evaluate returns on Windows/Linux.
-  const closed = app.waitForEvent('close', { timeout: 15_000 }).catch(error => error)
+  const marker = `HEXBOT_LIFECYCLE_WILL_QUIT_${Date.now()}`
+  let stopWatching
+  const nativeQuit = new Promise(resolve => {
+    let output = ''
+    const onData = chunk => {
+      output = `${output}${chunk}`.slice(-4096)
+      if (output.includes(marker)) {
+        stopWatching()
+        resolve(undefined)
+      }
+    }
+    const timer = setTimeout(() => {
+      stopWatching()
+      resolve(new Error(`Native ${source} Quit did not reach will-quit`))
+    }, 15_000)
+    stopWatching = () => {
+      clearTimeout(timer)
+      child.stdout.off('data', onData)
+    }
+    child.stdout.on('data', onData)
+  })
+  // Native Quit can dispose the debug connection before evaluate returns on
+  // Windows/Linux. The process exit below remains the final success check.
   const actionError = await app
-    .evaluate(({ app, Menu }, source) => {
+    .evaluate(({ app, Menu }, { source, marker }) => {
+      app.once('will-quit', event => {
+        // Prove the native action reached shutdown, then hand the last quit
+        // to Playwright so its inspector disconnects before Node exits.
+        event.preventDefault()
+        process.stdout.write(`${marker}\n`)
+      })
       setImmediate(() => {
         if (source === 'tray')
           globalThis.lifecycleFixture.trayMenu.items.find(item => item.label === 'Quit').click()
@@ -106,13 +132,24 @@ async function quit(app, source = 'app') {
             .click()
         else app.quit()
       })
-    }, source)
+    }, { source, marker })
     .then(
       () => undefined,
       error => error
     )
-  const closeError = await closed
-  if (closeError) throw actionError || closeError
+  const quitError = await nativeQuit
+  if (quitError) throw actionError || quitError
+  // The native action must reach will-quit before the driver closes anything.
+  // The one-shot deferral avoids racing two concurrent native quits. Public
+  // close reissues quit and detaches the inspector before Node exits.
+  let closeTimer
+  const detachError = await Promise.race([
+    app.close().then(() => undefined, error => error),
+    new Promise(resolve => {
+      closeTimer = setTimeout(() => resolve(new Error('Playwright did not finish closing the app')), 30_000)
+    })
+  ]).finally(() => clearTimeout(closeTimer))
+  if (detachError) throw actionError || detachError
   await expect
     .poll(() => child.exitCode)
     .toBe(0)

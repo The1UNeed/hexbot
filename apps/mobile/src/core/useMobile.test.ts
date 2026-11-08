@@ -94,6 +94,7 @@ const connected = async () => {
   return hook
 }
 beforeEach(() => {
+  appState.currentState = 'active'
   oneChat = true
   sections = []
   state.request.mockReset().mockImplementation(reply)
@@ -886,6 +887,78 @@ describe('mobile history critical path', () => {
     expect(hook.result.current.error).toBeNull()
   })
 })
+
+it.each(['covered', 'background'] as const)('keeps a heartbeat unread while the chat is %s', async hidden => {
+  const hook = await connected()
+  await act(async () => { await hook.result.current.openSection(bot) })
+  if (hidden === 'covered') act(() => hook.result.current.setChatCovered(true))
+  else appState.currentState = 'background'
+  state.request.mockClear()
+  act(() => state.event({
+    type: 'hexbot.heartbeat.message',
+    payload: { section_id: 'owl-chat', row_id: 'heartbeat-row', text: 'Please check this.' }
+  }))
+  expect(hook.result.current.chat.messages).toMatchObject([{ id: 'heartbeat-row', text: 'Please check this.' }])
+  expect(state.request.mock.calls.some(([method]) => method === 'hexbot.sections.mark_read')).toBe(false)
+  appState.currentState = 'active'
+  if (hidden === 'covered') {
+    act(() => hook.result.current.setChatCovered(false))
+    expect(state.request).toHaveBeenCalledWith('hexbot.sections.mark_read', { id: 'owl-chat' })
+  }
+})
+
+it('keeps a failed send in its original conversation after navigation', async () => {
+  const hook = await connected()
+  await act(async () => { await hook.result.current.openSection(bot) })
+  const held = pause('prompt.submit')
+  let sending!: Promise<unknown>
+  await act(async () => { sending = hook.result.current.send('Hello').catch(error => error); await held.called })
+  await act(async () => { await hook.result.current.openSection(other) })
+  act(() => state.event({ type: 'message.start', session_id: 'live-yak-chat' }))
+  expect(hook.result.current.chat.busy).toBe(true)
+  await act(async () => { held.reject(new Error('Old request failed')); await sending })
+  expect(hook.result.current.route).toMatchObject({ section: { id: 'yak-chat' } })
+  expect(hook.result.current.chat.busy).toBe(true)
+  expect(hook.result.current.chat.error).toBeNull()
+})
+
+it('keeps a covered chat unread when a daemon history reload arrives', async () => {
+  const hook = await connected()
+  await act(async () => { await hook.result.current.openSection(bot) })
+  act(() => hook.result.current.setChatCovered(true))
+  state.request.mockClear()
+  await act(async () => {
+    state.event({ type: 'hexbot.sections.changed', payload: { id: 'owl-chat', reload: true } })
+  })
+  expect(state.request).toHaveBeenCalledWith('hexbot.sections.open', { id: 'owl-chat' })
+  expect(state.request.mock.calls.some(([method]) => method === 'hexbot.sections.mark_read')).toBe(false)
+  act(() => hook.result.current.setChatCovered(false))
+  expect(state.request).toHaveBeenCalledWith('hexbot.sections.mark_read', { id: 'owl-chat' })
+})
+
+it.each(['covered', 'background'] as const)('keeps room events unread while the chat is %s, including history sync', async hidden => {
+  const hook = await connected()
+  await act(async () => { await hook.result.current.openRoom(room) })
+  if (hidden === 'covered') act(() => hook.result.current.setChatCovered(true))
+  else appState.currentState = 'background'
+  state.request.mockClear()
+  act(() => state.event({ type: 'hexbot.rooms.event', payload: {
+    room_id: 'room',
+    event: { seq: 3, kind: 'message.user', actor_kind: 'human', actor_id: 'local', payload: { text: 'Unseen' } }
+  } }))
+  await act(async () => { await hook.result.current.syncChat() })
+  expect(state.request.mock.calls.some(([method]) => method === 'hexbot.rooms.mark_read')).toBe(false)
+  // Sync restores the latest snapshot; a subsequent event is read on uncover.
+  act(() => state.event({ type: 'hexbot.rooms.event', payload: {
+    room_id: 'room',
+    event: { seq: 4, kind: 'message.user', actor_kind: 'human', actor_id: 'local', payload: { text: 'Still unseen' } }
+  } }))
+  appState.currentState = 'active'
+  act(() => hook.result.current.setChatCovered(true))
+  act(() => hook.result.current.setChatCovered(false))
+  expect(state.request).toHaveBeenCalledWith('hexbot.rooms.mark_read', { id: 'room', seq: 4 })
+})
+
 describe('switching to a bot read ahead', () => {
   let install = 'first-daemon'
   const said = (text: string) => ({ role: 'assistant', row_id: text, text })

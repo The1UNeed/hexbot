@@ -44,7 +44,7 @@ export const updaterEvents = new EventEmitter()
 
 let state: UpdateState | undefined
 let configuring: Promise<void> | undefined
-let active: 'check' | 'download' | 'install' | null = null
+let active: 'check' | 'download' | 'install' | 'channel' | null = null
 let pending: Promise<UpdateState> | undefined
 
 const now = (): string => new Date().toISOString()
@@ -205,13 +205,20 @@ export async function setUpdateChannel(channel: UpdateChannel): Promise<UpdateSt
   if (channel !== 'stable' && channel !== 'nightly') throw new TypeError('Invalid update channel')
   await configure()
   const current = state!
-  await updateDesktopState({ updateChannel: channel })
-  if (channel === current.channel) return current
   if (active) throw new Error('Wait for the current update to finish before switching tracks.')
-  const disabled = current.status === 'disabled' ? current.message : null
-  setState(initialUpdateState(current.currentVersion, channel, disabled))
-  if (disabled) return state!
-  applyChannel(channel)
+  // Keep checks, downloads and other switches out until the saved preference
+  // and the feed agree. A rejected switch must not change the next launch.
+  active = 'channel'
+  try {
+    await updateDesktopState({ updateChannel: channel })
+    if (channel === current.channel) return current
+    const disabled = current.status === 'disabled' ? current.message : null
+    setState(initialUpdateState(current.currentVersion, channel, disabled))
+    if (disabled) return state!
+    applyChannel(channel)
+  } finally {
+    active = null
+  }
   return checkForUpdates('track')
 }
 

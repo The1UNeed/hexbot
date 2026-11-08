@@ -2,11 +2,12 @@ import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
-import { derivePorts, printsSignInLink, validateDevArgs, ensurePiRuntime, prepareDevRuntime, pairingCode } from './run.mjs'
+import { derivePorts, printsSignInLink, validateDevArgs, validateDevHome, ensurePiRuntime, prepareDevRuntime, pairingCode } from './run.mjs'
 import { downloadTool, toolAsset } from '../../apps/desktop/src/main/backend/tools.ts'
 
 test('dev ports derive from the checkout path and stay apart per worktree', () => {
@@ -45,6 +46,11 @@ test('dev shares pinned search tool installs, refreshes receipts and puts them o
     assert.equal(env.PATH.split(delimiter)[0], join(root, 'bin'))
     assert.deepEqual(downloads, assets.map(asset => asset.url))
     await prepareDevRuntime(root, '/dev/hexbot', '/dev/pi', deps)
+    assert.equal(downloads.length, 2)
+    await chmod(join(root, 'bin/rg'), 0o644)
+    await prepareDevRuntime(root, '/dev/hexbot', '/dev/pi', deps)
+    assert.equal((await stat(join(root, 'bin/rg'))).mode & 0o111, 0o111)
+    assert.equal((await promisify(execFile)(join(root, 'bin/rg'))).stdout.trim(), 'pinned search tool')
     assert.equal(downloads.length, 2)
     await writeFile(join(root, 'bin/rg'), 'tampered cached executable')
     await rm(join(root, 'bin/fd'))
@@ -112,6 +118,36 @@ test('dev rejects removed backend selection', () => {
   validateDevArgs([])
   assert.throws(() => validateDevArgs(['--backend', 'python']), /removed/)
   assert.throws(() => validateDevArgs(['--backend=rust']), /removed/)
+})
+
+test('dev startup failures exit nonzero', async () => {
+  await assert.rejects(
+    promisify(execFile)(process.execPath, [fileURLToPath(new URL('./run.mjs', import.meta.url)), '--backend=python']),
+    error => error.code === 1 && /--backend was removed/.test(error.stderr)
+  )
+})
+
+test('dev refuses live homes through symlinks and missing descendant directories', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hexbot-dev-home-'))
+  try {
+    const user = join(root, 'user')
+    const live = join(user, '.hexbot')
+    await mkdir(live, { recursive: true })
+    const alias = join(root, 'live-alias')
+    const userAlias = join(root, 'user-alias')
+    await symlink(live, alias, process.platform === 'win32' ? 'junction' : 'dir')
+    await symlink(user, userAlias, process.platform === 'win32' ? 'junction' : 'dir')
+    for (const home of [live, alias, join(alias, 'missing/child'), join(userAlias, '.hexbot')])
+      await assert.rejects(validateDevHome(home, live), /live install/)
+    await assert.rejects(
+      promisify(execFile)(process.execPath, [fileURLToPath(new URL('./run.mjs', import.meta.url)), '--home', alias], {
+        env: { ...process.env, HOME: user, USERPROFILE: user, PATH: '/nonexistent' }
+      }),
+      error => error.code === 1 && /live install/.test(error.stderr) && !/building/.test(error.stdout)
+    )
+    await validateDevHome(join(userAlias, '.hexbot-dev'), live)
+    await validateDevHome(join(root, 'new/dev'), join(root, 'missing/.hexbot'))
+  } finally { await rm(root, { recursive: true, force: true }) }
 })
 
 test('dev installs Pi on first run, lockfile changes and missing executables', async () => {

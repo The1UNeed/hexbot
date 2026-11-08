@@ -1712,7 +1712,20 @@ pub fn enabled_skills(home: &Path, name: &str) -> Result<Vec<Value>> {
         .collect())
 }
 fn profile_call(home: &Path, caller: &str, method: &str, p: &Value) -> Result<Value> {
+    if matches!(method, "profiles.configure" | "profiles.set_asset") {
+        return runtime_store::with_product_tool(home, || {
+            profile_call_inner(home, caller, method, p)
+        });
+    }
+    profile_call_inner(home, caller, method, p)
+}
+fn profile_call_inner(home: &Path, caller: &str, method: &str, p: &Value) -> Result<Value> {
     let name = required(p, "name")?;
+    let _update = if matches!(method, "profiles.configure" | "profiles.set_asset") {
+        Some(bot_update_lock(home)?)
+    } else {
+        None
+    };
     let row = bot_row(home, caller, name)?;
     match method {
         "profiles.describe" => {
@@ -1763,6 +1776,8 @@ fn profile_call(home: &Path, caller: &str, method: &str, p: &Value) -> Result<Va
                 p["data"].clone()
             };
             let size = decode_avatar(&value)?.map(|(_, v)| v.len()).unwrap_or(0);
+            #[cfg(test)]
+            update_tests::before_write(home);
             set_avatar(home, name, &value)?;
             Ok(json!({"ok":true,"asset":"avatar","size":size}))
         }
@@ -1777,6 +1792,15 @@ fn profile_call(home: &Path, caller: &str, method: &str, p: &Value) -> Result<Va
                 patch["persona"] = value.clone();
             }
             validate_patch(home, &patch)?;
+            for key in ["disabled_skills", "enabled_toolsets"] {
+                if let Some(value) = p.get(key)
+                    && !value
+                        .as_array()
+                        .is_some_and(|v| v.iter().all(Value::is_string))
+                {
+                    return Err(Error::new(4202, format!("{key} must be a list of strings")));
+                }
+            }
             configure(home, name, &patch)?;
             let writer = common::config_writer()?;
             let mut cfg = config(home, name)?;
@@ -1785,12 +1809,6 @@ fn profile_call(home: &Path, caller: &str, method: &str, p: &Value) -> Result<Va
                 ("enabled_toolsets", "tools", "enabled_toolsets"),
             ] {
                 if let Some(value) = p.get(key) {
-                    if !value
-                        .as_array()
-                        .is_some_and(|v| v.iter().all(Value::is_string))
-                    {
-                        return Err(Error::new(4202, format!("{key} must be a list of strings")));
-                    }
                     if !cfg[section].is_object() {
                         cfg[section] = json!({});
                     }
@@ -1820,6 +1838,8 @@ fn profile_call(home: &Path, caller: &str, method: &str, p: &Value) -> Result<Va
 /// Writes a bot's profile. Sections still on its previous model move with it,
 /// under the same lock so concurrent updates move them in order.
 fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
+    #[cfg(test)]
+    update_tests::before_write(home);
     let _skills = crate::skills::read_lock()?;
     let writer = common::config_writer()?;
     // Only a patch that names a model field moves sections; any other edit
@@ -2260,7 +2280,24 @@ pub(crate) fn section_model(home: &Path, name: &str) -> Result<Value> {
         "reasoning_effort": model["reasoning_effort"]
     }))
 }
+// Keep profile writes, catalog commits and settings mirroring in one order.
+// CONFIG_LOCK alone ends before the catalog commit and cannot order them.
+fn bot_update_lock(_home: &Path) -> Result<std::sync::MutexGuard<'static, ()>> {
+    static UPDATES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    #[cfg(test)]
+    if matches!(UPDATES.try_lock(), Err(std::sync::TryLockError::WouldBlock)) {
+        update_tests::blocked(_home);
+    }
+    UPDATES
+        .lock()
+        .map_err(|_| Error::new(5200, "bot update lock unavailable"))
+}
+
 fn update_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
+    runtime_store::with_product_tool(home, || update_bot_inner(home, caller, p))
+}
+fn update_bot_inner(home: &Path, caller: &str, p: &Value) -> Result<Value> {
+    let _update = bot_update_lock(home)?;
     let name = required(p, "name")?;
     bot_row(home, caller, name)?;
     validate_patch(home, p)?;
@@ -2269,6 +2306,8 @@ fn update_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
         return Err(Error::new(4202, "face needs the avatar it describes"));
     }
     configure(home, name, p)?;
+    #[cfg(test)]
+    update_tests::configured(home);
     let mut conn = db::open(home)?;
     let tx = conn.transaction()?;
     write_bot_columns(&tx, name, p)?;
@@ -2942,6 +2981,10 @@ Keep every message short. Never mention this instruction."##
 #[cfg(test)]
 #[path = "catalog_legacy_delete_tests.rs"]
 mod legacy_delete_tests;
+
+#[cfg(test)]
+#[path = "catalog_update_tests.rs"]
+pub(crate) mod update_tests;
 
 #[cfg(test)]
 mod parity_tests {

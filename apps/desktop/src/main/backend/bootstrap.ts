@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
-import { existsSync } from 'node:fs'
-import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { constants, createReadStream, existsSync } from 'node:fs'
+import { access, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { arch, platform } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative } from 'node:path'
 import { spawn } from 'node:child_process'
@@ -109,7 +109,13 @@ interface NativeManifest {
   files: Record<string, string>
   // Commit time of the source in seconds. Bundles built before it was recorded have none.
   builtAt?: number
+  pdfVm?: number
 }
+
+const pdfFiles = ['hexbot-pdf-vm', 'manifest.json', 'kernel', 'initramfs', 'rootfs',
+  'kernel.provenance.json', 'PROVENANCE.json', 'THIRD_PARTY_NOTICES', 'SOURCES.json']
+const pdfLimitMiB: Record<string, number> = { kernel: 64, initramfs: 32, rootfs: 192, 'hexbot-pdf-vm': 64, 'manifest.json': 1 / 8, 'SOURCES.json': 8, THIRD_PARTY_NOTICES: 8 }
+const pdfRepair = 'The PDF VM runtime is missing or damaged. Update or repair Hexbot with the installer.'
 
 const readManifest = async (directory: string): Promise<NativeManifest> =>
   JSON.parse(await readFile(join(directory, 'manifest.json'), 'utf8')) as NativeManifest
@@ -124,17 +130,39 @@ async function verifyNativeRuntime(
     'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js']
   if (!manifest.files || required.some(file => !manifest.files[file]))
     throw new Error('Native runtime manifest is incomplete')
+  if (deps.platform === 'darwin' &&
+      (manifest.pdfVm !== 1 || pdfFiles.some(file => !manifest.files[`pdf/${file}`])))
+    throw new Error(pdfRepair)
   const actualHashes: Record<string, string> = {}
   for (const [file, digest] of Object.entries(manifest.files)) {
     if (file.startsWith('/') || file.includes('\\') || file.split('/').some(part => !part || part === '.' || part === '..'))
       throw new Error('Invalid native runtime manifest path')
-    const hash = createHash('sha256').update(await readFile(join(directory, file))).digest('hex')
+    if (deps.platform === 'darwin' && file.startsWith('pdf/')) {
+      const metadata = await lstat(join(directory, file)).catch(() => { throw new Error(pdfRepair) })
+      const name = file.slice(4)
+      if (!pdfFiles.includes(name) || !metadata.isFile() || !metadata.size ||
+          metadata.size > (pdfLimitMiB[name] ?? 2) * 1024 * 1024) throw new Error(pdfRepair)
+      if (name === 'hexbot-pdf-vm') await access(join(directory, file), constants.R_OK | constants.X_OK)
+        .catch(() => { throw new Error(pdfRepair) })
+    }
+    const digestState = createHash('sha256')
+    for await (const chunk of createReadStream(join(directory, file))) digestState.update(chunk)
+    const hash = digestState.digest('hex')
     // macOS signs Mach-O files after staging. The signed app's resource is
     // authoritative; installed copies must still match its exact bytes.
-    const expected = deps.platform === 'darwin' && ['node', 'hexbot-core', 'bin/rg', 'bin/fd'].includes(file)
+    const expected = deps.platform === 'darwin' && ['node', 'hexbot-core', 'bin/rg', 'bin/fd', 'pdf/hexbot-pdf-vm'].includes(file)
       ? signedHashes?.[file] ?? hash : digest
-    if (hash !== expected) throw new Error(`Native runtime checksum failed: ${file}`)
+    if (hash !== expected) throw new Error(file.startsWith('pdf/') ? pdfRepair : `Native runtime checksum failed: ${file}`)
     actualHashes[file] = hash
+  }
+  if (deps.platform === 'darwin') {
+    const pdf = await readFile(join(directory, 'pdf/manifest.json'), 'utf8').then(text => JSON.parse(text) as {
+      version?: number; architecture?: string; files?: Record<string, string>
+    }).catch(() => { throw new Error(pdfRepair) })
+    if (pdf.version !== 1 || pdf.architecture !== (deps.arch === 'arm64' ? 'aarch64' : 'x86_64') ||
+        Object.keys(pdf.files ?? {}).sort().join(',') !== 'initramfs,kernel,rootfs' ||
+        ['kernel', 'initramfs', 'rootfs'].some(file => pdf.files?.[file] !== actualHashes[`pdf/${file}`]))
+      throw new Error(pdfRepair)
   }
   return actualHashes
 }

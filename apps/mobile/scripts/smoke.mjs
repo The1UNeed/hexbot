@@ -2,25 +2,30 @@
 import assert from 'node:assert/strict'
 import { spawn, execFile } from 'node:child_process'
 import { once } from 'node:events'
-import { access, mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises'
+import { access, appendFile, mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { chromium, expect } from '@playwright/test'
+import { retainUntilStopped, stopChild } from './smoke-lifecycle.mjs'
+import { fixturePrompt, textOf } from './smoke-model.mjs'
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
 const daemonPath = path.join(root, 'backend/hexbot-core/target/debug/hexbot')
 const piPath = path.join(root, 'backend/pi-runtime/node_modules/.bin/pi')
 await Promise.all([access(daemonPath), access(piPath)])
 let appUrl = process.env.HEXBOT_MOBILE_URL || 'http://127.0.0.1:8181'
 let appServer
+let retained
+const keep = process.argv.includes('--keep')
 const artifacts =
   process.env.HEXBOT_MOBILE_ARTIFACTS ||
   (await mkdtemp(path.join(tmpdir(), 'hexbot-mobile-evidence-')))
 const home = await mkdtemp(path.join(tmpdir(), 'hexbot-mobile-home-'))
 const workspace = await mkdtemp(path.join(tmpdir(), 'hexbot-mobile-workspace-'))
 await mkdir(artifacts, { recursive: true })
+await writeFile(path.join(artifacts, 'model-requests.jsonl'), '')
 const errors = []
 const modelRequests = []
 let retainedUploadPath
@@ -29,12 +34,6 @@ let daemon,
   page,
   socket,
   daemonLog = ''
-const textOf = value =>
-  typeof value === 'string'
-    ? value
-    : Array.isArray(value)
-      ? value.map(p => p.text || '').join('\n')
-      : ''
 const model = createServer(async (req, res) => {
   if (req.method === 'GET' && req.url.endsWith('/models')) {
     res.writeHead(200, { 'content-type': 'application/json' })
@@ -54,8 +53,9 @@ const model = createServer(async (req, res) => {
     for await (const chunk of req) chunks.push(chunk)
     const request = JSON.parse(Buffer.concat(chunks).toString())
     modelRequests.push(request)
-    const prompt = textOf(request.messages.findLast(m => m.role === 'user')?.content)
-    const lastUser = request.messages.findLastIndex(m => m.role === 'user')
+    // Preserve native follow-up requests before responding, even if the harness is interrupted.
+    await appendFile(path.join(artifacts, 'model-requests.jsonl'), JSON.stringify(request) + '\n')
+    const { text: prompt, index: lastUser } = fixturePrompt(request.messages)
     const toolAnswered = request.messages.slice(lastUser + 1).some(m => m.role === 'tool')
     const tool =
       !toolAnswered && prompt.includes('Ask two questions')
@@ -319,7 +319,11 @@ try {
     await rpc('hexbot.rooms.create', { name: 'Launch week', members: ['fern', 'fox'] })
   ).room
   const code = (await rpc('hexbot.pairing.code')).code
-  browser = await chromium.launch({ headless: true })
+  browser = await chromium.launch({
+    headless: true,
+    // Playwright's SIGINT handler calls process.exit(130) before our cleanup can finish.
+    ...(keep && { handleSIGINT: false, handleSIGTERM: false })
+  })
   const context = await browser.newContext({
     viewport: { width: 393, height: 852 },
     deviceScaleFactor: 2,
@@ -369,10 +373,10 @@ try {
   await back()
   // The bot row opens its one chat.
   await page.getByTestId('bot-row-owl').click()
-  await expect(page.getByTestId('chat-empty')).toBeVisible()
   await expect(page.getByText('Opening conversation', { exact: true })).not.toBeVisible({
     timeout: 30000
   })
+  await expect(page.getByTestId('chat-empty')).toBeVisible()
   await page.getByTestId('chat-settings').click()
   await page.getByTestId('manage-models').click()
   // The menu asks each connected provider for its current list: mobile-live
@@ -657,12 +661,17 @@ try {
     timeout: 30000
   })
   await expect(page.getByTestId('heartbeat-next')).not.toContainText('Running now')
+  // The heartbeat arrived behind its settings card, so it is still unread.
+  assert.notEqual((await owl()).sections_recent?.find(s => s.id === section)?.done_at, null)
   await settle()
   await shot('heartbeat')
   await page.getByTestId('management-sheet-back').click()
   await page.getByTestId('management-sheet-close').click()
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
   await expect(message('Flight BA 286 is two hours late.', { exact: true })).toBeVisible()
+  await expect
+    .poll(async () => (await owl()).sections_recent?.find(s => s.id === section)?.done_at)
+    .toBe(null)
   await shot('heartbeat-chat')
   await back()
   // Rooms sit in the same list as chats and open like one.
@@ -934,14 +943,18 @@ try {
   }
   await writeFile(path.join(artifacts, 'smoke.json'), JSON.stringify(report, null, 2) + '\n')
   console.log(JSON.stringify(report, null, 2))
-  if (process.argv.includes('--keep')) {
+  if (keep) {
+    retained = retainUntilStopped()
+    // Native follow-ups need to be the only viewing client for unread checks.
+    await browser.close()
+    browser = undefined
     const nativeCode = (await rpc('hexbot.pairing.code')).code
     await writeFile(
       path.join(artifacts, 'native-pairing.json'),
       JSON.stringify({ base, port, code: nativeCode, home, workspace })
     )
     console.log('Test daemon is available for simulator validation. Stop this process to clean up.')
-    await new Promise(resolve => process.once('SIGINT', resolve))
+    await retained.stopped
   }
 } catch (e) {
   await page?.screenshot({ path: path.join(artifacts, 'failure.png') }).catch(() => {})
@@ -961,10 +974,7 @@ try {
   await writeFile(path.join(artifacts, 'daemon.log'), daemonLog)
   socket?.close()
   await browser?.close()
-  if (daemon && daemon.exitCode === null) {
-    daemon.kill('SIGTERM')
-    await once(daemon, 'exit')
-  }
+  await stopChild(daemon)
   model.closeAllConnections()
   await new Promise(resolve => model.close(resolve))
   if (appServer) {
@@ -973,4 +983,5 @@ try {
   }
   await rm(home, { recursive: true, force: true })
   await rm(workspace, { recursive: true, force: true })
+  retained?.dispose()
 }

@@ -1,8 +1,9 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { installers, readManifest } from './installers'
 
 const version = '0.1.5-nightly.20261003.42'
 const base = `https://updates.hexbot.app/install/${version}`
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
 // The shape make-install-manifest.mjs writes, trimmed to what the page reads.
 const manifest = (channel: string, targets: Record<string, unknown> = {
   'macos-aarch64': { full: {}, installerApp: { url: `${base}/HexbotInstaller-${version}-mac-arm64.dmg`, sha256: 'a', size: 9 } },
@@ -42,6 +43,21 @@ describe('installers', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     expect(await installers(async () => null)).toBeNull()
     expect(await installers(async () => { throw new Error('503') })).toBeNull()
+  })
+
+  it.each([false, 0, '', {}, []])('does not switch to nightly for invalid stable JSON %j', async stable => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const load = vi.fn(async (url: string) => url.endsWith('/stable.json') ? stable : manifest('nightly'))
+    expect(await installers(load)).toBeNull()
+    expect(load).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not treat a successful JSON null response as an unpublished stable manifest', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const fetcher = vi.fn(async () => Response.json(null))
+    vi.stubGlobal('fetch', fetcher)
+    expect(await installers()).toBeNull()
+    expect(fetcher).toHaveBeenCalledTimes(1)
   })
 })
 

@@ -6,6 +6,8 @@ import {
   JsonRpcGatewayClient
 } from '@hermes/shared'
 
+import { useConnection } from '../stores/connection'
+
 export class HexbotRpcClient {
   private readonly client: JsonRpcGatewayClient
 
@@ -107,9 +109,13 @@ export async function rpcCall<T>(
   params: Record<string, unknown> = {},
   waitMs = CONNECT_WAIT_MS
 ): Promise<T> {
+  // Cold pages queue reads before the supervisor initializes its socket
+  // generation. Bind that wait to the selected daemon, which must survive
+  // the first handshake, rather than to an already-open socket generation.
+  const target = useConnection.getState().target
   const client = active ?? (await waitForActive(waitMs).catch(() => null))
 
-  if (!client) {
+  if (!client || target !== useConnection.getState().target) {
     throw new NotConnectedError(method)
   }
 

@@ -17,7 +17,10 @@ import {
 } from '../lib/api'
 import type { Connector, ConnectorTest } from '../lib/types'
 
+import { connectionRead } from './connection'
+
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
+let latest = 0
 
 export interface ConnectorsState {
   addMcp: (bot: string, input: McpServerInput) => Promise<void>
@@ -48,24 +51,38 @@ export const useConnectors = create<ConnectorsState>((set, get) => ({
       return
     }
 
+    const current = connectionRead()
+
     try {
       const { connectors } = await connectorsList(bot)
 
-      set(state => ({ byBot: { [bot]: connectors, ...state.byBot } }))
+      if (current()) {
+        set(state => ({ byBot: { [bot]: connectors, ...state.byBot } }))
+      }
     } catch {
       // The labels fall back to the first part of the tool name.
     }
   },
 
   async refresh(bot) {
+    const current = connectionRead()
+    const mine = ++latest
     set({ error: null, loading: true })
 
     try {
       const { connectors } = await connectorsList(bot)
 
-      set(state => ({ byBot: { ...state.byBot, [bot]: connectors }, loading: false }))
+      if (current()) {
+        set(state => ({ byBot: { ...state.byBot, [bot]: connectors } }))
+      }
     } catch (error) {
-      set({ error: errorText(error), loading: false })
+      if (current()) {
+        set({ error: errorText(error) })
+      }
+    } finally {
+      if (mine === latest) {
+        set({ loading: false })
+      }
     }
   },
 
@@ -74,37 +91,55 @@ export const useConnectors = create<ConnectorsState>((set, get) => ({
   },
 
   async setup(input) {
+    const current = connectionRead()
     const result = await connectorsSetup(input)
 
-    await get().refresh(input.bot)
+    if (current()) {
+      await get().refresh(input.bot)
+    }
 
     return result.test
   },
 
   async clear(bot, id, botOnly = false) {
+    const current = connectionRead()
     await connectorsClear(id, { bot, bot_only: botOnly })
-    await get().refresh(bot)
+
+    if (current()) {
+      await get().refresh(bot)
+    }
   },
 
   async setForBot(bot, id, enabled) {
+    const current = connectionRead()
     const { connector } = await connectorsSetForBot(id, bot, enabled)
 
-    set(state => ({
-      byBot: {
-        ...state.byBot,
-        [bot]: (state.byBot[bot] ?? []).map(item => (item.id === connector.id ? connector : item))
-      }
-    }))
+    if (current()) {
+      set(state => ({
+        byBot: {
+          ...state.byBot,
+          [bot]: (state.byBot[bot] ?? []).map(item => (item.id === connector.id ? connector : item))
+        }
+      }))
+    }
   },
 
   async addMcp(bot, input) {
+    const current = connectionRead()
     await connectorsAddMcp({ ...input, bot })
-    await get().refresh(bot)
+
+    if (current()) {
+      await get().refresh(bot)
+    }
   },
 
   async removeMcp(bot, name) {
+    const current = connectionRead()
     await connectorsRemoveMcp(name)
-    await get().refresh(bot)
+
+    if (current()) {
+      await get().refresh(bot)
+    }
   }
 }))
 

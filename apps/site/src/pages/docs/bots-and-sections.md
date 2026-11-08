@@ -54,6 +54,8 @@ Write the checklist under Heartbeat in the bot's settings, or in its profile on 
 
 You can also ask the bot in its chat to keep an eye on something; it adds the line itself, and takes it off once it's settled. A new bot's checklist holds only an example, and while there is nothing on it, the heartbeat doesn't run and costs nothing.
 
+The checklist holds up to 4,000 characters. If you edit `HEARTBEAT.md` directly, keep it as a plain UTF-8 file in the bot's profile. Links to other files and special files are refused.
+
 The message shows in the bot's chat and as a notification in the app, in a browser tab you allowed (browsers notify only over HTTPS, such as through Hex Connect), and on your phone. Reply in the chat and the bot knows what it told you. Each bot sends at most one message per heartbeat and eight a day. Its Notify me switch silences the notifications; the messages still arrive in the chat.
 
 The same page shows when the next heartbeat runs, runs one now, and lists recent heartbeats with what each looked at. Turn heartbeats off for every bot there or in Settings. A heartbeat runs unattended, like a scheduled job, with your keys. It only looks: it can read files, search and read the web, and read its connectors, including Notion and Airtable, but it can't run commands, use the browser or the computer, change anything through a connector, or ask you anything, and it suggests memory changes for its next dream instead of writing them.

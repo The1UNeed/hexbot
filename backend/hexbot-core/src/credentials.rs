@@ -1612,6 +1612,7 @@ fn bwrap_arguments(layout: &Layout) -> Result<Vec<OsString>> {
     let base: &[&str] = if layout.confine.is_some() {
         &[
             "--die-with-parent",
+            "--unshare-user",
             "--new-session",
             "--unshare-pid",
             "--unshare-net",
@@ -1728,22 +1729,18 @@ fn bwrap_arguments(layout: &Layout) -> Result<Vec<OsString>> {
     }
     Ok(args)
 }
-/// Neither sandbox caps process creation, so a workspace program may start at
-/// most this many more processes than the user already runs.
+/// Linux uses this total task budget inside its private user namespace.
+/// macOS adds this many processes to the user's existing process count.
 #[cfg(unix)]
 const PROCESS_HEADROOM: usize = 512;
 #[cfg(unix)]
 fn process_limit() -> Option<usize> {
+    if cfg!(target_os = "linux") {
+        return Some(PROCESS_HEADROOM);
+    }
     // SAFETY: getuid has no preconditions and cannot fail.
     let uid = unsafe { libc::getuid() };
-    // Linux charges the limit per thread, macOS per process.
-    let threads: &[&str] = if cfg!(target_os = "linux") {
-        &["-L"]
-    } else {
-        &[]
-    };
     let listed = std::process::Command::new("ps")
-        .args(threads)
         .args(["-U", &uid.to_string(), "-o", "pid="])
         .output()
         .ok()
@@ -1804,27 +1801,38 @@ pub(crate) fn isolated_command_with_outputs(
         (confine != Confine::No).then_some(workspace.as_slice()),
         writable,
     )?;
-    let mut command = if cfg!(target_os = "macos") {
+    let limit =
+        if confine != Confine::No {
+            Some(process_limit().ok_or_else(|| {
+                Error::new(5240, "Hexbot could not cap processes for the sandbox.")
+            })? as libc::rlim_t)
+        } else {
+            None
+        };
+    let (mut command, cap_before_exec) = if cfg!(target_os = "macos") {
         let mut command = tokio::process::Command::new("/usr/bin/sandbox-exec");
         command.args(["-p", &sandbox_profile(&layout), program]);
-        command
+        (command, limit)
     } else if let Some(bwrap) = bwrap() {
         let mut command = tokio::process::Command::new(bwrap);
-        command
-            .args(bwrap_arguments(&layout)?)
-            .arg("--")
-            .arg(program);
-        command
+        command.args(bwrap_arguments(&layout)?).arg("--");
+        if let Some(limit) = limit {
+            // RLIMIT_NPROC counts host-UID tasks before user namespace setup,
+            // including tasks hidden by a container's PID namespace. Cap only
+            // after bubblewrap starts, before any caller-controlled shell hook.
+            command
+                .args(["/bin/bash", "--noprofile", "--norc", "-p", "-c"])
+                .arg(format!("ulimit -u {limit} || exit 126\nexec -- \"$@\""))
+                .arg("hexbot-process-limit");
+        }
+        command.arg(program);
+        (command, None)
     } else {
         warn_unavailable_isolation();
-        tokio::process::Command::new(program)
+        (tokio::process::Command::new(program), limit)
     };
-    if confine != Confine::No {
-        // The child applies the cap before it starts the sandbox, which keeps it;
-        // a program that cannot be capped does not start.
-        let limit = process_limit()
-            .ok_or_else(|| Error::new(5240, "Hexbot could not cap processes for the sandbox."))?
-            as libc::rlim_t;
+    if let Some(limit) = cap_before_exec {
+        // macOS and the explicit no-sandbox fallback keep the existing cap.
         // SAFETY: setrlimit is async-signal-safe and touches only this child.
         unsafe {
             command.pre_exec(move || {
@@ -3711,8 +3719,151 @@ mod tests {
         let own = limit(Confine::No).await;
         for confine in [Confine::Workspace, Confine::ReadOnly] {
             let capped = limit(confine).await;
-            assert!(capped > 512 && capped < own, "{confine:?} {capped} {own}");
+            assert!(capped < own, "{confine:?} {capped} {own}");
+            if cfg!(target_os = "linux") {
+                assert_eq!(capped, 512);
+            } else {
+                assert!(capped > 512);
+            }
         }
+    }
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn confined_linux_programs_keep_arguments_environment_and_bounded_processes() {
+        if !isolation_available() {
+            return;
+        }
+        let home = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let startup = work.path().join("startup.sh");
+        let marker = work.path().join("startup-limit");
+        std::fs::write(&startup, "ulimit -u > \"$CAP_LOG\"\n").unwrap();
+        let literal = "space ' \" $(not-a-command); *\nline";
+        let code = r#"import os,resource,json,subprocess,threading,sys
+soft,hard=resource.getrlimit(resource.RLIMIT_NPROC)
+try:
+ resource.setrlimit(resource.RLIMIT_NPROC,(hard+1,hard+1))
+ raise_denied=False
+except (ValueError,OSError):
+ raise_denied=True
+subprocess.run(['/bin/true'],check=True)
+t=threading.Thread(target=lambda:None);t.start();t.join()
+userns=os.readlink('/proc/self/ns/user')
+# Keep the enforcement test small: at most 43 tasks even if both caps fail.
+# A descendant namespace must not reset an exhausted ancestor's accounting.
+resource.setrlimit(resource.RLIMIT_NPROC,(12,12))
+nested="""import ctypes,os,json,sys,errno
+libc=ctypes.CDLL(None,use_errno=True)
+result=libc.unshare(0x10000000)
+print(json.dumps({'unshare':result,'userns':os.readlink('/proc/self/ns/user')}),flush=True)
+sys.stdin.readline()
+r,w=os.pipe();children=[];denied=False
+try:
+ for _ in range(16):
+  try:pid=os.fork()
+  except OSError as e:
+   denied=e.errno==errno.EAGAIN;break
+  if pid==0:
+   os.close(w);os.read(r,1);os._exit(0)
+  children.append(pid)
+finally:
+ os.close(w);os.close(r)
+ for pid in children:os.waitpid(pid,0)
+print(json.dumps({'forked':len(children),'denied':denied}),flush=True)
+"""
+child=subprocess.Popen(['/usr/bin/python3','-c',nested],stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
+setup=json.loads(child.stdout.readline())
+r,w=os.pipe();children=[];denied=False
+try:
+ for _ in range(24):
+  try:pid=os.fork()
+  except OSError as e:
+   import errno
+   denied=e.errno==errno.EAGAIN;break
+  if pid==0:
+   os.close(w);os.read(r,1);os._exit(0)
+  children.append(pid)
+ child.stdin.write('go\n');child.stdin.flush()
+ attempted=json.loads(child.stdout.readline())
+ child.stdin.close();assert child.wait()==0
+finally:
+ os.close(w);os.close(r)
+ for pid in children:os.waitpid(pid,0)
+assert denied and 0<len(children)<24
+assert attempted=={'forked':0,'denied':True},(setup,attempted)
+if setup['unshare']==0:assert setup['userns']!=userns
+print(json.dumps({'args':sys.argv[1:],'cwd':os.getcwd(),'env':os.environ['LITERAL_ENV'],'bash_env':os.environ['BASH_ENV'],'soft':soft,'hard':hard,'raise_denied':raise_denied,'userns':userns,'bounded':{'forked':len(children),'denied':denied,'nested':setup,'nested_attempt':attempted}}))
+"#;
+        for mode in [Confine::Workspace, Confine::ReadOnly] {
+            let result = isolated_command(
+                home.path(),
+                "/usr/bin/python3",
+                &[work.path().to_owned()],
+                mode,
+            )
+            .unwrap()
+            .args(["-c", code, literal])
+            .env("LITERAL_ENV", literal)
+            .env("BASH_ENV", &startup)
+            .env("CAP_LOG", &marker)
+            .current_dir(work.path())
+            .output()
+            .await
+            .unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            let actual: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+            assert_eq!(actual["args"], serde_json::json!([literal]));
+            assert_eq!(actual["cwd"], work.path().to_string_lossy().as_ref());
+            assert_eq!(actual["env"], literal);
+            assert_eq!(actual["bash_env"], startup.to_string_lossy().as_ref());
+            assert_eq!(actual["soft"], actual["hard"]);
+            assert_eq!(actual["hard"], 512);
+            assert_eq!(actual["raise_denied"], true);
+            assert_ne!(
+                actual["userns"],
+                std::fs::read_link("/proc/self/ns/user")
+                    .unwrap()
+                    .to_string_lossy()
+                    .as_ref()
+            );
+            assert!(
+                !marker.exists(),
+                "the wrapper must not evaluate BASH_ENV before the cap"
+            );
+        }
+        // The original target still receives BASH_ENV, after the wrapper caps it.
+        let result = isolated_command(
+            home.path(),
+            "/bin/bash",
+            &[work.path().to_owned()],
+            Confine::Workspace,
+        )
+        .unwrap()
+        .args([
+            "--noprofile",
+            "--norc",
+            "-c",
+            "printf '%s' \"$1\"",
+            "target",
+            literal,
+        ])
+        .env("BASH_ENV", &startup)
+        .env("CAP_LOG", &marker)
+        .current_dir(work.path())
+        .output()
+        .await
+        .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_eq!(result.stdout, literal.as_bytes());
+        assert_eq!(std::fs::read_to_string(marker).unwrap().trim(), "512");
     }
     #[test]
     fn code_floor() {

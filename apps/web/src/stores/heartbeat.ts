@@ -8,6 +8,7 @@ import { create } from 'zustand'
 import { heartbeatRunNow, heartbeatSet, heartbeatStatus, sectionsDelete } from '../lib/api'
 import type { HeartbeatStatus } from '../lib/types'
 
+import { connectionRead } from './connection'
 import { sectionsActions, useSections } from './sections'
 import { useTranscripts } from './transcripts'
 
@@ -31,12 +32,13 @@ export const useHeartbeat = create<HeartbeatState>((set, get) => ({
   errors: {},
 
   async refresh(bot) {
+    const current = connectionRead()
     const read = (reads[bot] = (reads[bot] ?? 0) + 1)
 
     try {
       const status = await heartbeatStatus(bot)
 
-      if (read !== reads[bot]) {
+      if (!current() || read !== reads[bot]) {
         return
       }
 
@@ -44,7 +46,7 @@ export const useHeartbeat = create<HeartbeatState>((set, get) => ({
 
       set(state => ({ byBot: { ...state.byBot, [bot]: status }, errors }))
     } catch (error) {
-      if (read !== reads[bot]) {
+      if (!current() || read !== reads[bot]) {
         return
       }
 
@@ -64,17 +66,25 @@ export const useHeartbeat = create<HeartbeatState>((set, get) => ({
   },
 
   async save(bot, text) {
+    const current = connectionRead()
     const status = await heartbeatSet(bot, text)
 
-    set(state => ({ byBot: { ...state.byBot, [bot]: status } }))
+    if (current()) {
+      set(state => ({ byBot: { ...state.byBot, [bot]: status } }))
+    }
   },
 
   async runNow(bot) {
+    const current = connectionRead()
     await heartbeatRunNow(bot)
-    await get().refresh(bot)
+
+    if (current()) {
+      await get().refresh(bot)
+    }
   },
 
   async deleteEarlier(bot) {
+    const current = connectionRead()
     const id = get().byBot[bot]?.earlier_checkins
 
     if (id) {
@@ -82,6 +92,10 @@ export const useHeartbeat = create<HeartbeatState>((set, get) => ({
         useSections.getState().liveSessionId[id] ?? useSections.getState().byId[id]?.live_session_id
 
       await sectionsDelete(id)
+
+      if (!current()) {
+        return
+      }
 
       // Its transcript and listing go with it.
       if (live) {
@@ -97,6 +111,8 @@ export const useHeartbeat = create<HeartbeatState>((set, get) => ({
       await sectionsActions().refresh()
     }
 
-    await get().refresh(bot)
+    if (current()) {
+      await get().refresh(bot)
+    }
   }
 }))

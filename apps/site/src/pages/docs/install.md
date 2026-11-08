@@ -16,6 +16,8 @@ Options and tracks are separate choices: Full, Client, and Headless describe wha
 
 Hexbot runs on macOS 12 or later (Apple Silicon or Intel) and on x86-64 Linux with glibc 2.35 or later, such as Ubuntu 22.04 or Debian 12. If the daemon cannot run on your system, the installer or first launch says so.
 
+Confined Linux tools also need bubblewrap with user namespaces. Their process accounting relies on upstream kernel 5.14 or later, or a vendor backport. Older kernels count every task for your host user against the fixed 512-task limit, so unrelated programs can prevent commands from starting. Legacy-kernel compatibility is unverified; a newer Linux userland inside a container does not upgrade its host kernel.
+
 ## Two ways to install
 
 Both ways offer the same three options and download only the files for the option you choose.
@@ -177,7 +179,7 @@ The deb package depends on `bubblewrap`; with the AppImage or Headless, install 
 
 ### Ubuntu 24.04 and later
 
-Ubuntu 24.04 confines unprivileged user namespaces with AppArmor, and the `bubblewrap` package ships no profile, so a fresh install still has no sandbox: `bwrap --ro-bind / / --unshare-pid --proc /proc -- true` prints `bwrap: setting up uid map: Permission denied`, and Settings, Approvals keeps its notice. Give bubblewrap its own profile; it lets only `bwrap` create user namespaces and leaves the system-wide restriction in place:
+Ubuntu 24.04 confines unprivileged user namespaces with AppArmor, and the `bubblewrap` package ships no profile, so a fresh install still has no sandbox: `bwrap --unshare-user --ro-bind / / --unshare-pid --proc /proc -- true` prints `bwrap: setting up uid map: Permission denied`, and Settings, Approvals keeps its notice. Confined commands require a user namespace even with a setuid bubblewrap helper. Give bubblewrap its own profile; it lets only `bwrap` create user namespaces and leaves the system-wide restriction in place:
 
 ```sh
 sudo tee /etc/apparmor.d/bwrap >/dev/null <<'EOF'

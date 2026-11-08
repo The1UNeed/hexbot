@@ -23,6 +23,7 @@ import { promisify } from 'node:util'
 const execute = promisify(execFile)
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const licenses = join(root, 'scripts/desktop/licenses')
+const vendoredRustManifests = new Set([join(root, 'third_party/rust/glib/Cargo.toml')])
 const maxBuffer = 256 * 1024 * 1024
 /** Every target a package is built for, including Linux arm64 Headless. */
 export const RUST_TARGETS = ['aarch64-apple-darwin', 'x86_64-apple-darwin', 'x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu']
@@ -58,7 +59,7 @@ export async function cargoPackages(manifest, { targets = RUST_TARGETS, features
     }
     for (const id of linked) {
       const item = packages.get(id)
-      if (!item.source && !members) continue // Hexbot's own crates
+      if (!item.source && !members && !vendoredRustManifests.has(resolve(item.manifest_path))) continue // Hexbot's own crates
       found.set(`${item.name}@${item.version}`, {
         name: item.name,
         version: item.version,

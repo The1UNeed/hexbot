@@ -59,6 +59,29 @@ route and composer checked before continuing.
   captured legacy schema fixtures in temporary homes. Local HTTP/SSE/MCP
   fixtures test provider and tool behavior. Actual Pi checks are documented
   in [`backend/hexbot-core/README.md`](../backend/hexbot-core/README.md).
+  PDF tests bound streamed output before encoding, validate concatenated PNG
+  boundaries and CRCs, and verify staging cleanup. Renderer tests cover exact
+  byte limits, read errors, cancellation, timeout, process-group cleanup for
+  forwarding wrappers, and inherited Linux resource limits. Page-range tests
+  reject values beyond Poppler's signed 32-bit range.
+  PDF backend controls verify macOS VM defaults, explicit host opt-in, unsupported
+  platform refusal, trusted Rosetta/native-architecture decisions and fixed
+  helper status mapping without interpreting stderr. Native runtime selection
+  checks all nine PDF files, inner architecture and helper Mach-O CPU type,
+  legacy upgrades above the chronology floor, damaged/future capability refusal,
+  and preservation of Linux behavior. Actual Mac VM attachment tests must use
+  the signed helper and final accepted guest assets with disposable daemon state.
+  macOS 12 API compilation is distinct from execution on macOS 27.2 Apple
+  silicon; native Intel virtualization also passed isolated qualification. Execution on macOS 12 remains unverified.
+  Concurrent modern and legacy bot-update tests hold profile writes before the
+  catalog commit and observe lock contention to verify both stay in one order.
+  Lifecycle regressions also hold updates and avatar writes across deletion
+  and handle reuse, including public RPC calls, to protect replacement bots.
+  Rejected legacy configuration requests must leave profile files and the
+  catalog unchanged, including mixed valid fields and invalid skill/tool lists.
+  Room tests reject limits beyond signed 64-bit storage and nonexistent members
+  without changing membership. Heartbeat tests reject linked checklists,
+  FIFOs and oversized text, including Unicode character and byte boundaries.
   Section deletion regressions in `tests/section_delete.rs` cover public calls,
   offline catalog deletion, restart recovery, deferred catalog commit failures,
   disposition write failures and completed descendant cleanup in both orders.
@@ -183,6 +206,17 @@ route and composer checked before continuing.
   execution runs in Ubuntu CI; macOS cannot validate the bubblewrap kernel
   boundary. The Linux `execute_code` regression checks its scan-budget recovery
   guidance and that a smaller workspace can run the code.
+  Confined Linux process tests require a private user namespace, start real
+  subprocesses and threads, check the 512-task hard limit cannot be raised, and preserve
+  literal arguments, environment and cwd. A hostile `BASH_ENV` must not run in
+  the limit wrapper; the original target receives it only after being capped.
+  A bounded 12-task test exhausts the cap and checks that a descendant user
+  namespace cannot fork past its ancestor's limit; it reaps every child and
+  attempts fewer than 64 tasks even if enforcement fails.
+  The repository audit exercised Linux 6.8.0-117 on ARM64. Namespace-local process
+  accounting was introduced in upstream 5.14; older kernels without a backport
+  retain global UID accounting and remain a compatibility gap. These results
+  do not validate legacy kernels or Linux x64 execution.
   Scheduled-script tests verify that Manual cannot write artifacts. Run
   `cargo fmt --manifest-path backend/hexbot-core/Cargo.toml --check` too.
   See [sandbox behavior and limits](../SECURITY.md#tool-isolation): Linux protects
@@ -225,6 +259,10 @@ route and composer checked before continuing.
   dbus-run-session -- xvfb-run -a -s '-screen 0 1600x1200x24' sh -c 'openbox >/dev/null 2>&1 & node scripts/dev/native-ui-smoke.mjs --desktop --edition=client'
   ```
 - Web bundle: `pnpm --filter ./apps/web run typecheck && pnpm --filter ./apps/web run test --run && pnpm --filter ./apps/web run lint && pnpm --filter ./apps/web run build`.
+  Gateway lifecycle and handshake tests cover construction failures, early close,
+  cancellation, missing readiness and auth rejection. Personal-state race tests
+  hold reads, mutations and rollbacks across daemon changes to verify that old
+  responses cannot replace the new daemon's settings or private state.
 - POSIX runtime selection and readiness: `node scripts/dev/runtime-selection-smoke.mjs`.
   Builds real `.58` and `.59` daemons with equal `builtAt` from a disposable source
   copy. Damaged identity metadata leaves `.58` running. Permission damage to a
@@ -239,6 +277,8 @@ route and composer checked before continuing.
   parallel test workers would extract it over each other. After an install
   with `--ignore-scripts`, run `pnpm --filter ./apps/desktop exec install-electron`
   before any test.
+  Updater track tests hold preference writes and update checks to verify that
+  rejected or overlapping track changes cannot alter the saved track.
   After building the web bundle, `pnpm --filter ./apps/desktop run e2e:lifecycle`
   builds and launches both desktop editions in disposable homes. It checks
   native close/reopen, renderer retention, a real second launch, menu Quit
@@ -250,14 +290,23 @@ route and composer checked before continuing.
   Close waits for native minimization to finish. Reopen waits for rendered
   frames and nonzero Chromium layout and visual viewports before screenshots;
   viewport metrics are saved with the evidence.
+  Quit checks observe and defer the first native `will-quit` once, then use
+  Playwright's `app.close()` to detach its inspector and reissue Quit. A clean
+  process exit is required. This tests the native menu action and shutdown
+  handlers with driver assistance, not uninstrumented OS logoff.
   Screenshots, process output and exit signals, failures, and results are uploaded as
   `desktop-lifecycle-*`. Linux needs `dbus-run-session -- xvfb-run -a` and a
   window manager. This does not perform actual logoff, shutdown, or update
   installation, and does not validate GNOME or Wayland integration. Windows
   remains a lifecycle test target, not a distributed package.
 - Packaging and release scripts: `node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs && node scripts/desktop/release-smoke.mjs`.
+  Dev-runner regressions cover live-home aliases and descendants, including
+  missing child directories, and nonzero exit status on startup failure.
 - Site: `pnpm --filter ./apps/site run check`.
 - Connect: `pnpm --filter ./apps/connect run typecheck && pnpm --filter ./apps/connect run test --run && pnpm --filter ./apps/connect run lint`.
+  Invalid record IDs are rejected before PostgreSQL UUID queries, and repeated
+  browser sign-in parameters cannot create a grant. Site installer tests allow
+  Nightly fallback only for a missing Stable manifest, not invalid JSON values.
 
 ## Mobile
 
@@ -267,6 +316,9 @@ shows under Settings, Licenses, no longer matches the app's dependencies;
 `node scripts/desktop/third-party-notices.mjs mobile` rewrites it.
 Room regressions cover simultaneous turns, reconnect cleanup, failure and limit
 notices, and former members' names. File tests cover size checks before reads.
+Read-receipt tests cover settings and profile screens and background state;
+send tests hold completion across navigation to protect the next chat's state,
+draft and attachments.
 `pnpm --filter @hexbot/mobile run export` bundles iOS, Android and web.
 
 With an Expo CLI login, validate the TestFlight workflow files from
@@ -313,6 +365,9 @@ and `cargo clippy --locked --manifest-path backend/hexbot-installer/Cargo.toml -
 The engine tests use temporary homes and `HEXBOT_SERVICE_NO_LOAD=1`. They cover
 foreign service ownership, runtime files without a Headless install, LAN
 preservation on repair, macOS app recovery, and status failures after setup.
+Receiptless repair tests use real CLI processes and local downloads for every
+install option and track. Mixed-edition detection checks that the selected
+option determines both the track and version.
 The bootstrap suite exercises curl and wget track selection. Only a Stable
 manifest 404 permits a Nightly fallback.
 
@@ -338,6 +393,8 @@ uv sync --extra dev --locked
 Tests use temporary homes and local archives to check native activation,
 historical module restart, service migration, checksums, archive limits,
 failure recovery, preservation of existing data, and CLI home defaults.
+Cached-runtime recovery tests also replace cyclic executable and selection
+links through verified archive installation.
 The release archive also accepts `uv sync --extra all --locked`, as required
 by the installed old updater. A failed native version probe exits non-zero,
 so that updater reports failure without restarting the running old daemon.
