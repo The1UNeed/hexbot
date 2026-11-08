@@ -40,7 +40,7 @@ export async function makeNativeUpdate(bundle, output, {
     if (await pdfFileHash(copy, sourceArchive.bytes) !== sourceArchive.sha256)
       throw new Error('The PDF VM corresponding-source archive changed while being copied')
   }
-  const filename = `hexbot-native-${metadata.version}-${target}.tar.gz`
+  const filename = `hexbot-native-${metadata.version}-${target}.${metadata.target === 'win32-x64' ? 'zip' : 'tar.gz'}`
   const manifest = await createNativeArchive(bundle, join(directory, filename))
   if (sourceArchive) manifest.pdfSources = sourceArchive
   manifest.path = [...path, filename].join('/')

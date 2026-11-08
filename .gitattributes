@@ -18,6 +18,7 @@ patches/*.patch -whitespace
 # at check-in; `eol=lf` also checks out as LF so the working tree matches
 # the index on every platform. PowerShell files are the deliberate
 # exception (PS 5.1 tooling expects CRLF).
+*.rs    text eol=lf
 *.py    text eol=lf
 *.ts    text eol=lf
 *.tsx   text eol=lf
@@ -34,3 +35,6 @@ patches/*.patch -whitespace
 *.html  text eol=lf
 *.svg   text eol=lf
 *.ps1   text eol=crlf
+
+# Managed voice requirements are embedded in receipts and generated as LF.
+backend/hexbot-core/assets/edge-tts.requirements.* text eol=lf

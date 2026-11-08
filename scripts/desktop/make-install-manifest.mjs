@@ -53,7 +53,7 @@ function readFeed(source) {
   }
 }
 
-export async function makeInstallManifest(root, { channel, version, baseUrl = 'https://updates.hexbot.app', allowMissing = false }) {
+export async function makeInstallManifest(root, { channel, version, baseUrl = 'https://updates.hexbot.app', allowMissing = false, windowsProbe = false }) {
   feedMetadataName(channel, 'mac')
   if (!/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(version)) throw new Error('Invalid install version')
   const base = new URL(`${baseUrl.replace(/\/+$/, '')}/`)
@@ -74,7 +74,7 @@ export async function makeInstallManifest(root, { channel, version, baseUrl = 'h
       throw new Error(`Invalid artifact size: ${path}`)
     if (await digest(file, algorithm, encoding) !== hash) throw new Error(`Artifact checksum mismatch: ${path}`)
   }
-  for (const [target, os, arch] of targets) {
+  for (const [target, os, arch] of [...targets, ...(windowsProbe ? [['windows-x86_64', 'win', 'x64']] : [])]) {
     const options = {}
     for (const edition of ['full', 'client']) {
       const directory = `${edition}/${os}/${arch}`
@@ -86,7 +86,7 @@ export async function makeInstallManifest(root, { channel, version, baseUrl = 'h
         if (!file.url || /[/\\]/.test(file.url) || file.url === '..') throw new Error(`Invalid artifact URL: ${feedPath}`)
         if (!(await exists(join(root, directory, file.url)))) throw new Error(`Referenced file is missing: ${directory}/${file.url}`)
       }
-      const format = os === 'mac' ? 'zip' : 'AppImage'
+      const format = os === 'mac' ? 'zip' : os === 'win' ? 'exe' : 'AppImage'
       const file = feed.files.find(file => file.url.endsWith(`.${format}`))
       if (!file) {
         if (allowMissing) continue
@@ -101,17 +101,18 @@ export async function makeInstallManifest(root, { channel, version, baseUrl = 'h
     const native = `daemon/native/${version}/${target}`
     if (await optional(`${native}/manifest.json`)) {
       const metadata = JSON.parse(await readFile(join(root, native, 'manifest.json'), 'utf8'))
-      const path = `${native}/hexbot-native-${version}-${target}.tar.gz`
-      if (metadata.version !== version || metadata.target !== target || metadata.format !== 'tar.gz')
+      const format = os === 'win' ? 'zip' : 'tar.gz'
+      const path = `${native}/hexbot-native-${version}-${target}.${format}`
+      if (metadata.version !== version || metadata.target !== target || metadata.format !== format || (os === 'win' && metadata.entrypoint !== 'hexbot.exe'))
         throw new Error(`Invalid native manifest: ${native}/manifest.json`)
       if (new URL(metadata.path ?? metadata.url, base).pathname !== new URL(path, base).pathname) throw new Error(`Invalid native archive URL: ${metadata.url}`)
       await verify(path, metadata.sha256, 'sha256', 'hex', metadata.size)
       options.headless = { url: url(path), path, sha256: metadata.sha256, size: metadata.size,
-        format: 'tar.gz', manifest: `${native}/manifest.json` }
+        format, manifest: `${native}/manifest.json` }
     }
-    const appName = os === 'mac' ? `mac-${arch}.dmg` : 'linux-x86_64.AppImage'
+    const appName = os === 'mac' ? `mac-${arch}.dmg` : os === 'win' ? 'win-x64.exe' : 'linux-x86_64.AppImage'
     for (const [option, filename] of [
-      ['installer', `hexbot-install-${version}-${target}`],
+      ['installer', `hexbot-install-${version}-${target}${os === 'win' ? '.exe' : ''}`],
       ['installerApp', `HexbotInstaller-${version}-${appName}`]
     ]) {
       const path = `install/${version}/${filename}`
@@ -121,6 +122,7 @@ export async function makeInstallManifest(root, { channel, version, baseUrl = 'h
     }
     if (Object.keys(options).length) manifest.targets[target] = options
   }
+  if (windowsProbe) manifest.experimental = 'Windows build/install probe only; not a public release'
   await mkdir(join(root, 'install'), { recursive: true })
   await writeFile(join(root, 'install', `${channel}.json`), `${JSON.stringify(manifest, null, 2)}\n`)
   await writeFile(join(root, 'install', `${channel}.txt`), lines.length ? `${lines.join('\n')}\n` : '')
@@ -133,7 +135,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   let root
   for (let i = 0; i < args.length; i++) {
     const argument = args[i]
-    if (argument === '--allow-missing') options.allowMissing = true
+    if (argument === '--windows-probe') options.windowsProbe = true
+    else if (argument === '--allow-missing') options.allowMissing = true
     else if (['--channel', '--version', '--base-url'].includes(argument)) {
       const value = args[++i]
       if (!value || value.startsWith('--')) throw new Error(`Missing value for ${argument}`)

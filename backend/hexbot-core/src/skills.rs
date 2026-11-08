@@ -209,6 +209,7 @@ fn met(need: &Requirement, env: &BTreeMap<String, String>) -> bool {
 fn bundled_root() -> PathBuf {
     let path = std::env::var_os("HEXBOT_BUNDLED_SKILLS")
         .map(PathBuf::from)
+        .or_else(|| crate::common::bundled_runtime().map(|root| root.join("skills")))
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../skills"));
     path.canonicalize().unwrap_or(path)
 }

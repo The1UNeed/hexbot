@@ -124,6 +124,15 @@ fn forward(channel: Channel<Progress>) -> impl FnMut(Progress) {
     }
 }
 
+fn locations(paths: &Paths, target: Target) -> hexbot_installer::Result<Locations> {
+    Ok(Locations {
+        home: paths.home.clone(),
+        hexbot_home: paths.hexbot_home.clone(),
+        apps: paths.planned_apps_dir(target)?,
+        cli: paths.cli_wrapper(target),
+    })
+}
+
 fn detection() -> hexbot_installer::Result<Detection> {
     let platform = format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH);
     let Ok(target) = Target::detect() else {
@@ -143,12 +152,7 @@ fn detection() -> hexbot_installer::Result<Detection> {
         installer_version: hexbot_installer::version(),
         platform,
         target: Some(target),
-        locations: Some(Locations {
-            home: paths.home.clone(),
-            hexbot_home: paths.hexbot_home.clone(),
-            apps: paths.planned_apps_dir(target)?,
-            cli: paths.wrapper(),
-        }),
+        locations: Some(locations(paths, target)?),
         daemon_files: installed.runtime,
         installed: installed.option().map(|option| InstalledView {
             option,
@@ -294,6 +298,13 @@ fn daemon(paths: &Paths, args: &[&str]) -> hexbot_installer::Result<String> {
 
 fn daemon_command(paths: &Paths, args: &[&str]) -> std::process::Command {
     let mut command = std::process::Command::new(paths.executable());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command
+            .creation_flags(0x08000000)
+            .env("USERPROFILE", &paths.home);
+    }
     command
         .args(args)
         .env("HOME", &paths.home)
@@ -353,14 +364,41 @@ async fn open_app(app: AppHandle, path: PathBuf) -> CommandResult<()> {
     blocking(move || {
         let paths = Paths::from_env()?;
         let receipt = read_receipt(&paths.receipt())?.ok_or("Hexbot is not installed.")?;
-        if !receipt.paths.contains(&path) || !is_app(&path) {
-            return Err("That is not an app this installer installed.".into());
-        }
-        platform::open(&path)
+        let executable = app_to_open(&paths, &receipt, &path, Target::detect()?)?;
+        platform::open(&executable)
     })
     .await?;
     app.exit(0);
     Ok(())
+}
+
+fn app_to_open(
+    paths: &Paths,
+    receipt: &hexbot_installer::Receipt,
+    path: &Path,
+    target: Target,
+) -> hexbot_installer::Result<PathBuf> {
+    if receipt.paths.iter().any(|owned| owned == path) {
+        if target.is_windows() {
+            // A receipt records the installed directory. Recheck the packaged
+            // ownership marker, edition, executable and asar before launching.
+            let installed = hexbot_installer::detect_at(paths, target)?;
+            if let Some(app) = installed
+                .apps
+                .iter()
+                .find(|app| app.path == path && app.option == receipt.option)
+            {
+                return Ok(app.path.join(if app.option == InstallOption::Client {
+                    "HexbotClient.exe"
+                } else {
+                    "Hexbot.exe"
+                }));
+            }
+        } else if is_app(path) {
+            return Ok(path.to_owned());
+        }
+    }
+    Err("That is not an app this installer installed.".into())
 }
 
 fn is_app(path: &Path) -> bool {
@@ -413,6 +451,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn serialized_cli_location_matches_each_platform_installation() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            home: root.path().join("user"),
+            hexbot_home: root.path().join("state"),
+            apps_override: Some(root.path().join("apps")),
+            opt_override: None,
+            service_root: root.path().join("services"),
+            service_no_load: true,
+        };
+        for (target, name) in [
+            (Target::WindowsX86_64, "hexbot.exe"),
+            (Target::LinuxX86_64, "hexbot"),
+            (Target::MacosAarch64, "hexbot"),
+            (Target::MacosX86_64, "hexbot"),
+        ] {
+            let serialized = serde_json::to_value(locations(&paths, target).unwrap()).unwrap();
+            let cli = Path::new(serialized["cli"].as_str().unwrap());
+            assert_eq!(cli, paths.home.join(".local").join("bin").join(name));
+            assert_eq!(cli.file_name().unwrap(), name);
+        }
+    }
+
+    #[test]
     fn initial_track_follows_the_installer_version_or_the_probe() {
         assert_eq!(
             initial_track("0.1.5-nightly.20261004.1", || panic!("must not probe")).unwrap(),
@@ -427,6 +489,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn daemon_commands_clean_the_appimage_environment() {
         // Put the inherited environment in a subprocess, not the parallel test runner.
         const CHILD: &str = "HEXBOT_TEST_APPIMAGE_CHILD";
@@ -473,6 +536,8 @@ mod tests {
                 Some(std::ffi::OsStr::new("/usr/lib"))
             );
             assert_eq!(value("HOME"), Some(paths.home.as_os_str()));
+            #[cfg(windows)]
+            assert_eq!(value("USERPROFILE"), Some(paths.home.as_os_str()));
             assert_eq!(value("HEXBOT_HOME"), Some(paths.hexbot_home.as_os_str()));
             assert_eq!(
                 value("HEXBOT_SERVICE_ROOT"),
@@ -486,6 +551,33 @@ mod tests {
             assert_eq!(command.get_args().collect::<Vec<_>>(), args);
         }
         assert_eq!(std::env::var("APPDIR").unwrap(), "/tmp/installer-appimage");
+    }
+
+    #[test]
+    fn daemon_commands_use_the_exact_selected_profile_and_state() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            home: root.path().join("Jos\u{e9} profile"),
+            hexbot_home: root.path().join("selected state"),
+            service_root: root.path().join("services"),
+            service_no_load: true,
+            apps_override: None,
+            opt_override: None,
+        };
+        for args in [&["status", "--json"][..], &["pair"][..]] {
+            let command = daemon_command(&paths, args);
+            let env: std::collections::BTreeMap<_, _> = command.get_envs().collect();
+            let value = |key: &str| env.get(std::ffi::OsStr::new(key)).copied().flatten();
+            assert_eq!(value("HOME"), Some(paths.home.as_os_str()));
+            assert_eq!(value("HEXBOT_HOME"), Some(paths.hexbot_home.as_os_str()));
+            assert_eq!(
+                value("HEXBOT_SERVICE_ROOT"),
+                Some(paths.service_root.as_os_str())
+            );
+            #[cfg(windows)]
+            assert_eq!(value("USERPROFILE"), Some(paths.home.as_os_str()));
+            assert_eq!(command.get_program(), paths.executable());
+        }
     }
 
     #[test]
@@ -537,6 +629,52 @@ mod tests {
             parse_pairing("Pairing code: \nLink: https://example.com"),
             None
         );
+    }
+
+    #[test]
+    fn windows_open_resolves_only_the_recorded_owned_edition() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            home: root.path().join("home"),
+            hexbot_home: root.path().join("state"),
+            service_root: root.path().join("services"),
+            service_no_load: true,
+            apps_override: Some(root.path().join("apps")),
+            opt_override: None,
+        };
+        let app = root.path().join("apps/app.hexbot.client");
+        std::fs::create_dir_all(app.join("resources")).unwrap();
+        std::fs::write(app.join("HexbotClient.exe"), "fixture").unwrap();
+        std::fs::write(app.join("resources/app.asar"), "fixture").unwrap();
+        let receipt = hexbot_installer::Receipt {
+            option: InstallOption::Client,
+            channel: Track::Stable,
+            version: "0.1.0".into(),
+            paths: vec![app.clone()],
+            installed_at: "fixture".into(),
+        };
+        let resolve = || app_to_open(&paths, &receipt, &app, Target::WindowsX86_64);
+        assert!(resolve().is_err()); // An unrelated exe is never sufficient.
+        std::fs::write(
+            app.join(".hexbot-app.json"),
+            r#"{"appId":"app.hexbot.client"}"#,
+        )
+        .unwrap();
+        assert_eq!(resolve().unwrap(), app.join("HexbotClient.exe"));
+        assert!(
+            app_to_open(
+                &paths,
+                &receipt,
+                &app.join("HexbotClient.exe"),
+                Target::WindowsX86_64
+            )
+            .is_err()
+        );
+        let mut wrong_edition = receipt.clone();
+        wrong_edition.option = InstallOption::Full;
+        assert!(app_to_open(&paths, &wrong_edition, &app, Target::WindowsX86_64).is_err());
+        std::fs::remove_file(app.join("resources/app.asar")).unwrap();
+        assert!(resolve().is_err());
     }
 
     #[test]

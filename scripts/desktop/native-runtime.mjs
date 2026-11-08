@@ -14,6 +14,7 @@ import { PDF_RUNTIME_FILES, stagePdfRuntime, validatePdfRuntime } from './pdf-ru
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const execute = promisify(execFile)
 export function nativeTarget(platform = process.platform, arch = process.arch) {
+  if (platform === 'win32' && arch === 'x64') return 'win32-x64'
   if (!['darwin', 'linux'].includes(platform) || !['arm64', 'x64'].includes(arch))
     throw new Error(`Unsupported native runtime target: ${platform}/${arch}`)
   return `${platform}-${arch}`
@@ -27,6 +28,7 @@ export function launchers() {
 }
 export function rustTarget(platform, arch) {
   nativeTarget(platform, arch)
+  if (platform === 'win32') return 'x86_64-pc-windows-msvc'
   return `${arch === 'arm64' ? 'aarch64' : 'x86_64'}-${platform === 'darwin' ? 'apple-darwin' : 'unknown-linux-gnu'}`
 }
 
@@ -98,7 +100,8 @@ export const NODE_SHA256 = Object.freeze({
   'darwin-arm64': 'c9e1dbc748b33ed2d14f42445191ecaf14c56259c7a9a26d0042c49ec2b66428',
   'darwin-x64': 'efcc2b0db6f94bf53eddb038fe2b370277a042bd29e4f19b8f8e23598795b819',
   'linux-arm64': 'f7a1e486dbc8b286847815b477d4fb5e9fb963ed4489c3e1588853d685f589f9',
-  'linux-x64': 'b8492284c76a54baf58d61668dd0e41ee0fc98adabf9503d30f05d08f55b4406'
+  'linux-x64': 'b8492284c76a54baf58d61668dd0e41ee0fc98adabf9503d30f05d08f55b4406',
+  'win32-x64': 'cbc74b5e0982c9dbb41525fd8fb5dcd32fbee237863f7829072f4639a1ce5f20'
 })
 // nodejs.org and GitHub sometimes cut a release build's download short.
 // Each attempt starts over; a wrong checksum is never retried.
@@ -114,8 +117,9 @@ export async function retryDownload(task, { attempts = 4, wait = ms => new Promi
 export async function standaloneNode(directory, platform, arch, version = NODE_VERSION, retry = retryDownload) {
   const digest = NODE_SHA256[nativeTarget(platform, arch)]
   if (version !== NODE_VERSION || !digest) throw new Error('Standalone Node checksum is not pinned')
-  const name = `node-v${version}-${platform}-${arch}`
-  const filename = `${name}.tar.gz`
+  const windows = platform === 'win32'
+  const name = `node-v${version}-${windows ? 'win' : platform}-${arch}`
+  const filename = `${name}.${windows ? 'zip' : 'tar.gz'}`
   const origin = `https://nodejs.org/dist/v${version}`
   const archive = await retry(async () => {
     const response = await fetch(`${origin}/${filename}`, { signal: AbortSignal.timeout(300_000) })
@@ -126,8 +130,9 @@ export async function standaloneNode(directory, platform, arch, version = NODE_V
   const path = join(directory, filename)
   await writeFile(path, archive)
   // Node's LICENSE also covers the libraries built into it (V8, OpenSSL, ICU, ...).
-  await execute('tar', ['-xzf', path, '-C', directory, `${name}/bin/node`, `${name}/LICENSE`])
-  return join(directory, name, 'bin/node')
+  const member = windows ? `${name}/node.exe` : `${name}/bin/node`
+  await execute('tar', [windows ? '-xf' : '-xzf', path, '-C', directory, member, `${name}/LICENSE`])
+  return join(directory, member)
 }
 
 export async function stageNativeRuntime({
@@ -144,7 +149,10 @@ export async function stageNativeRuntime({
   run = (command, args, options) => execute(command, args, { ...options, maxBuffer: 32 * 1024 * 1024 })
 } = {}) {
   const target = nativeTarget(platform, arch)
-  nativeBuildEnvironment([platform === 'darwin' ? '--mac' : '--linux', `--${arch}`])
+  const windows = platform === 'win32'
+  const daemonName = windows ? 'hexbot.exe' : 'hexbot-core'
+  const nodeName = windows ? 'node.exe' : 'node'
+  nativeBuildEnvironment([platform === 'darwin' ? '--mac' : windows ? '--win' : '--linux', `--${arch}`])
   const triple = rustTarget(platform, arch)
   const metadata = JSON.parse(await readFile(join(repository, 'apps/desktop/package.json'), 'utf8'))
   if (channel !== 'dev' && (typeof metadata.version !== 'string' || !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(metadata.version)))
@@ -155,7 +163,7 @@ export async function stageNativeRuntime({
   const nodeVersion = nodeExecutable ? (await run(nodeExecutable, ['-p', 'process.versions.node'])).stdout.trim() : NODE_VERSION
   const [major, minor] = nodeVersion.split('.').map(Number)
   if (major < 22 || (major === 22 && minor < 19)) throw new Error('Pi needs Node 22.19 or later')
-  await run('cargo', ['build', '--release', '--locked', '--target', triple, '--manifest-path', join(repository, 'backend/hexbot-core/Cargo.toml')], { cwd: repository })
+  await run('cargo', ['build', '--release', '--locked', '--bin', 'hexbot', ...(windows ? ['--bin', 'hexbot-cli'] : []), '--target', triple, '--manifest-path', join(repository, 'backend/hexbot-core/Cargo.toml')], { cwd: repository })
   await mkdir(dirname(destination), { recursive: true })
   const staging = await mkdtemp(`${destination}.staging-`)
   try {
@@ -175,7 +183,7 @@ export async function stageNativeRuntime({
     await mkdir(pi)
     for (const file of ['package.json', 'package-lock.json'])
       await cp(join(repository, 'backend/pi-runtime', file), join(pi, file))
-    await run('npm', ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', `--cpu=${arch}`, `--os=${platform}`], { cwd: pi })
+    await run(windows ? process.execPath : 'npm', [...(windows ? [join(dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js')] : []), 'ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', `--cpu=${arch}`, `--os=${platform}`], { cwd: pi })
     await cp(join(root, 'scripts/desktop/search-tools.mjs'), join(pi, 'search-tools.mjs'))
     for (const tool of ['rg', 'fd']) await installTool(tool, {
       binDirectory: join(staging, 'bin'), stagingDirectory: staging,
@@ -185,18 +193,19 @@ export async function stageNativeRuntime({
     await pruneRuntimeDependencies(join(pi, 'node_modules'), platform, arch)
     const afterBytes = await directoryBytes(pi)
     console.log(`Runtime dependencies: ${beforeBytes} -> ${afterBytes} bytes`)
-    await cp(join(repository, 'backend/hexbot-core/target', triple, 'release/hexbot'), join(staging, 'hexbot-core'))
+    await cp(join(repository, 'backend/hexbot-core/target', triple, windows ? 'release/hexbot.exe' : 'release/hexbot'), join(staging, daemonName))
+    if (windows) await cp(join(repository, 'backend/hexbot-core/target', triple, 'release/hexbot-cli.exe'), join(staging, 'hexbot-cli.exe'))
     let license
     if (nodeExecutable) {
       // A local Node, for tests and development; release builds download theirs.
-      await cp(nodeExecutable, join(staging, 'node'), { dereference: true })
+      await cp(nodeExecutable, join(staging, nodeName), { dereference: true })
       license = `Node.js ${nodeVersion}: https://github.com/nodejs/node/blob/v${nodeVersion}/LICENSE`
     } else {
       const download = await mkdtemp(`${destination}.node-`)
       try {
         const node = await standaloneNode(download, platform, arch)
-        await cp(node, join(staging, 'node'))
-        license = await readFile(join(dirname(node), '../LICENSE'), 'utf8')
+        await cp(node, join(staging, nodeName))
+        license = await readFile(join(dirname(node), windows ? 'LICENSE' : '../LICENSE'), 'utf8')
       } finally { await rm(download, { recursive: true, force: true }) }
     }
     // Third-party licenses for everything above; web/ carries the web app's own.
@@ -207,12 +216,15 @@ export async function stageNativeRuntime({
       (pdf ? `\n\nPDF VM guest runtime\n\n${await readFile(join(staging, 'pdf/THIRD_PARTY_NOTICES'), 'utf8')}\n` : ''))
     await cp(join(repository, 'apps/web/dist'), join(staging, 'web'), { recursive: true })
     await cp(join(repository, 'skills'), join(staging, 'skills'), { recursive: true, dereference: true })
-    const scripts = launchers()
-    await writeFile(join(staging, 'hexbot'), scripts.hexbot)
-    await writeFile(join(pi, 'hexbot-pi'), scripts.pi)
-    for (const file of ['hexbot', 'hexbot-core', 'node', 'pi/hexbot-pi']) await chmod(join(staging, file), 0o755)
+    if (!windows) {
+      const scripts = launchers()
+      await writeFile(join(staging, 'hexbot'), scripts.hexbot)
+      await writeFile(join(pi, 'hexbot-pi'), scripts.pi)
+      for (const file of ['hexbot', 'hexbot-core', 'node', 'pi/hexbot-pi']) await chmod(join(staging, file), 0o755)
+    }
+    await cp(join(root, 'scripts/desktop/pi-launch.mjs'), join(pi, 'launch.mjs'))
     const files = {}
-    for (const file of ['hexbot', 'hexbot-core', 'node', 'pi/hexbot-pi', 'pi/package-lock.json', 'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js', 'web/index.html', 'bin/rg', 'bin/fd', 'pi/search-tools.mjs'])
+    for (const file of [...(windows ? ['hexbot.exe', 'hexbot-cli.exe', 'node.exe', 'pi/launch.mjs'] : ['hexbot', 'hexbot-core', 'node', 'pi/hexbot-pi']), 'pi/package-lock.json', 'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js', 'web/index.html', `bin/rg${windows ? '.exe' : ''}`, `bin/fd${windows ? '.exe' : ''}`, 'pi/search-tools.mjs'])
       files[file] = createHash('sha256').update(await readFile(join(staging, file))).digest('hex')
     Object.assign(files, pdf?.files)
     // The app keeps whichever installed runtime was built from newer source,
@@ -220,7 +232,7 @@ export async function stageNativeRuntime({
     const commit = await execute('git', ['log', '-1', '--format=%ct'], { cwd: repository }).catch(() => ({ stdout: '' }))
     const builtAt = Number(commit.stdout.trim()) || Math.floor(Date.now() / 1000)
     await writeFile(join(staging, 'manifest.json'), `${JSON.stringify({ version: metadata.version, target, piVersion, nodeVersion, builtAt, ...(pdf ? { pdfVm: 1 } : {}), files }, null, 2)}\n`)
-    await run(join(staging, 'node'), [join(pi, 'node_modules/@earendil-works/pi-coding-agent/dist/cli.js'), '--version'], { cwd: staging })
+    await run(join(staging, nodeName), [join(pi, 'node_modules/@earendil-works/pi-coding-agent/dist/cli.js'), '--version'], { cwd: staging })
     await rm(destination, { recursive: true, force: true })
     await rename(staging, destination)
     return { destination, version: metadata.version, target, piVersion, beforeBytes, afterBytes, ...(pdf?.archive ? { pdfSourceArchive: pdf.archive } : {}) }
@@ -231,7 +243,7 @@ export async function stageNativeRuntime({
 export function updateTarget(platformTarget) {
   const [platform, arch] = platformTarget.split('-')
   nativeTarget(platform, arch)
-  return `${platform === 'darwin' ? 'macos' : platform}-${arch === 'arm64' ? 'aarch64' : 'x86_64'}`
+  return `${platform === 'darwin' ? 'macos' : platform === 'win32' ? 'windows' : platform}-${arch === 'arm64' ? 'aarch64' : 'x86_64'}`
 }
 export async function createNativeArchive(directory, destination) {
   // Materialize npm links as independent files. tar -h alone can emit hardlinks,
@@ -263,13 +275,17 @@ export async function createNativeArchive(directory, destination) {
     await writeFile(join(staging, 'manifest.json'), `${JSON.stringify(metadata, null, 2)}\n`)
     unpackedSize = await directoryBytes(staging)
     await execute('tar', [
+      ...(metadata.target === 'win32-x64' ? ['--format', 'zip'] : []),
       ...(process.platform === 'darwin' ? ['--no-mac-metadata', '--no-xattrs'] : []),
-      '-czf', destination, '-C', staging, '.'
+      metadata.target === 'win32-x64' ? '-cf' : '-czf', destination, '-C', staging, '.'
     ], { env: { ...process.env, COPYFILE_DISABLE: '1' } })
   } finally { await rm(staging, { recursive: true, force: true }) }
   const manifest = JSON.parse(await readFile(join(directory, 'manifest.json'), 'utf8'))
+  const windows = manifest.target === 'win32-x64'
+  const entrypoint = windows ? 'hexbot.exe' : 'hexbot'
+  if (!existsSync(join(directory, entrypoint))) throw new Error('Native archive entrypoint is missing')
   return {
-    version: manifest.version, builtAt: manifest.builtAt, target: updateTarget(manifest.target), format: 'tar.gz', entrypoint: 'hexbot',
+    version: manifest.version, builtAt: manifest.builtAt, target: updateTarget(manifest.target), format: windows ? 'zip' : 'tar.gz', entrypoint,
     size: (await stat(destination)).size, unpacked_size: unpackedSize,
     sha256: createHash('sha256').update(await readFile(destination)).digest('hex')
   }

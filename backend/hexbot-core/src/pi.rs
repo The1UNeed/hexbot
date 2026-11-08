@@ -272,6 +272,8 @@ pub fn provider_environment(name: &str, provider: &str) -> bool {
 
 impl PiProcess {
     pub fn spawn(options: PiOptions) -> Result<(Self, PiEvents), PiError> {
+        #[cfg(windows)]
+        let mut options = options;
         if options.max_record_bytes == 0
             || options.event_capacity == 0
             || options.request_capacity == 0
@@ -285,7 +287,38 @@ impl PiProcess {
         }
         // Diagnostics can contain credentials or model inputs. Discard them at
         // the OS boundary rather than retaining or returning them with errors.
-        let mut child = Command::new(&options.executable)
+        #[cfg(windows)]
+        if options
+            .executable
+            .file_name()
+            .is_some_and(|name| name == "node.exe")
+        {
+            options.executable = crate::windows_node_path::node_path(&options.executable)
+                .map_err(|_| PiError::Configuration("unsupported Node path"))?;
+            options.working_dir = crate::windows_node_path::node_path(&options.working_dir)
+                .map_err(|_| PiError::Configuration("unsupported working directory"))?;
+            options.agent_dir = crate::windows_node_path::node_path(&options.agent_dir)
+                .map_err(|_| PiError::Configuration("unsupported agent directory"))?;
+            for argument in &mut options.args {
+                if argument.starts_with(r"\\?\") {
+                    *argument = crate::windows_node_path::node_path(std::path::Path::new(argument))
+                        .map_err(|_| PiError::Configuration("unsupported Pi argument path"))?
+                        .into_os_string()
+                        .into_string()
+                        .map_err(|_| PiError::Configuration("invalid Pi argument path"))?;
+                }
+            }
+            let launcher = options.executable.with_file_name("pi").join("launch.mjs");
+            if launcher.is_file() {
+                options
+                    .args
+                    .insert(0, launcher.to_string_lossy().into_owned());
+            }
+        }
+        let mut command = Command::new(&options.executable);
+        #[cfg(windows)]
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW for GUI-owned Pi
+        let mut child = command
             .args(&options.args)
             .env_clear()
             .envs(std::env::vars().filter(|(name, _)| inherited_environment(name)))

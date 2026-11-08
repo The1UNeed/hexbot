@@ -9,7 +9,7 @@ fn parse(version: &str) -> Option<semver::Version> {
     semver::Version::parse(version).ok()
 }
 
-fn track(version: &semver::Version) -> Track {
+pub(crate) fn track(version: &semver::Version) -> Track {
     if version.pre.as_str().starts_with("nightly.") {
         Track::Nightly
     } else {
@@ -150,14 +150,14 @@ impl Installer {
         Ok(stranded)
     }
 
-    fn app_version(&self, app: &InstalledApp) -> Result<Option<semver::Version>> {
+    pub(crate) fn app_version(&self, app: &InstalledApp) -> Result<Option<semver::Version>> {
         if let Some(version) = app.version.as_deref().and_then(parse) {
             return Ok(Some(version));
         }
-        if app.managed_by_dpkg {
+        if app.managed_by_dpkg || self.target.is_windows() {
             return Ok(asar_version(&app.path.join("resources/app.asar")));
         }
-        if self.target.is_macos() {
+        if !self.target.is_linux() {
             return Ok(None);
         }
         appimage_version(&app.path)

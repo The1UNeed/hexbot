@@ -60,7 +60,7 @@ test('release archives the signed app runtime on both macOS targets and the stag
         const pdf = target.startsWith('darwin') ? await pdfFixture(join(bundle, 'pdf'), { arch: target.split('-')[1] }) : undefined
         await writeFile(join(bundle, 'manifest.json'), JSON.stringify({ version: '1.2.3', target, builtAt: 123, ...(pdf ? { pdfVm: 1 } : {}),
           files: { ...Object.fromEntries(['node', 'hexbot-core'].map(file => [file, createHash('sha256').update(`unsigned ${target} ${file}`).digest('hex')])), ...pdf?.runtimeFiles } }))
-        for (const file of ['node', 'hexbot-core']) await writeFile(join(bundle, file), `${signature} ${target} ${file}`)
+        for (const file of ['hexbot', 'node', 'hexbot-core']) await writeFile(join(bundle, file), `${signature} ${target} ${file}`)
       }
       await run('bash', ['-c', script], { cwd: root, env: { ...process.env, RUNNER_OS: runner, CHANNEL: 'dev' } })
       const updateTarget = target.replace('darwin', 'macos').replace('arm64', 'aarch64').replace('x64', 'x86_64')

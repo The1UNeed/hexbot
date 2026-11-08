@@ -825,6 +825,10 @@ fn cloudflared_asset() -> Result<(&'static str, &'static str)> {
             "cloudflared-linux-amd64",
             "14ecae0dd17ba74f8055e22b8f5b5acc3cbb5a9c3be4e7d6507fe1c4eadaea95",
         )),
+        ("windows", "x86_64") => Ok((
+            "cloudflared-windows-amd64.exe",
+            "82781b3ba8cb66c0f8fbc7d34974bc4bd8eb1fcc76f27badb97eb4cc7060f5ad",
+        )),
         _ => Err(Error::new(5242, "unsupported cloudflared platform")),
     }
 }
@@ -900,7 +904,10 @@ async fn ensure_cloudflared_asset(
 ) -> Result<PathBuf> {
     let directory = home.join("bin");
     fs::create_dir_all(&directory)?;
-    let binary = directory.join(format!("cloudflared-{CLOUDFLARED_VERSION}"));
+    let binary = directory.join(format!(
+        "cloudflared-{CLOUDFLARED_VERSION}{}",
+        if cfg!(windows) { ".exe" } else { "" }
+    ));
     let asset = directory.join(format!("{name}-{CLOUDFLARED_VERSION}.asset"));
     let compressed = name.ends_with(".tgz");
     let bytes = match verified_cloudflared(&asset, digest, compressed) {
@@ -1008,7 +1015,10 @@ fn spawn_cloudflared(
         .create(true)
         .append(true)
         .open(logs)?;
-    Command::new(binary)
+    let mut command = Command::new(binary);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000); // Logs are piped; never open a GUI-owned console.
+    command
         .arg("tunnel")
         .arg("--config")
         .arg(settings)
@@ -1513,7 +1523,13 @@ fn prune_native(
         let entry = entry?;
         let path = entry.path();
         if !entry.file_type()?.is_dir()
-            || !path.join("hexbot").is_file()
+            || !path
+                .join(if cfg!(windows) {
+                    "hexbot.exe"
+                } else {
+                    "hexbot"
+                })
+                .is_file()
             || entry.file_name().to_string_lossy().starts_with('.')
             || entry.file_name().to_string_lossy().contains(".staging-")
         {
@@ -1546,7 +1562,7 @@ pub fn prune_current_native(home: &Path) -> Result<()> {
     };
     let metadata: Value =
         serde_json::from_slice(&metadata).map_err(|error| Error::new(5243, error.to_string()))?;
-    let active = runtime.join("native-executable").canonicalize()?;
+    let active = selected_native_executable(home)?;
     let native = native_directory(home)?;
     if !active.starts_with(&native) {
         return Err(Error::new(5243, "invalid native runtime selection"));
@@ -1620,9 +1636,11 @@ pub(crate) fn activation_lock(runtime: &Path) -> Result<fs::File> {
         .truncate(false)
         .write(true)
         .open(runtime.join("activate.lock"))?;
+    #[cfg(unix)]
     let inherited = std::env::var("HEXBOT_ACTIVATION_LOCK_FD")
         .ok()
         .and_then(|fd| fd.parse().ok());
+    #[cfg(unix)]
     if let Some(held) = inherited_activation_lock(&file, inherited) {
         return Ok(held);
     }
@@ -1633,6 +1651,7 @@ pub(crate) fn activation_lock(runtime: &Path) -> Result<fs::File> {
 /// The installer holds the activation lock across its version check and
 /// `hexbot setup --activate`, and passes the locked descriptor down. Use it
 /// only if it is this lock file and the lock is already ours to take.
+#[cfg(unix)]
 fn inherited_activation_lock(file: &fs::File, fd: Option<i32>) -> Option<fs::File> {
     use std::os::fd::FromRawFd;
     use std::os::unix::fs::MetadataExt;
@@ -1998,6 +2017,64 @@ fn activate_native_with_update_locked(
     Ok(())
 }
 
+// Shared by the portable unit suite and the real native Windows integration
+// probe. Exercise the publisher and its actual lock, not a model of the check.
+#[cfg(any(test, all(debug_assertions, windows)))]
+fn assert_publication_floor_contract() {
+    for damaged in [
+        json!({}),
+        json!({"builtAt":"invalid"}),
+        json!({"builtAt":100}),
+        json!({"builtAt":300}),
+    ] {
+        let home = tempfile::tempdir().unwrap();
+        let native = native_directory(home.path()).unwrap();
+        let selected = native.join("selected");
+        fs::create_dir(&selected).unwrap();
+        let entrypoint = if cfg!(windows) {
+            "hexbot.exe"
+        } else {
+            "hexbot"
+        };
+        fs::write(selected.join(entrypoint), "old").unwrap();
+        fs::write(
+            selected.join("manifest.json"),
+            json!({"version":"old", "builtAt":200}).to_string(),
+        )
+        .unwrap();
+        {
+            let _lock = activation_lock(native.parent().unwrap()).unwrap();
+            activate_native_locked(&native, "old", &selected.join(entrypoint)).unwrap();
+        }
+        fs::write(selected.join("manifest.json"), damaged.to_string()).unwrap();
+        let floor = damaged["builtAt"].as_u64().unwrap_or(0).max(200);
+        for allow_equal in [false, true] {
+            let staging = tempfile::tempdir_in(&native).unwrap();
+            fs::write(staging.path().join(entrypoint), "new").unwrap();
+            // Calls the actual publisher, which takes activate.lock before
+            // rereading both sources. A parseable empty manifest is damage too.
+            assert_eq!(
+                publish_native_inner(
+                    &native,
+                    "repair",
+                    staging.path(),
+                    entrypoint,
+                    Some(&json!({"builtAt":floor-1})),
+                    allow_equal
+                )
+                .unwrap_err()
+                .code,
+                4212
+            );
+            assert_eq!(
+                selected_native_executable(home.path()).unwrap(),
+                selected.join(entrypoint)
+            );
+            assert!(staging.path().is_dir());
+        }
+    }
+}
+
 #[cfg(all(test, unix))]
 mod activation_tests {
     use super::*;
@@ -2072,6 +2149,11 @@ mod activation_tests {
         publish_native(&native, "9.8.9", newer.path(), "hexbot", Some(&requested)).unwrap();
         let active = runtime.join("native-executable").canonicalize().unwrap();
         assert_eq!(fs::read_to_string(active).unwrap(), "9.8.9");
+    }
+
+    #[test]
+    fn publication_keeps_the_highest_manifest_or_metadata_floor_during_repair() {
+        assert_publication_floor_contract();
     }
 
     #[test]
@@ -2404,12 +2486,33 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
         .and_then(Value::as_str)
         .unwrap_or("hexbot");
     common::identifier(entrypoint)?;
-    if manifest["format"] == "tar.gz" {
+    if cfg!(windows) && (manifest["format"] != "zip" || entrypoint != "hexbot.exe") {
+        return Err(Error::new(
+            5243,
+            "Windows updates require a ZIP with hexbot.exe",
+        ));
+    }
+    if cfg!(windows) && manifest["format"] == "zip" {
+        crate::native_zip::extract_zip(tmp.path(), staging.path(), 4 * 1024 * 1024 * 1024)?;
+    } else if manifest["format"] == "tar.gz" {
         extract_archive(tmp.path(), staging.path(), 4 * 1024 * 1024 * 1024)?;
     } else if manifest["format"].is_null() || manifest["format"] == "binary" {
         fs::copy(tmp.path(), staging.path().join(entrypoint))?;
     } else {
         return Err(Error::new(5243, "unsupported native update format"));
+    }
+    #[cfg(windows)]
+    {
+        crate::setup::verify_runtime_version(staging.path(), version)?;
+        let embedded: Value =
+            serde_json::from_slice(&fs::read(staging.path().join("manifest.json"))?)
+                .map_err(|e| Error::new(5243, e.to_string()))?;
+        if embedded["builtAt"] != manifest["builtAt"] {
+            return Err(Error::new(
+                5243,
+                "Native update source chronology does not match its runtime",
+            ));
+        }
     }
     let staged_executable = staging.path().join(entrypoint);
     if !staged_executable.is_file() {
@@ -2420,7 +2523,10 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&staged_executable, fs::Permissions::from_mode(0o700))?;
     }
-    let mut child = Command::new(&staged_executable)
+    let mut command = Command::new(&staged_executable);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+    let mut child = command
         .arg("version")
         .env("HEXBOT_HOME", home)
         .stdin(Stdio::null())
@@ -2868,5 +2974,154 @@ mod native_version_tests {
             }
         }
         assert!(artifact_url("http://mirror.example", &json!({"path": path})).is_err());
+    }
+}
+
+#[cfg(all(debug_assertions, windows))]
+#[doc(hidden)]
+pub mod windows_contract_tests {
+    use super::*;
+    pub fn publication_floor() {
+        assert_publication_floor_contract();
+    }
+    // Native-only worker-lifetime fixture. It uses the real supervisor/cleanup
+    // with a local metrics EXE and loopback Connect, never a real registration.
+    pub async fn tunnel_worker_cleanup(home: &Path, binary: &Path, pid_file: &Path) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let router = axum::Router::new().fallback(|| async { axum::Json(json!({})) });
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let config: ConnectConfig = serde_json::from_value(json!({"api_base":format!("http://{address}"),"daemon_id":"fixture","daemon_token":"fixture","owner_id":"local","issuer":format!("http://{address}"),"keys":[{}]})).unwrap();
+        let service = service(home).await.unwrap();
+        for _ in 0..2 {
+            let mut changed = service.changed.subscribe();
+            run_tunnel(
+                home,
+                9119,
+                service.clone(),
+                config.clone(),
+                binary.to_owned(),
+                TunnelTiming {
+                    poll: Duration::from_millis(50),
+                    ready_timeout: Duration::from_secs(60),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            let ready = tokio::time::timeout(Duration::from_secs(60), async {
+                loop {
+                    if service.data.lock().await.running {
+                        break;
+                    }
+                    changed.changed().await.unwrap();
+                }
+            })
+            .await;
+            let pid = fs::read_to_string(pid_file)
+                .ok()
+                .and_then(|value| value.parse::<u32>().ok());
+            let was_alive = pid.is_some_and(crate::osutil::process_alive);
+            shutdown(home).await.unwrap();
+            assert!(ready.is_ok(), "Native tunnel fixture did not become ready");
+            assert!(was_alive, "No actual supervised tunnel fixture process");
+            assert!(
+                !crate::osutil::process_alive(pid.unwrap()),
+                "Tunnel survived services::shutdown"
+            );
+            // Windows cannot rename an open child log with these sharing flags.
+            let log = home.join("logs/cloudflared.log");
+            let old = home.join("logs/closed-cloudflared.log");
+            if old.exists() {
+                fs::remove_file(&old).unwrap();
+            }
+            fs::rename(log, old).unwrap();
+        }
+        server.abort();
+        let _ = server.await;
+    }
+
+    pub async fn windows_contract_signed_zip_update_and_connect_executable() {
+        use axum::{
+            Router, body::Body, extract::Path as RoutePath, http::StatusCode, response::Response,
+            routing::get,
+        };
+        use std::collections::BTreeMap;
+        let root =
+            PathBuf::from(std::env::var_os("HEXBOT_WINDOWS_UPDATE_ROOT").expect("update root"));
+        let version = crate::version();
+        let path = format!("daemon/native/{version}/windows-x86_64/manifest.json");
+        let manifest = fs::read(root.join(&path)).unwrap();
+        let metadata: Value = serde_json::from_slice(&manifest).unwrap();
+        let archive_path = metadata["path"].as_str().unwrap();
+        let mut files = BTreeMap::new();
+        files.insert(path.clone(), manifest.clone());
+        files.insert(
+            format!("{path}.sig"),
+            crate::update_signature::test_signature(&manifest).into_bytes(),
+        );
+        files.insert(
+            archive_path.to_owned(),
+            fs::read(root.join(archive_path)).unwrap(),
+        );
+        let files = std::sync::Arc::new(files);
+        let router = Router::new().route(
+            "/{*path}",
+            get(move |RoutePath(path): RoutePath<String>| {
+                let files = files.clone();
+                async move {
+                    match files.get(&path) {
+                        Some(bytes) => Response::new(Body::from(bytes.clone())),
+                        None => Response::builder()
+                            .status(StatusCode::NOT_FOUND)
+                            .body(Body::empty())
+                            .unwrap(),
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let home = tempfile::tempdir().unwrap();
+        fs::write(
+            home.path().join("config.yaml"),
+            format!("updates:\n  base_url: http://{address}\n"),
+        )
+        .unwrap();
+        let service = Service::default();
+        let executable = native_update(home.path(), &version, &service)
+            .await
+            .unwrap();
+        assert_eq!(
+            selected_native_executable(home.path()).unwrap(),
+            executable.canonicalize().unwrap()
+        );
+        assert!(executable.ends_with("hexbot.exe"));
+        assert_eq!(
+            native_update(home.path(), &version, &service)
+                .await
+                .unwrap_err()
+                .code,
+            4212
+        );
+        assert_eq!(
+            selected_native_executable(home.path()).unwrap(),
+            executable.canonicalize().unwrap()
+        );
+        let cloudflared = ensure_cloudflared(home.path()).await.unwrap();
+        let output = Command::new(cloudflared)
+            .arg("--version")
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains(CLOUDFLARED_VERSION));
+        server.abort();
+        let _ = server.await;
     }
 }

@@ -129,4 +129,17 @@ if (linuxManifest) {
   console.log('linux/x64: no latest-linux.yml, skipped')
 }
 
+// NSIS uses latest.yml / nightly.yml, not latest-win.yml.
+const windowsExe = `${prefix}-${version}-win-x64.exe`
+if (files.includes(windowsExe)) {
+  const destination = join(feedRoot, 'win', 'x64')
+  await mkdir(destination, { recursive: true })
+  const exe = await entry(join(outputDirectory, windowsExe))
+  await cp(join(outputDirectory, windowsExe), join(destination, windowsExe))
+  const blockmap = `${windowsExe}.blockmap`
+  if (files.includes(blockmap)) await cp(join(outputDirectory, blockmap), join(destination, blockmap))
+  await writeFeedMetadata(destination, channel, 'win', manifest([exe], exe))
+  prepared++
+}
+
 if (!prepared) throw new Error(`No update artifacts found in ${outputDirectory}`)

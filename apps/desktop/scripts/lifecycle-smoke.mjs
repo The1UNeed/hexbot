@@ -10,6 +10,7 @@ import { dirname, join, resolve } from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { instrumentShutdown, observeShutdown, requestShutdown } from '../../../scripts/desktop/lifecycle-shutdown.mjs'
 
 const desktop = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const require = createRequire(join(desktop, 'package.json'))
@@ -27,14 +28,17 @@ const results = []
 let currentApp
 let currentProcess
 const processes = new WeakMap()
+const shutdowns = new WeakMap()
+const shutdownLogs = new WeakMap()
 
 function recordProcess(child, name) {
   const file = join(artifacts, `${name}-process.log`)
   const record = message => appendFileSync(file, message)
   record(`pid=${child.pid}\n`)
-  child.stdout?.on('data', record)
-  child.stderr?.on('data', record)
-  child.on('exit', (code, signal) => record(`\nexit=${JSON.stringify({ code, signal })}\n`))
+  child.stdout?.on('data', data => record(`[${Date.now()} stdout] ${data}`))
+  child.stderr?.on('data', data => record(`[${Date.now()} stderr] ${data}`))
+  child.on('exit', (code, signal) => record(`\nexit=${JSON.stringify({ time: Date.now(), code, signal })}\n`))
+  return (event, details = {}) => record(`harness=${JSON.stringify({ event, time: Date.now(), ...details })}\n`)
 }
 
 function launchArgs(directory) {
@@ -75,87 +79,52 @@ async function prepare(edition) {
   await cp(join(desktop, '../web/dist'), join(directory, 'out/renderer'), { recursive: true })
   return directory
 }
-async function launch(directory, name) {
+async function launch(directory, name, fixture = false) {
   const home = join(root, `${name}-home`)
   await mkdir(home)
   currentApp = await electron.launch({
     executablePath,
     args: launchArgs(directory),
-    env: { ...environment, HEXBOT_HOME: home },
+    env: {
+      ...environment,
+      HEXBOT_HOME: home,
+      ...(fixture ? { HEXBOT_LIFECYCLE_TRACE: join(artifacts, `${name}-events.jsonl`) } : {})
+    },
     timeout: 30_000
   })
   // Playwright disposes its process accessor when the Electron connection closes.
   currentProcess = currentApp.process()
   processes.set(currentApp, currentProcess)
-  recordProcess(currentProcess, name)
+  const record = recordProcess(currentProcess, name)
+  shutdowns.set(currentApp, observeShutdown(currentApp, currentProcess, record))
+  const shutdownLog = join(artifacts, `${name}-shutdown.jsonl`)
+  shutdownLogs.set(currentApp, shutdownLog)
+  await currentApp.evaluate(instrumentShutdown, shutdownLog)
   return currentApp
 }
 async function quit(app, source = 'app') {
-  const child = processes.get(app)
-  const marker = `HEXBOT_LIFECYCLE_WILL_QUIT_${Date.now()}`
-  let stopWatching
-  const nativeQuit = new Promise(resolve => {
-    let output = ''
-    const onData = chunk => {
-      output = `${output}${chunk}`.slice(-4096)
-      if (output.includes(marker)) {
-        stopWatching()
-        resolve(undefined)
-      }
-    }
-    const timer = setTimeout(() => {
-      stopWatching()
-      resolve(new Error(`Native ${source} Quit did not reach will-quit`))
-    }, 15_000)
-    stopWatching = () => {
-      clearTimeout(timer)
-      child.stdout.off('data', onData)
-    }
-    child.stdout.on('data', onData)
-  })
-  // Native Quit can dispose the debug connection before evaluate returns on
-  // Windows/Linux. The process exit below remains the final success check.
-  const actionError = await app
-    .evaluate(({ app, Menu }, { source, marker }) => {
-      app.once('will-quit', event => {
-        // Prove the native action reached shutdown, then hand the last quit
-        // to Playwright so its inspector disconnects before Node exits.
-        event.preventDefault()
-        process.stdout.write(`${marker}\n`)
-      })
-      setImmediate(() => {
-        if (source === 'tray')
-          globalThis.lifecycleFixture.trayMenu.items.find(item => item.label === 'Quit').click()
-        else if (source === 'menu')
-          Menu.getApplicationMenu()
-            .items[0].submenu.items.find(item => item.role === 'quit')
-            .click()
-        else app.quit()
-      })
-    }, { source, marker })
-    .then(
-      () => undefined,
-      error => error
-    )
-  const quitError = await nativeQuit
-  if (quitError) throw actionError || quitError
-  // The native action must reach will-quit before the driver closes anything.
-  // The one-shot deferral avoids racing two concurrent native quits. Public
-  // close reissues quit and detaches the inspector before Node exits.
-  let closeTimer
-  const detachError = await Promise.race([
-    app.close().then(() => undefined, error => error),
-    new Promise(resolve => {
-      closeTimer = setTimeout(() => resolve(new Error('Playwright did not finish closing the app')), 30_000)
+  await requestShutdown(shutdowns.get(app), () => app.evaluate(({ app, Menu }, source) => {
+    setImmediate(() => {
+      globalThis.hexbotLifecycleTrace('shutdown-request', { source })
+      globalThis.lifecycleFixture?.trace('shutdown-request', { source })
+      if (source === 'tray')
+        globalThis.lifecycleFixture.trayMenu.items.find(item => item.label === 'Quit').click()
+      else if (source === 'window') globalThis.lifecycleFixture.window.close()
+      else if (source === 'menu')
+        Menu.getApplicationMenu().items[0].submenu.items.find(item => item.role === 'quit').click()
+      else app.quit()
     })
-  ]).finally(() => clearTimeout(closeTimer))
-  if (detachError) throw actionError || detachError
-  await expect
-    .poll(() => child.exitCode)
-    .toBe(0)
-    .catch(error => {
-      throw actionError || error
-    })
+  }, source))
+  // The pinned shutdown helper detaches at native will-quit; do not reissue Quit.
+  // Keep the audit's native-action proof, including when an artifacts dir is reused.
+  const events = (await readFile(shutdownLogs.get(app), 'utf8'))
+    .trim().split('\n').map(line => JSON.parse(line))
+  const start = events.findLastIndex(event => event.event === 'instrumented')
+  assert(start >= 0, 'Shutdown instrumentation must have started')
+  const current = events.slice(start)
+  assert.equal(current.filter(event => event.event === 'will-quit').length, 1)
+  assert.equal(current.filter(event => event.event === 'inspector-detach').length, 1)
+  assert.equal(current.filter(event => event.event === 'shutdown-request' && event.source === source).length, 1)
   currentApp = undefined
 }
 
@@ -305,49 +274,37 @@ try {
     await expect
       .poll(() => endingApp.evaluate(({ powerMonitor }) => powerMonitor.listenerCount('shutdown')))
       .toBeGreaterThan(0)
-    const session = await endingApp
-      .evaluate(({ BrowserWindow, powerMonitor }) => {
-        const win = BrowserWindow.getAllWindows()[0]
+    const closeSession = () => endingApp.evaluate(({ BrowserWindow, powerMonitor }) => {
+      const win = BrowserWindow.getAllWindows()[0]
+      // Return the command acknowledgement before native close can dispose CDP.
+      setImmediate(() => {
+        globalThis.hexbotLifecycleTrace('session-close-request')
         if (process.platform === 'win32')
-          win.emit('session-end', {
-            preventDefault() {
-              throw new Error('Session end vetoed')
-            }
-          })
+          win.emit('session-end', { preventDefault() { throw new Error('Session end vetoed') } })
         else
-          powerMonitor.emit('shutdown', {
-            preventDefault() {
-              throw new Error('Shutdown vetoed')
-            }
-          })
-        // before-quit is intentionally absent here.
-        let prevented = false
-        win.once('close', event => {
-          prevented = event.defaultPrevented
-        })
+          powerMonitor.emit('shutdown', { preventDefault() { throw new Error('Shutdown vetoed') } })
+        // before-quit is intentionally absent here. Register after production's
+        // close handler and persist its actual veto result before destruction.
+        win.once('close', event => globalThis.hexbotLifecycleTrace('session-window-close', {
+          prevented: event.defaultPrevented
+        }))
         win.close()
-        return !prevented
       })
-      .catch(async error => {
-        // On Windows/Linux window-all-closed quits the process immediately.
-        // The debug connection can close before Node receives the process exit.
-        if (process.platform !== 'darwin') {
-          try {
-            await expect.poll(() => endingProcess.exitCode).toBe(0)
-            return true
-          } catch {
-            /* Preserve the evaluation failure if native exit failed. */
-          }
-        }
-        throw error
-      })
-    assert(session, 'OS session end must allow native close')
+    })
     if (process.platform === 'darwin') {
-      await expect
-        .poll(() => endingApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length))
-        .toBe(0)
+      await closeSession()
+      await expect.poll(() => endingApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(0)
       await quit(endingApp)
-    } else await expect.poll(() => endingProcess.exitCode).toBe(0)
+    } else await requestShutdown(shutdowns.get(endingApp), closeSession)
+    const shutdownEvents = (await readFile(join(artifacts, `${edition}-session-shutdown.jsonl`), 'utf8'))
+      .trim().split('\n').map(line => JSON.parse(line))
+    const closes = shutdownEvents.filter(event => event.event === 'session-window-close')
+    assert.equal(closes.length, 1, 'One actual native session close')
+    assert.equal(closes[0].prevented, false, 'OS session end must allow native close')
+    assert.equal(shutdownEvents.filter(event => event.event === 'session-close-request').length, 1)
+    assert.equal(shutdownEvents.filter(event => event.event === 'inspector-detach').length, 1)
+    assert.equal(endingProcess.exitCode, 0)
+    assert.equal(endingProcess.signalCode, null)
     currentApp = undefined
     results.push({ edition, osEventClose: 'passed' })
   }
@@ -375,11 +332,11 @@ try {
           formats: ['es'],
           fileName: () => 'fixture.js'
         },
-        rollupOptions: { external: ['electron', 'node:events', 'node:path'] }
+        rollupOptions: { external: ['electron', 'node:events', 'node:fs', 'node:path'] }
       }
     })
-    for (const mode of ['update', 'session-end', 'tray-absent']) {
-      const app = await launch(fixture, mode)
+    for (const mode of ['update', 'session-end', 'tray', 'tray-absent']) {
+      const app = await launch(fixture, mode, true)
       await expect.poll(() => app.evaluate(() => !!globalThis.lifecycleFixture)).toBe(true)
       const state = await app.evaluate(async (_electron, mode) => {
         const { lifecycle, window, tray, trayMenu, calls } = globalThis.lifecycleFixture
@@ -405,25 +362,70 @@ try {
             }
           })
         }
-        if (mode !== 'tray-absent')
-          await new Promise(resolve => {
-            window.once('closed', resolve)
-            window.close()
-          })
         return { retained, opens, calls, destroyed: window.isDestroyed() }
       }, mode)
       assert(state.retained)
       assert.equal(state.opens, process.platform === 'darwin' ? 1 : 2)
       assert.equal(state.calls.stops, 1)
       assert.equal(state.calls.opens, state.opens + 1)
-      if (mode !== 'tray-absent') assert(state.destroyed)
-      else if (process.platform !== 'darwin')
+      assert(!state.destroyed)
+      if (mode === 'tray-absent' && process.platform !== 'darwin')
         await expect
           .poll(() => app.evaluate(() => globalThis.lifecycleFixture.window.isMinimized()), {
             message: 'No tray must keep a taskbar entry'
           })
           .toBe(true)
-      await quit(app, 'tray')
+      if (mode === 'update' || mode === 'session-end') {
+        // Closing the last window starts Quit on Windows/Linux. Do not send a
+        // second Tray Quit into the native shutdown already in progress.
+        if (process.platform !== 'darwin') await quit(app, 'window')
+        else {
+          await app.evaluate(async () => {
+            const { window, trace } = globalThis.lifecycleFixture
+            trace('window-close-request')
+            await new Promise(resolve => {
+              window.once('closed', resolve)
+              window.close()
+            })
+          })
+          await quit(app, 'tray')
+        }
+      } else await quit(app, 'tray')
+      const events = (await readFile(join(artifacts, `${mode}-events.jsonl`), 'utf8'))
+        .trim()
+        .split('\n')
+        .map(line => JSON.parse(line))
+      const named = name => events.filter(item => item.event === name)
+      const closesWindow = ['update', 'session-end'].includes(mode)
+      assert.equal(named('shutdown-request').length, 1, `${mode}: exactly one Quit request`)
+      assert.equal(
+        named('shutdown-request')[0].source,
+        process.platform !== 'darwin' && closesWindow ? 'window' : 'tray'
+      )
+      assert.equal(named('closed').length, 1, `${mode}: native window closed`)
+      // Electron omits window-all-closed when app.quit() initiates the close.
+      assert.equal(
+        named('window-all-closed').length,
+        closesWindow ? 1 : 0,
+        `${mode}: platform close policy`
+      )
+      assert.equal(named('before-quit').length, 1, `${mode}: one native Quit`)
+      assert.equal(named('quit').length, 1, `${mode}: native Quit completed`)
+      assert.equal(named('process-exit').length, 1, `${mode}: process exit recorded`)
+      assert.equal(named('process-exit')[0].code, 0)
+      assert.equal(named('render-process-gone').length, 0, `${mode}: renderer did not crash`)
+      const finalClose = named('close').at(-1)
+      assert.equal(finalClose.prevented, false, `${mode}: final close allowed`)
+      assert.equal(finalClose.exiting, true, `${mode}: lifecycle permits exit`)
+      assert(finalClose.sequence < named('closed')[0].sequence)
+      if (closesWindow) {
+        assert(named('closed')[0].sequence < named('window-all-closed')[0].sequence)
+        assert(named('window-all-closed')[0].sequence < named('before-quit')[0].sequence)
+      } else assert(named('before-quit')[0].sequence < finalClose.sequence)
+      if (mode === 'session-end') {
+        assert.equal(named('session-end').length, 1)
+        assert(named('session-end')[0].sequence < finalClose.sequence)
+      }
       results.push({ fixture: mode, passed: true })
     }
   }
@@ -437,11 +439,18 @@ try {
   await writeFile(join(artifacts, 'failure.txt'), String(error.stack || error)).catch(console.error)
   throw error
 } finally {
-  if (currentApp && currentProcess.exitCode === null && currentProcess.signalCode === null)
-    await quit(currentApp).catch(error => {
+  if (currentApp && currentProcess.exitCode === null && currentProcess.signalCode === null) {
+    appendFileSync(join(artifacts, 'cleanup.jsonl'), JSON.stringify({
+      time: Date.now(), pid: currentProcess.pid, shutdownAlreadyRequested: shutdowns.get(currentApp)?.requested
+    }) + '\n')
+    if (shutdowns.get(currentApp)?.requested) {
+      // Preserve the failed exit gate. Never issue another Quit into a native
+      // shutdown already in progress, including a debugger disconnect failure.
+      currentProcess.kill()
+    } else await quit(currentApp, 'cleanup').catch(error => {
       console.error('Lifecycle cleanup:', error)
-      if (currentProcess.exitCode === null && currentProcess.signalCode === null)
-        currentProcess.kill()
+      if (currentProcess.exitCode === null && currentProcess.signalCode === null) currentProcess.kill()
     })
+  }
   await rm(root, { recursive: true, force: true }).catch(console.error)
 }

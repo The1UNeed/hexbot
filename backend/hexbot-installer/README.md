@@ -18,6 +18,10 @@ it repairs the detected install, using its app track or the default track for
 Headless. Receipts are
 written atomically after successful operations. If a later step fails, the
 previous receipt is retained; files already installed by setup may remain.
+An interrupted Windows app install can repair directly without a receipt when
+exactly one packaged, owned app remains at its expected install path. Its
+embedded version determines the current track. Ambiguous or incomplete app
+installs require an explicit option and track; repair does not guess.
 Status is best-effort after installation. Headless repair preserves the LAN
 setting; a first install or a change into Headless enables LAN. Without a
 receipt or an app, detection requires an owned service or CLI wrapper before

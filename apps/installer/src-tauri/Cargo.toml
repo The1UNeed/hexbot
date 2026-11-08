@@ -14,6 +14,9 @@ serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 tauri = { version = "=2.11.6", features = [] }
 
+[dev-dependencies]
+tempfile = "=3.27.0"
+
 [patch.crates-io]
 # GTK 3 needs 0.18; backport RUSTSEC-2024-0429 without changing its public API.
 glib = { path = "../../../third_party/rust/glib" }

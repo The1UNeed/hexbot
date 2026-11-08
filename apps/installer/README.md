@@ -51,3 +51,8 @@ dependencies too, so refresh it (`cargo update -p hexbot-installer`) when
 The icons in `src-tauri/icons` come from
 `pnpm tauri icon ../desktop/build/icon.png -o src-tauri/icons`, keeping the
 desktop sizes only.
+
+Windows build/install validation uses the engine's native NSIS probe and the
+shared runtime selection described in
+[`docs/windows-build-contract.md`](../../docs/windows-build-contract.md).
+This does not enable a public Windows installer release.

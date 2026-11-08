@@ -3,6 +3,9 @@ use hexbot_core::{
     server::{self, App},
     services,
 };
+#[cfg(windows)]
+mod windows_process_lifetime;
+
 use std::{
     io::IsTerminal,
     io::Write,
@@ -274,6 +277,8 @@ async fn run() -> Result<()> {
         }
     }
     let _lock = lock_home(&home)?;
+    #[cfg(windows)]
+    windows_process_lifetime::retain_until_process_exit()?;
     let executable = std::env::current_exe()?;
     common::atomic_write(
         &home.join("runtime/native-running.json"),
@@ -291,6 +296,7 @@ async fn run() -> Result<()> {
     let pi = common::pi_executable()?;
     let dist = std::env::var_os("HEXBOT_WEB_DIST")
         .map(PathBuf::from)
+        .or_else(|| common::bundled_runtime().map(|root| root.join("web")))
         .or_else(|| Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/web/dist")))
         .filter(|p| p.join("index.html").is_file());
     diagnostics.launch_phase("Find Pi and the web app", phase);
@@ -470,12 +476,20 @@ async fn run() -> Result<()> {
                 use std::os::unix::process::CommandExt;
                 return Err(next.exec().into());
             }
+            #[cfg(windows)]
+            {
+                // The scheduled task wrapper waits for this process to exit,
+                // resolves the new selection, then starts it in the same job.
+                // No child races this process's home lock or escapes the task.
+                return Ok(());
+            }
         }
     }
     Ok(())
 }
 /// Registers the handlers before returning, so a SIGTERM or SIGINT that arrives
 /// between the ready line and the first poll still shuts the daemon down cleanly.
+#[cfg(unix)]
 fn shutdown_signal() -> impl std::future::Future<Output = ()> {
     use tokio::signal::unix::{SignalKind, signal};
     let term = signal(SignalKind::terminate()).ok();
@@ -492,6 +506,58 @@ fn shutdown_signal() -> impl std::future::Future<Output = ()> {
         tokio::select! {_=wait(term)=>{},_=wait(interrupt)=>{}}
     }
 }
+#[cfg(windows)]
+fn shutdown_signal() -> impl std::future::Future<Output = ()> {
+    let ctrl_c = tokio::signal::windows::ctrl_c();
+    let ctrl_break = tokio::signal::windows::ctrl_break();
+    let parent = desktop_parent_shutdown();
+    async move {
+        let wait = |signal: std::io::Result<tokio::signal::windows::CtrlC>| async move {
+            if let Ok(mut signal) = signal {
+                signal.recv().await;
+            } else {
+                std::future::pending().await
+            }
+        };
+        let break_wait = async move {
+            if let Ok(mut signal) = ctrl_break {
+                signal.recv().await;
+            } else {
+                std::future::pending().await
+            }
+        };
+        tokio::select! { _ = wait(ctrl_c) => {}, _ = break_wait => {}, _ = parent => {} }
+    }
+}
+// Only an explicitly owned desktop child listens on its inherited pipe. A
+// detached thread avoids Tokio's uncancellable stdin worker keeping an update
+// exit alive while the parent still holds the write end. Parent EOF also stops
+// the orphaned daemon through the normal worker/tunnel cleanup path.
+#[cfg(windows)]
+fn desktop_parent_shutdown() -> impl std::future::Future<Output = ()> {
+    let enabled = std::env::var("HEXBOT_SUPERVISOR").as_deref() == Ok("desktop")
+        && std::env::var("HEXBOT_DESKTOP_CONTROL").as_deref() == Ok("stdin-v1");
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    if enabled {
+        std::thread::spawn(move || {
+            use std::io::{BufRead, Read};
+            let mut line = Vec::new();
+            let input = std::io::stdin();
+            let mut limited = std::io::BufReader::new(input.lock().take(64));
+            if limited.read_until(b'\n', &mut line).is_ok()
+                && (line.is_empty() || line == b"HEXBOT_SHUTDOWN_V1\n")
+            {
+                let _ = sender.send(());
+            }
+        });
+    }
+    async move {
+        if receiver.await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     if let Err(error) = run().await {

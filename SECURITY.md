@@ -163,6 +163,46 @@ callback's existing 256 KiB UTF-8 read limit and write behavior are unchanged.
 These file operations do not close the shell/code hard-link class or establish whole-process or
 whole-filesystem containment. See the [Linux hard-link semantics](https://man7.org/linux/man-pages/man2/link.2.html).
 
+These protections constrain tool actions through the checked paths and grants.
+They do not protect an installation from a process already running without the
+sandbox as the same user, including Bypass, an approved external tool, or other
+host software. Such a process can change files, links, permissions or ACLs.
+Shell/code hard-link aliases remain uncontained. A preexisting alias in a
+writable workspace/output folder can name the same inode as a protected managed
+runtime file; writing through that alias can modify installed bytes even when
+the original path is read-only. This also covers implicit/shared temporary roots
+such as `/tmp` and per-user `TMPDIR`, and paths outside Hexbot home writable by
+approved `full_access` commands. The same limitation applies to aliases inserted
+later by an unconfined same-user process. Canonical path checks and read-only
+binds of the original path do not protect these aliases. Hexbot does not scan
+managed-file inodes or recursively walk workspaces to look for them. Ordinary uv
+cache hard links do not require reprovisioning or prevent command launch.
+
+Linux mode `0444` alone is insufficient: the owning user can
+[change its mode](https://man7.org/linux/man-pages/man2/chmod.2.html). ACLs and
+filesystem-specific permissions also need consideration. This foundation adds
+no per-command chmod/ACL mutations of installed files, read-only-install contract
+or kernel policy for inode protection.
+
+Pi write/edit and native file callbacks atomically replace the output directory
+entry instead of truncating its inode. Those writes preserve other hard-link
+names, including preexisting aliases and aliases inserted after the file gate.
+Restricted Pi write/edit use a private daemon bridge whose final operations are
+relative to nonfollowing directory handles. Edit reads return bytes and the
+parent's device/inode identity; commit opens the parent again and refuses a
+different identity. Pi's existing edit matching, BOM and line-ending handling
+stay in Pi. Existing files must pass the OS writability check, and replacements
+preserve ordinary permission bits without setuid/setgid bits. New files remain
+private (`0600` subject to umask); new directories use `0777` subject to umask.
+Each private request and encoded reply is limited to 1 MiB, about 767 KiB of file
+data after base64 and metadata. Oversized write/edit requests fail before parent
+creation or writing; oversized edit reads fail without truncation. Use a command
+for larger files, under its ordinary approval and sandbox policy. Missing bridge
+support refuses instead of falling back to pathname writes. The native file
+callback's existing 256 KiB UTF-8 read limit and write behavior are unchanged.
+These file operations do not close the shell/code hard-link class or establish whole-process or
+whole-filesystem containment. See the [Linux hard-link semantics](https://man7.org/linux/man-pages/man2/link.2.html).
+
 macOS also matches `.git` paths and secret filenames created during a command. It
 blocks renaming protected files and browser stores, and pins the scanned
 ancestors of secrets and Git metadata and the ancestors of browser stores so
