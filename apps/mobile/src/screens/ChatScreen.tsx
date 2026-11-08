@@ -19,6 +19,8 @@ import {
   type BotStatus,
   bubbleFill,
   Button,
+  faceColor,
+  faceWash,
   dividesChat,
   type FaceMood,
   type FaceSource,
@@ -34,6 +36,7 @@ import {
   useTheme,
   withAlpha
 } from '../ui'
+import { FileCard } from './FileCard'
 import { MediaAttachment } from './MediaAttachment'
 import { PluginCard } from './PluginCard'
 import { SignInCard } from './SignInCard'
@@ -116,6 +119,8 @@ export interface ChatScreenProps {
   computerLive?: boolean
   /** Opens a visual item from the transcript. */
   onOpenVisual?: (id: string) => void
+  /** Previews a file the daemon keeps; its card opens it only with this. */
+  onOpenFile?: (file: AttachmentView) => void
   /** Opens search in this conversation; the button shows only with this. */
   onOpenSearch?: () => void
   /** A message search found: the transcript scrolls to it and marks it. A new nonce shows it again. */
@@ -341,6 +346,7 @@ function ChatBody(props: ChatScreenProps) {
     emotion,
     onApprove,
     onMessageLongPress,
+    onOpenFile,
     onOpenVisual,
     onRecall,
     recallId,
@@ -355,7 +361,7 @@ function ChatBody(props: ChatScreenProps) {
         <TranscriptEntry
           entry={entry}
           continued={continued}
-          face={entry.kind === 'message' && !room ? fallbackFace : undefined}
+          face={(entry.kind === 'message' || entry.kind === 'visual') && !room ? fallbackFace : undefined}
           room={room}
           onLongPress={
             entry.kind === 'message'
@@ -366,6 +372,7 @@ function ChatBody(props: ChatScreenProps) {
           }
           renderText={entry.kind === 'message' ? renderMessageText : undefined}
           loadMedia={entry.kind === 'message' ? loadMedia : undefined}
+          onOpenFile={entry.kind === 'message' ? onOpenFile : undefined}
           onApprove={entry.kind === 'approval' ? onApprove : undefined}
           onOpenVisual={entry.kind === 'visual' ? onOpenVisual : undefined}
           waitingLabel={entry.kind === 'waiting' ? waitingLabel : undefined}
@@ -392,6 +399,7 @@ function ChatBody(props: ChatScreenProps) {
       renderMessageText,
       loadMedia,
       onApprove,
+      onOpenFile,
       onOpenVisual,
       waitingLabel,
       waitingWho,
@@ -516,6 +524,7 @@ const TranscriptEntry = memo(function TranscriptEntry({
   renderText,
   loadMedia,
   onApprove,
+  onOpenFile,
   onOpenVisual,
   waitingLabel,
   waitingWho,
@@ -529,6 +538,7 @@ const TranscriptEntry = memo(function TranscriptEntry({
   renderText?: ChatScreenProps['renderMessageText']
   loadMedia?: ChatScreenProps['loadMedia']
   onApprove?: ChatScreenProps['onApprove']
+  onOpenFile?: ChatScreenProps['onOpenFile']
   onOpenVisual?: ChatScreenProps['onOpenVisual']
   waitingLabel?: string | null
   waitingWho?: FaceSource | null
@@ -558,6 +568,7 @@ const TranscriptEntry = memo(function TranscriptEntry({
       return (
         <View style={styles.visualItem}>
           <VisualCard
+            face={face}
             onOpen={() => onOpenVisual?.(entry.id)}
             testID={`visual-open-${entry.index}`}
             title={entry.title}
@@ -591,6 +602,7 @@ const TranscriptEntry = memo(function TranscriptEntry({
           onLongPress={onLongPress}
           renderText={renderText}
           loadMedia={loadMedia}
+          onOpenFile={onOpenFile}
           showAuthor={room && entry.role !== 'user' && !continued}
         />
       )
@@ -605,6 +617,7 @@ function MessageBubble({
   onLongPress,
   renderText,
   loadMedia,
+  onOpenFile,
   showAuthor
 }: {
   /** The thread's bot, for replies that do not name one. */
@@ -615,6 +628,7 @@ function MessageBubble({
   onLongPress?: (id: string) => void
   renderText?: (item: MessageItem) => ReactNode
   loadMedia?: ChatScreenProps['loadMedia']
+  onOpenFile?: ChatScreenProps['onOpenFile']
 }) {
   const theme = useTheme()
   const mine = item.role === 'user'
@@ -656,12 +670,12 @@ function MessageBubble({
         <View style={[styles.attachments, { justifyContent: mine ? 'flex-end' : 'flex-start' }]}>
           {item.attachments.map(file => {
             const card = (
-              <View key={file.id} style={[styles.file, { borderColor: theme.hairline }]}>
-                <Ionicons color={theme.muted} name="document-outline" size={16} />
-                <Text numberOfLines={1} style={styles.fileName} variant="footnote">
-                  {file.name}
-                </Text>
-              </View>
+              <FileCard
+                key={file.id}
+                name={file.name}
+                onOpen={file.path && onOpenFile ? () => onOpenFile(file) : undefined}
+                testID={`chat-file-${file.id}`}
+              />
             )
             return file.kind === 'image' || file.kind === 'video' || file.kind === 'audio' ? (
               <MediaAttachment card={card} file={file} key={file.id} load={loadMedia} />
@@ -704,15 +718,20 @@ function WaitingRow({
 
 /** A bot's visual as a post in the transcript; Open shows it on its own card. */
 export function VisualCard({
+  face,
   onOpen,
   testID,
   title
 }: {
+  /** The bot that drew it: the card takes its bubbles' wash and its face colour. */
+  face?: FaceSource | null
   title: string
   onOpen: () => void
   testID: string
 }) {
   const theme = useTheme()
+  const paint = face ? faceColor(face) : null
+  const wash = face ? faceWash(face, theme.fill, theme.scheme) : theme.fill
 
   return (
     <Pressable
@@ -722,12 +741,18 @@ export function VisualCard({
       onPress={onOpen}
       style={({ pressed }) => [
         styles.visual,
-        { backgroundColor: theme.surface, borderColor: theme.hairline, opacity: pressed ? 0.7 : 1 }
+        { backgroundColor: wash, opacity: pressed ? 0.7 : 1 }
       ]}
       testID={testID}
     >
-      <View style={[styles.visualIcon, { backgroundColor: withAlpha(theme.accent, 0.12) }]}>
-        <Ionicons color={theme.accent} name="bar-chart" size={22} />
+      <View
+        style={[
+          styles.visualIcon,
+          { backgroundColor: paint?.color ?? withAlpha(theme.text, 0.08) }
+        ]}
+        testID={`${testID}-icon`}
+      >
+        <Ionicons color={paint?.on ?? theme.muted} name="bar-chart" size={22} />
       </View>
       <View style={styles.visualText}>
         <Text numberOfLines={2} variant="subhead">
@@ -737,7 +762,7 @@ export function VisualCard({
           Interactive visual
         </Text>
       </View>
-      <View style={[styles.visualOpen, { backgroundColor: theme.fill }]}>
+      <View style={[styles.visualOpen, { backgroundColor: withAlpha(theme.text, 0.08) }]}>
         <Text variant="subhead">Open</Text>
       </View>
     </Pressable>
@@ -993,16 +1018,6 @@ const styles = StyleSheet.create({
   },
   error: { paddingHorizontal: 12, paddingTop: 6 },
   modelNotice: { paddingHorizontal: 12, paddingTop: 6 },
-  file: {
-    alignItems: 'center',
-    borderRadius: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    flexDirection: 'row',
-    gap: 6,
-    maxWidth: 240,
-    paddingHorizontal: 10,
-    paddingVertical: 8
-  },
   fileName: { flexShrink: 1 },
   input: {
     flex: 1,
@@ -1049,8 +1064,7 @@ const styles = StyleSheet.create({
   transcript: { paddingBottom: 8, paddingHorizontal: 14, paddingTop: 12 },
   visual: {
     alignItems: 'center',
-    borderRadius: radius.card,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: radius.bubble,
     flexDirection: 'row',
     gap: 12,
     minHeight: 64,

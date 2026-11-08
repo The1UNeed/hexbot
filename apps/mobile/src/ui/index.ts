@@ -29,6 +29,7 @@ export {
   FACE_SHAPES,
   type FaceMood,
   type FaceStyle,
+  faceColor,
   faceForName,
   faceWash,
   resolveFace

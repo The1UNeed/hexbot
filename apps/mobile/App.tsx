@@ -30,6 +30,7 @@ import {
   ComputerSheet,
   ConnectionScreen,
   DaemonSwitcher,
+  FileSheet,
   type HomeScreenProps,
   LibraryScreen,
   ModelSummary,
@@ -77,6 +78,8 @@ import { chatPreview, pulseTarget, purposeOf, stoppedIn } from './src/core/route
 import { previewLine } from '../web/src/lib/preview'
 import { mediaKind, mediaOf, mimeOf } from '../web/src/lib/media'
 import { mediaUri, type ReadMedia } from './src/core/media'
+import type { OpenedFile } from './src/core/files'
+import { mixHex } from '../web/src/app/conversation/visual'
 import { CONNECT_ORIGIN, parseConnectCallback } from './src/core/links'
 import { clearConnectSession, loadConnectSession, saveConnectSession } from './src/core/storage'
 import { connectGrant, request, RevokedError } from './src/core/transport'
@@ -219,6 +222,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
   const [connectPending, setConnectPending] = useState(false)
   const [connectSession, setConnectSession] = useState<string | null>(null)
   const [visual, setVisual] = useState<{ title: string; html: string } | null>(null)
+  const [file, setFile] = useState<AttachmentView | null>(null)
   /** The bots' computer card is open. */
   const [computerOpen, setComputerOpen] = useState(false)
   /** Search in the open conversation, and the message it last asked the transcript to show. */
@@ -240,8 +244,8 @@ function MobileApp({ children }: { children?: ReactNode }) {
       {
         method: string
         params: Record<string, unknown>
-        /** Where the file was uploaded, and the id the daemon gave it. */
-        upload?: { session: string | null; id?: string }
+        /** Where the file was uploaded, and the id and path the daemon gave it. */
+        upload?: { session: string | null; id?: string; path?: string }
       }
     >()
   )
@@ -330,6 +334,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
   }, [nativeUrl, callback])
   useEffect(() => {
     setVisual(null)
+    setFile(null)
     setDraft('')
     setAttachments([])
     attachmentData.current.clear()
@@ -900,11 +905,11 @@ function MobileApp({ children }: { children?: ReactNode }) {
         const ids: string[] = []
         for (const asset of attachmentData.current.values()) {
           if (!asset.upload || asset.upload.session !== sessionId) {
-            const reply = await mobile.rpc<{ id?: string }>(asset.method, {
+            const reply = await mobile.rpc<{ id?: string; path?: string }>(asset.method, {
               ...asset.params,
               session_id: sessionId
             })
-            asset.upload = { session: sessionId, id: reply.id }
+            asset.upload = { session: sessionId, id: reply.id, path: reply.path }
             if (sessionId) mobile.stage(sessionId)
           }
           if (asset.upload.id) ids.push(asset.upload.id)
@@ -918,7 +923,16 @@ function MobileApp({ children }: { children?: ReactNode }) {
         // Daemons older than upload ids send every staged file.
         const named = ids.length === files
         await mobile
-          .send(text, files > 0, named ? ids : undefined, attachments)
+          .send(
+            text,
+            files > 0,
+            named ? ids : undefined,
+            // The daemon's copy, so a file you just sent previews before the chat reloads.
+            attachments.map(file => ({
+              ...file,
+              path: attachmentData.current.get(file.id)?.upload?.path ?? file.path
+            }))
+          )
           .catch((e: unknown) => {
             // The next Send uploads the files again; the daemon drops the copies it holds.
             if (named) for (const asset of attachmentData.current.values()) asset.upload = undefined
@@ -944,6 +958,13 @@ function MobileApp({ children }: { children?: ReactNode }) {
     return mediaUri(`${current.active?.id}:${sessionId}:${id}:${path}`, () =>
       current.rpc<ReadMedia>('hexbot.files.read', { session_id: sessionId, path })
     )
+  }, [])
+  // A file's preview reads it through this chat, as the desktop's panel does.
+  const readFile = useCallback((path: string) => {
+    const current = mobileRef.current
+    const sessionId = current.liveSessionId()
+    if (!sessionId) return Promise.reject(new Error('Open this chat again.'))
+    return current.rpc<OpenedFile>('hexbot.files.read', { session_id: sessionId, path })
   }, [])
   const renderMessageText = useCallback<NonNullable<ChatScreenProps['renderMessageText']>>(
     item => (item.text ? <MarkdownText text={item.text} user={item.role === 'user'} /> : null),
@@ -1061,6 +1082,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
     onRemoveAttachment: removeAttachment,
     onApprove: approve,
     onOpenVisual: openVisual,
+    onOpenFile: route?.kind === 'section' ? setFile : undefined,
     sendDisabledReason: uploading
       ? 'Sending attachments'
       : mobile.loading
@@ -1534,34 +1556,45 @@ function MobileApp({ children }: { children?: ReactNode }) {
           scroll={false}
         >
           {visual ? (
-            <VisualFrame
-              title={visual.title}
-              document={visualDocument(visual.html, {
-                '--background': theme.background,
-                '--foreground': theme.text,
-                '--muted': theme.muted,
-                '--surface': theme.surface,
-                '--surface-2': theme.fill,
-                '--border': theme.hairline,
-                '--accent': theme.accent,
-                '--accent-foreground': theme.onAccent,
-                '--success': theme.success,
-                '--danger': theme.danger,
-                '--warning': theme.warning,
-                '--info': theme.info,
-                '--chart-1': theme.accent,
-                '--chart-2': theme.info,
-                '--chart-3': theme.success,
-                '--chart-4': theme.warning,
-                '--chart-5': theme.danger,
-                '--chart-6': theme.muted,
-                '--radius': '16px',
-                '--font-sans': 'system-ui',
-                '--font-mono': 'monospace'
-              })}
-            />
+            // The page sits on a card of its own, as the desktop shows it beside the chat.
+            <View style={[visualCard, { backgroundColor: theme.surface }]}>
+              <VisualFrame
+                background={theme.surface}
+                title={visual.title}
+                document={visualDocument(visual.html, {
+                  '--background': theme.surface,
+                  '--foreground': theme.text,
+                  '--muted': theme.muted,
+                  // Steps of text over the card, as the desktop steps them over a bubble.
+                  '--surface': mixHex(theme.surface, theme.text, 0.04) ?? theme.fill,
+                  '--surface-2': mixHex(theme.surface, theme.text, 0.1) ?? theme.fill,
+                  '--border': mixHex(theme.surface, theme.text, 0.12) ?? theme.hairline,
+                  '--accent': theme.accent,
+                  '--accent-foreground': theme.onAccent,
+                  '--success': theme.success,
+                  '--danger': theme.danger,
+                  '--warning': theme.warning,
+                  '--info': theme.info,
+                  '--chart-1': theme.accent,
+                  '--chart-2': theme.info,
+                  '--chart-3': theme.success,
+                  '--chart-4': theme.warning,
+                  '--chart-5': theme.danger,
+                  '--chart-6': theme.muted,
+                  '--radius': '12px',
+                  '--font-sans': 'system-ui, -apple-system, sans-serif',
+                  '--font-mono': 'ui-monospace, Menlo, monospace'
+                })}
+              />
+            </View>
           ) : null}
         </Layer>
+        <FileSheet
+          botName={route?.kind === 'section' ? route.bot.display_name : 'The bot'}
+          file={file}
+          onClose={() => setFile(null)}
+          read={readFile}
+        />
         <SearchSheet
           documents={searchDocuments}
           entries={entries}
@@ -1796,3 +1829,12 @@ function MobileApp({ children }: { children?: ReactNode }) {
     </Screens.Provider>
   )
 }
+
+// The visual's card inside its sheet, inset like the desktop's tab.
+const visualCard = {
+  borderRadius: 16,
+  flex: 1,
+  marginBottom: 12,
+  marginHorizontal: 12,
+  overflow: 'hidden'
+} as const

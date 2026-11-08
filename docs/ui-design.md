@@ -227,7 +227,11 @@ with Viewport Segments place both poses on the exact halves.
   A shared picture, video or audio file shows or plays there instead, and so
   do the voice replies, pictures and clips its media tools make. The composer shows pictures as
   thumbnails and other files as cards, each with a remove button. A room's
-  cards only name the file.
+  cards only name the file. On the phone, the same card opens the file on
+  its own card: a CSV or TSV as a table, Markdown formatted, other text as
+  it is, a picture, video, audio file or PDF shown or played (Android has no
+  PDF preview), and on iPhone Share saves or sends it. A visual's card there
+  takes its bot's colour, like the bot's bubbles.
 - Files beside the chat open as tabs in the side panel, next to any
   visuals. Text opens in the editor (Markdown and plain text formatted,
   code and data as plain text) and saves 0.8 s after typing stops. Under

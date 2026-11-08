@@ -104,7 +104,7 @@ vi.mock('../screens', async () => {
     ),
     ChatScreen: chat,
     ChatChooser: () => null, ConnectionScreen: () => null,
-    DaemonSwitcher: () => null, LibraryScreen: () => null,
+    DaemonSwitcher: () => null, FileSheet: () => null, LibraryScreen: () => null,
     ModelSummary: () => null, ProviderGoneCard: () => null, providerGone: () => false,
     SearchSheet: () => null, SettingsScreen: () => null
   }
@@ -354,4 +354,23 @@ it('keeps historical items, the face and row callbacks stable while a reply stre
   expect(after.onApprove).toBe(before.onApprove)
   expect(after.onOpenVisual).toBe(before.onOpenVisual)
   expect(after.items.at(-2)).toMatchObject({ streaming: true, text: 'tokentokentokentokentoken' })
+})
+
+it('a file you send carries the path the daemon gave its upload, so its card previews before the chat reloads', async () => {
+  const { pickFile } = await import('./pickFile')
+  vi.mocked(pickFile).mockResolvedValueOnce({ name: 'parts.csv', mimeType: 'text/csv', uri: 'file:///parts.csv', base64: 'YQ==', bytes: 1 } as never)
+  const answer = state.request.getMockImplementation()!
+  state.request.mockImplementation(async (method: string, params?: Record<string, unknown>) =>
+    method === 'file.attach' ? { id: 'upload-1', path: '/chat/attachments/parts.csv' } : answer(method, params)
+  )
+  await open('Bot')
+  await screen.findByText('owner history')
+  await act(async () => state.chat!.onAttach!())
+  await waitFor(() => expect(state.chat!.attachments).toHaveLength(1))
+  await act(async () => state.chat!.onSend('The parts'))
+  await waitFor(() => expect(calls('prompt.submit')).toHaveLength(1))
+  expect(calls('prompt.submit')[0]![1]).toMatchObject({ attachments: ['upload-1'] })
+  expect(state.chat!.items.find(item => item.kind === 'message' && item.attachments?.length)).toMatchObject({
+    attachments: [{ name: 'parts.csv', path: '/chat/attachments/parts.csv' }]
+  })
 })
