@@ -1,14 +1,7 @@
 import { memo } from 'react'
-import { Linking, Text as NativeText, Platform, View } from 'react-native'
+import { Linking, Text as NativeText, View } from 'react-native'
 import { parseMessage, type Span } from './core/message-text'
 import { mono, useTheme } from './ui'
-
-/**
- * A browser selects across the paragraphs. On a phone, iOS can only copy a
- * whole text view, one paragraph here, so a long press on the bubble offers
- * Copy and Select text instead (`ChatScreen`).
- */
-const selectable = Platform.OS === 'web'
 
 function inline(spans: Span[], ink: string) {
   return spans.map((span, i) => {
@@ -42,10 +35,16 @@ function inline(spans: Span[], ink: string) {
 }
 export const MarkdownText = memo(function MarkdownText({
   text,
-  user = false
+  user = false,
+  selectable = true
 }: {
   text: string
   user?: boolean
+  /**
+   * Off in a chat bubble on a phone: iOS copies only a whole paragraph here,
+   * so a long press on the bubble offers Copy and Select text instead.
+   */
+  selectable?: boolean
 }) {
   const theme = useTheme()
   // Links are underlined in the text colour too; the accent is too faint on a washed bubble.

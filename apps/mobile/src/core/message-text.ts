@@ -4,12 +4,10 @@ import { readableMath } from './math'
 // the copied text agree on what the message says.
 
 export type Span =
-  | { kind: 'text' | 'bold' | 'code'; text: string }
-  | { kind: 'link'; text: string; url: string }
+  { kind: 'text' | 'bold' | 'code'; text: string } | { kind: 'link'; text: string; url: string }
 
 export type Block =
-  | { kind: 'code'; text: string }
-  | { kind: 'paragraph'; heading: boolean; spans: Span[] }
+  { kind: 'code'; text: string } | { kind: 'paragraph'; heading: boolean; spans: Span[] }
 
 const INLINE = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\(https?:\/\/[^\s)]+\))/g
 const LINK = /^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/
@@ -23,7 +21,8 @@ function spans(text: string): Span[] {
       if (link) return { kind: 'link', text: link[1], url: link[2] }
       if (part.startsWith('**') && part.endsWith('**'))
         return { kind: 'bold', text: readableMath(part.slice(2, -2)) }
-      if (part.startsWith('`') && part.endsWith('`')) return { kind: 'code', text: part.slice(1, -1) }
+      if (part.startsWith('`') && part.endsWith('`'))
+        return { kind: 'code', text: part.slice(1, -1) }
       return { kind: 'text', text: readableMath(part) }
     })
 }
