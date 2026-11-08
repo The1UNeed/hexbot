@@ -81,6 +81,35 @@ async fn open(runtime: &Runtime) -> String {
 }
 
 #[tokio::test]
+async fn retired_code_stays_disabled_for_a_legacy_profile_in_bypass() {
+    let (home, runtime, _) = setup();
+    let profile = home.path().join("profiles/owl");
+    let mut config = common::read_config(&profile).unwrap();
+    config["tools"]["enabled_toolsets"] = json!(["code_execution"]);
+    config["code_execution"] = json!({"python":home.path().join("python-must-not-run")});
+    common::write_config(&profile, &config).unwrap();
+    db::open(home.path())
+        .unwrap()
+        .execute("UPDATE bots SET approval_mode='off' WHERE name='owl'", [])
+        .unwrap();
+    open(&runtime).await;
+    let source = runtime.sessions.lock().unwrap()["first"].clone();
+    let offered = source.tools.iter().any(|tool| tool["name"] == "execute_code");
+    let result = runtime
+        .tool(
+            &source,
+            "execute_code",
+            &json!({"code":"raise AssertionError('retired local Python ran')","full_access":true}),
+        )
+        .await;
+    runtime.shutdown().await;
+    assert!(!offered);
+    let error = result.unwrap_err();
+    assert_eq!(error.code, 4302);
+    assert_eq!(error.message, "tool is disabled: execute_code");
+}
+
+#[tokio::test]
 async fn clearing_unsubmitted_attachments_preserves_the_session_and_checks_owner() {
     let (home, runtime, _) = setup();
     let id = open(&runtime).await;

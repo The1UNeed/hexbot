@@ -65,10 +65,6 @@ async fn windows_security_runtime_refuses_code_before_approval() {
     let node =
         PathBuf::from(std::env::var_os("HEXBOT_WINDOWS_NODE").expect("absolute Node executable"));
     assert!(node.is_absolute() && node.is_file());
-    let python = PathBuf::from(
-        std::env::var_os("HEXBOT_WINDOWS_PYTHON").expect("absolute trusted Python executable"),
-    );
-    assert!(python.is_absolute() && python.is_file());
     let scratch = tempfile::tempdir().unwrap();
     let root = fs::canonicalize(scratch.path()).unwrap();
     let home = root.join("home");
@@ -141,7 +137,7 @@ async fn windows_security_runtime_refuses_code_before_approval() {
             [json!(work).to_string()],
         )
         .unwrap();
-    fs::write(home.join("profiles/owl/config.yaml"), json!({"model":{"provider":"openai","default":"fixture"},"tools":{"enabled_toolsets":["code_execution","file"]},"code_execution":{"python":python}}).to_string()).unwrap();
+    fs::write(home.join("profiles/owl/config.yaml"), json!({"model":{"provider":"openai","default":"fixture"},"tools":{"enabled_toolsets":["code_execution","file"]},"code_execution":{"python":fixture.join("python-must-not-run.exe")}}).to_string()).unwrap();
     let hub = EventHub::new();
     let runtime = Runtime::new(home.clone(), hub.clone(), fixture.join("node.exe")).unwrap();
     let scheduler =
@@ -282,87 +278,36 @@ async fn windows_security_runtime_refuses_code_before_approval() {
                 .execute("UPDATE bots SET workdir=?", [work.to_str().unwrap()])
                 .unwrap();
         }
-        for mode in ["smart", "manual"] {
-            // Real Python starts under Bypass. Change its live policy while it
-            // waits on a socket, then exercise that same worker's native bridge.
-            db::open(&home)
-                .unwrap()
-                .execute("UPDATE bots SET approval_mode='off'", [])
-                .unwrap();
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let port = listener.local_addr().unwrap().port();
-            let target = home.join("runtime/native-current.json");
-            let code = format!(
-                r#"import socket, hermes_tools
-s=socket.create_connection(('127.0.0.1', {port}))
-s.recv(1)
-for name, args in [('write_file', {{'path':{target},'content':'changed'}}), ('patch', {{'path':{target},'old_string':'keep','new_string':'changed'}}), ('read_file', {{'path':r'\\.\pipe\hexbot-security-untrusted'}}), ('read_file', {{'path':r'\\hexbot-hostile.invalid\share\secret'}})]:
-    try:
-        print(getattr(hermes_tools,name)(**args))
-    except RuntimeError as error:
-        print('bridge-denied:'+str(error))
-s.close()
-"#,
-                target = json!(target)
-            );
-            fs::write(fixture.join("code.json"), json!({"code":code}).to_string()).unwrap();
-            let opened = runtime
-                .call("alice", "hexbot.sections.open", &json!({"id":"first"}))
-                .await
-                .unwrap()
-                .unwrap();
-            let live = opened["section"]["live_session_id"].as_str().unwrap();
-            let mut events = hub.subscribe();
-            runtime
-                .call(
-                    "alice",
-                    "prompt.submit",
-                    &json!({"session_id":live,"text":json!({"code":code}).to_string()}),
-                )
-                .await
-                .unwrap()
-                .unwrap();
-            let (mut socket,_) = tokio::time::timeout(Duration::from_secs(15), async {
-                loop {
-                    tokio::select! {
-                        connection = listener.accept() => break connection.unwrap(),
-                        event = events.recv() => assert_ne!(event.unwrap().frame["params"]["type"], "approval.request", "Bypass must not ask for missing bubblewrap"),
-                    }
-                }
-            }).await.expect("Bypass Python connected");
-            db::open(&home)
-                .unwrap()
-                .execute(
-                    "UPDATE bots SET approval_mode=?,workdir=?",
-                    rusqlite::params![mode, r"\\hexbot-hostile.invalid\share\workdir"],
-                )
-                .unwrap();
-            let absent_output = home.join("runtime/sessions/first/attachments");
-            if absent_output.exists() {
-                fs::remove_dir(&absent_output).unwrap();
-            }
-            use tokio::io::AsyncWriteExt;
-            socket.write_all(b"x").await.unwrap();
-            let reply = native_reply(&mut events).await;
-            assert_eq!(reply["result"]["success"], true, "{reply}");
-            let output = reply["result"]["output"].as_str().unwrap();
-            assert_eq!(
-                output
-                    .matches("bridge-denied:Windows tool isolation is not implemented")
-                    .count(),
-                4,
-                "{reply}"
-            );
-            assert_eq!(fs::read_to_string(target).unwrap(), "keep");
-            assert!(
-                !absent_output.exists(),
-                "native callback created outputs before support refusal"
-            );
-            db::open(&home)
-                .unwrap()
-                .execute("UPDATE bots SET workdir=?", [work.to_str().unwrap()])
-                .unwrap();
-        }
+        // Computer use retired daemon-side Python. A legacy profile and a
+        // full_access request must not bring it back, even in Bypass.
+        db::open(&home)
+            .unwrap()
+            .execute("UPDATE bots SET approval_mode='off'", [])
+            .unwrap();
+        fs::write(
+            fixture.join("code.json"),
+            json!({"code":"raise AssertionError('retired local Python ran')"}).to_string(),
+        )
+        .unwrap();
+        let opened = runtime
+            .call("alice", "hexbot.sections.open", &json!({"id":"first"}))
+            .await
+            .unwrap()
+            .unwrap();
+        let live = opened["section"]["live_session_id"].as_str().unwrap();
+        let mut events = hub.subscribe();
+        runtime
+            .call(
+                "alice",
+                "prompt.submit",
+                &json!({"session_id":live,"text":"retired local Python probe"}),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let reply = native_reply(&mut events).await;
+        assert_eq!(reply["error"], "tool is disabled: execute_code", "{reply}");
+        fs::remove_file(fixture.join("code.json")).unwrap();
         for mode in ["smart", "manual", "off"] {
             db::open(&home)
                 .unwrap()
@@ -503,10 +448,9 @@ s.close()
     })();
     if result.is_err() || cleanup.is_err() {
         eprintln!(
-            "Trusted probe paths: node={}, launcher={}, python={}, home={}",
+            "Trusted probe paths: node={}, launcher={}, home={}",
             fixture.join("node.exe").display(),
             fixture.join("pi/launch.mjs").display(),
-            python.display(),
             home.display()
         );
         if let Err(error) = &cleanup {
