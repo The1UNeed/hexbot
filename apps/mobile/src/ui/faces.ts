@@ -94,6 +94,20 @@ export function faceWash(source: FaceSourceLike, fill: string, scheme: 'dark' | 
 }
 
 /**
+ * A bot's face colour and the colour its eyes are painted in, for things drawn
+ * in the bot's colour. Null for a bot with an uploaded picture.
+ */
+export function faceColor(source: FaceSourceLike): { color: string; on: string } | null {
+  if (source.imageUri) {
+    return null
+  }
+
+  const { color, eyes } = resolveFace(source.face ?? faceForName(source.name))
+
+  return { color: color.value, on: eyes }
+}
+
+/**
  * A message bubble's fill: ink for yours, the plain fill for other people,
  * and the bot's wash for a bot. Rooms name the bot on every reply; a bot's own
  * thread sends replies without one, so they belong to the thread's bot.

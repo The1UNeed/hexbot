@@ -42,7 +42,7 @@ vi.mock('../ui', async () => {
     BotFace: () => null, RoomFace: () => null, LoadingFace: () => null,
     Button: () => null, IconButton: () => null, Banner: () => null,
     useKeyboardVisible: () => false, useTheme: () => ({}),
-    bubbleFill: () => 'grey', withAlpha: () => 'grey', radius: {}, mono: 'monospace',
+    bubbleFill: () => 'grey', faceColor: () => null, faceWash: () => 'grey', withAlpha: () => 'grey', radius: {}, mono: 'monospace',
     Field: () => null, HIT: 44
   }
 })
@@ -137,7 +137,7 @@ it("puts a chat's bar buttons in reading order, with a profile or settings icon"
   ])
 })
 
-it('plays the pictures, videos and audio files a message carries, and names any other file', () => {
+it('plays the pictures, videos and audio files a message carries, and shows any other file as its card', () => {
   const load = vi.fn()
   const items: ChatItem[] = [
     {
@@ -156,5 +156,10 @@ it('plays the pictures, videos and audio files a message carries, and names any 
   expect(screen.getByTestId('media-video').textContent).toBe('clip.mp4 from the daemon')
   expect(screen.getByTestId('media-audio').textContent).toBe('voice.mp3 from the daemon')
   expect(screen.queryByTestId('media-file')).toBeNull()
-  expect(screen.getByText('notes.txt')).toBeTruthy()
+  // The card cuts the name before its extension, so the extension always shows, and names the kind.
+  expect(['notes', '.txt', 'Text'].map(text => screen.getByText(text).textContent)).toEqual([
+    'notes',
+    '.txt',
+    'Text'
+  ])
 })

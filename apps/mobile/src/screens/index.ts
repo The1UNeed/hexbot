@@ -9,6 +9,7 @@ export {
   VisualCard
 } from './ChatScreen'
 export { ComputerSheet, type ComputerSheetProps } from './ComputerSheet'
+export { FileSheet } from './FileSheet'
 export {
   type ConnectionPending,
   ConnectionScreen,
