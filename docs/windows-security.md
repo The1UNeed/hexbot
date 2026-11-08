@@ -168,7 +168,12 @@ Explicit `--current-tree` mode verifies both build and refusal interfaces and
 preserves the exact pinned source tree. It records original dependency ancestry
 without requiring history removed by squash merges. Two-source preparation uses
 one verified merge base and a shared reviewed dependency ancestor, either the
-original #132 commit or its main squash. Conflicting patches abort.
+original #132 commit or its main squash. A refreshed fixture can record
+`Production-Source: <40 lowercase full SHA>`, which must identify its sole
+parent. New source changes are then applied from that production snapshot,
+so squashing the security branch does not replay changes already in the
+fixture. Preparation records both the merge base and patch base. Conflicting
+patches still abort.
 
 The compiled integration probe invokes the actual Rust Runtime through a trusted
 Pi transport fixture. It verifies code refusal before approval in Auto and

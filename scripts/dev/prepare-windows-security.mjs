@@ -35,7 +35,8 @@ function main() {
   const repo = resolve(fileURLToPath(new URL('../..', import.meta.url)));
   const git = process.env.HEXBOT_CI_GIT ?? (process.platform === 'win32' ? undefined : '/usr/bin/git');
   assert(git && isAbsolute(git), 'HEXBOT_CI_GIT must name a trusted absolute Git executable');
-  const run = (args, cwd = repo) => execFileSync(git,args,{cwd,encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
+  const raw = (args, cwd = repo) => execFileSync(git,args,{cwd,encoding:'utf8',stdio:['ignore','pipe','pipe']});
+  const run = (args, cwd = repo) => raw(args,cwd).trim();
   const sha = input => {
     const value = run(['rev-parse','--verify',`${input}^{commit}`]);
     assert(/^[a-f0-9]{40}$/.test(value));
@@ -57,13 +58,28 @@ function main() {
   const baselineAncestry = [ancestry(baseSHA),ancestry(dependencySquashSHA)];
   if (!currentTree) assert(baselineAncestry.some(base => base.build && base.security), 'Historical combination requires a shared recorded dependency ancestor');
   if (currentTree) validateCurrentTree(path => run(['show',`${buildSHA}:${path}`]));
+  let productionSourceSHA = null;
+  if (!currentTree) {
+    const lines = raw(['show','-s','--format=%B',buildSHA]).split('\n').filter(line => /^\s*Production-Source(?:\s|:|$)/i.test(line));
+    if (lines.length) {
+      assert.equal(lines.length, 1, 'Expected one production snapshot trailer');
+      const match = /^Production-Source: ([a-f0-9]{40})$/.exec(lines[0]);
+      assert(match, 'Production snapshot must be one full immutable SHA');
+      productionSourceSHA = sha(match[1]);
+      assert.equal(run(['show','-s','--format=%P',buildSHA]), productionSourceSHA, 'Production snapshot must be the fixture sole parent');
+    }
+  }
   const needsSecurityDelta = !currentTree && !ancestor(securitySHA,buildSHA);
   let appliedSecurityPatch = false;
   let patchBaseSHA = null;
+  let mergeBaseSHA = null;
   if (needsSecurityDelta) {
     const bases = run(['merge-base','--all',buildSHA,securitySHA]).split('\n');
     assert(bases.length === 1 && /^[a-f0-9]{40}$/.test(bases[0]), 'Expected one unambiguous patch merge base');
-    patchBaseSHA = bases[0];
+    mergeBaseSHA = bases[0];
+    // A squash drops the production snapshot's ancestry. Diff from the recorded
+    // snapshot so its already-composed changes are not applied a second time.
+    patchBaseSHA = productionSourceSHA ?? mergeBaseSHA;
     assert(baselineAncestry.some(base => base.present && ancestor(base.sha,patchBaseSHA)), 'Patch base must include a recorded dependency ancestor');
     // A metadata-only security child may not be an ancestor of the build, but
     // its empty tree delta must leave that build exactly unchanged.
@@ -88,7 +104,7 @@ function main() {
     run(['add','backend/hexbot-core/src/lib.rs'],destination);
     const record = {
       sourceDir:destination, sourceMode:currentTree ? 'current-tree' : 'historical-combination',
-      buildSHA, securitySHA, baseSHA, dependencySquashSHA, baselineAncestry, patchBaseSHA, appliedSecurityPatch,
+      buildSHA, securitySHA, baseSHA, dependencySquashSHA, baselineAncestry, productionSourceSHA, mergeBaseSHA, patchBaseSHA, appliedSecurityPatch,
       guardedTree, probeTree:run(['write-tree'],destination),
       guardBeforeSHA256:createHash('sha256').update(before).digest('hex'),
       guardAfterSHA256:createHash('sha256').update(after).digest('hex'),
