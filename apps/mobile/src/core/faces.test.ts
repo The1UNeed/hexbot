@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { bubbleFill, FACE_COLORS, faceWash } from '../ui/faces'
+import { bubbleFill, FACE_COLORS, faceWash, randomFace } from '../ui/faces'
 import { palettes } from '../ui/theme'
 
 vi.mock('react-native', () => ({
@@ -66,5 +66,20 @@ describe('bubbleFill', () => {
   it('keeps people plain and yours on ink', () => {
     expect(bubbleFill({ author: { name: 'Ada' }, role: 'human' }, { room: true }, theme)).toBe(theme.fill)
     expect(bubbleFill({ role: 'user' }, { face: orange, room: false }, theme)).toBe(theme.ink)
+  })
+})
+
+describe('randomFace', () => {
+  it('gives a new bot a face none of the others has while any is left', () => {
+    const taken: { color: string; shape: string }[] = []
+
+    for (let index = 0; index < 64; index += 1) {
+      const face = randomFace(taken)
+      expect(taken).not.toContainEqual(face)
+      expect(['white', 'gray', 'brown']).not.toContain(face.color)
+      taken.push(face)
+    }
+
+    expect(taken).toContainEqual(randomFace(taken))
   })
 })

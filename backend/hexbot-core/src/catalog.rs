@@ -1358,20 +1358,110 @@ fn check_face(value: &Value) -> Result<()> {
         )),
     }
 }
+/// Sets the face drawn for the bot. A face put aside for a photo is kept in
+/// `face.kept.json`, so the bot gets its own face back when the photo goes.
 fn set_face(home: &Path, name: &str, value: &Value) -> Result<()> {
-    let path = profile(home, name)?.join("assets/face.json");
+    let dir = profile(home, name)?.join("assets");
+    let path = dir.join("face.json");
+    let kept = dir.join("face.kept.json");
     safe(home, &path)?;
+    safe(home, &kept)?;
     if value.is_null() {
         if path.exists() {
-            fs::remove_file(path)?;
+            fs::rename(path, kept)?;
         }
         return Ok(());
     }
     let face = json!({"shape": value["shape"], "color": value["color"]});
-    atomic_write(&path, face.to_string().as_bytes())
+    atomic_write(&path, face.to_string().as_bytes())?;
+    if kept.exists() {
+        fs::remove_file(kept)?;
+    }
+    Ok(())
+}
+/// Holds a bot's picture and face still while one request changes them and
+/// gives the bot its face back, so an upload cannot land between the two. A
+/// create holds it until the new bot's row is in, so a create at the same time
+/// sees its face. One lock for every bot on purpose: these writes are rare and
+/// quick. Take it before the skills and config locks, never after them.
+fn face_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+fn has_photo(home: &Path, name: &str) -> Result<bool> {
+    let dir = profile(home, name)?.join("assets");
+    for ext in ["png", "jpg", "webp"] {
+        let path = dir.join(format!("avatar.{ext}"));
+        safe(home, &path)?;
+        if path.exists() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+/// The face put aside behind a photo, if any.
+fn kept_face(home: &Path, name: &str) -> Result<Value> {
+    let path = profile(home, name)?.join("assets/face.kept.json");
+    Ok(serde_json::from_str::<Value>(&read_text(home, &path)?)
+        .ok()
+        .filter(|v| !v.is_null() && check_face(v).is_ok())
+        .unwrap_or(Value::Null))
+}
+/// Every bot without a photo has a face of its own, which its name does not
+/// change: the one it had before a photo, else `fallback`.
+fn ensure_face_or(home: &Path, name: &str, fallback: impl FnOnce() -> Result<Value>) -> Result<()> {
+    if has_photo(home, name)? || !face(home, name)?.is_null() {
+        return Ok(());
+    }
+    let kept = kept_face(home, name)?;
+    let next = if kept.is_null() { fallback()? } else { kept };
+    set_face(home, name, &next)
+}
+/// A new face is random, one none of the owner's other bots has, shown or
+/// kept behind a photo, while any is left. A profile that cannot be read
+/// takes nothing.
+fn ensure_face(home: &Path, owner: &str, name: &str) -> Result<()> {
+    ensure_face_or(home, name, || {
+        let conn = db::open(home)?;
+        let mut taken = Vec::new();
+        for row in common::rows(
+            &conn,
+            "SELECT name FROM bots WHERE owner_id=? AND name<>?",
+            &[&owner, &name],
+        )? {
+            if let Some(other) = row["name"].as_str() {
+                taken.push(face(home, other).unwrap_or(Value::Null));
+                taken.push(kept_face(home, other).unwrap_or(Value::Null));
+            }
+        }
+        Ok(crate::faces::random(&taken))
+    })
+}
+/// Bots from before faces were stored drew theirs from their display name.
+/// Each one without a photo or a face keeps that face for good, so renaming
+/// it no longer changes how it looks. Runs at every start; a bot it has seen
+/// has a face, so it does nothing more. A bot it cannot fix is skipped.
+pub fn keep_name_faces(home: &Path) -> Result<()> {
+    let conn = db::open(home)?;
+    for row in common::rows(&conn, "SELECT name, display_name FROM bots", &[])? {
+        let Some(name) = row["name"].as_str() else {
+            continue;
+        };
+        let shown = row["display_name"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| display_name(name));
+        let _lock = face_lock();
+        if let Err(error) = ensure_face_or(home, name, || Ok(crate::faces::for_name(&shown))) {
+            eprintln!("Could not keep the face of {name}: {}", error.message);
+        }
+    }
+    Ok(())
 }
 /// Replaces the picture. Any face stored for the old one no longer describes
-/// it, so it goes too; a client picking a face sends `face` with the picture.
+/// it, so it is put aside; a client picking a face sends `face` with the picture.
 fn set_avatar(home: &Path, name: &str, value: &Value) -> Result<()> {
     let image = decode_avatar(value)?;
     let dir = profile(home, name)?.join("assets");
@@ -1596,6 +1686,7 @@ fn shape_bot(
         "reasoning_effort": cfg["model"]["reasoning_effort"],
         "avatar": avatar(home, name)?,
         "face": face(home, name)?,
+        "kept_face": kept_face(home, name)?,
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "last_activity_at": row["last_activity_at"],
@@ -1763,7 +1854,9 @@ fn profile_call(home: &Path, caller: &str, method: &str, p: &Value) -> Result<Va
                 p["data"].clone()
             };
             let size = decode_avatar(&value)?.map(|(_, v)| v.len()).unwrap_or(0);
+            let _lock = face_lock();
             set_avatar(home, name, &value)?;
+            ensure_face(home, caller, name)?;
             Ok(json!({"ok":true,"asset":"avatar","size":size}))
         }
         "profiles.configure" => {
@@ -2153,7 +2246,10 @@ fn create(home: &Path, caller: &str, p: &Value, primary: bool) -> Result<Value> 
             let global = creation_config(read_config(home)?);
             writer.write(&dir, &global)?;
         }
+        // Held until the row is in, so a create at the same time sees this face.
+        let _lock = face_lock();
         configure(home, name, &patch)?;
+        ensure_face(home, caller, name)?;
         let now = now();
         let mut conn = db::open(home)?;
         let tx = conn.transaction()?;
@@ -2268,7 +2364,11 @@ fn update_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
     if p.get("face").is_some_and(|v| !v.is_null()) && p.get("avatar").is_none_or(Value::is_null) {
         return Err(Error::new(4202, "face needs the avatar it describes"));
     }
-    configure(home, name, p)?;
+    {
+        let _lock = face_lock();
+        configure(home, name, p)?;
+        ensure_face(home, caller, name)?;
+    }
     let mut conn = db::open(home)?;
     let tx = conn.transaction()?;
     write_bot_columns(&tx, name, p)?;

@@ -43,8 +43,9 @@ own visual identity. Read `CLAUDE.md` for the words.
   Faces picked in an app are stored as shape and colour, with a static PNG
   for other clients. The web app reads saved capsule-eye and
   flat-eye PNGs back into live faces; mobile shows legacy pictures as pictures. Other
-  uploads replace the face. Bots without a saved face derive one from their
-  names. Each mood moves the whole face and its eyes on springs
+  uploads replace the face until the photo is removed. Every bot without a
+  photo has a face of its own, random for new bots and HexBot, and renaming
+  it never changes it. Each mood moves the whole face and its eyes on springs
   (`lib/face-motion.ts`): idle sways, glances and blinks; listening tilts
   from side to side; searching peers one eye wide, then the other; working
   bobs while its eyes narrow on a steady beat; happy hops and squints; sleeping droops and breathes.

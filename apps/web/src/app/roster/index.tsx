@@ -18,7 +18,7 @@ import {
   type AvatarStyle,
   botFace,
   DEFAULT_AVATAR_STYLE,
-  styleForName
+  randomStyle
 } from '../../lib/avatar-builder'
 import { toHandle } from '../../lib/bot-handle'
 import { getBridge } from '../../lib/bridge'
@@ -448,6 +448,13 @@ export function RosterColumn() {
   const liveMoods = useMemo(() => liveMoodsOf(streamingSessions), [streamingSessions])
 
   const ordered = useMemo(() => orderedBots(bots), [bots])
+
+  // Every way in starts on a random face none of the other bots has; its name never changes it.
+  const openNewBot = () => {
+    setNewStyle(randomStyle(ordered.flatMap(bot => [bot.face, bot.kept_face])))
+    setBotDialog(true)
+  }
+
   const roster = useMemo(() => orderedRosterItems(bots, rooms), [bots, rooms])
 
   const anyMatch =
@@ -576,11 +583,7 @@ export function RosterColumn() {
             items={[
               {
                 label: 'New bot',
-                onSelect: () => {
-                  // Start each new bot on a different face than the last.
-                  setNewStyle(styleForName(`bot-${ordered.length}`))
-                  setBotDialog(true)
-                }
+                onSelect: openNewBot
               },
               {
                 'data-testid': 'roster-new-room',
@@ -615,11 +618,7 @@ export function RosterColumn() {
           />
         ) : null}
         {useBots.getState().loaded && ordered.length === 0 ? (
-          <button
-            className={cn(rowClass, 'bg-surface-2/60')}
-            onClick={() => setBotDialog(true)}
-            type="button"
-          >
+          <button className={cn(rowClass, 'bg-surface-2/60')} onClick={openNewBot} type="button">
             <span className={cn(footerIcon, 'size-10')}>
               <Plus size={18} />
             </span>

@@ -18,6 +18,7 @@ pub mod dpop;
 pub mod dreaming;
 pub mod engines;
 pub mod events;
+pub mod faces;
 pub mod http;
 mod install_ownership;
 pub mod log_files;

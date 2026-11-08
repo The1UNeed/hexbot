@@ -33,7 +33,7 @@ import {
   userMemoryGet,
   userMemorySet
 } from '../lib/api'
-import { avatarPng, type AvatarStyle, botFace, styleForName } from '../lib/avatar-builder'
+import { avatarPng, type AvatarStyle, botFace, randomStyle } from '../lib/avatar-builder'
 import { type DaemonProgress, getBridge, hasLocalRuntime, isElectron } from '../lib/bridge'
 import { cn } from '../lib/cn'
 import { connectTo, setLocalDaemonPort } from '../lib/connection'
@@ -1236,7 +1236,8 @@ function OnboardingPage() {
     setCreating(true)
 
     try {
-      const face = styleForName('hexbot')
+      // A random face, as every bot gets; its name never picks it.
+      const face = randomStyle()
       const avatar = await avatarPng(face)
 
       if (current()) {
