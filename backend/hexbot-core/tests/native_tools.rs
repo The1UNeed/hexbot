@@ -117,7 +117,7 @@ async fn configured_web_search_extract_headers_payload_and_artifacts() {
     server.abort();
 }
 #[tokio::test]
-async fn vision_and_speech_execute_configured_http_services() {
+async fn vision_executes_the_configured_http_service() {
     let requests: Requests = Default::default();
     let records = requests.clone();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -132,14 +132,10 @@ async fn vision_and_speech_execute_configured_http_services() {
                     Json(json!({"choices":[{"message":{"content":"A red square"}}]}))
                 }
             }),
-        )
-        .route(
-            "/audio/speech",
-            post(|| async { b"ID3generated-test-audio".to_vec() }),
         );
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let h = home(
-        json!({"tools":{"enabled_toolsets":["vision","tts"]},"auxiliary":{"vision":{"provider":"openai","model":"vision-test","base_url":format!("http://{address}")}},"tts":{"provider":"openai","openai":{"base_url":format!("http://{address}")}}}),
+        json!({"tools":{"enabled_toolsets":["vision"]},"auxiliary":{"vision":{"provider":"openai","model":"vision-test","base_url":format!("http://{address}")}}}),
     );
     std::fs::write(h.path().join(".env"), "OPENAI_API_KEY=private-test-key\n").unwrap();
     let vision = call(
@@ -150,33 +146,28 @@ async fn vision_and_speech_execute_configured_http_services() {
     .await
     .unwrap();
     assert_eq!(vision["analysis"], "A red square");
-    let speech = call(h.path(), "text_to_speech", json!({"text":"Hello"}))
-        .await
-        .unwrap();
-    assert_eq!(
-        std::fs::read(speech["file_path"].as_str().unwrap()).unwrap(),
-        b"ID3generated-test-audio"
-    );
     assert_eq!(requests.lock().unwrap()[0].1["model"], "vision-test");
     server.abort();
 }
+#[cfg(unix)]
 #[tokio::test]
 async fn speech_checks_the_requested_provider_instead_of_the_default() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let router = Router::new().route(
-        "/audio/speech",
-        post(|| async { b"ID3test-audio".to_vec() }),
-    );
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let h = home(json!({"tools":{"enabled_toolsets":["tts"]},"tts":{
-        "provider":"edge","edge":{"command": "/missing/hexbot-edge-tts"},
-        "openai":{"base_url":format!("http://{address}")}
+        "provider":"edge","edge":{"command": "/missing/hexbot-edge-tts"}
     }}));
+    let say = script(
+        h.path(),
+        "say.py",
+        "import sys\nopen(sys.argv[1],'wb').write(b'ID3test-audio')\n",
+    );
+    let mut cfg = common::read_config(h.path()).unwrap();
+    cfg["tts"]["providers"]["say"] =
+        json!({"type":"command","command":say,"args":["{output_path}"]});
+    common::write_config(h.path(), &cfg).unwrap();
     let audio = call(
         h.path(),
         "text_to_speech",
-        json!({"text":"Hello","provider":"openai"}),
+        json!({"text":"Hello","provider":"say"}),
     )
     .await
     .unwrap();
@@ -184,9 +175,7 @@ async fn speech_checks_the_requested_provider_instead_of_the_default() {
         std::fs::read(audio["file_path"].as_str().unwrap()).unwrap(),
         b"ID3test-audio"
     );
-    let mut cfg = common::read_config(h.path()).unwrap();
-    cfg["tts"]["provider"] = json!("openai");
-    common::write_config(h.path(), &cfg).unwrap();
+    // Cloud voices went with the Premium voice connector.
     let denied = call(
         h.path(),
         "text_to_speech",
@@ -196,11 +185,10 @@ async fn speech_checks_the_requested_provider_instead_of_the_default() {
     .unwrap_err();
     assert_eq!(denied.code, 4302);
     assert!(denied.message.contains("not set up"));
-    server.abort();
 }
 
 #[tokio::test]
-async fn vision_crop_and_openai_image_edit_send_actual_image_bytes() {
+async fn vision_crop_sends_actual_image_bytes() {
     use base64::Engine;
     let image = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
         4,
@@ -212,15 +200,12 @@ async fn vision_crop_and_openai_image_edit_send_actual_image_bytes() {
     let png = png.into_inner();
     let records: Requests = Default::default();
     let vision_records = records.clone();
-    let png_reply = png.clone();
-    let edit_body: Arc<Mutex<Vec<u8>>> = Default::default();
-    let saved_edit = edit_body.clone();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let router=Router::new().route("/chat/completions",post(move|headers:HeaderMap,Json(payload):Json<Value>|{let records=vision_records.clone();async move{records.lock().unwrap().push((headers,payload));Json(json!({"choices":[{"message":{"content":"Cropped image"}}]}))}})).route("/images/edits",post(move|body:axum::body::Bytes|{let saved=saved_edit.clone();let png=png_reply.clone();async move{*saved.lock().unwrap()=body.to_vec();Json(json!({"data":[{"b64_json":base64::engine::general_purpose::STANDARD.encode(png)}]}))}}));
+    let router=Router::new().route("/chat/completions",post(move|headers:HeaderMap,Json(payload):Json<Value>|{let records=vision_records.clone();async move{records.lock().unwrap().push((headers,payload));Json(json!({"choices":[{"message":{"content":"Cropped image"}}]}))}}));
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let h = home(
-        json!({"tools":{"enabled_toolsets":["vision","image_gen"]},"auxiliary":{"vision":{"provider":"openai","base_url":format!("http://{address}")}},"image_gen":{"provider":"openai","base_url":format!("http://{address}")}}),
+        json!({"tools":{"enabled_toolsets":["vision"]},"auxiliary":{"vision":{"provider":"openai","base_url":format!("http://{address}")}}}),
     );
     std::fs::create_dir_all(h.workspace()).unwrap();
     let input = h.workspace().join("input.png");
@@ -257,18 +242,6 @@ async fn vision_crop_and_openai_image_edit_send_actual_image_bytes() {
         .code,
         4202
     );
-    let result = call(
-        h.path(),
-        "image_generate",
-        json!({"prompt":"Make it blue","image_url":input}),
-    )
-    .await
-    .unwrap();
-    let saved = result["images"][0]["path"].as_str().unwrap();
-    assert_eq!(std::fs::read(saved).unwrap(), png);
-    let body = edit_body.lock().unwrap();
-    assert!(body.windows(png.len()).any(|part| part == png));
-    assert!(String::from_utf8_lossy(&body).contains("name=\"image[]\""));
     server.abort();
 }
 #[cfg(unix)]
@@ -1359,21 +1332,17 @@ async fn every_screen_reports_when_its_picture_is_up() {
     upstream.abort();
 }
 #[tokio::test]
-async fn keenable_mistral_and_krea_use_selected_vendor_contracts() {
-    use base64::Engine;
+async fn keenable_uses_its_vendor_contract() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let generated_url = format!("http://{address}/generated.png");
     let records: Requests = Default::default();
     let web_records = records.clone();
-    let speech_records = records.clone();
-    let image_records = records.clone();
-    let router=Router::new().route("/v1/search",post(move|headers:HeaderMap,Json(body):Json<Value>|{let records=web_records.clone();async move{records.lock().unwrap().push((headers,body));Json(json!({"results":[{"url":"https://example.test","title":"Keenable","snippet":"Search snippet"}]}))}})).route("/v1/fetch",axum::routing::get(||async{Json(json!({"content":"Extracted page","title":"Page"}))})).route("/v1/audio/speech",post(move|headers:HeaderMap,Json(body):Json<Value>|{let records=speech_records.clone();async move{records.lock().unwrap().push((headers,body));Json(json!({"audio_data":base64::engine::general_purpose::STANDARD.encode(b"ID3mistral-audio")}))}})).route("/generate/image/krea/krea-2/medium",post(move|headers:HeaderMap,Json(body):Json<Value>|{let records=image_records.clone();async move{records.lock().unwrap().push((headers,body));Json(json!({"job_id":"image-job"}))}})).route("/jobs/image-job",axum::routing::get(move||{let url=generated_url.clone();async move{Json(json!({"status":"completed","result":{"urls":[url]}}))}})).route("/generated.png",axum::routing::get(||async{b"\x89PNG\r\n\x1a\nfake-image".to_vec()}));
+    let router=Router::new().route("/v1/search",post(move|headers:HeaderMap,Json(body):Json<Value>|{let records=web_records.clone();async move{records.lock().unwrap().push((headers,body));Json(json!({"results":[{"url":"https://example.test","title":"Keenable","snippet":"Search snippet"}]}))}})).route("/v1/fetch",axum::routing::get(||async{Json(json!({"content":"Extracted page","title":"Page"}))}));
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let h = home(
-        json!({"tools":{"enabled_toolsets":["web","tts","image_gen"]},"web":{"backend":"keenable"},"tts":{"provider":"mistral","mistral":{"base_url":format!("http://{address}")}},"image_gen":{"provider":"krea","model":"krea-2-medium"}}),
+        json!({"tools":{"enabled_toolsets":["web"]},"web":{"backend":"keenable"}}),
     );
-    std::fs::write(h.path().join(".env"),format!("KEENABLE_API_KEY=web-secret\nKEENABLE_BASE_URL=http://{address}\nMISTRAL_API_KEY=voice-secret\nKREA_API_KEY=image-secret\nKREA_BASE_URL=http://{address}\n")).unwrap();
+    std::fs::write(h.path().join(".env"),format!("KEENABLE_API_KEY=web-secret\nKEENABLE_BASE_URL=http://{address}\n")).unwrap();
     let search = call(h.path(), "web_search", json!({"query":"selected backend"}))
         .await
         .unwrap();
@@ -1386,80 +1355,10 @@ async fn keenable_mistral_and_krea_use_selected_vendor_contracts() {
     .await
     .unwrap();
     assert_eq!(extracted["results"][0]["content"], "Extracted page");
-    let audio = call(h.path(), "text_to_speech", json!({"text":"Hello"}))
-        .await
-        .unwrap();
-    assert_eq!(
-        std::fs::read(audio["file_path"].as_str().unwrap()).unwrap(),
-        b"ID3mistral-audio"
-    );
-    let image=call(h.path(),"image_generate",json!({"prompt":"Test image","aspect_ratio":"landscape","reference_image_urls":["data:image/png;base64,aW1hZ2U="]})).await.unwrap();
-    assert!(std::fs::metadata(image["images"][0]["path"].as_str().unwrap()).is_ok());
     let saved = records.lock().unwrap();
     assert_eq!(saved[0].0["x-keenable-title"], "hexbot");
-    assert_eq!(saved[1].1["response_format"], "mp3");
-    assert_eq!(saved[2].1["aspect_ratio"], "16:9");
-    assert_eq!(saved[2].1["image_style_references"][0]["strength"], 0.6);
     server.abort();
 }
-#[tokio::test]
-async fn fal_edits_route_to_model_edit_endpoint_and_translate_references() {
-    use base64::Engine;
-    let records: Requests = Default::default();
-    let saved = records.clone();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let output_url = format!("http://{address}/output.png");
-    let router = Router::new()
-        .route(
-            "/fal-ai/flux-2/klein/9b/edit",
-            post(move |headers: HeaderMap, Json(body): Json<Value>| {
-                let saved = saved.clone();
-                let url = output_url.clone();
-                async move {
-                    saved.lock().unwrap().push((headers, body));
-                    Json(json!({"images":[{"url":url}]}))
-                }
-            }),
-        )
-        .route(
-            "/output.png",
-            axum::routing::get(|| async { b"\x89PNG\r\n\x1a\nimage".to_vec() }),
-        );
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let h =
-        home(json!({"tools":{"enabled_toolsets":["image_gen"]},"image_gen":{"provider":"fal"}}));
-    std::fs::write(
-        h.path().join(".env"),
-        format!("FAL_KEY=fal-secret\nFAL_BASE_URL=http://{address}\n"),
-    )
-    .unwrap();
-    std::fs::create_dir_all(h.workspace()).unwrap();
-    let source = h.workspace().join("source.png");
-    std::fs::write(&source, b"\x89PNG\r\n\x1a\nsource").unwrap();
-    call(
-        h.path(),
-        "image_generate",
-        json!({"prompt":"Change the color","image_url":source}),
-    )
-    .await
-    .unwrap();
-    let requests = records.lock().unwrap();
-    assert_eq!(requests[0].0["authorization"], "Key fal-secret");
-    let body = &requests[0].1;
-    assert_eq!(body["num_inference_steps"], 4);
-    assert!(body.get("image_size").is_none());
-    assert!(body.get("image_url").is_none());
-    assert_eq!(
-        body["image_urls"][0],
-        format!(
-            "data:image/png;base64,{}",
-            base64::engine::general_purpose::STANDARD.encode(b"\x89PNG\r\n\x1a\nsource")
-        )
-    );
-    server.abort();
-}
-
 #[test]
 fn missing_explicit_optional_commands_are_not_advertised() {
     let h = home(

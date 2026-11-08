@@ -816,7 +816,7 @@ impl App {
         if (method == "hexbot.bots.update" && p.get("skills").is_some())
             || (method == "profiles.configure" && p.get("disabled_skills").is_some())
             || (method == "hexbot.connectors.set_for_bot"
-                && matches!(p["id"].as_str(), Some("notion" | "airtable")))
+                && matches!(p["id"].as_str(), Some("notion")))
         {
             self.changed(
                 owner,

@@ -2399,6 +2399,11 @@ pub fn selection_warning(model: &Value) -> Option<String> {
 }
 
 pub async fn xai_credentials(home: &Path, bot: &str) -> Result<Value> {
+    xai_credentials_from(home, bot, None).await
+}
+/// xAI credentials for `bot`: `source` "xai" takes the API key only,
+/// "xai-oauth" the subscription sign-in only, and `None` the key first.
+pub async fn xai_credentials_from(home: &Path, bot: &str, source: Option<&str>) -> Result<Value> {
     common::identifier(bot)?;
     let profile_home = home.join("profiles").join(bot);
     let root_env = common::env_values(home)?;
@@ -2416,10 +2421,14 @@ pub async fn xai_credentials(home: &Path, bot: &str) -> Result<Value> {
         .or_else(|| std::env::var("XAI_BASE_URL").ok())
         .unwrap_or_else(|| "https://api.x.ai/v1".to_owned());
     let disabled = read_json(&home.join("providers-disabled.json"))?;
-    if disabled["xai"] != true
+    if source != Some("xai-oauth")
+        && disabled["xai"] != true
         && let Some(api_key) = key(&profile_home, profile("xai")?)?.or(key(home, profile("xai")?)?)
     {
         return Ok(json!({"api_key":api_key,"base_url":base,"provider":"xai"}));
+    }
+    if source == Some("xai") {
+        return Err(Error::new(4211, "Save an xAI API key to use this tool"));
     }
     let headers = request_auth(home, bot, "xai-oauth").await?;
     let token = string(&headers["headers"], "authorization")
@@ -2606,19 +2615,20 @@ pub fn adapt_request(home: &Path, bot: &str, session: &str, p: &Value) -> Result
     Ok(payload)
 }
 
-pub fn xai_configured(home: &Path, bot: &str) -> Result<bool> {
-    common::identifier(bot)?;
-    let profile_home = home.join("profiles").join(bot);
+/// Whether a SuperGrok sign-in is saved for `bot`, or for the daemon.
+pub fn xai_signed_in(home: &Path, bot: Option<&str>) -> Result<bool> {
+    let profile_home = match bot {
+        Some(bot) => {
+            common::identifier(bot)?;
+            Some(home.join("profiles").join(bot))
+        }
+        None => None,
+    };
     let disabled = read_json(&home.join("providers-disabled.json"))?;
-    if disabled["xai"] != true
-        && (key(&profile_home, profile("xai")?)?.is_some() || key(home, profile("xai")?)?.is_some())
-    {
-        return Ok(true);
-    }
     if disabled["xai-oauth"] == true {
         return Ok(false);
     }
-    for path in [&profile_home, home] {
+    for path in profile_home.iter().map(PathBuf::as_path).chain([home]) {
         let state = oauth(path, "xai-oauth")?;
         let tokens = if state["tokens"].is_object() {
             &state["tokens"]
@@ -2630,8 +2640,26 @@ pub fn xai_configured(home: &Path, bot: &str) -> Result<bool> {
             return Ok(true);
         }
     }
+    let Some(profile_home) = profile_home else {
+        return Ok(false);
+    };
     let pi = read_json(&profile_home.join("pi/auth.json"))?;
     Ok(pi["xai"]["type"] == "oauth" && pi["xai"]["access"].as_str().is_some_and(|s| !s.is_empty()))
+}
+/// A fresh SuperGrok access token, from `bot`'s own sign-in or the daemon's.
+pub async fn xai_subscription_token(home: &Path, bot: Option<&str>) -> Result<String> {
+    let profile_home = match bot {
+        Some(bot) => {
+            common::identifier(bot)?;
+            home.join("profiles").join(bot)
+        }
+        None => home.to_owned(),
+    };
+    let headers = credential_headers(home, &profile_home, "xai-oauth").await?;
+    string(&headers["headers"], "authorization")
+        .strip_prefix("Bearer ")
+        .map(str::to_owned)
+        .ok_or_else(|| Error::new(4211, "Sign in with SuperGrok or X Premium+ to use X search"))
 }
 
 #[cfg(test)]

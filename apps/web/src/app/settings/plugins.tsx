@@ -26,9 +26,8 @@ import { errorText, fieldLabel, Group, Heading } from '../bot-settings/shared'
 
 const CONNECTOR_GROUPS: { id: string; title: string }[] = [
   { id: 'search', title: 'Search and browsing' },
-  { id: 'media', title: 'Images and voice' },
   { id: 'work', title: 'Notes and work' },
-  { id: 'social_home', title: 'Social and home' }
+  { id: 'social_home', title: 'Social' }
 ]
 
 /** `software-development` reads as "Software development". */
@@ -76,7 +75,7 @@ const CATEGORIES: {
 }[] = [
   {
     description:
-      'Services Hexbot supports. Keys are stored once on this daemon; each bot you turn one on for uses them.',
+      'Services Hexbot supports. Keys and sign-ins are stored once on this daemon; each bot you turn one on for uses them.',
     empty: 'No connector matches that.',
     id: 'connectors',
     label: 'Connectors',

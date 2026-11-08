@@ -19,7 +19,7 @@ Open Bot settings, Tools. Each switch controls one capability. Computer use isn'
 | Terminal | Runs shell commands on the daemon computer. |
 | Files | Reads, writes, and searches files. |
 | Vision | Reads images you attach. |
-| Voice | Speaks replies with the built-in voice, which play in the chat; premium voice uses a connector. |
+| Voice | Speaks replies with the built-in voice, which play in the chat. |
 | Message other bots | Asks a named teammate for help privately. |
 | Delegate | Hands a subtask to an isolated subagent. |
 | Scheduling | Creates and manages reminders and recurring jobs. |
@@ -36,13 +36,15 @@ The **Working directory** is the bot's workspace. Choose a project folder outsid
 
 ## Connect outside services
 
-Connectors are the services Hexbot supports: web search, image and video generation, premium voice, Notion, Home Assistant, and others. The [tool catalog](/tools/) lists the capabilities.
+Connectors are the services Hexbot supports: web search, Notion, and X search. Anything else connects as an MCP server. The [tool catalog](/tools/) lists the capabilities.
 
 You set up a connector in Settings, Plugins, or in Bot settings, Connectors, by choosing its provider and entering the requested credentials. Each bot has its own on/off switch. A connector must be ready and enabled for that bot before its tools appear in the bot's chat.
 
-Notion and Airtable keys stay with the daemon. A bot reads and changes your workspace through Hexbot, which adds the key to each request; the bot never sees the key, and its commands never have it. It does not need your Notion or Airtable password. Reading runs in every approval mode. A change runs in Bypass, is checked first in Auto, and asks you in Manual. Notion only shows a bot the pages you connect to your integration: on the page, open **...**, then **Connections**.
+Your Notion key stays with the daemon. A bot reads and changes your workspace through Hexbot, which adds the key to each request; the bot never sees the key, and its commands never have it. It does not need your Notion password. Reading runs in every approval mode. A change runs in Bypass, is checked first in Auto, and asks you in Manual. Notion only shows a bot the pages you connect to your integration: on the page, open **...**, then **Connections**.
 
-**Connected** means an authenticated probe answered. **Key saved** means Hexbot stored the key but has not verified it with a live probe. **Ready** means the provider needs no key. Use the connector's test action if a service stops working, and check its reported error before replacing credentials.
+X search works three ways; pick one in its settings. **SuperGrok or X Premium+** signs in with your subscription, the same sign-in as the xAI model provider, so there is nothing to paste; X Premium+ includes SuperGrok. **xAI API** takes a key from the xAI console; Grok searches X and answers with the posts it cites. **X API** takes a bearer token from the X developer console and returns posts from X's own search, without Grok; X bills each post it returns. Searches older than seven days use X's full archive.
+
+**Signed in** means a subscription sign-in is saved but not yet tested. **Connected** means an authenticated probe answered. **Key saved** means Hexbot stored the key but has not verified it with a live probe. **Ready** means the provider needs no key. Use the connector's test action if a service stops working, and check its reported error before replacing credentials.
 
 ### Web search
 
@@ -54,7 +56,7 @@ To read a page, a bot uses the provider's own reader when it has one. Otherwise 
 
 Removing the keys returns web search to SearXNG, and every bot keeps it. To keep SearXNG off the daemon computer, set `web.searxng.docker: off` in `~/.hexbot/config.yaml`.
 
-Your model provider and your connectors may bill separately. A model subscription does not include an image service or premium voice account.
+Your model provider and your connectors may bill separately. A model key does not set up X search's X API, which X bills per post; a SuperGrok sign-in serves both xAI models and X search.
 
 ## Add an MCP server
 

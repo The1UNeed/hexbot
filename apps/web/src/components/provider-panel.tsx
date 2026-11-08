@@ -34,11 +34,17 @@ function openInBrowser(url: string) {
 
 /** Inline panel for one provider: browser sign-in or an API key. */
 export function ProviderPanel({
+  intro = true,
   onConfigured,
-  provider
+  provider,
+  size
 }: {
+  /** Explain a subscription sign-in; off where the caller already does. */
+  intro?: boolean
   onConfigured: () => Promise<void>
   provider: Provider
+  /** `sm` inside a chat card, whose own buttons are small. */
+  size?: 'sm'
 }) {
   const [key, setKey] = useState('')
   const [busy, setBusy] = useState(false)
@@ -63,6 +69,8 @@ export function ProviderPanel({
 
           if (next.status === 'done') {
             void onConfigured()
+          } else if (next.status === 'error') {
+            setError(next.message || 'The sign-in did not finish. Try again.')
           }
         })
         .catch(reason => setError(String(reason)))
@@ -141,9 +149,9 @@ export function ProviderPanel({
         {login?.status === 'pending' ? (
           <div className="space-y-3">
             <p className="text-secondary text-muted">
-              Finish signing in in your browser. If it asks for a code, enter this one:
+              Finish in your browser. If it asks for a code, enter this one:
             </p>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <code
                 className="rounded-control border border-border bg-background px-3 py-2 font-mono text-[length:var(--text-title)] tracking-[.18em]"
                 data-testid="login-code"
@@ -154,6 +162,7 @@ export function ProviderPanel({
                 aria-label="Copy code"
                 icon={copied ? <Check size={14} /> : <Copy size={14} />}
                 onClick={() => void copyCode()}
+                size={size}
                 variant="ghost"
               >
                 {copied ? 'Copied' : 'Copy'}
@@ -161,6 +170,7 @@ export function ProviderPanel({
               <Button
                 icon={<ExternalLink size={14} />}
                 onClick={() => openInBrowser(login.url)}
+                size={size}
                 variant="ghost"
               >
                 Open again
@@ -187,21 +197,24 @@ export function ProviderPanel({
                 }}
                 type="button"
               >
-                Cancel
+                Cancel sign-in
               </button>
             </div>
           </div>
         ) : (
           <>
-            <p className="text-secondary text-muted">
-              Uses your existing subscription. You will sign in through your browser; no key to
-              paste.
-            </p>
+            {intro ? (
+              <p className="text-secondary text-muted">
+                Uses your existing subscription. You will sign in through your browser; no key to
+                paste.
+              </p>
+            ) : null}
             <Button
               busy={busy}
               data-testid="provider-sign-in"
               icon={<ExternalLink size={14} />}
               onClick={() => void signIn()}
+              size={size}
               variant="primary"
             >
               Sign in with {provider.label}

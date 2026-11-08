@@ -24,7 +24,7 @@ Keep it practical. Your preferred language, units, and working hours are useful.
 
 Next, sign in to a subscription provider or paste an API key. Choose a default model for new bots and, optionally, a fallback for provider outages or rate limits. Add more providers later in Settings, Providers.
 
-Model credentials and tool credentials are separate. A model key does not configure web search, image generation, or other connectors. Setup offers those tools next; skip any of them and add them later. See [Providers and billing](/docs/providers/).
+Model credentials and tool credentials are separate. A model key does not configure web search or other connectors. Setup offers those tools next; skip any of them and add them later. See [Providers and billing](/docs/providers/).
 
 ## 4. Meet HexBot
 

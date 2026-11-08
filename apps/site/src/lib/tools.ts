@@ -14,7 +14,7 @@ export const toolGroups: ToolGroup[] = [
       { name: 'Files', does: 'Read, write, edit, and search files.' },
       { name: 'Computer use', does: "Work on the bots' own Linux computer: run code, browse in Chrome, click and type in its apps. Watch it live and take over.", note: 'Every bot has it. Needs Cua and Docker' },
       { name: 'Vision', does: 'Look at images and screenshots you attach.', note: 'Needs a model that can see' },
-      { name: 'Voice', does: 'Speak replies aloud with the built-in voice.', note: 'Premium voices are a connector' },
+      { name: 'Voice', does: 'Speak replies aloud with the built-in voice.' },
     ],
   },
   {
@@ -53,13 +53,8 @@ export const toolGroups: ToolGroup[] = [
     summary: 'Opt in, with your own account. Set one up once in Settings, Plugins, then choose the bots that get it.',
     tools: [
       { name: 'Web search', does: 'Search the web and read pages.', note: 'Free out of the box with SearXNG, which Hexbot runs for you, or Tavily, Wikipedia or Marginalia. Exa, Brave, Firecrawl, Parallel and Keenable with your key' },
-      { name: 'Image generation', does: 'Make and edit images.', note: 'FAL or Krea' },
-      { name: 'Video generation', does: 'Generate short clips.', note: 'FAL' },
-      { name: 'Voice', does: 'Speak replies aloud.', note: 'ElevenLabs, OpenAI, or Mistral' },
       { name: 'Notion', does: 'Read and write pages and databases.' },
-      { name: 'Airtable', does: 'Read and update bases.' },
-      { name: 'X search', does: 'Search posts and profiles.', note: 'Through xAI' },
-      { name: 'Home Assistant', does: 'Read sensors and control devices in your home.' },
+      { name: 'X search', does: 'Search posts and profiles.', note: 'Sign in with SuperGrok or X Premium+, or use an xAI key or the X API' },
       { name: 'MCP servers', does: 'Connect any MCP server, local or remote. A bot can find one and ask you to install it.', note: 'Installing always asks, even in Bypass' },
       { name: 'Plugin packages', does: 'Install an MCP server with the skills that explain it, or a set of skills, as one.' },
     ],

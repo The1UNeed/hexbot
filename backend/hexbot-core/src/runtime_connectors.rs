@@ -1,5 +1,5 @@
-//! `hexbot_connector_read` and `hexbot_connector_write`: Notion and Airtable
-//! work through a skill that describes their API and a key the user saves in
+//! `hexbot_connector_read` and `hexbot_connector_write`: Notion works
+//! through a skill that describes its API and a key the user saves in
 //! Settings, Plugins. A bot's shell never has connector keys
 //! (`shellEnvironment` in the extension) and Auto's sandbox has no network,
 //! so the daemon sends the request with the bot's key, which the model never
@@ -35,19 +35,10 @@ const APIS: &[Api] = &[
         ],
         prefix: "/v1/",
     },
-    Api {
-        id: "airtable",
-        name: "Airtable",
-        base: "https://api.airtable.com",
-        key: "AIRTABLE_API_KEY",
-        headers: &[],
-        reads_by_post: &[],
-        prefix: "/v0/",
-    },
 ];
 const CAP: usize = 200_000;
 
-/// Whether the bot has Notion or Airtable on; a heartbeat reads either way.
+/// Whether the bot has Notion on; a heartbeat reads either way.
 pub(super) fn offered(home: &Path, bot: &str) -> Result<bool> {
     for api in APIS {
         if crate::connectors::enabled(home, bot, api.id)? {
@@ -63,7 +54,7 @@ fn parameters(methods: &[&str]) -> Value {
         "properties": {
             "connector": { "type": "string", "enum": APIS.iter().map(|api| api.id).collect::<Vec<_>>() },
             "method": { "type": "string", "enum": methods },
-            "path": { "type": "string", "description": "Like /v1/search or /v0/BASE/TABLE?maxRecords=20" },
+            "path": { "type": "string", "description": "Like /v1/search or /v1/pages/PAGE_ID" },
             "body": { "type": "object", "description": "JSON body, for a POST, PATCH or PUT" }
         },
         "required": ["connector", "method", "path"]
@@ -74,7 +65,7 @@ pub(super) fn read_descriptor() -> Value {
     json!({
         "name": READ,
         "label": "Read a connector",
-        "description": "Read Notion or Airtable with the key the user saved in Settings, Plugins. Your shell never has that key, so do not use curl, ntn or a browser sign-in for them, and never ask the user for a password or key. Send the API request the connector's skill describes (skill_view shows it), with the path only: Hexbot adds the host and the key. Only reads: GET, plus Notion's POST search and database or data source queries. A 401 means the key is wrong; a 404 on something that exists means the user has not shared it with their integration (in Notion: the page's ... menu, Connections).",
+        "description": "Read Notion with the key the user saved in Settings, Plugins. Your shell never has that key, so do not use curl, ntn or a browser sign-in for them, and never ask the user for a password or key. Send the API request the connector's skill describes (skill_view shows it), with the path only: Hexbot adds the host and the key. Only reads: GET, plus Notion's POST search and database or data source queries. A 401 means the key is wrong; a 404 on something that exists means the user has not shared it with their integration (in Notion: the page's ... menu, Connections).",
         "parameters": parameters(&["GET", "POST"])
     })
 }
@@ -83,7 +74,7 @@ pub(super) fn write_descriptor() -> Value {
     json!({
         "name": WRITE,
         "label": "Change a connector",
-        "description": "Create, update or delete in Notion or Airtable: pages, blocks, database rows, records. Send the API request the connector's skill describes, with the path only: Hexbot adds the host and the key the user saved. The user's approval mode decides whether it runs at once or asks first. Use hexbot_connector_read to read.",
+        "description": "Create, update or delete in Notion: pages, blocks, database rows. Send the API request the connector's skill describes, with the path only: Hexbot adds the host and the key the user saved. The user's approval mode decides whether it runs at once or asks first. Use hexbot_connector_read to read.",
         "parameters": parameters(&["POST", "PATCH", "PUT", "DELETE"])
     })
 }
@@ -135,7 +126,7 @@ pub(super) async fn request(home: &Path, bot: &str, args: &Value, write: bool) -
     let api = APIS
         .iter()
         .find(|api| api.id == id)
-        .ok_or_else(|| Error::new(4202, "connector must be notion or airtable"))?;
+        .ok_or_else(|| Error::new(4202, "connector must be notion"))?;
     let method = common::required(args, "method")?;
     let path = common::required(args, "path")?;
     if !clean(api, path) {
@@ -230,11 +221,6 @@ mod tests {
         assert!(!readable(notion, "GET", "/v1/../oauth"));
         assert!(!readable(notion, "GET", "//evil.example/v1/x"));
         assert!(!readable(notion, "GET", "/v1/x@evil.example"));
-        let airtable = &APIS[1];
-        assert!(readable(airtable, "GET", "/v0/app1/Tasks?maxRecords=20"));
-        assert!(readable(airtable, "GET", "/v0/app1/Tasks?fields[]=Name"));
-        assert!(!readable(airtable, "POST", "/v0/app1/Tasks"));
-        assert!(!readable(airtable, "GET", "/v1/app1"));
     }
 
     #[test]

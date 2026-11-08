@@ -212,7 +212,7 @@ export default function hexbot(pi: any) {
     const mcp = event.toolName.startsWith('mcp__');
     const resource = ['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource'].includes(event.toolName);
     const script = event.toolName === 'codemode' && typeof event.input?.code === 'string' && config.mcpServers?.length;
-    // Notion and Airtable changes the daemon sends with the bot's key.
+    // Notion changes the daemon sends with the bot's key.
     const connector = event.toolName === 'hexbot_connector_write';
     if (!['bash', 'read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName) && !browser && !mcp && !resource && !script && !connector) return;
     try {

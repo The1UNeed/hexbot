@@ -446,7 +446,7 @@ others (`DESIGN.md`, "The primary bot"). There is at most one per owner.
   follow Settings (4202 otherwise). A `persona` longer than the soul limit
   this update leaves is refused with 4221 before anything is written. `tools` accepts `terminal`, `files`, `computer_use`,
   `vision`, `voice`, `message_bots`, `delegate`, and `scheduling`; older
-  clients may still send `code_execution` and `browser`, which are dropped; toolsets owned by connectors (web, image_gen, mcp-*) are left
+  clients may still send `code_execution` and `browser`, which are dropped; toolsets owned by connectors (web, x_search, mcp-*) are left
   as they are. Both capability lists use replace semantics. A tool missing
   from `available_tools` is dropped from `tools` on write. Combined model and
   tool edits use the new provider when checking availability.
@@ -1084,9 +1084,10 @@ Media in a chat. A message's files are named in its stored text: a user row
 ends with `\n\nAttached files:\n` and one kept path per line, which clients
 show as attachments rather than words. A bot's media tools name each file they
 made as `MEDIA:<path>` in the result: `text_to_speech` (`file_path`, in the
-bot's `artifacts/audio`), `image_generate` (each of `images[].path`) and
-`video_generate` (a copy of FAL's clip in `artifacts/videos`, as `file_path`;
-when the copy cannot be made, only the `video` link). Clients read each file
+bot's `artifacts/audio`). Chats from before image and video generation were
+removed may still hold `image_generate` (each of `images[].path`) and
+`video_generate` (`file_path`, or only the `video` link) results, which
+clients show the same way. Clients read each file
 through `hexbot.files.read` and show it with the files the message shared,
 under the bot's reply: a picture, a video or an audio file inline, anything
 else as a file card. The web UI and the Electron app play from an object URL
@@ -1095,8 +1096,8 @@ copy per path in its cache.
 
 ### Connectors and skills
 
-A connector is an outside service a bot can reach (web search, image
-generation, Notion, X search, Home Assistant, an MCP server, ...). Credentials
+A connector is an outside service a bot can reach: web search, Notion,
+X search, or an MCP server. Credentials
 are stored once for the daemon; each bot has its own on/off switch.
 Native tool configuration for a bot overrides matching fields in the daemon configuration.
 Nested objects merge recursively, preserving unspecified fields; lists and
@@ -1104,12 +1105,16 @@ other values replace the daemon value. Native tool configuration rejects profile
 that contain symlinks. Browser private-URL settings use the same merge.
 
 A tool that belongs to a connector (`web_search`, `web_extract`,
-`image_generate`, `video_generate`, `x_search`, the Home Assistant tools) is
-left out of every session's tool schema until that connector is `ready`.
+`x_search`) is left out of every session's tool schema until that connector
+is `ready`. Image generation, video generation, Premium voice, Airtable and
+Home Assistant were removed; their toolsets (`image_gen`, `video_gen`,
+`homeassistant`) are dropped from saved bot settings like
+`code_execution` and `browser`, and the Voice tool keeps the built-in voice
+and custom command voices.
 The core alone would offer some of them without a key (an xAI model key);
 `connectors.gate_tools` adds the "set up" condition to each tool's core
-availability check when the plugin registers. Onboarding offers the search
-and media connectors before the first bot is created
+availability check when the plugin registers. Onboarding offers the
+connectors before the first bot is created
 (`hexbot.connectors.setup` without a `bot`).
 
 A provider whose catalog entry lists no `keys` is set up as soon as it is
@@ -1131,7 +1136,7 @@ the provider in use cannot read pages and no reading service has a key,
 rules and turns its HTML into Markdown, preferring `<main>` or `<article>`.
 
 Connector shape: `{id, name, description, group, icon, scope, ready, state, state_text,
-providers: [{id, label, description, configured}] | null, provider | null,
+providers: [{id, label, description, sign_in, configured}] | null, provider | null,
 fields: [{key, provider, label, help, url, secret, advanced, optional?, set,
 hint}], enabled_for_bot | null, enabled_bots: [string],
 last_error | null, mcp?: {name, transport, tool_count, test_failed, running}}`. `state` is
@@ -1140,9 +1145,23 @@ last_error | null, mcp?: {name, transport, tool_count, test_failed, running}}`. 
 (`null` = common to all), so a client can show the right ones before a choice
 is saved. `optional` fields, such as a free provider's own key, may stay
 empty. `state_text` says "Connected" only after a probe answered (Notion,
-Airtable, ElevenLabs, Home Assistant, xAI make one small authenticated GET;
-a web search that needs no key runs one search); connectors with only an
-offline check say "Key saved", and a provider that needs no key says "Ready".
+xAI and the X API make one small authenticated GET, X's to its free usage
+summary; a web search that needs no key runs one search; a sign-in fetches
+a fresh token); connectors with only an offline check say "Key saved", a
+provider that needs no key says "Ready", and one signed in but not yet
+tested says "Signed in".
+
+A provider with `sign_in` uses a model provider's browser sign-in instead of
+a key: X search's `supergrok` names `xai-oauth`, so the client runs
+`hexbot.providers.login_start` with that id, then `hexbot.connectors.setup`
+with the provider. Its `configured` is true once that sign-in is saved for
+the daemon or, in a bot's list, for that bot. X search's providers are
+`supergrok`, `xai` (`XAI_API_KEY`, shared with the xAI model provider and
+kept when X search is cleared) and `x_api` (`X_BEARER_TOKEN`; X's recent
+search, or its full archive when a date is older than seven days;
+`HEXBOT_X_API_BASE_URL` points it elsewhere for tests). With none chosen, a
+saved key comes before a sign-in. The plugin card's `providers` carry
+`sign_in` and `configured` too.
 For the SearXNG the daemon runs, it adds why it is not running yet, such as
 "Ready · SearXNG (Docker isn't running)". A failed probe keeps
 the row in `error` with the probe's message until the next successful setup
@@ -1275,7 +1294,7 @@ bot, including bots created later; a list keeps bots created later off.
   `package`), `id`, `name`, `description`, `ready` and `bots`, the caller's
   bots it is given to. A plugin is given to a bot only once it is set up for
   that bot: one left on by default before setup (new bots start with Web
-  search, Image generation, Premium voice and every skill on) lists no bots,
+  search and every skill on) lists no bots,
   and reaches them when it is set up. A switched-off server keeps its bots. Connector rows are the `Connector` shape; one is
   `ready` when its required keys are saved, or its MCP server is enabled
   with no empty value, independently of an earlier connection error. A

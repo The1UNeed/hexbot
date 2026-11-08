@@ -158,11 +158,18 @@ The first catalog, by group:
 | Channels (bot scope) | Telegram, Discord, Slack, WhatsApp, Signal, iMessage, Matrix, Mattermost, and the rest the core ships, each with its allowed-users list |
 | MCP servers | Any number, added by command or URL, with a tool count and a running state |
 
+The catalog that ships is smaller: Web search, Notion, and X search
+(under Social). Image and video generation, Premium voice, Airtable, and
+Home Assistant were removed; anything else connects as an MCP server.
+X search offers three providers: a SuperGrok or X Premium+ sign-in,
+shared with the xAI model provider, an xAI API key, or an X API bearer
+token.
+
 Web search is a connector, not a tool, because it reaches an outside
 service and the user picks which. It is the one connector that is set up
 out of the box: SearXNG runs in Docker on the daemon's computer, and
 until it does, searches go to the free services that need no account.
-Image generation needs an account. The rule is the one in Principles:
+X search needs an account. The rule is the one in Principles:
 does it work offline with no account.
 
 ### Icons

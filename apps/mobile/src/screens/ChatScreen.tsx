@@ -52,6 +52,7 @@ import {
   withAlpha
 } from '../ui'
 import type { AttachSource } from '../core/pickFile'
+import type { Rpc } from '../core/types'
 import { AttachMenu } from './AttachMenu'
 import { FileCard } from './FileCard'
 import { MediaAttachment } from './MediaAttachment'
@@ -106,6 +107,8 @@ export interface ChatScreenProps {
     choice: ApprovalChoice,
     answer?: CardAnswer
   ) => Promise<unknown> | void
+  /** Lets a plugin card run a subscription sign-in, such as SuperGrok for X search. */
+  rpc?: Rpc
   /** Your message Recall can take back; a long press on it offers Recall. */
   recallId?: string | null
   onRecall?: (id: string) => void
@@ -367,7 +370,8 @@ function ChatBody(props: ChatScreenProps) {
     onRecall,
     recallId,
     renderMessageText,
-    loadMedia
+    loadMedia,
+    rpc
   } = props
   // The text a long press chose to select from; the sheet shows while it is set.
   const [selecting, setSelecting] = useState<string | null>(null)
@@ -408,6 +412,7 @@ function ChatBody(props: ChatScreenProps) {
           loadMedia={entry.kind === 'message' ? loadMedia : undefined}
           onOpenFile={entry.kind === 'message' ? onOpenFile : undefined}
           onApprove={entry.kind === 'approval' ? onApprove : undefined}
+          rpc={entry.kind === 'approval' ? rpc : undefined}
           onOpenVisual={entry.kind === 'visual' ? onOpenVisual : undefined}
           waitingLabel={entry.kind === 'waiting' ? waitingLabel : undefined}
           waitingWho={entry.kind === 'waiting' ? waitingWho : undefined}
@@ -432,6 +437,7 @@ function ChatBody(props: ChatScreenProps) {
       loadMedia,
       onApprove,
       onOpenFile,
+      rpc,
       onOpenVisual,
       waitingLabel,
       waitingWho,
@@ -558,6 +564,7 @@ const TranscriptEntry = memo(function TranscriptEntry({
   loadMedia,
   onApprove,
   onOpenFile,
+  rpc,
   onOpenVisual,
   waitingLabel,
   waitingWho,
@@ -572,6 +579,7 @@ const TranscriptEntry = memo(function TranscriptEntry({
   loadMedia?: ChatScreenProps['loadMedia']
   onApprove?: ChatScreenProps['onApprove']
   onOpenFile?: ChatScreenProps['onOpenFile']
+  rpc?: Rpc
   onOpenVisual?: ChatScreenProps['onOpenVisual']
   waitingLabel?: string | null
   waitingWho?: FaceSource | null
@@ -615,6 +623,7 @@ const TranscriptEntry = memo(function TranscriptEntry({
           joined={continued}
           onAnswer={onApprove!}
           request={entry.request}
+          rpc={rpc}
         />
       ) : entry.request.form ? (
         <SignInCard

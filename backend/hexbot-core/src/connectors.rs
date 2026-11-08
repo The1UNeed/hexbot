@@ -147,6 +147,11 @@ fn write_all(home: &Path, section: &str, key: &str, value: Value) -> Result<()> 
 /// The provider in use: the one chosen, else the first whose key or setting
 /// is saved, else the connector's default (SearXNG for web search).
 fn selected(home: &Path, spec: &Value) -> Result<Option<Value>> {
+    selected_for(home, None, spec)
+}
+/// The provider in use for `bot`: as `selected`, except that a key or sign-in
+/// saved for that bot alone counts too.
+fn selected_for(home: &Path, bot: Option<&str>, spec: &Value) -> Result<Option<Value>> {
     let config = read_config(home)?;
     let providers = spec["providers"].as_array().cloned().unwrap_or_default();
     for p in &providers {
@@ -173,8 +178,12 @@ fn selected(home: &Path, spec: &Value) -> Result<Option<Value>> {
             }
         }
     } else {
-        for p in &providers {
-            if has_keys(home, None, &strings(&p["keys"]))? {
+        // A saved key before a sign-in, so a choice made before sign-ins
+        // were offered here keeps working the same way.
+        let (keyed, signed): (Vec<_>, Vec<_>) =
+            providers.iter().partition(|p| p["sign_in"].is_null());
+        for p in keyed.into_iter().chain(signed) {
+            if provider_configured(home, bot, p)? {
                 return Ok(Some(p.clone()));
             }
         }
@@ -193,13 +202,40 @@ fn provider_fields(spec: &Value, provider: &Value) -> Vec<String> {
         .filter_map(|f| f["key"].as_str().map(str::to_owned))
         .collect()
 }
+/// Whether a provider has what it needs: its keys, or the sign-in it uses
+/// (`sign_in`, a subscription such as SuperGrok).
+fn provider_configured(home: &Path, bot: Option<&str>, provider: &Value) -> Result<bool> {
+    match provider["sign_in"].as_str() {
+        Some(grant) => signed_in(home, bot, grant),
+        None => has_keys(home, bot, &strings(&provider["keys"])),
+    }
+}
+fn signed_in(home: &Path, bot: Option<&str>, grant: &str) -> Result<bool> {
+    match grant {
+        "xai-oauth" => crate::providers::xai_signed_in(home, bot),
+        _ => Ok(false),
+    }
+}
 /// Whether a connector works for `bot` (or the daemon): its provider needs
-/// no key, as the free web searches do, or every key it needs is saved.
-fn set_up_for(home: &Path, bot: Option<&str>, spec: &Value, required: &[String]) -> Result<bool> {
-    if required.is_empty() && selected(home, spec)?.is_some() {
+/// no key, as the free web searches do, its sign-in is saved, or every key
+/// it needs is.
+fn set_up_for(home: &Path, bot: Option<&str>, spec: &Value) -> Result<bool> {
+    let Some(provider) = selected_for(home, bot, spec)? else {
+        return has_keys(home, bot, &strings(&spec["keys"]));
+    };
+    if let Some(grant) = provider["sign_in"].as_str() {
+        return signed_in(home, bot, grant);
+    }
+    let keys = strings(&provider["keys"]);
+    if keys.is_empty() {
         return Ok(true);
     }
-    has_keys(home, bot, required)
+    has_keys(home, bot, &keys)
+}
+/// The X search provider `bot` uses: `supergrok`, `xai` or `x_api`.
+pub(crate) fn x_search_provider(home: &Path, bot: &str) -> Result<Option<String>> {
+    Ok(selected_for(home, Some(bot), &spec("x_search")?)?
+        .and_then(|p| p["id"].as_str().map(str::to_owned)))
 }
 fn has_keys(home: &Path, bot: Option<&str>, keys: &[String]) -> Result<bool> {
     for k in keys {
@@ -209,14 +245,21 @@ fn has_keys(home: &Path, bot: Option<&str>, keys: &[String]) -> Result<bool> {
     }
     Ok(!keys.is_empty())
 }
-fn required_keys(home: &Path, spec: &Value) -> Result<Vec<String>> {
+fn required_keys(home: &Path, bot: Option<&str>, spec: &Value) -> Result<Vec<String>> {
     Ok(strings(
-        &selected(home, spec)?.unwrap_or_else(|| spec.clone())["keys"],
+        &selected_for(home, bot, spec)?.unwrap_or_else(|| spec.clone())["keys"],
     ))
 }
-/// Toolsets that ran on the daemon's computer. Bots now run code and browse
-/// on their own computer through Computer use, so these are never offered.
-const RETIRED_TOOLSETS: &[&str] = &["code_execution", "browser"];
+/// Toolsets no longer offered. Bots run code and browse on their own
+/// computer through Computer use; image and video generation and Home
+/// Assistant were removed with their connectors.
+const RETIRED_TOOLSETS: &[&str] = &[
+    "code_execution",
+    "browser",
+    "image_gen",
+    "video_gen",
+    "homeassistant",
+];
 /// Every bot has Computer use; it works once the computer is set up.
 const BUILT_IN_TOOLSET: &str = "computer_use";
 
@@ -252,7 +295,6 @@ fn configured_toolsets(home: &Path, bot: &str) -> Result<Vec<String>> {
         "file",
         "web",
         "vision",
-        "image_gen",
         "tts",
         "skills",
         "todo",
@@ -572,9 +614,9 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
     )?;
     for s in catalog() {
         let id = s["id"].as_str().unwrap();
-        let provider = selected(home, &s)?;
-        let required = required_keys(home, &s)?;
-        let ready = set_up_for(home, bot, &s, &required)?;
+        let provider = selected_for(home, bot, &s)?;
+        let required = required_keys(home, bot, &s)?;
+        let ready = set_up_for(home, bot, &s)?;
         let last = if ready { last_test(home, id)? } else { None };
         let err = incidents.iter().find(|i| i["connector"] == id);
         let (state, mut state_text) = if let Some(err) = err {
@@ -605,6 +647,8 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
                 "ready",
                 if last.as_ref().is_some_and(|v| v["probed"] == true) {
                     "Connected"
+                } else if provider.as_ref().is_some_and(|p| p["sign_in"].is_string()) {
+                    "Signed in"
                 } else if required.is_empty() {
                     "Ready"
                 } else {
@@ -643,7 +687,7 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
         let providers = if let Some(ps) = s["providers"].as_array() {
             let mut result = vec![];
             for p in ps {
-                result.push(json!({"id":p["id"],"label":p["label"],"description":p["description"],"configured":has_keys(home,None,&strings(&p["keys"]))?}));
+                result.push(json!({"id":p["id"],"label":p["label"],"description":p["description"],"sign_in":p["sign_in"],"configured":provider_configured(home,bot,p)?}));
             }
             json!(result)
         } else {
@@ -657,7 +701,7 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
         // On for a bot but waiting for its key: kept, and given once set up.
         let mut waiting_bots = vec![];
         for n in &names {
-            if set_up_for(home, Some(n), &s, &required)? {
+            if set_up_for(home, Some(n), &s)? {
                 ready_bots.push(n.clone());
                 if enabled(home, n, id)? {
                     bots.push(n.clone())
@@ -875,7 +919,14 @@ async fn probe(home: &Path, id: &str, bot: Option<&str>) -> Result<Value> {
         save_test(home, id, &result, probed)?;
         return Ok(result);
     }
-    let keys = required_keys(home, &s)?;
+    if let Some(provider) = selected_for(home, bot, &s)?
+        && provider["sign_in"].is_string()
+    {
+        let result = probe_sign_in(home, bot, &provider).await;
+        save_test(home, id, &result, result["ok"] == true)?;
+        return Ok(result);
+    }
+    let keys = required_keys(home, bot, &s)?;
     if keys.is_empty() {
         return Ok(json!({"ok":false,"message":"Choose a provider first."}));
     }
@@ -905,28 +956,19 @@ async fn probe(home: &Path, id: &str, bot: Option<&str>) -> Result<Value> {
                 )),
             )
         }
-        "airtable" => (
-            "Airtable",
-            "https://api.airtable.com/v0/meta/whoami".to_string(),
+        // The usage summary costs nothing, unlike a search.
+        "x_search" if keys.iter().any(|k| k == "X_BEARER_TOKEN") => (
+            "X",
+            format!("{}/2/usage/tweets", x_api_base(home, bot)?),
             Some((
                 "authorization",
-                format!("Bearer {}", key("AIRTABLE_API_KEY")?),
+                format!("Bearer {}", key("X_BEARER_TOKEN")?),
             )),
-        ),
-        "home_assistant" => (
-            "Home Assistant",
-            format!("{}/api/", key("HASS_URL")?.trim_end_matches('/')),
-            Some(("authorization", format!("Bearer {}", key("HASS_TOKEN")?))),
         ),
         "x_search" => (
             "xAI",
             "https://api.x.ai/v1/models".to_string(),
             Some(("authorization", format!("Bearer {}", key("XAI_API_KEY")?))),
-        ),
-        "premium_voice" if selected(home, &s)?.is_some_and(|p| p["id"] == "elevenlabs") => (
-            "ElevenLabs",
-            "https://api.elevenlabs.io/v1/user".to_string(),
-            Some(("xi-api-key", key("ELEVENLABS_API_KEY")?)),
         ),
         _ => {
             let r = json!({"ok":true,"message":"Key saved."});
@@ -959,6 +1001,28 @@ async fn probe(home: &Path, id: &str, bot: Option<&str>) -> Result<Value> {
     };
     save_test(home, id, &result, true)?;
     Ok(result)
+}
+/// Where the X API answers: `HEXBOT_X_API_BASE_URL`, else api.x.com.
+pub(crate) fn x_api_base(home: &Path, bot: Option<&str>) -> Result<String> {
+    Ok(value(home, bot, "HEXBOT_X_API_BASE_URL")?
+        .unwrap_or_else(|| "https://api.x.com".to_owned())
+        .trim_end_matches('/')
+        .to_owned())
+}
+/// Test a subscription sign-in by fetching a fresh token: an expired one is
+/// refreshed, and a revoked one fails here rather than in a bot's turn.
+async fn probe_sign_in(home: &Path, bot: Option<&str>, provider: &Value) -> Value {
+    let label = provider["label"].as_str().unwrap_or("your subscription");
+    match provider["sign_in"].as_str() {
+        Some("xai-oauth") if !signed_in(home, bot, "xai-oauth").unwrap_or(false) => {
+            json!({"ok":false,"message":format!("Sign in with {label} first.")})
+        }
+        Some("xai-oauth") => match crate::providers::xai_subscription_token(home, bot).await {
+            Ok(_) => json!({"ok":true,"message":"Signed in."}),
+            Err(e) => json!({"ok":false,"message":format!("{label}: {}", e.message)}),
+        },
+        _ => json!({"ok":false,"message":"Choose a provider first."}),
+    }
 }
 /// Test a web search that needs no key with one real search. The SearXNG
 /// Hexbot runs starts first; until it runs, bots search with Tavily and
@@ -1237,7 +1301,7 @@ async fn dispatch(home: &Path, caller: &str, method: &str, p: &Value) -> Result<
             let mut shared = BTreeSet::new();
             for other in catalog() {
                 if other["id"] != id {
-                    for key in required_keys(home, &other)? {
+                    for key in required_keys(home, bot, &other)? {
                         if value(home, bot, &key)?.is_some() {
                             shared.insert(key);
                         }
@@ -1908,13 +1972,10 @@ pub async fn close_bot(home: &Path, bot: &str) {
 
 /// Gate the connector tools before freezing a conversation's tool catalog.
 pub fn tool_available(home: &Path, bot: &str, tool: &str) -> Result<bool> {
-    if tool == "x_search" {
-        return Ok(enabled(home, bot, "x_search")? && crate::providers::xai_configured(home, bot)?);
-    }
     for spec in catalog() {
         if strings(&spec["tools"]).iter().any(|name| name == tool) {
             return Ok(enabled(home, bot, spec["id"].as_str().unwrap())?
-                && set_up_for(home, Some(bot), &spec, &required_keys(home, &spec)?)?);
+                && set_up_for(home, Some(bot), &spec)?);
         }
     }
     Ok(true)

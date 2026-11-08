@@ -40,16 +40,7 @@ async fn catalog_shapes_and_errors_match_clients() {
         rows.iter()
             .map(|r| r["id"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        [
-            "web_search",
-            "image_gen",
-            "video_gen",
-            "premium_voice",
-            "notion",
-            "airtable",
-            "x_search",
-            "home_assistant"
-        ]
+        ["web_search", "notion", "x_search"]
     );
     let providers = rows[0]["providers"].as_array().unwrap();
     assert_eq!(
@@ -71,7 +62,7 @@ async fn catalog_shapes_and_errors_match_clients() {
     );
     assert_eq!(
         providers[5],
-        json!({"id":"brave","label":"Brave Search","description":null,"configured":false})
+        json!({"id":"brave","label":"Brave Search","description":null,"sign_in":null,"configured":false})
     );
     assert!(
         providers[0]["description"]
@@ -122,7 +113,7 @@ async fn catalog_shapes_and_errors_match_clients() {
         rpc(
             home.path(),
             "hexbot.connectors.test",
-            json!({"id":"image_gen"})
+            json!({"id":"x_search"})
         )
         .await,
         json!({"ok":false,"message":"Choose a provider first."})
@@ -261,22 +252,32 @@ async fn toggles_preserve_other_toolsets_and_shared_credentials() {
         &json!({"tools":{"enabled_toolsets":["file","search"]}}),
     )
     .unwrap();
+    // Nothing answers here, so the test fails but the token is saved.
+    fs::write(
+        home.path().join(".env"),
+        "XAI_API_KEY=model-key\nHEXBOT_X_API_BASE_URL=http://127.0.0.1:9\n",
+    )
+    .unwrap();
     rpc(
         home.path(),
         "hexbot.connectors.setup",
-        json!({"id":"image_gen","provider":"fal","values":{"FAL_KEY":"shared-fal-key"}}),
-    )
-    .await;
-    rpc(
-        home.path(),
-        "hexbot.connectors.clear",
-        json!({"id":"image_gen"}),
+        json!({"id":"x_search","provider":"x_api","values":{"X_BEARER_TOKEN":"x-token"}}),
     )
     .await;
     assert_eq!(
-        connectors::credentials(home.path(), "owl").unwrap()["FAL_KEY"],
-        "shared-fal-key"
+        connectors::credentials(home.path(), "owl").unwrap()["X_BEARER_TOKEN"],
+        "x-token"
     );
+    rpc(
+        home.path(),
+        "hexbot.connectors.clear",
+        json!({"id":"x_search"}),
+    )
+    .await;
+    let kept = connectors::credentials(home.path(), "owl").unwrap();
+    assert!(!kept.contains_key("X_BEARER_TOKEN"));
+    // The xAI key also runs xAI models, so clearing X search keeps it.
+    assert_eq!(kept["XAI_API_KEY"], "model-key");
     rpc(
         home.path(),
         "hexbot.connectors.set_for_bot",
@@ -291,12 +292,12 @@ async fn toggles_preserve_other_toolsets_and_shared_credentials() {
     rpc(
         home.path(),
         "hexbot.connectors.set_for_bot",
-        json!({"id":"video_gen","bot":"owl","enabled":true}),
+        json!({"id":"x_search","bot":"owl","enabled":true}),
     )
     .await;
     assert_eq!(
         connectors::toolsets(home.path(), "owl").unwrap(),
-        vec!["computer_use", "file", "video_gen"]
+        vec!["computer_use", "file", "x_search"]
     );
     let c = common::read_config(&home.path().join("profiles/owl")).unwrap();
     assert_eq!(
@@ -378,7 +379,7 @@ async fn skill_listing_reads_metadata_and_disabled_state() {
     );
 }
 
-async fn ha_probe(State(status): State<StatusCode>, headers: HeaderMap) -> impl IntoResponse {
+async fn x_probe(State(status): State<StatusCode>, headers: HeaderMap) -> impl IntoResponse {
     assert_eq!(headers["authorization"], "Bearer local-test-token");
     (status, "{}")
 }
@@ -389,29 +390,31 @@ async fn probes_really_authenticate_and_report_denial() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let app = Router::new()
-            .route("/api/", get(ha_probe))
+            .route("/2/usage/tweets", get(x_probe))
             .with_state(status);
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let result=rpc(home.path(),"hexbot.connectors.setup",json!({"id":"home_assistant","values":{"HASS_URL":url,"HASS_TOKEN":"local-test-token"}})).await;
+        fs::write(
+            home.path().join(".env"),
+            format!("HEXBOT_X_API_BASE_URL={url}\n"),
+        )
+        .unwrap();
+        let result=rpc(home.path(),"hexbot.connectors.setup",json!({"id":"x_search","provider":"x_api","values":{"X_BEARER_TOKEN":"local-test-token"}})).await;
         assert_eq!(result["test"]["ok"], expected);
         assert_eq!(
             result["connector"]["state"],
             if expected { "ready" } else { "error" }
         );
         if expected {
-            assert_eq!(result["connector"]["state_text"], "Connected")
+            assert_eq!(result["connector"]["state_text"], "Connected · X API")
         } else {
-            assert_eq!(
-                result["test"]["message"],
-                "Home Assistant refused the token (401)."
-            )
+            assert_eq!(result["test"]["message"], "X refused the token (401).")
         }
         server.abort();
     }
     let result = rpc(
         home.path(),
         "hexbot.connectors.test",
-        json!({"id":"home_assistant"}),
+        json!({"id":"x_search"}),
     )
     .await;
     assert_eq!(result["ok"], false);
@@ -732,21 +735,24 @@ async fn mcp_refuses_existing_and_new_malicious_shell_entries() {
 #[tokio::test]
 async fn tool_readiness_requires_credentials_and_explicit_enablement() {
     let home = setup();
-    assert!(!connectors::tool_available(home.path(), "owl", "image_generate").unwrap());
-    rpc(
-        home.path(),
-        "hexbot.connectors.setup",
-        json!({"id":"image_gen","provider":"fal","values":{"FAL_KEY":"test-key"}}),
-    )
-    .await;
-    assert!(connectors::tool_available(home.path(), "owl", "image_generate").unwrap());
+    assert!(!connectors::tool_available(home.path(), "owl", "x_search").unwrap());
+    fs::write(home.path().join(".env"), "X_BEARER_TOKEN=test-key\n").unwrap();
+    // Set up, but not on for the bot until it is turned on.
+    assert!(!connectors::tool_available(home.path(), "owl", "x_search").unwrap());
     rpc(
         home.path(),
         "hexbot.connectors.set_for_bot",
-        json!({"id":"image_gen","bot":"owl","enabled":false}),
+        json!({"id":"x_search","bot":"owl","enabled":true}),
     )
     .await;
-    assert!(!connectors::tool_available(home.path(), "owl", "image_generate").unwrap());
+    assert!(connectors::tool_available(home.path(), "owl", "x_search").unwrap());
+    rpc(
+        home.path(),
+        "hexbot.connectors.set_for_bot",
+        json!({"id":"x_search","bot":"owl","enabled":false}),
+    )
+    .await;
+    assert!(!connectors::tool_available(home.path(), "owl", "x_search").unwrap());
     assert!(connectors::tool_available(home.path(), "owl", "read_file").unwrap());
 }
 
@@ -1197,4 +1203,65 @@ async fn settings_name_the_web_search_the_bots_use() {
     assert_eq!(crate::native_tools::web_backend(&cfg, &env, false), "exa");
     let row = connectors::get(home.path(), None, "web_search").unwrap();
     assert_eq!(row["provider"], "exa");
+}
+
+#[tokio::test]
+async fn x_search_offers_a_subscription_sign_in() {
+    let home = setup();
+    let row = rpc(home.path(), "hexbot.connectors.list", json!({"bot":"owl"})).await["connectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == "x_search")
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        row["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| (p["id"].as_str().unwrap(), p["sign_in"].clone()))
+            .collect::<Vec<_>>(),
+        [
+            ("supergrok", json!("xai-oauth")),
+            ("xai", Value::Null),
+            ("x_api", Value::Null)
+        ]
+    );
+    let result = rpc(
+        home.path(),
+        "hexbot.connectors.setup",
+        json!({"id":"x_search","provider":"supergrok"}),
+    )
+    .await;
+    assert_eq!(
+        result["test"],
+        json!({"ok":false,"message":"Sign in with SuperGrok or X Premium+ first."})
+    );
+    assert_eq!(result["connector"]["state"], "not_set_up");
+    // A sign-in saved for the daemon sets it up for every bot.
+    fs::write(
+        home.path().join("auth.json"),
+        json!({"providers":{"xai-oauth":{"access_token":"daemon-token","refresh_token":"r","expires_at":common::now()+3600.0}}}).to_string(),
+    )
+    .unwrap();
+    let result = rpc(
+        home.path(),
+        "hexbot.connectors.setup",
+        json!({"id":"x_search","provider":"supergrok","bot":"owl"}),
+    )
+    .await;
+    assert_eq!(result["test"], json!({"ok":true,"message":"Signed in."}));
+    assert_eq!(result["connector"]["state"], "ready");
+    assert_eq!(
+        result["connector"]["state_text"],
+        "Connected · SuperGrok or X Premium+"
+    );
+    assert_eq!(result["connector"]["enabled_for_bot"], true);
+    assert!(connectors::tool_available(home.path(), "owl", "x_search").unwrap());
+    assert!(!connectors::tool_available(home.path(), "fox", "x_search").unwrap());
+    assert_eq!(
+        result["connector"]["ready_bots"],
+        json!(["fox", "owl"])
+    );
 }

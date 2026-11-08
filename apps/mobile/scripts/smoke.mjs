@@ -92,10 +92,10 @@ const model = createServer(async (req, res) => {
                   name: 'hexbot_passwords',
                   args: { action: 'ask', title: 'Northfield School', url: 'https://school.example/login' }
                 }
-            : !toolAnswered && prompt.includes('Set up Home Assistant')
+            : !toolAnswered && prompt.includes('Set up X search')
               ? {
                   name: 'hexbot_plugins',
-                  args: { action: 'setup', id: 'connector:home_assistant' }
+                  args: { action: 'setup', id: 'connector:x_search' }
                 }
             : !toolAnswered && prompt.startsWith('Read the other app attachment')
               ? { name: 'read', args: { path: retainedUploadPath } }
@@ -123,8 +123,8 @@ const model = createServer(async (req, res) => {
                   ? 'The mobile approval reached Pi.'
                   : prompt.includes('Sign in to the school site')
                     ? 'The school sign-in is saved.'
-                  : prompt.includes('Set up Home Assistant')
-                    ? 'Home Assistant has its token.'
+                  : prompt.includes('Set up X search')
+                    ? 'X search has its token.'
                   : 'Your daemon received this from mobile. The connection is working.'
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
     const frame = (delta, finish_reason = null) =>
@@ -195,6 +195,8 @@ try {
   const env = {
     ...process.env,
     HEXBOT_HOME: home,
+    // Nothing answers here, so X search's test fails fast and stays offline.
+    HEXBOT_X_API_BASE_URL: 'http://127.0.0.1:9',
     // The vault key stays in the temporary home, not the login keychain.
     HEXBOT_PASSWORD_KEY_STORE: 'file',
     HEXBOT_PI_EXECUTABLE: piPath,
@@ -596,23 +598,26 @@ try {
     path.join(home, 'profiles/owl/config.yaml'),
     `model:\n  provider: lmstudio\n  default: mobile-test\n  base_url: ${modelBase}\n  api_key: test-key\ntools:\n  enabled_toolsets: [file, hexbot]\napproval_mode: manual\n`
   )
-  await page.getByTestId('chat-input').fill('Set up Home Assistant')
+  await page.getByTestId('chat-input').fill('Set up X search')
   await page.getByTestId('chat-send').click()
   const connect = page.locator('[data-testid^="plugin-"][data-testid$="-open"]')
   await expect(connect).toBeVisible({ timeout: 30000 })
-  await expect(page.getByText('Home Assistant', { exact: true })).toBeVisible()
+  await expect(page.getByText('X search', { exact: true })).toBeVisible()
   await shot('plugin-card')
   await connect.click()
-  await page.locator('[data-testid^="plugin-"][data-testid$="-HASS_URL"]').fill('http://127.0.0.1:9')
-  await page.locator('[data-testid^="plugin-"][data-testid$="-HASS_TOKEN"]').fill('mobile-ha-token-42')
+  // The subscription comes first and needs a sign-in, not a key.
+  await expect(page.locator('[data-testid^="plugin-"][data-testid$="-sign-in"]')).toBeVisible()
+  await page.screenshot({ path: path.join(artifacts, 'plugin-card-sign-in.png') })
+  await page.locator('[data-testid^="plugin-"][data-testid$="-provider-x_api"]').click()
+  await page.locator('[data-testid^="plugin-"][data-testid$="-X_BEARER_TOKEN"]').fill('mobile-x-token-42')
   await page.screenshot({ path: path.join(artifacts, 'plugin-card-open.png') })
   await page.locator('[data-testid^="plugin-"][data-testid$="-submit"]').click()
-  await expect(message('Home Assistant has its token.', { exact: true })).toBeVisible({
+  await expect(message('X search has its token.', { exact: true })).toBeVisible({
     timeout: 30000
   })
   const connectors = (await rpc('hexbot.connectors.list')).connectors
-  assert.equal(connectors.find(c => c.id === 'home_assistant').ready, true)
-  assert.doesNotMatch(JSON.stringify(modelRequests), /mobile-ha-token-42/)
+  assert.equal(connectors.find(c => c.id === 'x_search').ready, true)
+  assert.doesNotMatch(JSON.stringify(modelRequests), /mobile-x-token-42/)
   await shot('chat-plugin-saved')
   await page.getByTestId('chat-settings').click()
   await expect(page.getByTestId('fingerprint-soul')).toBeVisible()

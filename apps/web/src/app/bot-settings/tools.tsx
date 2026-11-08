@@ -35,7 +35,7 @@ export const TOOL_GROUPS: { rows: ToolRow[]; title: string }[] = [
     rows: [
       { description: 'Look at images you attach.', key: 'vision', label: 'Vision' },
       {
-        description: 'Speak replies with the built-in voice. Premium voice is a connector.',
+        description: 'Speak replies with the built-in voice.',
         key: 'voice',
         label: 'Voice'
       }
