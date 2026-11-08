@@ -94,7 +94,10 @@ async fn retired_code_stays_disabled_for_a_legacy_profile_in_bypass() {
         .unwrap();
     open(&runtime).await;
     let source = runtime.sessions.lock().unwrap()["first"].clone();
-    let offered = source.tools.iter().any(|tool| tool["name"] == "execute_code");
+    let offered = source
+        .tools
+        .iter()
+        .any(|tool| tool["name"] == "execute_code");
     let result = runtime
         .tool(
             &source,
