@@ -486,12 +486,12 @@ async fn render_pdf(
     #[cfg(target_os = "linux")]
     // SAFETY: setrlimit/getrlimit are async-signal-safe. Only the renderer inherits
     // these caps; existing stricter limits remain stricter. RLIMIT_DATA also
-    // covers anonymous mmap allocations on supported Linux kernels, while
-    // leaving a configured Node renderer's unused address reservations alone.
+    // covers anonymous mmap allocations on supported Linux kernels. Allow for
+    // V8's code-range reservation so configured Node renderers can start on x64.
     unsafe {
         command.pre_exec(|| {
             for (resource, cap) in [
-                (libc::RLIMIT_DATA, (512 * 1024 * 1024) as libc::rlim_t),
+                (libc::RLIMIT_DATA, (1024 * 1024 * 1024) as libc::rlim_t),
                 (libc::RLIMIT_CPU, 120 as libc::rlim_t),
                 (libc::RLIMIT_FSIZE, PDF_OUTPUT_LIMIT as libc::rlim_t),
                 (libc::RLIMIT_CORE, 0 as libc::rlim_t),
@@ -1193,7 +1193,7 @@ with open(sys.argv[1], 'w') as target: json.dump(limits, target)
             .unwrap();
         let limits: Value = serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
         for (name, cap) in [
-            ("DATA", 512 * 1024 * 1024),
+            ("DATA", 1024 * 1024 * 1024),
             ("CPU", 120),
             ("FSIZE", (IMAGE_ENVELOPE_LIMIT - 256) / 4 * 3),
             ("CORE", 0),
