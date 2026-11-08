@@ -39,6 +39,12 @@ it('shows CSV as a table, Markdown formatted and other text as it is', () => {
   expect(wide.rows[0]).toHaveLength(TABLE_COLUMNS)
   expect(wide.rows.length * TABLE_COLUMNS).toBeLessThanOrEqual(TABLE_CELLS)
   expect([wide.total, wide.columns]).toEqual([500, 2000])
+  // More rows than a function call takes arguments still opens.
+  const rows = 300_000
+  expect(previewOf({ mime: 'text/csv', name: 'tall.csv', text: 'a,b\n'.repeat(rows) })).toMatchObject({
+    total: rows,
+    columns: 2
+  })
   expect(previewOf({ mime: 'text/markdown', name: 'notes.md', text: '# Hi' }).kind).toBe('markdown')
   expect(previewOf({ mime: 'text/plain', name: 'main.rs', text: 'x'.repeat(TEXT_CHARS + 1) })).toMatchObject({
     kind: 'text',

@@ -38,7 +38,8 @@ export function previewOf(file: OpenedFile): Preview {
     if (ext === 'csv' || ext === 'tsv') {
       const rows = parseDelimited(file.text, ext === 'tsv' ? '\t' : ',')
       if (rows.length) {
-        const columns = Math.max(...rows.map(row => row.length))
+        // A loop, not a spread: a tall file has more rows than a call takes arguments.
+        const columns = rows.reduce((most, row) => Math.max(most, row.length), 0)
         const shown = Math.min(columns, TABLE_COLUMNS)
         return {
           kind: 'table',
