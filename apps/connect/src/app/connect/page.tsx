@@ -3,7 +3,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { currentUser, signInPath } from "@/lib/auth";
 import { browserSignInUrl, daemonOrigin, relativeTime } from "@/lib/daemons";
-import { fakeTunnels, getReachability, getStore } from "@/lib/runtime";
+import { daemonStatuses, fakeTunnels, getStore } from "@/lib/runtime";
 import { DaemonRow } from "./daemon-row";
 import { DeviceRow } from "./device-row";
 
@@ -16,13 +16,14 @@ export default async function ConnectPage() {
   const store = getStore();
   const fake = fakeTunnels();
   const now = Date.now();
-  const rows = await store.listDaemons(user.id, true);
-  const statuses = await getReachability().statuses(rows.filter(row => !row.revokedAt), fake, now);
+  // Sessions load while the daemons are read and probed, so the page waits for the slower of the two only.
+  const daemonsWithStatus = store.listDaemons(user.id, true).then(async rows => ({ rows, statuses: await daemonStatuses(rows.filter(row => !row.revokedAt), now) }));
+  const [{ rows, statuses }, sessions] = await Promise.all([daemonsWithStatus, store.listClientSessions(user.id)]);
   const daemons = rows.map(daemon => ({
     removing: !!daemon.revokedAt, id: daemon.id, name: daemon.name, hostname: daemon.tunnelHostname, status: statuses.get(daemon.id) ?? "offline",
     lastSeen: relativeTime(daemon.lastSeenAt, now), openUrl: browserSignInUrl(daemonOrigin(daemon, fake)),
   }));
-  const devices = (await store.listClientSessions(user.id)).map(session => ({
+  const devices = sessions.map(session => ({
     id: session.id, name: session.deviceName, created: relativeTime(session.createdAt, now), lastSeen: relativeTime(session.lastSeenAt, now),
   }));
 

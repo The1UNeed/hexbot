@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryStore, REGISTRATION_CLAIM_LEASE_MS } from "@/lib/store";
-import { FakeTunnelProvider, tunnelName } from "@/lib/tunnels";
-import { setRuntimeForTests } from "@/lib/runtime";
+import { FakeTunnelProvider, tunnelName, type TunnelProvider } from "@/lib/tunnels";
+import { SEEN_REFRESH_MS, setRuntimeForTests } from "@/lib/runtime";
 import { hashToken, randomToken } from "@/lib/tokens";
 import { POST as start } from "@/app/api/register/start/route";
 import { POST as approve } from "@/app/api/register/approve/route";
@@ -129,22 +129,65 @@ describe("authenticated daemon routes", () => {
 });
 
 describe("daemon list online state", () => {
-  it("reports online only when the address answers, keeps the boolean for older apps, and never probes an offline daemon", async () => {
+  it("reports online only when the address answers, keeps the boolean for older apps, and marks the one that answers as seen", async () => {
     const probed: string[] = [];
     setRuntimeForTests({ store, tunnels, reachability: new Reachability(async origin => { probed.push(origin); return origin === "http://127.0.0.1:9200"; }) });
-    const answering = await registration(); const silent = await registration(); const offline = await registration();
-    for (const [entry, port] of [[answering, 9200], [silent, 9201]] as const) {
-      const token = (await (await poll(request("/api/register/poll", { device_code: entry.started.device_code }))).json()).daemon_token;
-      expect((await heartbeat(request(`/api/daemons/${entry.approved.daemon_id}/heartbeat`, { port }, token), { params: Promise.resolve({ id: entry.approved.daemon_id }) })).status).toBe(200);
-    }
+    const answering = await registration(); const silent = await registration();
+    // With fake tunnels the heartbeat's port is the address; it leaves last_seen_at for the probe to prove.
+    const token = (await (await poll(request("/api/register/poll", { device_code: answering.started.device_code }))).json()).daemon_token;
+    expect((await heartbeat(request(`/api/daemons/${answering.approved.daemon_id}/heartbeat`, { port: 9200 }, token), { params: Promise.resolve({ id: answering.approved.daemon_id }) })).status).toBe(200);
+    store.daemons[0].lastSeenAt = null;
     const clientToken = randomToken("hxc_"); await store.createClientSession({ userId: store.users[0].id, tokenHash: hashToken(clientToken), deviceName: "Laptop" });
     const response = await listDaemons(request("/api/daemons", undefined, clientToken, "GET"));
     expect(response.status).toBe(200);
     const byId = Object.fromEntries((await response.json()).daemons.map((d: { id: string }) => [d.id, d]));
     expect(byId[answering.approved.daemon_id]).toMatchObject({ online: true, status: "online" });
-    expect(byId[silent.approved.daemon_id]).toMatchObject({ online: false, status: "unreachable" });
-    expect(byId[offline.approved.daemon_id]).toMatchObject({ online: false, status: "offline", last_seen_at: null });
-    expect(probed.sort()).toEqual(["http://127.0.0.1:9200", "http://127.0.0.1:9201"]);
+    // The store itself records the answer, through markDaemonSeen's own condition.
+    await vi.waitFor(() => expect(store.daemons[0].lastSeenAt).toBeInstanceOf(Date));
+    expect(byId[silent.approved.daemon_id]).toMatchObject({ online: false, status: "offline", last_seen_at: null });
+    expect(probed.sort()).toEqual(["http://127.0.0.1:9119", "http://127.0.0.1:9200"]);
+  });
+  it("writes last seen at most every five minutes", async () => {
+    setRuntimeForTests({ store, tunnels, reachability: new Reachability(async () => true) });
+    await registration();
+    const clientToken = randomToken("hxc_"); await store.createClientSession({ userId: store.users[0].id, tokenHash: hashToken(clientToken), deviceName: "Laptop" });
+    const recent = new Date(Date.now() - SEEN_REFRESH_MS + 60_000); store.daemons[0].lastSeenAt = recent;
+    const seen = vi.spyOn(store, "markDaemonSeen");
+    await listDaemons(request("/api/daemons", undefined, clientToken, "GET"));
+    expect(seen).not.toHaveBeenCalled();
+    store.daemons[0].lastSeenAt = new Date(Date.now() - SEEN_REFRESH_MS - 1);
+    await listDaemons(request("/api/daemons", undefined, clientToken, "GET"));
+    expect(seen).toHaveBeenCalledTimes(1);
+  });
+  it("still lists daemons when the last-seen write fails, and logs it", async () => {
+    setRuntimeForTests({ store, tunnels, reachability: new Reachability(async () => true) });
+    await registration();
+    const clientToken = randomToken("hxc_"); await store.createClientSession({ userId: store.users[0].id, tokenHash: hashToken(clientToken), deviceName: "Laptop" });
+    vi.spyOn(store, "markDaemonSeen").mockRejectedValueOnce(new Error("database asleep"));
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const response = await listDaemons(request("/api/daemons", undefined, clientToken, "GET"));
+    expect(response.status).toBe(200);
+    expect((await response.json()).daemons[0]).toMatchObject({ status: "online" });
+    await vi.waitFor(() => expect(logged).toHaveBeenCalledWith("Connect: last seen failed", expect.any(Error)));
+  });
+  it("never moves last seen backwards when two listings race", async () => {
+    await registration();
+    const id = store.daemons[0].id; const now = Date.now();
+    await store.markDaemonSeen(id, new Date(now), new Date(now - SEEN_REFRESH_MS));
+    await store.markDaemonSeen(id, new Date(now - 1_000), new Date(now - 1_000 - SEEN_REFRESH_MS));
+    expect(store.daemons[0].lastSeenAt?.getTime()).toBe(now);
+  });
+});
+
+describe("heartbeat through Cloudflare", () => {
+  it("answers without touching the database, so it never keeps the database awake", async () => {
+    const cloudflare = { kind: "cloudflare" } as unknown as TunnelProvider;
+    setRuntimeForTests({ store, tunnels: cloudflare });
+    const reads = [vi.spyOn(store, "findDaemonByTokenHash"), vi.spyOn(store, "getDaemon"), vi.spyOn(store, "updateDaemonHeartbeat")];
+    const response = await heartbeat(request("/api/daemons/any/heartbeat", { port: 9119 }, "hxd_anything"), { params: Promise.resolve({ id: "any" }) });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true });
+    for (const spy of reads) expect(spy).not.toHaveBeenCalled();
   });
 });
 

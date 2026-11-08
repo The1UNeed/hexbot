@@ -7,11 +7,8 @@ import { renameDaemon, revokeDaemon } from "./actions";
 export interface DaemonView { removing?: boolean; id: string; name: string; hostname: string; status: DaemonStatus; lastSeen: string; openUrl: string }
 
 const statusLabel = (daemon: DaemonView) =>
-  daemon.removing ? "Removing…" : daemon.status === "online" ? "Online" : daemon.status === "unreachable" ? "Running, but not reachable" : `Offline, last seen ${daemon.lastSeen}`;
-const openHint = (daemon: DaemonView) =>
-  daemon.status === "unreachable"
-    ? "The daemon is running but its tunnel is not answering. Hexbot retries on its own; check the machine's network if this lasts."
-    : "The daemon has not checked in for a while. Start hexbot serve on it.";
+  daemon.removing ? "Removing…" : daemon.status === "online" ? "Online" : `Offline, last seen ${daemon.lastSeen}`;
+const openHint = "The daemon is not answering at its address. Start hexbot serve on it, and check the machine's network if it is already running.";
 
 export function DaemonRow({ daemon }: { daemon: DaemonView }) {
   const [editing, setEditing] = useState(false);
@@ -25,7 +22,7 @@ export function DaemonRow({ daemon }: { daemon: DaemonView }) {
     if (result.ok) { setEditing(false); track("connect_daemon_renamed"); }
   });
   const revoke = () => {
-    if (!daemon.removing && !window.confirm(`Revoke ${daemon.name}? Its tunnel closes and apps signed in through Connect lose the way in. Hexbot on the current version disconnects within a few minutes; older versions stop working but keep the setting until you disconnect them. The daemon keeps working on its own network.`)) return;
+    if (!daemon.removing && !window.confirm(`Revoke ${daemon.name}? Its tunnel closes and apps signed in through Connect lose the way in. Hexbot on the current version disconnects within about ten minutes of its tunnel being deleted; older versions stop working but keep the setting until you disconnect them. The daemon keeps working on its own network.`)) return;
     start(async () => { const result = await revokeDaemon(daemon.id); setError(result.error ?? null); if (result.ok) track("connect_daemon_revoked"); });
   };
 
@@ -47,7 +44,7 @@ export function DaemonRow({ daemon }: { daemon: DaemonView }) {
         <span className="hostname">{daemon.hostname}</span>
         {daemon.removing
           ? <p className="meta">Revoked, but its tunnel is not removed yet. Retry to finish.</p>
-          : daemon.status === "online" ? null : <p className="meta">{openHint(daemon)}</p>}
+          : daemon.status === "online" ? null : <p className="meta">{openHint}</p>}
         {error ? <p className="small danger" role="alert">{error}</p> : null}
       </div>
       <div className="actions">
