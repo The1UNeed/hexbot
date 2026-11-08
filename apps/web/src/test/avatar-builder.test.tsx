@@ -17,6 +17,7 @@ import {
   faceReadNow,
   faceReadsHeld,
   matchFace,
+  randomStyle,
   readFace,
   READS_KEPT
 } from '../lib/avatar-builder'
@@ -211,5 +212,20 @@ describe('reading faces back from pictures', () => {
     await expect(readFace('data:image/jpeg;base64,photo')).resolves.toBeNull()
     expect(faceReadNow('data:image/jpeg;base64,photo')).toBeNull()
     expect(faceReadsHeld()).toBe(READS_KEPT)
+  })
+})
+
+describe('randomStyle', () => {
+  it('gives a new bot a face none of the others has while any is left', () => {
+    const taken: { color: string; shape: string }[] = []
+
+    for (let index = 0; index < 64; index += 1) {
+      const face = randomStyle(taken)
+      expect(taken).not.toContainEqual(face)
+      expect(['white', 'gray', 'brown']).not.toContain(face.color)
+      taken.push(face)
+    }
+
+    expect(taken).toContainEqual(randomStyle(taken))
   })
 })

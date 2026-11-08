@@ -301,7 +301,7 @@ mutation methods check ownership.
 ### Bots
 
 Bot shape: `{name, display_name, title, description, primary, persona, tools: [string], available_tools: [string], skills: [string],
-provider, provider_connected | null, model, reasoning_effort | null, avatar: {mime, data} | null, face: {shape, color} | null,
+provider, provider_connected | null, model, reasoning_effort | null, avatar: {mime, data} | null, face: {shape, color} | null, kept_face: {shape, color} | null,
 created_at, updated_at, last_activity_at,
 owner_id, dream_enabled, notify, approval_mode, workdir | null,
 soul_char_limit | null, memory_char_limit | null, soul_cap, memory_cap,
@@ -379,18 +379,26 @@ already running, a message queued behind it, and files already attached
 finish on the model they started with. Switching models costs the cached
 prefix once. A section on something else, like a scheduled job with
 its own model or `reasoning_effort`, keeps it.
-`face` is the shape and colour of a face picked in an app (ids from
+`face` is the shape and colour of the bot's face (ids from
 `apps/web/src/lib/avatar-builder.ts`, such as `{shape: "pill", color:
-"orange"}`), stored in the profile's `assets/face.json`. The app saves the
-face as the `avatar` PNG too, for clients that only show pictures; clients
-that know `face` draw it live and wash the bot's bubbles with its colour.
-It is null when no face was picked, and it is cleared whenever the avatar
-changes without one (a photo, `avatar: null`, or `profiles.set_asset`), so it
-never describes a picture it did not come with. `hexbot.bots.update` refuses
-a non-null `face` without an `avatar` in the same call (4202), so a face never
-lands on a photo. Older daemons leave it out and refuse `face` in writes
-(4201 `unknown bot field: face`); the web app then sends the write again
-without it, and the face is kept as the picture alone.
+"orange"}`), stored in the profile's `assets/face.json`. Every bot without a
+photo has one. `hexbot.bots.create` without `face` or `avatar` picks one at
+random, one none of the owner's other bots has, shown or kept behind a
+photo, while any is left; the bot's name never changes it. The apps pick a
+random face the same way, counting `face` and `kept_face`, and send it,
+HexBot's included. Bots from before stored faces keep the face their display
+name gave them, saved once at start. The web app saves a face picked there
+as the `avatar` PNG too, for clients that only show pictures; clients that
+know `face` draw it live and wash the bot's bubbles with its colour.
+`face` is null while the bot shows an uploaded photo: a photo, or any change
+of the avatar without a face, puts the face aside in `assets/face.kept.json`,
+read as `kept_face`, and `avatar: null` or clearing the asset brings it back,
+so a face never describes a picture it did not come with. `hexbot.bots.update`
+refuses a non-null `face` without an `avatar` in the same call (4202), so a
+face never lands on a photo. Older daemons leave both out and refuse `face`
+in writes (4201 `unknown bot field: face`); the web and mobile apps then send
+the write again without it. The web app's face is then kept as the picture
+alone; a bot made on mobile draws its face from its name there.
 `workdir` and the `workspace_dir` setting are refused (4202) when they resolve
 inside the Hexbot home, symlinks included.
 

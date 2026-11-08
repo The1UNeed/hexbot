@@ -94,6 +94,9 @@ impl App {
                 error.message
             );
         }
+        if let Err(error) = catalog::keep_name_faces(&home) {
+            eprintln!("Could not keep the bots' faces: {}", error.message);
+        }
         let events = EventHub::new();
         crate::computers::attach(&home, events.clone());
         let runtime = Runtime::new(home.clone(), events.clone(), pi)?;

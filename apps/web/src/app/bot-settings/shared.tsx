@@ -348,7 +348,9 @@ export function AvatarPicker({
   const fileRef = useRef<HTMLInputElement>(null)
   const shown = botFace(bot)
   const saved = useFaceRead(shown.image)
-  const currentStyle = style ?? shown.style ?? saved ?? styleForName(bot.display_name)
+
+  const currentStyle =
+    style ?? shown.style ?? saved ?? bot.kept_face ?? styleForName(bot.display_name)
 
   const upload = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]

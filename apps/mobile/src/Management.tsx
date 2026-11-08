@@ -7,6 +7,7 @@ import {
   Button,
   ChoiceRow,
   confirm,
+  type FaceStyle,
   Field,
   Form,
   Group,
@@ -14,6 +15,7 @@ import {
   Layer,
   PageLook,
   radius,
+  randomFace,
   Row,
   formatAgo,
   type SheetAction,
@@ -88,6 +90,12 @@ export type Panel = {
   title?: string
 }
 type Values = Record<string, string | boolean>
+
+/** A daemon from before stored faces refuses `face` on a bot write. */
+function refusesFace(error: unknown): boolean {
+  const { code, message } = (error ?? {}) as { code?: number; message?: string }
+  return code === 4201 && message === 'unknown bot field: face'
+}
 type RowData = Record<string, unknown>
 const modes = [
   { id: 'inherit', label: 'Default' },
@@ -367,6 +375,11 @@ export function Management({
     ? (mobile.rooms.find(r => r.id === panel.room!.id) ?? panel.room)
     : undefined
   const kind = panel?.kind ?? ''
+  // A new bot's face, kept with its draft; typing a name never changes it.
+  const newFace: FaceStyle | null =
+    kind === 'bot-create' && values.face_shape && values.face_color
+      ? { color: str(values.face_color), shape: str(values.face_shape) }
+      : null
   // The primary bot first, as on the web.
   const pluginRoster: PluginBot[] = [...mobile.bots]
     .sort((a, b) => Number(Boolean(b.primary)) - Number(Boolean(a.primary)))
@@ -422,8 +435,12 @@ export function Management({
             .map(([k, v]) => [k, typeof v === 'number' ? String(v) : v])
         ) as Values
         break
-      case 'bot-create':
+      case 'bot-create': {
+        // A face picked once for this draft, none of the other bots has; a name never changes it.
+        const face = randomFace(mobile.bots.flatMap(b => [b.face, b.kept_face]))
         fields = {
+          face_color: face.color,
+          face_shape: face.shape,
           name: '',
           display_name: '',
           title: '',
@@ -434,6 +451,7 @@ export function Management({
           reasoning_effort: ''
         }
         break
+      }
       case 'bot':
         if (bot)
           fields = {
@@ -909,7 +927,7 @@ export function Management({
           title: values.title,
           description: values.description,
           // A bot's soul is saved from its own card; only a new bot starts with one here.
-          ...(bot ? {} : { persona: values.persona }),
+          ...(bot ? {} : { persona: values.persona, ...(newFace ? { face: newFace } : {}) }),
           // Without a model the daemon uses its default.
           ...(values.provider && values.model
             ? { provider: values.provider, model: values.model }
@@ -934,7 +952,12 @@ export function Management({
         const result = await rpc<{ bot: Bot; section?: Section }>(
           bot ? 'hexbot.bots.update' : 'hexbot.bots.create',
           params
-        )
+        ).catch(error => {
+          // A daemon from before stored faces refuses the field; it draws one from the name.
+          if (!('face' in params) || !refusesFace(error)) throw error
+          const { face: _face, ...rest } = params
+          return rpc<{ bot: Bot; section?: Section }>('hexbot.bots.create', rest)
+        })
         if (!bot && result.section) await mobile.openSection(result.bot, result.section)
         return result
       }
@@ -942,9 +965,11 @@ export function Management({
         <>
           <View style={[styles.identity, { backgroundColor: theme.surface }]}>
             <BotFace
-              face={bot?.face}
+              face={bot ? bot.face : newFace}
               imageUri={botPhoto(bot)}
-              name={str(values.display_name) || str(values.name) || 'New bot'}
+              name={
+                bot ? bot.display_name : str(values.display_name) || str(values.name) || 'New bot'
+              }
               size={88}
             />
             {bot ? (
@@ -992,7 +1017,7 @@ export function Management({
               </View>
             ) : (
               <Text align="center" tone="muted" variant="footnote">
-                Its face comes from its name. You can add a photo after it is created.
+                Renaming it keeps this face. You can add a photo after it is created.
               </Text>
             )}
           </View>
@@ -1274,7 +1299,9 @@ export function Management({
                   testID={`member-${b.name}`}
                   value={joined(b.name)}
                   disabled={busy || mobile.connection !== 'connected'}
-                  leading={<BotFace name={b.display_name} size={28} />}
+                  leading={
+                    <BotFace face={b.face} imageUri={botPhoto(b)} name={b.display_name} size={28} />
+                  }
                   onValueChange={enabled => {
                     if (!room) {
                       // A bot that leaves the new room cannot stay its main bot.
