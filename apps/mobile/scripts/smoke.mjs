@@ -419,7 +419,13 @@ try {
   await expect(page.getByTestId('question-choice-Morning')).toBeVisible({ timeout: 30000 })
   await page.getByTestId('question-sheet-close').click()
   const answerFile = page.waitForEvent('filechooser')
+  // The + offers the phone's photos, its camera, and its files.
   await page.getByTestId('chat-attach').click()
+  for (const source of ['library', 'camera', 'files'])
+    await expect(page.getByTestId(`chat-attach-${source}`)).toBeVisible()
+  await settle()
+  await shot('chat-attach-menu')
+  await page.getByTestId('chat-attach-files').click()
   await (
     await answerFile
   ).setFiles({
@@ -464,6 +470,7 @@ try {
   await shot('chat-visual')
   const chooser = page.waitForEvent('filechooser')
   await page.getByTestId('chat-attach').click()
+  await page.getByTestId('chat-attach-files').click()
   await (
     await chooser
   ).setFiles({

@@ -38,7 +38,7 @@ vi.mock('expo-linking', () => ({ useURL: () => null }))
 vi.mock('expo-web-browser', () => ({ maybeCompleteAuthSession() {} }))
 vi.mock('expo-crypto', () => ({ randomUUID: () => 'message' }))
 vi.mock('@react-native-async-storage/async-storage', () => ({ default: {} }))
-vi.mock('./pickFile', () => ({ pickFile: vi.fn() }))
+vi.mock('./pickFile', () => ({ pickFile: vi.fn(), pickAttachments: vi.fn() }))
 vi.mock('../screens/MediaAttachment', () => ({ MediaAttachment: () => null }))
 vi.mock('./media', () => ({ mediaUri: vi.fn() }))
 // Push registration needs the native notifications module.
@@ -357,15 +357,18 @@ it('keeps historical items, the face and row callbacks stable while a reply stre
 })
 
 it('a file you send carries the path the daemon gave its upload, so its card previews before the chat reloads', async () => {
-  const { pickFile } = await import('./pickFile')
-  vi.mocked(pickFile).mockResolvedValueOnce({ name: 'parts.csv', mimeType: 'text/csv', uri: 'file:///parts.csv', base64: 'YQ==', bytes: 1 } as never)
+  const { pickAttachments } = await import('./pickFile')
+  vi.mocked(pickAttachments).mockResolvedValueOnce({
+    files: [{ name: 'parts.csv', mimeType: 'text/csv', uri: 'file:///parts.csv', base64: 'YQ==', bytes: 1 }],
+    refused: null
+  })
   const answer = state.request.getMockImplementation()!
   state.request.mockImplementation(async (method: string, params?: Record<string, unknown>) =>
     method === 'file.attach' ? { id: 'upload-1', path: '/chat/attachments/parts.csv' } : answer(method, params)
   )
   await open('Bot')
   await screen.findByText('owner history')
-  await act(async () => state.chat!.onAttach!())
+  await act(async () => state.chat!.onAttach!('files'))
   await waitFor(() => expect(state.chat!.attachments).toHaveLength(1))
   await act(async () => state.chat!.onSend('The parts'))
   await waitFor(() => expect(calls('prompt.submit')).toHaveLength(1))

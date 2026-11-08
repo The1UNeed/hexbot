@@ -112,7 +112,10 @@ opens at its latest 200 events and pages back with `before_seq` on
 `hexbot.rooms.log`; older daemons ignore it and the app reads the whole log.
 A bot's chat takes one message at a time, so Stop replaces Send while it works.
 
-Attachments stay on the phone until Send. Sending files without text uses
+The composer's + offers Photos and videos (up to 10 at once, HEIC arrives as
+JPEG), Camera (a photo or a video; Android, whose camera does one at a time,
+shows Take photo and Record video) and Files. Attachments stay on the phone
+until Send. Sending files without text uses
 "Please review the attached files." Chips clear only after the daemon accepts
 the message. Answer bot questions before sending attached files; the files stay
 ready for the next message. Failed uploads can be retried without
