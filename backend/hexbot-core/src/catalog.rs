@@ -41,6 +41,7 @@ const FIELDS: &[&str] = &[
     "provider",
     "model",
     "reasoning_effort",
+    "fast",
     "avatar",
     "face",
     "dream_enabled",
@@ -1684,6 +1685,7 @@ fn shape_bot(
             .map(Value::from)
             .unwrap_or_else(|| cfg["model"]["default"].clone()),
         "reasoning_effort": cfg["model"]["reasoning_effort"],
+        "fast": cfg["model"]["fast"] == true,
         "avatar": avatar(home, name)?,
         "face": face(home, name)?,
         "kept_face": kept_face(home, name)?,
@@ -1714,7 +1716,7 @@ fn validate_patch(home: &Path, p: &Value) -> Result<()> {
             return Err(Error::new(4201, format!("unknown bot field: {key}")));
         }
         match key.as_str() {
-            "notify" | "dream_enabled" if !value.is_boolean() => {
+            "notify" | "dream_enabled" | "fast" if !value.is_boolean() => {
                 return Err(Error::new(4202, format!("{key} must be a boolean")));
             }
             "approval_mode"
@@ -1952,6 +1954,14 @@ fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
                 .remove("reasoning_effort");
         }
         Some(level) => cfg["model"]["reasoning_effort"] = level.clone(),
+        None => {}
+    }
+    // Read by each section as a run starts, so it moves no section.
+    match p.get("fast") {
+        Some(Value::Bool(true)) => cfg["model"]["fast"] = json!(true),
+        Some(_) => {
+            cfg["model"].as_object_mut().unwrap().remove("fast");
+        }
         None => {}
     }
     if let Some(tools) = p["tools"].as_array() {
@@ -3056,6 +3066,20 @@ mod parity_tests {
             )
             .unwrap();
         home
+    }
+    #[test]
+    fn fast_mode_turns_on_and_off_and_only_as_a_boolean() {
+        let home = home();
+        fs::create_dir_all(home.path().join("profiles/owl")).unwrap();
+        let update = |fast: Value| {
+            call(home.path(), "alice", "hexbot.bots.update", &json!({"name":"owl","fast":fast}))
+                .unwrap()
+        };
+        assert_eq!(update(json!(true)).unwrap()["bot"]["fast"], true);
+        assert_eq!(config(home.path(), "owl").unwrap()["model"]["fast"], true);
+        assert_eq!(update(json!(false)).unwrap()["bot"]["fast"], false);
+        assert!(config(home.path(), "owl").unwrap()["model"].get("fast").is_none());
+        assert_eq!(update(json!("yes")).unwrap_err().code, 4202);
     }
     #[test]
     fn a_bot_keeps_its_own_limits_and_its_soul_stays_within_one() {

@@ -9,6 +9,13 @@ import { registerAcp } from './acp.ts';
 import { lazyStream } from '@earendil-works/pi-ai';
 import { builtinProviders } from '@earendil-works/pi-ai/providers/all';
 
+/** A request in fast mode: Anthropic's `speed`, ChatGPT's priority tier (its Fast). Other APIs are unchanged. */
+export function fastPayload(api: string | undefined, payload: any): any {
+  if (api === 'anthropic-messages') return {...payload, speed: 'fast'};
+  if (api === 'openai-codex-responses') return {...payload, service_tier: 'priority'};
+  return payload;
+}
+
 export const FILE_TRANSPORT_LIMIT = 1024 * 1024;
 const FILE_SIZE_ERROR = 'Restricted write/edit exceeds the 1 MiB transport limit (about 767 KiB of file data). Use a command for larger files.';
 export function fileRequestTitle(args: any): string {
@@ -429,11 +436,35 @@ export default function hexbot(pi: any) {
     }}};
   });
 
+  // Anthropic prices fast mode at twice its standard rate and Pi bills the
+  // standard one, so a reply that ran fast is billed again here. Pi already
+  // prices ChatGPT's Fast tier from the reply.
+  let ranFast = false;
+  // The model this run asks to run fast, fixed as the run starts: tool gates
+  // refresh the settings mid-run, and a new speed waits for the next message.
+  let fastModel: string | undefined;
+  pi.on('provider_stream_event', (event: any) => {
+    if (event.api !== 'anthropic-messages') return;
+    const speed = event.data?.usage?.speed ?? event.data?.message?.usage?.speed;
+    if (speed) ranFast = speed === 'fast';
+  });
+  pi.on('message_end', (event: any) => {
+    const message = event.message;
+    if (message?.role !== 'assistant' || !ranFast) return;
+    ranFast = false;
+    const cost = message.usage?.cost;
+    if (!cost) return;
+    const doubled = {input: cost.input * 2, output: cost.output * 2, cacheRead: cost.cacheRead * 2, cacheWrite: cost.cacheWrite * 2};
+    return {message: {...message, usage: {...message.usage, cost: {...cost, ...doubled, total: doubled.input + doubled.output + doubled.cacheRead + doubled.cacheWrite}}}};
+  });
   pi.on('before_provider_request', async (event: any, ctx: any) => {
     pendingPrompt = undefined;
+    ranFast = false;
     const provider = ctx.model?.provider ?? config.provider;
-    if (!['qwen-oauth', 'nous', 'openrouter', 'kimi-coding', 'kimi-coding-cn', 'moonshotai', 'moonshotai-cn', 'deepseek', 'zai', 'minimax', 'minimax-cn', 'minimax-oauth', 'custom', 'ollama'].includes(provider)) return;
-    const raw = await ctx.ui.input('__HEXBOT_TOOL__' + JSON.stringify({name: 'hexbot_provider_request', args: {provider, model: ctx.model?.id, thinking: pi.getThinkingLevel(), payload: event.payload}}));
+    // The daemon says when this section runs fast; a fallback model never does.
+    const payload = fastModel !== undefined && ctx.model?.id === fastModel ? fastPayload(ctx.model?.api, event.payload) : event.payload;
+    if (!['qwen-oauth', 'nous', 'openrouter', 'kimi-coding', 'kimi-coding-cn', 'moonshotai', 'moonshotai-cn', 'deepseek', 'zai', 'minimax', 'minimax-cn', 'minimax-oauth', 'custom', 'ollama'].includes(provider)) return payload === event.payload ? undefined : payload;
+    const raw = await ctx.ui.input('__HEXBOT_TOOL__' + JSON.stringify({name: 'hexbot_provider_request', args: {provider, model: ctx.model?.id, thinking: pi.getThinkingLevel(), payload}}));
     if (!raw) throw new Error('Provider request interrupted');
     const reply = JSON.parse(raw);
     if (reply.error) throw new Error(reply.error);
@@ -454,6 +485,7 @@ export default function hexbot(pi: any) {
     // Whatever fails here, still return the prompt Pi is running.
     try {
       await refresh(ctx);
+      fastModel = live.fast === true ? live.model : undefined;
       await registerMcp(ctx);
       primary ??= ctx.model;
       const model = ctx.modelRegistry.find(live.provider, live.model) ?? primary;

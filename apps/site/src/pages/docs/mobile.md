@@ -88,8 +88,8 @@ the phone from Devices returns it to pairing.
 Bots lists each bot with its role and description. Tap a bot to open your chat
 with it; each bot has one, which keeps going. Long-press a bot, or use the
 button at the top right of the chat, for its settings, where you pick its model
-and thinking level from the providers you have connected. A new model applies
-from the chat's next message.
+and thinking level from the providers you have connected, and turn on fast mode
+where the model offers it. A new model applies from the chat's next message.
 
 Rooms shows one room at a time, with a switcher when you have several. Daemon shows what your bots are doing now and
 opens settings, models, plugins (connectors, MCP servers, skills and built-in tools), jobs, About you, usage, bot

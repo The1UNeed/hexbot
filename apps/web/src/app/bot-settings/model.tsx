@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 import { Select } from '../../components/ui/select'
+import { Switch } from '../../components/ui/switch'
 import { providerModels } from '../../lib/api'
 import { reasoningOptions, runningLevel } from '../../lib/reasoning'
 import type { Bot, ModelOption, ReasoningEffort } from '../../lib/types'
@@ -158,6 +159,20 @@ export function ModelTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
             title="Reasoning"
           />
         </Group>
+        {current?.fast ? (
+          <Group footer="The same model answers faster and costs more for each token. Applies from the next message. Scheduled jobs and the heartbeat keep the standard speed.">
+            <Row
+              control={
+                <Switch
+                  aria-label="Fast mode"
+                  checked={bot.fast ?? false}
+                  onCheckedChange={fast => void onSave({ fast })}
+                />
+              }
+              title="Fast mode"
+            />
+          </Group>
+        ) : null}
         {current && (current.input_cost || current.output_cost || current.context) ? (
           <Group title="About this model">
             {current.context ? (
