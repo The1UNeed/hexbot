@@ -4,10 +4,11 @@ import { track } from "@/lib/analytics";
 import type { DaemonStatus } from "@/lib/reachability";
 import { renameDaemon, revokeDaemon } from "./actions";
 
-export interface DaemonView { removing?: boolean; id: string; name: string; hostname: string; status: DaemonStatus; lastSeen: string; openUrl: string }
+export interface DaemonView { removing?: boolean; id: string; name: string; hostname: string; status: DaemonStatus; openUrl: string }
 
-const statusLabel = (daemon: DaemonView) =>
-  daemon.removing ? "Removing…" : daemon.status === "online" ? "Online" : `Offline, last seen ${daemon.lastSeen}`;
+// No "last seen" time: it moves only while someone looks at this page, so it can be days older than the daemon's last moment online.
+export const statusLabel = (daemon: DaemonView) =>
+  daemon.removing ? "Removing…" : daemon.status === "online" ? "Online" : "Offline";
 const openHint = "The daemon is not answering at its address. Start hexbot serve on it, and check the machine's network if it is already running.";
 
 export function DaemonRow({ daemon }: { daemon: DaemonView }) {

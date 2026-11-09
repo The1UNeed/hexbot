@@ -21,7 +21,7 @@ export default async function ConnectPage() {
   const [{ rows, statuses }, sessions] = await Promise.all([daemonsWithStatus, store.listClientSessions(user.id)]);
   const daemons = rows.map(daemon => ({
     removing: !!daemon.revokedAt, id: daemon.id, name: daemon.name, hostname: daemon.tunnelHostname, status: statuses.get(daemon.id) ?? "offline",
-    lastSeen: relativeTime(daemon.lastSeenAt, now), openUrl: browserSignInUrl(daemonOrigin(daemon, fake)),
+    openUrl: browserSignInUrl(daemonOrigin(daemon, fake)),
   }));
   const devices = sessions.map(session => ({
     id: session.id, name: session.deviceName, created: relativeTime(session.createdAt, now), lastSeen: relativeTime(session.lastSeenAt, now),
