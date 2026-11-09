@@ -1494,6 +1494,33 @@ async fn an_xai_key_turned_off_with_its_provider_leaves_x_search_to_the_sign_in(
 }
 
 #[tokio::test]
+async fn a_key_for_one_bot_says_xai_is_disconnected() {
+    // X search chose the xAI API, then the xAI model provider was
+    // disconnected: a key saved for one bot alone does not connect it.
+    let home = setup();
+    fs::write(
+        home.path().join("config.yaml"),
+        "x_search:\n  provider: xai\n",
+    )
+    .unwrap();
+    fs::write(
+        home.path().join("providers-disabled.json"),
+        json!({"xai":true}).to_string(),
+    )
+    .unwrap();
+    for setup in [
+        json!({"id":"x_search","provider":"xai","bot":"owl","bot_only":true,"values":{"XAI_API_KEY":"owl-key"}}),
+        json!({"id":"x_search","bot":"owl","bot_only":true,"values":{"XAI_API_KEY":"owl-key"}}),
+    ] {
+        let result = rpc(home.path(), "hexbot.connectors.setup", setup).await;
+        assert_eq!(
+            result["test"],
+            json!({"ok":false,"message":"xAI is disconnected in Settings, Providers. Save the xAI key for every bot to connect it again."})
+        );
+    }
+}
+
+#[tokio::test]
 async fn an_xai_key_kept_in_the_credential_pool_sets_up_x_search() {
     let home = setup();
     if std::env::var_os("XAI_API_KEY").is_some() {

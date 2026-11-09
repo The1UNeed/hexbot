@@ -977,6 +977,11 @@ async fn probe(home: &Path, id: &str, bot: Option<&str>) -> Result<Value> {
             missing.push(k.clone())
         }
     }
+    // A key kept for one bot does not connect a disconnected xAI provider.
+    if missing.iter().any(|k| k == "XAI_API_KEY") && crate::providers::xai_disabled(home)? {
+        let message = "xAI is disconnected in Settings, Providers. Save the xAI key for every bot to connect it again.";
+        return Ok(json!({"ok":false,"message":message}));
+    }
     if !missing.is_empty() {
         return Ok(json!({"ok":false,"message":format!("Missing {}.",missing.join(", "))}));
     }
