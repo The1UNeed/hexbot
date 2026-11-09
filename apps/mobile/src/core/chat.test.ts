@@ -107,6 +107,30 @@ describe('chat event projection', () => {
     )
     expect(s.approvals[0].form).toBeUndefined()
   })
+  it("keeps a draft card's email so the phone can edit it", () => {
+    const form = {
+      kind: 'email_draft',
+      service: 'microsoft',
+      service_name: 'Outlook',
+      from: 'sam@contoso.com',
+      to: ['ana@example.com'],
+      cc: [],
+      bcc: [],
+      subject: 'Budget',
+      body: 'Numbers attached.',
+      reply_to: null
+    }
+    const s = reduceChat(
+      emptyChat(),
+      event('approval.request', { request_id: 'r1', command: 'Email to ana@example.com', form })
+    )
+    expect(s.approvals[0].form).toEqual(form)
+    const bad = reduceChat(
+      emptyChat(),
+      event('approval.request', { request_id: 'r2', form: { kind: 'email_draft', to: 'x' } })
+    )
+    expect(bad.approvals[0].form).toBeUndefined()
+  })
   it('moves a question card forward on a re-send with newer answers, never back', () => {
     const questions = [
       { qid: 'q1', question: 'Colour?' },

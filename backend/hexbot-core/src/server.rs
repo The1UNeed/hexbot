@@ -529,6 +529,19 @@ impl App {
                     result
                 } else if let Some(result) = providers::call(&self.home, owner, method, p).await {
                     result
+                } else if let Some(result) =
+                    crate::accounts::call(&self.home, owner, method, p, self.address.port()).await
+                {
+                    // A sign-in that finished on its own (a Microsoft code, the
+                    // browser back on this computer) is seen by the poll.
+                    if result.as_ref().is_ok_and(|v| {
+                        crate::accounts::CHANGES.contains(&method)
+                            || (method == "hexbot.accounts.sign_in_poll" && v["status"] == "done")
+                    }) {
+                        self.events
+                            .emit(owner, None, "hexbot.connectors.changed", json!({}));
+                    }
+                    result
                 } else if let Some(result) = services::call(&self.home, owner, method, p).await {
                     result
                 } else {
@@ -1062,6 +1075,28 @@ fn take_browser_login(app: &App, headers: &HeaderMap, state: &str) -> Result<Bro
         return Err(invalid());
     }
     Ok(logins.remove(state).expect("checked login"))
+}
+/// Where Google sends the browser after a sign-in for the Google Workspace
+/// connector (`accounts.rs`). Only a browser on this computer gets here, as
+/// Google returns to the loopback address; the state names the sign-in.
+async fn google_return(
+    State(app): State<Arc<App>>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+) -> Response {
+    if peer.is_some_and(|Extension(ConnectInfo(p))| !p.ip().is_loopback()) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let (ok, page) = crate::accounts::callback(&app.home, &query.unwrap_or_default()).await;
+    let mut response = axum::response::Html(page).into_response();
+    if !ok {
+        *response.status_mut() = StatusCode::BAD_REQUEST;
+    }
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store"),
+    );
+    response
 }
 async fn browser_callback(
     State(app): State<Arc<App>>,
@@ -2078,6 +2113,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/daemon/identity", get(daemon_identity))
         .route("/auth/login", get(browser_login))
         .route("/auth/callback", get(browser_callback))
+        .route("/oauth/google", get(google_return))
         .route("/api/ws", get(upgrade))
         .route("/auth/password-login", post(login))
         .route("/api/auth/ws-ticket", post(ticket))

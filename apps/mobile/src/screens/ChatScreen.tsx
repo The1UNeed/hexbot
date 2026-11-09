@@ -55,6 +55,7 @@ import type { AttachSource } from '../core/pickFile'
 import { AttachMenu } from './AttachMenu'
 import { FileCard } from './FileCard'
 import { MediaAttachment } from './MediaAttachment'
+import { EmailDraftCard } from './EmailDraftCard'
 import { PluginCard } from './PluginCard'
 import { SelectTextSheet } from './SelectTextSheet'
 import { SignInCard } from './SignInCard'
@@ -616,7 +617,14 @@ const TranscriptEntry = memo(function TranscriptEntry({
         </View>
       )
     case 'approval':
-      return entry.request.form?.kind === 'plugin' ? (
+      return entry.request.form?.kind === 'email_draft' ? (
+        <EmailDraftCard
+          form={entry.request.form}
+          joined={continued}
+          onAnswer={onApprove!}
+          request={entry.request}
+        />
+      ) : entry.request.form?.kind === 'plugin' ? (
         <PluginCard
           form={entry.request.form}
           joined={continued}

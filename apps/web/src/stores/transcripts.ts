@@ -28,6 +28,7 @@ import type {
   ClarifyRequest,
   ClarifyRequestPayload,
   ContextUsage,
+  EmailDraftForm,
   Message,
   PluginForm,
   SessionInfo,
@@ -161,7 +162,7 @@ export interface ApprovalRequestPayload {
   turn_id?: string
   choices?: ApprovalChoice[]
   command?: string
-  form?: PluginForm | SignInForm
+  form?: EmailDraftForm | PluginForm | SignInForm
   reason?: string
   request_id?: string
   tool?: string
@@ -251,7 +252,12 @@ export interface TranscriptsState {
     snapshot?: OpenSnapshot
   ) => void
   reasoningDelta: (sessionId: string, text: string) => void
-  resolveApproval: (sessionId: string, requestId: string, choice: ApprovalChoice) => void
+  resolveApproval: (
+    sessionId: string,
+    requestId: string,
+    choice: ApprovalChoice,
+    outcome?: ApprovalRequest['outcome']
+  ) => void
   sessionContext: (sessionId: string, context: ContextUsage) => void
   sessionInfo: (sessionId: string, info: SessionInfo) => void
   sessionUsage: (sessionId: string, usage: Usage) => void
@@ -1222,7 +1228,9 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         turnId: payload.turn_id,
         choices: payload.choices ?? ['once', 'deny'],
         command: payload.command,
-        ...((payload.form?.kind === 'sign_in' || payload.form?.kind === 'plugin') && {
+        ...((payload.form?.kind === 'sign_in' ||
+          payload.form?.kind === 'plugin' ||
+          payload.form?.kind === 'email_draft') && {
           form: payload.form
         }),
         reason: payload.reason,
@@ -1258,7 +1266,12 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       effects.notify({
         body: payload.command ?? payload.reason ?? 'A bot is asking for permission.',
         sectionId: transcript?.sectionId,
-        title: payload.form?.kind === 'sign_in' ? 'Sign-in needed' : 'Approval needed'
+        title:
+          payload.form?.kind === 'sign_in'
+            ? 'Sign-in needed'
+            : payload.form?.kind === 'email_draft'
+              ? 'Email draft ready'
+              : 'Approval needed'
       })
     },
 
@@ -1343,11 +1356,13 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       }))
     },
 
-    resolveApproval(sessionId, requestId, choice) {
+    resolveApproval(sessionId, requestId, choice, outcome) {
       update(sessionId, transcript => ({
         ...settledCard(transcript, requestId),
         approvals: transcript.approvals.map(approval =>
-          approval.requestId === requestId ? { ...approval, decision: choice } : approval
+          approval.requestId === requestId
+            ? { ...approval, decision: choice, ...(outcome && { outcome }) }
+            : approval
         )
       }))
     },

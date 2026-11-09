@@ -44,12 +44,14 @@ import type {
 import { holdHeartbeatMessage, transcriptNotify, useTranscripts } from '../stores/transcripts'
 import { useUi } from '../stores/ui'
 
+import { forgetUnsentDraft } from './draft-card'
 import type { HexbotRpcClient } from './rpc'
 import type {
   ApprovalChoice,
   ClarifyRequestPayload,
   ComputerStatus,
   ContextUsage,
+  EmailDraft,
   RoomEvent,
   RoomTurn,
   SessionInfo,
@@ -404,14 +406,28 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
       return
 
     case 'approval.resolved':
+      if (typeof payload.request_id === 'string') {
+        forgetUnsentDraft(payload.request_id)
+      }
+
       if (typeof payload.request_id === 'string' && typeof payload.choice === 'string') {
-        transcripts.resolveApproval(sessionId, payload.request_id, payload.choice as ApprovalChoice)
+        transcripts.resolveApproval(
+          sessionId,
+          payload.request_id,
+          payload.choice as ApprovalChoice,
+          (payload.mail_action === 'send' || payload.mail_action === 'save') &&
+            payload.draft &&
+            typeof payload.draft === 'object'
+            ? { draft: payload.draft as EmailDraft, mail_action: payload.mail_action }
+            : undefined
+        )
       }
 
       return
 
     case 'approval.expire':
       if (typeof payload.request_id === 'string') {
+        forgetUnsentDraft(payload.request_id)
         transcripts.approvalExpire(sessionId, payload.request_id)
       }
 

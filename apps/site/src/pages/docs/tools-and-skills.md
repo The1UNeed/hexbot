@@ -36,7 +36,7 @@ The **Working directory** is the bot's workspace. Choose a project folder outsid
 
 ## Connect outside services
 
-Connectors are the services Hexbot supports: web search, image and video generation, premium voice, Notion, Home Assistant, and others. The [tool catalog](/tools/) lists the capabilities.
+Connectors are the services Hexbot supports: web search, image and video generation, premium voice, Gmail and Outlook through Google Workspace and Microsoft 365, Notion, Home Assistant, and others. Google Workspace and Microsoft 365 are set up by signing in rather than with a key; see [Email](/docs/email/). The [tool catalog](/tools/) lists the capabilities.
 
 You set up a connector in Settings, Plugins, or in Bot settings, Connectors, by choosing its provider and entering the requested credentials. Each bot has its own on/off switch. A connector must be ready and enabled for that bot before its tools appear in the bot's chat.
 

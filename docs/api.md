@@ -115,7 +115,26 @@ data model. The native transport and event projection live in
   for that provider are read. With `setup`, a field with nothing saved must
   be filled (4202, and the card keeps waiting). The values are saved as
   `hexbot.connectors.setup` or `hexbot.plugins.configure` saves them, and,
-  like a sign-in, reach no event, log or history row. Questions arrive as `clarify.request` and
+  like a sign-in, reach no event, log or history row. A `form` with
+  `kind: "email_draft"` is the draft card `hexbot_mail` shows: `{service:
+  "google" | "microsoft", service_name, from, grant, to, cc, bcc, subject,
+  body, reply_to}`, the address lists as arrays. A `reply_to` that names no
+  message returns its error to the bot (4215, or 4202 for a malformed id)
+  and shows no card. `grant` names the sign-in
+  the card was written under; a sign-in since then won't send it. It is shown in every approval
+  mode, Bypass included. Answer `once` with `mail_action: "send" | "save"`
+  and `draft: {to, cc, bcc, subject, body, reply_to}` as the user left it,
+  or `deny` to discard it. The reply comes once Gmail or Outlook took the
+  email, so the card settles only then. An address that isn't one address,
+  a line break in an address or the subject, or `send` with nobody to send
+  to returns 4202; a mailbox that refuses it, an account signed in as
+  someone other than `from`, or the connector turned off for the bot
+  returns its error; 5244 means the service took it but never answered, so
+  it may have gone out or been saved, and the message says where to look.
+  In every such case the card keeps waiting, and any other answer while one
+  is going out, Discard included, returns 4204. `approval.resolved`
+  for this card also carries `mail_action` and `draft`, the email as it
+  went. Questions arrive as `clarify.request` and
   `pending_clarify` on section open; use `clarify.respond` to answer.
   Every card that stops waiting is settled once, to every client of the
   owner, by its `request_id`. An answer sends `approval.resolved
@@ -1178,6 +1197,43 @@ or a clear.
 - `hexbot.connectors.set_for_bot {id, bot, enabled}` → `{connector}`. A
   connector that is not `ready` for the bot can be turned off but not on:
   4209, "Set up NAME before giving it to a bot."
+- The `google` (Google Workspace) and `microsoft` (Microsoft 365) connectors
+  are set up by signing in, not with a key. Their rows carry `account:
+  {service, email, signed_in}`; `ready` means signed in with a grant that
+  still works, `state_text` is the account's address, and a revoked grant
+  reads `error`, "Sign in again". Their fields hold only the user's own OAuth
+  client (`GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`,
+  `MICROSOFT_OAUTH_CLIENT_ID`), which replaces Hexbot's; `test` reads the
+  account's profile.
+- `hexbot.accounts.sign_in_start {service}` → `AccountSignIn {login_id,
+  service, mode, status, url, code?, redirect_uri?, message}`. Microsoft's
+  `mode` is `device`: open `url` and enter `code`. Google's is `browser`:
+  open `url`; Google returns to `redirect_uri`, the daemon's own
+  `http://127.0.0.1:<port>/oauth/google`, which finishes the sign-in when the
+  browser runs on the daemon's computer. 4210 when the build has no client
+  of its own and none is saved. Starting another replaces a pending one.
+- `hexbot.accounts.sign_in_poll {login_id}` and `sign_in_cancel {login_id}`
+  → `AccountSignIn`; `status` is `pending | done | error | cancelled`, and
+  `done` carries `email`. Only the user who started it can read it.
+- `hexbot.accounts.sign_in_finish {login_id, url}` → `AccountSignIn`: the
+  address a browser on another computer ended on, for Google. Its `state`
+  must match the sign-in. 4202 for an address with no code.
+- `hexbot.accounts.disconnect {service}` → `{disconnected}`: the grant is
+  deleted, and revoked at Google. Bots keep the connector on and wait for a
+  new sign-in. Finishing and disconnecting send `hexbot.connectors.changed`.
+- The grant lives in `accounts/<service>.json`, owner-only and in the
+  credential policy, so no bot shell or file tool reads it in Manual or
+  Auto; Bypass has no sandbox (`SECURITY.md`). Tokens refresh
+  when under a minute is left; a refused refresh marks the account expired.
+  `accounts.<service>.endpoint` in the root `config.yaml` points every
+  request at one server, for tests; HTTP only on loopback.
+- `hexbot_mail {action: search | read | draft, account?, query?, max?, id?,
+  to?, cc?, bcc?, subject?, body?, reply_to?}` is a bot's tool once it has
+  either connector, in its own chat and its scheduled jobs; rooms, threads
+  between bots and heartbeats never get it. `search` and `read` need no
+  approval and return plain text. `draft` shows the draft card and returns
+  `{sent | saved_to_drafts: true, to, cc, subject, body}` as the user left
+  it; there is no other way to send. A job can't draft (4302).
 - `hexbot.connectors.add_mcp {name, command?, args?, env?, url?, transport?,
   bots?, bot?}` → `{connector}`; `hexbot.connectors.remove_mcp {name}` →
   `{removed: true}`. MCP servers are defined once, in the root `config.yaml`,

@@ -9,6 +9,7 @@ import { SkeletonLines } from '../../components/ui/skeleton'
 import { Switch } from '../../components/ui/switch'
 import { Textarea } from '../../components/ui/textarea'
 import {
+  accountsDisconnect,
   connectorsClear,
   connectorsRemoveMcp,
   connectorsTest,
@@ -549,15 +550,27 @@ function PluginDetails({
       await refresh()
     })
 
+  // Google and Microsoft are set up by signing in; their fields only hold
+  // the user's own OAuth client, shown once one is saved.
+  const account = plugin.kind === 'connector' ? connector?.account : null
+  const shownFields = account ? connector!.fields.filter(field => field.set) : connector?.fields
+
   // A server added on its own; a package goes with its server and skills.
   const looseServer = plugin.kind === 'connector' && Boolean(plugin.server)
   const removable = plugin.kind === 'package' || looseServer
 
   return (
     <>
-      {plugin.kind === 'connector' && connector?.fields.length ? (
+      {account ? (
+        <p className="text-muted">
+          {account.signed_in
+            ? `Signed in as ${account.email || 'your account'}. Bots can read and draft; only you send.`
+            : 'Not signed in.'}
+        </p>
+      ) : null}
+      {plugin.kind === 'connector' && connector && shownFields?.length ? (
         <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
-          {connector.fields
+          {shownFields
             .filter(field => !field.provider || field.provider === connector.provider)
             .map(field => (
               <div className="contents" key={field.key}>
@@ -623,8 +636,36 @@ function PluginDetails({
           </Button>
         ) : null}
         {plugin.kind === 'connector' && connector?.fields.length ? (
-          <Button onClick={onSetup} size="sm">
-            {plugin.state === 'not_set_up' ? 'Set up' : 'Edit'}
+          <Button
+            onClick={onSetup}
+            size="sm"
+            variant={account && !account.signed_in ? 'primary' : undefined}
+          >
+            {account
+              ? plugin.state === 'ready'
+                ? 'Edit'
+                : account.signed_in
+                  ? 'Sign in again'
+                  : 'Sign in'
+              : plugin.state === 'not_set_up'
+                ? 'Set up'
+                : 'Edit'}
+          </Button>
+        ) : null}
+        {account?.signed_in ? (
+          <Button
+            onClick={() =>
+              void confirm({
+                detail: 'Bots lose their access to this mail until you sign in again.',
+                title: `Sign out of ${plugin.name}?`
+              }).then(yes =>
+                yes ? run(() => accountsDisconnect(account.service).then(refresh)) : undefined
+              )
+            }
+            size="sm"
+            variant="ghost"
+          >
+            Sign out
           </Button>
         ) : null}
         {connector && (plugin.kind !== 'connector' || plugin.state !== 'not_set_up') ? (
@@ -637,14 +678,18 @@ function PluginDetails({
         connector?.fields.some(field => field.set) ? (
           <Button
             onClick={() =>
-              void confirm({ title: `Remove the keys for ${plugin.name}?` }).then(yes =>
+              void confirm({
+                title: account
+                  ? `Remove your own OAuth client for ${plugin.name}?`
+                  : `Remove the keys for ${plugin.name}?`
+              }).then(yes =>
                 yes ? run(() => connectorsClear(plugin.id).then(refresh)) : undefined
               )
             }
             size="sm"
             variant="ghost"
           >
-            Remove keys
+            {account ? 'Remove your client' : 'Remove keys'}
           </Button>
         ) : null}
         {removable ? (

@@ -566,10 +566,12 @@ async fn committed_client_answers_survive_stop_and_cannot_be_claimed_twice() {
         let s = runtime.sessions.lock().unwrap()["first"].clone();
         runtime.event(&s, json!({"type":"extension_ui_request","id":"committed","method":"confirm","title":"Continue?"})).unwrap();
         let p = json!({"request_id":"committed","choice":choice});
-        let (_, write) = runtime.claim_answer(&s, "approval.respond", &p).unwrap();
+        let (_, write) = runtime
+            .claim_answer(&s, "approval.respond", &p, None)
+            .unwrap();
         assert_eq!(
             runtime
-                .claim_answer(&s, "approval.respond", &p)
+                .claim_answer(&s, "approval.respond", &p, None)
                 .err()
                 .unwrap()
                 .code,
@@ -600,12 +602,15 @@ async fn final_clarification_enqueue_error_keeps_partial_answers_retryable() {
     runtime.event(&s, json!({"type":"extension_ui_request","id":"batch","method":"input","title":format!("__HEXBOT_CLARIFY__{}", json!({"questions":[{"qid":"a","question":"A?"},{"qid":"b","question":"B?"}]}))})).unwrap();
     let a = json!({"request_id":"batch","question_id":"a","answer":"first"});
     assert_eq!(
-        runtime.claim_answer(&s, "clarify.respond", &a).unwrap().0["remaining"],
+        runtime
+            .claim_answer(&s, "clarify.respond", &a, None)
+            .unwrap()
+            .0["remaining"],
         json!(["b"])
     );
     assert_eq!(
         runtime
-            .claim_answer(&s, "clarify.respond", &a)
+            .claim_answer(&s, "clarify.respond", &a, None)
             .err()
             .unwrap()
             .code,
@@ -613,13 +618,19 @@ async fn final_clarification_enqueue_error_keeps_partial_answers_retryable() {
     );
     let b = json!({"request_id":"batch","question_id":"b","answer":"second"});
     let held = s.process.hold_extension_admission();
-    assert!(runtime.claim_answer(&s, "clarify.respond", &b).is_err());
+    assert!(
+        runtime
+            .claim_answer(&s, "clarify.respond", &b, None)
+            .is_err()
+    );
     assert_eq!(
         s.state.lock().unwrap().pending["batch"]["answers"],
         json!({"a":"first"})
     );
     drop(held);
-    let (_, write) = runtime.claim_answer(&s, "clarify.respond", &b).unwrap();
+    let (_, write) = runtime
+        .claim_answer(&s, "clarify.respond", &b, None)
+        .unwrap();
     write.unwrap().wait().await.unwrap();
     Runtime::command(&s, json!({"type":"get_state"}))
         .await
@@ -655,7 +666,7 @@ async fn native_response_claim_is_atomic_with_stop() {
         if committed {
             assert!(
                 runtime
-                    .claim_answer(&s, "approval.respond", &p)
+                    .claim_answer(&s, "approval.respond", &p, None)
                     .unwrap()
                     .1
                     .is_none()
@@ -665,7 +676,7 @@ async fn native_response_claim_is_atomic_with_stop() {
         if !committed {
             assert_eq!(
                 runtime
-                    .claim_answer(&s, "approval.respond", &p)
+                    .claim_answer(&s, "approval.respond", &p, None)
                     .err()
                     .unwrap()
                     .code,

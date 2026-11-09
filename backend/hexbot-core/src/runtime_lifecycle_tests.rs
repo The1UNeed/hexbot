@@ -9,6 +9,8 @@ mod stop_tests;
 #[path = "runtime_admission_tests.rs"]
 mod admission_tests;
 
+#[path = "runtime_mail_tests.rs"]
+mod mail_tests;
 #[cfg(unix)]
 #[path = "runtime_passwords_tests.rs"]
 mod passwords_tests;

@@ -63,6 +63,61 @@ export interface SignInForm {
   username?: string
 }
 
+/**
+ * The draft card a bot shows with `hexbot_mail`: an email the user edits,
+ * then sends or saves to Drafts themselves. A bot can't send on its own.
+ */
+export interface EmailDraftForm {
+  bcc: string[]
+  body: string
+  cc: string[]
+  /** The signed-in address it goes out from. */
+  from: string
+  kind: 'email_draft'
+  /** The message it answers, by its id. */
+  reply_to?: null | string
+  service: MailService
+  /** Gmail or Outlook. */
+  service_name: string
+  subject: string
+  to: string[]
+}
+
+/** The draft as the user left it on the card. */
+export interface EmailDraft {
+  bcc: string[]
+  body: string
+  cc: string[]
+  reply_to?: null | string
+  subject: string
+  to: string[]
+}
+
+/** What the draft card answers with. */
+export interface EmailDraftAnswer {
+  draft: EmailDraft
+  mail_action: 'save' | 'send'
+}
+
+/** The accounts behind the Google Workspace and Microsoft 365 connectors. */
+export type MailService = 'google' | 'microsoft'
+
+/** A sign-in to Google or Microsoft from Settings, Plugins. */
+export interface AccountSignIn {
+  /** Microsoft's device code. */
+  code?: string
+  email?: null | string
+  login_id: string
+  message: string
+  /** `device`: enter a code; `browser`: Google returns to the daemon. */
+  mode: 'browser' | 'device'
+  /** Where Google returns: a browser elsewhere can't load it, so its address is pasted back. */
+  redirect_uri?: string
+  service: MailService
+  status: 'cancelled' | 'done' | 'error' | 'pending'
+  url: string
+}
+
 /** A key a plugin card asks for: never its value, only whether one is saved. */
 export interface PluginFormField {
   help?: null | string
@@ -142,7 +197,9 @@ export interface ApprovalRequest {
   decision?: ApprovalChoice
   /** The command or action, rendered in monospace. */
   command?: string
-  form?: PluginForm | SignInForm
+  form?: EmailDraftForm | PluginForm | SignInForm
+  /** What a draft card did once the mailbox took it, and the email as it went. */
+  outcome?: EmailDraftAnswer
   reason?: string
   receivedAt: number
   requestId: string
@@ -365,6 +422,8 @@ export interface ConnectorProviderOption {
 
 /** One row of the connector catalog, with daemon and per-bot state. */
 export interface Connector {
+  /** Google and Microsoft: set up by signing in, not with a key. */
+  account?: null | { email: null | string; service: MailService; signed_in: boolean }
   description: string
   enabled_bots: string[]
   /** Null when the list was fetched without a bot. */

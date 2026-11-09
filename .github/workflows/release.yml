@@ -183,6 +183,12 @@ jobs:
     env:
       CHANNEL: ${{ needs.preflight.outputs.channel }}
       VERSION: ${{ needs.preflight.outputs.version }}
+      # Hexbot's own OAuth clients for the Google Workspace and Microsoft 365
+      # connectors, compiled into the daemon (backend/hexbot-core/src/accounts.rs).
+      # Empty, a build signs in only with a client the user adds.
+      HEXBOT_GOOGLE_CLIENT_ID: ${{ vars.HEXBOT_GOOGLE_CLIENT_ID }}
+      HEXBOT_GOOGLE_CLIENT_SECRET: ${{ secrets.HEXBOT_GOOGLE_CLIENT_SECRET }}
+      HEXBOT_MICROSOFT_CLIENT_ID: ${{ vars.HEXBOT_MICROSOFT_CLIENT_ID }}
     steps:
       - uses: actions/checkout@v7
       # Installs the pnpm pinned by `packageManager` in the root package.json.

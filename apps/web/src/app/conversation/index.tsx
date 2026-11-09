@@ -90,6 +90,7 @@ import { useUi } from '../../stores/ui'
 import { AskingRow } from './asking-row'
 import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
+import { EmailDraftCard } from './email-draft-card'
 import { FileCard } from './file-card'
 import { filesOf, type FileTarget, mimeOf, openFile } from './file-tab'
 import { MediaView } from './media'
@@ -1060,6 +1061,10 @@ const APPROVAL_CHOICES: Record<ApprovalChoice, string> = {
 export function ApprovalCard({ approval }: { approval: ApprovalRequest }) {
   if (approval.form?.kind === 'plugin') {
     return <PluginCard approval={approval} form={approval.form} />
+  }
+
+  if (approval.form?.kind === 'email_draft') {
+    return <EmailDraftCard approval={approval} form={approval.form} />
   }
 
   if (approval.form) {

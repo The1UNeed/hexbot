@@ -13,6 +13,7 @@ import { splitAttached } from './media'
 import { rpcCall } from './rpc'
 import { toMillis } from './time'
 import type {
+  AccountSignIn,
   ApprovalChoice,
   Bot,
   BotCreateInput,
@@ -29,7 +30,9 @@ import type {
   DaemonInfo,
   DaemonUpdateStatus,
   Device,
+  EmailDraftAnswer,
   HeartbeatStatus,
+  MailService,
   Message,
   ModelOption,
   NetworkInfo,
@@ -260,6 +263,31 @@ export function connectorsClear(
   options: { bot?: string; bot_only?: boolean } = {}
 ): Promise<{ connector: Connector }> {
   return rpcCall<{ connector: Connector }>('hexbot.connectors.clear', { id, ...options })
+}
+
+// ---------------------------------------------------------------------------
+// Google and Microsoft accounts
+// ---------------------------------------------------------------------------
+
+export function accountsSignInStart(service: MailService): Promise<AccountSignIn> {
+  return rpcCall<AccountSignIn>('hexbot.accounts.sign_in_start', { service })
+}
+
+export function accountsSignInPoll(loginId: string): Promise<AccountSignIn> {
+  return rpcCall<AccountSignIn>('hexbot.accounts.sign_in_poll', { login_id: loginId })
+}
+
+/** Finishes a Google sign-in with the address the browser ended on. */
+export function accountsSignInFinish(loginId: string, url: string): Promise<AccountSignIn> {
+  return rpcCall<AccountSignIn>('hexbot.accounts.sign_in_finish', { login_id: loginId, url })
+}
+
+export function accountsSignInCancel(loginId: string): Promise<AccountSignIn> {
+  return rpcCall<AccountSignIn>('hexbot.accounts.sign_in_cancel', { login_id: loginId })
+}
+
+export function accountsDisconnect(service: MailService): Promise<{ disconnected: MailService }> {
+  return rpcCall<{ disconnected: MailService }>('hexbot.accounts.disconnect', { service })
 }
 
 export function connectorsSetForBot(
@@ -898,7 +926,7 @@ export function approvalRespond(
   sessionId: string,
   requestId: string,
   choice: ApprovalChoice,
-  answer?: PluginAnswer | { password: string; username: string }
+  answer?: EmailDraftAnswer | PluginAnswer | { password: string; username: string }
 ): Promise<{ resolved: boolean }> {
   return rpcCall<{ resolved: boolean }>('approval.respond', {
     choice,

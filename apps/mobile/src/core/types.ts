@@ -14,6 +14,7 @@ export type {
   Plugin,
   PluginsList,
   SignInForm,
+  EmailDraftForm,
   SkillInfo,
   SkillRequirement,
   NetworkInfo,
@@ -82,8 +83,9 @@ export interface PendingApproval {
   command: string
   reason?: string
   choices: string[]
-  /** The sign-in card a bot shows to save a password, or a plugin card. */
+  /** The sign-in card a bot shows to save a password, a plugin card, or a draft card. */
   form?:
+    | import('../../../web/src/lib/types').EmailDraftForm
     | import('../../../web/src/lib/types').PluginForm
     | import('../../../web/src/lib/types').SignInForm
 }
