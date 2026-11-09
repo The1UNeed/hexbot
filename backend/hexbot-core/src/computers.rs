@@ -1141,6 +1141,13 @@ pub async fn proxy(token: String, request: Request) -> Response {
     if rest == "cua.env.v1.StreamService/SetPreferences" {
         return StatusCode::FORBIDDEN.into_response();
     }
+    // Hexbot draws each bot's cursor, with its face, over the screen. The
+    // viewer would draw one more for everyone on the computer, each bot by
+    // its name, so a bot would show two pointers. Kept out of presence, it
+    // draws none; a user in control keeps their own pointer.
+    if rest.starts_with(PRESENCE) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     if rest == "viewer/hexbot-screen.js" {
         return (
             [
@@ -1160,6 +1167,9 @@ pub async fn proxy(token: String, request: Request) -> Response {
     });
     forward(parts, body, target, upstream, page).await
 }
+/// The viewer's calls that share who is on the computer and where each
+/// pointer is: `Join`, `UpdateCursor` and `Leave`.
+const PRESENCE: &str = "cua.env.v1.PresenceService/";
 /// A watching screen is small and takes no input: the viewer's toolbar would
 /// only cover it. Its status overlay stays, so a lost stream still says so.
 const WATCH_STYLE: &str =

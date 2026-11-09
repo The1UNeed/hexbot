@@ -617,6 +617,10 @@ async fn computer_screen_is_served_through_the_daemon_and_embeddable() {
         .route(
             "/cua.env.v1.StreamService/SetPreferences",
             axum::routing::post(|| async { "resized" }),
+        )
+        .route(
+            "/cua.env.v1.PresenceService/{method}",
+            axum::routing::post(|| async { "present" }),
         );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -680,6 +684,32 @@ async fn computer_screen_is_served_through_the_daemon_and_embeddable() {
     )
     .await;
     assert_eq!(resize.status(), 403);
+    // Hexbot draws the bots' cursors. The viewer is kept out of presence, so
+    // it draws no second one, watching or in control.
+    let control = computers::call(h.path(), "hexbot.computer.view", &json!({"control": true}))
+        .await
+        .unwrap()
+        .unwrap();
+    let control = control["path"].as_str().unwrap().split_once('#').unwrap().0;
+    let control = control
+        .strip_prefix("/hexbot/computer/")
+        .unwrap()
+        .strip_suffix("/viewer/")
+        .unwrap();
+    for token in [token, control] {
+        for method in ["Join", "UpdateCursor", "Leave"] {
+            let presence = computers::proxy(
+                token.to_owned(),
+                Request::post(format!(
+                    "/hexbot/computer/{token}/cua.env.v1.PresenceService/{method}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await;
+            assert_eq!(presence.status(), 403, "{method}");
+        }
+    }
     // A link may fix the screen's quality; an unknown one is refused.
     let fixed = computers::call(
         h.path(),

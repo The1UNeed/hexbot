@@ -888,6 +888,9 @@ cursor there.
   `reconnecting` or `failed`. A client switching links, as taking control
   and giving it back do, keeps the old screen in sight until the new one
   streams.
+  Hexbot draws each bot's cursor itself, so the daemon refuses the viewer's
+  presence calls (`cua.env.v1.PresenceService/*`) and the viewer draws none
+  of its own.
   The viewer decodes H.264 with WebCodecs, which browsers offer only on a
   secure page: over HTTPS (Connect) or on the daemon's own computer. A page
   at a plain `http://` address on the network gets no video; clients say so
