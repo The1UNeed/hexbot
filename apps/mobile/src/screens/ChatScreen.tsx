@@ -25,7 +25,7 @@ import {
 } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
-import { messageText } from '../core/message-text'
+import { messageCode, messageText } from '../core/message-text'
 
 import {
   Banner,
@@ -383,10 +383,14 @@ function ChatBody(props: ChatScreenProps) {
       // The browser preview selects with the mouse; a press there only recalls.
       if (Platform.OS === 'web' || !item?.text) return recall?.()
       // What the bubble shows: a bot's Markdown marks are drawn, not written.
-      const text =
-        item.role === 'user' || !renderMessageText ? item.text : messageText(item.text)
+      const markdown = item.role !== 'user' && Boolean(renderMessageText)
+      const text = markdown ? messageText(item.text) : item.text
+      // A bot's command or snippet, without the words around it.
+      const code = markdown ? messageCode(item.text) : null
+      const put = (value: string) => () => void Clipboard.setStringAsync(value).catch(() => undefined)
       messageMenu({
-        copy: () => void Clipboard.setStringAsync(text),
+        copy: put(text),
+        copyCode: code ? put(code) : undefined,
         select: () => setSelecting(text),
         recall
       })
@@ -736,32 +740,37 @@ function MessageBubble({
 
 /**
  * What a long press on a message offers: the system's action sheet on iOS,
- * a dialog on Android, which holds three choices and closes with Back.
+ * a dialog on Android, which holds three choices and closes with Back. Copy
+ * code is for a bot's reply and Recall for your own message, so a message
+ * never has both.
  */
-function messageMenu(actions: { copy: () => void; select: () => void; recall?: () => void }) {
-  const { copy, select, recall } = actions
+function messageMenu(actions: {
+  copy: () => void
+  copyCode?: () => void
+  select: () => void
+  recall?: () => void
+}) {
+  const { copy, copyCode, select, recall } = actions
+  const choices = [
+    { text: 'Copy', onPress: copy },
+    ...(copyCode ? [{ text: 'Copy code', onPress: copyCode }] : []),
+    { text: 'Select text', onPress: select },
+    ...(recall ? [{ text: 'Recall', onPress: recall, style: 'destructive' as const }] : [])
+  ]
   if (Platform.OS === 'ios') {
-    const options = ['Copy', 'Select text', ...(recall ? ['Recall'] : []), 'Cancel']
+    const destructive = choices.findIndex(choice => choice.text === 'Recall')
     ActionSheetIOS.showActionSheetWithOptions(
       {
-        cancelButtonIndex: options.length - 1,
-        destructiveButtonIndex: recall ? 2 : undefined,
-        options
+        cancelButtonIndex: choices.length,
+        destructiveButtonIndex: destructive < 0 ? undefined : destructive,
+        options: [...choices.map(choice => choice.text), 'Cancel']
       },
-      index => [copy, select, recall][index]?.()
+      index => choices[index]?.onPress()
     )
     return
   }
-  Alert.alert(
-    'Message',
-    undefined,
-    [
-      ...(recall ? [{ onPress: recall, style: 'destructive' as const, text: 'Recall' }] : []),
-      { onPress: select, text: 'Select text' },
-      { onPress: copy, text: 'Copy' }
-    ],
-    { cancelable: true }
-  )
+  // Android's dialog puts its last button where the main one goes: Copy.
+  Alert.alert('Message', undefined, [...choices].reverse(), { cancelable: true })
 }
 
 function WaitingRow({

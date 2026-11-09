@@ -31,7 +31,7 @@ vi.mock('react-native', async () => {
   }
 })
 vi.mock('@expo/vector-icons', () => ({ Ionicons: () => null }))
-vi.mock('expo-clipboard', () => ({ setStringAsync: vi.fn() }))
+vi.mock('expo-clipboard', () => ({ setStringAsync: vi.fn(async () => true) }))
 vi.mock('../ui/PluginIcon', () => ({ PluginIcon: () => null }))
 // The players are native views; this checks which file each message hands them.
 vi.mock('../screens/MediaAttachment', async () => {
@@ -175,6 +175,24 @@ it('plays the pictures, videos and audio files a message carries, and shows any 
     '.txt',
     'Text'
   ])
+})
+
+it('a long press on a reply with code can copy the code alone', () => {
+  const menu = vi.mocked(ActionSheetIOS.showActionSheetWithOptions)
+  const items: ChatItem[] = [
+    { kind: 'message', id: 'reply', role: 'bot', text: 'Run this:\n\n```sh\nhexbot jobs --all\n```' }
+  ]
+  render(createElement(ChatScreen, {
+    title: 'Ops', face: { name: 'Ops' }, items, onSend: vi.fn(), onApprove: vi.fn(),
+    renderMessageText: item => createElement('span', null, item.text)
+  }))
+
+  fireEvent.contextMenu(screen.getByTestId('chat-message-reply'))
+  expect(menu.mock.lastCall?.[0]).toMatchObject({ options: ['Copy', 'Copy code', 'Select text', 'Cancel'], cancelButtonIndex: 3 })
+  act(() => menu.mock.lastCall?.[1](1))
+  expect(Clipboard.setStringAsync).toHaveBeenLastCalledWith('hexbot jobs --all')
+  act(() => menu.mock.lastCall?.[1](0))
+  expect(Clipboard.setStringAsync).toHaveBeenLastCalledWith('Run this:\n\nhexbot jobs --all')
 })
 
 it('a long press on a message copies it whole or opens it to select any part', () => {

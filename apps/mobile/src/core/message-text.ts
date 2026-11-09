@@ -71,3 +71,11 @@ export function messageText(text: string): string {
     )
     .join('\n\n')
 }
+
+/** A message's code blocks, a blank line apart, or null when it has none. */
+export function messageCode(text: string): string | null {
+  const code = parseMessage(text)
+    .filter(block => block.kind === 'code')
+    .map(block => block.text)
+  return code.length ? code.join('\n\n') : null
+}

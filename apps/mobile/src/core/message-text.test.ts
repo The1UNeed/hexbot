@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { messageText, parseMessage } from './message-text'
+import { messageCode, messageText, parseMessage } from './message-text'
 
 it('copies a message as its bubble reads, every paragraph at once', () => {
   const text = [
@@ -35,4 +35,10 @@ it('reads headings, code and links once for the bubble', () => {
   ])
   // A bare address is not written twice.
   expect(messageText('See [https://a.example](https://a.example)')).toBe('See https://a.example')
+})
+
+it('copies only the code of a message that has some', () => {
+  const text = 'Run this:\n\n```sh\nhexbot jobs\n```\n\nThen this:\n\n```\nhexbot pair\n```'
+  expect(messageCode(text)).toBe('hexbot jobs\n\nhexbot pair')
+  expect(messageCode('Inline `code` is part of the words.')).toBeNull()
 })
