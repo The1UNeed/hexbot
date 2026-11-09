@@ -343,7 +343,8 @@ try {
     expect(async () => {
       await page
         .getByTestId('chat-transcript')
-        .evaluate(node => node.scrollTo(0, node.scrollHeight))
+        // React Native Web replaces scrollTo with its own (y, x) API.
+        .evaluate(node => { node.scrollTop = node.scrollHeight })
       await expect(
         message('Your daemon received this from mobile. The connection is working.', {
           exact: true
