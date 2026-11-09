@@ -265,6 +265,15 @@ also holds the key file can. Same-user malware can ask the keychain for the key.
 Bots' shells and file tools can read neither file in Manual or Auto; Bypass has
 no sandbox, so a bot in Bypass can.
 
+The Google Workspace and Microsoft 365 sign-ins are OAuth grants in
+`accounts/<service>.json`, plain JSON in an owner-only file, like provider
+credentials. They hold a refresh token that can read, draft and send mail as
+the user. `hexbot_mail` sends only what the user sends from a draft card, in
+every approval mode, and only from the account the card showed. Bots' shells
+and file tools can't read the grant in Manual or Auto; Bypass has no sandbox,
+so a bot in Bypass can, and could send mail with it outside the card. Sign
+out removes the file, and for Google withdraws the grant.
+
 A bot never receives a password in its conversation. The daemon types it into
 the page the bot names, and only when the browser's page is on the login's own
 site (the same host, or one inside the other, never https to http). On the

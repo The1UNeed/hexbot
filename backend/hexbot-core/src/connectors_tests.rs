@@ -45,6 +45,8 @@ async fn catalog_shapes_and_errors_match_clients() {
             "image_gen",
             "video_gen",
             "premium_voice",
+            "google",
+            "microsoft",
             "notion",
             "airtable",
             "x_search",
@@ -1197,4 +1199,70 @@ async fn settings_name_the_web_search_the_bots_use() {
     assert_eq!(crate::native_tools::web_backend(&cfg, &env, false), "exa");
     let row = connectors::get(home.path(), None, "web_search").unwrap();
     assert_eq!(row["provider"], "exa");
+}
+
+/// Google and Microsoft are set up by signing in: until then no bot can be
+/// given them, and once signed in the row names the account.
+#[tokio::test]
+async fn account_connectors_are_ready_once_signed_in() {
+    let home = setup();
+    let h = home.path();
+    let row = |list: &Value, id: &str| {
+        list["connectors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == id)
+            .unwrap()
+            .clone()
+    };
+    let list = rpc(h, "hexbot.connectors.list", json!({"bot":"owl"})).await;
+    let google = row(&list, "google");
+    assert_eq!(google["state"], "not_set_up");
+    assert_eq!(google["account"]["signed_in"], false);
+    assert_eq!(google["enabled_for_bot"], false);
+    let refused = call(
+        h,
+        "alice",
+        "hexbot.connectors.set_for_bot",
+        json!({"bot":"owl","id":"google","enabled":true}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(refused.code, 4209);
+    fs::create_dir_all(h.join("accounts")).unwrap();
+    fs::write(
+        h.join("accounts/google.json"),
+        json!({"email":"ana@example.com","client_id":"c","access_token":"t","refresh_token":"r","expires_at":0}).to_string(),
+    )
+    .unwrap();
+    rpc(
+        h,
+        "hexbot.connectors.set_for_bot",
+        json!({"bot":"owl","id":"google","enabled":true}),
+    )
+    .await;
+    let list = rpc(h, "hexbot.connectors.list", json!({"bot":"owl"})).await;
+    let google = row(&list, "google");
+    assert_eq!(google["state"], "ready");
+    assert_eq!(google["state_text"], "ana@example.com");
+    assert_eq!(google["account"]["email"], "ana@example.com");
+    assert_eq!(google["enabled_for_bot"], true);
+    assert!(!google.to_string().contains("refresh"));
+    // Microsoft stays off: each connector has its own toolset.
+    assert_eq!(row(&list, "microsoft")["enabled_for_bot"], false);
+    // A revoked grant shows as needing a sign-in, and the bot keeps waiting for it.
+    fs::write(
+        h.join("accounts/google.json"),
+        json!({"email":"ana@example.com","client_id":"c","refresh_token":"r","expired":true})
+            .to_string(),
+    )
+    .unwrap();
+    let google = row(
+        &rpc(h, "hexbot.connectors.list", json!({"bot":"owl"})).await,
+        "google",
+    );
+    assert_eq!(google["state"], "error");
+    assert_eq!(google["state_text"], "Sign in again");
+    assert_eq!(google["waiting_bots"], json!(["owl"]));
 }

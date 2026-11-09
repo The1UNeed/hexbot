@@ -165,6 +165,19 @@ more freedom and more capability than a hosted product can offer.
   for reads (GET, and Notion's search and queries) and, outside heartbeats,
   `hexbot_connector_write` for changes, which Auto reviews and Manual asks
   about like a connected tool's.
+- Gmail and Outlook come through the Google Workspace and Microsoft 365
+  connectors, set up by signing in, not with a key. The daemon keeps the
+  grant and makes every request (`accounts.rs`, `mail.rs`); a bot's
+  `hexbot_mail` searches and reads, as plain text, and drafts. A draft is a
+  card in the bot's chat that the user edits, then sends or saves to Drafts
+  with their own click, in every approval mode: sending email is never the
+  bot's decision, and a reviewer can't tell a good email from a bad one.
+  The draft stays in the chat until then, so nothing half-written lands in
+  the mailbox, and the card says Sent only once the mailbox took it; a
+  refusal leaves the card open with the user's edits. Mail stays in the bot's own chat and its jobs; rooms and
+  threads between bots may have other readers. Google refuses Gmail scopes
+  to device codes, so it signs in with PKCE and returns to the daemon's
+  loopback port, or to a pasted address from another computer.
 - Its one way to speak is `hexbot_notify`: one message per run, eight a day
   from each bot. The message is posted as the bot's own message in its chat
   (made if it has none) and broadcast whole as `hexbot.heartbeat.message`:

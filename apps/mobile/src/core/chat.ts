@@ -2,7 +2,14 @@ import type { GatewayEvent } from '@hermes/shared'
 import { splitAttached } from '../../../web/src/lib/media'
 import type { PluginForm } from '../../../web/src/lib/types'
 
-import type { ChatMessage, ChatState, ChatTool, SignInForm, TurnState } from './types'
+import type {
+  ChatMessage,
+  ChatState,
+  ChatTool,
+  EmailDraftForm,
+  SignInForm,
+  TurnState
+} from './types'
 export const emptyTurn = (): TurnState => ({
   streaming: '',
   interim: [],
@@ -67,6 +74,14 @@ const isPlugin = (value: unknown): value is PluginForm =>
   typeof (value as PluginForm).id === 'string' &&
   typeof (value as PluginForm).name === 'string' &&
   Array.isArray((value as PluginForm).fields)
+
+/** A draft card's email, from an `approval.request`. */
+const isEmailDraft = (value: unknown): value is EmailDraftForm =>
+  typeof value === 'object' &&
+  value !== null &&
+  (value as EmailDraftForm).kind === 'email_draft' &&
+  Array.isArray((value as EmailDraftForm).to) &&
+  typeof (value as EmailDraftForm).body === 'string'
 
 const detailOf = (value: unknown) =>
   typeof value === 'string' ? value : value == null ? '' : JSON.stringify(value, null, 2)
@@ -239,7 +254,7 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
         command: String(p.command ?? p.tool_name ?? 'Approve this action'),
         reason: typeof p.reason === 'string' ? p.reason : undefined,
         choices: Array.isArray(p.choices) ? (p.choices as string[]) : ['once', 'deny'],
-        ...((isSignIn(p.form) || isPlugin(p.form)) && { form: p.form })
+        ...((isSignIn(p.form) || isPlugin(p.form) || isEmailDraft(p.form)) && { form: p.form })
       }
       return {
         ...state,

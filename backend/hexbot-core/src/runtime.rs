@@ -31,6 +31,8 @@ mod connector_tool;
 mod delegation;
 #[path = "runtime_identity.rs"]
 mod identity;
+#[path = "runtime_mail.rs"]
+mod mail_tool;
 #[path = "runtime_passwords.rs"]
 mod password_tool;
 #[path = "runtime_plugins.rs"]
@@ -626,6 +628,10 @@ impl Runtime {
             return;
         }
         for (id, request) in pending {
+            // A draft card going out settles as sent instead.
+            if mail_tool::is_sending(&s.id, &id) {
+                continue;
+            }
             let kind = if request["kind"] == "clarify" {
                 "clarify.expire"
             } else {
@@ -1444,6 +1450,13 @@ impl Runtime {
         if !heartbeat_run && connector_tool::offered(&self.home, bot)? {
             tools.push(connector_tool::read_descriptor());
             tools.push(connector_tool::write_descriptor());
+        }
+        // Gmail and Outlook: in the bot's own chat and its jobs only
+        // (runtime_mail.rs).
+        if !heartbeat_run
+            && mail_tool::offered(&self.home, bot, own && restricted.is_none(), overrides)?
+        {
+            tools.push(mail_tool::descriptor());
         }
         if heartbeat_run {
             tools.push(heartbeat::notify_descriptor());
@@ -2352,6 +2365,7 @@ impl Runtime {
         s: &Live,
         method: &str,
         p: &Value,
+        mail: Option<&Value>,
     ) -> Result<(Value, Option<crate::pi::ExtensionWrite>)> {
         let _gate = s.event_gate.lock().unwrap();
         let mut state = s.state.lock().unwrap();
@@ -2365,10 +2379,18 @@ impl Runtime {
             .cloned()
             .ok_or_else(|| Error::new(4204, "request is no longer waiting"))?;
         // What every client of the owner is told was answered.
-        let settled;
+        let mut settled;
         let answer = if method == "approval.respond" {
             if request["kind"] != "approval" {
                 return Err(Error::new(4202, "not an approval request"));
+            }
+            // A draft card going out takes no other answer, Discard included,
+            // until the mailbox has answered.
+            if mail.is_none()
+                && request["approval_payload"]["form"]["kind"] == "email_draft"
+                && mail_tool::is_sending(&s.id, id)
+            {
+                return Err(Error::new(4204, "This email is already on its way."));
             }
             let offered = |choice: &str| {
                 request["approval_payload"]["choices"]
@@ -2391,6 +2413,15 @@ impl Runtime {
                 // The plugin card: the keys typed go to the waiting tool only.
                 let form = &request["approval_payload"]["form"];
                 json!({"value": plugin_tool::answer(form, p)?.to_string()})
+            } else if request["approval_payload"]["form"]["kind"] == "email_draft"
+                && choice != "deny"
+            {
+                // The draft card, already sent or saved by `mail_deliver`:
+                // every client shows what went out and where.
+                let answer =
+                    mail.ok_or_else(|| Error::new(5201, "The draft card sent no draft."))?;
+                settled = mail_tool::settled(answer);
+                json!({"value": answer.to_string()})
             } else if request["approval_payload"]["form"].is_object() && choice != "deny" {
                 // The sign-in card: what was typed goes to the waiting tool
                 // only, never to an event, a log or the conversation.
@@ -2510,12 +2541,18 @@ impl Runtime {
             // waiters, which forget their own requests. The rest are taken
             // below, so a turn that ends meanwhile expires each only once.
             let mut cards = HashMap::new();
+            // A draft card going out keeps its waiter, which hears it was
+            // sent once the mailbox answers (`approval.respond`).
+            let going = |id: &String| mail_tool::is_sending(&s.id, id);
             for id in state.native_approvals.keys().cloned().collect::<Vec<_>>() {
+                if going(&id) {
+                    continue;
+                }
                 if let Some(request) = state.pending.remove(&id) {
                     cards.insert(id, request);
                 }
             }
-            state.native_approvals.clear();
+            state.native_approvals.retain(|id, _| going(id));
             state.display.clear();
             let owned = state
                 .pending
@@ -3203,12 +3240,39 @@ impl Runtime {
                 json!({"acknowledged":s.state.lock().unwrap().pending.contains_key(required(p,"request_id")?)}),
             ),
             "approval.respond" | "clarify.respond" => {
-                let claimed = match self.claim_answer(&s, method, p) {
+                // A draft card's email goes out first: the card settles only
+                // once Gmail or Outlook took it, and a refusal keeps it open.
+                let delivered = if method == "approval.respond" {
+                    self.mail_deliver(&s, p).await?
+                } else {
+                    None
+                };
+                let mail = delivered.as_ref().map(|(_, answer, _)| answer);
+                let claimed = match self.claim_answer(&s, method, p, mail) {
                     Err(error) if error.message == crate::pi::PiError::Capacity.to_string() => {
                         s.process.extension_slot(Duration::from_secs(1)).await;
-                        self.claim_answer(&s, method, p)?
+                        self.claim_answer(&s, method, p, mail)
                     }
-                    result => result?,
+                    result => result,
+                };
+                let claimed = match (claimed, &delivered) {
+                    // Sent, but Stop or the turn's end took the card meanwhile.
+                    // Its card wasn't expired while it went, so every client
+                    // folds it to what went out; a tool still waiting hears too.
+                    (Err(error), Some((request, answer, _))) if error.code == 4204 => {
+                        let id = required(p, "request_id")?;
+                        let waiting = {
+                            let mut state = s.state.lock().unwrap();
+                            state.pending.remove(id);
+                            state.native_approvals.remove(id)
+                        };
+                        if let Some(sender) = waiting {
+                            let _ = sender.send(answer.to_string());
+                        }
+                        self.resolved(&s, id, request, mail_tool::settled(answer));
+                        return Ok(json!({"resolved":true}));
+                    }
+                    (result, _) => result?,
                 };
                 if let Some(write) = claimed.1 {
                     write.wait().await.map_err(pi_error)?;
@@ -4759,6 +4823,7 @@ impl Runtime {
             }
             plugin_tool::NAME => self.plugins_tool(s, args).await,
             password_tool::NAME => self.passwords_tool(s, args).await,
+            mail_tool::NAME => self.mail_tool(s, args).await,
             "self_soul" | "hexbot_soul" => {
                 let path = self.home.join("profiles").join(&s.bot).join("SOUL.md");
                 let cap = MemoryStore::new(self.home.clone()).soul_cap(&s.bot)?;
@@ -5952,7 +6017,7 @@ fn tool_context(name: &str, args: &Value) -> String {
         "hexbot_show_html" => "title",
         "hexbot_share_file" => "path",
         "hexbot_bots" | "hexbot_rooms" | "hexbot_jobs" | "hexbot_settings" | "hexbot_heartbeat"
-        | "hexbot_plugins" | "hexbot_passwords" | "computer_use" => "action",
+        | "hexbot_plugins" | "hexbot_passwords" | "hexbot_mail" | "computer_use" => "action",
         "hexbot_notify" => "message",
         "hexbot_connector_read" | "hexbot_connector_write" => "path",
         name if name.starts_with("mcp__") => args

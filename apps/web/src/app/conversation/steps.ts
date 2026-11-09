@@ -60,6 +60,24 @@ const COMPUTER: Record<string, [live: string, done: string]> = {
   windows: ['Checking windows', 'Checked windows']
 }
 
+/** Email, by `hexbot_mail` action, which the daemon sends as the call's summary. */
+const MAIL: Record<string, [live: string, done: string]> = {
+  draft: ['Drafting an email', 'Drafted an email'],
+  read: ['Reading an email', 'Read an email'],
+  search: ['Searching email', 'Searched email']
+}
+
+/** "Searching email", or the plain phrase when the action is unknown. */
+export function mailLabel(action: null | string | undefined, tense: 'done' | 'live'): string {
+  const verbs = MAIL[(action ?? '').trim()]
+
+  return verbs
+    ? verbs[tense === 'live' ? 0 : 1]
+    : tense === 'live'
+      ? 'Checking email'
+      : 'Checked email'
+}
+
 /** "Clicking on the computer", or the plain phrase when the action is unknown. */
 export function computerLabel(action: null | string | undefined, tense: 'done' | 'live'): string {
   const verbs = COMPUTER[(action ?? '').trim()]
@@ -218,6 +236,10 @@ export function toolLabel(
     return computerLabel(call.summary, tense)
   }
 
+  if (call.name === 'hexbot_mail') {
+    return mailLabel(call.summary, tense)
+  }
+
   const connector = PREVIEW[call.name]
   const detail = connector === undefined ? '' : preview(call)
   const verbs = (detail ? undefined : NO_PREVIEW[call.name]) ?? VERBS[call.name]
@@ -333,6 +355,10 @@ export function activityLabel(call: ToolCall, name: string): string {
 
   if (call.name === 'computer_use') {
     return `${name} is ${computerLabel(call.summary, 'live').replace(/^\w/, c => c.toLowerCase())}`
+  }
+
+  if (call.name === 'hexbot_mail') {
+    return `${name} is ${mailLabel(call.summary, 'live').replace(/^\w/, c => c.toLowerCase())}`
   }
 
   return `${name} ${ACTIVITY[call.name] ?? `is using ${humanize(call.name)}`}`

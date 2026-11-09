@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons'
+import * as Clipboard from 'expo-clipboard'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { Linking, StyleSheet, View } from 'react-native'
 import {
@@ -41,6 +42,7 @@ import { botPhoto } from './core/avatar'
 import { scheduleChange } from './core/jobs'
 import { requirementText } from './core/skills'
 import { canGive, pluginRows, withWaiting } from '../../web/src/lib/plugin-rows'
+import { GoogleSignInButton } from './ui/GoogleSignInButton'
 import { PluginIcon } from './ui/PluginIcon'
 import { isOpenRoom } from './core/routes'
 import { pickFile } from './core/pickFile'
@@ -742,6 +744,45 @@ export function Management({
       newer = true
     }
   }, [mobile.heartbeats])
+  // A connector panel reads its row again after a sign-in or sign-out, so
+  // it shows who is signed in and offers the right actions.
+  const reloadConnector = async () => {
+    if (kind !== 'connector' || !panel) return
+    const { connectors } = await rpc<{ connectors: Connector[] }>(
+      'hexbot.connectors.list',
+      bot ? { bot: bot.name } : {}
+    )
+    const fresh = connectors.find(c => c.id === str(panel.data?.id))
+    setExtra({})
+    if (fresh) onNavigate({ ...panel, data: fresh as unknown as RowData })
+  }
+  // A Google or Microsoft sign-in from a connector panel finishes on its
+  // own: the daemon is asked until it says done.
+  const signingIn =
+    kind === 'connector' && extra.account_login === true && extra.status === 'pending'
+  // The sign-in still waiting, so an answer for one the user stopped is dropped.
+  const waitingLogin = useRef<unknown>(null)
+  waitingLogin.current = signingIn ? extra.login_id : null
+  useEffect(() => {
+    if (!signingIn) return
+    const current = epoch.current
+    const timer = setInterval(() => {
+      void rpc<RowData>('hexbot.accounts.sign_in_poll', { login_id: extra.login_id })
+        .then(next => {
+          if (current !== epoch.current || waitingLogin.current !== next.login_id) return
+          setExtra(e => ({ ...e, ...next }))
+          if (next.status === 'done') {
+            setNotice(next.email ? `Signed in as ${str(next.email)}` : str(next.message))
+            void mobile.refresh()
+            void reloadConnector().catch(() => {})
+          } else if (next.status === 'error' || next.status === 'cancelled')
+            // Cancelled elsewhere: another sign-in replaced it, or Sign out ended it.
+            setError(str(next.message))
+        })
+        .catch(() => {})
+    }, 2000)
+    return () => clearInterval(timer)
+  }, [signingIn, extra.login_id])
   const set = (key: string, value: string | boolean) => setValues(v => ({ ...v, [key]: value }))
   const field = (
     key: string,
@@ -1571,9 +1612,114 @@ export function Management({
       break
     case 'connector': {
       const c = panel!.data as unknown as Connector
+      const account = c.account
+      const accountName = account?.service === 'google' ? 'Google' : 'Microsoft'
+      const pending = extra.account_login === true && extra.status === 'pending'
+      const startSignIn = async () => {
+        const login = await rpc<RowData>('hexbot.accounts.sign_in_start', {
+          service: account!.service
+        })
+        setExtra({ ...login, account_login: true })
+        // Microsoft's page waits until the code is copied, so the phone
+        // doesn't switch away before the user has it.
+        if (login.mode === 'device') {
+          setNotice(`Copy the code, then sign in on the ${accountName} page.`)
+          return
+        }
+        setNotice(`Finish signing in on the ${accountName} page.`)
+        await Linking.openURL(str(login.url))
+      }
       content = (
         <>
           <Text tone="muted">{c.description}</Text>
+          {account ? (
+            <Group
+              title="Account"
+              footer={
+                pending && extra.mode === 'browser'
+                  ? `Google ends on a page that doesn't load on this phone. Copy that page's address and paste it here.`
+                  : 'Bots you turn it on for can read your mail and draft email for you. Only you can send it.'
+              }
+            >
+              <Row
+                title={
+                  account.signed_in
+                    ? `Signed in as ${account.email || accountName}`
+                    : 'Not signed in'
+                }
+                subtitle={c.state === 'error' ? c.state_text : undefined}
+                testID="account-state"
+              />
+              {pending && extra.code ? (
+                <Row
+                  title={str(extra.code)}
+                  subtitle={`Enter this code on the ${accountName} page`}
+                  testID="account-code"
+                />
+              ) : null}
+              {pending && extra.mode === 'browser'
+                ? field('account_url', 'Address the browser ended on')
+                : null}
+              {pending && extra.mode === 'browser'
+                ? action(
+                    'Finish sign-in',
+                    async () => {
+                      const next = await rpc<RowData>('hexbot.accounts.sign_in_finish', {
+                        login_id: extra.login_id,
+                        url: str(values.account_url).trim()
+                      })
+                      setExtra(e => ({ ...e, ...next }))
+                      if (next.status === 'error') throw new Error(str(next.message))
+                      setNotice(next.email ? `Signed in as ${str(next.email)}` : str(next.message))
+                      await reloadConnector()
+                    },
+                    false,
+                    '',
+                    !str(values.account_url).trim()
+                  )
+                : null}
+              {pending && extra.mode === 'device'
+                ? action(`Copy code and open ${accountName}`, async () => {
+                    await Clipboard.setStringAsync(str(extra.code))
+                    await Linking.openURL(str(extra.url))
+                  })
+                : pending
+                  ? action('Open the page again', () => Linking.openURL(str(extra.url)))
+                  : account.service === 'google'
+                    ? null
+                    : action(
+                        account.signed_in
+                          ? `Sign in to ${accountName} again`
+                          : `Sign in with ${accountName}`,
+                        startSignIn
+                      )}
+              {pending
+                ? action('Stop signing in', async () => {
+                    await rpc('hexbot.accounts.sign_in_cancel', { login_id: extra.login_id })
+                    setExtra({})
+                  })
+                : null}
+              {account.signed_in
+                ? action(
+                    'Sign out',
+                    async () => {
+                      await rpc('hexbot.accounts.disconnect', { service: account.service })
+                      await reloadConnector()
+                    },
+                    true,
+                    'Bots lose their access to this mail until you sign in again.'
+                  )
+                : null}
+            </Group>
+          ) : null}
+          {account?.service === 'google' && !pending ? (
+            <GoogleSignInButton
+              busy={busy}
+              disabled={mobile.connection !== 'connected'}
+              onPress={() => void run(startSignIn)}
+              testID="account-google-sign-in"
+            />
+          ) : null}
           {c.providers?.length ? (
             <Group title="Provider">
               {c.providers.map(p => (
@@ -1615,7 +1761,7 @@ export function Management({
                 }
               />
             ) : null}
-            {action('Save credentials', () =>
+            {action(account ? 'Save your own OAuth client' : 'Save credentials', () =>
               rpc('hexbot.connectors.setup', {
                 id: c.id,
                 provider: values.provider || undefined,
@@ -1635,7 +1781,11 @@ export function Management({
               setNotice(str(result.message))
             })}
             {c.fields.some(f => f.set)
-              ? action('Clear credentials', () => rpc('hexbot.connectors.clear', { id: c.id }), true)
+              ? action(
+                  account ? 'Remove your client' : 'Clear credentials',
+                  () => rpc('hexbot.connectors.clear', { id: c.id }),
+                  true
+                )
               : null}
             {c.mcp
               ? action(
@@ -1878,7 +2028,14 @@ export function Management({
           <Group>
             {p.kind === 'connector' && p.connector
               ? row(
-                  p.state === 'not_set_up' ? 'Set up' : 'Keys and provider',
+                  // Google and Microsoft sign in; other connectors take keys.
+                  p.connector.account
+                    ? p.connector.account.signed_in
+                      ? 'Account'
+                      : 'Sign in'
+                    : p.state === 'not_set_up'
+                      ? 'Set up'
+                      : 'Keys and provider',
                   'connector',
                   undefined,
                   p.connector as unknown as RowData

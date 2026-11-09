@@ -53,7 +53,8 @@ import type {
   SavedDaemon,
   Rpc
 } from './types'
-import type { PluginAnswer } from '../../../web/src/lib/types'
+import { draftAnswerError, forgetUnsentDraft } from '../../../web/src/lib/draft-card'
+import type { EmailDraftAnswer, PluginAnswer } from '../../../web/src/lib/types'
 export type { ChatRoute }
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e))
 /** A room opens at its latest events and pages back this many at a time. */
@@ -515,6 +516,12 @@ export function useMobile() {
     (event: GatewayEvent) => {
       const target = routeRef.current
       const p = (event.payload ?? {}) as Record<string, unknown>
+      // A card settled anywhere drops its kept edits, whatever is on screen.
+      if (
+        (event.type === 'approval.resolved' || event.type === 'approval.expire') &&
+        typeof p.request_id === 'string'
+      )
+        forgetUnsentDraft(p.request_id)
       // Sent on every bot action there; it changes nothing else.
       if (event.type === 'hexbot.computer.changed') {
         setComputer(current =>
@@ -993,11 +1000,11 @@ export function useMobile() {
     if (owner && stoppedIn(owner, target.section))
       await rpc('hexbot.bots.clear_status', { name: owner.name })
   }
-  /** `answer` answers a sign-in or plugin card: what was typed goes to the daemon, never the chat. */
+  /** `answer` answers a sign-in, plugin or draft card: what was typed goes to the daemon, never the chat. */
   const approval = async (
     requestId: string,
     choice: string,
-    answer?: PluginAnswer | { username: string; password: string }
+    answer?: EmailDraftAnswer | PluginAnswer | { username: string; password: string }
   ) => {
     const pending = chat.approvals.find(a => a.requestId === requestId)
     if (!pending) return
@@ -1006,6 +1013,10 @@ export function useMobile() {
       request_id: requestId,
       choice,
       ...answer
+    }).catch((e: unknown) => {
+      // A draft card's send or save the app gave up on may still have gone.
+      if (!answer || !('mail_action' in answer) || pending.form?.kind !== 'email_draft') throw e
+      throw new Error(draftAnswerError(errorText(e), answer.mail_action, pending.form.service_name))
     })
     setChat(c => {
       if (!c.turns[pending.sessionId])

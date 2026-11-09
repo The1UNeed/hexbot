@@ -1504,3 +1504,52 @@ html {
   inherits: false;
   initial-value: 0px;
 }
+
+/*
+ * Sign in with Google, as Google's branding guidelines draw it: white with a
+ * grey hairline in light, near-black in dark, Roboto Medium, the "G" in its
+ * own colours. Its colours are Google's, not the theme's.
+ */
+:root {
+  --hex-google-fill: #ffffff;
+  --hex-google-stroke: #747775;
+  --hex-google-text: #1f1f1f;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --hex-google-fill: #131314;
+    --hex-google-stroke: #8e918f;
+    --hex-google-text: #e3e3e3;
+  }
+}
+[data-theme='light'] {
+  --hex-google-fill: #ffffff;
+  --hex-google-stroke: #747775;
+  --hex-google-text: #1f1f1f;
+}
+[data-theme='dark'] {
+  --hex-google-fill: #131314;
+  --hex-google-stroke: #8e918f;
+  --hex-google-text: #e3e3e3;
+}
+@layer components {
+  .hex-google-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    height: 40px;
+    padding: 0 12px;
+    border: 1px solid var(--hex-google-stroke);
+    border-radius: 20px;
+    background: var(--hex-google-fill);
+    color: var(--hex-google-text);
+    font-family: Roboto, var(--hex-font-sans);
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 20px;
+    white-space: nowrap;
+  }
+  .hex-google-button:disabled {
+    opacity: 0.6;
+  }
+}

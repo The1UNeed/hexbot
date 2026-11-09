@@ -196,6 +196,10 @@ fn provider_fields(spec: &Value, provider: &Value) -> Vec<String> {
 /// Whether a connector works for `bot` (or the daemon): its provider needs
 /// no key, as the free web searches do, or every key it needs is saved.
 fn set_up_for(home: &Path, bot: Option<&str>, spec: &Value, required: &[String]) -> Result<bool> {
+    // Google and Microsoft are set up once the user signs in (accounts.rs).
+    if let Some(account) = spec["account"].as_str() {
+        return crate::accounts::connected(home, account);
+    }
     if required.is_empty() && selected(home, spec)?.is_some() {
         return Ok(true);
     }
@@ -612,9 +616,25 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
                 }
                 .to_string(),
             )
+        } else if let Some(account) = s["account"].as_str()
+            && crate::accounts::summary(home, account)?.is_some_and(|a| a["expired"] == true)
+        {
+            ("error", "Sign in again".to_string())
         } else {
             ("not_set_up", "Not set up".to_string())
         };
+        let account = match s["account"].as_str() {
+            Some(account) => crate::accounts::summary(home, account)?,
+            None => None,
+        };
+        if state == "ready"
+            && let Some(email) = account
+                .as_ref()
+                .and_then(|a| a["email"].as_str())
+                .filter(|e| !e.is_empty())
+        {
+            state_text = email.to_owned();
+        }
         if state == "ready"
             && let Some(p) = &provider
         {
@@ -682,6 +702,11 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
             "enabled_for_bot": bot.map(|b| bots.iter().any(|n| n == b)),
             "enabled_bots": bots,
             "ready_bots": ready_bots,
+            "account": s["account"].as_str().map(|service| json!({
+                "service": service,
+                "email": account.as_ref().map(|a| a["email"].clone()),
+                "signed_in": account.is_some(),
+            })),
             "waiting_bots": waiting_bots,
             "last_error": err.map(|e| {
                 json!({
@@ -867,6 +892,11 @@ async fn probe(home: &Path, id: &str, bot: Option<&str>) -> Result<Value> {
         return Ok(result);
     }
     let s = spec(id)?;
+    if let Some(account) = s["account"].as_str() {
+        let result = crate::accounts::probe(home, account).await?;
+        save_test(home, id, &result, true)?;
+        return Ok(result);
+    }
     if id == "web_search"
         && let Some(provider) = selected(home, &s)?
         && strings(&provider["keys"]).is_empty()
