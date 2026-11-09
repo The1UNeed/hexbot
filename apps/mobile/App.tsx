@@ -967,7 +967,14 @@ function MobileApp({ children }: { children?: ReactNode }) {
     return current.rpc<OpenedFile>('hexbot.files.read', { session_id: sessionId, path })
   }, [])
   const renderMessageText = useCallback<NonNullable<ChatScreenProps['renderMessageText']>>(
-    item => (item.text ? <MarkdownText text={item.text} user={item.role === 'user'} /> : null),
+    item =>
+      item.text ? (
+        <MarkdownText
+          selectable={Platform.OS === 'web'}
+          text={item.text}
+          user={item.role === 'user'}
+        />
+      ) : null,
     []
   )
   // Your latest message in a bot's chat, while the bot is on it or after its turn

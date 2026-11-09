@@ -1,8 +1,12 @@
 import { Ionicons } from '@expo/vector-icons'
 import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import * as Clipboard from 'expo-clipboard'
 import {
+  ActionSheetIOS,
+  Alert,
   FlatList,
   type ListRenderItemInfo,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -11,6 +15,8 @@ import {
   View
 } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
+
+import { messageText } from '../core/message-text'
 
 import {
   Banner,
@@ -39,6 +45,7 @@ import {
 import { FileCard } from './FileCard'
 import { MediaAttachment } from './MediaAttachment'
 import { PluginCard } from './PluginCard'
+import { SelectTextSheet } from './SelectTextSheet'
 import { SignInCard } from './SignInCard'
 import type {
   ApprovalChoice,
@@ -88,8 +95,7 @@ export interface ChatScreenProps {
     choice: ApprovalChoice,
     answer?: CardAnswer
   ) => Promise<unknown> | void
-  onMessageLongPress?: (id: string) => void
-  /** Your message Recall can take back; a long press on it recalls it. */
+  /** Your message Recall can take back; a long press on it offers Recall. */
   recallId?: string | null
   onRecall?: (id: string) => void
 
@@ -345,7 +351,6 @@ function ChatBody(props: ChatScreenProps) {
   const {
     emotion,
     onApprove,
-    onMessageLongPress,
     onOpenFile,
     onOpenVisual,
     onRecall,
@@ -353,6 +358,30 @@ function ChatBody(props: ChatScreenProps) {
     renderMessageText,
     loadMedia
   } = props
+  // The text a long press chose to select from; the sheet shows while it is set.
+  const [selecting, setSelecting] = useState<string | null>(null)
+  // Read at the press, so a message streaming in does not draw every row again.
+  const latest = useRef(items)
+  latest.current = items
+  const pressMessage = useCallback(
+    (id: string) => {
+      const recall = id === recallId && onRecall ? () => onRecall(id) : undefined
+      const item = latest.current.find(
+        (entry): entry is MessageItem => entry.kind === 'message' && entry.id === id
+      )
+      // The browser preview selects with the mouse; a press there only recalls.
+      if (Platform.OS === 'web' || !item?.text) return recall?.()
+      // What the bubble shows: a bot's Markdown marks are drawn, not written.
+      const text =
+        item.role === 'user' || !renderMessageText ? item.text : messageText(item.text)
+      messageMenu({
+        copy: () => void Clipboard.setStringAsync(text),
+        select: () => setSelecting(text),
+        recall
+      })
+    },
+    [onRecall, recallId, renderMessageText]
+  )
   const waitingLabel = waiting?.label
   const waitingWho = waiting?.who ?? (room ? null : fallbackFace)
   const renderItem = useCallback(
@@ -363,13 +392,7 @@ function ChatBody(props: ChatScreenProps) {
           continued={continued}
           face={(entry.kind === 'message' || entry.kind === 'visual') && !room ? fallbackFace : undefined}
           room={room}
-          onLongPress={
-            entry.kind === 'message'
-              ? entry.id === recallId && onRecall
-                ? onRecall
-                : onMessageLongPress
-              : undefined
-          }
+          onLongPress={entry.kind === 'message' ? pressMessage : undefined}
           renderText={entry.kind === 'message' ? renderMessageText : undefined}
           loadMedia={entry.kind === 'message' ? loadMedia : undefined}
           onOpenFile={entry.kind === 'message' ? onOpenFile : undefined}
@@ -393,9 +416,7 @@ function ChatBody(props: ChatScreenProps) {
       theme.accent,
       room,
       fallbackFace,
-      recallId,
-      onRecall,
-      onMessageLongPress,
+      pressMessage,
       renderMessageText,
       loadMedia,
       onApprove,
@@ -409,6 +430,7 @@ function ChatBody(props: ChatScreenProps) {
 
   return (
     <>
+      <SelectTextSheet onClose={() => setSelecting(null)} text={selecting} />
       {items.length === 0 && !waiting && opening ? (
         <View style={styles.empty} testID="chat-opening">
           <LoadingFace {...(face ?? { name: title })} name={title} />
@@ -660,7 +682,11 @@ function MessageBubble({
           {rendered ? (
             rendered
           ) : (
-            <Text selectable style={mine ? { color: theme.onInk } : null} variant="body">
+            <Text
+              selectable={Platform.OS === 'web'}
+              style={mine ? { color: theme.onInk } : null}
+              variant="body"
+            >
               {item.text}
             </Text>
           )}
@@ -694,6 +720,36 @@ function MessageBubble({
         </View>
       ) : null}
     </View>
+  )
+}
+
+/**
+ * What a long press on a message offers: the system's action sheet on iOS,
+ * a dialog on Android, which holds three choices and closes with Back.
+ */
+function messageMenu(actions: { copy: () => void; select: () => void; recall?: () => void }) {
+  const { copy, select, recall } = actions
+  if (Platform.OS === 'ios') {
+    const options = ['Copy', 'Select text', ...(recall ? ['Recall'] : []), 'Cancel']
+    ActionSheetIOS.showActionSheetWithOptions(
+      {
+        cancelButtonIndex: options.length - 1,
+        destructiveButtonIndex: recall ? 2 : undefined,
+        options
+      },
+      index => [copy, select, recall][index]?.()
+    )
+    return
+  }
+  Alert.alert(
+    'Message',
+    undefined,
+    [
+      ...(recall ? [{ onPress: recall, style: 'destructive' as const, text: 'Recall' }] : []),
+      { onPress: select, text: 'Select text' },
+      { onPress: copy, text: 'Copy' }
+    ],
+    { cancelable: true }
   )
 }
 

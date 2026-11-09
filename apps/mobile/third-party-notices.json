@@ -709,6 +709,12 @@
      "source": "https://www.npmjs.com/package/expo-blur/v/58.0.4"
     },
     {
+     "name": "expo-clipboard",
+     "version": "58.0.4",
+     "license": "MIT",
+     "source": "https://www.npmjs.com/package/expo-clipboard/v/58.0.4"
+    },
+    {
      "name": "expo-constants",
      "version": "58.0.12",
      "license": "MIT",
