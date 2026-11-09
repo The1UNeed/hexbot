@@ -1729,18 +1729,24 @@ fn bwrap_arguments(layout: &Layout) -> Result<Vec<OsString>> {
     }
     Ok(args)
 }
-/// Linux uses this total task budget inside its private user namespace.
-/// macOS adds this many processes to the user's existing process count.
+/// Private Linux namespaces use this task budget. Other capped launches add
+/// headroom to the user's existing tasks (processes rather than threads on macOS).
 #[cfg(unix)]
 const PROCESS_HEADROOM: usize = 512;
 #[cfg(unix)]
 fn process_limit() -> Option<usize> {
-    if cfg!(target_os = "linux") {
+    if cfg!(target_os = "linux") && bwrap().is_some() {
         return Some(PROCESS_HEADROOM);
     }
     // SAFETY: getuid has no preconditions and cannot fail.
     let uid = unsafe { libc::getuid() };
+    let threads: &[&str] = if cfg!(target_os = "linux") {
+        &["-L"]
+    } else {
+        &[]
+    };
     let listed = std::process::Command::new("ps")
+        .args(threads)
         .args(["-U", &uid.to_string(), "-o", "pid="])
         .output()
         .ok()

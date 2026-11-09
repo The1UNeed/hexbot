@@ -533,12 +533,12 @@ export function bwrapArguments(home: string, outputs: string[] = [], workspace?:
   for (const path of paths) if (existsSync(path)) args.push(...(statSync(path).isDirectory() ? ['--tmpfs', path, '--remount-ro', path] : ['--ro-bind', '/dev/null', path]));
   return args;
 }
-// Linux uses this total task budget inside its private user namespace.
-// macOS adds this many processes to the user's existing process count.
+// Private Linux namespaces use this task budget. Other capped launches add
+// headroom to existing tasks (processes rather than threads on macOS).
 export const PROCESS_HEADROOM = 512;
 export function processLimit(): number | undefined {
-  if (process.platform === 'linux') return PROCESS_HEADROOM;
-  const listed = spawnSync('ps', ['-U', String(process.getuid?.() ?? ''), '-o', 'pid='], {encoding: 'utf8', timeout: 5000});
+  if (process.platform === 'linux' && probeIsolation()) return PROCESS_HEADROOM;
+  const listed = spawnSync('ps', [...(process.platform === 'linux' ? ['-L'] : []), '-U', String(process.getuid?.() ?? ''), '-o', 'pid='], {encoding: 'utf8', timeout: 5000});
   return listed.status === 0 ? listed.stdout.split('\n').filter(Boolean).length + PROCESS_HEADROOM : undefined;
 }
 export function isolatedCommand(command: string, home: string, outputs: string[] = [], workspace?: string[], searchRoots: string[] = workspace ?? []): string {

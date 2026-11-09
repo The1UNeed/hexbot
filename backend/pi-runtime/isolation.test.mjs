@@ -169,6 +169,29 @@ test('bubblewrap masks SSH private keys and leaves public SSH files readable', n
   assert.equal(result.stdout, 'done\n');
 });
 
+test('Linux fallback keeps host process headroom for subprocesses and threads', {skip:process.platform !== 'linux'}, t => {
+  const root = mkdtempSync(join(tmpdir(), 'hexbot-fallback-processes-'));
+  t.after(() => rmSync(root, {recursive:true, force:true}));
+  const bins = join(root, 'bin'); mkdirSync(bins);
+  symlinkSync('/usr/bin/ps', join(bins, 'ps'));
+  const code = `import json,resource,subprocess,threading
+subprocess.run(["/bin/true"],check=True)
+t=threading.Thread(target=lambda:None);t.start();t.join()
+print(json.dumps(resource.getrlimit(resource.RLIMIT_NPROC)))`;
+  const command = `exec /usr/bin/python3 -c '${code}'`;
+  const script = `import {execFileSync} from 'node:child_process';
+import {isolatedCommand} from ${JSON.stringify(new URL('./isolation.ts', import.meta.url).href)};
+const root=${JSON.stringify(root)}, command=${JSON.stringify(command)};
+for (const workspace of [[root], []]) process.stdout.write(execFileSync('/bin/bash', ['--noprofile','--norc','-c',isolatedCommand(command,root,[],workspace)], {encoding:'utf8'}));`;
+  const result = execFileSync(process.execPath, ['--input-type=module','-e',script], {env:{...process.env, PATH:bins}, encoding:'utf8'});
+  const limits = result.trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(limits.length, 2);
+  for (const cap of limits) {
+    assert.equal(cap[0], cap[1]);
+    assert.ok(cap[0] > 512, result);
+  }
+});
+
 test('confined Linux commands can fork and start threads with a bounded namespace process limit', needsBubblewrap, async t => {
   const {spawnSync} = await import('node:child_process');
   const {readlinkSync} = await import('node:fs');

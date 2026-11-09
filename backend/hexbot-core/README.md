@@ -73,6 +73,9 @@ Older kernels count all tasks for the host UID against the fixed 512-task cap,
 so unrelated programs can prevent commands from starting. Legacy-kernel
 compatibility remains unverified. Run the daemon
 as your own user, since root bypasses Linux's process limit.
+Without bubblewrap, explicitly approved commands that would otherwise be
+confined add 512 to the existing task count visible for that UID. They still
+run without a filesystem sandbox.
 
 From an extracted native runtime, run `./hexbot setup --activate` to verify and
 copy the bundle into `$HEXBOT_HOME/runtime/native`, select it, install managed
