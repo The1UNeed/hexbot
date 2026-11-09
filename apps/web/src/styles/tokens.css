@@ -388,6 +388,80 @@ body {
       backdrop-filter: none;
     }
   }
+  /*
+   * Nothing scrolls into a line. Every scrolling surface runs the full height
+   * of its card, its controls float over it as glass (`ScrollArea` top and
+   * bottom), and where the content meets an edge it fades out: a mask on the
+   * scroller itself, so what shows through is whatever is really behind it,
+   * the chat card, the panel's glass or the dimmed app, in either theme. Three
+   * lengths say where the top fade starts being see-through (`-from`) and
+   * where each edge's content is whole again; `ScrollArea` sets them from the
+   * measured chrome. The fade eases the same at both edges: 15% of the way in
+   * at 45% of its length. The scrollbar fades with the content, as an overlay
+   * scrollbar does; a strip left unmasked for it kept sharp text at the edge.
+   */
+  .hex-fade-mask {
+    --hex-fade: linear-gradient(
+      to bottom,
+      transparent var(--hex-fade-top-from),
+      rgb(0 0 0 / 0.15)
+        calc(var(--hex-fade-top-from) + (var(--hex-fade-top) - var(--hex-fade-top-from)) * 0.45),
+      #000 var(--hex-fade-top),
+      #000 calc(100% - var(--hex-fade-bottom)),
+      rgb(0 0 0 / 0.15) calc(100% - var(--hex-fade-bottom) * 0.45),
+      transparent 100%
+    );
+    -webkit-mask-image: var(--hex-fade);
+    mask-image: var(--hex-fade);
+    transition:
+      --hex-fade-top var(--hex-motion-fast) var(--hex-ease-out),
+      --hex-fade-top-from var(--hex-motion-fast) var(--hex-ease-out),
+      --hex-fade-bottom var(--hex-motion-fast) var(--hex-ease-out);
+  }
+  /*
+   * Glass inside glass cannot blur: the outer pane's backdrop filter makes it
+   * the backdrop root, and the inner one shows what scrolls under it sharp.
+   * Floating controls inside a panel or a window take the dense field fill
+   * instead, so content never shows through them unblurred.
+   */
+  .hex-glass-strong .hex-glass {
+    background: var(--hex-glass-field);
+  }
+  @media (prefers-reduced-transparency: reduce) {
+    .hex-glass-strong .hex-glass {
+      background: var(--hex-surface);
+    }
+  }
+  /*
+   * Floating chrome lets clicks through to the content under it, except on
+   * the controls themselves, which also opt out of the window's drag handle.
+   */
+  .hex-chrome {
+    pointer-events: none;
+  }
+  .hex-chrome
+    :is(
+      a,
+      button,
+      input,
+      textarea,
+      select,
+      label,
+      [role='alert'],
+      [role='group'],
+      [role='listbox'],
+      [role='menu'],
+      [role='status'],
+      [role='tablist'],
+      [role='toolbar'],
+      [title],
+      .hex-glass,
+      .hex-glass-strong,
+      .hex-glass-field
+    ) {
+    pointer-events: auto;
+    -webkit-app-region: no-drag;
+  }
   /* Keyboard focus: the accent ring, outside the shape, on every rounded control. */
   .hex-focus {
     outline: 2px solid transparent;
@@ -1257,7 +1331,7 @@ html {
 }
 @keyframes hex-split {
   from {
-    width: 2rem;
+    width: 2.25rem;
   }
 }
 @keyframes hex-split-in {
@@ -1412,4 +1486,21 @@ html {
     background: var(--hex-card);
     box-shadow: var(--hex-card-shadow);
   }
+}
+
+/* The fade lengths animate, so a fade eases in as content first scrolls past an edge. */
+@property --hex-fade-top {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+@property --hex-fade-top-from {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+@property --hex-fade-bottom {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
 }

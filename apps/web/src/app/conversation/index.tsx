@@ -26,6 +26,7 @@ import { Avatar, useFaceColor } from '../../components/ui/avatar'
 import { Button } from '../../components/ui/button'
 import { Chip } from '../../components/ui/chip'
 import { Dialog } from '../../components/ui/dialog'
+import { fadeLengths } from '../../components/ui/scroll-area'
 import { StatusDot } from '../../components/ui/status-dot'
 import {
   approvalRespond,
@@ -59,6 +60,7 @@ import type {
   ClarifyRequest
 } from '../../lib/types'
 import { openedElsewhere, selectionsSettled } from '../../lib/use-chat-selection'
+import { useHeight } from '../../lib/use-height'
 import { botMissing, useBot, useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { connectorsActions } from '../../stores/connectors'
@@ -1832,27 +1834,6 @@ const botBefore = (timeline: TimelineItem[], position: number) => {
   return false
 }
 
-/** Tracks an element's height, for content that scrolls under floating glass. */
-function useHeight<T extends HTMLElement>(): [React.RefObject<T | null>, number] {
-  const ref = useRef<T>(null)
-  const [height, setHeight] = useState(0)
-
-  useEffect(() => {
-    const node = ref.current
-
-    if (!node || typeof ResizeObserver === 'undefined') {
-      return
-    }
-
-    const observer = new ResizeObserver(() => setHeight(node.offsetHeight))
-    observer.observe(node)
-
-    return () => observer.disconnect()
-  }, [])
-
-  return [ref, height]
-}
-
 /** Messages drawn when a chat opens, and how many more each Load earlier adds. */
 const FIRST_PAINT = 10
 const PAGE = 60
@@ -2039,6 +2020,9 @@ function BotConversation() {
   const togglePanel = useUi(state => state.toggleRightPanel)
   const panelOpen = useUi(state => state.rightPanelOpen)
   const [composerBox, composerHeight] = useHeight<HTMLDivElement>()
+  // The header grows when a notice joins the name pill; the chat clears it.
+  const [headerBox, headerHeight] = useHeight<HTMLElement>()
+  const clearTop = Math.max(60, headerHeight + 8)
   // Messages that arrive after the section opened spring in; history is drawn still.
   const opened = useRef({ at: Date.now(), id: liveId })
 
@@ -2872,14 +2856,22 @@ function BotConversation() {
         }
       }}
     >
+      {/* Messages fade out under the header and the composer, as every
+          scroller does (`.hex-fade-mask`), and are whole where they end. */}
       <div
-        className="absolute inset-0 overflow-y-auto"
+        className="hex-fade-mask absolute inset-0 overflow-y-auto"
         onScroll={event => {
           const node = event.currentTarget
           setAtBottom(node.scrollHeight - node.scrollTop - node.clientHeight < 80)
         }}
         ref={viewport}
-        style={{ paddingBottom: composerHeight + 8, paddingTop: 60 }}
+        style={{
+          ...fadeLengths({ bottom: composerHeight + 8, top: clearTop }),
+          paddingBottom: composerHeight + 8,
+          paddingTop: clearTop,
+          scrollPaddingBottom: composerHeight + 8,
+          scrollPaddingTop: clearTop
+        }}
       >
         {openFailure && openFailure.section === params.section ? (
           <div
@@ -3037,15 +3029,14 @@ function BotConversation() {
           </div>
         )}
       </div>
-      <header className="hex-drag pointer-events-none absolute inset-x-0 top-0 z-20 flex flex-col items-center gap-2 px-24 pt-2.5">
-        <div
-          aria-hidden
-          className="absolute inset-x-0 top-0 h-9 bg-gradient-to-b from-background/70 to-transparent"
-        />
+      <header
+        className="hex-chrome hex-drag absolute inset-x-0 top-0 z-20 flex flex-col items-center gap-2 pt-2.5 pr-[max(6rem,calc(var(--hex-overlay,0px)+1rem))] pl-[max(1rem,calc(6rem-var(--hex-overlay,0px)))] max-[700px]:pl-[max(3.5rem,calc(6rem-var(--hex-overlay,0px)))] transition-[padding] duration-[var(--hex-motion-panel)] ease-[var(--hex-ease-out)]"
+        ref={headerBox}
+      >
         <button
           aria-expanded={panelOpen}
           aria-label={name}
-          className="hex-glass hex-glass-press hex-focus hex-no-drag pointer-events-auto flex h-9 max-w-[min(100%_-_7rem,30rem)] [--hex-press-scale:1.04] min-w-0 items-center gap-2 rounded-full pr-4 pl-1.5 @min-[54rem]:max-w-[min(100%_-_12.5rem,30rem)]"
+          className="hex-glass hex-glass-press hex-focus hex-no-drag pointer-events-auto flex h-9 max-w-[min(100%,30rem)] [--hex-press-scale:1.04] min-w-0 items-center gap-2 rounded-full pr-4 pl-1.5"
           onClick={() => togglePanel()}
           title={panelOpen ? 'Hide details' : 'Show details'}
           type="button"
@@ -3059,7 +3050,7 @@ function BotConversation() {
             />
             <StatusDot size="sm" status={status} />
           </span>
-          <span className="shrink-0 truncate text-[length:var(--text-secondary)] font-semibold">
+          <span className="min-w-0 truncate text-[length:var(--text-secondary)] font-semibold">
             {name}
           </span>
         </button>
@@ -3081,7 +3072,7 @@ function BotConversation() {
       {!atBottom ? (
         <button
           aria-label="Jump to latest"
-          className="hex-glass hex-glass-press hex-focus hex-fade absolute left-1/2 z-20 grid size-9 -translate-x-1/2 place-items-center rounded-full text-foreground/80"
+          className="hex-glass hex-glass-press hex-focus hex-fade absolute left-[calc((100%-var(--hex-overlay,0px))/2)] z-20 grid size-9 -translate-x-1/2 place-items-center rounded-full text-foreground/80"
           onClick={() => {
             toEnd('smooth')
             setAtBottom(true)
@@ -3092,7 +3083,8 @@ function BotConversation() {
           <ArrowDown size={16} />
         </button>
       ) : null}
-      <div className="absolute inset-x-0 bottom-0 z-20" ref={composerBox}>
+      {/* Messages fade out under the composer instead of meeting the card's edge. */}
+      <div className="hex-chrome absolute inset-x-0 bottom-0 z-20" ref={composerBox}>
         {composer ? (
           <div className="relative mx-auto max-w-[52rem] px-1">
             {providerGone(bot) ? <ProviderGoneCard bot={bot} /> : null}
@@ -3114,8 +3106,13 @@ function BotConversation() {
         onOpenChange={open => !open && setLightbox(null)}
         open={Boolean(lightbox)}
         toolbar={
-          <button aria-label="Close image" onClick={() => setLightbox(null)} type="button">
-            <X />
+          <button
+            aria-label="Close image"
+            className="hex-glass hex-glass-press hex-focus grid size-9 shrink-0 place-items-center rounded-full text-foreground/70 hover:text-foreground"
+            onClick={() => setLightbox(null)}
+            type="button"
+          >
+            <X size={16} />
           </button>
         }
       >
@@ -3187,10 +3184,10 @@ function OpeningChat({ name: botName }: { name: string }) {
       >
         <Avatar {...botFace(bot)} mood="loading" name={name} size="xl" />
       </div>
-      <header className="hex-drag pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center px-24 pt-2.5">
-        <div className="hex-glass flex h-9 max-w-[min(100%_-_7rem,30rem)] min-w-0 items-center gap-2 rounded-full pr-4 pl-1.5">
+      <header className="hex-drag pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center pt-2.5 pr-[max(6rem,calc(var(--hex-overlay,0px)+1rem))] pl-[max(1rem,calc(6rem-var(--hex-overlay,0px)))] max-[700px]:pl-[max(3.5rem,calc(6rem-var(--hex-overlay,0px)))] transition-[padding] duration-[var(--hex-motion-panel)] ease-[var(--hex-ease-out)]">
+        <div className="hex-glass flex h-9 max-w-[min(100%,30rem)] min-w-0 items-center gap-2 rounded-full pr-4 pl-1.5">
           <Avatar {...botFace(bot)} name={name} size="sm" />
-          <span className="shrink-0 truncate text-[length:var(--text-secondary)] font-semibold">
+          <span className="min-w-0 truncate text-[length:var(--text-secondary)] font-semibold">
             {name}
           </span>
         </div>

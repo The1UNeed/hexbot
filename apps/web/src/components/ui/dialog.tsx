@@ -4,6 +4,8 @@ import { type ReactNode, useRef } from 'react'
 
 import { cn } from '../../lib/cn'
 
+import { ScrollArea } from './scroll-area'
+
 export interface DialogProps {
   /** A question that needs an answer: an alertdialog a click outside does not close. */
   alert?: boolean
@@ -14,6 +16,11 @@ export interface DialogProps {
   label?: string
   onOpenChange?: (open: boolean) => void
   open?: boolean
+  /**
+   * The window scrolls its own content (the default). A window that lays out
+   * and scrolls its own columns, as Settings does, passes false.
+   */
+  scroll?: boolean
   title?: ReactNode
   /** Rendered on the right of the title row. */
   toolbar?: ReactNode
@@ -32,6 +39,7 @@ export function Dialog({
   label,
   onOpenChange,
   open,
+  scroll = true,
   title,
   toolbar
 }: DialogProps) {
@@ -54,24 +62,39 @@ export function Dialog({
           ref={popup}
         >
           <div className="hex-glass-strong flex min-h-0 flex-1 flex-col overflow-hidden rounded-[24px]">
-            {title || toolbar ? (
-              <div className="flex items-start justify-between gap-4 px-6 pt-5 pb-1">
-                <div className="min-w-0">
-                  {title ? (
-                    <BaseDialog.Title className="text-[length:var(--text-heading)] font-semibold tracking-[-0.01em]">
-                      {title}
-                    </BaseDialog.Title>
-                  ) : null}
-                  {description ? (
-                    <BaseDialog.Description className="mt-1 text-[length:var(--text-secondary)] text-muted">
-                      {description}
-                    </BaseDialog.Description>
-                  ) : null}
-                </div>
-                {toolbar}
-              </div>
-            ) : null}
-            <div className="min-h-0 flex-1 overflow-auto">{children}</div>
+            {scroll ? (
+              // The title row floats over the content as the chat's header
+              // does, so its actions stay in reach and nothing stops at a line.
+              <ScrollArea
+                className="flex-1"
+                drag={false}
+                hold
+                top={
+                  title || toolbar ? (
+                    <div className="flex items-start justify-between gap-4 px-6 pt-5 pb-1">
+                      <div className="min-w-0">
+                        {title ? (
+                          <BaseDialog.Title className="text-[length:var(--text-heading)] font-semibold tracking-[-0.01em]">
+                            {title}
+                          </BaseDialog.Title>
+                        ) : null}
+                        {description ? (
+                          <BaseDialog.Description className="mt-1 text-[length:var(--text-secondary)] text-muted">
+                            {description}
+                          </BaseDialog.Description>
+                        ) : null}
+                      </div>
+                      {toolbar}
+                    </div>
+                  ) : undefined
+                }
+                viewportClassName="overflow-auto"
+              >
+                {children}
+              </ScrollArea>
+            ) : (
+              <div className="flex min-h-0 flex-1 flex-col">{children}</div>
+            )}
           </div>
         </BaseDialog.Popup>
       </BaseDialog.Portal>

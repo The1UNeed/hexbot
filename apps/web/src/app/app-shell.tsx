@@ -141,6 +141,10 @@ export function AppShell({ children }: { children?: ReactNode }) {
       style={
         {
           '--hex-app-columns': `${sidebarWidth}px 0px minmax(0,1fr) ${panelTrack}px`,
+          // How much of the chat the floating panel covers, so headers centre
+          // their pills in what is left instead of under the panel's edge.
+          '--hex-overlay':
+            showPanel && compact ? (showVisuals ? 'min(92vw, 600px)' : 'min(92vw, 360px)') : '0px',
           transition: resizing
             ? undefined
             : `grid-template-columns var(--hex-motion-panel) var(--hex-ease-in-out)`

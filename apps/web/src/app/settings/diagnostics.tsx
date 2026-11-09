@@ -4,6 +4,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { Button } from '../../components/ui/button'
 import { Chip } from '../../components/ui/chip'
 import { Input } from '../../components/ui/input'
+import { ScrollArea } from '../../components/ui/scroll-area'
 import { Select } from '../../components/ui/select'
 import { SkeletonLines } from '../../components/ui/skeleton'
 import { Switch } from '../../components/ui/switch'
@@ -1574,12 +1575,15 @@ function Logs() {
             Errors only
           </label>
         </div>
-        <div
-          aria-busy={busy !== '' || undefined}
-          aria-label={`Lines of ${page.file}`}
-          className="max-h-[60vh] min-h-40 overflow-auto py-2 font-mono text-[length:var(--text-meta)] leading-[1.55]"
-          ref={scroller}
-          role="log"
+        <ScrollArea
+          className="max-h-[60vh] min-h-40"
+          viewportClassName="overflow-auto py-2 font-mono text-[length:var(--text-meta)] leading-[1.55]"
+          viewportProps={{
+            'aria-busy': busy !== '' || undefined,
+            'aria-label': `Lines of ${page.file}`,
+            role: 'log'
+          }}
+          viewportRef={scroller}
         >
           {page.more ? (
             <div className="px-4 pb-2">
@@ -1607,7 +1611,7 @@ function Logs() {
                   : 'This file is empty.'}
             </p>
           )}
-        </div>
+        </ScrollArea>
       </Group>
     </>
   )

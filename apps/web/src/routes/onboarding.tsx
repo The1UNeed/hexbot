@@ -16,6 +16,7 @@ import { Chip } from '../components/ui/chip'
 import { ConnectorIcon } from '../components/ui/connector-icon'
 import type { HexbotActName } from '../components/ui/hexbot-act'
 import { Input } from '../components/ui/input'
+import { ScrollArea } from '../components/ui/scroll-area'
 import { Select } from '../components/ui/select'
 import { Switch } from '../components/ui/switch'
 import { Textarea } from '../components/ui/textarea'
@@ -423,9 +424,11 @@ export function InstallStep({
       </div>
       <details className="w-full pb-10 text-center text-secondary text-muted">
         <summary className="cursor-pointer">Install log</summary>
-        <pre className="mt-2 max-h-40 overflow-y-auto text-left whitespace-pre-wrap font-mono text-meta">
-          {progress.map(item => item.message).join('\n')}
-        </pre>
+        <ScrollArea className="mt-2 max-h-40">
+          <pre className="text-left whitespace-pre-wrap font-mono text-meta">
+            {progress.map(item => item.message).join('\n')}
+          </pre>
+        </ScrollArea>
       </details>
     </SetupFrame>
   )
@@ -626,49 +629,51 @@ function ProvidersStep({
         placeholder="Search providers"
         value={search}
       />
-      <ul className="max-h-[42dvh] divide-y divide-border overflow-y-auto rounded-panel border border-border">
-        {filtered.map(item => {
-          const open = selected === item.id
+      <ScrollArea className="max-h-[42dvh] overflow-hidden rounded-2xl bg-foreground/[0.04]">
+        <ul className="divide-y divide-foreground/[0.07]">
+          {filtered.map(item => {
+            const open = selected === item.id
 
-          return (
-            <li key={item.id}>
-              <button
-                aria-expanded={open}
-                className={cn(
-                  'flex w-full items-center justify-between gap-3 px-4 py-3 text-left outline-none transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent',
-                  open && 'bg-surface-2'
-                )}
-                data-testid={`onboarding-provider-item-${item.id}`}
-                onClick={() => setSelected(open ? null : item.id)}
-                type="button"
-              >
-                <span className="font-medium">{item.label}</span>
-                <Chip
-                  tone={item.configured ? 'success' : isSubscription(item) ? 'accent' : 'neutral'}
+            return (
+              <li key={item.id}>
+                <button
+                  aria-expanded={open}
+                  className={cn(
+                    'flex w-full items-center justify-between gap-3 px-4 py-3 text-left outline-none transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent',
+                    open && 'bg-surface-2'
+                  )}
+                  data-testid={`onboarding-provider-item-${item.id}`}
+                  onClick={() => setSelected(open ? null : item.id)}
+                  type="button"
                 >
-                  {item.configured
-                    ? 'Connected'
-                    : isSubscription(item)
-                      ? 'Subscription'
-                      : supportsApiKey(item)
-                        ? 'API key'
-                        : 'Setup required'}
-                </Chip>
-              </button>
-              {open ? (
-                <div className="border-t border-border bg-background px-4 py-4">
-                  <ProviderPanel onConfigured={refresh} provider={item} />
-                </div>
-              ) : null}
+                  <span className="font-medium">{item.label}</span>
+                  <Chip
+                    tone={item.configured ? 'success' : isSubscription(item) ? 'accent' : 'neutral'}
+                  >
+                    {item.configured
+                      ? 'Connected'
+                      : isSubscription(item)
+                        ? 'Subscription'
+                        : supportsApiKey(item)
+                          ? 'API key'
+                          : 'Setup required'}
+                  </Chip>
+                </button>
+                {open ? (
+                  <div className="border-t border-foreground/[0.07] px-4 py-4">
+                    <ProviderPanel onConfigured={refresh} provider={item} />
+                  </div>
+                ) : null}
+              </li>
+            )
+          })}
+          {filtered.length === 0 ? (
+            <li className="px-4 py-6 text-center text-secondary text-muted">
+              {providers ? 'No providers match.' : 'Loading providers'}
             </li>
-          )
-        })}
-        {filtered.length === 0 ? (
-          <li className="px-4 py-6 text-center text-secondary text-muted">
-            {providers ? 'No providers match.' : 'Loading providers'}
-          </li>
-        ) : null}
-      </ul>
+          ) : null}
+        </ul>
+      </ScrollArea>
       <p className="text-center text-secondary text-muted">
         {configured.length === 0
           ? 'Connect at least one provider to continue.'
@@ -1145,48 +1150,52 @@ export function ToolsStep({
 
   return (
     <div className="w-full space-y-4 py-8">
-      <ul className="max-h-[52dvh] divide-y divide-border overflow-y-auto rounded-panel border border-border">
-        {(tools ?? []).map(item => {
-          const open = selected === item.id
+      <ScrollArea className="max-h-[52dvh] overflow-hidden rounded-2xl bg-foreground/[0.04]">
+        <ul className="divide-y divide-foreground/[0.07]">
+          {(tools ?? []).map(item => {
+            const open = selected === item.id
 
-          return (
-            <li key={item.id}>
-              <button
-                aria-expanded={open}
-                className={cn(
-                  'flex w-full items-center gap-3 px-4 py-3 text-left outline-none transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent',
-                  open && 'bg-surface-2'
-                )}
-                data-testid={`onboarding-tool-item-${item.id}`}
-                onClick={() => setSelected(open ? null : item.id)}
-                type="button"
-              >
-                <ConnectorIcon icon={item.icon} />
-                <span className="min-w-0 flex-1">
-                  <span className="block font-medium">{item.name}</span>
-                  <span className="block text-secondary text-muted">{item.description}</span>
-                </span>
-                <Chip tone={item.state === 'ready' ? 'success' : 'neutral'}>{item.state_text}</Chip>
-              </button>
-              {open ? (
-                <div className="border-t border-border bg-background px-4 py-4">
-                  <ToolPanel
-                    connector={item}
-                    onSaved={saved =>
-                      setTools(current =>
-                        (current ?? []).map(tool => (tool.id === saved.id ? saved : tool))
-                      )
-                    }
-                  />
-                </div>
-              ) : null}
-            </li>
-          )
-        })}
-        {tools === null ? (
-          <li className="px-4 py-6 text-center text-secondary text-muted">Loading tools</li>
-        ) : null}
-      </ul>
+            return (
+              <li key={item.id}>
+                <button
+                  aria-expanded={open}
+                  className={cn(
+                    'flex w-full items-center gap-3 px-4 py-3 text-left outline-none transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent',
+                    open && 'bg-surface-2'
+                  )}
+                  data-testid={`onboarding-tool-item-${item.id}`}
+                  onClick={() => setSelected(open ? null : item.id)}
+                  type="button"
+                >
+                  <ConnectorIcon icon={item.icon} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-medium">{item.name}</span>
+                    <span className="block text-secondary text-muted">{item.description}</span>
+                  </span>
+                  <Chip tone={item.state === 'ready' ? 'success' : 'neutral'}>
+                    {item.state_text}
+                  </Chip>
+                </button>
+                {open ? (
+                  <div className="border-t border-foreground/[0.07] px-4 py-4">
+                    <ToolPanel
+                      connector={item}
+                      onSaved={saved =>
+                        setTools(current =>
+                          (current ?? []).map(tool => (tool.id === saved.id ? saved : tool))
+                        )
+                      }
+                    />
+                  </div>
+                ) : null}
+              </li>
+            )
+          })}
+          {tools === null ? (
+            <li className="px-4 py-6 text-center text-secondary text-muted">Loading tools</li>
+          ) : null}
+        </ul>
+      </ScrollArea>
       <p className="text-center text-secondary text-muted">
         {ready.length === 0
           ? "Bots cannot use a tool until it is set up. You can do it later in a bot's Connectors."

@@ -9,6 +9,7 @@ import { Dialog } from '../../components/ui/dialog'
 import { Input } from '../../components/ui/input'
 import { ContextMenu, Menu } from '../../components/ui/menu'
 import { RoomCluster } from '../../components/ui/room-cluster'
+import { ScrollArea } from '../../components/ui/scroll-area'
 import { Select } from '../../components/ui/select'
 import { StatusDot, StatusTag } from '../../components/ui/status-dot'
 import { providerModels, sectionsMarkRead } from '../../lib/api'
@@ -556,55 +557,88 @@ export function RosterColumn() {
 
   const activeRoom = (params as { room?: string }).room
 
-  const footerRow =
-    'flex w-full items-center gap-3 rounded-panel px-2.5 py-2 text-left outline-none transition-colors hover:bg-foreground/[0.04]'
-
   const footerIcon =
     'grid size-7 shrink-0 place-items-center rounded-full border border-border text-foreground'
 
   return (
     <div className="flex h-full min-h-0 flex-col" onKeyDown={keyboard} ref={root}>
-      <header className={cn('hex-drag shrink-0 px-3 pb-2', macTitleBar ? 'pt-[42px]' : 'pt-3')}>
-        <div className="hex-no-drag flex items-center gap-2">
-          <label className="relative block min-w-0 flex-1">
-            <Search className="absolute top-1/2 left-3 -translate-y-1/2 text-muted" size={14} />
-            <Input
-              aria-label="Search bots and rooms"
-              className="h-9 rounded-full border-transparent bg-foreground/[0.05] pl-9 focus-visible:border-transparent focus-visible:bg-background focus-visible:shadow-card"
-              onChange={event => {
-                cancelChat()
-                setQuery(event.target.value.toLowerCase())
-              }}
-              placeholder="Search"
-              value={query}
-            />
-          </label>
-          <Menu
-            items={[
-              {
-                label: 'New bot',
-                onSelect: openNewBot
-              },
-              {
-                'data-testid': 'roster-new-room',
-                disabled: !ordered.length,
-                label: 'New room',
-                onSelect: () => setRoomDialog(true)
-              }
-            ]}
-            trigger={
+      <ScrollArea
+        bottom={
+          <div className="px-2 pb-2">
+            <UpdatePill className="hex-glass hex-glass-press mb-1 w-full rounded-full border-transparent hover:bg-[var(--hex-glass-bg)]" />
+            <div
+              // Not a row: no hover fill, so the glass keeps its density.
+              className="hex-glass flex w-full items-center gap-3 rounded-full py-1.5 pr-2.5 pl-1.5"
+            >
+              <span className="relative">
+                <PersonAvatar name={me?.display_name ?? 'You'} />
+                <span
+                  className={cn('absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full', dot)}
+                  title={label}
+                />
+              </span>
+              <span className="min-w-0 flex-1 truncate font-medium">
+                {me?.display_name ?? 'You'}
+              </span>
               <button
-                aria-label="New"
-                className="hex-glass hex-glass-press grid size-9 shrink-0 place-items-center rounded-full text-foreground/75 hover:text-foreground"
+                aria-label="Settings"
+                className="hex-focus grid size-7 place-items-center rounded-full text-muted transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
+                onClick={() =>
+                  void navigate({ to: '/settings/$tab', params: { tab: 'providers' } })
+                }
                 type="button"
               >
-                <Plus size={18} />
+                <Settings size={14} />
               </button>
-            }
-          />
-        </div>
-      </header>
-      <div className="hex-no-scrollbar min-h-0 flex-1 overflow-y-auto px-2 py-1">
+            </div>
+          </div>
+        }
+        className="flex-1"
+        gap={4}
+        top={
+          <header className={cn('px-3 pb-2', macTitleBar ? 'pt-[42px]' : 'pt-3')}>
+            <div className="flex items-center gap-2">
+              <label className="hex-glass hex-glass-field relative block min-w-0 flex-1 rounded-full">
+                <Search className="absolute top-1/2 left-3 -translate-y-1/2 text-muted" size={14} />
+                <Input
+                  aria-label="Search bots and rooms"
+                  className="h-9 rounded-full border-transparent bg-transparent pl-9 hover:bg-transparent focus-visible:border-transparent focus-visible:bg-transparent"
+                  onChange={event => {
+                    cancelChat()
+                    setQuery(event.target.value.toLowerCase())
+                  }}
+                  placeholder="Search"
+                  value={query}
+                />
+              </label>
+              <Menu
+                items={[
+                  {
+                    label: 'New bot',
+                    onSelect: openNewBot
+                  },
+                  {
+                    'data-testid': 'roster-new-room',
+                    disabled: !ordered.length,
+                    label: 'New room',
+                    onSelect: () => setRoomDialog(true)
+                  }
+                ]}
+                trigger={
+                  <button
+                    aria-label="New"
+                    className="hex-glass hex-glass-press grid size-9 shrink-0 place-items-center rounded-full text-foreground/75 hover:text-foreground"
+                    type="button"
+                  >
+                    <Plus size={18} />
+                  </button>
+                }
+              />
+            </div>
+          </header>
+        }
+        viewportClassName="hex-no-scrollbar px-2"
+      >
         {needsPrimary(ordered) ? (
           <PrimaryChoice
             bots={ordered}
@@ -665,31 +699,7 @@ export function RosterColumn() {
             />
           )
         )}
-      </div>
-      <div className="shrink-0 px-2 pb-2">
-        <UpdatePill className="mb-1 w-full" />
-        <div className={cn(footerRow, 'hover:bg-transparent')}>
-          <span className="relative">
-            <PersonAvatar name={me?.display_name ?? 'You'} />
-            <span
-              className={cn(
-                'absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full border-2 border-surface',
-                dot
-              )}
-              title={label}
-            />
-          </span>
-          <span className="min-w-0 flex-1 truncate font-medium">{me?.display_name ?? 'You'}</span>
-          <button
-            aria-label="Settings"
-            className="grid size-7 place-items-center rounded-full border border-border text-muted transition-colors hover:bg-surface-2 hover:text-foreground"
-            onClick={() => void navigate({ to: '/settings/$tab', params: { tab: 'providers' } })}
-            type="button"
-          >
-            <Settings size={14} />
-          </button>
-        </div>
-      </div>
+      </ScrollArea>
       <Dialog
         description="A face and a name. It will ask you the rest in your chat."
         onOpenChange={value => {
@@ -894,30 +904,33 @@ function NewRoomDialog({
           placeholder="Search bots"
           value={query}
         />
-        <fieldset className="max-h-44 overflow-auto border-y border-border">
-          <legend className="sr-only">Members</legend>
-          {bots
-            .filter(bot =>
-              `${bot.display_name} ${bot.name}`.toLowerCase().includes(query.toLowerCase())
-            )
-            .map(bot => (
-              <label className="flex items-center gap-3 py-2" key={bot.name}>
-                <input
-                  checked={members.includes(bot.name)}
-                  onChange={event =>
-                    setMembers(items =>
-                      event.target.checked
-                        ? [...items, bot.name]
-                        : items.filter(item => item !== bot.name)
-                    )
-                  }
-                  type="checkbox"
-                />
-                <Avatar {...botFace(bot)} name={bot.display_name} size="sm" />
-                <span>{bot.display_name}</span>
-              </label>
-            ))}
-        </fieldset>
+        {/* The list fades at its edges while it scrolls, without rules above and below. */}
+        <ScrollArea className="max-h-44">
+          <fieldset>
+            <legend className="sr-only">Members</legend>
+            {bots
+              .filter(bot =>
+                `${bot.display_name} ${bot.name}`.toLowerCase().includes(query.toLowerCase())
+              )
+              .map(bot => (
+                <label className="flex items-center gap-3 py-2" key={bot.name}>
+                  <input
+                    checked={members.includes(bot.name)}
+                    onChange={event =>
+                      setMembers(items =>
+                        event.target.checked
+                          ? [...items, bot.name]
+                          : items.filter(item => item !== bot.name)
+                      )
+                    }
+                    type="checkbox"
+                  />
+                  <Avatar {...botFace(bot)} name={bot.display_name} size="sm" />
+                  <span>{bot.display_name}</span>
+                </label>
+              ))}
+          </fieldset>
+        </ScrollArea>
         <label className="grid gap-1">
           <span>
             Main bot <span className="text-muted">(optional)</span>

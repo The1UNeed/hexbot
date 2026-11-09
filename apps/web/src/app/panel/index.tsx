@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
+import { ScrollArea } from '../../components/ui/scroll-area'
 import { Switch } from '../../components/ui/switch'
 import { cn } from '../../lib/cn'
 import { useBrowserNotifications } from '../../lib/notify'
@@ -295,15 +296,16 @@ function PanelActions({
   onSearch: () => void
   searching: boolean
 }) {
+  // Glass, like the chat's own buttons: the panel scrolls under them.
   const button =
-    'hex-focus grid size-8 shrink-0 place-items-center rounded-full text-muted transition-colors duration-[var(--hex-motion-fast)] hover:bg-foreground/[0.06] hover:text-foreground'
+    'hex-glass hex-glass-press hex-focus grid size-9 shrink-0 place-items-center rounded-full text-foreground/70 hover:text-foreground'
 
   return (
-    <div className="hex-no-drag hex-split flex w-[4.25rem] shrink-0 items-center justify-end gap-1 overflow-hidden">
+    <div className="hex-split flex w-[4.75rem] shrink-0 items-center justify-end gap-1">
       <button
         aria-label={searching ? 'Close search' : 'Search this chat'}
         aria-pressed={searching}
-        className={cn(button, 'hex-split-in', searching && 'bg-foreground/[0.07] text-foreground')}
+        className={cn(button, 'hex-split-in', searching && 'text-accent hover:text-accent')}
         onClick={onSearch}
         title="Search"
         type="button"
@@ -401,19 +403,6 @@ export function ProfilePanel(): React.JSX.Element {
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="profile-panel">
-      <header className="hex-drag flex h-14 shrink-0 items-center justify-end gap-2 px-3">
-        {searching ? (
-          <SearchField
-            label={`Search your chat with ${bot.display_name}`}
-            onLeave={searchActions().close}
-          />
-        ) : null}
-        <PanelActions
-          onClose={() => closePanel(false)}
-          onSearch={() => searchActions().setOpen(!searching)}
-          searching={searching}
-        />
-      </header>
       {editing ? (
         <FingerprintEditor
           bot={bot}
@@ -424,8 +413,28 @@ export function ProfilePanel(): React.JSX.Element {
           onMemory={setMemory}
         />
       ) : null}
-      {searching ? (
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-5">
+      {/* The panel scrolls under its buttons, as the chat does under its header. */}
+      <ScrollArea
+        className="flex-1"
+        gap={0}
+        top={
+          <header className="flex h-14 items-center justify-end gap-2 px-3">
+            {searching ? (
+              <SearchField
+                label={`Search your chat with ${bot.display_name}`}
+                onLeave={searchActions().close}
+              />
+            ) : null}
+            <PanelActions
+              onClose={() => closePanel(false)}
+              onSearch={() => searchActions().setOpen(!searching)}
+              searching={searching}
+            />
+          </header>
+        }
+        viewportClassName="px-4 pb-5"
+      >
+        {searching ? (
           <SearchResults
             documents={documents}
             entries={entries}
@@ -433,108 +442,108 @@ export function ProfilePanel(): React.JSX.Element {
             onDocument={setEditing}
             onLeave={hideBotPanel}
           />
-        </div>
-      ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-5">
-          <div className="flex flex-col items-center">
-            <AvatarPicker bot={bot} hint={false} onSave={save} />
-            <InlineField
-              ariaLabel="Bot name"
-              className="mt-2 h-8 max-w-60 rounded-[10px] border-transparent bg-transparent px-2 text-center text-[18px] font-semibold shadow-none hover:bg-foreground/[0.04] focus-visible:border-transparent focus-visible:bg-background focus-visible:ring-0"
-              onSave={value => void save({ display_name: value })}
-              value={bot.display_name}
-            />
-            <InlineField
-              ariaLabel="Title"
-              className="h-7 max-w-52 rounded-[10px] border-transparent bg-transparent px-2 text-center text-[length:var(--text-secondary)] text-muted shadow-none placeholder:text-muted/70 hover:bg-foreground/[0.04] focus-visible:border-transparent focus-visible:bg-background focus-visible:text-foreground focus-visible:ring-0"
-              onSave={value => void save({ title: value })}
-              placeholder="Add a label"
-              value={bot.title}
-            />
-            {status ? (
-              <button
-                className="hex-bubble hex-focus mt-1.5 flex max-w-full items-center gap-1.5 rounded-full bg-info/10 px-2.5 py-1 text-[length:var(--text-meta)] font-medium text-info"
-                onClick={() => setTab('computer')}
-                type="button"
-              >
-                <span className="size-1.5 shrink-0 rounded-full bg-current" />
-                <span className="truncate">{status}</span>
-              </button>
-            ) : null}
-          </div>
-          {error ? (
-            <p
-              className="mt-3 text-center text-[length:var(--text-secondary)] text-danger"
-              role="alert"
-            >
-              {error}
-            </p>
-          ) : null}
-          <div
-            aria-label="Panel tabs"
-            className="mt-5 mb-5 flex w-full gap-0.5 rounded-full bg-foreground/[0.05] p-[3px]"
-            onKeyDown={event => {
-              const step = { ArrowLeft: -1, ArrowRight: 1 }[event.key]
-
-              if (!step) {
-                return
-              }
-
-              event.preventDefault()
-              const index = TABS.findIndex(item => item.id === tab)
-              const next = TABS[(index + step + TABS.length) % TABS.length]!
-              setTab(next.id)
-              document.getElementById(`panel-tab-${next.id}`)?.focus()
-            }}
-            role="tablist"
-          >
-            {TABS.map(item => (
-              <button
-                aria-controls="panel-tabpanel"
-                aria-selected={tab === item.id}
-                className={cn(
-                  'hex-focus relative flex h-7 min-w-0 flex-1 items-center justify-center gap-1 rounded-full px-1.5 text-[12.5px] font-medium whitespace-nowrap transition-colors duration-[var(--hex-motion-fast)]',
-                  tab === item.id
-                    ? 'bg-background text-foreground shadow-card'
-                    : 'text-muted hover:text-foreground'
-                )}
-                id={`panel-tab-${item.id}`}
-                key={item.id}
-                onClick={() => setTab(item.id)}
-                role="tab"
-                tabIndex={tab === item.id ? 0 : -1}
-                type="button"
-              >
-                {item.label}
-                {item.id === 'computer' && running ? (
-                  <span aria-hidden className="size-1.5 rounded-full bg-info" />
-                ) : null}
-              </button>
-            ))}
-          </div>
-          <div
-            aria-labelledby={`panel-tab-${tab}`}
-            className="hex-fade"
-            id="panel-tabpanel"
-            key={tab}
-            role="tabpanel"
-          >
-            {tab === 'details' ? <DetailsTab bot={bot} onSave={save} /> : null}
-            {tab === 'library' ? (
-              <LibraryTab
-                messages={messages}
-                name={bot.display_name}
-                sectionId={selected?.section ?? null}
-                sessionId={liveId}
+        ) : (
+          <>
+            <div className="flex flex-col items-center">
+              <AvatarPicker bot={bot} hint={false} onSave={save} />
+              <InlineField
+                ariaLabel="Bot name"
+                className="mt-2 h-8 max-w-60 rounded-[10px] border-transparent bg-transparent px-2 text-center text-[18px] font-semibold shadow-none hover:bg-foreground/[0.04] focus-visible:border-transparent focus-visible:bg-background focus-visible:ring-0"
+                onSave={value => void save({ display_name: value })}
+                value={bot.display_name}
               />
+              <InlineField
+                ariaLabel="Title"
+                className="h-7 max-w-52 rounded-[10px] border-transparent bg-transparent px-2 text-center text-[length:var(--text-secondary)] text-muted shadow-none placeholder:text-muted/70 hover:bg-foreground/[0.04] focus-visible:border-transparent focus-visible:bg-background focus-visible:text-foreground focus-visible:ring-0"
+                onSave={value => void save({ title: value })}
+                placeholder="Add a label"
+                value={bot.title}
+              />
+              {status ? (
+                <button
+                  className="hex-bubble hex-focus mt-1.5 flex max-w-full items-center gap-1.5 rounded-full bg-info/10 px-2.5 py-1 text-[length:var(--text-meta)] font-medium text-info"
+                  onClick={() => setTab('computer')}
+                  type="button"
+                >
+                  <span className="size-1.5 shrink-0 rounded-full bg-current" />
+                  <span className="truncate">{status}</span>
+                </button>
+              ) : null}
+            </div>
+            {error ? (
+              <p
+                className="mt-3 text-center text-[length:var(--text-secondary)] text-danger"
+                role="alert"
+              >
+                {error}
+              </p>
             ) : null}
-            {tab === 'fingerprint' ? (
-              <FingerprintTab bot={bot} memory={memory} onOpen={setEditing} />
-            ) : null}
-            {tab === 'computer' ? <ComputerTab bot={bot} onSave={save} /> : null}
-          </div>
-        </div>
-      )}
+            <div
+              aria-label="Panel tabs"
+              className="mt-5 mb-5 flex w-full gap-0.5 rounded-full bg-foreground/[0.05] p-[3px]"
+              onKeyDown={event => {
+                const step = { ArrowLeft: -1, ArrowRight: 1 }[event.key]
+
+                if (!step) {
+                  return
+                }
+
+                event.preventDefault()
+                const index = TABS.findIndex(item => item.id === tab)
+                const next = TABS[(index + step + TABS.length) % TABS.length]!
+                setTab(next.id)
+                document.getElementById(`panel-tab-${next.id}`)?.focus()
+              }}
+              role="tablist"
+            >
+              {TABS.map(item => (
+                <button
+                  aria-controls="panel-tabpanel"
+                  aria-selected={tab === item.id}
+                  className={cn(
+                    'hex-focus relative flex h-7 min-w-0 flex-1 items-center justify-center gap-1 rounded-full px-1.5 text-[12.5px] font-medium whitespace-nowrap transition-colors duration-[var(--hex-motion-fast)]',
+                    tab === item.id
+                      ? 'bg-background text-foreground shadow-card'
+                      : 'text-muted hover:text-foreground'
+                  )}
+                  id={`panel-tab-${item.id}`}
+                  key={item.id}
+                  onClick={() => setTab(item.id)}
+                  role="tab"
+                  tabIndex={tab === item.id ? 0 : -1}
+                  type="button"
+                >
+                  {item.label}
+                  {item.id === 'computer' && running ? (
+                    <span aria-hidden className="size-1.5 rounded-full bg-info" />
+                  ) : null}
+                </button>
+              ))}
+            </div>
+            <div
+              aria-labelledby={`panel-tab-${tab}`}
+              className="hex-fade"
+              id="panel-tabpanel"
+              key={tab}
+              role="tabpanel"
+            >
+              {tab === 'details' ? <DetailsTab bot={bot} onSave={save} /> : null}
+              {tab === 'library' ? (
+                <LibraryTab
+                  messages={messages}
+                  name={bot.display_name}
+                  sectionId={selected?.section ?? null}
+                  sessionId={liveId}
+                />
+              ) : null}
+              {tab === 'fingerprint' ? (
+                <FingerprintTab bot={bot} memory={memory} onOpen={setEditing} />
+              ) : null}
+              {tab === 'computer' ? <ComputerTab bot={bot} onSave={save} /> : null}
+            </div>
+          </>
+        )}
+      </ScrollArea>
     </div>
   )
 }

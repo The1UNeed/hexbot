@@ -2,6 +2,7 @@ import { JsonRpcGatewayError } from '@hermes/shared'
 import { ArrowUp, Download, FileText } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { ScrollArea } from '../../components/ui/scroll-area'
 import { filesRead, filesWrite, type OpenedFile } from '../../lib/api'
 import { cn } from '../../lib/cn'
 import { useBots } from '../../stores/bots'
@@ -293,12 +294,12 @@ function QuickTools({
   }
 
   return (
-    <div className="shrink-0 border-t border-foreground/[0.07] px-3 pt-2.5 pb-3">
+    <div className="relative px-3 pt-2.5 pb-3">
       {tools.length ? (
         <div aria-label="Quick tools" className="mb-2 flex flex-wrap gap-1.5" role="group">
           {tools.map(tool => (
             <button
-              className="hex-focus rounded-full bg-foreground/[0.05] px-2.5 py-1 text-[length:var(--text-meta)] font-medium text-foreground transition-colors duration-[var(--hex-motion-fast)] hover:bg-foreground/[0.09] disabled:opacity-40"
+              className="hex-glass hex-glass-press hex-focus rounded-full px-2.5 py-1 text-[length:var(--text-meta)] font-medium text-foreground disabled:opacity-40"
               disabled={off}
               key={tool.label}
               onClick={() => void send(`${tool.ask} ${name}.`)}
@@ -310,7 +311,7 @@ function QuickTools({
         </div>
       ) : null}
       <form
-        className="flex items-center gap-1.5 rounded-full bg-foreground/[0.05] py-1 pr-1 pl-3.5"
+        className="hex-glass hex-glass-field flex items-center gap-1.5 rounded-full py-1 pr-1 pl-3.5"
         onSubmit={event => {
           event.preventDefault()
           void send(text)
@@ -588,8 +589,14 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
           {error}
         </p>
       ) : null}
-      <div className="min-h-0 flex-1 overflow-auto p-1">{body}</div>
-      {tools}
+      {/* The preview runs under the floating ask field, as the editor's page does. */}
+      <ScrollArea
+        bottom={tools ?? undefined}
+        className="flex-1"
+        viewportClassName="overflow-auto p-1"
+      >
+        {body}
+      </ScrollArea>
     </div>
   )
 }
