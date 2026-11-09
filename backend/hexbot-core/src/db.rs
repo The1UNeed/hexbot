@@ -62,6 +62,10 @@ CREATE TABLE IF NOT EXISTS bot_messages(
 CREATE TABLE IF NOT EXISTS dreams(
  id TEXT PRIMARY KEY, bot TEXT NOT NULL, room_id TEXT, started_at REAL NOT NULL,
  finished_at REAL, status TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '');
+-- Pinned rooms. A table of its own: older daemons insert rooms by position.
+CREATE TABLE IF NOT EXISTS room_pins(
+ room_id TEXT PRIMARY KEY, pinned_at REAL NOT NULL,
+ FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS room_memory(
  room_id TEXT PRIMARY KEY, text TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL,
  FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE);
@@ -134,6 +138,7 @@ const COLUMNS: &[(&str, &str, &str)] = &[
     ("sections", "purpose", "TEXT"),
     ("devices", "push_token", "TEXT"),
     ("devices", "push_platform", "TEXT"),
+    ("bots", "pinned_at", "REAL"),
 ];
 
 /// Open the explicitly selected database without running schema migrations.
@@ -192,6 +197,13 @@ pub fn migrate(home: &Path) -> Result<()> {
             transaction.execute_batch(&format!(
                 "ALTER TABLE {table} ADD COLUMN {column} {definition}"
             ))?;
+            // The primary bot starts pinned, once: an unpinned one stays unpinned.
+            if (*table, *column) == ("bots", "pinned_at") {
+                transaction.execute(
+                    "UPDATE bots SET pinned_at=COALESCE(created_at,CAST(strftime('%s','now') AS REAL)) WHERE is_primary=1",
+                    [],
+                )?;
+            }
         }
     }
     transaction.execute_batch(

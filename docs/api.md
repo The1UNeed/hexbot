@@ -321,7 +321,7 @@ mutation methods check ownership.
 
 ### Bots
 
-Bot shape: `{name, display_name, title, description, primary, persona, tools: [string], available_tools: [string], skills: [string],
+Bot shape: `{name, display_name, title, description, primary, pinned_at, persona, tools: [string], available_tools: [string], skills: [string],
 provider, provider_connected | null, model, reasoning_effort | null, fast, avatar: {mime, data} | null, face: {shape, color} | null, kept_face: {shape, color} | null,
 created_at, updated_at, last_activity_at,
 owner_id, dream_enabled, notify, approval_mode, workdir | null,
@@ -483,6 +483,12 @@ others (`DESIGN.md`, "The primary bot"). There is at most one per owner.
   as they are. Both capability lists use replace semantics. A tool missing
   from `available_tools` is dropped from `tools` on write. Combined model and
   tool edits use the new provider when checking availability.
+- `hexbot.bots.pin {name, pinned?}` → `{bot: Bot}`. Pins the bot's chat in
+  the list, or unpins it with `pinned: false`. `pinned_at` keeps the time it
+  was first pinned, so pinning again keeps its place. The primary bot starts
+  pinned, when it is created or made primary and once when an existing
+  database upgrades; after that it stays as the user leaves it. Emits
+  `hexbot.bots.changed`.
 - `hexbot.bots.clear_status {name}` → `{bot: Bot}`. Closes every open incident
   for the bot.
 - `hexbot.bots.delete {name}` → `{deleted: true}` (deletes the profile
@@ -986,7 +992,7 @@ for the next dream, and soul writes are refused. See [Dreaming](dreaming.md).
 ### Rooms
 
 Room shape: `{id, name, owner_id, main_bot, approval_mode, limits,
-created_at, updated_at, last_activity_at, archived_at, members}`. Member rows
+created_at, updated_at, last_activity_at, archived_at, pinned_at, members}`. Member rows
 include `display_name` for bots and for the owner, and keep `left_at` after
 departure so old transcripts retain their identities.
 `limits` is `{bot_turns_per_human_turn?, budget_tokens_per_human_turn?}`,
@@ -1032,6 +1038,9 @@ and its bots run as the owner.
   Removing the last bot uses this same decision; pending cleanup is reported
   as `room.history_pending`. Neither operation changes bot memory or notes.
 - `hexbot.rooms.mark_read {id, seq}` → `{room}`
+- `hexbot.rooms.pin {id, pinned?}` → `{room}`. Pins the room in the list, or
+  unpins it with `pinned: false`, like `hexbot.bots.pin`. Pins live in
+  `room_pins`, so older daemons still create rooms in the same database.
 
 Room turns use hidden sessions on each bot profile. The daemon waits
 for the corresponding assistant row through `session.history` after

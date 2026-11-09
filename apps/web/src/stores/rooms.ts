@@ -9,6 +9,7 @@ import {
   roomsList,
   roomsLog,
   roomsMarkRead,
+  roomsPin,
   roomsRemoveMember,
   roomsUpdate
 } from '../lib/api'
@@ -62,6 +63,7 @@ export interface RoomsState {
   /** Only pass false after confirming room deletion. Resolves true if the room was deleted. */
   removeMember: (id: string, bot: string, keepRoom: boolean) => Promise<boolean>
   update: (id: string, patch: Parameters<typeof roomsUpdate>[1]) => Promise<void>
+  pin: (id: string, pinned: boolean) => Promise<void>
 }
 
 /** The daemon no longer shows this room to you. */
@@ -663,6 +665,18 @@ export const useRooms = create<RoomsState>((set, get) => ({
     const connected = connectionRead()
     const ticket = authority.request()
     const { room } = await roomsUpdate(id, patch)
+
+    if (!connected() || !authority.commit(room.id, ticket, 'present')) {
+      return
+    }
+
+    set(state => mergeRoom(state, room))
+  },
+
+  async pin(id, pinned) {
+    const connected = connectionRead()
+    const ticket = authority.request()
+    const { room } = await roomsPin(id, pinned)
 
     if (!connected() || !authority.commit(room.id, ticket, 'present')) {
       return

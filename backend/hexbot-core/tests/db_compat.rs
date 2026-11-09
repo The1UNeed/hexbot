@@ -122,6 +122,7 @@ fn team_shape(connection: &Connection) -> Vec<(String, Vec<Column>)> {
                 Some("0".into()),
                 0,
             ));
+            columns.push(("pinned_at".into(), "REAL".into(), false, None, 0));
         }
     }
     // Native-only tables, in sqlite_master name order with the rest.
@@ -176,6 +177,10 @@ fn team_shape(connection: &Connection) -> Vec<(String, Vec<Column>)> {
             ("summary".into(), "TEXT".into(), true, Some("''".into()), 0),
             text("message_id", false),
         ],
+    ));
+    expected.push((
+        "room_pins".into(),
+        vec![key("room_id"), real("pinned_at", true)],
     ));
     expected.sort_by(|a, b| a.0.cmp(&b.0));
     expected

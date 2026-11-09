@@ -1,4 +1,4 @@
-use hexbot_core::{catalog, db, memory::MemoryStore, runtime_store, settings};
+use hexbot_core::{catalog, db, memory::MemoryStore, rooms, runtime_store, settings};
 use serde_json::{Value, json};
 use std::{fs, path::Path};
 fn setup() -> tempfile::TempDir {
@@ -91,6 +91,140 @@ fn a_bot_says_whether_its_provider_is_connected() {
     hexbot_core::common::write_config(&profile, &cfg).unwrap();
     let bot = call(h, "alice", "hexbot.bots.get", json!({"name":"local"}))["bot"].clone();
     assert_eq!(bot["provider_connected"], true);
+}
+
+#[test]
+fn bots_and_rooms_pin_and_unpin_and_keep_their_place_when_pinned_again() {
+    let home = setup();
+    let h = home.path();
+    create(h);
+    let pinned = call(
+        h,
+        "alice",
+        "hexbot.bots.pin",
+        json!({"name":"research-owl"}),
+    );
+    let at = pinned["bot"]["pinned_at"].as_f64().unwrap();
+    let again = call(
+        h,
+        "alice",
+        "hexbot.bots.pin",
+        json!({"name":"research-owl","pinned":true}),
+    );
+    assert_eq!(again["bot"]["pinned_at"].as_f64(), Some(at));
+    let listed = call(h, "alice", "hexbot.bots.list", json!({}));
+    assert_eq!(listed["bots"][0]["pinned_at"].as_f64(), Some(at));
+    let unpinned = call(
+        h,
+        "alice",
+        "hexbot.bots.pin",
+        json!({"name":"research-owl","pinned":false}),
+    );
+    assert!(unpinned["bot"]["pinned_at"].is_null());
+    assert!(
+        catalog::call(h, "bob", "hexbot.bots.pin", &json!({"name":"research-owl"}))
+            .unwrap()
+            .is_err()
+    );
+
+    let room = |method: &str, p: Value| rooms::call(h, "alice", method, &p).unwrap().unwrap();
+    let id = room(
+        "hexbot.rooms.create",
+        json!({"name":"Plans","members":["research-owl"]}),
+    )["room"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(room("hexbot.rooms.get", json!({"id":id}))["room"]["pinned_at"].is_null());
+    let at = room("hexbot.rooms.pin", json!({"id":id}))["room"]["pinned_at"]
+        .as_f64()
+        .unwrap();
+    assert_eq!(
+        room("hexbot.rooms.pin", json!({"id":id}))["room"]["pinned_at"].as_f64(),
+        Some(at)
+    );
+    assert_eq!(
+        room("hexbot.rooms.list", json!({}))["rooms"][0]["pinned_at"].as_f64(),
+        Some(at)
+    );
+    assert!(
+        rooms::call(h, "bob", "hexbot.rooms.pin", &json!({"id":id}))
+            .unwrap()
+            .is_err()
+    );
+    assert!(
+        room("hexbot.rooms.pin", json!({"id":id,"pinned":false}))["room"]["pinned_at"].is_null()
+    );
+    // A deleted room takes its pin with it.
+    room("hexbot.rooms.pin", json!({"id":id}));
+    db::open(h)
+        .unwrap()
+        .execute("DELETE FROM rooms WHERE id=?", [&id])
+        .unwrap();
+    let left: i64 = db::open(h)
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM room_pins", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(left, 0);
+}
+#[test]
+fn the_primary_bot_starts_pinned_and_stays_unpinned_once_unpinned() {
+    let home = setup();
+    let h = home.path();
+    let primary = call(
+        h,
+        "alice",
+        "hexbot.bots.create_primary",
+        json!({"model":"model-a","provider":"openai"}),
+    );
+    assert!(primary["bot"]["pinned_at"].is_number());
+    call(
+        h,
+        "alice",
+        "hexbot.bots.pin",
+        json!({"name":"hexbot","pinned":false}),
+    );
+    db::migrate(h).unwrap();
+    assert!(
+        call(h, "alice", "hexbot.bots.get", json!({"name":"hexbot"}))["bot"]["pinned_at"].is_null()
+    );
+
+    // A bot made primary later is pinned too.
+    create(h);
+    call(
+        h,
+        "bob",
+        "hexbot.bots.create",
+        json!({"name":"owl","model":"model-a","provider":"openai"}),
+    );
+    let promoted = call(h, "bob", "hexbot.bots.set_primary", json!({"name":"owl"}));
+    assert!(promoted["bot"]["pinned_at"].is_number());
+    assert!(
+        call(
+            h,
+            "alice",
+            "hexbot.bots.get",
+            json!({"name":"research-owl"})
+        )["bot"]["pinned_at"]
+            .is_null()
+    );
+}
+
+#[test]
+fn an_upgrade_pins_the_primary_bot_it_already_has() {
+    let home = setup();
+    let h = home.path();
+    let conn = db::open(h).unwrap();
+    conn.execute_batch("INSERT INTO bots(name,owner_id,is_primary,created_at) VALUES ('hexbot','alice',1,5),('owl','alice',0,6); ALTER TABLE bots DROP COLUMN pinned_at;").unwrap();
+    db::migrate(h).unwrap();
+    let pins = |name: &str| -> Option<f64> {
+        conn.query_row("SELECT pinned_at FROM bots WHERE name=?", [name], |r| {
+            r.get(0)
+        })
+        .unwrap()
+    };
+    assert_eq!(pins("hexbot"), Some(5.0));
+    assert_eq!(pins("owl"), None);
 }
 #[test]
 fn lifecycle_preserves_memory_and_reopens_archived_sections() {

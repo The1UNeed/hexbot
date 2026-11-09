@@ -220,6 +220,11 @@ export function botsUpdate(name: string, patch: BotUpdatePatch): Promise<{ bot: 
   return withFace<{ bot: Bot }>('hexbot.bots.update', { name, ...patch })
 }
 
+/** Pin a bot's chat in the list, or unpin it. */
+export function botsPin(name: string, pinned: boolean): Promise<{ bot: Bot }> {
+  return rpcCall<{ bot: Bot }>('hexbot.bots.pin', { name, pinned })
+}
+
 export function botsDelete(name: string): Promise<{ deleted: boolean }> {
   return rpcCall<{ deleted: boolean }>('hexbot.bots.delete', { name })
 }
@@ -499,6 +504,10 @@ export function roomsArchive(id: string): Promise<{ room: Room }> {
 
 export function roomsDelete(id: string): Promise<{ deleted: boolean }> {
   return rpcCall<{ deleted: boolean }>('hexbot.rooms.delete', { id })
+}
+
+export function roomsPin(id: string, pinned: boolean): Promise<{ room: Room }> {
+  return rpcCall<{ room: Room }>('hexbot.rooms.pin', { id, pinned })
 }
 
 export function roomsMarkRead(id: string, seq: number): Promise<{ room: Room }> {

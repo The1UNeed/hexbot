@@ -542,6 +542,11 @@ function MobileApp({ children }: { children?: ReactNode }) {
     via: d.kind === 'connect' ? 'connect' : 'lan',
     current: d.id === mobile.active?.id
   }))
+  // A finished turn in a bot's chat you have not seen; Check-ins do not count.
+  const unreadOf = (b: Bot) =>
+    (b.sections_recent ?? []).filter(
+      s => s.done_at && !s.archived_at && !purposeOf(s, mobile.sections)
+    )
   const bots: BotSummary[] = mobile.bots.map(b => {
     return {
       ...faceOf(b),
@@ -551,11 +556,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
       description: b.description,
       preview: previewLine(chatPreview(b.name, mobile.sections, b.sections_recent) ?? '') || null,
       activity: b.status_detail?.text,
-      status:
-        b.status === 'idle' &&
-        b.sections_recent?.some(s => s.done_at && !s.archived_at && !purposeOf(s, mobile.sections))
-          ? ('done' as const)
-          : b.status,
+      status: b.status === 'idle' && unreadOf(b).length ? ('done' as const) : b.status,
       updatedAt: ms(b.last_activity_at)
     }
   })
@@ -645,7 +646,13 @@ function MobileApp({ children }: { children?: ReactNode }) {
             activity: away ? null : b.activity,
             status: away ? undefined : b.status,
             updatedAt: b.updatedAt,
-            primary: b.primary
+            primary: b.primary,
+            // Older daemons send no pins; their primary bot stays on top.
+            pinned:
+              botByName(b.id)!.pinned_at != null ||
+              (botByName(b.id)!.pinned_at === undefined && b.primary),
+            pinnedAt: ms(botByName(b.id)!.pinned_at),
+            unread: unreadOf(botByName(b.id)!).length > 0
           }
         }),
         ...mobile.rooms
@@ -659,7 +666,9 @@ function MobileApp({ children }: { children?: ReactNode }) {
               members: membersOf(r),
               status: urgent([...here.map(b => b.status), r.turns?.length ? 'working' : undefined]),
               activity: here.find(b => b.status === 'working')?.status_detail?.text,
-              updatedAt: ms(r.last_activity_at)
+              updatedAt: ms(r.last_activity_at),
+              pinned: r.pinned_at != null,
+              pinnedAt: ms(r.pinned_at)
             }
           }),
         ...(primaryBot && checkins
@@ -1173,6 +1182,26 @@ function MobileApp({ children }: { children?: ReactNode }) {
     const b = c.kind === 'checkins' ? primaryBot : botByName(c.id)
     if (b) setPanels([{ kind: 'bot', bot: b }])
   }
+  const pinConversation = (c: ConversationSummary, pinned: boolean) =>
+    act(async () => {
+      await (c.kind === 'room'
+        ? mobile.rpc('hexbot.rooms.pin', { id: c.id, pinned })
+        : mobile.rpc('hexbot.bots.pin', { name: c.id, pinned }))
+      await mobile.refresh()
+    })
+  const markConversationRead = (c: ConversationSummary) =>
+    act(async () => {
+      const b = botByName(c.id)
+      if (c.kind !== 'bot' || !b) return
+      await Promise.all(unreadOf(b).map(s => mobile.rpc('hexbot.sections.mark_read', { id: s.id })))
+      await mobile.refresh()
+    })
+  const renameConversation = async (c: ConversationSummary, name: string) => {
+    await (c.kind === 'room'
+      ? mobile.rpc('hexbot.rooms.update', { id: c.id, name })
+      : mobile.rpc('hexbot.bots.update', { name: c.id, display_name: name }))
+    await mobile.refresh()
+  }
   const openConversation = (c: ConversationSummary) => {
     if (demo) {
       setBotPage(c.id)
@@ -1451,7 +1480,10 @@ function MobileApp({ children }: { children?: ReactNode }) {
     conversations,
     // Beside the sidebar on iOS; Android pushes the chat route when one opens.
     onOpen: Platform.OS === 'ios' ? c => select(`${c.kind}-${c.id}`) : openConversation,
-    onLongPress: demo ? undefined : openPanelFor,
+    onSettings: demo ? undefined : openPanelFor,
+    onPin: demo ? undefined : pinConversation,
+    onMarkRead: demo ? undefined : markConversationRead,
+    onRename: demo ? undefined : renameConversation,
     waiting: demo ? [] : waitingElsewhere,
     onOpenPulse: openPulse,
     onNewBot: demo ? undefined : () => setPanels([{ kind: 'bot-create' }]),

@@ -1,6 +1,6 @@
 import type { Bot, Room } from '../../lib/types'
 
-import { orderedBots, orderedRosterItems, startingModel } from './index'
+import { isPinned, orderedBots, orderedRosterItems, startingModel } from './index'
 
 describe('roster ordering', () => {
   it('orders bots and rooms together by daemon activity time', () => {
@@ -9,7 +9,7 @@ describe('roster ordering', () => {
     expect(orderedRosterItems([bot], [room]).map(item => item.kind)).toEqual(['room', 'bot'])
   })
 
-  it('pins the primary bot on top however quiet it is', () => {
+  it('keeps the primary bot on top for older daemons, which send no pins', () => {
     const primary = { last_activity_at: 1, name: 'hexbot', primary: true } as Bot
     const bot = { last_activity_at: 100, name: 'writer', primary: false } as Bot
     const room = { archived_at: null, id: 'room-1', last_activity_at: 200 } as Room
@@ -18,7 +18,28 @@ describe('roster ordering', () => {
       room,
       bot
     ])
+    expect(isPinned({ item: primary, kind: 'bot' })).toBe(true)
     expect(orderedBots([bot, primary])).toEqual([primary, bot])
+  })
+
+  it('lets you unpin the primary bot', () => {
+    const primary = { last_activity_at: 1, name: 'hexbot', pinned_at: null, primary: true } as Bot
+    const bot = { last_activity_at: 100, name: 'writer', pinned_at: null } as Bot
+    expect(isPinned({ item: primary, kind: 'bot' })).toBe(false)
+    expect(orderedRosterItems([primary, bot], []).map(entry => entry.item)).toEqual([bot, primary])
+  })
+
+  it('keeps pinned bots and rooms first, in the order they were pinned', () => {
+    const primary = { last_activity_at: 1, name: 'hexbot', pinned_at: 5, primary: true } as Bot
+    const later = { last_activity_at: 1, name: 'writer', pinned_at: 20 } as Bot
+    const busy = { last_activity_at: 500, name: 'coder', pinned_at: null } as Bot
+    const room = { archived_at: null, id: 'room-1', last_activity_at: 2, pinned_at: 10 } as Room
+    expect(orderedRosterItems([busy, later, primary], [room]).map(entry => entry.item)).toEqual([
+      primary,
+      room,
+      later,
+      busy
+    ])
   })
 })
 

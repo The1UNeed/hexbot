@@ -373,11 +373,13 @@ more freedom and more capability than a hosted product can offer.
   change, or an update changes Hexbot's own tools, the chat is rebuilt with
   them at its next message; rooms, threads between bots, jobs and delegates
   keep what they started with. Skill reads use current bodies and grants.
-- Sidebar: one list of bots and rooms, newest message first, with the primary
-  bot pinned on top. A bot moves up when you write in its chat and when it
-  posts there; work out of sight (threads between bots, rooms, jobs,
-  heartbeat runs, dreams) leaves it in place. A bot is one row; opening it
-  opens the chat.
+- Sidebar: one list of bots and rooms, newest message first. A bot moves up
+  when you write in its chat and when it posts there; work out of sight
+  (threads between bots, rooms, jobs, heartbeat runs, dreams) leaves it in
+  place. A bot is one row; opening it opens the chat. Pinned bots and rooms
+  sit above the list as large faces, in the order they were pinned; the
+  primary bot starts pinned. Right-click a row (long-press on the phone) to
+  pin, mark as read, rename, or open settings.
 
 ## 3. Client
 

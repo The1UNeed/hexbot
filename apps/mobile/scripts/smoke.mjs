@@ -405,6 +405,36 @@ try {
   await page.getByTestId('connection-pair').click()
   await expect(page.getByTestId('bot-row-owl')).toBeVisible({ timeout: 30000 })
   await page.screenshot({ path: path.join(artifacts, 'bots.png') })
+  // A long press on a chat opens its menu beside it: pin it, then rename it from its face.
+  const longPress = async locator => {
+    const box = await locator.boundingBox()
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    await page.mouse.down()
+    await page.waitForTimeout(600)
+    await page.mouse.up()
+  }
+  const owlName = (await rpc('hexbot.bots.get', { name: 'owl' })).bot.display_name
+  await longPress(page.getByTestId('bot-row-owl'))
+  await expect(page.getByTestId('row-menu-rename')).toBeVisible()
+  await settle()
+  await shot('row-menu')
+  await page.getByTestId('row-menu-pin').click()
+  await expect(page.getByTestId('pinned-bot-owl')).toBeVisible()
+  await expect
+    .poll(async () => (await rpc('hexbot.bots.get', { name: 'owl' })).bot.pinned_at)
+    .not.toBe(null)
+  await shot('pinned')
+  await longPress(page.getByTestId('pinned-bot-owl'))
+  await page.getByTestId('row-menu-rename').click()
+  await page.getByTestId('rename-name').fill('Night Owl')
+  await page.getByTestId('rename-sheet-action').click()
+  await expect(page.getByTestId('pinned-bot-owl')).toContainText('Night Owl')
+  await expect
+    .poll(async () => (await rpc('hexbot.bots.get', { name: 'owl' })).bot.display_name)
+    .toBe('Night Owl')
+  await rpc('hexbot.bots.update', { name: 'owl', display_name: owlName })
+  await rpc('hexbot.bots.pin', { name: 'owl', pinned: false })
+  await expect(page.getByTestId('bot-row-owl')).toBeVisible()
   const device = (await rpc('hexbot.devices.list')).devices.find(
     d => d.name === 'Hexbot on Android'
   )
@@ -1113,6 +1143,7 @@ try {
       'email draft card the user edits and sends, with a comma in a name',
       'Google and Microsoft account panels: sign out, and a code before the page',
       'chat list, and one chat per bot opened from its row',
+      'a long press pins a chat and renames it from its face',
       'model menu lists connected providers from their live lists and shows the level the model runs at',
       'tool card',
       'heartbeat checklist, a run the card follows to its end, and its message in the chat',

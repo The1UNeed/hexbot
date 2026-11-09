@@ -40,8 +40,14 @@ export interface ConversationSummary {
   activity?: string | null
   updatedAt?: number | null
   status?: BotStatus
-  /** The primary bot's chat, pinned on top. */
+  /** The primary bot's chat. */
   primary?: boolean
+  /** Pinned: drawn as a large face above the list. The primary bot starts pinned. */
+  pinned?: boolean
+  /** When it was pinned, epoch milliseconds; pinned faces keep that order. */
+  pinnedAt?: number | null
+  /** Something finished here that you have not seen. */
+  unread?: boolean
 }
 
 /** A daemon this app has paired with and can switch to. */

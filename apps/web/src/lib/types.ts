@@ -278,6 +278,8 @@ export interface Bot {
   persona: string
   /** When SOUL.md last changed, in Unix seconds; null before it exists. Older daemons leave it out. */
   persona_updated_at?: null | number
+  /** When you pinned its chat in the list; null when not pinned. Older daemons leave it out. */
+  pinned_at?: null | number
   /** The one bot that looks after the others; it can't be deleted. Older daemons leave it out. */
   primary?: boolean
   provider: null | string
@@ -1106,6 +1108,8 @@ export interface Room {
   members: RoomMember[]
   name: string
   owner_id: string
+  /** When you pinned it in the list; null when not pinned. Older daemons leave it out. */
+  pinned_at?: null | number
   /** Bots with a turn running now; older daemons leave it out. */
   turns?: Pick<RoomTurn, 'bot' | 'live_session_id'>[]
   updated_at: number
