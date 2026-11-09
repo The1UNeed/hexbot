@@ -1,7 +1,7 @@
 import { act, render, screen, waitFor } from '@testing-library/react'
 import { IDBFactory } from 'fake-indexeddb'
 
-import { ProvidersSettings, SettingsPanel } from '../app/settings'
+import { NetworkSettings, ProvidersSettings, SettingsPanel } from '../app/settings'
 import { useConnection } from '../stores/connection'
 
 import { ConnectionSupervisor } from './connection'
@@ -29,7 +29,11 @@ class DaemonSocket extends EventTarget {
   send(data: string) {
     const { id, method } = JSON.parse(data) as { id: string; method: string }
 
-    const result = method === 'hexbot.memory.user.get'
+    const result = method === 'hexbot.network.get'
+      ? { lan_enabled: true, addresses: ['Initial network'], port: 9119 }
+      : method === 'hexbot.devices.list'
+        ? { devices: [] }
+      : method === 'hexbot.memory.user.get'
       ? { text: 'Cold-page About you', path: 'user.md' }
       : method === 'hexbot.providers.list'
         ? { providers: [{ id: 'cold-provider', label: install === 'cold-page' ? 'Cold provider' : `Catalog ${install}`, configured: false, auth_type: 'api_key', models_source: 'catalog' }] }
@@ -42,7 +46,10 @@ class DaemonSocket extends EventTarget {
         : { bots: [], rooms: [], sections: [], connectors: [], display_name: 'Alex' }
 
     queueMicrotask(async () => {
-      if (method === 'hexbot.info' && holdInfo) {await holdInfo}
+      if (method === 'hexbot.info' && holdInfo) {
+        await holdInfo
+      }
+
       this.frame({ id, result })
     })
   }
@@ -122,5 +129,48 @@ it.each(['memory', 'providers'] as const)('a cold /settings/%s page loads throug
     expect(screen.queryByRole('alert')).toBeNull()
   } finally {
     supervisor.stop()
+  }
+})
+
+
+it('network remains usable without a disconnected-read error after a long reconnect', async () => {
+  vi.stubGlobal('indexedDB', new IDBFactory())
+  const target = { kind: 'local' as const, origin: window.location.origin }
+  useConnection.setState({ target, epoch: null, connects: 0, daemon: null })
+  setActiveRpc(null)
+  install = 'network'
+  let offline = false
+  const sockets: DaemonSocket[] = []
+
+  const supervisor = new ConnectionSupervisor({
+    fetch: vi.fn(async url => String(url).endsWith('/api/auth/ws-ticket')
+      ? new Response('{"ticket":"cold"}') : new Response('')),
+    socketFactory: () => {
+      if (offline) {throw new Error('test offline')}
+      const socket = new DaemonSocket()
+      sockets.push(socket)
+
+      return socket as unknown as WebSocket
+    }
+  })
+
+  try {
+    await act(async () => { await supervisor.start(target) })
+    render(<NetworkSettings />)
+    await screen.findByText('Initial network:9119')
+    expect(screen.queryByRole('alert')).toBeNull()
+    vi.useFakeTimers()
+    offline = true
+    await act(async () => { sockets[0]!.close() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(16000) })
+    offline = false
+    vi.useRealTimers()
+    await act(async () => { await supervisor.retryNow() })
+    expect(useConnection.getState().status).toBe('connected')
+    expect(screen.getByText('Initial network:9119')).toBeVisible()
+    expect(screen.queryByRole('alert')).toBeNull()
+  } finally {
+    await act(async () => { supervisor.stop() })
+    vi.useRealTimers()
   }
 })

@@ -997,6 +997,10 @@ export function NetworkSettings(): React.JSX.Element {
     }
   }, [connectionStatus, refreshDevices, refreshNetwork, reconnecting])
   useEffect(() => {
+    if (useConnection.getState().status !== 'connected') {
+      return
+    }
+
     void Promise.all([refreshNetwork(), refreshDevices()]).catch(cause =>
       setError(errorText(cause))
     )
