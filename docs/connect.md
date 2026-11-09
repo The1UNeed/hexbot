@@ -223,9 +223,14 @@ per minute per running app instance, when a registration is created.
    `connect.json` from before owner pinning is ignored with a warning; run
    `hexbot connect` again.
 5. Heartbeat: `POST /api/daemons/{id}/heartbeat {port}` every five minutes
-   with the daemon token, the first one as soon as the tunnel starts; Connect
-   records `last_seen_at` and the port, which only the loopback development
-   address uses.
+   with the daemon token, the first one as soon as the tunnel starts. Through
+   Cloudflare, Connect answers `{ok: true}` and reads and writes nothing: a
+   query every five minutes per daemon would keep Neon from ever scaling to
+   zero, and Neon bills for every hour its compute runs. Only fake tunnels
+   use it, to record the port that the loopback development address needs.
+   It answers 200 to any token, so `last_heartbeat_at` in `hexbot connect
+   status` shows only that Connect answered, not that the registration is
+   still valid.
 6. Bot message push: `POST /api/daemons/{id}/push {targets: [{token, device}],
    section}` with the daemon token, when a bot's heartbeat posts in its chat.
    Connect relays it to Expo's push service in its own words,
@@ -243,10 +248,10 @@ per minute per running app instance, when a registration is created.
 
 ## Online state
 
-A heartbeat says the daemon process is up; it says nothing about the tunnel,
-which runs beside it and can be down while the daemon keeps checking in. So
-whenever Connect lists daemons (`GET /api/daemons` and the `/connect` page) it
-also probes each daemon's address. With a stored identity key it requests
+Connect learns whether a daemon is up only by asking it. Whenever Connect
+lists daemons (`GET /api/daemons` and the `/connect` page) it probes each
+daemon's address; nothing runs in the background, so the database sleeps
+while nobody uses Connect. With a stored identity key it requests
 `GET https://<tunnel_hostname>/api/connect/identity?nonce=<fresh random>` and
 verifies the Ed25519 signature against that stored key, daemon ID, hostname,
 and nonce. A wrong ID, invalid signature, malformed reply, or failed request
@@ -263,12 +268,22 @@ to that request Host. A reachable answer is cached for thirty seconds, an
 unreachable one for five. The cache includes the daemon ID and identity key,
 so enrollment takes effect without waiting for an old providers result to expire.
 
-Three states follow: **online** (heartbeat within ten minutes and the address
-answers), **unreachable** (heartbeat within ten minutes, address does not
-answer or prove its identity: the daemon runs but its address fails the probe),
-and **offline** (no heartbeat for ten minutes; not probed). The API carries `status` plus the older
-`online` boolean, which is true only for `online`. "Open in browser" and the
-app's daemon list enable a daemon only while it is online.
+Two states follow: **online** (the address answers and proves its identity)
+and **offline** (anything else; a stopped daemon and a broken tunnel look the
+same from here). The API carries `status` plus the older `online` boolean,
+which is true only for `online`; apps still accept `unreachable` from Connect
+deployments that sent it. "Open in browser" and the app's daemon list enable
+a daemon only while it is online. `last_seen_at` is the last time a probe got
+an answer. It is written after the response, at most every five minutes, with
+a conditional UPDATE, so concurrent listings write once; a failed write is
+logged and never fails the listing. A client session's `last_seen_at` moves
+the same way.
+
+The one latency this accepts: after five minutes without a query, Neon
+suspends the database, and the next request that reads it waits for it to
+start (a few hundred milliseconds, per Neon's documentation). Only Connect
+requests pay it: signing in, opening the daemons page or the app's daemon
+list, and a grant. Chat traffic goes straight to the daemon and never does.
 
 ## App sign-in
 
@@ -389,8 +404,11 @@ as success. Other calls made with that daemon's token receive
 `410 {error: "daemon_revoked"}`. An unknown token stays 401. The daemon treats that answer, and only that answer, as the owner's
 decision: it drops the registration exactly as disconnect does, minus the
 DELETE, and Settings shows "Not connected. Removed in Hex Connect." The
-first heartbeat goes out when the tunnel starts and the rest every five
-minutes, so a revoked daemon disconnects within a few minutes. A 401, a 5xx,
+heartbeat does not carry it: revoking deletes the tunnel, so `cloudflared`
+loses its connection, and after three failures the daemon asks for a tunnel
+repair, which answers 410. A revoked daemon disconnects within about ten
+minutes of its tunnel being deleted; while cleanup has failed, it learns only
+after the owner's **Retry** succeeds, or from a push or grant exchange. Pushes and grant exchanges answer 410 too. A 401, a 5xx,
 or an unreachable Connect never removes anything: a Connect outage must not
 disconnect daemons.
 
