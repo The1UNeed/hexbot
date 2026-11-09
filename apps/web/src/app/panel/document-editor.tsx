@@ -14,10 +14,11 @@ import {
   MoreHorizontal,
   X
 } from 'lucide-react'
-import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 
 import { Menu } from '../../components/ui/menu'
+import { ScrollArea } from '../../components/ui/scroll-area'
 import { cn } from '../../lib/cn'
 import { errorText } from '../bot-settings/shared'
 
@@ -59,6 +60,39 @@ export interface DocumentEditorProps {
   title: string
   value: string
 }
+
+/**
+ * Scrolls the nearest scroller just enough that the caret sits clear of its
+ * scroll-padding, which `ScrollArea` sets to the floating chrome's height.
+ */
+function revealCaret(node: HTMLElement, caret: { bottom: number; top: number }): boolean {
+  let scroller = node.parentElement
+
+  while (scroller && !/(auto|scroll)/.test(getComputedStyle(scroller).overflowY)) {
+    scroller = scroller.parentElement
+  }
+
+  if (!scroller) {
+    return false
+  }
+
+  const style = getComputedStyle(scroller)
+  const box = scroller.getBoundingClientRect()
+  const top = box.top + (parseFloat(style.scrollPaddingTop) || 0) + 8
+  const bottom = box.bottom - (parseFloat(style.scrollPaddingBottom) || 0) - 8
+
+  if (caret.top < top) {
+    scroller.scrollTop -= top - caret.top
+  } else if (caret.bottom > bottom) {
+    scroller.scrollTop += caret.bottom - bottom
+  }
+
+  return true
+}
+
+// A round glass button, as every floating control is.
+const glassCircle =
+  'hex-glass hex-glass-press hex-focus grid size-9 place-items-center rounded-full text-foreground/70 hover:text-foreground'
 
 const toolClass =
   'hex-focus grid h-8 min-w-8 place-items-center rounded-[9px] px-1.5 text-[13px] font-semibold text-muted transition-colors duration-[var(--hex-motion-fast)] hover:bg-foreground/[0.06] hover:text-foreground disabled:pointer-events-none disabled:opacity-40 aria-pressed:bg-foreground/[0.08] aria-pressed:text-foreground'
@@ -250,7 +284,22 @@ export function DocumentEditor({
     autofocus: inline ? false : 'end',
     content: value,
     contentType: 'markdown',
-    editorProps: { attributes: { 'aria-label': title, class: 'hex-document outline-none' } },
+    editorProps: {
+      attributes: { 'aria-label': title, class: 'hex-document outline-none' },
+      // The caret keeps clear of the floating glass above and below it: the
+      // scroller's scroll-padding is the measured height of that chrome.
+      // ProseMirror reveals it first, nested and sideways scrollers included,
+      // then the page scroller nudges it out from under the chrome.
+      handleScrollToSelection: view => {
+        requestAnimationFrame(() => {
+          if (view.dom.isConnected) {
+            revealCaret(view.dom, view.coordsAtPos(view.state.selection.head))
+          }
+        })
+
+        return false
+      }
+    },
     extensions: [
       StarterKit.configure({ underline: false }),
       Markdown,
@@ -275,6 +324,43 @@ export function DocumentEditor({
   const [source, setSource] = useState<null | string>(sourceOnly ? value : null)
   // The source text as it was shown, to tell whether switching back needs to reload the editor.
   const shownSource = useRef(source)
+  // The source field grows with its text, so the page scroller (and its
+  // scroll-padding) keeps the caret clear of the chrome. Chromium does it in
+  // CSS (`field-sizing`); Safari and Firefox are sized here.
+  const sourceField = useRef<HTMLTextAreaElement>(null)
+  useLayoutEffect(() => {
+    const field = sourceField.current
+
+    if (!field || (typeof CSS !== 'undefined' && CSS.supports?.('field-sizing', 'content'))) {
+      return
+    }
+
+    const fit = () => {
+      field.style.height = 'auto'
+      field.style.height = `${field.scrollHeight}px`
+    }
+
+    fit()
+
+    if (typeof ResizeObserver === 'undefined') {
+      return
+    }
+
+    // A narrower panel wraps more lines, and a field first measured in a
+    // hidden tab has no height yet: fit again when its width changes.
+    let width = field.clientWidth
+
+    const observer = new ResizeObserver(() => {
+      if (field.clientWidth !== width) {
+        width = field.clientWidth
+        fit()
+      }
+    })
+
+    observer.observe(field)
+
+    return () => observer.disconnect()
+  }, [source])
 
   // Until something is edited, the file is its own text, not the editor's rewrite of it.
   const current = useCallback(
@@ -485,7 +571,7 @@ export function DocumentEditor({
             ])
       ]}
       trigger={
-        <button aria-label="More" className={toolClass} type="button">
+        <button aria-label="More" className={inline ? toolClass : glassCircle} type="button">
           <MoreHorizontal size={16} />
         </button>
       }
@@ -511,7 +597,7 @@ export function DocumentEditor({
       {source !== null ? (
         <textarea
           aria-label={`${title} source`}
-          className="min-h-[60vh] w-full resize-none bg-transparent font-mono text-[13px] leading-relaxed text-foreground outline-none"
+          className="min-h-[60vh] w-full resize-none bg-transparent [field-sizing:content] font-mono text-[13px] leading-relaxed text-foreground outline-none"
           onChange={event => {
             edited.current = true
             draft.current = event.target.value
@@ -519,6 +605,7 @@ export function DocumentEditor({
             setLength(event.target.value.length)
             schedule()
           }}
+          ref={sourceField}
           spellCheck={false}
           value={source}
         />
@@ -531,24 +618,35 @@ export function DocumentEditor({
   if (inline) {
     return (
       <div className="flex h-full min-h-0 flex-col" data-testid="document-editor">
-        <div className="flex h-11 shrink-0 items-center gap-1 border-b border-foreground/[0.07] px-2">
-          {plain ? (
-            <span className="truncate px-1.5 text-[length:var(--text-meta)] text-muted">
-              Plain text
-            </span>
-          ) : (
-            <Toolbar disabled={source !== null} editor={editor} />
-          )}
-          <span
-            aria-live="polite"
-            className="ml-auto pr-1 text-[length:var(--text-meta)] text-muted"
-          >
-            {status}
-          </span>
-          {menu}
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 pt-5 pb-8">{body}</div>
-        {footer}
+        {/* The page runs under its floating toolbar and ask field. */}
+        <ScrollArea
+          bottom={footer ?? undefined}
+          className="flex-1"
+          drag={false}
+          top={
+            <div className="p-2">
+              <div className="hex-glass flex h-10 items-center gap-1 rounded-full px-1.5">
+                {plain ? (
+                  <span className="truncate px-1.5 text-[length:var(--text-meta)] text-muted">
+                    Plain text
+                  </span>
+                ) : (
+                  <Toolbar disabled={source !== null} editor={editor} />
+                )}
+                <span
+                  aria-live="polite"
+                  className="ml-auto pr-1 text-[length:var(--text-meta)] text-muted"
+                >
+                  {status}
+                </span>
+                {menu}
+              </div>
+            </div>
+          }
+          viewportClassName="px-5 pb-8"
+        >
+          {body}
+        </ScrollArea>
       </div>
     )
   }
@@ -561,46 +659,52 @@ export function DocumentEditor({
       data-testid="document-editor"
       role="dialog"
     >
-      <header className="hex-drag grid h-12 shrink-0 grid-cols-[1fr_auto_1fr] items-center border-b border-foreground/[0.07] px-3">
-        <span className="truncate pl-[72px] text-[length:var(--text-secondary)] font-medium text-muted">
-          {title}
-        </span>
-        <div className="hex-no-drag">
-          <Toolbar disabled={source !== null} editor={editor} />
-        </div>
-        <div className="hex-no-drag flex items-center justify-end gap-1">
-          {cap !== undefined ? (
-            <span
-              className={cn(
-                'mr-1 text-[length:var(--text-meta)] tabular-nums',
-                over ? 'text-danger' : 'text-muted'
-              )}
-            >
-              {length.toLocaleString()} / {cap.toLocaleString()}
+      {/* The document scrolls under its floating header, as the chat does. */}
+      <ScrollArea
+        className="flex-1"
+        hold
+        top={
+          <header className="grid h-14 grid-cols-[1fr_auto_1fr] items-center gap-2 px-3">
+            <span className="truncate pl-[72px] text-[length:var(--text-secondary)] font-medium text-muted">
+              {title}
             </span>
-          ) : null}
-          <span aria-live="polite" className="mr-1 text-[length:var(--text-meta)] text-muted">
-            {status}
-          </span>
-          {menu}
-          <button
-            aria-label="Close"
-            className={toolClass}
-            onClick={() => void close()}
-            type="button"
-          >
-            <X size={16} />
-          </button>
-        </div>
-      </header>
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto w-full max-w-[46rem] px-8 pt-10 pb-24">
+            <div className="hex-glass flex h-10 items-center rounded-full px-1.5">
+              <Toolbar disabled={source !== null} editor={editor} />
+            </div>
+            <div className="flex items-center justify-end gap-1">
+              {cap !== undefined ? (
+                <span
+                  className={cn(
+                    'mr-1 text-[length:var(--text-meta)] tabular-nums',
+                    over ? 'text-danger' : 'text-muted'
+                  )}
+                >
+                  {length.toLocaleString()} / {cap.toLocaleString()}
+                </span>
+              ) : null}
+              <span aria-live="polite" className="mr-1 text-[length:var(--text-meta)] text-muted">
+                {status}
+              </span>
+              {menu}
+              <button
+                aria-label="Close"
+                className={glassCircle}
+                onClick={() => void close()}
+                type="button"
+              >
+                <X size={16} />
+              </button>
+            </div>
+          </header>
+        }
+      >
+        <div className="mx-auto w-full max-w-[46rem] px-8 pt-4 pb-24">
           <blockquote className="mb-9 border-l-2 border-foreground/15 pl-4 text-[length:var(--text-secondary)] leading-relaxed text-foreground/75 italic">
             {about}
           </blockquote>
           {body}
         </div>
-      </div>
+      </ScrollArea>
     </div>,
     document.body
   )

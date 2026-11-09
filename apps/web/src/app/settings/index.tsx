@@ -6,6 +6,7 @@ import { isSubscription, ProviderPanel, supportsApiKey } from '../../components/
 import { Button } from '../../components/ui/button'
 import { Chip } from '../../components/ui/chip'
 import { Input } from '../../components/ui/input'
+import { ScrollArea } from '../../components/ui/scroll-area'
 import { Select } from '../../components/ui/select'
 import { settingsPageClass } from '../../components/ui/settings-shell'
 import { SkeletonLines } from '../../components/ui/skeleton'
@@ -1738,12 +1739,17 @@ function ThirdPartyNotices() {
   }
 
   return text ? (
-    <pre
-      className="max-h-[60dvh] overflow-auto whitespace-pre rounded-2xl bg-foreground/[0.04] p-4 font-mono text-[length:var(--text-meta)]"
-      data-testid="third-party-notices"
+    <ScrollArea
+      className="max-h-[60dvh] overflow-hidden rounded-2xl bg-foreground/[0.04]"
+      viewportClassName="overflow-auto"
     >
-      {text}
-    </pre>
+      <pre
+        className="whitespace-pre p-4 font-mono text-[length:var(--text-meta)]"
+        data-testid="third-party-notices"
+      >
+        {text}
+      </pre>
+    </ScrollArea>
   ) : (
     <p className="px-1 text-[length:var(--text-secondary)] text-muted">
       The build adds them. This copy of Hexbot runs from source.

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '../../components/ui/button'
 import { confirm } from '../../components/ui/confirm'
+import { ScrollArea } from '../../components/ui/scroll-area'
 import { SkeletonLines } from '../../components/ui/skeleton'
 import { Switch } from '../../components/ui/switch'
 import { Textarea } from '../../components/ui/textarea'
@@ -569,9 +570,11 @@ function DreamEntry({
                   <span className="mb-1 block text-[length:var(--text-meta)] text-muted">
                     {label}
                   </span>
-                  <pre className="max-h-48 overflow-auto rounded-[10px] bg-foreground/[0.05] p-2.5 font-mono text-[length:var(--text-meta)] whitespace-pre-wrap">
-                    {(label === 'Before' ? dream.memory_before : dream.memory_after) || '(empty)'}
-                  </pre>
+                  <ScrollArea className="max-h-48 overflow-hidden rounded-[10px] bg-foreground/[0.05]">
+                    <pre className="p-2.5 font-mono text-[length:var(--text-meta)] whitespace-pre-wrap">
+                      {(label === 'Before' ? dream.memory_before : dream.memory_after) || '(empty)'}
+                    </pre>
+                  </ScrollArea>
                 </div>
               ))}
               <div className="@min-[600px]:col-span-2">

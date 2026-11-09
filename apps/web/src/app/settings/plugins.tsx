@@ -188,7 +188,8 @@ export function PluginsSettings(): React.JSX.Element {
       </Heading>
       <div
         aria-label="Plugin kinds"
-        className="mb-5 flex gap-6 border-b border-foreground/[0.08]"
+        // The same pill segments as the bot panel's tabs: no rule underneath.
+        className="mb-5 flex w-fit max-w-full gap-0.5 rounded-full bg-foreground/[0.05] p-[3px]"
         role="tablist"
       >
         {CATEGORIES.map(item => (
@@ -196,10 +197,10 @@ export function PluginsSettings(): React.JSX.Element {
             aria-controls="plugins-panel"
             aria-selected={category === item.id}
             className={cn(
-              'hex-focus -mb-px flex h-9 items-center gap-1.5 border-b-2 text-[length:var(--text-body)] transition-colors duration-[var(--hex-motion-fast)]',
+              'hex-focus flex h-8 items-center gap-1.5 rounded-full px-3.5 text-[length:var(--text-secondary)] font-medium whitespace-nowrap transition-colors duration-[var(--hex-motion-fast)]',
               category === item.id
-                ? 'border-foreground font-medium text-foreground'
-                : 'border-transparent text-muted hover:text-foreground'
+                ? 'bg-background text-foreground shadow-card'
+                : 'text-muted hover:text-foreground'
             )}
             key={item.id}
             onClick={() => {
