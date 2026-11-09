@@ -3072,13 +3072,22 @@ mod parity_tests {
         let home = home();
         fs::create_dir_all(home.path().join("profiles/owl")).unwrap();
         let update = |fast: Value| {
-            call(home.path(), "alice", "hexbot.bots.update", &json!({"name":"owl","fast":fast}))
-                .unwrap()
+            call(
+                home.path(),
+                "alice",
+                "hexbot.bots.update",
+                &json!({"name":"owl","fast":fast}),
+            )
+            .unwrap()
         };
         assert_eq!(update(json!(true)).unwrap()["bot"]["fast"], true);
         assert_eq!(config(home.path(), "owl").unwrap()["model"]["fast"], true);
         assert_eq!(update(json!(false)).unwrap()["bot"]["fast"], false);
-        assert!(config(home.path(), "owl").unwrap()["model"].get("fast").is_none());
+        assert!(
+            config(home.path(), "owl").unwrap()["model"]
+                .get("fast")
+                .is_none()
+        );
         assert_eq!(update(json!("yes")).unwrap_err().code, 4202);
     }
     #[test]

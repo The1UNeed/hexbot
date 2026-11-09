@@ -6395,9 +6395,18 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
         )
         .unwrap();
         let sections = [
-            ("chat", json!({"provider":"anthropic","model":"claude-opus-5-5"})),
-            ("job", json!({"provider":"anthropic","model":"claude-opus-5-5","job":"j1"})),
-            ("older", json!({"provider":"anthropic","model":"claude-sonnet-5-5"})),
+            (
+                "chat",
+                json!({"provider":"anthropic","model":"claude-opus-5-5"}),
+            ),
+            (
+                "job",
+                json!({"provider":"anthropic","model":"claude-opus-5-5","job":"j1"}),
+            ),
+            (
+                "older",
+                json!({"provider":"anthropic","model":"claude-sonnet-5-5"}),
+            ),
         ];
         for (id, options) in &sections {
             let mut options = options.clone();
