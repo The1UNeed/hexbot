@@ -5118,18 +5118,18 @@ impl Runtime {
             }
             "agent_settled" => {
                 self.retry_messages(s);
-                let (ending, latest) = {
+                let (ending, latest, stopped) = {
                     let mut state = s.state.lock().unwrap();
                     // This boundary belongs to the stopped run even if a new
                     // prompt reached idle Pi before we handled its last event.
-                    state.interrupted = false;
+                    let stopped = std::mem::take(&mut state.interrupted);
                     s.run_ended.send_modify(|v| *v += 1);
                     let ending = state.identity.settle();
                     let latest = match &ending {
                         Some(end) => state.identity.is_latest(end),
                         None => !state.identity.unmatched_settlement(),
                     };
-                    (ending, latest)
+                    (ending, latest, stopped)
                 };
                 if latest {
                     crate::diagnostics::get().run_settled(&s.id);
@@ -5170,6 +5170,16 @@ impl Runtime {
                         ending
                             .as_ref()
                             .map_or_else(|| state.error.clone(), |end| end.error.clone())
+                            // Hexbot stopped this run (Stop, a deadline, your next
+                            // message): it was interrupted, whatever words its abort
+                            // ended with, such as "This operation was aborted".
+                            .map(|e| {
+                                if stopped {
+                                    "The turn was interrupted".into()
+                                } else {
+                                    e
+                                }
+                            })
                             .filter(|e| !(superseded && e == "The turn was interrupted")),
                         std::mem::take(&mut state.pending),
                     )

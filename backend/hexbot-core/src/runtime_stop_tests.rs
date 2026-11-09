@@ -376,12 +376,14 @@ const emit = event => process.stdout.write(JSON.stringify(event) + '\n');
 const status = text => emit({type:'extension_ui_request', method:'setStatus', statusText:text});
 const response = (c, data = {}) => emit({type:'response', id:c.id, command:c.type, success:true, data});
 const idleBeforeSettled = JSON.parse(fs.readFileSync(__dirname + '/idle-before-settled'));
+// Some aborts end in an error message instead, such as "This operation was aborted".
+const abortError = fs.existsSync(__dirname + '/abort-error') ? fs.readFileSync(__dirname + '/abort-error', 'utf8') : null;
 let active = false, abort;
 const queue = [], steering = [];
 const delivered = text => emit({type:'message_end', message:{role:'user', content:text}});
 const finishAbort = () => {
   active = false;
-  emit({type:'message_end', message:{role:'assistant', content:[], stopReason:'aborted'}});
+  emit({type:'message_end', message:abortError ? {role:'assistant', content:[], stopReason:'error', errorMessage:abortError} : {role:'assistant', content:[], stopReason:'aborted'}});
   if (!idleBeforeSettled) emit({type:'agent_settled'});
   response(abort);
   abort = undefined;
@@ -1286,6 +1288,59 @@ async fn abort_admission_error_releases_stop_and_rejects_waiting_results() {
         runtime.interrupt(&s, DEADLINE).await.unwrap_err().code,
         4001
     );
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_stopped_run_ends_interrupted_without_a_failure_whatever_its_abort_says() {
+    let (home, runtime, hub) = setup();
+    install_queue_pi(home.path(), false);
+    fs::write(
+        home.path().join("abort-error"),
+        "This operation was aborted",
+    )
+    .unwrap();
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let mut events = hub.subscribe();
+    runtime
+        .call_inner(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":id,"text":"wait"}),
+        )
+        .await
+        .unwrap();
+    stop_event(&mut events, |event| {
+        event["payload"]["text"] == "projected wait"
+    })
+    .await;
+    // Stop, or a deadline running out, aborts the run; Pi ends it with an error.
+    let stopping = start_stop(&runtime, &id);
+    stop_event(&mut events, |event| {
+        event["payload"]["text"] == "abort waiting"
+    })
+    .await;
+    Runtime::command(&s, json!({"type":"release_abort"}))
+        .await
+        .unwrap();
+    let cut = stop_event(&mut events, |event| event["type"] == "message.complete").await;
+    assert_eq!(cut["payload"]["error"], "The turn was interrupted", "{cut}");
+    tokio::time::timeout(EVENT_WAIT, stopping)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    // Nothing failed, so the bot's dot does not turn red.
+    let incidents: i64 = db::open(home.path())
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM bot_incidents WHERE bot='owl'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(incidents, 0);
     runtime.shutdown().await;
 }
 
