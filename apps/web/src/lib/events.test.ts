@@ -53,6 +53,100 @@ describe('event routing', () => {
     expect(transcript.usage?.total_tokens).toBe(12)
   })
 
+  describe('a finished reply', () => {
+    const complete = (payload: Record<string, unknown>) =>
+      routeEvent({
+        payload: {
+          bot: 'owl',
+          chat: true,
+          section_id: 'chat',
+          status: 'complete',
+          text: ' Friday it is. ',
+          ...payload
+        },
+        session_id: 'live-owl',
+        type: 'message.complete'
+      } as unknown as GatewayEvent)
+
+    let notify: ReturnType<typeof vi.fn<(input: unknown) => void>>
+    beforeEach(() => {
+      notify = vi.fn<(input: unknown) => void>()
+      setTranscriptEffects({ notify })
+      useBots.setState({ byName: { owl: { display_name: 'Owl', name: 'owl' } as Bot } })
+    })
+
+    it('notifies about a bot’s chat, open on this page or not', () => {
+      // No transcript for live-owl: the chat was never opened here.
+      complete({})
+      expect(notify).toHaveBeenCalledExactlyOnceWith({
+        body: 'Friday it is.',
+        sectionId: 'chat',
+        title: 'Owl'
+      })
+    })
+
+    it('says it finished when the reply has no words', () => {
+      complete({ text: '' })
+      expect(notify).toHaveBeenCalledWith(expect.objectContaining({ body: 'Finished.' }))
+    })
+
+    it.each([
+      ['a thread, a job or a summary', { chat: false }],
+      [
+        'a failed turn, which has its Stopped notification',
+        { error: 'Model failed', status: 'error' }
+      ],
+      ['a stopped turn', { error: 'The turn was interrupted', status: 'error' }]
+    ])('stays quiet about %s', (_, payload) => {
+      complete(payload)
+      expect(notify).not.toHaveBeenCalled()
+    })
+
+    describe('from a daemon that does not say which chat', () => {
+      const older = { bot: undefined, chat: undefined, section_id: undefined }
+
+      const open = (section: Partial<Section>) => {
+        useSections.setState({
+          byId: { chat: { bot: 'owl', id: 'chat', ...section } as Section }
+        })
+        useTranscripts.setState({ bySession: { 'live-owl': emptyTranscript('live-owl', 'chat') } })
+      }
+
+      it('notifies about the session’s chat', () => {
+        open({})
+        complete(older)
+        expect(notify).toHaveBeenCalledExactlyOnceWith({
+          body: 'Friday it is.',
+          sectionId: 'chat',
+          title: 'Owl'
+        })
+      })
+
+      it.each([
+        ['a thread', { peer_bot: 'fox' }],
+        ['a job or Check-ins', { purpose: 'checkins' }],
+        ['an archived conversation', { archived_at: 1 }]
+      ])('stays quiet about %s', (_, section) => {
+        open(section as Partial<Section>)
+        complete(older)
+        expect(notify).not.toHaveBeenCalled()
+      })
+
+      it('stays quiet about a session this page never opened', () => {
+        complete(older)
+        expect(notify).not.toHaveBeenCalled()
+      })
+    })
+
+    it('stays quiet when the bot’s Notify me is off', () => {
+      useBots.setState({
+        byName: { owl: { display_name: 'Owl', name: 'owl', notify: false } as Bot }
+      })
+      complete({})
+      expect(notify).not.toHaveBeenCalled()
+    })
+  })
+
   it('reads a chat again once a dream report closed it', () => {
     useSections.setState({ liveSessionId: { chat: 'live-9', other: 'live-8' } })
     useTranscripts.setState({

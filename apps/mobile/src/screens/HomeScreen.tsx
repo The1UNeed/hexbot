@@ -50,6 +50,8 @@ export interface HomeScreenProps {
    * creates HexBot; without it, the user promotes a bot from its profile.
    */
   primaryChoice?: { onAdd?: () => void } | null
+  /** Set while this phone does not show Hexbot's notifications. */
+  notificationsPrompt?: { onEnable: () => void; onClose: () => void } | null
 
   daemon: DaemonOverview | null
   /** Signed-in person on this daemon; their initials open Settings. */
@@ -212,6 +214,19 @@ export function HomeScreen(props: HomeScreenProps) {
                   onAction={props.primaryChoice.onAdd}
                   testID="home-primary-choice"
                   title="Choose a primary bot"
+                  tone="info"
+                />
+              </View>
+            ) : null}
+            {props.notificationsPrompt && !query ? (
+              <View style={styles.banner}>
+                <Banner
+                  actionLabel="Enable"
+                  message="Know when a bot replies or needs you."
+                  onAction={props.notificationsPrompt.onEnable}
+                  onDismiss={props.notificationsPrompt.onClose}
+                  testID="home-notifications"
+                  title="Turn on notifications"
                   tone="info"
                 />
               </View>

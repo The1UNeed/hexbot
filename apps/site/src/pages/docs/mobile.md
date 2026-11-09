@@ -110,10 +110,15 @@ message carries only the files picked for it, and files picked for a chat you
 leave without sending are removed from the daemon. Older
 daemons show an update notice for unavailable attachment or job controls.
 
-When a bot's [heartbeat](/docs/bots-and-sections#heartbeat) writes to you, or
-a bot finishes a reply you have not read within 30 seconds on any device, the
-phone gets a notification, if you allowed notifications, the bot's Notify me is
-on and the daemon is on Hex Connect. The notification only says one of your
+When a bot's [heartbeat](/docs/bots-and-sections#heartbeat) writes to you, a
+bot finishes a reply you have not read within 30 seconds on any device, or a
+bot has waited 30 seconds for your approval or answer, the phone gets a
+notification, if you allowed notifications, the bot's Notify me is on and the
+daemon is on Hex Connect. A reply counts as read only once you look at it: a
+computer whose Hexbot window sits behind another app does not count. Settings,
+Notifications shows whether this phone takes them, sends a test, and has each
+bot's Notify me; while they are off, a banner over the chat list offers to
+turn them on. The notification only says one of your
 bots has a message;
 the message stays on your daemon until you open it. Tap it to open that bot's
 chat, on the right daemon if you have several. Each bot's checklist is under

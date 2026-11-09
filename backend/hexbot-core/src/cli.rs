@@ -568,8 +568,10 @@ pub async fn execute(home: &Path, args: &[String]) -> Result<Value> {
         && let Some(devices) = result["devices"].as_array_mut()
     {
         for device in devices {
+            // The CLI keeps the Python CLI's fields; apps read `push`.
             if let Some(d) = device.as_object_mut() {
                 d.remove("current");
+                d.remove("push");
             }
         }
     }

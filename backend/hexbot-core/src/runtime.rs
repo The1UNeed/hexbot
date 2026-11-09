@@ -604,6 +604,17 @@ impl Runtime {
         if (kind.starts_with("approval.") || kind.starts_with("clarify.")) && payload.is_object() {
             payload["bot"] = json!(s.bot);
             payload["section_id"] = json!(s.stored);
+            // Unanswered a while, a card wakes the owner's phones; replays push no second time.
+            if let Some(request) = payload["request_id"].as_str() {
+                match kind {
+                    "approval.request" | "clarify.request" => {
+                        heartbeat::push_card_later(&self.home, &s.stored, request)
+                    }
+                    "approval.resolved" | "approval.expire" | "clarify.resolved"
+                    | "clarify.expire" => heartbeat::card_settled(&self.home, request),
+                    _ => {}
+                }
+            }
         }
         self.events.emit(&s.owner, Some(&s.id), kind, payload);
     }
@@ -5266,7 +5277,11 @@ impl Runtime {
                 });
                 let now = common::now();
                 let stamped = self.mark_done(s, now);
-                self.emit(s, "message.complete", with_fields(json!({"text":text,"error":error,"status":if error.is_some(){"error"}else{"complete"},"usage":usage}), &fields));
+                // A reply in a bot's own chat notifies every app, whichever chat it shows.
+                let chat = db::open(&self.home)
+                    .and_then(|conn| heartbeat::bot_chat(&conn, &s.stored))
+                    .unwrap_or(false);
+                self.emit(s, "message.complete", with_fields(json!({"text":text,"error":error,"status":if error.is_some(){"error"}else{"complete"},"usage":usage,"bot":s.bot,"section_id":s.stored,"chat":chat}), &fields));
                 self.emit_usage(s, false);
                 self.emit(s, "status.update", json!({"kind":"idle","text":""}));
                 s.settled.send_modify(|v| *v += 1);

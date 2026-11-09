@@ -29,6 +29,7 @@ import { useUi } from '../../stores/ui'
 import { AskingRow, AskRows } from './asking-row'
 import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
+import { NotificationsBanner } from './notifications-banner'
 import { useSearchJump } from './search-jump'
 import { type Ask, liveMood } from './steps'
 import { DeliveryMark, NotSent, SEND_TIMEOUT_MS } from './unsent'
@@ -644,6 +645,7 @@ export function RoomConversation() {
                 <WaitingBanner name={waitingBot(events, bots, room.members)} />
               ) : null}
               <ConnectedToolsNotice sectionId={`room:${roomId}`} />
+              <NotificationsBanner />
             </header>
             <div className="absolute top-2.5 right-3 flex items-center gap-1.5">
               {searching ? null : (

@@ -14,10 +14,11 @@ vi.mock('electron', () => ({
 }))
 
 const options = { title: 'Owl', body: 'Reply', sectionId: 'chat', backgroundOnly: true }
-const window = (visible: boolean, minimized: boolean) => ({
+const window = (visible: boolean, minimized: boolean, focused = visible && !minimized) => ({
   isDestroyed: () => false,
   isVisible: () => visible,
   isMinimized: () => minimized,
+  isFocused: () => focused,
   restore: vi.fn(() => {
     minimized = false
   }),
@@ -32,17 +33,19 @@ beforeEach(() => vi.clearAllMocks())
 
 describe('native reply notifications', () => {
   it.each([
-    [false, false, true],
-    [true, true, true],
-    [true, false, false]
-  ])('visible=%s minimized=%s delivers=%s', (visible, minimized, delivers) => {
-    const win = window(visible, minimized)
+    [false, false, false, true],
+    [true, true, false, true],
+    // Open behind another app: you are not looking at it.
+    [true, false, false, true],
+    [true, false, true, false]
+  ])('visible=%s minimized=%s focused=%s delivers=%s', (visible, minimized, focused, delivers) => {
+    const win = window(visible, minimized, focused)
     notify(options, () => win as unknown as BrowserWindow)
     expect(native.show).toHaveBeenCalledTimes(delivers ? 1 : 0)
     expect(native.create).toHaveBeenCalledTimes(delivers ? 1 : 0)
   })
 
-  it('checks visibility when delivering, including a reopen racing completion', () => {
+  it('checks focus when delivering, including a reopen racing completion', () => {
     let win = window(false, false)
     const getWindow = () => win as unknown as BrowserWindow
     notify(options, getWindow)

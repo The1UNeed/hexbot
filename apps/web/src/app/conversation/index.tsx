@@ -42,11 +42,9 @@ import {
 } from '../../lib/api'
 import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
-import { botNotifies } from '../../lib/events'
 import { moodForStatus } from '../../lib/face'
 import { mathDelimiters } from '../../lib/math'
 import { mediaKind, mediaOf } from '../../lib/media'
-import { notifyUser } from '../../lib/notify'
 import { plainError } from '../../lib/plain-error'
 import { NotConnectedError } from '../../lib/rpc'
 import { useTurnCues } from '../../lib/sounds'
@@ -94,6 +92,7 @@ import { EmailDraftCard } from './email-draft-card'
 import { FileCard } from './file-card'
 import { filesOf, type FileTarget, mimeOf, openFile } from './file-tab'
 import { MediaView } from './media'
+import { NotificationsBanner } from './notifications-banner'
 import { PluginCard } from './plugin-card'
 import { providerGone, ProviderGoneCard } from './provider-gone-card'
 import { RoomConversation } from './room'
@@ -2268,32 +2267,7 @@ function BotConversation() {
   }, [approvals.length, atBottom, clarifies, composerHeight, messages])
   // The turn, not its bubble: a card closes the bubble while the turn runs on.
   const busy = Boolean(transcript?.turnActive) || streaming
-  const wasBusy = useRef({ busy, section: section?.id })
-  useEffect(() => {
-    const was = wasBusy.current
-
-    wasBusy.current = { busy, section: section?.id }
-
-    // A failed turn has its own Stopped notification, and a stopped one needs none.
-    if (!was.busy || busy || was.section !== section?.id || transcript?.error) {
-      return
-    }
-
-    if (!botNotifies(bot?.name)) {
-      return
-    }
-
-    // This turn's last words: the messages after what the user last sent.
-    const turn = messages.slice(messages.findLastIndex(message => message.role === 'user') + 1)
-    const reply = turn.findLast(message => message.role === 'assistant' && message.text.trim())
-
-    notifyUser({
-      backgroundOnly: true,
-      body: reply?.text.trim() || 'Finished.',
-      sectionId: section?.id,
-      title: bot?.display_name ?? 'Hexbot'
-    })
-  }, [bot?.display_name, bot?.name, busy, messages, section?.id, transcript?.error])
+  // A finished reply notifies from lib/events.ts, for every bot's chat.
   useConversationFeelings(
     bot?.name,
     section?.id,
@@ -3061,6 +3035,7 @@ function BotConversation() {
         </button>
         {status === 'needs_you' ? <WaitingBanner /> : null}
         <ConnectedToolsNotice sectionId={params.section ?? ''} />
+        <NotificationsBanner />
       </header>
       <div className="hex-no-drag absolute top-2.5 right-3 z-30 flex items-center gap-1.5">
         {panelOpen ? null : (

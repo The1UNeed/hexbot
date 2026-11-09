@@ -46,6 +46,7 @@ import { GoogleSignInButton } from './ui/GoogleSignInButton'
 import { PluginIcon } from './ui/PluginIcon'
 import { isOpenRoom } from './core/routes'
 import { pickFile } from './core/pickFile'
+import { allowPush, pushPermission, testNotification } from './core/push'
 import { aboutFile, DocumentPanel, FingerprintCards } from './Fingerprint'
 import type { useMobile } from './core/useMobile'
 export type Panel = {
@@ -68,6 +69,7 @@ export type Panel = {
     | 'mcp'
     | 'memory'
     | 'network'
+    | 'notifications'
     | 'password'
     | 'password-create'
     | 'passwords'
@@ -412,6 +414,7 @@ export function Management({
           'dreams',
           'heartbeat',
           'network',
+          'notifications',
           'usage',
           'updates',
           'plugins',
@@ -533,6 +536,15 @@ export function Management({
         data = (await rpc<{ devices: Device[] }>('hexbot.devices.list'))
           .devices as unknown as RowData[]
         break
+      case 'notifications': {
+        const [{ devices }, permission] = await Promise.all([
+          rpc<{ devices: Device[] }>('hexbot.devices.list'),
+          pushPermission()
+        ])
+        data = devices.filter(d => d.push) as unknown as RowData[]
+        detail = permission as unknown as RowData
+        break
+      }
       case 'usage':
         detail = await rpc('hexbot.usage.summary')
         break
@@ -1580,6 +1592,99 @@ export function Management({
         </Group>
       )
       break
+    case 'notifications': {
+      const offline = busy || mobile.connection !== 'connected'
+      const status = str(extra.status)
+      content = (
+        <>
+          <Group
+            footer={
+              status === 'denied' && extra.canAsk === false
+                ? 'Turn on opens Settings, where Hexbot’s notifications are allowed.'
+                : undefined
+            }
+            title="This phone"
+          >
+            {status === 'unavailable' ? (
+              <Row
+                subtitle="This build of Hexbot cannot show notifications."
+                testID="notifications-unavailable"
+                title="Not available"
+              />
+            ) : status === 'granted' ? (
+              <Row
+                meta="On"
+                testID="notifications-this-phone"
+                title="Notifications"
+                trailing={
+                  <Button
+                    label="Send a test"
+                    onPress={() => void run(testNotification)}
+                    size="small"
+                    testID="notifications-test"
+                    variant="plain"
+                  />
+                }
+              />
+            ) : (
+              <Row
+                subtitle="Know when a bot replies or needs you."
+                testID="notifications-this-phone"
+                title="Off"
+                trailing={
+                  <Button
+                    disabled={offline}
+                    label="Turn on"
+                    onPress={() => void run(() => allowPush(rpc, mobile.active?.deviceId))}
+                    size="small"
+                    testID="notifications-allow"
+                  />
+                }
+              />
+            )}
+          </Group>
+          <Group
+            footer="A reply still unread 30 seconds after it finished, or a bot waiting on you, wakes these phones through Hex Connect. The push names no bot and holds no message."
+            title="Phones"
+          >
+            {rows.length ? (
+              rows.map(d => (
+                <Row
+                  key={str(d.id)}
+                  meta="On"
+                  subtitle={d.id === mobile.active?.deviceId ? 'This phone' : undefined}
+                  testID={`notifications-phone-${d.id}`}
+                  title={str(d.name) || 'Phone'}
+                />
+              ))
+            ) : (
+              <Row testID="notifications-no-phones" title="No phone takes notifications yet" />
+            )}
+          </Group>
+          <Group
+            footer="Replies, approvals, questions, stops and heartbeat messages, on every device. Never about the chat you have open."
+            title="Bots"
+          >
+            {mobile.bots.map(b => (
+              <SwitchRow
+                disabled={offline}
+                key={b.name}
+                leading={
+                  <BotFace face={b.face} imageUri={botPhoto(b)} name={b.display_name} size={28} />
+                }
+                onValueChange={on =>
+                  void run(() => rpc('hexbot.bots.update', { name: b.name, notify: on }))
+                }
+                testID={`notifications-bot-${b.name}`}
+                title={b.display_name || b.name}
+                value={b.notify !== false}
+              />
+            ))}
+          </Group>
+        </>
+      )
+      break
+    }
     case 'usage':
       content = (
         <Group>
@@ -2645,6 +2750,7 @@ export function Management({
     provider: str(panel?.data?.label),
     network: 'Network',
     devices: 'Paired devices',
+    notifications: 'Notifications',
     usage: 'Usage',
     connectors: 'Connectors',
     connector: str(panel?.data?.name),

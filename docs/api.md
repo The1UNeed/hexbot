@@ -207,7 +207,9 @@ data model. The native transport and event projection live in
 - Health: `gateway.ping`, `gateway.capabilities`.
 
 Events the client renders: `message.start`, `message.delta`, `message.interim`,
-`message.complete` (turn end), `reasoning.delta`, `thinking.delta`, `tool.start`, `tool.complete`,
+`message.complete` (turn end; at the end of a run it also carries `bot`,
+`section_id` and `chat`, true when the run was in a bot's own chat, which every
+client notifies about), `reasoning.delta`, `thinking.delta`, `tool.start`, `tool.complete`,
 `approval.request`, `approval.resolved`, `approval.expire`, `clarify.request`,
 `clarify.resolved`, `clarify.expire`, `status.update`, `session.info`, `session.usage {usage,
 context}` (the section's totals and its context meter, see Sections), `error`.
@@ -762,7 +764,7 @@ context of its own; the meter belongs to bot sections.
 - `hexbot.sections.mark_read {id}` → `{section: Section}` clears `done_at`:
   the user has seen the finished work. Broadcasts `hexbot.sections.changed`,
   so the green dot clears on every device. Clients call it only while the chat
-  is on screen: a reply in a bot's chat that is still unread 30 seconds after
+  is on screen and the app or tab is in front: a reply in a bot's chat that is still unread 30 seconds after
   it finished wakes the owner's phones (see `hexbot.devices.set_push`). A
   failed or stopped turn, a thread between bots, an archived chat and a bot
   whose Notify me is off wake nothing.
@@ -1570,12 +1572,14 @@ and [provider setup guide](https://hexbot.app/docs/providers/).
 - `hexbot.pairing.code {}` → `{code, expires_at, link}` (loopback or paired
   device). `link` is `hexbot://pair?host=...&port=...#code=...`.
 - `hexbot.devices.list {}` → `{devices: [{id, name, platform, created_at,
-  last_seen_at, current: bool}]}`
+  last_seen_at, current: bool, push: bool}]}`. `push` marks a phone that takes
+  pushes; the token stays on the daemon.
 - `hexbot.devices.revoke {id}` → `{revoked: true}`
 - `hexbot.devices.set_push {token, platform}` → `{ok: true}` stores the
   calling device's Expo push token (`ExponentPushToken[...]`) and platform
-  (`ios` or `android`) for pushes about heartbeat messages and unread replies
-  in a bot's chat; `{token: null}` stops them. Only
+  (`ios` or `android`) for pushes about heartbeat messages, unread replies
+  in a bot's chat, and approval and question cards there still unanswered 30
+  seconds after they appeared; `{token: null}` stops them. Only
   the calling connection's own paired device changes.
 
 ### Local daemon identity

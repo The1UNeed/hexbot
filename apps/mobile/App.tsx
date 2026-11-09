@@ -75,6 +75,7 @@ import { USAGE_DOCS_URL } from '@hermes/shared'
 import { captureUsage, sendDailyUsage, useUsageData, watchUsageErrors } from './src/core/usage'
 import { useFeeling } from './src/core/feelings'
 import { clearTapped, useTappedSection } from './src/core/tapped'
+import { useNotificationsPrompt } from './src/core/notificationsPrompt'
 import { chatPreview, pulseTarget, purposeOf, stoppedIn } from './src/core/routes'
 import { previewLine } from '../web/src/lib/preview'
 import { mediaKind, mediaOf, mimeOf } from '../web/src/lib/media'
@@ -201,6 +202,11 @@ export default function App({ children }: { children?: ReactNode }) {
 function MobileApp({ children }: { children?: ReactNode }) {
   const mobile = useMobile()
   const usage = useUsageData()
+  const notificationsPrompt = useNotificationsPrompt(
+    mobile.rpc,
+    mobile.active?.deviceId,
+    mobile.connection === 'connected'
+  )
   // Counted once a day while the app is used, including after it comes back
   // from the background; nothing unless usage data is on.
   useEffect(() => {
@@ -743,6 +749,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
           title: 'You',
           areas: [
             area('about', 'About you', 'person-outline'),
+            area('notifications', 'Notifications', 'notifications-outline'),
             area('settings', 'Daemon settings', 'options-outline', 'Approvals, budgets')
           ]
         },
@@ -1448,6 +1455,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
     onOpenPulse: openPulse,
     onNewBot: demo ? undefined : () => setPanels([{ kind: 'bot-create' }]),
     onNewRoom: demo ? undefined : () => setPanels([{ kind: 'room-create' }]),
+    notificationsPrompt: demo ? null : notificationsPrompt,
     primaryChoice:
       // A daemon from before the primary bot leaves `primary` out; an
       // empty one is offered HexBot too, falling back on older daemons.

@@ -42,7 +42,11 @@ vi.mock('./pickFile', () => ({ pickFile: vi.fn(), pickAttachments: vi.fn() }))
 vi.mock('../screens/MediaAttachment', () => ({ MediaAttachment: () => null }))
 vi.mock('./media', () => ({ mediaUri: vi.fn() }))
 // Push registration needs the native notifications module.
-vi.mock('./push', () => ({ registerPush: vi.fn(async () => undefined) }))
+vi.mock('./push', () => ({
+  registerPush: vi.fn(async () => undefined),
+  pushPermission: vi.fn(async () => ({ status: 'unavailable', canAsk: false })),
+  allowPush: vi.fn(async () => 'unavailable')
+}))
 vi.mock('./transport', () => ({ pair: vi.fn(), connectGrant: vi.fn(), request: vi.fn(), RevokedError: class extends Error {} }))
 vi.mock('./storage', () => ({
   activeDaemonId: async () => 'first',
