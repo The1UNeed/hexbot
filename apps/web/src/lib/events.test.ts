@@ -91,8 +91,7 @@ describe('event routing', () => {
     })
 
     it.each([
-      ['a thread, a job or a summary', { chat: undefined }],
-      ['an older daemon', { bot: undefined, chat: undefined, section_id: undefined }],
+      ['a thread, a job or a summary', { chat: false }],
       [
         'a failed turn, which has its Stopped notification',
         { error: 'Model failed', status: 'error' }
@@ -101,6 +100,42 @@ describe('event routing', () => {
     ])('stays quiet about %s', (_, payload) => {
       complete(payload)
       expect(notify).not.toHaveBeenCalled()
+    })
+
+    describe('from a daemon that does not say which chat', () => {
+      const older = { bot: undefined, chat: undefined, section_id: undefined }
+
+      const open = (section: Partial<Section>) => {
+        useSections.setState({
+          byId: { chat: { bot: 'owl', id: 'chat', ...section } as Section }
+        })
+        useTranscripts.setState({ bySession: { 'live-owl': emptyTranscript('live-owl', 'chat') } })
+      }
+
+      it('notifies about the session’s chat', () => {
+        open({})
+        complete(older)
+        expect(notify).toHaveBeenCalledExactlyOnceWith({
+          body: 'Friday it is.',
+          sectionId: 'chat',
+          title: 'Owl'
+        })
+      })
+
+      it.each([
+        ['a thread', { peer_bot: 'fox' }],
+        ['a job or Check-ins', { purpose: 'checkins' }],
+        ['an archived conversation', { archived_at: 1 }]
+      ])('stays quiet about %s', (_, section) => {
+        open(section as Partial<Section>)
+        complete(older)
+        expect(notify).not.toHaveBeenCalled()
+      })
+
+      it('stays quiet about a session this page never opened', () => {
+        complete(older)
+        expect(notify).not.toHaveBeenCalled()
+      })
     })
 
     it('stays quiet when the bot’s Notify me is off', () => {

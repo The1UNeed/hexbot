@@ -34,7 +34,7 @@ import { useMe } from '../stores/me'
 import { refreshPasswordsIfLoaded } from '../stores/passwords'
 import { refreshPluginsIfLoaded } from '../stores/plugins'
 import { useRooms } from '../stores/rooms'
-import { keepHistory, useSections } from '../stores/sections'
+import { isThread, keepHistory, useSections } from '../stores/sections'
 import { useSettings } from '../stores/settings'
 import type {
   ApprovalRequestPayload,
@@ -109,24 +109,42 @@ export function botNotifies(bot?: string | null): boolean {
  * chat this page shows. A failed turn has its own Stopped notification, and
  * a stopped one needs none.
  */
-function notifyReply(payload: Record<string, unknown>): void {
-  const bot = typeof payload.bot === 'string' ? payload.bot : ''
+function notifyReply(payload: Record<string, unknown>, sessionId: string): void {
+  const chat = replyChat(payload, sessionId)
 
-  if (
-    payload.chat !== true ||
-    payload.status !== 'complete' ||
-    payload.error ||
-    typeof payload.section_id !== 'string' ||
-    !botNotifies(bot)
-  ) {
+  if (!chat || payload.status !== 'complete' || payload.error || !botNotifies(chat.bot)) {
     return
   }
 
   transcriptNotify({
     body: text(payload).trim() || 'Finished.',
-    sectionId: payload.section_id,
-    title: useBots.getState().byName[bot]?.display_name ?? bot
+    sectionId: chat.section,
+    title: useBots.getState().byName[chat.bot]?.display_name ?? chat.bot
   })
+}
+
+/**
+ * The bot's chat a reply finished in, or null. A daemon from before `chat`
+ * names neither; then it is the session's own section, if that is a chat.
+ */
+function replyChat(
+  payload: Record<string, unknown>,
+  sessionId: string
+): null | { bot: string; section: string } {
+  if (payload.chat !== undefined) {
+    return payload.chat === true &&
+      typeof payload.bot === 'string' &&
+      typeof payload.section_id === 'string'
+      ? { bot: payload.bot, section: payload.section_id }
+      : null
+  }
+
+  const id = useTranscripts.getState().bySession[sessionId]?.sectionId
+  const section = id ? useSections.getState().byId[id] : undefined
+
+  return section?.bot && !isThread(section) && !section.purpose && !section.archived_at
+    ? { bot: section.bot, section: section.id }
+    : null
 }
 
 function botOfSection(sectionId?: string | null): string | undefined {
@@ -487,7 +505,7 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
         }
       }
 
-      notifyReply(payload)
+      notifyReply(payload, sessionId)
 
       return
 
