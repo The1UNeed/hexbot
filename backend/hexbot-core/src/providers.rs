@@ -2403,12 +2403,19 @@ pub async fn xai_credentials(home: &Path, bot: &str) -> Result<Value> {
 }
 /// xAI credentials for `bot`: `source` "xai" takes the API key only,
 /// "xai-oauth" the subscription sign-in only, and `None` the key first.
-pub async fn xai_credentials_from(home: &Path, bot: &str, source: Option<&str>) -> Result<Value> {
-    common::identifier(bot)?;
-    let profile_home = home.join("profiles").join(bot);
+/// Where xAI answers for `bot` (or the daemon): `HEXBOT_XAI_BASE_URL`, its
+/// older names, else api.x.ai.
+pub fn xai_base_url(home: &Path, bot: Option<&str>) -> Result<String> {
+    let profile_home = match bot {
+        Some(bot) => {
+            common::identifier(bot)?;
+            home.join("profiles").join(bot)
+        }
+        None => home.to_owned(),
+    };
     let root_env = common::env_values(home)?;
     let profile_env = common::env_values(&profile_home)?;
-    let base = profile_env
+    Ok(profile_env
         .get("HEXBOT_XAI_BASE_URL")
         .or_else(|| root_env.get("HEXBOT_XAI_BASE_URL"))
         .cloned()
@@ -2419,7 +2426,12 @@ pub async fn xai_credentials_from(home: &Path, bot: &str, source: Option<&str>) 
         .or_else(|| root_env.get("XAI_BASE_URL").cloned())
         .or_else(|| std::env::var("HERMES_XAI_BASE_URL").ok())
         .or_else(|| std::env::var("XAI_BASE_URL").ok())
-        .unwrap_or_else(|| "https://api.x.ai/v1".to_owned());
+        .unwrap_or_else(|| "https://api.x.ai/v1".to_owned()))
+}
+pub async fn xai_credentials_from(home: &Path, bot: &str, source: Option<&str>) -> Result<Value> {
+    common::identifier(bot)?;
+    let profile_home = home.join("profiles").join(bot);
+    let base = xai_base_url(home, Some(bot))?;
     let disabled = read_json(&home.join("providers-disabled.json"))?;
     if source != Some("xai-oauth")
         && disabled["xai"] != true
@@ -2618,6 +2630,10 @@ pub fn adapt_request(home: &Path, bot: &str, session: &str, p: &Value) -> Result
 /// The xAI API key saved for `bot`, or for the daemon: an `XAI_API_KEY`
 /// value or the provider's credential pool. None while xAI is turned off.
 pub fn xai_api_key(home: &Path, bot: Option<&str>) -> Result<Option<String>> {
+    // Turning xAI off is the daemon's; it covers a key in the environment too.
+    if read_json(&home.join("providers-disabled.json"))?["xai"] == true {
+        return Ok(None);
+    }
     if let Some(bot) = bot {
         common::identifier(bot)?;
         if let Some(found) = key(&home.join("profiles").join(bot), profile("xai")?)? {

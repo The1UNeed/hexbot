@@ -84,6 +84,11 @@ pub fn profile_credentials(home: &Path, dir: &Path) -> Result<BTreeMap<String, S
     Ok(values)
 }
 fn value(home: &Path, bot: Option<&str>, key: &str) -> Result<Option<String>> {
+    // The xAI key is also the xAI model provider's: it may sit in that
+    // provider's credential pool, and turning xAI off withholds it.
+    if key == "XAI_API_KEY" {
+        return crate::providers::xai_api_key(home, bot);
+    }
     if let Some(bot) = bot
         && let Some(v) = read_env(&profile(home, bot)?)?
             .remove(key)
@@ -91,16 +96,10 @@ fn value(home: &Path, bot: Option<&str>, key: &str) -> Result<Option<String>> {
     {
         return Ok(Some(v));
     }
-    let found = read_env(home)?
+    Ok(read_env(home)?
         .remove(key)
         .filter(|v| !v.is_empty())
-        .or_else(|| std::env::var(key).ok().filter(|v| !v.is_empty()));
-    // The xAI key is also the xAI model provider's, which may keep it in
-    // its credential pool instead of `.env`.
-    if found.is_none() && key == "XAI_API_KEY" {
-        return crate::providers::xai_api_key(home, bot);
-    }
-    Ok(found)
+        .or_else(|| std::env::var(key).ok().filter(|v| !v.is_empty())))
 }
 fn write_values(
     home: &Path,
@@ -1023,10 +1022,39 @@ async fn probe_sign_in(home: &Path, bot: Option<&str>, provider: &Value) -> Valu
         Some("xai-oauth") if !signed_in(home, bot, "xai-oauth").unwrap_or(false) => {
             json!({"ok":false,"message":format!("Sign in with {label} first.")})
         }
-        Some("xai-oauth") => match crate::providers::xai_subscription_token(home, bot).await {
-            Ok(_) => json!({"ok":true,"message":"Signed in."}),
-            Err(e) => json!({"ok":false,"message":format!("{label}: {}", e.message)}),
-        },
+        Some("xai-oauth") => {
+            let token = match crate::providers::xai_subscription_token(home, bot).await {
+                Ok(token) => token,
+                Err(e) => {
+                    return json!({"ok":false,"message":format!("{label}: {}", e.message)});
+                }
+            };
+            // A cached token can be revoked before it expires: ask xAI.
+            let Ok(base) = crate::providers::xai_base_url(home, bot) else {
+                return json!({"ok":false,"message":"Could not find where xAI answers."});
+            };
+            let Ok(client) = crate::http::client(6, 0) else {
+                return json!({"ok":false,"message":"Could not reach xAI: request failed."});
+            };
+            match client
+                .get(format!("{}/models", base.trim_end_matches('/')))
+                .bearer_auth(token)
+                .send()
+                .await
+            {
+                Ok(r) if r.status().is_success() => json!({"ok":true,"message":"Connected."}),
+                Ok(r) if matches!(r.status().as_u16(), 401 | 403) => json!({
+                    "ok": false,
+                    "message": format!("xAI refused the sign-in ({}). Sign in again.", r.status().as_u16())
+                }),
+                Ok(r) => {
+                    json!({"ok":false,"message":format!("xAI answered {}.", r.status().as_u16())})
+                }
+                Err(e) => {
+                    json!({"ok":false,"message":format!("Could not reach xAI: {}.", if e.is_timeout() {"timed out"} else if e.is_connect() {"connection failed"} else {"request failed"})})
+                }
+            }
+        }
         _ => json!({"ok":false,"message":"Choose a provider first."}),
     }
 }

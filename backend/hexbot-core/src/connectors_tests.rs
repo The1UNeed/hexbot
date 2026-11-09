@@ -1239,7 +1239,28 @@ async fn x_search_offers_a_subscription_sign_in() {
         json!({"ok":false,"message":"Sign in with SuperGrok or X Premium+ first."})
     );
     assert_eq!(result["connector"]["state"], "not_set_up");
-    // A sign-in saved for the daemon sets it up for every bot.
+    // A sign-in saved for the daemon sets it up for every bot. The test asks
+    // xAI with the token, since a cached one can be revoked before it expires.
+    let status = Arc::new(Mutex::new(StatusCode::OK));
+    let answer = status.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let app = Router::new().route(
+        "/v1/models",
+        get(move |headers: HeaderMap| {
+            let answer = answer.clone();
+            async move {
+                assert_eq!(headers["authorization"], "Bearer daemon-token");
+                (*answer.lock().unwrap(), "{}")
+            }
+        }),
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    fs::write(
+        home.path().join(".env"),
+        format!("HEXBOT_XAI_BASE_URL={url}\n"),
+    )
+    .unwrap();
     fs::write(
         home.path().join("auth.json"),
         json!({"providers":{"xai-oauth":{"access_token":"daemon-token","refresh_token":"r","expires_at":common::now()+3600.0}}}).to_string(),
@@ -1251,7 +1272,7 @@ async fn x_search_offers_a_subscription_sign_in() {
         json!({"id":"x_search","provider":"supergrok","bot":"owl"}),
     )
     .await;
-    assert_eq!(result["test"], json!({"ok":true,"message":"Signed in."}));
+    assert_eq!(result["test"], json!({"ok":true,"message":"Connected."}));
     assert_eq!(result["connector"]["state"], "ready");
     assert_eq!(
         result["connector"]["state_text"],
@@ -1261,6 +1282,43 @@ async fn x_search_offers_a_subscription_sign_in() {
     assert!(connectors::tool_available(home.path(), "owl", "x_search").unwrap());
     assert!(!connectors::tool_available(home.path(), "fox", "x_search").unwrap());
     assert_eq!(result["connector"]["ready_bots"], json!(["fox", "owl"]));
+    *status.lock().unwrap() = StatusCode::UNAUTHORIZED;
+    let result = rpc(
+        home.path(),
+        "hexbot.connectors.test",
+        json!({"id":"x_search","bot":"owl"}),
+    )
+    .await;
+    assert_eq!(
+        result,
+        json!({"ok":false,"message":"xAI refused the sign-in (401). Sign in again."})
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn turning_xai_off_withholds_its_key_from_x_search() {
+    let home = setup();
+    fs::write(home.path().join(".env"), "XAI_API_KEY=env-key\n").unwrap();
+    fs::write(
+        home.path().join("auth.json"),
+        json!({"providers":{"xai-oauth":{"access_token":"t","refresh_token":"r","expires_at":common::now()+3600.0}}}).to_string(),
+    )
+    .unwrap();
+    assert_eq!(
+        connectors::get(home.path(), None, "x_search").unwrap()["provider"],
+        "xai"
+    );
+    fs::write(
+        home.path().join("providers-disabled.json"),
+        json!({"xai": true}).to_string(),
+    )
+    .unwrap();
+    // The key is withheld, so the sign-in serves X search instead.
+    assert_eq!(
+        connectors::get(home.path(), None, "x_search").unwrap()["provider"],
+        "supergrok"
+    );
 }
 
 #[tokio::test]
