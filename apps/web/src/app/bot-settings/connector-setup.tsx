@@ -260,6 +260,10 @@ function KeySetupSheet({
   const needsSignIn = connectorSignInMissing(chosen, signedIn, renewing)
   // A subscription has no fields to change: once signed in, it can always be tested.
   const subscription = Boolean(chosen?.sign_in)
+  // A value for one bot is a second account on the provider the other bots
+  // use; the daemon refuses one that would move them to another provider.
+  const canKeepForBot = connector.scope === 'daemon' && !subscription && !providerChanged
+  const keepForBot = botOnly && canKeepForBot
 
   const others = connector.enabled_bots.filter(name => name !== bot?.name)
 
@@ -276,7 +280,7 @@ function KeySetupSheet({
       }
 
       const test = bot
-        ? await setup({ ...input, bot: bot.name, bot_only: botOnly && !subscription, enable_for_bot: enable })
+        ? await setup({ ...input, bot: bot.name, bot_only: keepForBot, enable_for_bot: enable })
         : (await connectorsSetup(input)).test
 
       setResult(test)
@@ -294,7 +298,7 @@ function KeySetupSheet({
   return (
     <Dialog
       description={
-        bot && botOnly && !subscription
+        bot && keepForBot
           ? `Stored for ${bot.display_name} only. Other bots keep the shared value.`
           : 'Stored once on this daemon. Every bot you turn it on for uses it.'
       }
@@ -342,7 +346,7 @@ function KeySetupSheet({
               title={`Turn on for ${bot.display_name}`}
             />
             {/* A sign-in is the daemon's; there is no value to keep for one bot. */}
-            {connector.scope === 'daemon' && !subscription ? (
+            {canKeepForBot ? (
               <Row
                 control={
                   <Switch aria-label="Bot only" checked={botOnly} onCheckedChange={setBotOnly} />

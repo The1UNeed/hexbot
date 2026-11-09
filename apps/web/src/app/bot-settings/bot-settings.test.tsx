@@ -548,6 +548,43 @@ describe('connectors page', () => {
     expect(screen.queryByLabelText('Bot only')).toBeNull()
   })
 
+  it('keeps a value for one bot on the provider the other bots use', async () => {
+    const field = (key: string, label: string, provider: string) => ({
+      advanced: false,
+      help: '',
+      hint: null,
+      key,
+      label,
+      provider,
+      secret: true,
+      set: provider === 'x_api',
+      url: null
+    })
+
+    const keyed = connector({
+      fields: [field('X_BEARER_TOKEN', 'Bearer token', 'x_api'), field('XAI_API_KEY', 'xAI key', 'xai')],
+      id: 'x_search',
+      name: 'X search',
+      provider: 'x_api',
+      providers: [
+        { configured: true, id: 'x_api', label: 'X API' },
+        { configured: false, id: 'xai', label: 'xAI API' }
+      ],
+      state: 'error'
+    })
+
+    fakeRpc({ 'hexbot.connectors.list': () => ({ connectors: [keyed] }) })
+    render(<ConnectorsTab bot={bot} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Fix' }))
+    expect(await screen.findByLabelText('Bot only')).toBeVisible()
+    fireEvent.click(screen.getByRole('combobox', { name: 'Provider' }))
+    const xai = await screen.findByRole('option', { name: 'xAI API' })
+    fireEvent.mouseMove(xai)
+    fireEvent.click(xai)
+    // Another provider is set up for every bot, never for one alone.
+    await waitFor(() => expect(screen.queryByLabelText('Bot only')).toBeNull())
+  })
+
   it('connects X search with a subscription already signed in', async () => {
     const call = fakeRpc({
       'hexbot.connectors.list': () => ({ connectors: [xSearch(true)] }),

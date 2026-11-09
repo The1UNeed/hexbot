@@ -958,8 +958,8 @@ async fn probe(home: &Path, id: &str, bot: Option<&str>) -> Result<Value> {
     if let Some(provider) = selected_for(home, bot, &s)?
         && provider["sign_in"].is_string()
     {
-        let result = probe_sign_in(home, bot, &provider).await;
-        save_test(home, id, &result, result["ok"] == true)?;
+        let (result, probed) = probe_sign_in(home, bot, &provider).await?;
+        save_test(home, id, &result, probed)?;
         return Ok(result);
     }
     let keys = required_keys(home, bot, &s)?;
@@ -1003,7 +1003,7 @@ async fn probe(home: &Path, id: &str, bot: Option<&str>) -> Result<Value> {
         ),
         "x_search" => (
             "xAI",
-            "https://api.x.ai/v1/models".to_string(),
+            format!("{}/models", crate::providers::xai_base_url(home, bot)?),
             Some(("authorization", format!("Bearer {}", key("XAI_API_KEY")?))),
         ),
         _ => {
@@ -1019,12 +1019,26 @@ async fn probe(home: &Path, id: &str, bot: Option<&str>) -> Result<Value> {
                 .map_err(|_| Error::new(4202, "credential contains an invalid header character"))?,
         );
     }
+    let result = probe_get(name, url, headers, |status| {
+        format!("{name} refused the token ({status}).")
+    })
+    .await?;
+    save_test(home, id, &result, true)?;
+    Ok(result)
+}
+/// One authenticated GET: Connected on a 2xx, `refused` on a 401 or 403.
+async fn probe_get(
+    name: &str,
+    url: String,
+    headers: reqwest::header::HeaderMap,
+    refused: impl Fn(u16) -> String,
+) -> Result<Value> {
     let client = crate::http::client(6, 0).map_err(|e| Error::new(5200, e.to_string()))?;
-    let result = match client.get(url).headers(headers).send().await {
+    Ok(match client.get(url).headers(headers).send().await {
         Ok(response) => {
             let status = response.status().as_u16();
             if status == 401 || status == 403 {
-                json!({"ok":false,"message":format!("{name} refused the token ({status}).")})
+                json!({"ok":false,"message":refused(status)})
             } else if !(200..300).contains(&status) {
                 json!({"ok":false,"message":format!("{name} answered {status}.")})
             } else {
@@ -1034,9 +1048,7 @@ async fn probe(home: &Path, id: &str, bot: Option<&str>) -> Result<Value> {
         Err(e) => {
             json!({"ok":false,"message":format!("Could not reach {name}: {}.",if e.is_timeout(){"timed out"}else if e.is_connect(){"connection failed"}else{"request failed"})})
         }
-    };
-    save_test(home, id, &result, true)?;
-    Ok(result)
+    })
 }
 /// Where the X API answers: `HEXBOT_X_API_BASE_URL`, else api.x.com.
 pub(crate) fn x_api_base(home: &Path, bot: Option<&str>) -> Result<String> {
@@ -1045,20 +1057,52 @@ pub(crate) fn x_api_base(home: &Path, bot: Option<&str>) -> Result<String> {
         .trim_end_matches('/')
         .to_owned())
 }
-/// Test a subscription sign-in by fetching a fresh token: an expired one is
-/// refreshed, and a revoked one fails here rather than in a bot's turn.
-async fn probe_sign_in(home: &Path, bot: Option<&str>, provider: &Value) -> Value {
+/// Test a subscription sign-in the way X search uses it: fetch a fresh
+/// token, refreshing an expired one, then ask xAI's API with it, so a sign-in
+/// that is revoked or has no API access fails here rather than in a bot's
+/// turn. Returns the result and whether xAI answered.
+async fn probe_sign_in(home: &Path, bot: Option<&str>, provider: &Value) -> Result<(Value, bool)> {
     let label = provider["label"].as_str().unwrap_or("your subscription");
-    match provider["sign_in"].as_str() {
-        Some("xai-oauth") if !signed_in(home, bot, "xai-oauth").unwrap_or(false) => {
-            json!({"ok":false,"message":format!("Sign in with {label} first.")})
-        }
-        Some("xai-oauth") => match crate::providers::xai_subscription_token(home, bot).await {
-            Ok(_) => json!({"ok":true,"message":"Signed in."}),
-            Err(e) => json!({"ok":false,"message":format!("{label}: {}", e.message)}),
-        },
-        _ => json!({"ok":false,"message":"Choose a provider first."}),
+    if provider["sign_in"] != "xai-oauth" {
+        return Ok((
+            json!({"ok":false,"message":"Choose a provider first."}),
+            false,
+        ));
     }
+    if !signed_in(home, bot, "xai-oauth").unwrap_or(false) {
+        return Ok((
+            json!({"ok":false,"message":format!("Sign in with {label} first.")}),
+            false,
+        ));
+    }
+    let token = match crate::providers::xai_subscription_token(home, bot).await {
+        Ok(token) => token,
+        // A refresh xAI turned down: the sign-in has ended.
+        Err(e) if e.message.ends_with("Sign in again.") => {
+            let message = format!("Your {label} sign-in has ended. Sign in again.");
+            return Ok((json!({"ok":false,"message":message}), false));
+        }
+        Err(e) => {
+            return Ok((
+                json!({"ok":false,"message":format!("{label}: {}", e.message)}),
+                false,
+            ));
+        }
+    };
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        reqwest::header::AUTHORIZATION,
+        reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
+            .map_err(|_| Error::new(4202, "credential contains an invalid header character"))?,
+    );
+    let url = format!("{}/models", crate::providers::xai_base_url(home, bot)?);
+    let result = probe_get("xAI", url, headers, |status| {
+        format!(
+            "xAI refused this sign-in ({status}). Sign in again, or use an xAI key or the X API."
+        )
+    })
+    .await?;
+    Ok((result, true))
 }
 /// Test a web search that needs no key with one real search. The SearXNG
 /// Hexbot runs starts first; until it runs, bots search with Tavily and
@@ -1306,6 +1350,23 @@ async fn dispatch(home: &Path, caller: &str, method: &str, p: &Value) -> Result<
             } else {
                 None
             };
+            // The provider choice is the daemon's. A value kept for one bot
+            // is a second account on the provider the other bots use, so it
+            // never moves them to another provider.
+            if bot_only
+                && let Some(chosen) = &provider
+                && let Some(current) = selected_for(home, bot, &s)?
+                && chosen["id"] != current["id"]
+            {
+                return Err(Error::new(
+                    4202,
+                    format!(
+                        "Other bots use {}. Keep a value for one bot on that provider, or set up {} for every bot.",
+                        current["label"].as_str().unwrap_or("another provider"),
+                        chosen["label"].as_str().unwrap_or("this provider")
+                    ),
+                ));
+            }
             if id == "x_search"
                 && !bot_only
                 && let Some(key) = values.remove("XAI_API_KEY")
@@ -1313,7 +1374,7 @@ async fn dispatch(home: &Path, caller: &str, method: &str, p: &Value) -> Result<
                 crate::providers::set_key(home, "xai", &key)?;
             }
             write_values(home, if bot_only { bot } else { None }, &values, &[])?;
-            if let Some(provider) = provider {
+            if let Some(provider) = provider.filter(|_| !bot_only) {
                 let selection = strings(&provider["selection"]);
                 write_all(home, &selection[0], &selection[1], json!(selection[2]))?;
             }

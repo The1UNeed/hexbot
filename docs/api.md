@@ -1181,8 +1181,8 @@ last_error | null, mcp?: {name, transport, tool_count, test_failed, running}}`. 
 is saved. `optional` fields, such as a free provider's own key, may stay
 empty. `state_text` says "Connected" only after a probe answered (Notion,
 xAI and the X API make one small authenticated GET, X's to its free usage
-summary; a web search that needs no key runs one search; a sign-in fetches
-a fresh token); connectors with only an offline check say "Key saved", a
+summary; a web search that needs no key runs one search; a sign-in asks
+xAI's `/models` with a fresh token); connectors with only an offline check say "Key saved", a
 provider that needs no key says "Ready", and one signed in but not yet
 tested says "Signed in".
 
@@ -1190,7 +1190,9 @@ A provider with `sign_in` uses a model provider's browser sign-in instead of
 a key: X search's `supergrok` names `xai-oauth`, so the client runs
 `hexbot.providers.login_start` with that id, then `hexbot.connectors.setup`
 with the provider. Its `configured` is true once that sign-in is saved for
-the daemon or, in a bot's list, for that bot. X search's providers are
+the daemon or, in a bot's list, for that bot. A sign-in xAI refuses, revoked
+or without API access, tests as failed and stays in `error`
+(`HEXBOT_XAI_BASE_URL` points xAI elsewhere for tests). X search's providers are
 `supergrok`, `xai` (`XAI_API_KEY`, shared with the xAI model provider and
 kept when X search is cleared) and `x_api` (`X_BEARER_TOKEN`; X's recent
 search, or its full archive when a date is older than seven days;
@@ -1209,7 +1211,9 @@ or a clear.
   process environment (`bot_only` writes only that bot's profile), records the
   backend choice where the core reads it, runs the check or probe, and, when
   it passes, turns the connector on for `bot` unless `enable_for_bot` is
-  false. A failed probe leaves the connector off for the bot.
+  false. A failed probe leaves the connector off for the bot. The backend
+  choice is the daemon's: with `bot_only`, a provider other than the one the
+  bot already uses is refused (4202), so other bots never move.
 - `hexbot.connectors.test {id, bot?}` → `{ok, message, tool_count?}`. A successful
   connected-server probe counts all tool pages and saves `tool_count`. The connector
   list reports the last probe count, or null when untested.
