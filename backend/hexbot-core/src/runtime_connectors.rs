@@ -21,21 +21,19 @@ struct Api {
     reads_by_post: &'static [&'static str],
     prefix: &'static str,
 }
-const APIS: &[Api] = &[
-    Api {
-        id: "notion",
-        name: "Notion",
-        base: "https://api.notion.com",
-        key: "NOTION_API_KEY",
-        headers: &[("Notion-Version", "2025-09-03")],
-        reads_by_post: &[
-            "/v1/search",
-            "/v1/databases/*/query",
-            "/v1/data_sources/*/query",
-        ],
-        prefix: "/v1/",
-    },
-];
+const APIS: &[Api] = &[Api {
+    id: "notion",
+    name: "Notion",
+    base: "https://api.notion.com",
+    key: "NOTION_API_KEY",
+    headers: &[("Notion-Version", "2025-09-03")],
+    reads_by_post: &[
+        "/v1/search",
+        "/v1/databases/*/query",
+        "/v1/data_sources/*/query",
+    ],
+    prefix: "/v1/",
+}];
 const CAP: usize = 200_000;
 
 /// Whether the bot has Notion on; a heartbeat reads either way.

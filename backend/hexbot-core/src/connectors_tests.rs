@@ -1260,8 +1260,5 @@ async fn x_search_offers_a_subscription_sign_in() {
     assert_eq!(result["connector"]["enabled_for_bot"], true);
     assert!(connectors::tool_available(home.path(), "owl", "x_search").unwrap());
     assert!(!connectors::tool_available(home.path(), "fox", "x_search").unwrap());
-    assert_eq!(
-        result["connector"]["ready_bots"],
-        json!(["fox", "owl"])
-    );
+    assert_eq!(result["connector"]["ready_bots"], json!(["fox", "owl"]));
 }
