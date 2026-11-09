@@ -279,7 +279,7 @@ export interface ComputerStatus {
   actor: null | string
   /** Whether the daemon's computer has Cua; events leave it out. */
   available?: boolean
-  /** Who is using the computer: the bots, or the user who took over. */
+  /** `user` while the user has paused the bots; their actions wait for `bot`. */
   control: 'bot' | 'user'
   cursors: ComputerCursor[]
   error: null | string

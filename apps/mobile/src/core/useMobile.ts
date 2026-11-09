@@ -1099,7 +1099,7 @@ export function useMobile() {
       setComputer(current => ({ ...current, ...result }) as ComputerStatus)
       return result
     },
-    /** A link, relative to the daemon, to the computer's screen; `control` takes over. */
+    /** A link, relative to the daemon, to the computer's screen; with `control` it takes touches. */
     computerView: (control: boolean, quality: ComputerQuality = 'auto') =>
       rpc<{ path: string; control: boolean; expires_at: number }>('hexbot.computer.view', {
         control,

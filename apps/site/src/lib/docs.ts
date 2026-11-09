@@ -13,7 +13,7 @@ export const docGroups = [
     pages: [
       { title: 'Tools, plugins, and skills', summary: 'Enable local tools, then choose the connectors, MCP servers, and skills each bot gets.', href: '/docs/tools-and-skills/' },
       { title: 'Heartbeat', summary: 'Give a bot a checklist it works through every 30 minutes, and hear only when something needs you.', href: '/docs/bots-and-sections/#heartbeat' },
-      { title: "Your bots' computer", summary: 'Bots run code and browse on a Linux desktop of their own. Watch or take control.', href: '/docs/tools-and-skills/#your-bots-computer' },
+      { title: "Your bots' computer", summary: 'Bots run code and browse on a Linux desktop of their own. Watch it and use it with them.', href: '/docs/tools-and-skills/#your-bots-computer' },
       { title: 'Visuals', summary: 'Let a bot show a chart, table, diagram, or mockup in its chat.', href: '/docs/visuals/' },
       { title: 'Approvals', summary: 'Use Auto, Manual, or Bypass to control what a bot can do.', href: '/docs/approvals/' },
       { title: 'Passwords', summary: 'Save sign-ins your bots type into websites without seeing them.', href: '/docs/passwords/' },

@@ -191,7 +191,7 @@ const COMPUTER_USES: { title: string; description: string; icon: IconName }[] = 
   },
   {
     title: 'Desktop',
-    description: 'See the screen, click and type in its apps. You can watch and take over.',
+    description: 'See the screen, click and type in its apps. You can watch and use it with them.',
     icon: 'browsers-outline'
   }
 ]
@@ -232,7 +232,7 @@ function ComputerUse({ mobile }: { mobile: ReturnType<typeof useMobile> }) {
             subtitle={
               status.state === 'starting'
                 ? 'The first start downloads the computer, a few GB.'
-                : "Open a chat's computer button to watch it or take control."
+                : "Open a chat's computer button to watch it or use it."
             }
             subtitleLines={3}
             testID="computer-status"

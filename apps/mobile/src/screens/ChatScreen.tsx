@@ -133,7 +133,7 @@ export interface ChatScreenProps {
   loadMedia?: (path: string, id: string) => Promise<string>
   /** Opens the bots' computer on its own card; the button shows only with this. */
   onOpenComputer?: () => void
-  /** A bot is acting on the computer, or you have it: the button shows a dot. */
+  /** A bot is acting on the computer, or you paused them: the button shows a dot. */
   computerLive?: boolean
   /** Opens a visual item from the transcript. */
   onOpenVisual?: (id: string) => void
