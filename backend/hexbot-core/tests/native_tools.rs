@@ -382,7 +382,7 @@ async fn bots_share_one_computer_and_take_turns() {
     )
     .await
     .unwrap();
-    // While the user has control, the bot's actions wait.
+    // While the user has paused the bots, their actions are refused.
     computers::call(
         h.path(),
         "hexbot.computer.control",
@@ -398,7 +398,7 @@ async fn bots_share_one_computer_and_take_turns() {
     )
     .await
     .unwrap_err();
-    assert!(refused.message.contains("taken over"));
+    assert!(refused.message.contains("paused"));
     computers::call(
         h.path(),
         "hexbot.computer.control",
@@ -794,7 +794,7 @@ async fn a_bot_action_under_way_keeps_the_turn_until_it_ends() {
     second.await.unwrap().unwrap();
     let after = log();
     assert!(after.find(r#""done""#).unwrap() < after.find("computer_double_click").unwrap());
-    // Taking control waits for a click under way, too.
+    // Pausing the bots waits for a click under way, too.
     std::fs::write(&hold, "").unwrap();
     let home = h.path().to_owned();
     let click = tokio::spawn(async move {
@@ -818,7 +818,7 @@ async fn a_bot_action_under_way_keeps_the_turn_until_it_ends() {
             .unwrap()
     });
     let waited = tokio::time::timeout(std::time::Duration::from_secs(1), &mut take).await;
-    assert!(waited.is_err(), "control was granted during the click");
+    assert!(waited.is_err(), "the bots paused during the click");
     std::fs::remove_file(&hold).unwrap();
     click.await.unwrap().unwrap();
     assert_eq!(take.await.unwrap().unwrap()["control"], "user");
@@ -1230,7 +1230,7 @@ async fn a_removed_container_is_not_made_again_without_reset() {
 }
 #[cfg(unix)]
 #[tokio::test]
-async fn giving_the_computer_back_closes_an_open_control_screen() {
+async fn the_user_and_the_bots_use_the_screen_at_once() {
     use axum::{
         extract::{Path as UrlPath, Request, WebSocketUpgrade, ws::Message},
         routing::{any, get},
@@ -1281,11 +1281,49 @@ async fn giving_the_computer_back_closes_an_open_control_screen() {
     let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{served}{media}media"))
         .await
         .unwrap();
-    socket.send("click".into()).await.unwrap();
-    assert_eq!(
-        socket.next().await.unwrap().unwrap().into_text().unwrap(),
-        "click"
-    );
+    // The user's screen takes clicks while the bots keep working.
+    let clicks = async |socket: &mut tokio_tungstenite::WebSocketStream<_>| {
+        socket.send("click".into()).await.unwrap();
+        assert_eq!(
+            socket.next().await.unwrap().unwrap().into_text().unwrap(),
+            "click"
+        );
+    };
+    clicks(&mut socket).await;
+    let status = computers::call(h.path(), "hexbot.computer.status", &json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(status["control"], "bot");
+    call(
+        h.path(),
+        "computer_use",
+        json!({"action":"click","coordinate":[10,20]}),
+    )
+    .await
+    .unwrap();
+    clicks(&mut socket).await;
+    // Pausing the bots refuses their actions and leaves the screen as it is.
+    let paused = computers::call(
+        h.path(),
+        "hexbot.computer.control",
+        &json!({"holder": "user"}),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(paused["control"], "user");
+    let refused = call(
+        h.path(),
+        "computer_use",
+        json!({"action":"click","coordinate":[1,2]}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(refused.code, 4302);
+    assert!(refused.message.contains("paused"), "{}", refused.message);
+    clicks(&mut socket).await;
+    // Resuming them keeps the user's screen open too.
     computers::call(
         h.path(),
         "hexbot.computer.control",
@@ -1294,18 +1332,15 @@ async fn giving_the_computer_back_closes_an_open_control_screen() {
     .await
     .unwrap()
     .unwrap();
-    // The bots have it again, so the screen that could type is shut.
-    let ended = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        loop {
-            match socket.next().await {
-                None | Some(Err(_)) => break,
-                Some(Ok(message)) if message.is_close() => break,
-                Some(Ok(_)) => {}
-            }
-        }
-    })
-    .await;
-    assert!(ended.is_ok(), "the control screen stayed open");
+    clicks(&mut socket).await;
+    call(
+        h.path(),
+        "computer_use",
+        json!({"action":"click","coordinate":[3,4]}),
+    )
+    .await
+    .unwrap();
+    hexbot_core::connectors::close_bot(h.path(), "tester").await;
     server.abort();
     upstream.abort();
 }

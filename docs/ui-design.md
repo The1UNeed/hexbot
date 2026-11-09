@@ -371,24 +371,28 @@ notice. Working and idle draw the plain pill.
     dialog). An untouched editor follows the bot's own changes.
   - Computer: the bots' shared computer on top, when the bot has Computer
     use: its live screen, watch-only, with a still blue ring while a bot
-    acts there or the user has it, and one line under it saying what is
-    happening ("Scout is clicking on the computer", "You have control. Your
-    bots wait until you give it back."). Each bot that acted lately has a
+    acts there or the bots are paused, and one line under it saying what is
+    happening ("Scout is clicking on the computer", "Your bots are paused
+    until you resume them."). Each bot that acted lately has a
     cursor on the screen: an arrow in its face colour with its face beside
     it. The cursor glides to where the bot acts, presses and rings on a
     click, and the face taps while the bot types; it fades after 45 seconds
-    idle. "Take control" opens the screen large over the app, where the user
-    can click and type; "Give back" or closing the window hands it back.
-    The small screen keeps playing under the window, and a screen switching
-    between watching and control keeps its picture until the new one is up,
-    so neither goes black. A
+    idle. Clicking the screen, or Open larger, opens it large over the app,
+    where the user clicks and types while the bots keep working, each with
+    its own cursor. "Pause bots", beside the line and in the window, gives
+    the user the computer alone: the bots stop after the action they are on
+    and wait until "Resume bots". Closing the window leaves a pause as it
+    is. The small screen keeps playing under the window, and a screen
+    switching links keeps its picture until the new one is up, so neither
+    goes black. Cua's viewer draws no cursors of its own; the daemon keeps
+    it out of presence. A
     menu has Open larger, Restart, Turn off and Reset… (asks first:
     everything on it is erased, for every bot), then "Quality on this
     device" with Auto (the default), 1080p · 60 fps, 1080p · 30 fps,
     720p · 60 fps and 720p · 30 fps, a check on the chosen one. An off
     computer shows "Turn on"; a daemon without Cua shows how to install it.
     Reached at a plain http:// address on the network, where the screen
-    cannot play, it says so in place of the screen, without Take control.
+    cannot play, it says so in place of the screen; Pause bots stays.
     Under it, the bot's other tool calls in the section, housekeeping
     included, newest first, each with its glyph, time and result mark,
     closed until clicked open to its arguments and output. Computer actions are not listed here; the
@@ -397,11 +401,12 @@ notice. Working and idle draw the plain pill.
     blue dot.
     The mobile app shows the same computer on a front card from a computer
     button in the chat's header, which carries a dot while a bot acts there
-    or you have it: the screen with the same face cursors, the line under
-    it, Take control or Give back, Restart, Turn off and Reset… as rows,
-    and a "Quality on this device" group with the same five choices.
-    Its screen, too, keeps its picture through Take control and Give back.
-    Closing the card while you have control gives it back.
+    or the bots are paused: the screen with the same face cursors, which
+    takes your touches while the bots keep working, the line under it,
+    Pause bots or Resume bots, Restart, Turn off and Reset… as rows, and a
+    "Quality on this device" group with the same five choices. Its screen,
+    too, keeps its picture through a new link. Closing the card leaves a
+    pause as it is.
 
     ![The Computer tab's menu with the quality choices](screens/computer-quality.png)
 - Opening and closing is one 240 ms move: the panel's column widens or

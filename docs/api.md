@@ -850,6 +850,8 @@ while Docker answers waits for Reset.
 
 The desktop has one pointer and one focused window, so bots take turns one
 action at a time; a bot that waits more than two minutes gets error 4209.
+The user's screen takes clicks and keys at the same time, and the user can
+pause the bots to have it alone.
 The daemon records where each bot last acted so clients can draw its
 cursor there.
 
@@ -861,8 +863,8 @@ cursor there.
   reports the computer `missing`, `state` is `error` at once with the reason,
   and a bot's action repairs it as Turn on does or fails with that reason;
   the computer is kept, not made again. `control` is `bot`, or `user` while
-  the user has taken over; the bots' actions are refused until it is `bot`
-  again. `actor` and `activity` are the bot acting and its action,
+  the user has paused the bots; their actions are refused with error 4302
+  until it is `bot` again. A pause outlasts a restart or reset. `actor` and `activity` are the bot acting and its action,
   such as `click`. A cursor's `x` and `y` are fractions of the screen and
   `at` is when it last acted, in seconds.
 - `hexbot.computer.start|stop|restart|reset {}` → the status. The step runs
@@ -870,14 +872,15 @@ cursor there.
   repairs a computer lost with its engine, as the watchdog does. Reset deletes
   the computer and makes a new one at the chosen size. Error 4209 while
   another step runs.
-- `hexbot.computer.control {holder: "user" | "bot"}` → the status.
+- `hexbot.computer.control {holder: "user" | "bot"}` → the status. `user`
+  pauses the bots once the action one has under way ends; `bot` resumes
+  them. Neither opens nor closes a screen.
 - `hexbot.computer.view {control?, quality?}` → `{path, control,
   expires_at}`. `path` is relative to the daemon,
   `/hexbot/computer/<token>/viewer/#ticket=…`: Cua's viewer, served by the
   daemon for an hour, so it works over LAN, Tailscale and Connect. Without
-  `control` it only watches. With `control` the user takes over and the page
-  takes clicks and keys. Handing the computer back closes the pages that
-  could type. The token in the path is the credential; the daemon drops
+  `control` it only watches. With `control` the page takes clicks and keys
+  while the bots keep working; it does not pause them. The token in the path is the credential; the daemon drops
   cookies and the viewer's own ticket authorises its calls. The daemon also
   serves `…/<token>/viewer` as the page, because Hex Connect's edge drops
   the trailing slash.
@@ -885,9 +888,8 @@ cursor there.
   `{type: "hexbot.computer.screen", status}` to the page around it
   (`window.parent`, or `ReactNativeWebView` in the phone app) each time the
   viewer's state changes: `connecting`, `streaming` once the picture is up,
-  `reconnecting` or `failed`. A client switching links, as taking control
-  and giving it back do, keeps the old screen in sight until the new one
-  streams.
+  `reconnecting` or `failed`. A client switching links, as a new quality
+  does, keeps the old screen in sight until the new one streams.
   Hexbot draws each bot's cursor itself, so the daemon refuses the viewer's
   presence calls (`cua.env.v1.PresenceService/*`) and the viewer draws none
   of its own.
@@ -1814,9 +1816,10 @@ on the pairing code or grant's single-use protection instead. CORS exposes
   every bot's heartbeat on or off, shows a bot's checklist and recent runs,
   runs one, or replaces its checklist. Status, now, and set need the daemon
   running.
-- `hexbot computer [on | off | restart | reset | give-back | size
+- `hexbot computer [on | off | restart | reset | pause | resume | size
   small|medium|large]`: shows the bots' computer or changes it, through the
-  running daemon.
+  running daemon. `pause` and `resume` stop and restart the bots' actions on
+  it; `give-back`, the earlier name, still resumes them.
 - `hexbot diagnostics`: prints `hexbot.diagnostics.get` as JSON from the
   running daemon, the same report as Settings, Advanced, Diagnostics.
 - `hexbot devices list|revoke`, `hexbot bots list|create|delete`,

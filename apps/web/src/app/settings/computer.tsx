@@ -43,7 +43,7 @@ const USES: { description: string; icon: LucideIcon; title: string }[] = [
     title: 'Browser'
   },
   {
-    description: 'See the screen, click and type in its apps. You can watch and take over.',
+    description: 'See the screen, click and type in its apps. You can watch and use it with them.',
     icon: AppWindow,
     title: 'Desktop'
   }
@@ -128,7 +128,7 @@ export function ComputerSettings(): React.JSX.Element {
               description={
                 status.state === 'starting'
                   ? 'The first start downloads the computer, a few GB.'
-                  : 'Open a bot’s Computer tab to watch it or take control.'
+                  : 'Open a bot’s Computer tab to watch it or use it.'
               }
               title={
                 <span className="flex items-baseline gap-2">

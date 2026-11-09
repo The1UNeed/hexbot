@@ -1,8 +1,9 @@
 //! The bots' computer: one Cua sandbox per daemon, a Linux desktop that every
-//! bot with Computer use drives with `computer_use`, and that the user watches,
-//! or takes over, from the Computer tab. Bots take turns one action at a time;
-//! the daemon remembers where each one last acted, so clients draw a cursor
-//! with that bot's face there.
+//! bot with Computer use drives with `computer_use`, and that the user watches
+//! and uses alongside them from the Computer tab. Bots take turns one action
+//! at a time, the user's clicks and keys go straight to the screen, and the
+//! user can pause the bots to have it alone. The daemon remembers where each
+//! bot last acted, so clients draw a cursor with that bot's face there.
 //!
 //! The `cua` CLI creates, wakes and removes the sandbox; `cua mcp` carries the
 //! bots' actions. The daemon serves the sandbox's viewer at
@@ -103,8 +104,9 @@ struct Cursor {
 /// What the daemon knows about the computer between `cua` calls.
 #[derive(Default)]
 struct Computer {
-    /// The user took over: the bots' actions wait until they give it back.
-    user_control: bool,
+    /// The user paused the bots: their actions are refused until the user
+    /// resumes them. The user's own screen takes clicks and keys either way.
+    paused: bool,
     /// The bot whose action is in progress, and the action, such as `click`.
     actor: Option<String>,
     activity: Option<String>,
@@ -367,7 +369,7 @@ fn snapshot(home: &Path) -> Value {
     with(home, |c| {
         json!({
             "state": c.busy.or(c.state).unwrap_or("absent"),
-            "control": if c.user_control { "user" } else { "bot" },
+            "control": if c.paused { "user" } else { "bot" },
             "actor": c.actor,
             "activity": c.activity,
             "error": c.error,
@@ -761,8 +763,8 @@ async fn lifecycle_step(home: &Path, step: &str) -> Result<()> {
         }
     }
     .await;
+    // The views close with the old machine; a pause outlasts the step.
     forget(home).await;
-    release(home);
     match result {
         Ok("running") => came_up(home),
         // Turned off on purpose: the watchdog leaves it off.
@@ -939,13 +941,12 @@ pub async fn call(home: &Path, method: &str, p: &Value) -> Option<Result<Value>>
                         "bot" => false,
                         _ => return Err(Error::new(4202, "holder must be user or bot")),
                     };
+                    // `user` pauses the bots, after the action one has under way;
+                    // `bot` resumes them.
+                    with(home, |c| c.paused = user);
+                    changed(home);
                     if user {
-                        with(home, |c| c.user_control = true);
-                        changed(home);
                         settled(home).await;
-                    } else {
-                        release(home);
-                        changed(home);
                     }
                     Ok(snapshot(home))
                 }
@@ -983,7 +984,8 @@ pub async fn call(home: &Path, method: &str, p: &Value) -> Option<Result<Value>>
 }
 
 /// A link to the computer's screen through this daemon. With `control` the
-/// user takes over and the link can type and click; without it, it only watches.
+/// link takes clicks and keys while the bots keep working; without it, it
+/// only watches. Pausing the bots is `hexbot.computer.control`, apart from it.
 /// `quality` fixes how the screen streams; without one it follows the connection.
 async fn view(home: &Path, control: bool, quality: Option<Stream>) -> Result<Value> {
     let (cfg, env) = setup(home)?;
@@ -999,60 +1001,41 @@ async fn view(home: &Path, control: bool, quality: Option<Stream>) -> Result<Val
         "--ttl".into(),
         format!("{}s", VIEW_TTL as u64),
     ];
-    let held = with(home, |c| c.user_control);
-    if control {
-        with(home, |c| c.user_control = true);
-        changed(home);
-        settled(home).await;
-    } else {
+    if !control {
         args.push("--view-only".into());
     }
-    // Taking control is what the user asked for; a link that fails hands it back.
-    let made = async {
-        let out = cua(
-            &cfg,
-            &env,
-            &args.iter().map(String::as_str).collect::<Vec<_>>(),
-            30,
-        )
-        .await?;
-        if out.code == 3 {
-            return Err(Error::new(4209, "The computer is off."));
-        }
-        if out.code != 0 {
-            return Err(failure(
-                &out.stderr,
-                "Could not open the computer's screen.",
-            ));
-        }
-        let link = parse(&out.stdout)?;
-        let url = url::Url::parse(link["url"].as_str().unwrap_or(""))
-            .map_err(|_| Error::new(4211, "Cua returned no screen link."))?;
-        if !matches!(
-            url.host_str(),
-            Some("127.0.0.1" | "localhost" | "::1" | "[::1]")
-        ) {
-            return Err(Error::new(
-                4211,
-                "The computer's screen is not on this machine.",
-            ));
-        }
-        Ok(url)
+    let out = cua(
+        &cfg,
+        &env,
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+        30,
+    )
+    .await?;
+    if out.code == 3 {
+        return Err(Error::new(4209, "The computer is off."));
     }
-    .await;
-    if control && !held && made.is_err() {
-        release(home);
-        changed(home);
+    if out.code != 0 {
+        return Err(failure(
+            &out.stderr,
+            "Could not open the computer's screen.",
+        ));
     }
-    let url = made?;
+    let link = parse(&out.stdout)?;
+    let url = url::Url::parse(link["url"].as_str().unwrap_or(""))
+        .map_err(|_| Error::new(4211, "Cua returned no screen link."))?;
+    if !matches!(
+        url.host_str(),
+        Some("127.0.0.1" | "localhost" | "::1" | "[::1]")
+    ) {
+        return Err(Error::new(
+            4211,
+            "The computer's screen is not on this machine.",
+        ));
+    }
     let upstream = url.origin().ascii_serialization();
     let token = format!("{}{}", common::id(), common::id());
     let expires = common::now() + VIEW_TTL;
-    // Checked under the lock `release` holds, so a give-back can't slip between.
     let mut map = views().lock().unwrap_or_else(|e| e.into_inner());
-    if control && !with(home, |c| c.user_control) {
-        return Err(Error::new(4209, "The computer went back to your bots."));
-    }
     map.retain(|_, v| v.expires > common::now());
     map.insert(
         token.clone(),
@@ -1072,16 +1055,9 @@ async fn view(home: &Path, control: bool, quality: Option<Stream>) -> Result<Val
 }
 
 /// Waits for the action a bot has under way, so none of its input lands
-/// after the user takes over. Bots waiting for a turn see the user has it.
+/// after the user pauses the bots. Bots waiting for a turn see the pause.
 async fn settled(home: &Path) {
     let _ = tokio::time::timeout(TURN_WAIT, turns(home).lock()).await;
-}
-
-/// The bots have the computer again: screens that could type stop working.
-fn release(home: &Path) {
-    let mut map = views().lock().unwrap_or_else(|e| e.into_inner());
-    with(home, |c| c.user_control = false);
-    map.retain(|_, v| !(v.home == home && v.control));
 }
 
 struct View {
@@ -1421,7 +1397,7 @@ async fn pump(
         }
         let _ = client_tx.close().await;
     };
-    // Giving the computer back, or the link expiring, ends an open screen too.
+    // The link expiring ends an open screen too.
     let revoked = async {
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -1644,7 +1620,7 @@ pub fn descriptor() -> Value {
     let point = json!({"type":"array","items":{"type":"integer"},"minItems":2,"maxItems":2});
     json!({
         "name": "computer_use",
-        "description": "Use the computer your bots share: a Linux desktop with a browser and a terminal, separate from the user's computer and your workspace. Run code, install programs and browse the web there, not on the user's computer. It starts on first use. Other bots may work on it too, one action at a time, and the user can watch and take over, so look before you act. Start with screenshot; coordinates are pixels in the latest screenshot. After an action that changes the screen, look again, or pass capture_after. Use shell for installs and files on that computer and open for a URL. If the user has taken over, wait for them to hand it back.",
+        "description": "Use the computer your bots share: a Linux desktop with a browser and a terminal, separate from the user's computer and your workspace. Run code, install programs and browse the web there, not on the user's computer. It starts on first use. Other bots may work on it too, one action at a time, and the user can watch it and use it at the same time, so look before you act. Start with screenshot; coordinates are pixels in the latest screenshot. After an action that changes the screen, look again, or pass capture_after. Use shell for installs and files on that computer and open for a URL. If the user has paused the bots, wait for them to resume.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -1835,8 +1811,8 @@ pub async fn act(
             ));
         }
     };
-    if with(home, |c| c.user_control) {
-        return Err(taken_over());
+    if with(home, |c| c.paused) {
+        return Err(paused_error());
     }
     if command(cfg, env).is_none() {
         return Err(unavailable());
@@ -1846,8 +1822,8 @@ pub async fn act(
     let turn = tokio::time::timeout(TURN_WAIT, turns(home).lock_owned())
         .await
         .map_err(|_| Error::new(4209, "Another bot kept the computer busy. Try again."))?;
-    if with(home, |c| c.user_control) {
-        return Err(taken_over());
+    if with(home, |c| c.paused) {
+        return Err(paused_error());
     }
     let at = point(args, "coordinate").ok();
     aim(home, bot, action, at);
@@ -1896,10 +1872,10 @@ pub async fn act(
     }
     Ok(result)
 }
-fn taken_over() -> Error {
+fn paused_error() -> Error {
     Error::new(
         4302,
-        "The user has taken over the computer. Wait until they hand it back before using it again, and ask what changed if it matters.",
+        "The user has paused the bots on the computer. Wait until they resume them before using it again, and ask what changed if it matters.",
     )
 }
 
@@ -1928,8 +1904,8 @@ pub async fn fill(
     env: &BTreeMap<String, String>,
     fills: &[(Option<(i64, i64)>, String)],
 ) -> Result<()> {
-    if with(home, |c| c.user_control) {
-        return Err(taken_over());
+    if with(home, |c| c.paused) {
+        return Err(paused_error());
     }
     if command(cfg, env).is_none() {
         return Err(unavailable());
@@ -1938,8 +1914,8 @@ pub async fn fill(
     let turn = tokio::time::timeout(TURN_WAIT, turns(home).lock_owned())
         .await
         .map_err(|_| Error::new(4209, "Another bot kept the computer busy. Try again."))?;
-    if with(home, |c| c.user_control) {
-        return Err(taken_over());
+    if with(home, |c| c.paused) {
+        return Err(paused_error());
     }
     with(home, |c| {
         c.actor = Some(bot.to_owned());
