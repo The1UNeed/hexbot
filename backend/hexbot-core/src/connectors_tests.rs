@@ -1468,6 +1468,32 @@ async fn a_value_for_one_bot_keeps_the_other_bots_on_their_provider() {
 }
 
 #[tokio::test]
+async fn an_xai_key_turned_off_with_its_provider_leaves_x_search_to_the_sign_in() {
+    // An xAI key in `.env`, the xAI model provider turned off, and a
+    // SuperGrok sign-in: searches would refuse the key, so X search uses
+    // the sign-in.
+    let home = setup();
+    fs::write(home.path().join(".env"), "XAI_API_KEY=turned-off\n").unwrap();
+    fs::write(
+        home.path().join("providers-disabled.json"),
+        json!({"xai":true}).to_string(),
+    )
+    .unwrap();
+    fs::write(
+        home.path().join("auth.json"),
+        json!({"providers":{"xai-oauth":{"access_token":"daemon-token","refresh_token":"r","expires_at":common::now()+3600.0}}}).to_string(),
+    )
+    .unwrap();
+    let row = connectors::get(home.path(), Some("owl"), "x_search").unwrap();
+    assert_eq!(row["provider"], "supergrok");
+    assert_eq!(row["ready"], true);
+    // Without the sign-in, the turned-off key does not set X search up.
+    fs::remove_file(home.path().join("auth.json")).unwrap();
+    let row = connectors::get(home.path(), Some("owl"), "x_search").unwrap();
+    assert_eq!(row["ready"], false);
+}
+
+#[tokio::test]
 async fn an_xai_key_kept_in_the_credential_pool_sets_up_x_search() {
     let home = setup();
     if std::env::var_os("XAI_API_KEY").is_some() {

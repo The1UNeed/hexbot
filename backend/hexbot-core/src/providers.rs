@@ -2437,6 +2437,12 @@ pub fn selection_warning(model: &Value) -> Option<String> {
 pub async fn xai_credentials(home: &Path, bot: &str) -> Result<Value> {
     xai_credentials_from(home, bot, None).await
 }
+/// Whether the xAI model provider is turned off. Its key then serves
+/// nothing, X search included, until a key is saved again.
+pub fn xai_disabled(home: &Path) -> Result<bool> {
+    Ok(read_json(&home.join("providers-disabled.json"))?["xai"] == true)
+}
+
 /// Where xAI's API answers for a bot, or for the daemon when `bot` is None.
 pub fn xai_base_url(home: &Path, bot: Option<&str>) -> Result<String> {
     let root_env = common::env_values(home)?;
@@ -2469,9 +2475,8 @@ pub async fn xai_credentials_from(home: &Path, bot: &str, source: Option<&str>) 
     common::identifier(bot)?;
     let profile_home = home.join("profiles").join(bot);
     let base = xai_base_url(home, Some(bot))?;
-    let disabled = read_json(&home.join("providers-disabled.json"))?;
     if source != Some("xai-oauth")
-        && disabled["xai"] != true
+        && !xai_disabled(home)?
         && let Some(api_key) = key(&profile_home, profile("xai")?)?.or(key(home, profile("xai")?)?)
     {
         return Ok(json!({"api_key":api_key,"base_url":base,"provider":"xai"}));

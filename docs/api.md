@@ -1193,8 +1193,8 @@ with the provider. Its `configured` is true once that sign-in is saved for
 the daemon or, in a bot's list, for that bot. A sign-in xAI refuses, revoked
 or without API access, tests as failed and stays in `error`
 (`HEXBOT_XAI_BASE_URL` points xAI elsewhere for tests). X search's providers are
-`supergrok`, `xai` (`XAI_API_KEY`, shared with the xAI model provider and
-kept when X search is cleared) and `x_api` (`X_BEARER_TOKEN`; X's recent
+`supergrok`, `xai` (`XAI_API_KEY`, shared with the xAI model provider,
+kept when X search is cleared, and unused while that provider is turned off) and `x_api` (`X_BEARER_TOKEN`; X's recent
 search, or its full archive when a date is older than seven days;
 `HEXBOT_X_API_BASE_URL` points it elsewhere for tests). With none chosen, a
 saved key comes before a sign-in. The plugin card's `providers` carry

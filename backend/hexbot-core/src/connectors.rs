@@ -84,6 +84,11 @@ pub fn profile_credentials(home: &Path, dir: &Path) -> Result<BTreeMap<String, S
     Ok(values)
 }
 fn value(home: &Path, bot: Option<&str>, key: &str) -> Result<Option<String>> {
+    // The xAI key is the xAI model provider's: turned off there, X search
+    // has no key either, as its search does not (`xai_credentials_from`).
+    if key == "XAI_API_KEY" && crate::providers::xai_disabled(home)? {
+        return Ok(None);
+    }
     if let Some(bot) = bot
         && let Some(v) = read_env(&profile(home, bot)?)?
             .remove(key)
