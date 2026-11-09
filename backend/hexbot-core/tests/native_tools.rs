@@ -150,6 +150,34 @@ async fn vision_executes_the_configured_http_service() {
 }
 #[cfg(unix)]
 #[tokio::test]
+async fn a_cloud_voice_saved_before_speaks_with_the_built_in_voice() {
+    let h = home(json!({"tools":{"enabled_toolsets":["tts"]},"tts":{"provider":"elevenlabs"}}));
+    // Stands in for edge-tts: writes the file named after --write-media.
+    let edge = script(
+        h.path(),
+        "edge.py",
+        "import sys\nopen(sys.argv[sys.argv.index('--write-media')+1],'wb').write(b'ID3edge-audio')\n",
+    );
+    let mut cfg = common::read_config(h.path()).unwrap();
+    cfg["tts"]["edge"] = json!({"command": edge});
+    common::write_config(h.path(), &cfg).unwrap();
+    assert!(
+        native_tools::descriptors(h.path(), "tester")
+            .unwrap()
+            .iter()
+            .any(|t| t["name"] == "text_to_speech")
+    );
+    let audio = call(h.path(), "text_to_speech", json!({"text":"Hello"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read(audio["file_path"].as_str().unwrap()).unwrap(),
+        b"ID3edge-audio"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn speech_checks_the_requested_provider_instead_of_the_default() {
     let h = home(json!({"tools":{"enabled_toolsets":["tts"]},"tts":{
         "provider":"edge","edge":{"command": "/missing/hexbot-edge-tts"}

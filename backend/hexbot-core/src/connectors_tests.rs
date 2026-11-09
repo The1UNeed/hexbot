@@ -1328,3 +1328,21 @@ async fn x_search_offers_a_subscription_sign_in() {
     assert!(!connectors::tool_available(home.path(), "fox", "x_search").unwrap());
     assert_eq!(result["connector"]["ready_bots"], json!(["fox", "owl"]));
 }
+
+#[tokio::test]
+async fn an_xai_key_kept_in_the_credential_pool_sets_up_x_search() {
+    let home = setup();
+    if std::env::var_os("XAI_API_KEY").is_some() {
+        return;
+    }
+    fs::write(
+        home.path().join("auth.json"),
+        json!({"credential_pool":{"xai":[{"auth_type":"api_key","access_token":"pooled-xai-key","priority":0}]}}).to_string(),
+    )
+    .unwrap();
+    let row = connectors::get(home.path(), Some("owl"), "x_search").unwrap();
+    assert_eq!(row["ready"], true);
+    assert_eq!(row["provider"], "xai");
+    connectors::set_enabled(home.path(), "owl", "x_search", true).unwrap();
+    assert!(connectors::tool_available(home.path(), "owl", "x_search").unwrap());
+}
