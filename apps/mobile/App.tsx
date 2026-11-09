@@ -21,7 +21,7 @@ import { avatarSrc } from './src/core/avatar'
 import { encodeAnswer, imageMime } from './src/core/chat-send'
 import { daemonBehind } from './src/core/version-skew'
 import { version as appVersion } from '../desktop/package.json'
-import { pickFile } from './src/core/pickFile'
+import { type AttachSource, pickAttachments } from './src/core/pickFile'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import {
   ChatChooser,
@@ -484,33 +484,43 @@ function MobileApp({ children }: { children?: ReactNode }) {
       setConnectPending(false)
     }
   }
-  const attach = async () => {
+  const attach = async (source: AttachSource) => {
     if (mobile.route?.kind !== 'section') return
     const sessionId = mobile.liveSessionId()
     if (!sessionId) throw new Error('Open this chat again before attaching a file.')
-    const asset = await pickFile()
-    if (!asset) return
-    const image = imageMime(asset.name, asset.mimeType)
-    const pdf = asset.mimeType === 'application/pdf' || asset.name.toLowerCase().endsWith('.pdf')
-    if (image && asset.bytes > 25 * 1024 * 1024)
-      throw new Error('Choose an image smaller than 25 MiB.')
-    const id = Crypto.randomUUID()
-    attachmentData.current.set(id, {
-      method: image ? 'image.attach_bytes' : pdf ? 'pdf.attach' : 'file.attach',
-      params:
-        image || pdf
-          ? { content_base64: asset.base64, filename: asset.name }
-          : {
-              name: asset.name,
-              data_url: `data:${asset.mimeType || 'application/octet-stream'};base64,${asset.base64}`
-            }
-    })
-    // A picture, video or audio file shows from the phone's own copy.
-    const kind = image ? 'image' : mediaKind(asset.mimeType ?? mimeOf(asset.name), asset.name)
-    setAttachments(list => [
-      ...list,
-      { id, name: asset.name, kind, uri: kind === 'file' || kind === 'pdf' ? null : asset.uri }
-    ])
+    const { files, refused } = await pickAttachments(source)
+    const added: AttachmentView[] = []
+    let tooBig: string | null = null
+    for (const asset of files) {
+      const image = imageMime(asset.name, asset.mimeType)
+      const pdf = asset.mimeType === 'application/pdf' || asset.name.toLowerCase().endsWith('.pdf')
+      if (image && asset.bytes > 25 * 1024 * 1024) {
+        tooBig ??= `${asset.name}: Choose an image smaller than 25 MiB.`
+        continue
+      }
+      const id = Crypto.randomUUID()
+      attachmentData.current.set(id, {
+        method: image ? 'image.attach_bytes' : pdf ? 'pdf.attach' : 'file.attach',
+        params:
+          image || pdf
+            ? { content_base64: asset.base64, filename: asset.name }
+            : {
+                name: asset.name,
+                data_url: `data:${asset.mimeType || 'application/octet-stream'};base64,${asset.base64}`
+              }
+      })
+      // A picture, video or audio file shows from the phone's own copy.
+      const kind = image ? 'image' : mediaKind(asset.mimeType ?? mimeOf(asset.name), asset.name)
+      added.push({
+        id,
+        name: asset.name,
+        kind,
+        uri: kind === 'file' || kind === 'pdf' ? null : asset.uri
+      })
+    }
+    if (added.length) setAttachments(list => [...list, ...added])
+    const problem = refused ?? tooBig
+    if (problem) throw new Error(problem)
   }
   // An uploaded file left out of the message is dropped by the daemon when it is sent.
   const removeAttachment = (id: string) => {
@@ -1269,7 +1279,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
           <ProviderGoneCard bot={route.bot} models={mobile.models} rpc={mobile.rpc} />
         ) : undefined
       }
-      onAttach={() => act(attach)}
+      onAttach={source => act(() => attach(source))}
       onOpenComputer={
         (route.bot.available_tools ?? route.bot.tools ?? []).includes('computer_use')
           ? () => setComputerOpen(true)

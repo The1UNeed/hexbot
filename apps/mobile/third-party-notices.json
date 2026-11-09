@@ -751,6 +751,18 @@
      "source": "https://www.npmjs.com/package/expo-glass-effect/v/58.0.4"
     },
     {
+     "name": "expo-image-loader",
+     "version": "58.0.3",
+     "license": "MIT",
+     "source": "https://www.npmjs.com/package/expo-image-loader/v/58.0.3"
+    },
+    {
+     "name": "expo-image-picker",
+     "version": "58.0.10",
+     "license": "MIT",
+     "source": "https://www.npmjs.com/package/expo-image-picker/v/58.0.10"
+    },
+    {
      "name": "expo-keep-awake",
      "version": "58.0.3",
      "license": "MIT",

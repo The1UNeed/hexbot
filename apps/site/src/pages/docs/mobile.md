@@ -102,7 +102,9 @@ replaces Send until its bot finishes. Removing a room's last bot deletes the
 room, and the app asks first.
 
 Job details show the last status, error and up to 12,000 characters of output
-saved on the daemon. Attachments can be sent without text. The app asks the bot
+saved on the daemon. The + next to the message field attaches photos and
+videos from your phone, a photo or video you take with the camera, or any
+file. Attachments can be sent without text. The app asks the bot
 to review the files and keeps attachment chips until the send succeeds. A
 message carries only the files picked for it, and files picked for a chat you
 leave without sending are removed from the daemon. Older

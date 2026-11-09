@@ -1,5 +1,14 @@
 import { Ionicons } from '@expo/vector-icons'
-import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  type ComponentRef,
+  memo,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react'
 import * as Clipboard from 'expo-clipboard'
 import {
   ActionSheetIOS,
@@ -42,6 +51,8 @@ import {
   useTheme,
   withAlpha
 } from '../ui'
+import type { AttachSource } from '../core/pickFile'
+import { AttachMenu } from './AttachMenu'
 import { FileCard } from './FileCard'
 import { MediaAttachment } from './MediaAttachment'
 import { PluginCard } from './PluginCard'
@@ -78,8 +89,8 @@ export interface ChatScreenProps {
 
   onSend: (text: string) => void
   onStop?: () => void
-  /** Leave out to hide the attach button. */
-  onAttach?: () => void
+  /** Leave out to hide the attach button. Its menu offers photos, the camera and files. */
+  onAttach?: (source: AttachSource) => void
   attachments?: AttachmentView[]
   onRemoveAttachment?: (id: string) => void
   /** Controlled draft; leave both out to let the screen keep it. */
@@ -929,6 +940,8 @@ function Composer({
   // A phone held sideways is short: the field grows to a third of it at most.
   const { height } = useWindowDimensions()
   const [own, setOwn] = useState('')
+  const plus = useRef<ComponentRef<typeof View>>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
   const text = draft ?? own
   const setText = onDraftChange ?? setOwn
   const canSend = (text.trim() !== '' || !!attachments?.length) && !sendDisabledReason
@@ -962,7 +975,13 @@ function Composer({
             <View key={file.id} style={[styles.pendingFile, { backgroundColor: theme.fill }]}>
               <Ionicons
                 color={theme.muted}
-                name={file.kind === 'image' ? 'image-outline' : 'document-outline'}
+                name={
+                  file.kind === 'image'
+                    ? 'image-outline'
+                    : file.kind === 'video'
+                      ? 'videocam-outline'
+                      : 'document-outline'
+                }
                 size={16}
               />
               <Text numberOfLines={1} style={styles.fileName} variant="footnote">
@@ -985,14 +1004,17 @@ function Composer({
       ) : null}
       <View style={styles.composerRow}>
         {onAttach ? (
-          <IconButton
-            accessibilityLabel="Attach a file"
-            icon="add"
-            iconSize={24}
-            onPress={onAttach}
-            testID="chat-attach"
-            variant="glass"
-          />
+          <View collapsable={false} ref={plus}>
+            <IconButton
+              accessibilityLabel="Attach a photo, video or file"
+              icon="add"
+              iconSize={24}
+              onPress={() => plus.current?.measureInWindow((x, y, w, h) => setMenu({ h, w, x, y }))}
+              testID="chat-attach"
+              variant="glass"
+            />
+            <AttachMenu anchor={menu} onChoose={onAttach} onClose={() => setMenu(null)} />
+          </View>
         ) : null}
         <Glass radius={24} style={styles.inputWell}>
           <TextInput
