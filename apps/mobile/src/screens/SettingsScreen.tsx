@@ -30,6 +30,7 @@ export interface DaemonArea {
     | 'devices'
     | 'licenses'
     | 'network'
+    | 'notifications'
     | 'passwords'
     | 'plugins'
     | 'providers'

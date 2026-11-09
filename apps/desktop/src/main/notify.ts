@@ -33,11 +33,26 @@ export function reportShown(window: BrowserWindow): void {
   window.webContents.on('did-finish-load', send)
 }
 
+/** Whether you are using the window: shown, not minimized, and in front of other apps. */
+export function windowInFront(window: BrowserWindow | null): boolean {
+  return Boolean(
+    window &&
+    !window.isDestroyed() &&
+    window.isVisible() &&
+    !window.isMinimized() &&
+    window.isFocused()
+  )
+}
+
+/**
+ * Shows a native notification. `backgroundOnly` is for the chat on screen: it
+ * stays silent only while the window is in front. A window left open behind
+ * another app still notifies. Checked at delivery time, so a switch racing a
+ * reply goes the right way.
+ */
 export function notify(options: NotificationOptions, getWindow: () => BrowserWindow | null): void {
   const window = getWindow()
-  // Chromium visibility can stay "visible" after native hide/minimize. Check
-  // at delivery time, so a reopen racing a reply also stays silent.
-  if (options.backgroundOnly && window?.isVisible() && !window.isMinimized()) return
+  if (options.backgroundOnly && windowInFront(window)) return
   const notification = new Notification({ title: options.title, body: options.body })
   notification.on('click', () => {
     const window = getWindow()

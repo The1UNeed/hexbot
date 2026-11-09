@@ -124,7 +124,7 @@ function DetailsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
             <span className="min-w-0 flex-1">
               <span className="block font-medium">Allow in this browser</span>
               <span className="block text-[length:var(--text-meta)] text-muted">
-                So notifications show while this tab is in the background
+                So this browser can notify you while the tab is open
               </span>
             </span>
           </button>

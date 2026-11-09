@@ -629,6 +629,8 @@ export interface Device {
   last_seen_at: null | number
   name: string
   platform: string
+  /** A phone that takes pushes. Older daemons leave it out. */
+  push?: boolean
 }
 
 export interface Message {

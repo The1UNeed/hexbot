@@ -200,16 +200,21 @@ name}` (other files) or `pdf.attach`. Stop: `session.interrupt`.
 Closing the app window keeps its page and daemon connection alive in both
 editions. Full keeps an app-owned daemon running; Client keeps receiving
 notifications from its remote daemon. Chromium keeps its default background
-throttling. The end of a turn in the open chat requests one background-only
-native notification with the turn's last words, unless the turn failed (its
-Stopped notification says so) or the bot's Notify me is off; the main process
-checks whether the window is hidden or minimized at delivery time. Every
-notification goes through `lib/notify.ts`, which shortens the text to 1,000
-characters; a browser tab shows its own only while hidden, and clicking it
-opens the chat. A browser asks for permission when Notify me is turned on, or
-from Allow on the profile and the Heartbeat tab. A chat is marked read only
-while the page is visible, so a closed window leaves a reply unread for the
-phone push.
+throttling. A `message.complete` with `chat: true` (a bot's own chat, sent to
+every client) requests one native notification with the turn's last words,
+whichever chat the page shows, unless the turn failed (its Stopped
+notification says so) or the bot's Notify me is off. Every notification goes
+through `lib/notify.ts`, which shortens the text to 1,000 characters and stays
+quiet only about the chat on screen while Hexbot is in front: the roster names
+that chat (`setShownSection` in `lib/page-visible.ts`), the app passes
+`backgroundOnly` for it and the main process checks the window's focus at
+delivery time; a browser tab checks `document.hasFocus()`. A window left open
+behind another app, or another chat, still notifies. Clicking a notification
+opens the chat. Settings, Notifications holds this device's permission and a
+test, the phones that take pushes, and each bot's Notify me; a banner under
+the chat's header asks once per device to turn notifications on. A chat is
+marked read only while the page is focused, so a window behind another app
+leaves a reply unread for the phone push.
 macOS hides the window as before. Windows hides it to the tray, or minimizes
 if tray setup fails. Linux always minimizes, because a tray object does not
 prove that the desktop displays an icon, including on GNOME without a tray
@@ -232,8 +237,8 @@ Exposed by the preload with contextIsolation on:
 - `pair(host, port, code, deviceName)` performs the password-login from
   the main process and returns the device token.
 - `notify({title, body, sectionId?, backgroundOnly?})` shows a native notification;
-  background-only requests stay silent while the window is visible and not
-  minimized. Clicking focuses the window and navigates.
+  background-only requests stay silent only while the window is shown, not
+  minimized and focused. Clicking focuses the window and navigates.
 - `openExternal(url)`, `pickFiles()`.
 - `updater.state()`, `updater.check()`, `updater.download()`, `updater.install()`,
   `updater.setChannel(track)`, `updater.onStatus(cb)`. `stores/updates.ts`

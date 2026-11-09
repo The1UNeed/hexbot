@@ -66,6 +66,7 @@ import { ConfirmUpdate, installTarget } from '../confirm-update'
 import { ComputerSettings } from './computer'
 import { DiagnosticsSettings } from './diagnostics'
 import { OPEN_SOURCE } from './licenses'
+import { NotificationsSettings } from './notifications'
 import { PasswordsSettings } from './passwords'
 import { PluginsSettings } from './plugins'
 import { PrivacySettings } from './privacy'
@@ -80,6 +81,7 @@ export const SETTINGS_TABS = [
   'memory',
   'usage',
   'approvals',
+  'notifications',
   'appearance',
   'updates',
   'privacy',
@@ -139,6 +141,7 @@ export function SettingsPanel({ tab }: { tab: string }): React.JSX.Element {
       {tab === 'memory' && <MemorySettings />}
       {tab === 'usage' && <UsageSettings />}
       {tab === 'approvals' && <ApprovalsSettings />}
+      {tab === 'notifications' && <NotificationsSettings />}
       {tab === 'appearance' && <AppearanceSettings />}
       {tab === 'updates' && <UpdatesSettings />}
       {tab === 'privacy' && <PrivacySettings />}

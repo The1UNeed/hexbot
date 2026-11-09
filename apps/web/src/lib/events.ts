@@ -104,6 +104,31 @@ export function botNotifies(bot?: string | null): boolean {
   return record?.notify !== false
 }
 
+/**
+ * A reply finished in a bot's own chat (`chat`, from the daemon), whichever
+ * chat this page shows. A failed turn has its own Stopped notification, and
+ * a stopped one needs none.
+ */
+function notifyReply(payload: Record<string, unknown>): void {
+  const bot = typeof payload.bot === 'string' ? payload.bot : ''
+
+  if (
+    payload.chat !== true ||
+    payload.status !== 'complete' ||
+    payload.error ||
+    typeof payload.section_id !== 'string' ||
+    !botNotifies(bot)
+  ) {
+    return
+  }
+
+  transcriptNotify({
+    body: text(payload).trim() || 'Finished.',
+    sectionId: payload.section_id,
+    title: useBots.getState().byName[bot]?.display_name ?? bot
+  })
+}
+
 function botOfSection(sectionId?: string | null): string | undefined {
   return sectionId ? useSections.getState().byId[sectionId]?.bot : undefined
 }
@@ -461,6 +486,8 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
           keepHistory(section, sessionId)
         }
       }
+
+      notifyReply(payload)
 
       return
 

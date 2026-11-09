@@ -25,7 +25,7 @@ import { toHandle } from '../../lib/bot-handle'
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
 import { moodForStatus } from '../../lib/face'
-import { usePageVisible } from '../../lib/page-visible'
+import { setShownSection, usePageFocused } from '../../lib/page-visible'
 import { previewLine } from '../../lib/preview'
 import { reasoningOptions, runningLevel } from '../../lib/reasoning'
 import { toMillis } from '../../lib/time'
@@ -431,18 +431,28 @@ export function RosterColumn() {
       )?.done_at
     : null
 
-  // Read only once on screen: a closed app window or a background tab has not
-  // seen it, so the daemon still wakes the phone about it.
-  const pageVisible = usePageVisible()
+  // Read only once you look at it: a closed app window, a background tab or a
+  // window behind another app has not shown it to you, so the daemon still
+  // wakes the phone about it.
+  const pageFocused = usePageFocused()
 
   // A chat hidden behind another bot's loading face has not been seen either.
   const hidden = Boolean(asking && asking !== params.bot)
 
   useEffect(() => {
-    if (params.section && activeSectionDoneAt && pageVisible && !hidden) {
+    if (params.section && activeSectionDoneAt && pageFocused && !hidden) {
       void sectionsMarkRead(params.section).catch(() => undefined)
     }
-  }, [activeSectionDoneAt, hidden, pageVisible, params.section])
+  }, [activeSectionDoneAt, hidden, pageFocused, params.section])
+
+  // What a notification about the chat or room on screen checks (lib/notify.ts).
+  const shownRoom = (params as { room?: string }).room
+  const shown = shownRoom ? `room:${shownRoom}` : !hidden ? (params.section ?? null) : null
+  useEffect(() => {
+    setShownSection(shown)
+
+    return () => setShownSection(null)
+  }, [shown])
   const streamingSessions = useTranscripts(state => state.bySession)
 
   const liveSections = useMemo(() => liveSectionsOf(streamingSessions), [streamingSessions])

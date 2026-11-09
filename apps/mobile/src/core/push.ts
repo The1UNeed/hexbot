@@ -1,6 +1,6 @@
 import Constants from 'expo-constants'
 import * as Notifications from 'expo-notifications'
-import { Platform } from 'react-native'
+import { Linking, Platform } from 'react-native'
 import type { Rpc } from './types'
 
 /**
@@ -14,10 +14,14 @@ import type { Rpc } from './types'
 export const CHANNEL = 'checkins'
 /** Daemon device and token pairs already sent this run of the app. */
 const registered = new Set<string>()
+/** Expo issues push tokens only to a build with an EAS project, and only on a phone. */
+function pushProject(): string | undefined {
+  if (Platform.OS !== 'ios' && Platform.OS !== 'android') return undefined
+  return (Constants.expoConfig?.extra as { eas?: { projectId?: string } } | undefined)?.eas
+    ?.projectId
+}
 export async function registerPush(rpc: Rpc, device = ''): Promise<void> {
-  if (Platform.OS !== 'ios' && Platform.OS !== 'android') return
-  const projectId = (Constants.expoConfig?.extra as { eas?: { projectId?: string } } | undefined)
-    ?.eas?.projectId
+  const projectId = pushProject()
   if (!projectId) return
   // Android 13 asks for permission only once a channel exists, and pushes name it.
   if (Platform.OS === 'android')
@@ -51,4 +55,48 @@ export function notificationTarget(data: unknown): PushTarget | null {
   const { section, device } = (data ?? {}) as { section?: unknown; device?: unknown }
   if (typeof section !== 'string' || !section) return null
   return { section, device: typeof device === 'string' && device ? device : null }
+}
+
+/**
+ * Whether this phone shows Hexbot's notifications: the system's answer, or
+ * `unavailable` on the web and in a build that cannot take pushes. `canAsk`
+ * is false once the system no longer shows its prompt; only its Settings can
+ * turn them on then.
+ */
+export type PushPermission = 'denied' | 'granted' | 'unavailable' | 'undetermined'
+export async function pushPermission(): Promise<{ status: PushPermission; canAsk: boolean }> {
+  if (!pushProject()) return { status: 'unavailable', canAsk: false }
+  const { status, canAskAgain } = await Notifications.getPermissionsAsync()
+  return { status: status as PushPermission, canAsk: canAskAgain !== false }
+}
+
+/**
+ * Turns notifications on for this phone: the system's prompt while it still
+ * shows one, else its Settings for Hexbot. Granted, the daemon learns this
+ * phone's token.
+ */
+export async function allowPush(rpc: Rpc, device = ''): Promise<PushPermission> {
+  const { status, canAsk } = await pushPermission()
+  if (status === 'unavailable' || status === 'granted') {
+    if (status === 'granted') await registerPush(rpc, device)
+    return status
+  }
+  if (!canAsk) {
+    await Linking.openSettings()
+    return status
+  }
+  const asked = (await Notifications.requestPermissionsAsync()).status as PushPermission
+  if (asked === 'granted') await registerPush(rpc, device)
+  return asked
+}
+
+/** One notification on this phone now, to show they work. */
+export async function testNotification(): Promise<void> {
+  await Notifications.scheduleNotificationAsync({
+    content: {
+      title: 'Notifications are on',
+      body: 'You will see one like this when a bot replies or needs you.'
+    },
+    trigger: null
+  })
 }

@@ -543,6 +543,102 @@ fn unread_reply(
     .and_then(|row| row["owner_id"].as_str().map(str::to_owned)))
 }
 
+/// Whether `section` is a bot's own chat with its owner, the chats a phone
+/// opens: not a thread between bots, not an earlier Check-ins, not archived.
+/// Apps notify about a reply that finishes there, wherever the user is.
+pub(crate) fn bot_chat(conn: &rusqlite::Connection, section: &str) -> Result<bool> {
+    Ok(!common::rows(
+        conn,
+        "SELECT 1 FROM sections WHERE id=? AND peer_bot IS NULL AND purpose IS NULL AND archived_at IS NULL",
+        &[&section],
+    )?
+    .is_empty())
+}
+
+/// The owner to wake about a card in `section`: its bot's chat, with Notify me on.
+fn card_owner(conn: &rusqlite::Connection, section: &str) -> Result<Option<String>> {
+    Ok(common::rows(
+        conn,
+        "SELECT s.owner_id FROM sections s JOIN bots b ON b.name=s.bot WHERE s.id=? AND s.peer_bot IS NULL AND s.purpose IS NULL AND s.archived_at IS NULL AND b.notify=1",
+        &[&section],
+    )?
+    .pop()
+    .and_then(|row| row["owner_id"].as_str().map(str::to_owned)))
+}
+
+/// Approval and question cards waiting on the owner, by daemon home and
+/// request id; true once their phone push went out.
+fn open_cards() -> &'static Mutex<HashMap<(PathBuf, String), bool>> {
+    static OPEN: OnceLock<Mutex<HashMap<(PathBuf, String), bool>>> = OnceLock::new();
+    OPEN.get_or_init(Default::default)
+}
+
+/// A card started waiting. False when it already was: a replay to a
+/// reconnecting app is the same card and pushes no second time.
+fn card_opened(key: &(PathBuf, String)) -> bool {
+    let mut open = open_cards().lock().unwrap();
+    if open.contains_key(key) {
+        return false;
+    }
+    open.insert(key.clone(), false);
+    true
+}
+
+/// Whether a card still waits and has not been pushed, marking it pushed.
+fn card_due(key: &(PathBuf, String)) -> bool {
+    match open_cards().lock().unwrap().get_mut(key) {
+        Some(pushed) if !*pushed => {
+            *pushed = true;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// The owner answered a card, or the bot stopped waiting on it.
+pub(crate) fn card_settled(home: &Path, request: &str) {
+    open_cards()
+        .lock()
+        .unwrap()
+        .remove(&(home.to_owned(), request.to_owned()));
+}
+
+/// An approval or question card in `section`. Still unanswered after
+/// REPLY_PUSH_DELAY, it wakes the owner's phones, as an unread reply does:
+/// answered at once on a computer, it wakes nothing. Like the others, the push
+/// carries no text and the bot's Notify me switch silences it.
+pub(crate) fn push_card_later(home: &Path, section: &str, request: &str) {
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    let key = (home.to_owned(), request.to_owned());
+    if !card_opened(&key) {
+        return;
+    }
+    let section = section.to_owned();
+    handle.spawn(async move {
+        tokio::time::sleep(REPLY_PUSH_DELAY).await;
+        if !card_due(&key) {
+            return;
+        }
+        let home = key.0;
+        let result = async {
+            let targets = {
+                let conn = db::open(&home)?;
+                match card_owner(&conn, &section)? {
+                    Some(owner) => phones(&conn, &owner)?,
+                    None => return Ok(()),
+                }
+            };
+            let tickets = wake(&home, &targets, &section).await?;
+            forget_removed_apps(&home, tickets).await
+        };
+        if let Err(error) = result.await {
+            eprintln!("Card push: {}", error.message);
+        }
+    });
+}
+
 /// Pushes still due: Connect did not take them, or the daemon stopped before
 /// sending. One older than PUSH_GRACE is dropped, not sent late.
 fn due_pushes(conn: &rusqlite::Connection, now: f64) -> Result<Vec<String>> {
@@ -1098,6 +1194,50 @@ mod tests {
         conn.execute("UPDATE sections SET done_at=NULL WHERE id='chat'", [])
             .unwrap();
         assert_eq!(unread_reply(&conn, "chat", 5.0).unwrap(), None);
+    }
+
+    #[test]
+    fn a_card_pushes_once_and_not_after_its_answer() {
+        let home = PathBuf::from("/tmp/hexbot-card-test");
+        let card = (home.clone(), "approve-1".to_owned());
+        assert!(card_opened(&card));
+        // Replayed to an app that reconnects: the same card.
+        assert!(!card_opened(&card));
+        assert!(card_due(&card));
+        // Pushed once, even if it is replayed again while it waits.
+        assert!(!card_opened(&card));
+        assert!(!card_due(&card));
+        card_settled(&home, "approve-1");
+
+        let answered = (home.clone(), "approve-2".to_owned());
+        assert!(card_opened(&answered));
+        card_settled(&home, "approve-2");
+        assert!(!card_due(&answered));
+    }
+
+    #[test]
+    fn cards_and_replies_notify_only_from_a_bots_own_chat() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        let conn = db::open(home.path()).unwrap();
+        conn.execute_batch(
+            "INSERT INTO bots(name,owner_id) VALUES ('owl','alice'),('fox','alice');
+             UPDATE bots SET notify=0 WHERE name='fox';
+             INSERT INTO sections(id,bot,owner_id) VALUES ('chat','owl','alice'),('quiet','fox','alice');
+             INSERT INTO sections(id,bot,owner_id,peer_bot) VALUES ('thread','owl','alice','fox');
+             INSERT INTO sections(id,bot,owner_id,purpose) VALUES ('checkins','owl','alice','checkins');
+             INSERT INTO sections(id,bot,owner_id,archived_at) VALUES ('old','owl','alice',6);",
+        )
+        .unwrap();
+        assert!(bot_chat(&conn, "chat").unwrap());
+        // Apps apply Notify me themselves; the phone push applies it here.
+        assert!(bot_chat(&conn, "quiet").unwrap());
+        assert_eq!(card_owner(&conn, "chat").unwrap().as_deref(), Some("alice"));
+        assert_eq!(card_owner(&conn, "quiet").unwrap(), None);
+        for section in ["thread", "checkins", "old", "missing"] {
+            assert!(!bot_chat(&conn, section).unwrap(), "{section}");
+            assert_eq!(card_owner(&conn, section).unwrap(), None, "{section}");
+        }
     }
 
     #[test]
