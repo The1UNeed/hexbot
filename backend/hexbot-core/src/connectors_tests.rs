@@ -1383,6 +1383,42 @@ async fn a_sign_in_xai_refuses_is_not_connected() {
     assert_eq!(result["connector"]["enabled_for_bot"], false);
 }
 
+async fn refused_refresh() -> impl IntoResponse {
+    (StatusCode::BAD_REQUEST, r#"{"error":"invalid_grant"}"#)
+}
+#[tokio::test]
+async fn a_sign_in_whose_refresh_xai_refuses_has_ended() {
+    // The access token has expired and xAI turns down the refresh token, as
+    // after signing out at xAI or a lapsed subscription.
+    let home = setup();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let issuer = format!("http://{}", listener.local_addr().unwrap());
+    let app = Router::new().route("/oauth2/token", post(refused_refresh));
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    common::write_config(
+        home.path(),
+        &json!({"provider_auth":{"xai-oauth":{"issuer":issuer}}}),
+    )
+    .unwrap();
+    fs::write(
+        home.path().join("auth.json"),
+        json!({"providers":{"xai-oauth":{"access_token":"old","refresh_token":"revoked","expires_at":common::now()-60.0}}}).to_string(),
+    )
+    .unwrap();
+    let result = rpc(
+        home.path(),
+        "hexbot.connectors.setup",
+        json!({"id":"x_search","provider":"supergrok","bot":"owl"}),
+    )
+    .await;
+    server.abort();
+    assert_eq!(
+        result["test"],
+        json!({"ok":false,"message":"Your SuperGrok or X Premium+ sign-in has ended. Sign in again."})
+    );
+    assert_eq!(result["connector"]["enabled_for_bot"], false);
+}
+
 #[tokio::test]
 async fn a_value_for_one_bot_keeps_the_other_bots_on_their_provider() {
     let home = setup();

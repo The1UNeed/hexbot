@@ -1077,8 +1077,9 @@ async fn probe_sign_in(home: &Path, bot: Option<&str>, provider: &Value) -> Resu
     }
     let token = match crate::providers::xai_subscription_token(home, bot).await {
         Ok(token) => token,
-        // A refresh xAI turned down: the sign-in has ended.
-        Err(e) if e.message.ends_with("Sign in again.") => {
+        // A refresh xAI turned down, or no way left to refresh: the sign-in
+        // has ended.
+        Err(e) if sign_in_ended(&e.message) => {
             let message = format!("Your {label} sign-in has ended. Sign in again.");
             return Ok((json!({"ok":false,"message":message}), false));
         }
@@ -1103,6 +1104,14 @@ async fn probe_sign_in(home: &Path, bot: Option<&str>, provider: &Value) -> Resu
     })
     .await?;
     Ok((result, true))
+}
+/// Whether a failed token refresh means the sign-in has ended: xAI refused
+/// the refresh (400 or 401), or there is nothing left to refresh with.
+fn sign_in_ended(message: &str) -> bool {
+    message.ends_with("Sign in again.")
+        || ["400", "401"]
+            .iter()
+            .any(|status| message == format!("provider sign-in request failed (HTTP {status})"))
 }
 /// Test a web search that needs no key with one real search. The SearXNG
 /// Hexbot runs starts first; until it runs, bots search with Tavily and
