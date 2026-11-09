@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import App, { type AppScreens, useAppScreens } from '../../App'
 import { type ChatScreenProps, HomeScreen, type HomeScreenProps } from '../screens'
 import type { Bot, Room, Section } from './types'
-import { pickFile } from './pickFile'
+import { pickAttachments } from './pickFile'
 
 const state = vi.hoisted(() => ({
   request: vi.fn(),
@@ -41,7 +41,7 @@ vi.mock('expo-linking', () => ({ useURL: () => state.nativeUrl }))
 vi.mock('expo-web-browser', () => ({ maybeCompleteAuthSession() {} }))
 vi.mock('expo-crypto', () => ({ randomUUID: () => `message-${++state.uuid}` }))
 vi.mock('@react-native-async-storage/async-storage', () => ({ default: {} }))
-vi.mock('./pickFile', () => ({ pickFile: vi.fn(), pickAttachments: vi.fn() }))
+vi.mock('./pickFile', () => ({ pickAttachments: vi.fn() }))
 vi.mock('../screens/MediaAttachment', () => ({ MediaAttachment: () => null }))
 vi.mock('./media', () => ({ mediaUri: vi.fn() }))
 // Push registration needs the native notifications module.
@@ -131,7 +131,7 @@ beforeEach(() => {
   state.screens = null
   state.nativeUrl = null
   state.uuid = 0
-  vi.mocked(pickFile).mockReset()
+  vi.mocked(pickAttachments).mockReset().mockResolvedValue({ files: [], refused: null })
   state.request.mockReset().mockImplementation(async (method: string, params: Record<string, unknown> = {}) => {
     if (method === 'hexbot.info') return { one_chat: true, install_id: 'first' }
     if (method === 'hexbot.bots.list') return { bots: [bot] }
@@ -363,7 +363,6 @@ it('keeps historical items, the face and row callbacks stable while a reply stre
 })
 
 it('a file you send carries the path the daemon gave its upload, so its card previews before the chat reloads', async () => {
-  const { pickAttachments } = await import('./pickFile')
   vi.mocked(pickAttachments).mockResolvedValueOnce({
     files: [{ name: 'parts.csv', mimeType: 'text/csv', uri: 'file:///parts.csv', base64: 'YQ==', bytes: 1 }],
     refused: null
@@ -411,8 +410,8 @@ it.each(['resolve', 'reject'] as const)('a send that later %ss leaves the next c
   view.rerender(createElement(App, null, createElement(Routes)))
   await waitFor(() => expect(state.chat!.title).toBe('Yak'))
   act(() => state.chat!.onDraftChange!('New draft'))
-  vi.mocked(pickFile).mockResolvedValue({ name: 'next.txt', uri: 'file:///next.txt', base64: 'YQ==', bytes: 1, mimeType: 'text/plain', lastModified: 0 })
-  await act(async () => state.chat!.onAttach!())
+  vi.mocked(pickAttachments).mockResolvedValue({ files: [{ name: 'next.txt', uri: 'file:///next.txt', base64: 'YQ==', bytes: 1, mimeType: 'text/plain' }], refused: null })
+  await act(async () => state.chat!.onAttach!('files'))
   await act(async () => {
     if (result === 'resolve') resolve({ accepted: true })
     else reject(new Error('Old request failed'))
@@ -450,8 +449,8 @@ it('leaves a file selected while a send waits ready for the next message', async
   state.request.mockImplementation((method: string, params?: Record<string, unknown>) => method === 'prompt.submit' ? held : answer(method, params))
   act(() => state.chat!.onSend('Without files'))
   await waitFor(() => expect(calls('prompt.submit')).toHaveLength(1))
-  vi.mocked(pickFile).mockResolvedValue({ name: 'next.txt', uri: 'file:///next.txt', base64: 'YQ==', bytes: 1, mimeType: 'text/plain', lastModified: 0 })
-  await act(async () => state.chat!.onAttach!())
+  vi.mocked(pickAttachments).mockResolvedValue({ files: [{ name: 'next.txt', uri: 'file:///next.txt', base64: 'YQ==', bytes: 1, mimeType: 'text/plain' }], refused: null })
+  await act(async () => state.chat!.onAttach!('files'))
   expect(state.chat!.attachments).toMatchObject([{ name: 'next.txt' }])
   await act(async () => { resolve({ accepted: true }); await Promise.resolve() })
   expect(state.chat!.attachments).toMatchObject([{ name: 'next.txt' }])
@@ -516,5 +515,34 @@ it.each(['resolve', 'reject'] as const)('a delayed question answer that %ss pres
     await Promise.resolve()
   })
   expect(state.chat!.draft).toBe('New chat draft')
+  expect(state.chat!.error).toBeNull()
+})
+
+it('ignores a late attachment batch and its refused files after leaving the conversation', async () => {
+  const next = { ...owner, id: 'next', bot: 'yak', live_session_id: 'live-next' }
+  sections.push(next)
+  const reply = state.request.getMockImplementation()!
+  state.request.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+    if (method === 'hexbot.bots.list') return { bots: [bot, { ...bot, name: 'yak', display_name: 'Yak' }] }
+    if (method === 'hexbot.sections.create' && params?.bot === 'yak') return { section: next }
+    return reply(method, params)
+  })
+  const view = renderApp()
+  fireEvent.click(await screen.findByRole('button', { name: 'Bot Owl' }))
+  await screen.findByText('owner history')
+  let resolve!: (value: Awaited<ReturnType<typeof pickAttachments>>) => void
+  vi.mocked(pickAttachments).mockReturnValueOnce(new Promise(done => { resolve = done }))
+  act(() => state.chat!.onAttach!('files'))
+  state.nativeUrl = 'hexbot://bot?name=yak'
+  view.rerender(createElement(App, null, createElement(Routes)))
+  await waitFor(() => expect(state.chat!.title).toBe('Yak'))
+  act(() => state.chat!.onDraftChange!('New chat draft'))
+  const asset = { name: 'late.txt', uri: 'file:///late.txt', base64: 'YQ==', bytes: 1, mimeType: 'text/plain' }
+  await act(async () => {
+    resolve({ files: [asset, { ...asset, name: 'later.txt' }], refused: 'A refused file' })
+    await Promise.resolve()
+  })
+  expect(state.chat!.draft).toBe('New chat draft')
+  expect(state.chat!.attachments).toEqual([])
   expect(state.chat!.error).toBeNull()
 })
