@@ -2,7 +2,7 @@ import 'katex/dist/katex.min.css'
 
 import { JsonRpcGatewayError } from '@hermes/shared'
 import { useNavigate, useParams, useRouter } from '@tanstack/react-router'
-import { ArrowDown, Copy, PanelRight, Undo2, X } from 'lucide-react'
+import { ArrowDown, ChevronDown, Copy, PanelRight, Undo2, X } from 'lucide-react'
 import {
   type CSSProperties,
   isValidElement,
@@ -1068,14 +1068,15 @@ export function ApprovalCard({ approval }: { approval: ApprovalRequest }) {
 }
 
 function ChoiceCard({ approval }: { approval: ApprovalRequest }) {
+  const [open, setOpen] = useState(false)
+
   const choose = async (choice: ApprovalChoice) => {
     await approvalRespond(approval.sessionId, approval.requestId, choice)
     transcriptActions().resolveApproval(approval.sessionId, approval.requestId, choice)
   }
 
-  return (
-    <div className="hex-bubble min-w-0 max-w-[min(85%,40rem)] flex-1 rounded-[20px] border border-warning/30 bg-bubble px-4 py-3">
-      <div className="font-semibold">Approval needed</div>
+  const details = (
+    <>
       {approval.command ? (
         <pre className="my-2 overflow-auto rounded-[12px] bg-background/80 p-2.5 font-mono text-[length:var(--text-secondary)]">
           {approval.command}
@@ -1084,24 +1085,69 @@ function ChoiceCard({ approval }: { approval: ApprovalRequest }) {
       {approval.reason ? (
         <p className="mb-2 text-[length:var(--text-secondary)] text-muted">{approval.reason}</p>
       ) : null}
-      {approval.decision ? (
-        <Chip tone={approval.decision === 'deny' ? 'danger' : 'success'}>
-          {APPROVAL_CHOICES[approval.decision]}
-        </Chip>
-      ) : (
-        <div className="flex flex-wrap gap-2">
-          {approval.choices.map(choice => (
-            <Button
-              key={choice}
-              onClick={() => void choose(choice)}
-              size="sm"
-              variant={choice === 'once' ? 'primary' : undefined}
+    </>
+  )
+
+  // Once answered, the card folds to one line; the command stays a click away.
+  if (approval.decision) {
+    const summary = approval.command?.trim().split('\n')[0] || approval.reason
+
+    return (
+      <div className="hex-bubble min-w-0 max-w-[min(85%,40rem)] flex-1 rounded-[20px] bg-bubble px-2 py-1.5">
+        <button
+          aria-expanded={open}
+          className="group/approval hex-focus flex w-full items-center gap-2 rounded-[14px] px-2 py-1 text-left"
+          onClick={() => setOpen(!open)}
+          type="button"
+        >
+          <Chip className="shrink-0" tone={approval.decision === 'deny' ? 'danger' : 'success'}>
+            {APPROVAL_CHOICES[approval.decision]}
+          </Chip>
+          {summary ? (
+            <span
+              className={cn(
+                'min-w-0 flex-1 truncate text-[length:var(--text-meta)] text-muted',
+                approval.command && 'font-mono'
+              )}
             >
-              {APPROVAL_BUTTONS[choice]}
-            </Button>
-          ))}
-        </div>
-      )}
+              {summary}
+            </span>
+          ) : (
+            <span className="flex-1" />
+          )}
+          <ChevronDown
+            className={cn(
+              'shrink-0 text-muted opacity-0 transition-[opacity,transform] duration-[var(--hex-motion-fast)] group-hover/approval:opacity-100 group-focus-visible/approval:opacity-100',
+              open && 'rotate-180 opacity-100'
+            )}
+            size={12}
+          />
+        </button>
+        {open ? (
+          <div className="hex-unfold px-2">
+            <div>{details}</div>
+          </div>
+        ) : null}
+      </div>
+    )
+  }
+
+  return (
+    <div className="hex-bubble min-w-0 max-w-[min(85%,40rem)] flex-1 rounded-[20px] border border-warning/30 bg-bubble px-4 py-3">
+      <div className="font-semibold">Approval needed</div>
+      {details}
+      <div className="flex flex-wrap gap-2">
+        {approval.choices.map(choice => (
+          <Button
+            key={choice}
+            onClick={() => void choose(choice)}
+            size="sm"
+            variant={choice === 'once' ? 'primary' : undefined}
+          >
+            {APPROVAL_BUTTONS[choice]}
+          </Button>
+        ))}
+      </div>
     </div>
   )
 }
