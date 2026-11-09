@@ -22,7 +22,7 @@ It prints an address and an eight-character code. Open the address, sign in, and
 
 The daemon downloads a pinned, checksum-verified `cloudflared` binary for its tunnel.
 
-Your daemons page checks each daemon's address when you open it: a daemon is online when its address answers, and offline otherwise, with the last time it answered.
+Your daemons page checks each daemon's address when you open it: a daemon is online when its address answers, and offline otherwise.
 
 If the tunnel disappears on Cloudflare's side, the daemon proves its tunnel credentials to Connect, repairs it, and keeps the same address. Tunnels registered before credential proofs were introduced, or before the service signing key was rotated, need `hexbot connect` again if repair fails. A daemon registered before owner pinning ignores its old registration and asks you to run `hexbot connect` again.
 
