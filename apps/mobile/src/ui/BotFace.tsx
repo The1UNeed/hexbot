@@ -126,6 +126,8 @@ export function BotFace({ face, imageUri, mood, name, size = 44, status, testID 
           source={{ uri: imageUri }}
           style={{ borderRadius: size / 2, height: size, width: size }}
         />
+      ) : mood === 'computer' ? (
+        <ComputerFace size={size} style={face ?? faceForName(name)} />
       ) : (
         <FaceDrawing
           mood={mood ?? moodForStatus(status)}
@@ -149,6 +151,90 @@ export function BotFace({ face, imageUri, mood, name, size = 44, status, testID 
         />
       ) : null}
     </View>
+  )
+}
+
+/** The pointer a face rides beside on the computer, its tip at the origin, as the web app draws it. */
+const POINTER = 'M0 0 26 11a1.5 1.5 0 0 1-.2 2.8L15 17 11.8 27.6a1.5 1.5 0 0 1-2.8.2Z'
+
+/** Where the pointer and its rider rest between moves, in face units; they visit them in turn. */
+const CURSOR_STOPS = [
+  { x: -6, y: -5 },
+  { x: 7, y: -1 },
+  { x: -2, y: 6 }
+]
+
+/**
+ * A bot's face riding beside a pointer, as the web app shows it while the
+ * bot uses the computer: the two glide from stop to stop and the pointer
+ * dips once at each, as if it clicked. Still when the system asks for
+ * reduced motion.
+ */
+function ComputerFace({ size, style }: { size: number; style: FaceStyle }) {
+  const { color } = resolveFace(style)
+  const unit = size / 100
+  const [first] = CURSOR_STOPS
+  const x = useRef(new Animated.Value(first!.x * unit)).current
+  const y = useRef(new Animated.Value(first!.y * unit)).current
+  const press = useRef(new Animated.Value(1)).current
+
+  useEffect(() => {
+    let cancelled = false
+    let running: Animated.CompositeAnimation | null = null
+    const ease = Easing.inOut(Easing.cubic)
+
+    void (AccessibilityInfo.isReduceMotionEnabled?.() ?? Promise.resolve(false))
+      .catch(() => false)
+      .then(reduce => {
+        if (cancelled || reduce) return
+        const legs = CURSOR_STOPS.map((_, index) => {
+          const to = CURSOR_STOPS[(index + 1) % CURSOR_STOPS.length]!
+          return Animated.sequence([
+            Animated.parallel([
+              Animated.timing(x, {
+                duration: 660,
+                easing: ease,
+                toValue: to.x * unit,
+                useNativeDriver: true
+              }),
+              Animated.timing(y, {
+                duration: 660,
+                easing: ease,
+                toValue: to.y * unit,
+                useNativeDriver: true
+              })
+            ]),
+            Animated.delay(90),
+            Animated.timing(press, { duration: 110, toValue: 0.88, useNativeDriver: true }),
+            Animated.timing(press, { duration: 110, toValue: 1, useNativeDriver: true }),
+            Animated.delay(130)
+          ])
+        })
+        running = Animated.loop(Animated.sequence(legs))
+        running.start()
+      })
+
+    return () => {
+      cancelled = true
+      running?.stop()
+    }
+  }, [press, unit, x, y])
+
+  return (
+    <Animated.View
+      style={{ height: size, transform: [{ translateX: x }, { translateY: y }], width: size }}
+    >
+      <Animated.View style={[StyleSheet.absoluteFill, { transform: [{ scale: press }] }]}>
+        <Svg height={size} viewBox="0 0 100 100" width={size}>
+          <G transform="translate(13 11)">
+            <Path d={POINTER} fill={color.value} stroke={color.value} strokeLinejoin="round" strokeWidth={4} />
+          </G>
+        </Svg>
+      </Animated.View>
+      <View style={{ left: 35 * unit, position: 'absolute', top: 35 * unit }}>
+        <FaceDrawing mood="computer" size={56 * unit} style={style} />
+      </View>
+    </Animated.View>
   )
 }
 

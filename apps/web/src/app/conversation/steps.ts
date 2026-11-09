@@ -341,12 +341,13 @@ export function activityLabel(call: ToolCall, name: string): string {
 /** Tools that look for something; the face searches with them. */
 const SEARCHING = new Set(['search_files', 'session_search', 'web_search', 'x_search'])
 
-/** The face a bot wears while it works: thinking, searching, writing, or working. */
-export type LiveMood = 'searching' | 'thinking' | 'working' | 'writing'
+/** The face a bot wears while it works: thinking, searching, writing, working, or on the computer. */
+export type LiveMood = 'computer' | 'searching' | 'thinking' | 'working' | 'writing'
 
 /**
  * The face a bot wears over a message while it streams: thinking before
- * anything happens, searching or working while a step runs, writing while
+ * anything happens, searching, working or a pointer on the computer while a
+ * step runs, writing while
  * its words stream. None once the message is done.
  */
 export function liveMood(message: Message): LiveMood | undefined {
@@ -360,7 +361,11 @@ export function liveMood(message: Message): LiveMood | undefined {
   )
 
   if (running && !message.checking) {
-    return SEARCHING.has(running.name) ? 'searching' : 'working'
+    return running.name === 'computer_use'
+      ? 'computer'
+      : SEARCHING.has(running.name)
+        ? 'searching'
+        : 'working'
   }
 
   if (message.checking || message.activity) {

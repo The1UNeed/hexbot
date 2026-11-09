@@ -126,6 +126,9 @@ describe('liveMood', () => {
     expect(liveMood({ ...turn, toolCalls: [call({ name: 'web_search', status: 'ok' })] })).toBe(
       'working'
     )
+    expect(
+      liveMood({ ...turn, toolCalls: [call({ name: 'computer_use', status: 'running' })] })
+    ).toBe('computer')
     expect(liveMood({ ...turn, text: 'Here is the result.' })).toBe('writing')
     expect(liveMood({ ...turn, text: 'Here is the result.', streaming: false })).toBeUndefined()
   })

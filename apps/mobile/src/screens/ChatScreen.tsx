@@ -83,7 +83,8 @@ export interface ChatScreenProps {
   /** The transcript, oldest first. */
   items: ChatItem[]
   /** A bot is working but has not written anything yet. */
-  waiting?: { label?: string | null; who?: FaceSource | null } | null
+  /** `computer`: the bot acts on the bots' computer, so its face is a moving pointer. */
+  waiting?: { computer?: boolean; label?: string | null; who?: FaceSource | null } | null
   /** A turn is running; the composer offers Stop, which becomes Send once there is text. */
   busy?: boolean
 
@@ -394,6 +395,7 @@ function ChatBody(props: ChatScreenProps) {
     [onRecall, recallId, renderMessageText]
   )
   const waitingLabel = waiting?.label
+  const waitingComputer = !!waiting?.computer
   const waitingWho = waiting?.who ?? (room ? null : fallbackFace)
   const renderItem = useCallback(
     ({ item: { entry, continued } }: ListRenderItemInfo<ListEntry>) => {
@@ -411,7 +413,11 @@ function ChatBody(props: ChatScreenProps) {
           onOpenVisual={entry.kind === 'visual' ? onOpenVisual : undefined}
           waitingLabel={entry.kind === 'waiting' ? waitingLabel : undefined}
           waitingWho={entry.kind === 'waiting' ? waitingWho : undefined}
-          mood={entry.kind === 'waiting' ? emotion : undefined}
+          mood={
+            entry.kind === 'waiting'
+              ? (emotion ?? (waitingComputer ? 'computer' : undefined))
+              : undefined
+          }
         />
       )
       return entry.id === flash?.id ? (
@@ -435,6 +441,7 @@ function ChatBody(props: ChatScreenProps) {
       onOpenVisual,
       waitingLabel,
       waitingWho,
+      waitingComputer,
       emotion
     ]
   )

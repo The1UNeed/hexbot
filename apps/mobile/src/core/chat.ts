@@ -196,6 +196,7 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
           {
             id: String(p.tool_id ?? `tool-${state.tools.length}`),
             name: String(p.name ?? p.tool_name ?? 'tool'),
+            ...(typeof p.context === 'string' && { action: p.context }),
             args: parseArgs(p.args ?? p.args_text),
             detail: '',
             status: 'running'

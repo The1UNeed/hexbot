@@ -48,6 +48,8 @@ export interface ConnectDaemon {
 export interface ChatTool {
   id: string
   name: string
+  /** What the step does, as the daemon names it: a `computer_use` action such as `click`. */
+  action?: string
   args: unknown
   detail: string
   status: 'running' | 'ok' | 'error'

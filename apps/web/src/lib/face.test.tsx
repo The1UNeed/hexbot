@@ -195,6 +195,27 @@ describe('original faces', () => {
     vi.useRealTimers()
   })
 
+  it('rides beside a moving pointer while the bot uses the computer', () => {
+    vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'cancelAnimationFrame', 'performance'] })
+    const { container, rerender } = render(<LiveFace color="pink" eyes="white" mood="working" />)
+    const part = (name: string) => container.querySelector(`[data-part="${name}"]`)!
+    expect(part('pointer')).toHaveAttribute('display', 'none')
+    rerender(<LiveFace color="pink" eyes="white" mood="computer" />)
+    act(() => vi.advanceTimersByTime(1000))
+    expect(part('body')).toHaveAttribute('display', 'inline')
+    expect(part('pointer')).toHaveAttribute('display', 'inline')
+    const pointer = part('pointer').getAttribute('transform')
+    const body = part('body').getAttribute('transform')
+    act(() => vi.advanceTimersByTime(500))
+    expect(part('pointer').getAttribute('transform')).not.toBe(pointer)
+    expect(part('body').getAttribute('transform')).not.toBe(body)
+    rerender(<LiveFace color="pink" eyes="white" mood="working" />)
+    act(() => vi.advanceTimersByTime(1000))
+    expect(part('pointer')).toHaveAttribute('display', 'none')
+    expect(part('body')).toHaveAttribute('transform', restFrame('working').body)
+    vi.useRealTimers()
+  })
+
   it('unfolds for an emotion, and celebrates with a hop, a turn and sparks', () => {
     vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'cancelAnimationFrame', 'performance'] })
     const { container, rerender } = render(<LiveFace color="pink" eyes="white" mood="thinking" />)
