@@ -284,7 +284,6 @@ fn select(home: &Path, source: &Path, manifest: &Value) -> Result<PathBuf> {
     fs::create_dir_all(home)?;
     let native = services::native_directory(home)?;
     let source = source.canonicalize()?;
-    verify_bytes(&source, manifest)?;
     if native.starts_with(&source) {
         return Err(Error::new(
             5243,

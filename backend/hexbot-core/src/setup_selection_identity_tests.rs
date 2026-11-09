@@ -14,6 +14,16 @@ fn healthy_identity_is_retained(version: &str) {
     let executable = select(home.path(), source.path(), &original).unwrap();
     let record = home.path().join("runtime/native-current.json");
     let before = fs::read(&record).unwrap();
+    // The public entrypoint validates its source even when a healthy selection
+    // would otherwise be retained without staging that source.
+    let (corrupt, corrupt_manifest) = bundle(version, 200);
+    fs::write(corrupt.path().join("node"), "corrupt source").unwrap();
+    assert!(
+        effective_manifest(corrupt.path(), corrupt_manifest)
+            .and_then(|manifest| select(home.path(), corrupt.path(), &manifest))
+            .is_err()
+    );
+    assert_eq!(fs::read(&record).unwrap(), before);
     // Exact healthy reuse does not publish a new immutable directory or record.
     assert_eq!(
         select(home.path(), source.path(), &original).unwrap(),
