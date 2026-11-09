@@ -355,6 +355,39 @@ test('each new turn restores primary and uses live fallback without changing pro
   await f.handlers.agent_before_settle({outcome:'error'},f.ctx);
   assert.equal(f.ctx.model.id,'replacement');
 });
+test('fast mode asks each provider its own way, from the next run, and is billed at its price', async t => {
+  const f = fixture(t, 'manual', [], {provider:'anthropic'});
+  f.ctx.model = {provider:'anthropic', id:'primary', api:'anthropic-messages'};
+  const request = payload => f.handlers.before_provider_request({payload}, f.ctx);
+  await f.handlers.before_agent_start({}, f.ctx);
+  assert.equal(await request({model:'primary'}), undefined);
+  // The daemon turns it on; the run already going keeps its speed until the next
+  // one, even after a tool gate reads the new settings.
+  f.settings.fast = true;
+  await f.gate('read', {path:f.home});
+  assert.equal(await request({model:'primary'}), undefined);
+  await f.handlers.before_agent_start({}, f.ctx);
+  assert.deepEqual(await request({model:'primary', betas:['b']}), {model:'primary', betas:['b'], speed:'fast'});
+  // Pi prices the reply at the standard rate; a reply that ran fast costs twice that.
+  f.handlers.provider_stream_event({api:'anthropic-messages', data:{type:'message_delta', usage:{output_tokens:5, speed:'fast'}}});
+  const usage = {input:10, output:5, cost:{input:1, output:2, cacheRead:0.5, cacheWrite:0, total:3.5}};
+  const billed = f.handlers.message_end({message:{role:'assistant', usage}});
+  assert.deepEqual(billed.message.usage.cost, {input:2, output:4, cacheRead:1, cacheWrite:0, total:7});
+  assert.equal(f.handlers.message_end({message:{role:'assistant', usage}}), undefined, 'billed once');
+  // A reply at the standard speed is billed as Pi priced it.
+  await request({model:'primary'});
+  f.handlers.provider_stream_event({api:'anthropic-messages', data:{type:'message_start', message:{usage:{speed:'standard'}}}});
+  assert.equal(f.handlers.message_end({message:{role:'assistant', usage}}), undefined);
+  // ChatGPT takes its priority tier; a fallback model runs at its standard speed.
+  f.ctx.model = {provider:'openai-codex', id:'primary', api:'openai-codex-responses'};
+  assert.deepEqual(await request({model:'primary'}), {model:'primary', service_tier:'priority'});
+  f.ctx.model = {provider:'anthropic', id:'fallback', api:'anthropic-messages'};
+  assert.equal(await request({model:'fallback'}), undefined);
+  // Providers the daemon adapts get the fast request to adapt.
+  f.ctx.model = {provider:'openrouter', id:'primary', api:'openai-completions'};
+  await request({model:'primary'});
+  assert.deepEqual(f.requests.at(-1).args.payload, {model:'primary'});
+});
 test('heartbeat messages join the next turn after the user message, once, without touching the prompt', async t => {
   const f = fixture(t);
   const input = f.ctx.ui.input;

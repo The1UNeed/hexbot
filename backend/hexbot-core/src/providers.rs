@@ -845,6 +845,8 @@ async fn limited_json(response: reqwest::Response) -> Result<Value> {
 
 /// Reasoning levels providers report in their live lists, by provider and model.
 const LIVE_LEVELS: &str = "live_model_levels.json";
+/// Models a provider's live list offers a Fast tier for, by provider.
+const LIVE_FAST: &str = "live_model_fast.json";
 /// Codex hides models from clients older than this. Hexbot drives every listed
 /// model through Pi, so it asks for the full list.
 const CODEX_CLIENT_VERSION: &str = "99.0.0";
@@ -958,6 +960,7 @@ async fn codex_models(home: &Path, base: &str) -> Result<(Vec<String>, Value)> {
     let data = provider_json(req).await?;
     let mut ids = vec![];
     let mut levels = json!({});
+    let mut fast = vec![];
     for model in data["models"].as_array().into_iter().flatten() {
         let Some(id) = model["slug"].as_str() else {
             continue;
@@ -966,6 +969,13 @@ async fn codex_models(home: &Path, base: &str) -> Result<(Vec<String>, Value)> {
             continue;
         }
         ids.push(id.to_owned());
+        // ChatGPT names its priority tier Fast and lists it per model.
+        if model["service_tiers"]
+            .as_array()
+            .is_some_and(|tiers| tiers.iter().any(|tier| tier["id"] == "priority"))
+        {
+            fast.push(id.to_owned());
+        }
         if let Some(supported) = model["supported_reasoning_levels"].as_array() {
             let efforts = supported
                 .iter()
@@ -984,7 +994,27 @@ async fn codex_models(home: &Path, base: &str) -> Result<(Vec<String>, Value)> {
     let mut saved = read_json(&path).unwrap_or_else(|_| json!({}));
     saved["openai-codex"] = levels.clone();
     write_json(&path, &saved)?;
+    let path = home.join(LIVE_FAST);
+    let mut saved = read_json(&path).unwrap_or_else(|_| json!({}));
+    saved["openai-codex"] = json!(fast);
+    write_json(&path, &saved)?;
     Ok((ids, levels))
+}
+/// Whether a model runs in fast mode: the same model, faster, at a higher price.
+/// Anthropic offers it on Claude Opus 5.5 (`speed: "fast"`); ChatGPT marks each
+/// model with a Fast tier in its live list (`service_tier: "priority"`).
+fn fast_in(saved: &Value, provider: &str, model: &str) -> bool {
+    match canonical_provider(provider).as_str() {
+        "anthropic" => model == "claude-opus-5-5",
+        "openai-codex" => saved["openai-codex"]
+            .as_array()
+            .is_some_and(|ids| ids.iter().any(|id| id == model)),
+        _ => false,
+    }
+}
+pub fn supports_fast(home: &Path, provider: &str, model: &str) -> bool {
+    let saved = read_json(&home.join(LIVE_FAST)).unwrap_or_else(|_| json!({}));
+    fast_in(&saved, provider, model)
 }
 fn strings(value: &Value) -> Option<Vec<String>> {
     value.as_array().map(|items| {
@@ -1188,7 +1218,7 @@ pub async fn list_models(home: &Path, p: &Value) -> Result<Value> {
         }
     }
     // A recommendation the provider no longer lists cannot be chosen.
-    let curated = catalog()["curated"]
+    let mut curated = catalog()["curated"]
         .as_array()
         .unwrap()
         .iter()
@@ -1210,6 +1240,12 @@ pub async fn list_models(home: &Path, p: &Value) -> Result<Value> {
             Some(row)
         })
         .collect::<Vec<_>>();
+    let fast = read_json(&home.join(LIVE_FAST)).unwrap_or_else(|_| json!({}));
+    for row in all.iter_mut().chain(curated.iter_mut()) {
+        if fast_in(&fast, string(row, "provider"), string(row, "id")) {
+            row["fast"] = json!(true)
+        }
+    }
     all.sort_by_key(|v| string(v, "label").to_lowercase());
     let mut output = json!({"curated":curated,"all_source":if all.is_empty(){"none"}else if live{"mixed"}else{"catalog"},"all":all});
     if !errors.is_empty() {
@@ -2663,6 +2699,21 @@ mod migration_tests {
             ["low", "high"]
         );
         assert_eq!(levels("opencode-go", "unknown-model", &none), None);
+    }
+    #[test]
+    fn fast_mode_is_offered_on_opus_5_5_and_on_chatgpt_models_with_a_fast_tier() {
+        let saved = json!({"openai-codex":["gpt-6-astra"]});
+        assert!(fast_in(&saved, "anthropic", "claude-opus-5-5"));
+        assert!(fast_in(&saved, "claude", "claude-opus-5-5"));
+        // Opus 5 needs a waitlist and Opus 4.8 loses it; neither is offered.
+        assert!(!fast_in(&saved, "anthropic", "claude-opus-5"));
+        assert!(!fast_in(&saved, "anthropic", "claude-opus-4-8"));
+        assert!(fast_in(&saved, "openai-codex", "gpt-6-astra"));
+        assert!(!fast_in(&saved, "openai-codex", "gpt-6-luna"));
+        // The API key route has no Fast tier, and nor does a model through another provider.
+        assert!(!fast_in(&saved, "openai-api", "gpt-6-astra"));
+        assert!(!fast_in(&saved, "openrouter", "anthropic/claude-opus-5-5"));
+        assert!(!fast_in(&json!({}), "openai-codex", "gpt-6-astra"));
     }
     #[test]
     fn reads_credential_pool_and_hexbot_anthropic_login_without_changing_imports() {

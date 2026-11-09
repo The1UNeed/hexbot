@@ -68,7 +68,7 @@ Changes reach the chat at different times:
 
 | Change                                         | When the chat has it                                                                                                              |
 | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| Model or reasoning level                       | From your next message.                                                                                                           |
+| Model, reasoning level, or fast mode           | From your next message.                                                                                                           |
 | Tools, connectors, or MCP servers              | From your next message. That one reply rereads the conversation without the provider's prompt cache, so it costs more than usual. |
 | Soul, memory, About you, skills, and teammates | After the chat next summarises older messages, as described below.                                                                |
 

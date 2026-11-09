@@ -301,7 +301,7 @@ mutation methods check ownership.
 ### Bots
 
 Bot shape: `{name, display_name, title, description, primary, persona, tools: [string], available_tools: [string], skills: [string],
-provider, provider_connected | null, model, reasoning_effort | null, avatar: {mime, data} | null, face: {shape, color} | null, kept_face: {shape, color} | null,
+provider, provider_connected | null, model, reasoning_effort | null, fast, avatar: {mime, data} | null, face: {shape, color} | null, kept_face: {shape, color} | null,
 created_at, updated_at, last_activity_at,
 owner_id, dream_enabled, notify, approval_mode, workdir | null,
 soul_char_limit | null, memory_char_limit | null, soul_cap, memory_cap,
@@ -379,6 +379,15 @@ already running, a message queued behind it, and files already attached
 finish on the model they started with. Switching models costs the cached
 prefix once. A section on something else, like a scheduled job with
 its own model or `reasoning_effort`, keeps it.
+`fast` turns on fast mode, stored as `model.fast: true` in the profile's
+`config.yaml` (false removes it). It applies only where the section's model
+offers it (`Model.fast`), and never in a scheduled job, a heartbeat, or their
+delegates. Each section reads it as a run starts, so it moves no section: the
+extension adds `speed: "fast"` to an Anthropic request and `service_tier:
+"priority"` to a ChatGPT one, and never to a fallback model. Anthropic replies
+that ran fast are billed at twice the standard price; Pi prices ChatGPT's tier
+from the reply. Requests at a new speed do not share the cached prefix, so the
+first reply after a change costs it once.
 `face` is the shape and colour of the bot's face (ids from
 `apps/web/src/lib/avatar-builder.ts`, such as `{shape: "pill", color:
 "orange"}`), stored in the profile's `assets/face.json`. Every bot without a
@@ -439,7 +448,7 @@ others (`DESIGN.md`, "The primary bot"). There is at most one per owner.
   once they have navigated to the section. Refused (4243) once the section
   has messages.
 - `hexbot.bots.update {name, display_name?, title?, description?, persona?,
-  provider?, model?, reasoning_effort?, avatar?, face?, dream_enabled?,
+  provider?, model?, reasoning_effort?, fast?, avatar?, face?, dream_enabled?,
   tools?, skills?, notify?, approval_mode?, workdir?, soul_char_limit?,
   memory_char_limit?}` →
   `{bot: Bot}`. A limit is a whole number from 500 to 20000, or null to
@@ -1465,7 +1474,7 @@ and [provider setup guide](https://hexbot.app/docs/providers/).
   Disconnect removes the provider from those copies, including bots that are idle.
 - `hexbot.models.list {provider?, include_unconfigured?, refresh?}` →
   `{curated: [Model], all: [Model], all_source, error?}` with
-  `Model = {provider, id, label, context?, input_cost?, output_cost?, reasoning_levels?}`,
+  `Model = {provider, id, label, context?, input_cost?, output_cost?, reasoning_levels?, fast?}`,
   built from `model.options`. Ids come from the profile list and the pinned
   Pi catalog. Naming a configured provider also asks it for its current list
   when that list holds only models an agent can run: OpenAI Codex (its
@@ -1474,7 +1483,10 @@ and [provider setup guide](https://hexbot.app/docs/providers/).
   catalog of its own. Other providers are asked only with `refresh: true`. `reasoning_levels` are the thinking levels both Pi and the provider
   accept, in Pi's order, or whichever of them knows the model; it is absent
   when neither does. Levels a provider reports for a model newer than the
-  pinned Pi are kept in `live_model_levels.json` and given to Pi. A
+  pinned Pi are kept in `live_model_levels.json` and given to Pi. `fast` is
+  true on a model that runs in fast mode: Claude Opus 5.5 on Anthropic, and
+  each OpenAI Codex model whose live list offers the priority tier ChatGPT
+  calls Fast, kept in `live_model_fast.json`. A
   recommended model the provider no longer lists is left out of `curated`. `provider` accepts the friendly aliases
   `openai` (→ `openai-api`), `chatgpt` (→ `openai-codex`), `claude`,
   `grok`, `glm`. `include_unconfigured` defaults to true when the named

@@ -3652,6 +3652,18 @@ impl Runtime {
             "SELECT EXISTS(SELECT 1 FROM sections WHERE id=?) OR EXISTS(SELECT 1 FROM room_sessions WHERE stored_session_id=?)",
             params![s.stored,s.stored], |r| r.get::<_,bool>(0)
         )?);
+        // Fast mode is for conversations someone waits on. Scheduled jobs and
+        // heartbeats, and their delegates, run at the standard price.
+        let bot_cfg = common::read_config(&self.home.join("profiles").join(&s.bot))?;
+        saved["fast"] = json!(
+            bot_cfg["model"]["fast"] == true
+                && !saved["job"].is_string()
+                && crate::providers::supports_fast(
+                    &self.home,
+                    saved["provider"].as_str().unwrap_or(""),
+                    saved["model"].as_str().unwrap_or(""),
+                )
+        );
         Ok(saved)
     }
 
@@ -6371,6 +6383,58 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
         let workspace = json!(fs::canonicalize(home.workspace()).unwrap());
         assert_eq!(config["cwd"], workspace);
         assert_eq!(runtime.session_settings(&s).unwrap()["cwd"], workspace);
+    }
+    /// Fast mode follows the bot's switch, on a model that offers it, where someone waits.
+    #[tokio::test]
+    async fn fast_mode_runs_in_conversations_on_models_that_offer_it() {
+        let (home, runtime, _) = setup();
+        let config = home.path().join("profiles/owl/config.yaml");
+        fs::write(
+            &config,
+            "model:\n  provider: anthropic\n  default: claude-opus-5-5\n  fast: true\ntools:\n  enabled_toolsets: []\n",
+        )
+        .unwrap();
+        let sections = [
+            (
+                "chat",
+                json!({"provider":"anthropic","model":"claude-opus-5-5"}),
+            ),
+            (
+                "job",
+                json!({"provider":"anthropic","model":"claude-opus-5-5","job":"j1"}),
+            ),
+            (
+                "older",
+                json!({"provider":"anthropic","model":"claude-sonnet-5-5"}),
+            ),
+        ];
+        for (id, options) in &sections {
+            let mut options = options.clone();
+            options["tools"] = json!([]);
+            options["enabledToolsets"] = json!([]);
+            store::open(home.path())
+                .unwrap()
+                .execute(
+                    "INSERT INTO native_sessions(stored_id,owner,bot,prompt,options) VALUES(?,'alice','owl','frozen',?)",
+                    params![id, options.to_string()],
+                )
+                .unwrap();
+        }
+        let fast = |s: &Arc<Live>| runtime.session_settings(s).unwrap()["fast"].clone();
+        let chat = runtime.open_session("alice", "owl", "chat").await.unwrap();
+        let job = runtime.open_session("alice", "owl", "job").await.unwrap();
+        let older = runtime.open_session("alice", "owl", "older").await.unwrap();
+        assert_eq!(fast(&chat), true);
+        assert_eq!(fast(&job), false);
+        assert_eq!(fast(&older), false);
+        // Turning it off applies from the next run, with no restart.
+        fs::write(
+            &config,
+            "model:\n  provider: anthropic\n  default: claude-opus-5-5\ntools:\n  enabled_toolsets: []\n",
+        )
+        .unwrap();
+        assert_eq!(fast(&chat), false);
+        runtime.shutdown().await;
     }
     #[test]
     fn sessions_take_the_bot_mode_or_their_rooms() {

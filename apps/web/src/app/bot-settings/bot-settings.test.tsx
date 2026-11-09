@@ -440,6 +440,27 @@ describe('model tab', () => {
     fireEvent.click(high)
     expect(save).toHaveBeenCalledWith({ reasoning_effort: 'high' })
   })
+
+  it('offers fast mode only on a model that has it, in both directions', async () => {
+    const opus = { fast: true, id: 'claude-opus-5-5', label: 'Claude Opus 5.5', provider: 'anthropic' }
+    const sonnet = { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5', provider: 'anthropic' }
+    fakeRpc({
+      'hexbot.models.list': () => ({ all: [sonnet], curated: [opus] }),
+      'hexbot.providers.list': () => ({ providers: [] })
+    })
+    const save = vi.fn()
+    const onOpus = { ...bot, model: opus.id, provider: 'anthropic' }
+    const { rerender } = render(<ModelTab bot={onOpus} onSave={save} />)
+    const fast = await screen.findByRole('switch', { name: 'Fast mode' })
+    expect(fast).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(fast)
+    expect(save).toHaveBeenLastCalledWith({ fast: true })
+    rerender(<ModelTab bot={{ ...onOpus, fast: true }} onSave={save} />)
+    fireEvent.click(screen.getByRole('switch', { name: 'Fast mode' }))
+    expect(save).toHaveBeenLastCalledWith({ fast: false })
+    rerender(<ModelTab bot={{ ...onOpus, model: sonnet.id }} onSave={save} />)
+    expect(screen.queryByRole('switch', { name: 'Fast mode' })).toBeNull()
+  })
 })
 
 describe('connectors page', () => {

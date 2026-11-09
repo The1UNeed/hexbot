@@ -24,7 +24,7 @@ import {
   useTheme
 } from './ui'
 import { Licenses } from './Licenses'
-import { ModelPill } from './screens/ModelMenu'
+import { ModelPill, useCurrentModel } from './screens/ModelMenu'
 import {
   type Bot,
   type Connector,
@@ -375,6 +375,12 @@ export function Management({
     ? (mobile.rooms.find(r => r.id === panel.room!.id) ?? panel.room)
     : undefined
   const kind = panel?.kind ?? ''
+  // The bot's chosen model, for what it offers beyond its levels.
+  const chosenModel = useCurrentModel(mobile.models, {
+    provider: str(values.provider),
+    model: str(values.model),
+    reasoning: ''
+  })
   // A new bot's face, kept with its draft; typing a name never changes it.
   const newFace: FaceStyle | null =
     kind === 'bot-create' && values.face_shape && values.face_color
@@ -463,6 +469,7 @@ export function Management({
             provider: bot.provider ?? '',
             model: bot.model ?? '',
             reasoning_effort: bot.reasoning_effort ?? '',
+            fast: bot.fast ?? false,
             approval_mode: bot.approval_mode ?? 'inherit',
             workdir: bot.workdir ?? '',
             dream_enabled: bot.dream_enabled,
@@ -939,6 +946,8 @@ export function Management({
                 workdir: values.workdir || null,
                 dream_enabled: values.dream_enabled,
                 notify: values.notify,
+                // Only when changed: a daemon from before fast mode refuses the field.
+                ...(values.fast !== (bot.fast ?? false) ? { fast: values.fast === true } : {}),
                 // Only a limit the user changed: a daemon from before the limits
                 // refuses them, and a limit the field can't show is kept.
                 ...Object.fromEntries(
@@ -1054,7 +1063,14 @@ export function Management({
               Number(mobile.settings?.soul_char_limit) || 4000
             )
           )}
-          <Group title="Model" footer="Applies from the next message.">
+          <Group
+            title="Model"
+            footer={
+              bot && chosenModel?.fast
+                ? 'Applies from the next message. Fast mode answers faster and costs more for each token; scheduled jobs and the heartbeat keep the standard speed.'
+                : 'Applies from the next message.'
+            }
+          >
             <View style={styles.inset}>
               <ModelPill
                 disabled={busy || mobile.connection !== 'connected'}
@@ -1076,6 +1092,7 @@ export function Management({
                 }}
               />
             </View>
+            {bot && chosenModel?.fast ? toggle('fast', 'Fast mode') : null}
           </Group>
           {bot ? (
             <>

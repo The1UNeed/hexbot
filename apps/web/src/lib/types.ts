@@ -221,6 +221,8 @@ export interface Bot {
   provider_connected?: boolean | null
   /** How hard the model thinks; null means Pi's default, medium. */
   reasoning_effort?: null | ReasoningEffort
+  /** Fast mode, where the model offers it (`ModelOption.fast`). Older daemons leave it out. */
+  fast?: boolean
   sections_recent: Section[]
   sections_total: number
   skills: string[]
@@ -326,6 +328,7 @@ export type BotUpdatePatch = Partial<Omit<BotCreateInput, 'avatar' | 'name'>> & 
   approval_mode?: BotApprovalMode
   avatar?: null | string
   dream_enabled?: boolean
+  fast?: boolean
   notify?: boolean
   workdir?: null | string
   soul_char_limit?: null | number
@@ -632,6 +635,8 @@ export type MessageRole = 'assistant' | 'system' | 'tool' | 'user'
 
 export interface ModelOption {
   context?: number
+  /** The model can run in fast mode: the same model, faster, at a higher price. */
+  fast?: boolean
   id: string
   input_cost?: number
   label: string
