@@ -109,7 +109,13 @@ fn setup(base: &str) -> tempfile::TempDir {
     let home = tempfile::tempdir().unwrap();
     db::migrate(home.path()).unwrap();
     db::open(home.path()).unwrap().execute_batch("INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0),('bob','Bob','member',0);INSERT INTO bots(name,owner_id) VALUES('owl','alice'),('fox','bob');").unwrap();
-    fs::write(home.path().join(".env"),format!("XAI_API_KEY='root-x-key'\nXAI_BASE_URL='{base}'\nHEXBOT_X_API_BASE_URL='{base}'\n")).unwrap();
+    fs::write(
+        home.path().join(".env"),
+        format!(
+            "XAI_API_KEY='root-x-key'\nXAI_BASE_URL='{base}'\nHEXBOT_X_API_BASE_URL='{base}'\n"
+        ),
+    )
+    .unwrap();
     for bot in ["owl", "fox"] {
         let profile = home.path().join("profiles").join(bot);
         fs::create_dir_all(&profile).unwrap();
@@ -365,7 +371,10 @@ async fn x_api_search_sends_the_query_with_handles_and_returns_posts() {
     let home = setup(&mock.base);
     fs::write(
         home.path().join(".env"),
-        format!("X_BEARER_TOKEN='root-x-bearer'\nHEXBOT_X_API_BASE_URL='{}'\n", mock.base),
+        format!(
+            "X_BEARER_TOKEN='root-x-bearer'\nHEXBOT_X_API_BASE_URL='{}'\n",
+            mock.base
+        ),
     )
     .unwrap();
     fs::write(home.path().join("profiles/owl/.env"), "").unwrap();
@@ -430,11 +439,18 @@ async fn x_api_search_goes_to_the_archive_for_old_dates_and_explains_refusals() 
     let home = setup(&mock.base);
     fs::write(
         home.path().join(".env"),
-        format!("X_BEARER_TOKEN='root-x-bearer'\nHEXBOT_X_API_BASE_URL='{}'\n", mock.base),
+        format!(
+            "X_BEARER_TOKEN='root-x-bearer'\nHEXBOT_X_API_BASE_URL='{}'\n",
+            mock.base
+        ),
     )
     .unwrap();
     choose(home.path(), "x_api");
-    mock.reply("GET", "/2/tweets/search/all", json!({"meta":{"result_count":0}}));
+    mock.reply(
+        "GET",
+        "/2/tweets/search/all",
+        json!({"meta":{"result_count":0}}),
+    );
     let out = call(
         home.path(),
         "owl",
@@ -450,7 +466,10 @@ async fn x_api_search_goes_to_the_archive_for_old_dates_and_explains_refusals() 
     assert!(path.contains("start_time=2024-01-01T00%3A00%3A00Z"));
     assert!(path.contains("end_time=2024-02-01T00%3A00%3A00Z"));
     // The exclusion covers both sides of the OR.
-    assert!(path.contains("query=%28launch+OR+release%29+-from%3Aspam"), "{path}");
+    assert!(
+        path.contains("query=%28launch+OR+release%29+-from%3Aspam"),
+        "{path}"
+    );
     for (status, text) in [
         (StatusCode::UNAUTHORIZED, "X refused the bearer token"),
         (StatusCode::PAYMENT_REQUIRED, "no credits left"),
@@ -496,6 +515,10 @@ async fn x_search_uses_the_chosen_xai_credential() {
         .collect::<Vec<_>>();
     assert_eq!(
         auth,
-        ["Bearer owl-x-key", "Bearer owl-oauth-token", "Bearer owl-x-key"]
+        [
+            "Bearer owl-x-key",
+            "Bearer owl-oauth-token",
+            "Bearer owl-x-key"
+        ]
     );
 }

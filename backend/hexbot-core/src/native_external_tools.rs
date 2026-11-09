@@ -343,7 +343,10 @@ async fn x_api_search(
         ("user.fields", "name,username,verified".to_owned()),
     ];
     if let Some(from) = s.from {
-        params.push(("start_time", day(from).format("%Y-%m-%dT%H:%M:%SZ").to_string()));
+        params.push((
+            "start_time",
+            day(from).format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        ));
     }
     // X wants the end at least ten seconds in the past; a later one is now.
     if let Some(to) = s.to

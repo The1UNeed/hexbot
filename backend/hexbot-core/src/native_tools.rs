@@ -2902,7 +2902,11 @@ mod safety_tests {
                 [json!(cwd).to_string()],
             )
             .unwrap();
-        common::write_config(home.path(), &json!({"tools":{"enabled_toolsets":["code_execution","tts","browser","web"]}})).unwrap();
+        common::write_config(
+            home.path(),
+            &json!({"tools":{"enabled_toolsets":["code_execution","tts","browser","web"]}}),
+        )
+        .unwrap();
         home
     }
     #[cfg(target_os = "linux")]

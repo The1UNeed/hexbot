@@ -122,17 +122,16 @@ async fn vision_executes_the_configured_http_service() {
     let records = requests.clone();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let router = Router::new()
-        .route(
-            "/chat/completions",
-            post(move |headers: HeaderMap, Json(payload): Json<Value>| {
-                let records = records.clone();
-                async move {
-                    records.lock().unwrap().push((headers, payload));
-                    Json(json!({"choices":[{"message":{"content":"A red square"}}]}))
-                }
-            }),
-        );
+    let router = Router::new().route(
+        "/chat/completions",
+        post(move |headers: HeaderMap, Json(payload): Json<Value>| {
+            let records = records.clone();
+            async move {
+                records.lock().unwrap().push((headers, payload));
+                Json(json!({"choices":[{"message":{"content":"A red square"}}]}))
+            }
+        }),
+    );
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let h = home(
         json!({"tools":{"enabled_toolsets":["vision"]},"auxiliary":{"vision":{"provider":"openai","model":"vision-test","base_url":format!("http://{address}")}}}),
@@ -202,7 +201,16 @@ async fn vision_crop_sends_actual_image_bytes() {
     let vision_records = records.clone();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let router=Router::new().route("/chat/completions",post(move|headers:HeaderMap,Json(payload):Json<Value>|{let records=vision_records.clone();async move{records.lock().unwrap().push((headers,payload));Json(json!({"choices":[{"message":{"content":"Cropped image"}}]}))}}));
+    let router = Router::new().route(
+        "/chat/completions",
+        post(move |headers: HeaderMap, Json(payload): Json<Value>| {
+            let records = vision_records.clone();
+            async move {
+                records.lock().unwrap().push((headers, payload));
+                Json(json!({"choices":[{"message":{"content":"Cropped image"}}]}))
+            }
+        }),
+    );
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let h = home(
         json!({"tools":{"enabled_toolsets":["vision"]},"auxiliary":{"vision":{"provider":"openai","base_url":format!("http://{address}")}}}),
@@ -1404,10 +1412,12 @@ async fn keenable_uses_its_vendor_contract() {
     let web_records = records.clone();
     let router=Router::new().route("/v1/search",post(move|headers:HeaderMap,Json(body):Json<Value>|{let records=web_records.clone();async move{records.lock().unwrap().push((headers,body));Json(json!({"results":[{"url":"https://example.test","title":"Keenable","snippet":"Search snippet"}]}))}})).route("/v1/fetch",axum::routing::get(||async{Json(json!({"content":"Extracted page","title":"Page"}))}));
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let h = home(
-        json!({"tools":{"enabled_toolsets":["web"]},"web":{"backend":"keenable"}}),
-    );
-    std::fs::write(h.path().join(".env"),format!("KEENABLE_API_KEY=web-secret\nKEENABLE_BASE_URL=http://{address}\n")).unwrap();
+    let h = home(json!({"tools":{"enabled_toolsets":["web"]},"web":{"backend":"keenable"}}));
+    std::fs::write(
+        h.path().join(".env"),
+        format!("KEENABLE_API_KEY=web-secret\nKEENABLE_BASE_URL=http://{address}\n"),
+    )
+    .unwrap();
     let search = call(h.path(), "web_search", json!({"query":"selected backend"}))
         .await
         .unwrap();
