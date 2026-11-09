@@ -356,9 +356,13 @@ export function RosterColumn() {
       return
     }
 
+    if (connection.status !== 'connected') {
+      return
+    }
+
     void useSettings.getState().refreshProviders()
     void useSettings.getState().refresh()
-  }, [botDialog])
+  }, [botDialog, connection.connects, connection.daemon?.install_id, connection.status])
 
   useEffect(() => {
     if (!botDialog) {

@@ -6,6 +6,7 @@ import { Select } from '../../components/ui/select'
 import { providerModels } from '../../lib/api'
 import type { Bot, ModelOption } from '../../lib/types'
 import { botsActions } from '../../stores/bots'
+import { useConnection } from '../../stores/connection'
 import { useSettings } from '../../stores/settings'
 import { errorText } from '../bot-settings/shared'
 
@@ -22,6 +23,8 @@ export function providerGone(bot: Bot | undefined): bot is Bot {
 export function ProviderGoneCard({ bot }: { bot: Bot }) {
   const providers = useSettings(state => state.providers)
   const refreshProviders = useSettings(state => state.refreshProviders)
+  const connects = useConnection(state => state.connects)
+  const installId = useConnection(state => state.daemon?.install_id)
   const [provider, setProvider] = useState('')
   const [model, setModel] = useState('')
 
@@ -34,8 +37,12 @@ export function ProviderGoneCard({ bot }: { bot: Bot }) {
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
+    if (useConnection.getState().status !== 'connected') {
+      return
+    }
+
     void refreshProviders()
-  }, [refreshProviders])
+  }, [connects, installId, refreshProviders])
 
   // Each provider is asked for its current list; the daemon falls back to its catalog.
   useEffect(() => {

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { botsUpdate, providerModels, providersList } from '../../lib/api'
 import type { Bot } from '../../lib/types'
+import { useConnection } from '../../stores/connection'
 
 import { providerGone, ProviderGoneCard } from './provider-gone-card'
 
@@ -36,6 +37,7 @@ const bot = {
 
 describe('provider gone card', () => {
   beforeEach(() => {
+    useConnection.setState({ status: 'connected' })
     vi.mocked(providersList).mockResolvedValue({
       providers: [
         {

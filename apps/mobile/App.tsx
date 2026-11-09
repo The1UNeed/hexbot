@@ -887,6 +887,9 @@ function MobileApp({ children }: { children?: ReactNode }) {
     )
   )
   const send = (text: string) => {
+    const generation = conversationGeneration.current
+    const current = () => generation === conversationGeneration.current
+
     const pending = mobile.chat.questions[0]
     if (pending?.questions[0]) {
       if (attachmentData.current.size) {
@@ -903,16 +906,18 @@ function MobileApp({ children }: { children?: ReactNode }) {
       }
       const q = pending.questions[0]
       act(async () => {
-        await mobile.answer(pending.requestId, q.id, encodeAnswer(q.multiSelect, [], text))
-        setDraft('')
+        try {
+          await mobile.answer(pending.requestId, q.id, encodeAnswer(q.multiSelect, [], text))
+          if (current()) setDraft(typed => typed === draft ? '' : typed)
+        } catch (error) {
+          if (current()) throw error
+        }
       })
       return
     }
     // In a chat, a message sent while the bot works cuts its reply off and goes
     // next; rooms queue messages themselves.
     const previous = draft
-    const generation = conversationGeneration.current
-    const current = () => generation === conversationGeneration.current
     const sendingFiles = new Map(attachmentData.current)
     setDraft('')
     act(async () => {

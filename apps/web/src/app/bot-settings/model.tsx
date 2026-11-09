@@ -4,6 +4,7 @@ import { Select } from '../../components/ui/select'
 import { providerModels } from '../../lib/api'
 import { reasoningOptions, runningLevel } from '../../lib/reasoning'
 import type { Bot, ModelOption, ReasoningEffort } from '../../lib/types'
+import { useConnection } from '../../stores/connection'
 import { useSettings } from '../../stores/settings'
 
 import { errorText, Group, Heading, Row, type SaveBot } from './shared'
@@ -17,10 +18,16 @@ export function ModelTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   const [error, setError] = useState<string | null>(null)
   const providerRows = useSettings(state => state.providers)
   const refreshProviders = useSettings(state => state.refreshProviders)
+  const connects = useConnection(state => state.connects)
+  const installId = useConnection(state => state.daemon?.install_id)
 
   useEffect(() => {
+    if (useConnection.getState().status !== 'connected') {
+      return
+    }
+
     void refreshProviders()
-  }, [refreshProviders])
+  }, [connects, installId, refreshProviders])
 
   // Each provider is asked for its current list; the daemon falls back to its catalog.
   useEffect(() => {

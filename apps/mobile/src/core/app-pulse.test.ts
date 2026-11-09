@@ -457,3 +457,64 @@ it('leaves a file selected while a send waits ready for the next message', async
   expect(state.chat!.attachments).toMatchObject([{ name: 'next.txt' }])
   expect(calls('file.attach')).toHaveLength(0)
 })
+
+it.each(['unchanged', 'edited', 'failed'] as const)('a delayed question answer clears only its submitted draft: %s', async kind => {
+  await open('Bot')
+  await screen.findByText('owner history')
+  act(() => state.event({ type: 'clarify.request', session_id: 'live-owner', payload: {
+    request_id: 'question', questions: [{ qid: 'colour', question: 'Colour?' }]
+  } }))
+  let resolve!: (value: unknown) => void
+  let reject!: (error: Error) => void
+  const held = new Promise((yes, no) => { resolve = yes; reject = no })
+  const reply = state.request.getMockImplementation()!
+  state.request.mockImplementation((method: string, params?: Record<string, unknown>) =>
+    method === 'clarify.respond' ? held : reply(method, params))
+  act(() => state.chat!.onDraftChange!('Red'))
+  act(() => state.chat!.onSend('Red'))
+  await waitFor(() => expect(calls('clarify.respond')).toHaveLength(1))
+  if (kind !== 'unchanged') act(() => state.chat!.onDraftChange!('New draft'))
+  await act(async () => {
+    if (kind === 'failed') reject(new Error('Answer failed'))
+    else resolve({})
+    await Promise.resolve()
+  })
+  expect(state.chat!.draft).toBe(kind === 'unchanged' ? '' : 'New draft')
+  expect(state.chat!.error).toBe(kind === 'failed' ? 'Answer failed' : null)
+})
+
+it.each(['resolve', 'reject'] as const)('a delayed question answer that %ss preserves the next conversation draft', async result => {
+  const next = { ...owner, id: 'next', bot: 'yak', live_session_id: 'live-next' }
+  sections.push(next)
+  const reply = state.request.getMockImplementation()!
+  state.request.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+    if (method === 'hexbot.bots.list') return { bots: [bot, { ...bot, name: 'yak', display_name: 'Yak' }] }
+    if (method === 'hexbot.sections.create' && params?.bot === 'yak') return { section: next }
+    return reply(method, params)
+  })
+  const view = renderApp()
+  fireEvent.click(await screen.findByRole('button', { name: 'Bot Owl' }))
+  await screen.findByText('owner history')
+  act(() => state.event({ type: 'clarify.request', session_id: 'live-owner', payload: {
+    request_id: 'question', questions: [{ qid: 'colour', question: 'Colour?' }]
+  } }))
+  let resolve!: (value: unknown) => void
+  let reject!: (error: Error) => void
+  const held = new Promise((yes, no) => { resolve = yes; reject = no })
+  const answer = state.request.getMockImplementation()!
+  state.request.mockImplementation((method: string, params?: Record<string, unknown>) =>
+    method === 'clarify.respond' ? held : answer(method, params))
+  act(() => state.chat!.onSend('Red'))
+  await waitFor(() => expect(calls('clarify.respond')).toHaveLength(1))
+  state.nativeUrl = 'hexbot://bot?name=yak'
+  view.rerender(createElement(App, null, createElement(Routes)))
+  await waitFor(() => expect(state.chat!.title).toBe('Yak'))
+  act(() => state.chat!.onDraftChange!('New chat draft'))
+  await act(async () => {
+    if (result === 'resolve') resolve({})
+    else reject(new Error('Old answer failed'))
+    await Promise.resolve()
+  })
+  expect(state.chat!.draft).toBe('New chat draft')
+  expect(state.chat!.error).toBeNull()
+})

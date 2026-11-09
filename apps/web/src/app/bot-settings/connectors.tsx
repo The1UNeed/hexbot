@@ -34,6 +34,7 @@ const FILTERS: { id: Filter; label: (bot: Bot) => string }[] = [
 
 export function ConnectorsTab({ bot, initialConnector }: { bot: Bot; initialConnector?: string }) {
   const connects = useConnection(state => state.connects)
+  const installId = useConnection(state => state.daemon?.install_id)
   const connectors = useConnectorsForBot(bot.name)
   const loading = useConnectors(state => state.loading)
   const storeError = useConnectors(state => state.error)
@@ -49,7 +50,7 @@ export function ConnectorsTab({ bot, initialConnector }: { bot: Bot; initialConn
   const [error, setError] = useState<string | null>(null)
   useEffect(() => {
     void refresh(bot.name)
-  }, [bot.name, connects, refresh])
+  }, [bot.name, connects, installId, refresh])
   useEffect(() => setSheet(initialConnector ?? null), [initialConnector])
 
   const visible = useMemo(() => {

@@ -58,10 +58,11 @@ export function ComputerSettings(): React.JSX.Element {
   const step = useComputer(state => state.step)
   const configure = useComputer(state => state.configure)
   const connects = useConnection(state => state.connects)
+  const installId = useConnection(state => state.daemon?.install_id)
 
   useEffect(() => {
     void refresh()
-  }, [connects, refresh])
+  }, [connects, installId, refresh])
 
   const busy = status ? BUSY.includes(status.state) : false
   const running = status?.state === 'running'

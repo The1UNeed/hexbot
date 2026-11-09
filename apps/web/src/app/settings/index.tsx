@@ -585,14 +585,19 @@ const idleRow: ProviderRowState = { busy: false, draft: '', open: false, result:
 
 export function ProvidersSettings(): React.JSX.Element {
   const connects = useConnection(state => state.connects)
+  const installId = useConnection(state => state.daemon?.install_id)
   const providers = useSettings(state => state.providers)
   const refresh = useSettings(state => state.refreshProviders)
   const setKey = useSettings(state => state.setProviderKey)
   const clearKey = useSettings(state => state.clearProviderKey)
   const [query, setQuery] = useState('')
   useEffect(() => {
+    if (useConnection.getState().status !== 'connected') {
+      return
+    }
+
     void refresh()
-  }, [connects, refresh])
+  }, [connects, installId, refresh])
 
   const needle = query.trim().toLowerCase()
 
@@ -957,6 +962,8 @@ function ProviderRow({
 }
 
 export function NetworkSettings(): React.JSX.Element {
+  const connects = useConnection(state => state.connects)
+  const installId = useConnection(state => state.daemon?.install_id)
   const network = useSettings(state => state.network)
   const devices = useSettings(state => state.devices)
   const refreshNetwork = useSettings(state => state.refreshNetwork)
@@ -993,7 +1000,7 @@ export function NetworkSettings(): React.JSX.Element {
     void Promise.all([refreshNetwork(), refreshDevices()]).catch(cause =>
       setError(errorText(cause))
     )
-  }, [refreshDevices, refreshNetwork])
+  }, [connects, installId, refreshDevices, refreshNetwork])
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
 

@@ -132,12 +132,13 @@ export function PluginsSettings(): React.JSX.Element {
   const target = useConnection(state => state.target)
   const epoch = useConnection(state => state.epoch)
   const connects = useConnection(state => state.connects)
+  const installId = useConnection(state => state.daemon?.install_id)
   useEffect(() => {
     void refresh()
 
     // Events refresh the list only while this page is open.
     return () => usePlugins.setState({ loaded: false })
-  }, [refresh, target, epoch, connects])
+  }, [refresh, target, epoch, connects, installId])
 
   // A bot that was deleted while it was chosen falls back to every bot.
   const focused = bots.find(bot => bot.name === focus) ?? null

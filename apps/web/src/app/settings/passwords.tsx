@@ -74,12 +74,13 @@ export function PasswordsSettings(): React.JSX.Element {
   const target = useConnection(state => state.target)
   const epoch = useConnection(state => state.epoch)
   const connects = useConnection(state => state.connects)
+  const installId = useConnection(state => state.daemon?.install_id)
   useEffect(() => {
     void refresh()
 
     // Events refresh the list only while this page is open.
     return () => usePasswords.setState({ loaded: false })
-  }, [refresh, target, epoch, connects])
+  }, [refresh, target, epoch, connects, installId])
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase()

@@ -420,6 +420,7 @@ function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   const src = useScreen(running && enabled, false)
   const actor = useActorName(status?.actor)
   const connects = useConnection(state => state.connects)
+  const installId = useConnection(state => state.daemon?.install_id)
   const target = useConnection(state => state.target)
   const plays = !target || screenPlays(targetOrigin(target))
   const quality = useUi(state => state.computerQuality)
@@ -427,7 +428,7 @@ function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
 
   useEffect(() => {
     void refresh()
-  }, [connects, refresh])
+  }, [connects, installId, refresh])
 
   // Nothing until the daemon answers; an older daemon has no computer.
   if (!status) {

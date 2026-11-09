@@ -48,6 +48,7 @@ function outcome(run: HeartbeatRun): string {
 /** A bot's heartbeat: its checklist, when it runs, and what came of it. */
 export function HeartbeatTab({ bot }: { bot: Bot }) {
   const connects = useConnection(state => state.connects)
+  const installId = useConnection(state => state.daemon?.install_id)
   const enabled = useSettings(state => state.settings?.heartbeat_enabled ?? true)
   const patch = useSettings(state => state.patch)
   const status = useHeartbeat(state => state.byBot[bot.name])
@@ -65,7 +66,7 @@ export function HeartbeatTab({ bot }: { bot: Bot }) {
 
   useEffect(() => {
     void refresh(bot.name)
-  }, [bot.name, connects, refresh])
+  }, [bot.name, connects, installId, refresh])
 
   // The bot may change its checklist from its chat while this is open.
   // What you have typed and not saved yet stays.
