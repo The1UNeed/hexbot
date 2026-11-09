@@ -76,6 +76,29 @@ describe('WorkStatus', () => {
     expect(screen.queryByText(/provider/)).toBeNull()
   })
 
+  it('says what the bot does on the computer while that step runs', () => {
+    const working = (summary?: string) =>
+      message({
+        streaming: true,
+        toolCalls: [call({ name: 'computer_use', status: 'running', summary })]
+      })
+
+    const { rerender } = render(<WorkStatus message={working('click')} name="Scout" />)
+    expect(screen.getByRole('status', { name: 'Scout is clicking on the computer' })).toBeVisible()
+    rerender(<WorkStatus message={working()} name="Scout" />)
+    expect(screen.getByRole('status', { name: 'Scout is using the computer' })).toBeVisible()
+    rerender(
+      <WorkStatus
+        message={message({
+          streaming: true,
+          toolCalls: [call({ name: 'computer_use', summary: 'click' })]
+        })}
+        name="Scout"
+      />
+    )
+    expect(screen.getByRole('status', { name: 'Scout is working' })).toBeVisible()
+  })
+
   it('keeps saying working while Auto mode checks a step', () => {
     render(<WorkStatus checking="Checking this step" message={message({})} name="Scout" />)
     expect(screen.getByRole('status', { name: 'Scout is working' })).toBeVisible()

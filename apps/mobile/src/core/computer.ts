@@ -25,6 +25,18 @@ export function computerActivity(name: string, action?: string | null) {
   return doing ? `${name} is ${doing} on the computer` : `${name} is using the computer`
 }
 
+/**
+ * The waiting line while a bot works on the computer: its face as a moving
+ * pointer and what it does there. `null` when no computer step runs.
+ */
+export function computerWaiting(
+  tools: { action?: string; name: string; status: string }[],
+  name: string
+): { computer: true; label: string } | null {
+  const step = tools.findLast(tool => tool.status === 'running' && tool.name === 'computer_use')
+  return step ? { computer: true, label: computerActivity(name, step.action) } : null
+}
+
 /** The screen's quality on this phone, as the card lists it; as on the web. */
 export const COMPUTER_QUALITIES: { label: string; value: ComputerQuality }[] = [
   { label: 'Auto', value: 'auto' },

@@ -52,11 +52,15 @@ own visual identity. Read `CLAUDE.md` for the words.
   Searching, working and happy faces now and then turn all the way round,
   with a sweep in tints of their colour. Thinking folds the face into three
   bobbing dots, writing into a pencil that scribbles, and loading
-  into a whirl round a dot; the face unfolds when the mood ends. A face
+  into a whirl round a dot; the face unfolds when the mood ends. On the
+  bots' computer the face shrinks and rides beside a pointer in its colour,
+  as on the Computer tab: the two glide from spot to spot, the face a beat
+  behind, and the pointer dips as if it clicked. A face
   leaving sleeping opens wide and throws sparks. The
   in-app mark sleeps on the connection-lost screen and loads while an update
   installs. A live turn starts thinking, searches while a
-  search tool runs, writes while text streams, and works during other steps.
+  search tool runs, writes while text streams, rides the pointer while a
+  computer step runs, and works during other steps.
   Roster and header
   faces, including every face in a room's cluster, match their status dots;
   while a reply streams, the roster and header wear the chat's live face, so
@@ -82,7 +86,9 @@ own visual identity. Read `CLAUDE.md` for the words.
   sidebar, header and chat copies sway, blink and glance in step however
   late each appeared.
   Reduced motion draws each mood's rest pose, morph included, and offscreen
-  or hidden-page faces stop. Mobile draws the same settled expressions.
+  or hidden-page faces stop. Mobile draws the same settled expressions,
+  and the same face riding a moving pointer on a chat's waiting line while
+  the bot uses the computer.
   Clicking a face does nothing. Acts play only when the app gives a face
   one, such as typing while the bot works; they hold the face at rest and
   clean up with their React subtree.
@@ -189,10 +195,12 @@ with Viewport Segments place both poses on the exact halves.
 - Live status: from the moment a turn starts until the whole turn is done,
   a line sits at its foot, under the messages the bot has finished: the
   bot's face, in the mood of its work, and "General is working" in muted
-  words, with no bubble behind it. It never names the step, the tool, the
-  thinking, or the provider's wait notice, and it does not open. It stays
+  words, with no bubble behind it. While a step on the bots' computer runs,
+  the face rides the moving pointer and the words say what it does there:
+  "General is clicking on the computer". Otherwise it never names the step,
+  the tool, the thinking, or the provider's wait notice, and it does not open. It stays
   while a step the user approved still runs. The face thinks, searches,
-  works or writes with the turn; no spinner, no ring, no shimmer. What the
+  works, writes or points with the turn; no spinner, no ring, no shimmer. What the
   bot is still writing stays hidden; the message appears whole when it is
   done and springs in. When the turn ends the line is gone at once and
   nothing takes its place.

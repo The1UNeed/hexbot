@@ -18,6 +18,7 @@ import * as ExpoLinking from 'expo-linking'
 import * as WebBrowser from 'expo-web-browser'
 import * as Crypto from 'expo-crypto'
 import { avatarSrc } from './src/core/avatar'
+import { computerWaiting } from './src/core/computer'
 import { encodeAnswer, imageMime } from './src/core/chat-send'
 import { daemonBehind } from './src/core/version-skew'
 import { version as appVersion } from '../desktop/package.json'
@@ -1090,7 +1091,13 @@ function MobileApp({ children }: { children?: ReactNode }) {
     renderMessageText,
     loadMedia: route?.kind === 'section' ? loadMedia : undefined,
     busy: mobile.chat.busy,
-    waiting: mobile.chat.busy && !mobile.chat.streaming ? { label: 'Working' } : undefined,
+    waiting:
+      mobile.chat.busy && !mobile.chat.streaming
+        ? (computerWaiting(
+            mobile.chat.tools,
+            route?.kind === 'section' ? route.bot.display_name : 'The bot'
+          ) ?? { label: 'Working' })
+        : undefined,
     onSend: send,
     draft,
     onDraftChange: setDraft,

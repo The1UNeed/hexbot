@@ -10,6 +10,7 @@ export const FACE_MOODS = [
   'searching',
   'working',
   'writing',
+  'computer',
   'listening',
   'happy',
   'sleeping',
