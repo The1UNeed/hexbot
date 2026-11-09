@@ -91,10 +91,16 @@ fn value(home: &Path, bot: Option<&str>, key: &str) -> Result<Option<String>> {
     {
         return Ok(Some(v));
     }
-    Ok(read_env(home)?
+    let found = read_env(home)?
         .remove(key)
         .filter(|v| !v.is_empty())
-        .or_else(|| std::env::var(key).ok().filter(|v| !v.is_empty())))
+        .or_else(|| std::env::var(key).ok().filter(|v| !v.is_empty()));
+    // The xAI key is also the xAI model provider's, which may keep it in
+    // its credential pool instead of `.env`.
+    if found.is_none() && key == "XAI_API_KEY" {
+        return crate::providers::xai_api_key(home, bot);
+    }
+    Ok(found)
 }
 fn write_values(
     home: &Path,

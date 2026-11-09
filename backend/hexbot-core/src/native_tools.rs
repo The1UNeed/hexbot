@@ -299,7 +299,7 @@ fn set_up(
                 _ => false,
             }
         }
-        "tts" => speech_set_up(home, cfg, text(&cfg["tts"], "provider", "edge")),
+        "tts" => speech_set_up(home, cfg, speech_provider(cfg, &Value::Null)),
         "vision" => {
             let aux = &cfg["auxiliary"]["vision"];
             // An explicit endpoint may need no key, like a local server.
@@ -315,6 +315,19 @@ fn set_up(
             }
         }
         _ => true,
+    }
+}
+/// The voice to speak with: the one asked for, else the configured one. The
+/// cloud voices went with Premium voice, so a choice of one saved before
+/// becomes the built-in voice, unless it names a custom command voice.
+fn speech_provider<'a>(cfg: &'a Value, args: &'a Value) -> &'a str {
+    let provider = text(args, "provider", text(&cfg["tts"], "provider", "edge"));
+    if ["elevenlabs", "openai", "mistral"].contains(&provider)
+        && !cfg["tts"]["providers"][provider].is_object()
+    {
+        "edge"
+    } else {
+        provider
     }
 }
 fn speech_set_up(home: &Path, cfg: &Value, provider: &str) -> bool {
@@ -542,11 +555,7 @@ pub async fn call(
                 let available = if family == "web" {
                     connectors::tool_available(home, bot, "web_search")?
                 } else if name == "text_to_speech" {
-                    speech_set_up(
-                        home,
-                        &cfg,
-                        text(args, "provider", text(&cfg["tts"], "provider", "edge")),
-                    )
+                    speech_set_up(home, &cfg, speech_provider(&cfg, args))
                 } else {
                     set_up(home, &cfg, &env, family)
                 };
@@ -1883,7 +1892,7 @@ async fn speech(
     args: &Value,
 ) -> Result<Value> {
     let input = common::required(args, "text")?;
-    let provider = text(args, "provider", text(&cfg["tts"], "provider", "edge"));
+    let provider = speech_provider(cfg, args);
     let options = &cfg["tts"][provider];
     let speed = args["speed"]
         .as_f64()

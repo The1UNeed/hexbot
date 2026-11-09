@@ -2615,6 +2615,17 @@ pub fn adapt_request(home: &Path, bot: &str, session: &str, p: &Value) -> Result
     Ok(payload)
 }
 
+/// The xAI API key saved for `bot`, or for the daemon: an `XAI_API_KEY`
+/// value or the provider's credential pool. None while xAI is turned off.
+pub fn xai_api_key(home: &Path, bot: Option<&str>) -> Result<Option<String>> {
+    if let Some(bot) = bot {
+        common::identifier(bot)?;
+        if let Some(found) = key(&home.join("profiles").join(bot), profile("xai")?)? {
+            return Ok(Some(found));
+        }
+    }
+    key(home, profile("xai")?)
+}
 /// Whether a SuperGrok sign-in is saved for `bot`, or for the daemon.
 pub fn xai_signed_in(home: &Path, bot: Option<&str>) -> Result<bool> {
     let profile_home = match bot {
