@@ -46,23 +46,30 @@ export function FaceEditor({ bot, mobile }: { bot: Bot; mobile: ReturnType<typeo
   const face = photo ? null : { face: value, name: bot.display_name }
   const off = busy || mobile.connection !== 'connected'
 
-  const write = async (patch: { avatar: null | string; face?: FaceStyle }) => {
-    setBusy(true)
-    setError(null)
+  const writes = useRef<Promise<void>>(Promise.resolve())
 
-    try {
-      await mobile.rpc('hexbot.bots.update', { name: bot.name, ...patch }).catch(cause => {
-        // A daemon from before stored faces keeps the picture alone.
-        if (!patch.face || !refusesFace(cause)) throw cause
+  /** One write at a time, in the order they were asked for, so the last one asked for is kept. */
+  const write = (patch: { avatar: null | string; face?: FaceStyle }) => {
+    writes.current = writes.current.then(async () => {
+      setBusy(true)
+      setError(null)
 
-        return mobile.rpc('hexbot.bots.update', { avatar: patch.avatar, name: bot.name })
-      })
-      await mobile.refresh()
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
-    } finally {
-      setBusy(false)
-    }
+      try {
+        await mobile.rpc('hexbot.bots.update', { name: bot.name, ...patch }).catch(cause => {
+          // A daemon from before stored faces keeps the picture alone.
+          if (!patch.face || !refusesFace(cause)) throw cause
+
+          return mobile.rpc('hexbot.bots.update', { avatar: patch.avatar, name: bot.name })
+        })
+        await mobile.refresh()
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause))
+      } finally {
+        setBusy(false)
+      }
+    })
+
+    return writes.current
   }
 
   const saved = useRef(write)

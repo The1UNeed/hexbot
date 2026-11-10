@@ -107,16 +107,54 @@ describe('the Face page', () => {
     ).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Back to a face' }))
-    expect(onSave).toHaveBeenLastCalledWith({ avatar: null })
+    await waitFor(() => expect(onSave).toHaveBeenLastCalledWith({ avatar: null }))
 
-    // A pick starts from the face the photo put aside.
+    // A pick starts from the face the photo put aside, and shows at once.
     fireEvent.click(screen.getByRole('button', { name: 'Ghost' }))
+    expect(screen.getByTestId('face-stage').querySelector('img')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Shuffle' })).toBeInTheDocument()
     await waitFor(() =>
       expect(onSave).toHaveBeenLastCalledWith({
         avatar: 'data:image/png;base64,ghost-teal',
         face: { color: 'teal', shape: 'ghost' }
       })
     )
+  })
+
+  it('shows a PNG photo as a photo while it is still being read', () => {
+    const png = { data: 'data:image/png;base64,iVBORw0KGgo=', mime: 'image/png' }
+    render(<FaceTab bot={{ ...scout, avatar: png, face: null }} onSave={vi.fn()} />)
+
+    expect(screen.getByTestId('face-stage').querySelector('img')).toHaveAttribute('src', png.data)
+    expect(screen.getByRole('button', { name: 'Back to a face' })).toBeInTheDocument()
+  })
+
+  it('keeps the last pick when picks come faster than their pictures', async () => {
+    const saved: unknown[] = []
+    let release = () => undefined as void
+
+    // The first save hangs until released; the second must wait its turn.
+    const onSave = vi.fn((patch: unknown) => {
+      saved.push(patch)
+
+      return saved.length === 1 ? new Promise<void>(resolve => (release = resolve)) : undefined
+    })
+
+    render(<FaceTab bot={scout} onSave={onSave} />)
+
+    // Two picks before any picture is drawn: only the later one is sent.
+    fireEvent.click(screen.getByRole('button', { name: 'Star' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Cat' }))
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
+    expect(saved[0]).toMatchObject({ face: { color: 'teal', shape: 'cat' } })
+
+    // A pick made while that save is on its way goes after it, never beside it.
+    fireEvent.click(screen.getByRole('button', { name: 'Lemon' }))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(onSave).toHaveBeenCalledTimes(1)
+    release()
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2))
+    expect(saved[1]).toMatchObject({ face: { color: 'yellow', shape: 'cat' } })
   })
 
   it('takes a photo of the kinds and size the daemon keeps, and says why not otherwise', async () => {

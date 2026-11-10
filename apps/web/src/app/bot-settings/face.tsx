@@ -81,16 +81,28 @@ export function FaceTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   const bots = useBots(state => state.byName)
   const shown = botFace(bot)
   const read = useFaceRead(shown.image)
-  // A picture this app did not draw is a photo.
-  const photo = Boolean(shown.image) && read === null
+  // A picture is a photo until it is read back as a face this app drew, as
+  // `Avatar` shows it. A pick shows at once, in place of the photo too.
+  const photo = !picked && Boolean(shown.image) && !read
   const value = picked ?? shown.style ?? read ?? bot.kept_face ?? styleForName(bot.display_name)
+  const saves = useRef<Promise<unknown>>(Promise.resolve())
+  const picks = useRef(0)
+
+  /** One save at a time, in the order they were asked for, so the last one asked for is kept. */
+  const save = (work: () => Promise<void> | void) => {
+    saves.current = saves.current.then(work).catch(() => undefined)
+  }
 
   const choose = (next: AvatarStyle) => {
+    const pick = ++picks.current
     setError(null)
     setPicked(next)
-    void avatarPng(next).then(png => {
-      if (png) {
-        void onSave({ avatar: png, face: next })
+    save(async () => {
+      const png = await avatarPng(next)
+
+      // A later pick replaces this one before it is sent.
+      if (png && pick === picks.current) {
+        await onSave({ avatar: png, face: next })
       }
     })
   }
@@ -116,7 +128,7 @@ export function FaceTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
     reader.onload = () => {
       setError(null)
       setPicked(null)
-      void onSave({ avatar: String(reader.result) })
+      save(() => onSave({ avatar: String(reader.result) }))
     }
 
     reader.onerror = () => setError('Could not read that image.')
@@ -147,7 +159,7 @@ export function FaceTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
                 <Button
                   onClick={() => {
                     setPicked(null)
-                    void onSave({ avatar: null })
+                    save(() => onSave({ avatar: null }))
                   }}
                   size="sm"
                   variant="ghost"
