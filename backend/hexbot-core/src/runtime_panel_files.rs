@@ -71,21 +71,26 @@ impl Runtime {
 }
 
 /// `~`, `$HOME` or `${HOME}` at the start is the user's home, as the bot's file
-/// tools read it, so a path the bot wrote with one opens here too.
+/// tools read it, so a path the bot wrote with one opens here too. Windows
+/// takes either separator after it.
 fn expand_home(value: &str, home: Option<&Path>) -> PathBuf {
+    let separator = |c: char| c == '/' || (cfg!(windows) && c == '\\');
     let rest = ["${HOME}", "$HOME", "~"].iter().find_map(|prefix| {
         value
             .strip_prefix(prefix)
-            .filter(|rest| rest.is_empty() || rest.starts_with('/'))
+            .filter(|rest| rest.is_empty() || rest.starts_with(separator))
     });
     match (rest, home) {
-        (Some(rest), Some(home)) => home.join(rest.trim_start_matches('/')),
+        (Some(rest), Some(home)) => home.join(rest.trim_start_matches(separator)),
         _ => PathBuf::from(value),
     }
 }
 
 /// The existing regular file `value` names, once symlinks are resolved, if it
 /// is inside one of `roots`. A relative path is taken from the first root.
+/// The bot names these paths, so on Windows one is judged by its text, and
+/// every link on the way by its target, before anything opens it: a network
+/// share or a device is refused, never reached.
 pub(super) fn resolve_in(roots: &[PathBuf], value: &str, home: Option<&Path>) -> Result<PathBuf> {
     let input = expand_home(value, home);
     let input = if input.is_absolute() {
@@ -96,16 +101,24 @@ pub(super) fn resolve_in(roots: &[PathBuf], value: &str, home: Option<&Path>) ->
             .ok_or_else(|| Error::new(4302, "no folder to open files from"))?
             .join(input)
     };
-    let path = fs::canonicalize(&input).map_err(|_| Error::new(4204, "file not found"))?;
-    let inside = roots
-        .iter()
-        .filter_map(|root| fs::canonicalize(root).ok())
-        .any(|root| path.starts_with(root));
-    if !inside {
-        return Err(Error::new(
+    let outside = || {
+        Error::new(
             4302,
             "only files in the bot's working folder, its artifacts or this chat's attachments open here",
-        ));
+        )
+    };
+    #[cfg(windows)]
+    if !crate::credentials::local_link(&input) {
+        return Err(outside());
+    }
+    let path =
+        crate::credentials::canonical(&input).map_err(|_| Error::new(4204, "file not found"))?;
+    let inside = roots
+        .iter()
+        .filter_map(|root| crate::credentials::canonical(root).ok())
+        .any(|root| path.starts_with(root));
+    if !inside {
+        return Err(outside());
     }
     if !fs::metadata(&path)?.is_file() {
         return Err(Error::new(4202, "not a file"));
@@ -209,17 +222,12 @@ fn replace(path: &Path, bytes: &[u8], meta: &fs::Metadata) -> Result<()> {
         .write_keeping_mode(bytes, (meta.permissions().mode() & 0o777) as libc::mode_t)
 }
 
-#[cfg(not(unix))]
-fn replace(path: &Path, bytes: &[u8], meta: &fs::Metadata) -> Result<()> {
-    use std::io::Write;
-    let dir = path
-        .parent()
-        .ok_or_else(|| Error::new(4202, "invalid file path"))?;
-    let mut temp = tempfile::NamedTempFile::new_in(dir)?;
-    temp.write_all(bytes)?;
-    temp.as_file().set_permissions(meta.permissions())?;
-    temp.persist(path).map_err(|e| Error::from(e.error))?;
-    Ok(())
+/// On Windows the handle bridge walks to the file without following a link,
+/// junction or cloud-synced folder and renames the new file over it
+/// (`runtime_files_windows.rs`). The new file takes its folder's permissions.
+#[cfg(windows)]
+fn replace(path: &Path, bytes: &[u8], _: &fs::Metadata) -> Result<()> {
+    super::files::FileAccess::pi_open(path, false)?.pi_write(bytes)
 }
 
 /// Replaces a text file's contents in one step. `expected` is the version the

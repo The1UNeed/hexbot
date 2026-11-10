@@ -537,11 +537,7 @@ async fn windows_security_runtime_runs_sections_and_scripts_in_the_sandbox() {
                 (secret.to_str().unwrap(), "protected"),
             ] {
                 for operation in ["write", "edit_open", "edit_commit"] {
-                    let reply = ask(
-                        &live,
-                        request(operation, Path::new(path), unopened()),
-                    )
-                    .await;
+                    let reply = ask(&live, request(operation, Path::new(path), unopened())).await;
                     assert!(
                         reply["error"].as_str().unwrap().contains(reason),
                         "{operation} {path}: {reply}"
@@ -642,6 +638,42 @@ async fn windows_security_runtime_runs_sections_and_scripts_in_the_sandbox() {
                 fs::read_to_string(&target).unwrap(),
                 format!("edit_commit-{mode}")
             );
+            // The chat's side panel opens and saves the same file through
+            // the daemon. A save takes the handle bridge, and a path the bot
+            // names is refused by its text before anything opens it.
+            let panel = async |method: &str, params: Value| {
+                runtime.call("alice", method, &params).await.unwrap()
+            };
+            let shown = panel(
+                "hexbot.files.read",
+                json!({"session_id":live,"path":target}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(shown["text"], format!("edit_commit-{mode}"), "{shown}");
+            assert!(
+                !shown["path"].as_str().unwrap().starts_with(r"\\?\"),
+                "{shown}"
+            );
+            panel(
+                "hexbot.files.write",
+                json!({"session_id":live,"path":shown["path"],"text":"panel save","version":shown["version"]}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(fs::read_to_string(&target).unwrap(), "panel save");
+            for path in [
+                r"\\hexbot-hostile.invalid\share\file.txt",
+                r"\\.\pipe\hexbot-private-file",
+                missing_drive.as_str(),
+            ] {
+                for method in ["hexbot.files.read", "hexbot.files.write"] {
+                    let error = panel(method, json!({"session_id":live,"path":path,"text":"x"}))
+                        .await
+                        .unwrap_err();
+                    assert_eq!(error.code, 4302, "{method} {path}: {}", error.message);
+                }
+            }
             // A snapshot of another working folder refuses before the path is
             // resolved or its folder created, and a working folder that moved
             // to a network share is refused by its text.

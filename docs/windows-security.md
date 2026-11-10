@@ -233,12 +233,22 @@ bridge. On Windows the bridge works through handles
   refuses, as does a read-only file, and a failed write deletes the
   temporary file through its own handle.
 - **An edit commits to the file it read.** The read returns the file's raw
-  bytes and its identity, the volume serial number and 128-bit file ID. The
-  commit refuses unless the name still has that file, so a file replaced,
-  deleted or moved in between is never overwritten.
+  bytes, their version (SHA-256) and the file's identity, the volume serial
+  number and 128-bit file ID. The commit refuses unless the name still has
+  that file with those bytes, so a file replaced, deleted, moved or saved by
+  the user in between is never overwritten.
 - **Limits and Stop.** Each encoded request and reply is at most 1 MiB,
   about 767 KiB of file data. Stop waits for a running request to finish
   before it acknowledges.
+
+The side panel of a chat opens and saves files in the bot's working folder,
+its artifacts and the chat's attachments, and a bot shares a file there by
+its path (`hexbot_share_file`). The bot names those paths, so on Windows the
+daemon judges one by its text, and every link on the way by its target, before
+it opens anything: a network share, a device or a drive that is not a local
+fixed disk refuses. A save from the panel takes the same handle bridge under
+the same lock as a bot's edit, with the version it last read, so neither
+overwrites the other and a save never follows a link.
 
 Residual risks:
 

@@ -175,7 +175,9 @@ fn edit_commits_only_to_the_file_it_read() {
     fs::write(&path, raw).unwrap();
     let open = || call(json!({"operation":"edit_open","path":path})).unwrap();
     let commit = |opened: &Value, text: &str| {
-        call(json!({"operation":"edit_commit","path":path,"parent":opened["parent"],"opened":opened["version"],"content":content(text)}))
+        call(
+            json!({"operation":"edit_commit","path":path,"parent":opened["parent"],"opened":opened["version"],"content":content(text)}),
+        )
     };
     // Raw bytes come back with the file's identity, two strings of digits.
     let opened = open();
