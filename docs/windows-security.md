@@ -32,7 +32,10 @@ What is guaranteed:
   its access level (Auto writes the workspace, Manual only reads it) and a
   digest of the roots it is granted. Grants are ACL entries for that
   container's SID alone, so a container never reaches a root that only
-  another policy was granted.
+  another policy was granted. A conversation's own folder (its attachments,
+  in `runtime\sessions`) is left out of the name: a bot's chat, rooms, job
+  runs and delegates share the bot's container, and each one's folder is
+  granted to it when a command first runs there.
 - **No network.** A container has no capabilities: no internet, no local
   network, not even loopback.
 - **Only granted files.** A container reads the roots its policy names and
@@ -65,10 +68,11 @@ What is guaranteed:
 - **Git metadata stays read-only.** `.git`, linked `gitdir` and `commondir`
   targets, bare repositories and configured hooks folders inside a writable
   root keep only a read entry, so a command can neither change them nor move
-  them aside to plant others. The folders around them stay writable, so the
-  helper also holds each of them open while a command runs: Windows renames
-  no folder that has an open entry below it, and the repository cannot be
-  moved aside either. As on Linux, a scan that stops early, a missing
+  them aside to plant others. The folders between a writable root and Git
+  metadata inside it keep everything but the right to delete themselves,
+  which a rename or move takes, so the repository around the metadata cannot
+  be moved aside either; what is inside those folders is created, changed
+  and deleted as anywhere else. As on Linux, a scan that stops early, a missing
   hooks target that would make a whole repository read-only, or a link on the
   way to Git metadata refuses the command.
 - **What the scan finds.** Git metadata and project secrets are found by the
@@ -302,16 +306,23 @@ Residual risks:
 - **Hard links.** A file with more than one name is never granted, since its
   DACL is shared with names outside the tree. A link made later by a process
   outside the sandbox to a file a container was granted shares that grant.
-- **Moved files.** Grants are written onto each file. A file moved out of a
-  granted root keeps them until reset; a file moved in has none, so a command
-  can neither read, change nor delete it until the next command of that
-  policy walks the root again.
+- **Moved files.** Grants are written onto each file, and a root is walked
+  once for each container. A file moved out of a granted root keeps its
+  grants until reset. A file moved in from elsewhere on the same drive, as
+  Explorer does, keeps the permissions it had and gains none, so a command
+  can neither read, change nor delete it, while Pi's read tool can.
+  `hexbot sandbox reset` makes the next command grant the folder again; a
+  file copied in, or saved there, is granted like the rest.
 - **New metadata and secrets.** `.git` folders and `.env` files created
   while a command runs inherit the root's allow. They lose it from the next
   command on.
-- **Repositories stay put while a command runs.** The helper holds Git
-  metadata open until its command ends, so nobody, the user included, renames
-  or moves a folder above it in that time.
+- **Folders above Git metadata stay put.** A command cannot rename or move
+  a folder that has Git metadata below it. That lasts after the metadata is
+  gone, until reset.
+- **A bot's conversations share its container.** A command in one of a
+  bot's conversations can open another conversation's attachments folder,
+  once a command has run there, if it knows the folder's path. The folders
+  in between are not listed for it.
 - **Permissions applied again.** A tool that applies inheritance again across
   a workspace, such as `icacls /reset /t` or Explorer's "Replace all child
   object permission entries", gives protected entries the workspace's allow
@@ -343,8 +354,13 @@ Residual risks:
 - **No memory or CPU caps.** The job limits only the number of processes.
 - **Policy size.** A policy is one command-line argument. A workspace with
   very many protected files refuses rather than drop protections.
-- **Containers accumulate.** Each combination of working folder and outputs
-  gets its own container and grants until `hexbot sandbox reset`.
+- **Containers accumulate.** Each combination of access level, working
+  folder and bot output folder gets its own container and grants until
+  `hexbot sandbox reset`. Every container adds one entry to every file it is
+  granted, and a file holds about 1,300 of them, so very many working
+  folders shared by very many bots would need a reset. Removing Hexbot with
+  its data runs the reset first; removing it and keeping the data leaves the
+  grants, and the journal to reset them with after a reinstall.
 - **First commands are slow in large workspaces.** A new container's grants
   are written file by file before its first command runs, and that time
   counts against a scheduled script's two minutes.
@@ -413,7 +429,9 @@ the path is judged by its text first, and every link on the way to it by its
 target, then opened without following a final link, and pipes, devices and
 other reparse points are refused — including
 files in OneDrive and other cloud-synced folders, even fully downloaded
-ones, which are reparse points. A working folder and a scheduled script are
+ones, which are reparse points. A file on a drive that is no fixed disk,
+such as a mapped network drive, is refused too. A working folder, a scheduled
+script and a media path a bot names are
 judged the same way before the daemon resolves them: a link on the way that
 names a network share, a device or a drive that is no fixed disk refuses, as
 does a chain of more than 40 links. Commands

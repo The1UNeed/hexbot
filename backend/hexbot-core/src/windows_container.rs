@@ -1,9 +1,10 @@
 //! Windows tool isolation: AppContainers, file grants and contained processes.
 //!
 //! One AppContainer per policy: its Hexbot home, its access level (Auto writes
-//! the workspace, Manual only reads it) and the roots it is granted. Grants are
-//! lasting ACL entries, so a container never reaches a root that only another
-//! policy was granted. A container has no capabilities, so it has no network,
+//! the workspace, Manual only reads it) and the roots it is granted, apart
+//! from a conversation's own folder, which a bot's conversations each bring
+//! to the one container they share. Grants are lasting ACL entries, so a
+//! container never reaches a root that only another policy was granted. A container has no capabilities, so it has no network,
 //! not even loopback, and reaches no file the user owns unless Hexbot granted
 //! it. Grants are allow entries for the container's SID only: the workspace and
 //! output folders, its own private home and temp folder, and the runtime
@@ -15,7 +16,9 @@
 //! none (`Change::Cap`).
 //! Deleting or renaming an entry takes DELETE on it or FILE_DELETE_CHILD on its
 //! folder: no cap keeps the first and no grant carries the second, so neither
-//! is ever deleted or moved aside. A walk that grants a tree meets each
+//! is ever deleted or moved aside. The folders between a writable root and Git
+//! metadata inside it lose DELETE on themselves alone (`Change::Pin`), so the
+//! repository around the metadata cannot be moved aside either. A walk that grants a tree meets each
 //! protected root by its file identity and writes only what the cap leaves
 //! below it, so no grant ever opens a protected entry, and a protected entry a
 //! walk cannot reach stops the command. A root that is or holds the user's
@@ -346,6 +349,7 @@ const ALLOWED: u8 = 0;
 const DENIED: u8 = 1;
 const OBJECT_INHERIT: u8 = 0x1;
 const CONTAINER_INHERIT: u8 = 0x2;
+const INHERIT_ONLY: u8 = 0x8;
 const INHERITED: u8 = 0x10;
 const READ_CONTROL: u32 = 0x0002_0000;
 const WRITE_DAC: u32 = 0x0004_0000;
@@ -519,6 +523,12 @@ pub enum Change {
     Cap(u32),
     /// Remove every entry for the SIDs, allow or deny, explicit or inherited.
     Revoke,
+    /// Keep a folder where it is. Each allow entry for the SIDs that lets the
+    /// folder itself be deleted, which is what a rename or move takes, is
+    /// split in two: one for the folder alone without DELETE, and one that
+    /// only its contents inherit, unchanged, so they are still created,
+    /// changed and deleted. Nothing is added.
+    Pin,
 }
 
 /// What a walk changed and what it left alone.
@@ -625,6 +635,13 @@ impl Ace {
         ace.mask = mask;
         ace
     }
+    /// This entry with the inheritance flags `flags`.
+    fn with_flags(&self, flags: u8) -> Ace {
+        let mut ace = self.clone();
+        ace.bytes[1] = flags;
+        ace.flags = flags;
+        ace
+    }
 }
 
 /// The entries of a DACL, marking those for one of `sids`.
@@ -728,7 +745,7 @@ fn change_object(
             !ace.ours
                 || match change {
                     Change::Revoke => false,
-                    Change::Cap(_) => ace.kind != DENIED,
+                    Change::Cap(_) | Change::Pin => ace.kind != DENIED,
                     Change::Allow(_) => {
                         ace.kind == ALLOWED && (ace.flags & INHERITED) != (flags & INHERITED)
                     }
@@ -752,6 +769,28 @@ fn change_object(
                 list.insert(at + offset, Ace::allowed(flags, mask, *sid));
             }
         }
+    }
+    if change == Change::Pin {
+        let inheritance = OBJECT_INHERIT | CONTAINER_INHERIT;
+        list = list
+            .into_iter()
+            .flat_map(|ace| {
+                let pinned = !(ace.ours && ace.kind == ALLOWED)
+                    || ace.flags & INHERIT_ONLY != 0
+                    || ace.mask & DELETE == 0;
+                if pinned {
+                    return vec![ace];
+                }
+                let own = ace
+                    .with_flags(ace.flags & !inheritance)
+                    .with_mask(ace.mask & !DELETE);
+                if ace.flags & inheritance == 0 {
+                    vec![own]
+                } else {
+                    vec![own, ace.with_flags(ace.flags | INHERIT_ONLY)]
+                }
+            })
+            .collect();
     }
     if let Some(cap) = cap {
         // A protected object keeps only what its cap allows, whichever walk
@@ -844,9 +883,8 @@ fn open_root(path: &Path) -> io::Result<OwnedHandle> {
 }
 
 /// The protected root at `path` as walks meet it: by its file identity, the
-/// link itself when it is one. The open entry comes back too, for a caller
-/// that holds it.
-fn limit_at(path: &Path, cap: u32) -> io::Result<(Limit, OwnedHandle)> {
+/// link itself when it is one.
+fn limit_at(path: &Path, cap: u32) -> io::Result<Limit> {
     let name = wide(path.as_os_str());
     // SAFETY: a NUL-terminated path; the handle is owned below.
     let handle = owned(unsafe {
@@ -861,12 +899,11 @@ fn limit_at(path: &Path, cap: u32) -> io::Result<(Limit, OwnedHandle)> {
         )
     })?;
     let info = information(handle.as_raw_handle())?;
-    let limit = Limit {
+    Ok(Limit {
         volume: info.volume,
         index: info.index(),
         cap,
-    };
-    Ok((limit, handle))
+    })
 }
 
 /// Open `name` inside `parent` through the parent's handle, never by path.
@@ -1040,7 +1077,7 @@ fn walk_limited(
     }
     // A protected tree a walk cannot finish keeps what it was granted before.
     let protected = |cap: Option<u32>| match change {
-        Change::Revoke => false,
+        Change::Revoke | Change::Pin => false,
         Change::Cap(_) => true,
         Change::Allow(_) => cap.is_some(),
     };
@@ -1102,6 +1139,21 @@ fn walk_limited(
     Ok(walk)
 }
 
+/// Take from `folder` itself, for `sid`, the right a rename or move takes,
+/// and leave what its contents inherit ([`Change::Pin`]).
+fn pin(folder: &Path, sid: &ContainerSid) -> io::Result<()> {
+    let handle = open_root(folder)?;
+    change_object(
+        handle.as_raw_handle(),
+        true,
+        Change::Pin,
+        None,
+        false,
+        &[sid.as_ptr()],
+    )
+    .map(drop)
+}
+
 /// Whether `root` already carries what `change` writes there: the explicit
 /// allow of a grant, no allow beyond a cap, or no entry at all for a revoke.
 pub fn applied(root: &Path, change: Change, sid: &ContainerSid) -> io::Result<bool> {
@@ -1127,11 +1179,15 @@ pub fn applied(root: &Path, change: Change, sid: &ContainerSid) -> io::Result<bo
     let list = entries(dacl, &[sid.as_ptr()])?;
     let mut ours = list.iter().filter(|ace| ace.ours);
     Ok(match change {
-        Change::Allow(mask) => {
-            ours.any(|ace| ace.kind == ALLOWED && ace.mask == mask && ace.flags == flags)
-        }
+        // A pinned root passes its grant on through an inherit-only entry.
+        Change::Allow(mask) => ours.any(|ace| {
+            ace.kind == ALLOWED && ace.mask == mask && ace.flags & !INHERIT_ONLY == flags
+        }),
         Change::Cap(cap) => !ours.any(|ace| ace.kind == ALLOWED && ace.mask & !cap != 0),
         Change::Revoke => ours.next().is_none(),
+        Change::Pin => !ours.any(|ace| {
+            ace.kind == ALLOWED && ace.flags & INHERIT_ONLY == 0 && ace.mask & DELETE != 0
+        }),
     })
 }
 
@@ -1149,6 +1205,9 @@ impl GrantKind {
         }
     }
 }
+
+/// Where the daemon keeps each conversation's own folder, in the home.
+const CONVERSATIONS: &str = r"runtime\sessions";
 
 pub fn sandbox_dir(home: &Path) -> PathBuf {
     // Native separators: programs such as cmd.exe parse the paths they are given.
@@ -1316,12 +1375,6 @@ pub struct Container {
     /// Its private folder, which holds its home, AppData and temp folder, in
     /// the plain form programs are given.
     pub private: PathBuf,
-    /// The policy's Git metadata, open for as long as this value lives. Its
-    /// own entries refuse a move; Windows also renames no folder while an
-    /// entry below it is open, so a command cannot move the repository
-    /// around it aside and plant other metadata under its name. Keep this
-    /// value until the container's commands end.
-    pub held: Vec<OwnedHandle>,
 }
 
 /// The LOCALAPPDATA a contained command's environment names, inside the
@@ -1522,16 +1575,10 @@ pub fn prepare(policy: &Policy) -> io::Result<Container> {
         .map(|root| (root, READ))
         .chain(deny_all.iter().map(|root| (root, 0)))
         .collect();
-    let (mut limits, mut held) = (Vec::new(), Vec::new());
+    let mut limits = Vec::new();
     for (root, cap) in &caps {
         match limit_at(&root.canonical, *cap) {
-            Ok((limit, entry)) => {
-                limits.push(limit);
-                // Git metadata, not secrets: only it runs as the user later.
-                if *cap == READ {
-                    held.push(entry);
-                }
-            }
+            Ok(limit) => limits.push(limit),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
@@ -1543,9 +1590,17 @@ pub fn prepare(policy: &Policy) -> io::Result<Container> {
             .map(|(_, cap)| *cap)
             .reduce(|cap, other| cap & other)
     };
+    // A conversation's own folder is left out of the container's name, as
+    // the shell is: every conversation, job run and delegate brings another,
+    // and a container for each would walk the working folder again and add an
+    // entry to every file in it until their ACLs are full. A bot's
+    // conversations share its container, and each one's folder is granted to
+    // it when a command first runs there.
+    let conversations = rules::fold(&plain(&home.join(CONVERSATIONS))?);
     let folded = |roots: &[Root]| {
         roots
             .iter()
+            .filter(|root| !rules::within(&root.folded, &conversations))
             .map(|root| root.folded.clone())
             .collect::<Vec<_>>()
     };
@@ -1598,11 +1653,36 @@ pub fn prepare(policy: &Policy) -> io::Result<Container> {
     for root in &deny_all {
         grant(&root.canonical, GrantKind::DenyAll, cap_of(root))?;
     }
+    // The folders between a writable root and Git metadata inside it stay
+    // where they are, so a command cannot move the repository around the
+    // metadata aside and plant other metadata under its name. Every command
+    // pins them again: a walk that grants the root anew writes plain entries.
+    let mut pinned = Vec::new();
+    for root in &deny_write {
+        for folder in root.canonical.ancestors().skip(1) {
+            let folded = rules::fold(&plain(folder)?);
+            let inside = writable
+                .iter()
+                .any(|root| folded != root.folded && rules::within(&folded, &root.folded));
+            // A folder outside every writable root has only such folders above it.
+            if !inside {
+                break;
+            }
+            if !pinned.contains(&folded) {
+                pin(folder, &sid).map_err(|error| {
+                    io::Error::other(format!(
+                        "Could not keep {} in place: {error}",
+                        folder.display()
+                    ))
+                })?;
+                pinned.push(folded);
+            }
+        }
+    }
     Ok(Container {
         sid,
         profile,
         private,
-        held,
     })
 }
 
@@ -2177,9 +2257,8 @@ fn captured(
 /// with 126, as a shell does for a command it cannot run.
 pub fn exec(arguments: &[String]) -> ! {
     let code = match start(arguments) {
-        // The job ends the program's descendants when `child` drops. The
-        // container holds Git metadata open until then.
-        Ok((child, _container)) => child
+        // The job ends the program's descendants when `child` drops.
+        Ok(child) => child
             .wait()
             .map(|code| code as i32)
             .unwrap_or_else(|error| not_run(&error.to_string())),
@@ -2193,7 +2272,7 @@ fn not_run(message: &str) -> i32 {
     NOT_RUN
 }
 
-fn start(arguments: &[String]) -> Result<(Contained, Container), String> {
+fn start(arguments: &[String]) -> Result<Contained, String> {
     use base64::Engine;
     let [policy, separator, program, rest @ ..] = arguments else {
         return Err(USAGE.to_owned());
@@ -2215,7 +2294,7 @@ fn start(arguments: &[String]) -> Result<(Contained, Container), String> {
     let environment = environment(&container, std::env::vars_os());
     let directory = std::env::current_dir().ok();
     let arguments: Vec<OsString> = rest.iter().map(OsString::from).collect();
-    let child = spawn(
+    spawn(
         &container.sid,
         program,
         &arguments,
@@ -2228,8 +2307,7 @@ fn start(arguments: &[String]) -> Result<(Contained, Container), String> {
             "Could not start {} in the Windows sandbox: {error}",
             program.display()
         )
-    })?;
-    Ok((child, container))
+    })
 }
 
 /// `hexbot sandbox reset` removes every grant and profile in the home. The

@@ -36,7 +36,7 @@ redaction, and pattern checks do not provide equivalent containment.
 
 On Windows, Auto and Manual run every local command in an AppContainer
 through the daemon's own `hexbot sandbox exec`: Pi's bash tool, the user's
-own commands and scheduled scripts. There is one container per policy, with
+own commands and scheduled scripts. There is one container per policy, which a bot's conversations share, with
 no network and access only to the roots the policy grants. Those are the
 working folder and output folders (read-only in Manual), the managed Python,
 the runtime's BusyBox and Git for Windows. The user's profile, the Hexbot

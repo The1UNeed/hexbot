@@ -304,10 +304,60 @@ fn auto_writes_only_the_workspace_and_never_git_or_secrets() {
     );
 }
 
+/// Every conversation, job run and delegate has its own folder in the home.
+/// It is left out of the container's name, so they share one container and
+/// the working folder is granted once, not once for each of them.
+#[test]
+fn conversations_of_one_policy_share_a_container() {
+    let f = fixture("conversations");
+    let folder = |id: &str| {
+        let path = f
+            .home
+            .join("runtime")
+            .join("sessions")
+            .join(id)
+            .join("attachments");
+        fs::create_dir_all(&path).unwrap();
+        path
+    };
+    let with = |extra: &Path| Policy {
+        writable: vec![f.workspace.clone(), extra.to_owned()],
+        ..auto(&f)
+    };
+    let (first, second) = (folder("first"), folder("cron-1"));
+    let (a, b) = (with(&first), with(&second));
+    let sid = container_sid(&a);
+    assert_eq!(sid, container_sid(&auto(&f)));
+    // Each conversation's folder is granted when its own command runs.
+    assert_eq!(
+        run_in(&a, &first, &cmd(), &["/d", "/c", "echo x> a.txt"]),
+        0
+    );
+    assert!(first.join("a.txt").is_file());
+    let listed = run_in(
+        &a,
+        &f.workspace,
+        &cmd(),
+        &["/d", "/c", "dir", second.to_str().unwrap()],
+    );
+    assert_ne!(listed, 0, "no command has run in the second folder yet");
+    assert_eq!(container_sid(&b), sid);
+    assert_eq!(
+        run_in(&b, &second, &cmd(), &["/d", "/c", "echo x> b.txt"]),
+        0
+    );
+    assert!(second.join("b.txt").is_file());
+    // Any other root still names a container of its own.
+    let other = f.root.path().join("other output");
+    fs::create_dir_all(&other).unwrap();
+    assert_ne!(container_sid(&with(&other)), sid);
+}
+
 /// Git metadata refuses a move by its own entries, but the folders around it
-/// are ordinary and writable. While a command runs the helper holds the
-/// metadata open, and Windows renames no folder with an open entry below it,
-/// so a repository cannot be moved aside to plant other metadata in its place.
+/// are ordinary and writable. Those between the workspace and the metadata
+/// keep everything but DELETE on themselves, so a repository cannot be moved
+/// aside to plant other metadata in its place, while their contents are
+/// created, changed and deleted as anywhere else.
 #[test]
 fn a_repository_cannot_be_moved_aside_to_plant_other_metadata() {
     let f = fixture("relocate");
@@ -323,26 +373,49 @@ fn a_repository_cannot_be_moved_aside_to_plant_other_metadata() {
         shell: shell.clone(),
         ..policy.clone()
     };
-    // The repository's own files stay writable and deletable.
+    // The repository's own files stay writable and renameable.
     assert_eq!(script(&f, &policy, "echo x> projects\\repo\\new.txt"), 0);
     assert_eq!(
         script(&f, &policy, "ren projects\\repo\\new.txt renamed.txt"),
         0
     );
     assert!(repo.join("renamed.txt").is_file());
+    // Each folder above the metadata carries one entry for itself, which is
+    // no longer modify, and one that only its contents inherit.
+    let sid = container_sid(&policy);
+    for folder in [repo.clone(), f.workspace.join("projects")] {
+        let entries = entries_for(&folder, &sid);
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.contains("(IO)") && entry.ends_with("(M)"))
+                && !entries.iter().any(|entry| !entry.contains("(IO)")
+                    && (entry.ends_with("(M)") || entry.ends_with("(F)"))),
+            "{}: {entries:?}",
+            folder.display()
+        );
+    }
     // Neither the repository nor a folder above it moves, by cmd or by the
     // shell, so nothing else can take its name.
     script(&f, &policy, "ren projects\\repo moved");
     script(&f, &policy, "move projects\\repo src\\");
     script(&f, &policy, "ren projects elsewhere");
     if let Some(shell) = &shell {
+        let sh = |command: &str| said(&f, &with_shell, shell, &["sh", "-c", command]);
         for command in [
             "mv projects/repo projects/moved",
             "mv projects/repo src/",
             "mv projects elsewhere",
         ] {
-            said(&f, &with_shell, shell, &["sh", "-c", command]);
+            sh(command);
         }
+        // What a command makes inside the repository, it still moves and
+        // deletes.
+        let made = sh(
+            "cd projects/repo && mkdir made && mv made kept && echo x > gone.txt && rm gone.txt",
+        );
+        assert!(repo.join("kept").is_dir(), "{made}");
+        assert!(!repo.join("gone.txt").exists(), "{made}");
     }
     for gone in ["projects/moved", "src/repo", "elsewhere"] {
         assert!(!f.workspace.join(gone).exists(), "{gone}");
@@ -355,7 +428,7 @@ fn a_repository_cannot_be_moved_aside_to_plant_other_metadata() {
     // A folder with no Git metadata below it still moves.
     assert_eq!(script(&f, &policy, "ren plain renamed-plain"), 0);
     assert!(f.workspace.join("renamed-plain/inner").is_dir());
-    // Once the command has ended, the user moves the repository freely.
+    // The user moves the repository freely.
     fs::rename(&repo, f.workspace.join("projects/user-moved")).unwrap();
 }
 
