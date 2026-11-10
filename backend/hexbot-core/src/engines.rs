@@ -1,5 +1,6 @@
 //! The container engine the bots' computer runs in: Colima, OrbStack, Docker
-//! Desktop, or Docker as a user service. Cua finds a running one by itself.
+//! Desktop (the one engine on Windows), or Docker as a user service. Cua finds
+//! a running one by itself.
 //! When none answers, as after the daemon's computer restarts for an update,
 //! the daemon starts the one the computer was made in, so the computer comes
 //! back without the user.
@@ -60,6 +61,8 @@ impl Engine {
             Self::Colima(profile) => return vec!["colima".into(), "start".into(), profile.clone()],
             Self::OrbStack => &["orb", "start"],
             Self::DockerDesktop if cfg!(target_os = "macos") => &["open", "-g", "-a", "Docker"],
+            // Docker Desktop's own command; it returns once the engine answers.
+            Self::DockerDesktop if cfg!(windows) => &["docker", "desktop", "start"],
             Self::DockerDesktop => &["systemctl", "--user", "start", "docker-desktop"],
             Self::Docker => &["systemctl", "--user", "start", "docker"],
             Self::Custom(command) => return command.clone(),
@@ -69,11 +72,21 @@ impl Engine {
 }
 
 fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
+    crate::osutil::user_home()
 }
 
 /// The engine a Docker endpoint such as `unix:///Users/me/.colima/default/docker.sock` belongs to.
 pub fn from_endpoint(host: &str) -> Option<Engine> {
+    // Docker Desktop on Windows listens on its own named pipes, such as
+    // `npipe:////./pipe/dockerDesktopLinuxEngine`. `docker_engine` is any
+    // engine's pipe and names none.
+    if let Some(pipe) = host.strip_prefix("npipe://") {
+        let name = pipe.rsplit(['/', '\\']).next().unwrap_or_default();
+        return name
+            .to_ascii_lowercase()
+            .starts_with("dockerdesktop")
+            .then_some(Engine::DockerDesktop);
+    }
     let path = host.strip_prefix("unix://")?;
     if let Some(rest) = path.split("/.colima/").nth(1) {
         let profile = rest.split('/').next().filter(|p| *p != "docker.sock");
@@ -154,6 +167,13 @@ fn installed() -> Option<Engine> {
     if cfg!(target_os = "macos") && Path::new("/Applications/Docker.app").is_dir() {
         return Some(Engine::DockerDesktop);
     }
+    if cfg!(windows) {
+        let app = std::env::var_os("ProgramFiles")
+            .map(|programs| Path::new(&programs).join(r"Docker\Docker\Docker Desktop.exe"));
+        if app.is_some_and(|app| app.is_file()) {
+            return Some(Engine::DockerDesktop);
+        }
+    }
     if cfg!(target_os = "linux") {
         let units = home.join(".config/systemd/user");
         if units.join("docker-desktop.service").exists() {
@@ -196,6 +216,13 @@ pub async fn start(engine: &Engine) -> Result<()> {
         .ok_or_else(|| Error::new(4211, format!("{program} is not installed")))?;
     let mut cmd = tokio::process::Command::new(&path);
     crate::credentials::desktop_environment(&mut cmd);
+    // On Windows the Docker CLI finds `docker desktop` under these folders.
+    #[cfg(windows)]
+    for name in ["ProgramFiles", "ProgramData"] {
+        if let Some(value) = std::env::var_os(name) {
+            cmd.env(name, value);
+        }
+    }
     // Colima runs limactl and docker from beside itself.
     if let Some(dir) = path.parent() {
         let rest = std::env::var_os("PATH").unwrap_or_default();
@@ -260,6 +287,11 @@ mod tests {
             ("unix:///run/user/1000/docker.sock", Some(Engine::Docker)),
             ("unix:///var/run/docker.sock", None),
             ("tcp://10.0.0.2:2375", None),
+            (
+                "npipe:////./pipe/dockerDesktopLinuxEngine",
+                Some(Engine::DockerDesktop),
+            ),
+            ("npipe:////./pipe/docker_engine", None),
         ] {
             assert_eq!(from_endpoint(host), engine, "{host}");
         }
