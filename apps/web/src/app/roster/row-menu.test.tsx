@@ -48,6 +48,7 @@ const bot = (patch: Partial<Bot>) =>
     display_name: 'Writer',
     last_activity_at: 0,
     name: 'writer',
+    pinned_at: null,
     sections_recent: [],
     status: 'idle',
     title: '',
@@ -168,6 +169,17 @@ describe('roster row menu', () => {
     expect(await menuFor(/HexBot/)).toEqual(['Unpin', 'Mark as read', 'Rename…', 'Settings'])
     fireEvent.click(screen.getByRole('menuitem', { name: 'Unpin' }))
     expect(pinBot).toHaveBeenCalledWith('hexbot', false)
+  })
+
+  it('offers no Pin on a daemon from before pins, which keeps the primary bot on top', async () => {
+    const primary = bot({ display_name: 'HexBot', name: 'hexbot', primary: true })
+    delete (primary as Partial<Bot>).pinned_at
+    useRooms.setState({ byId: {}, order: [] })
+    useBots.setState({ byName: { hexbot: primary }, order: ['hexbot'] })
+    render(<RosterColumn />)
+
+    expect(within(screen.getByTestId('roster-pinned')).getByText('HexBot')).toBeTruthy()
+    expect(await menuFor(/HexBot/)).toEqual(['Mark as read', 'Rename…', 'Settings'])
   })
 
   it('lists pinned bots as rows while you search', () => {

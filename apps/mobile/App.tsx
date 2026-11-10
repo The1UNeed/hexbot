@@ -1481,7 +1481,8 @@ function MobileApp({ children }: { children?: ReactNode }) {
     // Beside the sidebar on iOS; Android pushes the chat route when one opens.
     onOpen: Platform.OS === 'ios' ? c => select(`${c.kind}-${c.id}`) : openConversation,
     onSettings: demo ? undefined : openPanelFor,
-    onPin: demo ? undefined : pinConversation,
+    // A daemon from before pins sends no pinned_at and can't pin.
+    onPin: demo || mobile.bots.every(b => b.pinned_at === undefined) ? undefined : pinConversation,
     onMarkRead: demo ? undefined : markConversationRead,
     onRename: demo ? undefined : renameConversation,
     waiting: demo ? [] : waitingElsewhere,

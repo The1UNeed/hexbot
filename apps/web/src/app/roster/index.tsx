@@ -143,14 +143,15 @@ function rowMenu({
   unread
 }: {
   onMarkRead: () => void
-  onPin: () => void
+  /** Left out for a daemon from before pins, which can't pin. */
+  onPin?: () => void
   onRename: () => void
   onSettings: () => void
   pinned: boolean
   unread: boolean
 }): MenuItem[] {
   return [
-    { label: pinned ? 'Unpin' : 'Pin', onSelect: onPin },
+    ...(onPin ? [{ label: pinned ? 'Unpin' : 'Pin', onSelect: onPin }] : []),
     { disabled: !unread, label: 'Mark as read', onSelect: onMarkRead },
     { label: 'Rename…', onSelect: onRename },
     { label: null, separator: true },
@@ -207,11 +208,14 @@ function RoomRow({
 
   const menu = rowMenu({
     onMarkRead: () => latest && void useRooms.getState().markRead(room.id, latest.seq),
-    onPin: () =>
-      void useRooms
-        .getState()
-        .pin(room.id, !pinned)
-        .catch(() => undefined),
+    onPin:
+      room.pinned_at === undefined
+        ? undefined
+        : () =>
+            void useRooms
+              .getState()
+              .pin(room.id, !pinned)
+              .catch(() => undefined),
     onRename: () => onRename({ id: room.id, kind: 'room', name: room.name }),
     onSettings: () => onSettings(room.id),
     pinned,
@@ -341,11 +345,14 @@ function BotRow({
   const menu = rowMenu({
     onMarkRead: () =>
       void Promise.all(unread.map(section => sectionsMarkRead(section.id))).catch(() => undefined),
-    onPin: () =>
-      void useBots
-        .getState()
-        .pin(bot.name, !pinned)
-        .catch(() => undefined),
+    onPin:
+      bot.pinned_at === undefined
+        ? undefined
+        : () =>
+            void useBots
+              .getState()
+              .pin(bot.name, !pinned)
+              .catch(() => undefined),
     onRename: () => onRename({ id: bot.name, kind: 'bot', name: bot.display_name }),
     onSettings: () => onSettings(bot.name),
     pinned,
