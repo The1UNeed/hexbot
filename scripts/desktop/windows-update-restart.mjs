@@ -31,6 +31,12 @@ const originalManifest = JSON.parse(await readFile(join(bundle, 'manifest.json')
 const nextVersion = '999.0.0-nightly.windows.contract'
 const debugExe = resolve('backend/hexbot-core/target/debug/hexbot.exe')
 const files = new Map()
+// The installer reads a manifest's signature at the immutable
+// install/<version>/<track>.json.sig, as release.yml publishes it.
+const publishInstall = (track, manifest) => {
+  files.set(`install/${track}.json`, manifest)
+  files.set(`install/${JSON.parse(manifest).version}/${track}.json.sig`, Buffer.from(signature(testKey(), manifest)))
+}
 const server = createServer((request, response) => {
   const bytes = files.get(request.url?.slice(1))
   if (!bytes) { response.writeHead(404); response.end(); return }
@@ -127,8 +133,7 @@ try {
   const installManifest = Buffer.from(JSON.stringify({ schema: 1, channel: 'nightly', version: nextVersion, minInstaller: '0.1.5-0',
     targets: { 'windows-x86_64': { headless: { url: `${base}/${update.manifest.path}`, path: update.manifest.path,
       sha256: update.manifest.sha256, size: update.manifest.size, format: 'zip', manifest: manifestPath } } } }))
-  files.set('install/nightly.json', installManifest)
-  files.set('install/nightly.json.sig', Buffer.from(signature(testKey(), installManifest)))
+  publishInstall('nightly', installManifest)
   await exec('cargo', ['build', '--locked', '--manifest-path', 'backend/hexbot-installer/Cargo.toml', '--bin', 'hexbot-install'], { timeout: 300_000, maxBuffer: 16 * 1024 * 1024, windowsHide: true })
   const installOutput = await run(resolve('backend/hexbot-installer/target/debug/hexbot-install.exe'), ['--headless', '--nightly', '--yes', '--json'])
   console.log(installOutput.stdout)
@@ -164,8 +169,7 @@ try {
     const fullInstall = Buffer.from(JSON.stringify({ schema: 1, channel: 'stable', version: originalManifest.version, minInstaller: '0.1.5-0',
       targets: { 'windows-x86_64': { full: { path: 'cross-track-full.exe', size: fullNsis.length,
         sha256: createHash('sha256').update(fullNsis).digest('hex'), format: 'exe', appId: appId('stable'), productName: productName('stable', originalManifest.version) } } } }))
-    files.set('install/stable.json', fullInstall)
-    files.set('install/stable.json.sig', Buffer.from(signature(testKey(), fullInstall)))
+    publishInstall('stable', fullInstall)
     assert.match((await run(installer, ['--full', '--stable', '--yes', '--json'])).stdout, /"stage":"done"/)
     const fullReceipt = JSON.parse(await readFile(join(changedHome, 'install.json'), 'utf8'))
     assert.equal(fullReceipt.option, 'full')
@@ -188,8 +192,7 @@ try {
     files.set(oldArchive.manifest.path, await readFile(join(root, `cross-track-update-${track}`, oldArchive.manifest.path)))
     const offeredInstall = Buffer.from(JSON.stringify({ schema: 1, channel: track, version: offeredManifest.version, minInstaller: '0.1.5-0',
       targets: { 'windows-x86_64': { headless: { path: oldArchive.manifest.path, size: oldArchive.manifest.size, sha256: oldArchive.manifest.sha256, format: 'zip' } } } }))
-    files.set(`install/${track}.json`, offeredInstall)
-    files.set(`install/${track}.json.sig`, Buffer.from(signature(testKey(), offeredInstall)))
+    publishInstall(track, offeredInstall)
     const installedOutput = await run(installer, ['--headless', `--${track}`, '--yes', '--json'])
     assert.match(installedOutput.stdout, /"stage":"done"/)
     assert.equal(await readFile(join(changedHome, 'runtime/native-current.json'), 'utf8'), beforeSelection)
