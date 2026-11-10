@@ -304,6 +304,61 @@ fn auto_writes_only_the_workspace_and_never_git_or_secrets() {
     );
 }
 
+/// Git metadata refuses a move by its own entries, but the folders around it
+/// are ordinary and writable. While a command runs the helper holds the
+/// metadata open, and Windows renames no folder with an open entry below it,
+/// so a repository cannot be moved aside to plant other metadata in its place.
+#[test]
+fn a_repository_cannot_be_moved_aside_to_plant_other_metadata() {
+    let f = fixture("relocate");
+    let repo = f.workspace.join("projects").join("repo");
+    fs::create_dir_all(repo.join(".git/hooks")).unwrap();
+    fs::write(repo.join(".git/config"), "[core]\n").unwrap();
+    fs::write(repo.join("main.txt"), "code").unwrap();
+    fs::create_dir_all(f.workspace.join("plain/inner")).unwrap();
+    let mut policy = auto(&f);
+    policy.deny_write.push(repo.join(".git"));
+    let shell = bundled_shell();
+    let with_shell = Policy {
+        shell: shell.clone(),
+        ..policy.clone()
+    };
+    // The repository's own files stay writable and deletable.
+    assert_eq!(script(&f, &policy, "echo x> projects\\repo\\new.txt"), 0);
+    assert_eq!(
+        script(&f, &policy, "ren projects\\repo\\new.txt renamed.txt"),
+        0
+    );
+    assert!(repo.join("renamed.txt").is_file());
+    // Neither the repository nor a folder above it moves, by cmd or by the
+    // shell, so nothing else can take its name.
+    script(&f, &policy, "ren projects\\repo moved");
+    script(&f, &policy, "move projects\\repo src\\");
+    script(&f, &policy, "ren projects elsewhere");
+    if let Some(shell) = &shell {
+        for command in [
+            "mv projects/repo projects/moved",
+            "mv projects/repo src/",
+            "mv projects elsewhere",
+        ] {
+            said(&f, &with_shell, shell, &["sh", "-c", command]);
+        }
+    }
+    for gone in ["projects/moved", "src/repo", "elsewhere"] {
+        assert!(!f.workspace.join(gone).exists(), "{gone}");
+    }
+    assert_eq!(
+        fs::read_to_string(repo.join(".git/config")).unwrap(),
+        "[core]\n"
+    );
+    assert_eq!(fs::read_to_string(repo.join("main.txt")).unwrap(), "code");
+    // A folder with no Git metadata below it still moves.
+    assert_eq!(script(&f, &policy, "ren plain renamed-plain"), 0);
+    assert!(f.workspace.join("renamed-plain/inner").is_dir());
+    // Once the command has ended, the user moves the repository freely.
+    fs::rename(&repo, f.workspace.join("projects/user-moved")).unwrap();
+}
+
 #[test]
 fn auto_deletes_and_moves_workspace_files_but_never_git_or_secrets() {
     let f = fixture("delete");

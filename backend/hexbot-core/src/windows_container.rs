@@ -844,8 +844,9 @@ fn open_root(path: &Path) -> io::Result<OwnedHandle> {
 }
 
 /// The protected root at `path` as walks meet it: by its file identity, the
-/// link itself when it is one.
-fn limit_at(path: &Path, cap: u32) -> io::Result<Limit> {
+/// link itself when it is one. The open entry comes back too, for a caller
+/// that holds it.
+fn limit_at(path: &Path, cap: u32) -> io::Result<(Limit, OwnedHandle)> {
     let name = wide(path.as_os_str());
     // SAFETY: a NUL-terminated path; the handle is owned below.
     let handle = owned(unsafe {
@@ -860,11 +861,12 @@ fn limit_at(path: &Path, cap: u32) -> io::Result<Limit> {
         )
     })?;
     let info = information(handle.as_raw_handle())?;
-    Ok(Limit {
+    let limit = Limit {
         volume: info.volume,
         index: info.index(),
         cap,
-    })
+    };
+    Ok((limit, handle))
 }
 
 /// Open `name` inside `parent` through the parent's handle, never by path.
@@ -1314,6 +1316,12 @@ pub struct Container {
     /// Its private folder, which holds its home, AppData and temp folder, in
     /// the plain form programs are given.
     pub private: PathBuf,
+    /// The policy's Git metadata, open for as long as this value lives. Its
+    /// own entries refuse a move; Windows also renames no folder while an
+    /// entry below it is open, so a command cannot move the repository
+    /// around it aside and plant other metadata under its name. Keep this
+    /// value until the container's commands end.
+    pub held: Vec<OwnedHandle>,
 }
 
 /// The LOCALAPPDATA a contained command's environment names, inside the
@@ -1514,10 +1522,16 @@ pub fn prepare(policy: &Policy) -> io::Result<Container> {
         .map(|root| (root, READ))
         .chain(deny_all.iter().map(|root| (root, 0)))
         .collect();
-    let mut limits = Vec::new();
+    let (mut limits, mut held) = (Vec::new(), Vec::new());
     for (root, cap) in &caps {
         match limit_at(&root.canonical, *cap) {
-            Ok(limit) => limits.push(limit),
+            Ok((limit, entry)) => {
+                limits.push(limit);
+                // Git metadata, not secrets: only it runs as the user later.
+                if *cap == READ {
+                    held.push(entry);
+                }
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
@@ -1588,6 +1602,7 @@ pub fn prepare(policy: &Policy) -> io::Result<Container> {
         sid,
         profile,
         private,
+        held,
     })
 }
 
@@ -2162,8 +2177,9 @@ fn captured(
 /// with 126, as a shell does for a command it cannot run.
 pub fn exec(arguments: &[String]) -> ! {
     let code = match start(arguments) {
-        // The job ends the program's descendants when `child` drops.
-        Ok(child) => child
+        // The job ends the program's descendants when `child` drops. The
+        // container holds Git metadata open until then.
+        Ok((child, _container)) => child
             .wait()
             .map(|code| code as i32)
             .unwrap_or_else(|error| not_run(&error.to_string())),
@@ -2177,7 +2193,7 @@ fn not_run(message: &str) -> i32 {
     NOT_RUN
 }
 
-fn start(arguments: &[String]) -> Result<Contained, String> {
+fn start(arguments: &[String]) -> Result<(Contained, Container), String> {
     use base64::Engine;
     let [policy, separator, program, rest @ ..] = arguments else {
         return Err(USAGE.to_owned());
@@ -2199,7 +2215,7 @@ fn start(arguments: &[String]) -> Result<Contained, String> {
     let environment = environment(&container, std::env::vars_os());
     let directory = std::env::current_dir().ok();
     let arguments: Vec<OsString> = rest.iter().map(OsString::from).collect();
-    spawn(
+    let child = spawn(
         &container.sid,
         program,
         &arguments,
@@ -2212,7 +2228,8 @@ fn start(arguments: &[String]) -> Result<Contained, String> {
             "Could not start {} in the Windows sandbox: {error}",
             program.display()
         )
-    })
+    })?;
+    Ok((child, container))
 }
 
 /// `hexbot sandbox reset` removes every grant and profile in the home. The
