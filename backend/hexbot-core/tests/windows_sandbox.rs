@@ -432,6 +432,79 @@ fn a_repository_cannot_be_moved_aside_to_plant_other_metadata() {
     fs::rename(&repo, f.workspace.join("projects/user-moved")).unwrap();
 }
 
+/// A working folder that is the repository is writable itself, and another
+/// writable root, such as the bot's output folder, could take it whole. It is
+/// pinned as the folders below it are.
+#[test]
+fn a_working_folder_that_is_a_repository_cannot_be_moved_into_another_root() {
+    let f = fixture("relocate-root");
+    let repo = f.root.path().join("repo-root");
+    let output = f.root.path().join("output");
+    fs::create_dir_all(repo.join(".git")).unwrap();
+    fs::write(repo.join(".git/config"), "[core]\n").unwrap();
+    fs::write(repo.join("main.txt"), "code").unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let policy = Policy {
+        home: f.home.clone(),
+        access: Some(Access::Workspace),
+        writable: vec![repo.clone(), output.clone()],
+        deny_write: vec![repo.join(".git")],
+        ..Policy::default()
+    };
+    let shell = bundled_shell();
+    let with_shell = Policy {
+        shell: shell.clone(),
+        ..policy.clone()
+    };
+    // The command runs in the output folder, so no current directory holds
+    // the repository open.
+    run_in(
+        &policy,
+        &output,
+        &cmd(),
+        &["/d", "/c", "move ..\\repo-root taken"],
+    );
+    if let Some(shell) = &shell {
+        run_in(
+            &with_shell,
+            &output,
+            shell,
+            &["sh", "-c", "mv ../repo-root taken"],
+        );
+    }
+    assert!(!output.join("taken").exists());
+    assert_eq!(
+        fs::read_to_string(repo.join(".git/config")).unwrap(),
+        "[core]\n"
+    );
+    // The root still passes its grant on: its files are written and deleted.
+    assert_eq!(
+        run_in(
+            &policy,
+            &repo,
+            &cmd(),
+            &["/d", "/c", "echo x> new.txt && ren new.txt kept.txt"]
+        ),
+        0
+    );
+    assert!(repo.join("kept.txt").is_file());
+    let sid = container_sid(&policy);
+    let entries = entries_for(&repo, &sid);
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry.contains("(IO)") && entry.ends_with("(M)"))
+            && !entries.iter().any(|entry| !entry.contains("(IO)")
+                && (entry.ends_with("(M)") || entry.ends_with("(F)"))),
+        "{entries:?}"
+    );
+    // A second command finds the pinned root granted and does not refuse.
+    assert_eq!(
+        run_in(&policy, &repo, &cmd(), &["/d", "/c", "type main.txt"]),
+        0
+    );
+}
+
 #[test]
 fn auto_deletes_and_moves_workspace_files_but_never_git_or_secrets() {
     let f = fixture("delete");
@@ -477,11 +550,7 @@ fn auto_deletes_and_moves_workspace_files_but_never_git_or_secrets() {
             path.display()
         );
     }
-    for path in [
-        f.workspace.clone(),
-        f.workspace.join("src"),
-        f.workspace.join("made"),
-    ] {
+    for path in [f.workspace.join("src"), f.workspace.join("made")] {
         let entries = entries_for(&path, &sid);
         assert!(
             entries.iter().all(|entry| entry.ends_with("(OI)(CI)(M)")),
@@ -489,6 +558,17 @@ fn auto_deletes_and_moves_workspace_files_but_never_git_or_secrets() {
             path.display()
         );
     }
+    // The workspace holds Git metadata, so it is pinned: its contents
+    // inherit modify, and the folder itself keeps everything but delete.
+    let entries = entries_for(&f.workspace, &sid);
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry.ends_with("(OI)(CI)(IO)(M)"))
+            && !entries.iter().any(|entry| !entry.contains("(IO)")
+                && (entry.ends_with("(M)") || entry.ends_with("(F)"))),
+        "{entries:?}"
+    );
     // del, rmdir and move report success even when they change nothing;
     // check what is left. A secret is neither deleted, moved nor replaced.
     script(&f, &policy, "del /f /q .env");

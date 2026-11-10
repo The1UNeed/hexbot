@@ -16,9 +16,9 @@
 //! none (`Change::Cap`).
 //! Deleting or renaming an entry takes DELETE on it or FILE_DELETE_CHILD on its
 //! folder: no cap keeps the first and no grant carries the second, so neither
-//! is ever deleted or moved aside. The folders between a writable root and Git
-//! metadata inside it lose DELETE on themselves alone (`Change::Pin`), so the
-//! repository around the metadata cannot be moved aside either. A walk that grants a tree meets each
+//! is ever deleted or moved aside. The folders from a writable root down to
+//! Git metadata inside it lose DELETE on themselves alone (`Change::Pin`), so
+//! the repository around the metadata cannot be moved aside either. A walk that grants a tree meets each
 //! protected root by its file identity and writes only what the cap leaves
 //! below it, so no grant ever opens a protected entry, and a protected entry a
 //! walk cannot reach stops the command. A root that is or holds the user's
@@ -1653,17 +1653,19 @@ pub fn prepare(policy: &Policy) -> io::Result<Container> {
     for root in &deny_all {
         grant(&root.canonical, GrantKind::DenyAll, cap_of(root))?;
     }
-    // The folders between a writable root and Git metadata inside it stay
-    // where they are, so a command cannot move the repository around the
-    // metadata aside and plant other metadata under its name. Every command
-    // pins them again: a walk that grants the root anew writes plain entries.
+    // The folders from a writable root down to Git metadata inside it stay
+    // where they are, the root included: a command could move a working
+    // folder that is the repository whole into another writable root. So it
+    // cannot move the repository around the metadata aside and plant other
+    // metadata under its name. Every command pins them again: a walk that
+    // grants the root anew writes plain entries.
     let mut pinned = Vec::new();
     for root in &deny_write {
         for folder in root.canonical.ancestors().skip(1) {
             let folded = rules::fold(&plain(folder)?);
             let inside = writable
                 .iter()
-                .any(|root| folded != root.folded && rules::within(&folded, &root.folded));
+                .any(|root| rules::within(&folded, &root.folded));
             // A folder outside every writable root has only such folders above it.
             if !inside {
                 break;

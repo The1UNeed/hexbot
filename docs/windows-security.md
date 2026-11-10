@@ -68,8 +68,9 @@ What is guaranteed:
 - **Git metadata stays read-only.** `.git`, linked `gitdir` and `commondir`
   targets, bare repositories and configured hooks folders inside a writable
   root keep only a read entry, so a command can neither change them nor move
-  them aside to plant others. The folders between a writable root and Git
-  metadata inside it keep everything but the right to delete themselves,
+  them aside to plant others. The folders from a writable root down to Git
+  metadata inside it, the root included, keep everything but the right to
+  delete themselves,
   which a rename or move takes, so the repository around the metadata cannot
   be moved aside either; what is inside those folders is created, changed
   and deleted as anywhere else. As on Linux, a scan that stops early, a missing
