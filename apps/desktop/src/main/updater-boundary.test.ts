@@ -52,7 +52,7 @@ it.each(['win32', 'darwin', 'linux'])(
     expect(mock.error).toHaveBeenCalledWith('update check failed: HTTP 404 missing latest.yml')
     if (platform === 'win32') {
       expect(state).toMatchObject({
-        message: 'No update is available for this channel yet.',
+        message: 'No update is available on this track yet.',
         rawError: 'HTTP 404 missing latest.yml'
       })
     } else {

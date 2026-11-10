@@ -558,14 +558,14 @@ describe('settings', () => {
       currentVersion: '1.0.0',
       downloadedVersion: null,
       errorContext: 'check',
-      message: 'No update is available for this channel yet.',
+      message: 'No update is available on this track yet.',
       rawError: 'HTTP 404 https://updates.hexbot.app/full/win/x64/latest.yml',
       percent: null,
       status: 'error'
     }
 
     expect(updateLabel(failed)).toBe(
-      'Update check failed: No update is available for this channel yet.'
+      'Update check failed: No update is available on this track yet.'
     )
     expect(updateLabel({ ...failed, message: 'offline', rawError: undefined })).toBe(
       'Update check failed: offline'

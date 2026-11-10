@@ -22,7 +22,7 @@ Both ways offer the same three options and download only the files for the optio
 
 ### Hexbot Installer
 
-The [download page](/download/) offers the Hexbot Installer for your computer: a .dmg for macOS, an AppImage for Linux. Open it, choose Full, Client, or Headless, and install. On Linux, make the AppImage executable first (right-click it, or `chmod +x` it). On Windows, the download page offers the installer (.exe) for the Full and Client apps, and the terminal installer below covers every option.
+The [download page](/download/) offers the Hexbot Installer for your computer: a .dmg for macOS, an AppImage for Linux. Open it, choose Full, Client, or Headless, and install. On Linux, make the AppImage executable first (right-click it, or `chmod +x` it). There is no Hexbot Installer for Windows yet. On Windows, the download page offers the terminal installer below, which covers every option, and the Full and Client packages (.exe) are under "All downloads".
 
 ### Terminal
 
@@ -44,7 +44,7 @@ On Windows, download `hexbot-install-<version>-windows-x86_64.exe` from the [dow
 .\hexbot-install-<version>-windows-x86_64.exe --headless
 ```
 
-The same command installs `--full` or `--client`, and `--repair` fixes an existing install. The script asks which option to install when you name none.
+The same command installs `--full` or `--client`, and `--repair` fixes an existing install. The installer asks which option to install when you name none.
 
 | Flag | What it does |
 | --- | --- |
@@ -90,7 +90,7 @@ The Full and Client packages are still on the [download page](/download/#all) un
 - Intel for older Macs
 - AppImage for a portable Linux app
 - deb for Debian, Ubuntu, and related distributions
-- the installer (.exe) for Windows 10 or later, 64-bit
+- an .exe for Windows 10 or later, 64-bit
 
 Linux ARM and Windows ARM packages are not provided.
 

@@ -28,6 +28,9 @@ also over SSH:
 curl -fsSL https://hexbot.app/install.sh | sh
 ```
 
+On Windows, download `hexbot-install-<version>-windows-x86_64.exe` from the
+download page and run it in PowerShell. Windows has no Hexbot Installer yet.
+
 Both offer three options and download only the one you choose:
 
 - **Full** (`Hexbot`): the app plus the daemon. Install where your bots

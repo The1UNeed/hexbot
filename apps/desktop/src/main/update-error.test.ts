@@ -16,7 +16,7 @@ it.each([
   'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND'
 ])('explains a missing Windows feed: %s', raw => {
   expect(normalizeUpdateError(new Error(raw), 'win32')).toEqual({
-    message: 'No update is available for this channel yet.',
+    message: 'No update is available on this track yet.',
     raw
   })
 })
@@ -58,7 +58,7 @@ it('preserves other Windows failures and carries raw details through IPC state u
   ]) {
     expect(failed).toMatchObject({
       status: 'error',
-      message: 'No update is available for this channel yet.',
+      message: 'No update is available on this track yet.',
       rawError: 'HTTP 404'
     })
     expect(onCheckStart(failed)).toMatchObject({ message: null, rawError: null })

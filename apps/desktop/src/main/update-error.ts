@@ -21,7 +21,7 @@ export function normalizeUpdateError(
         detail
       ))
   )
-    return { message: 'No update is available for this channel yet.', raw }
+    return { message: 'No update is available on this track yet.', raw }
   if (
     /net::|ERR_(?:INTERNET|NETWORK|CONNECTION|NAME_NOT_RESOLVED|TIMED_OUT)|E(?:CONNRESET|CONNREFUSED|NOTFOUND|AI_AGAIN|TIMEDOUT)|network|fetch failed/i.test(
       detail
