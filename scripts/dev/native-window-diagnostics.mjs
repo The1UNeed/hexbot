@@ -83,7 +83,7 @@ export function instrumentNativeWindow({ app, BrowserWindow, ipcMain }, write) {
         }
     )
   }
-  for (const name of ['isVisible', 'isMinimized']) {
+  for (const name of ['isVisible', 'isMinimized', 'isFocused']) {
     replace(
       prototype,
       name,
