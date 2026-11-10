@@ -7,6 +7,14 @@ import { hexbotHome } from './backend/paths'
 import { migrateLegacyService, reconcileWindowsService } from './service'
 import { launchdPlist, systemdUnit } from './service-files'
 
+// The saved variables go back into the real process.env. Replacing it with
+// the copy would leave an object that looks names up with case, and Windows
+// names such as SystemRoot would go missing for every later test.
+function restoreEnvironment(saved: NodeJS.ProcessEnv): void {
+  for (const name of Object.keys(process.env)) if (!(name in saved)) delete process.env[name]
+  Object.assign(process.env, saved)
+}
+
 for (const platform of ['darwin', 'linux'] as const) {
   it(`migrates ${platform} services once, removing the legacy PATH`, async () => {
     const root = await mkdtemp(join(tmpdir(), 'hexbot-service-'))
@@ -184,7 +192,7 @@ it('Windows setup services pass the exact app home to every native child', async
       expect(call.options?.env?.HEXBOT_HOME).toBe(process.env.HEXBOT_HOME)
       expect(call.options?.windowsHide).toBe(true)
     }
-  } finally { process.env = previous; executable.mockRestore() }
+  } finally { restoreEnvironment(previous); executable.mockRestore() }
 })
 
 it('repairs only a verified running Windows task whose home daemon uses an older executable, including a missing script', async () => {

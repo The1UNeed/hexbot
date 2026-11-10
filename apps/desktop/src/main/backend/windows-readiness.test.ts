@@ -10,6 +10,15 @@ import { expect, it, vi } from 'vitest'
 import { windowsDaemon, windowsReadinessScript } from './windows-readiness'
 import { runningDaemonPort, selectedDaemon, lockedDaemonPid, DaemonManager } from './manager'
 import { reconcileWindowsService } from '../service'
+
+// The saved variables go back into the real process.env. Replacing it with
+// the copy would leave an object that looks names up with case, and Windows
+// names such as SystemRoot would go missing for every later test.
+function restoreEnvironment(saved: NodeJS.ProcessEnv): void {
+  for (const name of Object.keys(process.env)) if (!(name in saved)) delete process.env[name]
+  Object.assign(process.env, saved)
+}
+
 vi.mock('electron', () => ({ app: { on: () => undefined, isPackaged: true } }))
 const exec = promisify(execFile)
 
@@ -168,7 +177,7 @@ it.skipIf(process.platform !== 'win32' || !process.env.HEXBOT_NATIVE_TEST_BUNDLE
       if (!failed) throw cleanup
       console.error('Isolated readiness cleanup also failed:', String(cleanup).slice(0, 1024))
     } finally {
-      process.env = previous
+      restoreEnvironment(previous)
       await rm(root, { recursive: true, force: true })
     }
   }

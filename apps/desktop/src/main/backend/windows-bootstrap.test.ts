@@ -5,6 +5,15 @@ import { dirname, isAbsolute, join, relative } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { performBootstrap, runChild } from './bootstrap'
 import { binDir, canonicalRuntimePath, hexbotHome, nativeServiceExecutable } from './paths'
+
+// The saved variables go back into the real process.env. Replacing it with
+// the copy would leave an object that looks names up with case, and Windows
+// names such as SystemRoot would go missing for every later test.
+function restoreEnvironment(saved: NodeJS.ProcessEnv): void {
+  for (const name of Object.keys(process.env)) if (!(name in saved)) delete process.env[name]
+  Object.assign(process.env, saved)
+}
+
 vi.mock('../service', () => ({ migrateLegacyService: async () => undefined }))
 
 describe.skipIf(process.platform !== 'win32' || !process.env.HEXBOT_NATIVE_TEST_BUNDLE)('real Windows Full bootstrap', () => {
@@ -136,7 +145,7 @@ describe.skipIf(process.platform !== 'win32' || !process.env.HEXBOT_NATIVE_TEST_
       }))
       throw error
     } finally {
-      process.env = previous
+      restoreEnvironment(previous)
       await rm(root, { recursive: true, force: true })
     }
   }, 300_000)
