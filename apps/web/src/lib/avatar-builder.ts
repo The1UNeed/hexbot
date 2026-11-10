@@ -28,7 +28,10 @@ import {
   EYES,
   eyeTransform,
   type FaceMood,
-  INK
+  INK,
+  NAME_COLORS,
+  NAME_SHAPES,
+  NEUTRAL_COLORS
 } from './face-geometry'
 
 export {
@@ -57,11 +60,10 @@ export {
  */
 export function styleForName(name: string): AvatarStyle {
   const hue = hueFromString(name)
-  const colors = AVATAR_COLORS.filter(item => !['white', 'gray', 'brown'].includes(item.id))
 
   return {
-    color: colors[hue % colors.length]!.id,
-    shape: AVATAR_SHAPES[Math.floor(hue / 7) % AVATAR_SHAPES.length]!.id
+    color: NAME_COLORS[hue % NAME_COLORS.length]!,
+    shape: NAME_SHAPES[Math.floor(hue / 7) % NAME_SHAPES.length]!
   }
 }
 
@@ -71,7 +73,7 @@ export function styleForName(name: string): AvatarStyle {
  * whatever it is called.
  */
 export function randomStyle(taken: readonly (AvatarStyle | null | undefined)[] = []): AvatarStyle {
-  const colors = AVATAR_COLORS.filter(item => !['white', 'gray', 'brown'].includes(item.id))
+  const colors = AVATAR_COLORS.filter(item => !NEUTRAL_COLORS.includes(item.id))
 
   const all = AVATAR_SHAPES.flatMap(shape =>
     colors.map(color => ({ color: color.id, shape: shape.id }))

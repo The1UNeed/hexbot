@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react'
 
 import { isSubscription } from '../components/provider-panel'
-import { AvatarBuilder } from '../components/ui/avatar-builder'
+import { FaceChoices } from '../components/ui/avatar-builder'
 import { Thinking } from '../components/ui/thinking'
 import {
   AVATAR_COLORS,
@@ -19,7 +19,8 @@ import {
   matchFace,
   randomStyle,
   readFace,
-  READS_KEPT
+  READS_KEPT,
+  styleForName
 } from '../lib/avatar-builder'
 import { FACE_EMOTIONS, FACE_MOODS, facePose } from '../lib/face'
 
@@ -156,12 +157,27 @@ describe('avatar builder', () => {
 
   it('offers every shape and colour as a pressable button', () => {
     const onChange = vi.fn()
-    render(<AvatarBuilder onChange={onChange} value={{ color: 'blue', shape: 'round' }} />)
 
+    const { rerender } = render(
+      <FaceChoices onChange={onChange} value={{ color: 'blue', shape: 'round' }} />
+    )
+
+    expect(screen.getAllByRole('button')).toHaveLength(AVATAR_SHAPES.length + AVATAR_COLORS.length)
     expect(screen.getByRole('button', { name: 'Round', pressed: true })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Sky', pressed: true })).toBeInTheDocument()
+    // The name of each pick shows beside its heading.
+    expect(screen.getByRole('group', { name: 'Shape' })).toHaveTextContent('Round')
+    expect(screen.getByRole('group', { name: 'Colour' })).toHaveTextContent('Sky')
     screen.getByRole('button', { name: 'Cloud' }).click()
     expect(onChange).toHaveBeenCalledWith({ color: 'blue', shape: 'cloud' })
+    screen.getByRole('button', { name: 'Lemon' }).click()
+    expect(onChange).toHaveBeenCalledWith({ color: 'yellow', shape: 'round' })
+
+    // Behind a photo nothing is picked, and every choice still works.
+    rerender(<FaceChoices onChange={onChange} photo value={{ color: 'blue', shape: 'round' }} />)
+    expect(screen.queryByRole('button', { pressed: true })).toBeNull()
+    screen.getByRole('button', { name: 'Star' }).click()
+    expect(onChange).toHaveBeenCalledWith({ color: 'blue', shape: 'star' })
   })
 })
 
@@ -215,11 +231,22 @@ describe('reading faces back from pictures', () => {
   })
 })
 
+describe('styleForName', () => {
+  it('gives a name the face it always did, however many shapes and colours there are', () => {
+    // The daemon's own cases (`faces.rs`).
+    expect(styleForName('network')).toEqual({ color: 'violet', shape: 'square' })
+    expect(styleForName('HexBot')).toEqual({ color: 'teal', shape: 'triangle' })
+    expect(styleForName('Ünïcode 🦉')).toEqual({ color: 'orange', shape: 'square' })
+    expect(styleForName('')).toEqual({ color: 'red', shape: 'round' })
+  })
+})
+
 describe('randomStyle', () => {
   it('gives a new bot a face none of the others has while any is left', () => {
     const taken: { color: string; shape: string }[] = []
+    const faces = AVATAR_SHAPES.length * (AVATAR_COLORS.length - 3)
 
-    for (let index = 0; index < 64; index += 1) {
+    for (let index = 0; index < faces; index += 1) {
       const face = randomStyle(taken)
       expect(taken).not.toContainEqual(face)
       expect(['white', 'gray', 'brown']).not.toContain(face.color)

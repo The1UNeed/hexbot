@@ -711,6 +711,56 @@ try {
     .poll(async () => (await rpc('hexbot.bots.get', { name: 'owl' })).bot.persona)
     .toBe('You are Owl. Give short, clear answers.')
   await expect(page.getByTestId('fingerprint-soul')).toBeVisible()
+  // The face has its own page behind Change face. A pick is saved at once,
+  // with the picture of it this phone drew.
+  await page.getByTestId('action-change-face').click()
+  await expect(page.getByTestId('face-stage')).toBeVisible()
+  await expect(page.getByTestId('face-picker').getByRole('radio')).toHaveCount(40)
+  await page.getByTestId('face-picker-shape-star').click()
+  await page.getByTestId('face-picker-color-yellow').click()
+  await expect
+    .poll(async () => (await rpc('hexbot.bots.get', { name: 'owl' })).bot.face)
+    .toEqual({ color: 'yellow', shape: 'star' })
+  const faced = (await rpc('hexbot.bots.get', { name: 'owl' })).bot
+  assert.equal(faced.avatar?.mime, 'image/png', 'a picked face is saved with its picture')
+  const picture = Buffer.from(faced.avatar.data.replace(/^data:[^,]*,/, ''), 'base64')
+  assert.deepEqual(
+    [picture.readUInt32BE(16), picture.readUInt32BE(20)],
+    [512, 512],
+    'the picture is 512 pixels square'
+  )
+  await writeFile(path.join(artifacts, 'face-picture.png'), picture)
+  // The name of each pick shows beside its heading.
+  await expect(page.getByTestId('face-picker')).toContainText('Star')
+  await expect(page.getByTestId('face-picker')).toContainText('Lemon')
+  await settle()
+  await shot('face')
+  // A photo takes the face's place and puts it aside; one button brings it back.
+  const photoChooser = page.waitForEvent('filechooser')
+  await page.getByTestId('action-choose-bot-picture').click()
+  await (await photoChooser).setFiles({
+    name: 'me.png',
+    mimeType: 'image/png',
+    // A one-pixel PNG: a picture, but no face this app drew.
+    buffer: Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+      'base64'
+    )
+  })
+  await expect(page.getByTestId('face-photo')).toBeVisible()
+  const withPhoto = (await rpc('hexbot.bots.get', { name: 'owl' })).bot
+  assert.equal(withPhoto.face, null, 'a photo puts the face aside')
+  assert.deepEqual(withPhoto.kept_face, { color: 'yellow', shape: 'star' })
+  await expect(page.getByTestId('face-picker')).not.toContainText('Star')
+  await settle()
+  await shot('face-photo')
+  await page.getByTestId('action-use-generated-face').click()
+  await expect
+    .poll(async () => (await rpc('hexbot.bots.get', { name: 'owl' })).bot.face)
+    .toEqual({ color: 'yellow', shape: 'star' })
+  await expect(page.getByTestId('action-shuffle-face')).toBeVisible()
+  await page.getByTestId('management-sheet-back').click()
+  await expect(page.getByTestId('fingerprint-soul')).toBeVisible()
   await page.getByTestId('field-title').fill('Unsaved role on my phone')
   await page.getByTestId('fingerprint-memory').click()
   await page.getByTestId('document-mode').getByText('Edit').click()
@@ -1067,6 +1117,7 @@ try {
       'tool card',
       'heartbeat checklist, a run the card follows to its end, and its message in the chat',
       'soul editing',
+      'a face picked on its page and saved with its picture',
       'isolated bot memory',
       'About you',
       'daemon management panels and unlimited room turn budget',

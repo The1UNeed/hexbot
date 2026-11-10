@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { bubbleFill, FACE_COLORS, faceWash, randomFace } from '../ui/faces'
+import { bubbleFill, FACE_COLORS, FACE_SHAPES, faceForName, faceWash, randomFace } from '../ui/faces'
 import { palettes } from '../ui/theme'
 
 vi.mock('react-native', () => ({
@@ -72,8 +72,9 @@ describe('bubbleFill', () => {
 describe('randomFace', () => {
   it('gives a new bot a face none of the others has while any is left', () => {
     const taken: { color: string; shape: string }[] = []
+    const faces = FACE_SHAPES.length * (FACE_COLORS.length - 3)
 
-    for (let index = 0; index < 64; index += 1) {
+    for (let index = 0; index < faces; index += 1) {
       const face = randomFace(taken)
       expect(taken).not.toContainEqual(face)
       expect(['white', 'gray', 'brown']).not.toContain(face.color)
@@ -81,5 +82,14 @@ describe('randomFace', () => {
     }
 
     expect(taken).toContainEqual(randomFace(taken))
+  })
+})
+
+describe('faceForName', () => {
+  it('gives a name the face it always did, however many shapes and colours there are', () => {
+    // The daemon's own cases (`faces.rs`).
+    expect(faceForName('network')).toEqual({ color: 'violet', shape: 'square' })
+    expect(faceForName('HexBot')).toEqual({ color: 'teal', shape: 'triangle' })
+    expect(faceForName('')).toEqual({ color: 'red', shape: 'round' })
   })
 })

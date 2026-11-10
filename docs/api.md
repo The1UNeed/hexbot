@@ -410,15 +410,18 @@ that ran fast are billed at twice the standard price; Pi prices ChatGPT's tier
 from the reply. Requests at a new speed do not share the cached prefix, so the
 first reply after a change costs it once.
 `face` is the shape and colour of the bot's face (ids from
-`apps/web/src/lib/avatar-builder.ts`, such as `{shape: "pill", color:
-"orange"}`), stored in the profile's `assets/face.json`. Every bot without a
+`apps/web/src/lib/face-geometry.ts`, such as `{shape: "pill", color:
+"orange"}`), stored in the profile's `assets/face.json`. The daemon keeps any
+short lowercase ids, so shapes and colours can be added without a new daemon;
+an app from before a shape or colour draws Round or Chalk in its place until
+it is updated. Every bot without a
 photo has one. `hexbot.bots.create` without `face` or `avatar` picks one at
 random, one none of the owner's other bots has, shown or kept behind a
 photo, while any is left; the bot's name never changes it. The apps pick a
 random face the same way, counting `face` and `kept_face`, and send it,
 HexBot's included. Bots from before stored faces keep the face their display
-name gave them, saved once at start. The web app saves a face picked there
-as the `avatar` PNG too, for clients that only show pictures; clients that
+name gave them, saved once at start. The web and mobile apps save a face
+picked there as the `avatar` PNG too, for clients that only show pictures; clients that
 know `face` draw it live and wash the bot's bubbles with its colour.
 `face` is null while the bot shows an uploaded photo: a photo, or any change
 of the avatar without a face, puts the face aside in `assets/face.kept.json`,
@@ -427,7 +430,7 @@ so a face never describes a picture it did not come with. `hexbot.bots.update`
 refuses a non-null `face` without an `avatar` in the same call (4202), so a
 face never lands on a photo. Older daemons leave both out and refuse `face`
 in writes (4201 `unknown bot field: face`); the web and mobile apps then send
-the write again without it. The web app's face is then kept as the picture
+the write again without it. A picked face is then kept as the picture
 alone; a bot made on mobile draws its face from its name there.
 `workdir` and the `workspace_dir` setting are refused (4202) when they resolve
 inside the Hexbot home, symlinks included.

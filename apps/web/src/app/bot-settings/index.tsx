@@ -8,6 +8,7 @@ import { useBots } from '../../stores/bots'
 import { AdvancedTab } from './advanced'
 import { ApprovalsTab } from './approvals'
 import { ConnectorsTab } from './connectors'
+import { FaceTab } from './face'
 import { HeartbeatTab } from './heartbeat'
 import { MemoryTab } from './memory'
 import { ModelTab } from './model'
@@ -19,6 +20,7 @@ import { ToolsTab } from './tools'
 
 export const BOT_SETTINGS_TABS = [
   'profile',
+  'face',
   'persona',
   'model',
   'memory',
@@ -36,6 +38,7 @@ export const TAB_LABELS: Record<BotSettingsTab, string> = {
   advanced: 'Advanced',
   approvals: 'Approvals',
   connectors: 'Connectors',
+  face: 'Face',
   heartbeat: 'Heartbeat',
   memory: 'Memory',
   model: 'Model',
@@ -103,6 +106,7 @@ export function BotSettingsPanel({
   return (
     <section aria-label={`${TAB_LABELS[tab]} bot settings`} className={settingsPageClass}>
       {tab === 'profile' && <ProfileTab bot={bot} onSave={save} />}
+      {tab === 'face' && <FaceTab bot={bot} onSave={save} />}
       {tab === 'persona' && <PersonaTab bot={bot} onSave={save} />}
       {tab === 'model' && <ModelTab bot={bot} onSave={save} />}
       {tab === 'memory' && <MemoryTab bot={bot} onSave={save} />}

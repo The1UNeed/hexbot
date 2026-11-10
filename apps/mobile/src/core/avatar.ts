@@ -4,6 +4,13 @@ export function avatarSrc(avatar?: null | { data: string; mime: string }): strin
   return avatar.data.startsWith('data:') ? avatar.data : `data:${avatar.mime};base64,${avatar.data}`
 }
 
+/** A daemon from before stored faces refuses `face` on a bot write. */
+export function refusesFace(error: unknown): boolean {
+  const { code, message } = (error ?? {}) as { code?: number; message?: string }
+
+  return code === 4201 && message === 'unknown bot field: face'
+}
+
 /**
  * The bot's photo, if it has one. A face picked in an app also arrives as
  * `avatar` (its PNG), but it is not a photo: the face is drawn live instead.

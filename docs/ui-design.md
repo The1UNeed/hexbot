@@ -36,8 +36,8 @@ own visual identity. Read `CLAUDE.md` for the words.
 - Chart series, for bot visuals only: light #4F46E5, #0D9488, #D97706,
   #DB2777, #2F7CF6, #65A30D; dark #8B85FF, #2DD4BF, #FBBF24, #F472B6,
   #4C9AFF, #A3E635. The first is the accent; the rest step apart in hue.
-- Bot faces: Hexbot's eight outlines with the icon's two capsule eyes, white except
-  ink on Chalk. `lib/face-geometry.ts` is the source, copied to
+- Bot faces: Hexbot's nineteen outlines in twenty-one colours, with the icon's
+  two capsule eyes, white except ink on Chalk, Peach, Lemon and Lilac. `lib/face-geometry.ts` is the source, copied to
   mobile by `apps/web/scripts/face-rest.mjs`. The [provenance note](face-provenance.md)
   records where the outlines, eyes, and poses come from.
   Faces picked in an app are stored as shape and colour, with a static PNG
@@ -69,11 +69,14 @@ own visual identity. Read `CLAUDE.md` for the words.
   turn and look toward each other.
   Faces also show emotions (`lib/emotions.ts`), read from what happens in
   the open chat or room, never asked of the model: as a turn starts the
-  bot is shy at thanks, surprised at alarm or shouting, and otherwise
-  curious; a failed step confuses it, three frustrate it; a reply that
+  bot is shy at thanks, sheepish at a correction, determined when asked
+  to try again, surprised at alarm or shouting, amused at a laugh, excited
+  at good news, cheerful at a greeting, and otherwise curious, the first
+  that fits; a failed step confuses it, three frustrate it; a reply that
   fails or apologises is sad, one that reports passing tests, a merge or a
-  deploy celebrates, a long or many-step one is proud, and one that ends in
-  a question is curious. A quiet open chat gets bored after 3 minutes and
+  deploy celebrates, one that got there after a failed step is relieved, a
+  long or many-step one is proud, and one that ends in a question is
+  curious. A quiet open chat gets bored after 3 minutes and
   drowsy after 8, and anything happening wakes it. Each emotion shows for
   a second or a few over what the bot is doing, on its header, live and
   roster faces and its latest room message; drowsy stays until something
@@ -442,9 +445,15 @@ nested inside a card and no row carries more than one line of explanation.
   Closing returns to the chat that was open. `?connector=<id>` opens
   that connector's set-up sheet, which is how a "Fix Notion" action in the
   chat lands here.
-- Tabs in three groups: Profile, Soul, Model; Abilities (Memory, Tools,
+- Tabs in three groups: Profile, Face, Soul, Model; Abilities (Memory, Tools,
   Connectors, Skills); Manage (Approvals, Heartbeat, Advanced).
-- Tabs: Profile (face, name, label, description), Soul
+- Tabs: Profile (the face as one Change face button that opens Face, name,
+  label, description), Face (the bot as it will look, on a stage washed
+  with its colour over a sample of its bubble, with Shuffle and Use a
+  photo; beside it every shape in the chosen colour and every colour, the
+  name of each pick beside its heading; a pick is saved at once; behind a
+  photo the choices fade and still work, and Back to a face takes the
+  photo off), Soul
   (full-height editor, template menu with a confirm, character count
   against the soul limit, the bot's own limit below), Model
   (configured providers only, the provider's model list with the

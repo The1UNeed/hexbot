@@ -294,7 +294,8 @@ pnpm --filter @hexbot/mobile run smoke -- --static
 The test serves the exported Expo web app at iPhone size, pairs a device with
 DPoP, and uses the real Rust daemon and pinned Pi with a local streaming model.
 It checks chat, attachment-only sends, unlimited room turn budgets, rooms, soul,
-isolated memory, About you, scheduled jobs,
+a face picked on its page and saved with its picture, a photo and the way
+back to the face, isolated memory, About you, scheduled jobs,
 disconnect, reconnect and history. It writes screenshots and a JSON report to a
 new temporary directory. `HEXBOT_MOBILE_ARTIFACTS` selects an output directory.
 It creates and removes its own daemon home and workspace.
@@ -425,8 +426,8 @@ service migration. Rust tests cover update pruning and legacy listener refusal.
 `node apps/web/scripts/face-rest.mjs --check` checks that mobile uses the
 web's face geometry. `node apps/web/scripts/face-smoke.mjs` launches a
 temporary Vite entry and Chromium, then removes the entry and closes both.
-It checks all 264 PNG shape and colour roundtrips (current, older capsule, and flat
-eyes), every mood and emotion moving with no CSS animation, no writes from offscreen or
+It checks every PNG shape and colour roundtrip (current, older capsule, and flat
+eyes; 1,197 of them), every mood and emotion moving with no CSS animation, no writes from offscreen or
 held faces, reduced-motion rest poses and all acts, offscreen pause/resume,
 keyed reorder/unmount cleanup, and 24 working faces under 4× CPU throttling.
 `HEXBOT_FACE_ARTIFACTS` selects the screenshot directory. It uses the desktop

@@ -45,6 +45,25 @@ describe('emotions', () => {
     expect(feelingAbout('Can you look at the logs?')).toBe('curious')
   })
 
+  it('takes a correction, another go, a laugh, good news and a greeting each its own way', () => {
+    expect(feelingAbout("That's wrong, the total is 42")).toBe('sheepish')
+    expect(feelingAbout('not what I asked for')).toBe('sheepish')
+    expect(feelingAbout('Try again with the other key')).toBe('determined')
+    expect(feelingAbout('retry')).toBe('determined')
+    // A request about retries is not a request to go again.
+    expect(feelingAbout('Add retry logic to the fetcher')).toBe('curious')
+    expect(feelingAbout('haha nice one')).toBe('amused')
+    expect(feelingAbout('😂')).toBe('amused')
+    expect(feelingAbout("Let's go, the launch is on 🚀")).toBe('excited')
+    expect(feelingAbout('Good morning')).toBe('cheerful')
+    expect(feelingAbout('hey 👋')).toBe('cheerful')
+    // Not a greeting: "hi" has to stand alone.
+    expect(feelingAbout('History of the repo?')).toBe('curious')
+    // Praise and alarm still come first.
+    expect(feelingAbout('haha thanks')).toBe('shy')
+    expect(feelingAbout('hey, the build is broken')).toBe('surprised')
+  })
+
   it('feels about how a reply ended', () => {
     expect(feelingAfter(reply({ failed: true }))).toBe('sad')
     expect(feelingAfter(reply({ status: 'interrupted' }))).toBeNull()
@@ -53,6 +72,11 @@ describe('emotions', () => {
     expect(feelingAfter(reply({ text: "Sorry, I couldn't reach the server." }))).toBe('sad')
     expect(feelingAfter(reply({ text: 'All 42 tests pass 🎉' }))).toBe('celebrating')
     expect(feelingAfter(reply({ steps: 9 }))).toBe('proud')
+    // It got there although a step failed: relief, however long it took.
+    expect(feelingAfter(reply({ errors: 1 }))).toBe('relieved')
+    expect(feelingAfter(reply({ errors: 2, steps: 9 }))).toBe('relieved')
+    expect(feelingAfter(reply({ errors: 1, text: 'All tests pass.' }))).toBe('celebrating')
+    expect(feelingAfter(reply({ errors: 1, failed: true }))).toBe('sad')
     expect(feelingAfter(reply({ workedMs: 90_000 }))).toBe('proud')
     expect(feelingAfter(reply({ text: 'Which branch should I use?' }))).toBe('curious')
     expect(feelingAfter(reply({}))).toBeNull()

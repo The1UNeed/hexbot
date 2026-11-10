@@ -8,6 +8,7 @@ import {
   Button,
   ChoiceRow,
   confirm,
+  FacePicker,
   type FaceStyle,
   Field,
   Form,
@@ -39,15 +40,15 @@ import {
   type Section,
   type SkillRequirement
 } from './core/types'
-import { botPhoto } from './core/avatar'
+import { botPhoto, refusesFace } from './core/avatar'
 import { scheduleChange } from './core/jobs'
 import { requirementText } from './core/skills'
 import { canGive, pluginRows, withWaiting } from '../../web/src/lib/plugin-rows'
 import { GoogleSignInButton } from './ui/GoogleSignInButton'
 import { PluginIcon } from './ui/PluginIcon'
 import { isOpenRoom } from './core/routes'
-import { pickFile } from './core/pickFile'
 import { allowPush, pushPermission, testNotification } from './core/push'
+import { FaceEditor } from './FaceEditor'
 import { aboutFile, DocumentPanel, FingerprintCards } from './Fingerprint'
 import type { useMobile } from './core/useMobile'
 export type Panel = {
@@ -62,6 +63,7 @@ export type Panel = {
     | 'connectors'
     | 'devices'
     | 'dreams'
+    | 'face'
     | 'heartbeat'
     | 'job'
     | 'job-create'
@@ -96,11 +98,6 @@ export type Panel = {
 }
 type Values = Record<string, string | boolean>
 
-/** A daemon from before stored faces refuses `face` on a bot write. */
-function refusesFace(error: unknown): boolean {
-  const { code, message } = (error ?? {}) as { code?: number; message?: string }
-  return code === 4201 && message === 'unknown bot field: face'
-}
 type RowData = Record<string, unknown>
 const modes = [
   { id: 'inherit', label: 'Default' },
@@ -365,6 +362,8 @@ export function Management({
   const [notice, setNotice] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [loadedPanel, setLoadedPanel] = useState<Panel | null>(null)
+  // The new-bot card's shapes and colours, behind its Change face button.
+  const [choosingFace, setChoosingFace] = useState(false)
   // While a closed card slides away it keeps showing what it showed.
   const panel = requested ?? loadedPanel
   const panelLoading = loading || loadedPanel !== panel
@@ -1040,50 +1039,44 @@ export function Management({
               }
               size={88}
             />
-            {bot ? (
-              <View style={styles.pictureActions}>
+            <View style={styles.pictureActions}>
+              {bot ? null : (
                 <Button
-                  disabled={busy || mobile.connection !== 'connected'}
-                  icon="image-outline"
-                  label={botPhoto(bot) ? 'Change photo' : 'Use a photo'}
-                  onPress={() =>
-                    void run(async () => {
-                      const file = await pickFile(
-                        ['image/png', 'image/jpeg', 'image/webp'],
-                        2000000
-                      )
-                      if (!file) return
-                      const result = await rpc<{ bot: Bot }>('hexbot.bots.update', {
-                        name: bot.name,
-                        avatar: file.base64
-                      })
-                      onNavigate({ kind: 'bot', bot: result.bot, data: { draft: values } })
-                    })
-                  }
+                  disabled={busy}
+                  label="Shuffle"
+                  onPress={() => {
+                    const face = randomFace([
+                      newFace,
+                      ...mobile.bots.flatMap(b => [b.face, b.kept_face])
+                    ])
+                    setValues(v => ({ ...v, face_color: face.color, face_shape: face.shape }))
+                  }}
                   size="small"
-                  testID="action-choose-bot-picture"
+                  testID="action-shuffle-face"
                   variant="secondary"
                 />
-                {botPhoto(bot) ? (
-                  <Button
-                    disabled={busy || mobile.connection !== 'connected'}
-                    label="Use its face"
-                    onPress={() =>
-                      void run(async () => {
-                        const result = await rpc<{ bot: Bot }>('hexbot.bots.update', {
-                          name: bot.name,
-                          avatar: null
-                        })
-                        onNavigate({ kind: 'bot', bot: result.bot, data: { draft: values } })
-                      })
-                    }
-                    size="small"
-                    testID="action-use-generated-face"
-                    variant="plain"
-                  />
-                ) : null}
+              )}
+              <Button
+                disabled={busy}
+                label="Change face"
+                onPress={() => (bot ? navigate('face') : setChoosingFace(open => !open))}
+                size="small"
+                testID="action-change-face"
+                variant={bot ? 'secondary' : 'plain'}
+              />
+            </View>
+            {!bot && choosingFace && newFace ? (
+              <View style={styles.newFace}>
+                <FacePicker
+                  onChange={face =>
+                    setValues(v => ({ ...v, face_color: face.color, face_shape: face.shape }))
+                  }
+                  testID="new-bot-face"
+                  value={newFace}
+                />
               </View>
-            ) : (
+            ) : null}
+            {bot ? null : (
               <Text align="center" tone="muted" variant="footnote">
                 Renaming it keeps this face. You can add a photo after it is created.
               </Text>
@@ -1256,6 +1249,9 @@ export function Management({
           value={str(values.persona)}
         />
       )
+      break
+    case 'face':
+      content = bot ? <FaceEditor bot={bot} mobile={mobile} /> : null
       break
     case 'licenses':
       content = <Licenses />
@@ -2785,6 +2781,7 @@ export function Management({
     bot: bot ? `Edit ${bot.display_name}` : 'Edit bot',
     memory: 'Memory',
     soul: 'Soul',
+    face: 'Face',
     about: 'About you',
     licenses: 'Licenses',
     tools: 'Tools',
@@ -2906,6 +2903,7 @@ const styles = StyleSheet.create({
   dot: { borderRadius: 4, height: 8, width: 8 },
   identity: { alignItems: 'center', borderRadius: radius.panel, gap: 12, padding: 18 },
   inset: { gap: 14, paddingHorizontal: 16, paddingVertical: 14 },
+  newFace: { alignSelf: 'stretch' },
   pictureActions: {
     alignItems: 'center',
     flexDirection: 'row',
