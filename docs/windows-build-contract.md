@@ -416,24 +416,25 @@ concurrently copies real stdout/stderr bytes. B also inherits non-redirected
 stdin through .NET Framework's `GetStdHandle` setup; the daemon's service path
 does not read it. There is no explicit stdin copy, but input is still inherited.
 An A startup failure remains an overall control failure even if B passes.
-The normal workflow selects only A. Before claiming B acceptance, explicitly
-invoke the control and the full six-mode fixture with
-`HEXBOT_SHUTDOWN_FORWARD_STDIO=1`, using the verified bundle in
-`HEXBOT_NATIVE_TEST_BUNDLE`:
+The six-mode fixture's two service modes use B. The native run on commit
+4703c124 completed the four direct modes and then read no byte of standard
+output in 45 seconds from a live service child started as A: a daemon started
+with no window and no redirect gets a hidden console of its own, so its READY
+line never reaches the fixture. The real service redirects the daemon's output
+as B does (`windows_service.rs`). The control stays ignored, and
+`HEXBOT_SHUTDOWN_FORWARD_STDIO=0` runs the fixture's service modes as A:
 
 ```powershell
 node scripts/dev/run-one-rust-test.mjs backend/hexbot-core/Cargo.toml windows_shutdown real_service_parent_stdio_control
-$env:HEXBOT_SHUTDOWN_FORWARD_STDIO = '1'
+$env:HEXBOT_SHUTDOWN_FORWARD_STDIO = '0'
 node scripts/dev/run-one-rust-test.mjs backend/hexbot-core/Cargo.toml windows_shutdown owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock
 Remove-Item Env:\HEXBOT_SHUTDOWN_FORWARD_STDIO
 ```
 
 Portable stdin controls check input ownership; GNU compilation checks source only.
-PowerShell/C# and exact Windows stdio transport are unrun for the service
-controls this document describes; historical stdout loss is an inference, not
-an established cause. The native run on commit a17cbe6d completed four modes,
-timed out in service-exit readiness and never reached service-kill. The ignored
-control and B forwarding remain opt-in.
+The service modes with B forwarding have not completed natively yet: an
+earlier run on commit a17cbe6d, as A, also completed four modes and timed out
+in service-exit readiness.
 A separate native supervisor probe
 starts/stops a local tunnel metrics fixture twice through real services cleanup.
 It does not prove live Cloudflare enrollment. A volume without distinct 8.3 names

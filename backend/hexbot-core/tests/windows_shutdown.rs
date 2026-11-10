@@ -135,8 +135,14 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
             ),
         )
         .unwrap();
-        // The forwarding candidate remains opt-in pending native A/B review.
-        let forward = std::env::var("HEXBOT_SHUTDOWN_FORWARD_STDIO").as_deref() == Ok("1");
+        // The service parent forwards the daemon's output. Started with no
+        // window and no redirect, the daemon gets a hidden console of its
+        // own for standard output, and READY never reaches this test: the
+        // native run on 4703c124 read no byte in 45 seconds from a live
+        // daemon. The real service redirects the daemon's output too
+        // (`windows_service.rs`). HEXBOT_SHUTDOWN_FORWARD_STDIO=0 keeps the
+        // unforwarded launch.
+        let forward = std::env::var("HEXBOT_SHUTDOWN_FORWARD_STDIO").as_deref() != Ok("0");
         let (mut command, witness) = if service_mode {
             let (command, listener) = service_parent_fixture::service_command(&nonce, forward).await;
             (command, Some(listener))
