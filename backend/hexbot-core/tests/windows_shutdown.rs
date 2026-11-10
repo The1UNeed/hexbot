@@ -71,8 +71,14 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
         "service-kill",
     ] {
         let service_mode = mode.starts_with("service-");
+        // The section and service modes change the bot's model and tools.
+        // The bot's chat would be rebuilt with them at its first message,
+        // which starts Pi a second time, and this fixture's Pi starts once.
+        // So each of those modes opens a section of its own.
         let stored = if mode == "section" {
             "first-section"
+        } else if service_mode {
+            mode
         } else {
             "first"
         };
@@ -185,8 +191,8 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
             assert!(daemon_handle.alive() && peer_handle.alive());
             if service_mode {assert_ne!(daemon_pid,supervisor_pid);} else {assert_eq!(daemon_pid,supervisor_pid);}
             eprintln!("Shutdown {mode}: supervisor={supervisor_pid}; currentDaemon={}; independent={}",daemon_handle.snapshot(),peer_handle.snapshot());
-            if mode == "section" {
-                db::open(&home).unwrap().execute("INSERT INTO sections(id,bot,owner_id,title) VALUES('first-section','owl','local','Lifetime')",[]).unwrap();
+            if mode == "section" || service_mode {
+                db::open(&home).unwrap().execute("INSERT INTO sections(id,bot,owner_id,title) VALUES(?,'owl','local','Lifetime')",[stored]).unwrap();
             }
             let (mut socket, _) = connect_async(format!("ws://127.0.0.1:{port}/api/ws?token={token}")).await.unwrap();
             socket.send(Message::Text(json!({"jsonrpc":"2.0","id":"open-pi","method":"hexbot.sections.open","params":{"id":stored}}).to_string().into())).await.unwrap();
