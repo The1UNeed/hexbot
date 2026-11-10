@@ -65,9 +65,18 @@ What is guaranteed:
 - **Git metadata stays read-only.** `.git`, linked `gitdir` and `commondir`
   targets, bare repositories and configured hooks folders inside a writable
   root keep only a read entry, so a command can neither change them nor move
-  them aside to plant others. As on Linux, a scan that stops early, a missing
+  them aside to plant others. The folders around them stay writable, so the
+  helper also holds each of them open while a command runs: Windows renames
+  no folder that has an open entry below it, and the repository cannot be
+  moved aside either. As on Linux, a scan that stops early, a missing
   hooks target that would make a whole repository read-only, or a link on the
   way to Git metadata refuses the command.
+- **What the scan finds.** Git metadata and project secrets are found by the
+  scan Linux uses ([SECURITY.md](../SECURITY.md#tool-isolation)): the working
+  folder and output folders, three folders deep, without the dependency and
+  runtime folders `credential-policy.json` skips, such as `node_modules`.
+  What lies deeper or inside a skipped folder is granted like any other
+  file.
 - **Protection is the absence of an allow.** An AppContainer's access check
   ignores deny entries for its own SID, so Hexbot writes none: Git metadata
   and secrets are protected by what their allow entries leave out. No grant
@@ -300,6 +309,9 @@ Residual risks:
 - **New metadata and secrets.** `.git` folders and `.env` files created
   while a command runs inherit the root's allow. They lose it from the next
   command on.
+- **Repositories stay put while a command runs.** The helper holds Git
+  metadata open until its command ends, so nobody, the user included, renames
+  or moves a folder above it in that time.
 - **Permissions applied again.** A tool that applies inheritance again across
   a workspace, such as `icacls /reset /t` or Explorer's "Replace all child
   object permission entries", gives protected entries the workspace's allow
@@ -397,10 +409,14 @@ control and nothing else, and what is written into those folders afterwards
 inherits it. The DACL is set on the folder alone, never propagated, so it
 cannot walk into the containers' folders in the home or through a link.
 Untrusted reads (`common::read_regular`) open only regular local disk files:
-the path is judged by its text first, then opened without following a final
-link, and pipes, devices and other reparse points are refused — including
+the path is judged by its text first, and every link on the way to it by its
+target, then opened without following a final link, and pipes, devices and
+other reparse points are refused — including
 files in OneDrive and other cloud-synced folders, even fully downloaded
-ones, which are reparse points. Commands
+ones, which are reparse points. A working folder and a scheduled script are
+judged the same way before the daemon resolves them: a link on the way that
+names a network share, a device or a drive that is no fixed disk refuses, as
+does a chain of more than 40 links. Commands
 the daemon looks up take the `PATHEXT` extensions in turn and either
 separator, and the user's own folders are under the profile.
 

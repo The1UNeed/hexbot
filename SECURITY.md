@@ -182,15 +182,17 @@ in `git status`. Review those changes before running them. When `hooks`,
 symbolic link to a folder or file in the workspace, that target is protected
 like the metadata.
 
-Linux protects repositories and secret files that exist when a command starts.
-Repositories created during a command are **not protected** on Linux. The scan
+Linux and Windows protect repositories and secret files that exist when a
+command starts. Repositories created during a command are **not protected**
+on either. The scan
 visits workspace and output roots breadth-first, including read-only workspaces
 in Manual, through three nested folders. It resolves `.env` symlinks and Git
 pointers, and skips dependency/runtime folders listed in `credential-policy.json`
 plus shared temporary roots. Repositories and secrets beyond these limits are
-not covered by the Linux scan. If more than 1,000 directories need scanning,
-or the folders it reads hold more than 50,000 entries, only Linux bubblewrap
-commands refuse to run and require an approved `full_access` retry. For
+not covered by the scan on Linux or Windows. If more than 1,000 directories need scanning,
+or the folders it reads hold more than 50,000 entries, Linux bubblewrap and
+Windows commands refuse to run. Linux then needs an approved `full_access`
+retry; Windows, which has none, needs a smaller workspace or Bypass. For
 `execute_code`, use a smaller workspace or run the Python code through the
 terminal tool with `full_access` and a reason; a scheduled script needs a
 smaller workspace. macOS
