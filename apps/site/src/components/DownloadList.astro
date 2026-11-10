@@ -11,7 +11,7 @@ const rows = (edition: 'full' | 'client', os?: 'mac' | 'linux' | 'win') =>
 const groups = [
   ['Hexbot for Mac', 'Apple Silicon or Intel. Updates itself.', rows('full', 'mac')],
   ['Hexbot for Linux', 'An AppImage for any distribution, or a deb for Debian and Ubuntu. Updates itself.', rows('full', 'linux')],
-  ['Hexbot for Windows', 'Windows x64 installer (.exe).', rows('full', 'win')],
+  ['Hexbot for Windows', 'An .exe for Windows 10 or later, 64-bit. Updates itself.', rows('full', 'win')],
   ['Hexbot Client', 'Just the app, for a second computer that connects to the one running your bots.', rows('client')],
 ] as const
 ---

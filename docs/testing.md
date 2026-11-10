@@ -482,8 +482,10 @@ runtime, bootstrap, scheduled task, signed update and both Nightly
 identities. `.github/workflows/windows-security.yml` runs the Pi extension
 probes and the Rust `windows_security` boundary probe as a new standard user;
 [Windows security](windows-security.md#verification) lists what they prove.
-The release workflow separately includes Windows x64 packaging and installer
-jobs; portable release fixtures verify that plumbing. See
+A release runs `windows-security.yml` on its own commit before it builds;
+`windows-contract.yml`, which holds the AppContainer and NSIS suites, runs on
+pull requests only. The release workflow separately includes Windows x64
+packaging and installer jobs; portable release fixtures verify that plumbing. See
 [the build contract](windows-build-contract.md) for the runtime layout and
 the native controls.
 

@@ -16,6 +16,12 @@ const builder = createRequire(desktop.resolve('electron-builder'))
 const { load } = createRequire(builder.resolve('app-builder-lib/out/packager.js'))('js-yaml')
 const { jobs } = load(source)
 
+test('a release proves the Windows sandbox boundary before it builds', () => {
+  const job = name => source.match(new RegExp(`^  ${name}:\\n([\\s\\S]*?)(?=^  [a-z-]+:\\n|(?![\\s\\S]))`, 'm'))?.[1] ?? ''
+  assert.match(job('windows'), /^    uses: \.\/\.github\/workflows\/windows-security\.yml$/m)
+  for (const name of ['build', 'installer']) assert.match(job(name), /^    needs: \[preflight, check, windows\]$/m, name)
+})
+
 test('both release editions build Windows x64 with bash and per-user NSIS names', async () => {
   assert.deepEqual(jobs.build.strategy.matrix.edition, ['full', 'client'])
   assert.equal(jobs.build.strategy.matrix.build.length * jobs.build.strategy.matrix.edition.length, 8)

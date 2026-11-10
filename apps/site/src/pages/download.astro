@@ -117,7 +117,7 @@ const steps = [
   {windowsInstaller && installers && (
     <section id="windows" class="mx-auto max-w-[720px] px-5 pt-20 sm:px-8">
       <h2 class="display-sm text-center text-[1.75rem]">Windows x64 instructions</h2>
-      <p class="mt-3 text-mute">Download the <a href={windowsInstaller.url} download>Windows CLI installer</a>, then open PowerShell in that folder. Choose one install option:</p>
+      <p class="mt-3 text-mute">Download the <a href={windowsInstaller.url} download>Windows terminal installer</a>, then open PowerShell in that folder. Choose one install option:</p>
       <pre class="mt-4 overflow-x-auto rounded-[14px] bg-ink p-4 text-paper"><code>{['--full', '--client', '--headless'].map(option => `${windowsCommand} ${option} --${installers.track}`).join('\n')}</code></pre>
       <p class="mt-4 text-mute">Run the same file again to repair or uninstall:</p>
       <pre class="mt-3 overflow-x-auto rounded-[14px] bg-ink p-4 text-paper"><code>{`${windowsCommand} --repair\n${windowsCommand} --uninstall`}</code></pre>
