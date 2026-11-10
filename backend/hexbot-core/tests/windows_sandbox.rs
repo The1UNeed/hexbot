@@ -498,7 +498,17 @@ fn a_working_folder_that_is_a_repository_cannot_be_moved_into_another_root() {
                 && (entry.ends_with("(M)") || entry.ends_with("(F)"))),
         "{entries:?}"
     );
-    // A second command finds the pinned root granted and does not refuse.
+    // The pinned root still counts as granted, so a later command does not
+    // walk it again, which would leave it unpinned for a moment.
+    let container = sandbox::prepare(&policy).unwrap();
+    assert!(
+        sandbox::applied(
+            &fs::canonicalize(&repo).unwrap(),
+            sandbox::GrantKind::Modify.change(),
+            &container.sid
+        )
+        .unwrap()
+    );
     assert_eq!(
         run_in(&policy, &repo, &cmd(), &["/d", "/c", "type main.txt"]),
         0
