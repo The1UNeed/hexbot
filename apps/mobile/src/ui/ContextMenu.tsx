@@ -52,6 +52,34 @@ export interface MenuItem {
 }
 
 /**
+ * Below the pressed thing when it fits or has more room there, otherwise
+ * above. Kept inside the safe area when neither side has room, as on a phone
+ * in landscape; it may then cover part of the lifted copy.
+ */
+export function menuPlace(
+  frame: MenuFrame,
+  height: number,
+  screen: number,
+  insets: { bottom: number; top: number }
+): { downward: boolean; place: { bottom: number } | { top: number } } {
+  const below = screen - insets.bottom - (frame.y + frame.h) - GAP
+  const downward = below >= height || below >= frame.y - insets.top - GAP
+  const room = screen - insets.top - insets.bottom - GAP * 2 - height
+
+  return {
+    downward,
+    place: downward
+      ? { top: Math.max(insets.top + GAP, Math.min(frame.y + frame.h + GAP, insets.top + GAP + room)) }
+      : {
+          bottom: Math.max(
+            insets.bottom + GAP,
+            Math.min(screen - frame.y + GAP, insets.bottom + GAP + room)
+          )
+        }
+  }
+}
+
+/**
  * A long-press menu in the manner of iOS: the screen blurs, the pressed thing
  * lifts in place, and a short list of actions opens beside it. Tapping the
  * lifted copy does what tapping the original does; tapping anywhere else
@@ -97,17 +125,13 @@ export function ContextMenu({
 
   const width = Math.min(WIDTH, window.width - 32)
   const height = items.length * ITEM + items.filter((item, i) => i > 0 && item.group).length * 8
-  const below = window.height - insets.bottom - (frame.y + frame.h) - GAP
-  const downward = below >= height || below >= frame.y - insets.top - GAP
+  const { downward, place } = menuPlace(frame, height, window.height, insets)
   // Aligned with the side of the screen the pressed thing is on, as iOS does.
   const fromRight = frame.x + frame.w / 2 > window.width / 2
   const left = Math.min(
     Math.max(16, fromRight ? frame.x + frame.w - width : frame.x),
     window.width - width - 16
   )
-  const place = downward
-    ? { top: frame.y + frame.h + GAP }
-    : { bottom: window.height - frame.y + GAP }
   const origin = `${downward ? 'top' : 'bottom'} ${fromRight ? 'right' : 'left'}`
   // A full-width row lifts as an inset card; anything smaller grows a little.
   const wide = frame.w > window.width - 32
