@@ -189,11 +189,7 @@ fn write(home: &Path, svc: &Service, value: &Value) -> Result<()> {
     let file = path(home, svc);
     let dir = file.parent().expect("accounts dir");
     std::fs::create_dir_all(dir)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-    }
+    crate::osutil::private_dir(dir)?;
     common::atomic_write(
         &file,
         &serde_json::to_vec_pretty(value).map_err(|e| Error::new(5200, e.to_string()))?,
