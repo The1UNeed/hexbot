@@ -1332,7 +1332,7 @@ fn linked(
 /// scan must never reach: only a link whose every hop stays on a local disk
 /// is followed.
 #[cfg(windows)]
-fn local_link(path: &Path) -> bool {
+pub(crate) fn local_link(path: &Path) -> bool {
     linked(
         &mut WorkspaceProtected::default(),
         &GitConfigs::default(),
@@ -1431,9 +1431,11 @@ fn git_metadata(
     path: &Path,
     worktree: &Path,
 ) -> Result<()> {
+    // First, before anything resolves the path: on Windows a `.git` that is
+    // a link to a network share fails here, unopened.
+    linked(protected, configs, path, &[])?;
     add_path(&mut protected.git, path)?;
     protected.worktrees.insert(real_root(worktree)?);
-    linked(protected, configs, path, &[])?;
     let mut dir = path.to_owned();
     if !path.is_dir() {
         let text = regular_file(path)?.unwrap_or_default();
@@ -1479,19 +1481,20 @@ fn git_metadata(
 /// literal .git belongs to the worktree around it; any other one is a bare
 /// repository, its own worktree.
 fn git_directory(path: &Path) -> bool {
-    // Windows does not follow a HEAD or objects link here: it may name a
-    // network share. Counting one as present only protects more.
-    let present = |path: PathBuf| {
-        if cfg!(windows) {
-            path.symlink_metadata().is_ok()
-        } else {
-            path.exists()
-        }
-    };
     path.file_name()
         .is_some_and(|name| folded(Path::new(name)).to_string_lossy().ends_with(".git"))
-        && present(path.join("HEAD"))
-        && present(path.join("objects"))
+        && present(&path.join("HEAD"))
+        && present(&path.join("objects"))
+}
+/// Whether Git metadata has this entry. Windows does not follow a link to
+/// find out: it may name a network share. Counting one as present only
+/// protects more.
+fn present(path: &Path) -> bool {
+    if cfg!(windows) {
+        path.symlink_metadata().is_ok()
+    } else {
+        path.exists()
+    }
 }
 fn bare_repository(path: &Path) -> bool {
     path.file_name()
@@ -1535,7 +1538,7 @@ fn workspace_protected(roots: &[PathBuf], limit: usize) -> Result<WorkspaceProte
         }
         for parent in dir.ancestors().filter(|p| p.parent().is_some()) {
             let marker = parent.join(".git");
-            if marker.exists() {
+            if present(&marker) {
                 record_metadata(&mut protected, &mut configs, &marker, parent);
             }
         }
