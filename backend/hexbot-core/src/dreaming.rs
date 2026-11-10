@@ -1871,6 +1871,13 @@ impl Dreaming {
                 .and_then(crate::windows_paths::sandbox::local)
                 .map_err(|reason| Error::new(4302, format!("{reason}: {script}")))?;
             crate::windows_sandbox::fixed_drive(&plain)?;
+            // Resolving the script below follows links on the way to it.
+            if !crate::credentials::local_link(&path) {
+                return Err(Error::new(
+                    4302,
+                    format!("{}: {script}", crate::windows_paths::sandbox::LINKED),
+                ));
+            }
         }
         let path = crate::credentials::canonical(&path)?;
         let workspace = match workdir {

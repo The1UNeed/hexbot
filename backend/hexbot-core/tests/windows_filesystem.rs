@@ -140,6 +140,23 @@ fn reads_open_only_local_disk_files() {
             error.message
         );
     }
+    // A link on the way is followed while every hop stays on a local disk.
+    let through = base.path().join("link").join("text");
+    assert_eq!(common::read_regular(&through, 5).unwrap(), b"12345");
+    // A chain too long to judge refuses rather than resolve: Windows follows
+    // more hops than the daemon checks, and a later one could name a share.
+    let mut target = base.path().to_path_buf();
+    for hop in 0..41 {
+        let link = base.path().join(format!("hop{hop}"));
+        junction(&link, &target);
+        target = link;
+    }
+    let error = common::read_regular(&target.join("text"), 5).unwrap_err();
+    assert!(
+        error.message.contains("link that leaves"),
+        "{}",
+        error.message
+    );
 }
 
 #[test]

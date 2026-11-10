@@ -241,6 +241,9 @@ pub mod sandbox {
     }
 
     pub const RESERVED: &str = "Paths cannot use a reserved Windows device name";
+    /// A link on the way names a network share, a device or a drive that is
+    /// no fixed disk, or the chain of links is too long to judge.
+    pub const LINKED: &str = "Paths cannot pass through a link that leaves this computer's disks";
     pub const TRAILING: &str = "Paths cannot have names that end in a dot or space";
 
     /// A disk path in plain form whose names Windows opens as named: never a

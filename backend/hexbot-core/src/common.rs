@@ -488,8 +488,9 @@ pub(crate) enum DiskEntry {
 #[cfg(windows)]
 pub(crate) const NOT_UNICODE: &str = "Windows paths must be Unicode";
 /// Open a path the way an untrusted one must be on Windows. Its text is
-/// judged first (`windows_paths::sandbox::local`), so a network, device or
-/// stream path is never opened; then one handle opens it without following a
+/// judged first (`windows_paths::sandbox::local`), and every link on the way
+/// by its target (`credentials::local_link`), so a network, device or stream
+/// path is never opened; then one handle opens it without following a
 /// final link, and it is a file only when that handle is a disk file that is
 /// no reparse point. Nothing at the path is `NotFound`.
 #[cfg(windows)]
@@ -513,6 +514,10 @@ pub(crate) fn open_disk_entry(path: &Path) -> std::io::Result<DiskEntry> {
     };
     if let Err(reason) = crate::windows_paths::sandbox::local(text) {
         return Ok(DiskEntry::Refused(reason));
+    }
+    // The open below follows links on the way to the file.
+    if !crate::credentials::local_link(path) {
+        return Ok(DiskEntry::Refused(crate::windows_paths::sandbox::LINKED));
     }
     let file = fs::OpenOptions::new()
         .read(true)
@@ -597,6 +602,13 @@ pub fn check_workdir(home: &Path, configured: &str) -> Result<std::path::PathBuf
             .and_then(crate::windows_paths::sandbox::local)
             .map_err(|reason| Error::new(4202, format!("{reason}: {configured}")))?;
         crate::windows_sandbox::fixed_drive(&plain)?;
+        // The checks below resolve the folder, links included.
+        if !crate::credentials::local_link(&path) {
+            return Err(Error::new(
+                4202,
+                format!("{}: {configured}", crate::windows_paths::sandbox::LINKED),
+            ));
+        }
     }
     if path
         .components()

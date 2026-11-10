@@ -1320,6 +1320,14 @@ fn linked(
                         }
                         rest.extend(parts(&link));
                     }
+                    // Windows resolves longer chains than this walk judges,
+                    // and the next hop could name a share.
+                    Ok(_) if cfg!(windows) => {
+                        return Err(Error::new(
+                            5240,
+                            format!("Too many links on the way to {}", path.display()),
+                        ));
+                    }
                     _ => dir = next,
                 }
             }
@@ -1328,9 +1336,10 @@ fn linked(
     }
     Ok(())
 }
-/// On Windows a link in the workspace can name a network share, which the
-/// scan must never reach: only a link whose every hop stays on a local disk
-/// is followed.
+/// On Windows a link on the way to a path can name a network share, which
+/// the daemon must never reach with its own sign-in: only a path whose every
+/// hop stays on a local fixed disk is resolved or opened. Whoever resolves a
+/// path a bot or a workspace names asks this first.
 #[cfg(windows)]
 pub(crate) fn local_link(path: &Path) -> bool {
     linked(
