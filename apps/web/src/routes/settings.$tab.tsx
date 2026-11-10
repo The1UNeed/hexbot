@@ -1,6 +1,7 @@
 import { createFileRoute, redirect, useNavigate } from '@tanstack/react-router'
 import {
   Activity,
+  Bell,
   Brain,
   Download,
   Gauge,
@@ -44,6 +45,7 @@ const ITEMS: Record<SettingsTab, SettingsTabItem<SettingsTab>> = {
   diagnostics: { icon: Activity, id: 'diagnostics', label: 'Diagnostics' },
   memory: { icon: Brain, id: 'memory', label: 'Memory' },
   network: { icon: Wifi, id: 'network', label: 'Network' },
+  notifications: { icon: Bell, id: 'notifications', label: 'Notifications' },
   passwords: { icon: LockKeyhole, id: 'passwords', label: 'Passwords' },
   plugins: { icon: Puzzle, id: 'plugins', label: 'Plugins' },
   privacy: { icon: ShieldEllipsis, id: 'privacy', label: 'Privacy' },
@@ -57,7 +59,7 @@ const GROUPS: { ids: SettingsTab[]; label: string }[] = [
   { ids: ['plugins', 'passwords'], label: 'Bots' },
   { ids: ['computer'], label: 'Manuals' },
   { ids: ['network', 'connect'], label: 'Devices' },
-  { ids: ['memory', 'approvals', 'appearance'], label: 'You' },
+  { ids: ['memory', 'approvals', 'notifications', 'appearance'], label: 'You' },
   { ids: ['updates', 'privacy', 'about'], label: 'App' },
   { ids: ['diagnostics'], label: 'Advanced' }
 ]

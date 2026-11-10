@@ -1,5 +1,6 @@
 //! Native Hexbot daemon with Pi agent sessions and the existing frontend contract.
 
+pub mod accounts;
 mod admission;
 pub mod auth;
 pub mod catalog;
@@ -13,9 +14,13 @@ pub mod db;
 pub mod diagnostics;
 pub mod dpop;
 pub mod dreaming;
+pub mod engines;
 pub mod events;
+pub mod faces;
 pub mod http;
 mod install_ownership;
+pub mod log_files;
+pub mod mail;
 pub mod memory;
 pub mod native_external_tools;
 pub mod native_product_tools;
@@ -32,6 +37,7 @@ pub mod rooms;
 pub mod rpc;
 pub mod runtime;
 pub mod runtime_store;
+pub mod searxng;
 pub mod server;
 pub mod services;
 pub mod settings;

@@ -60,6 +60,14 @@ test('ad-hoc Electron bundles launch without hardened library validation', { ski
   assert.equal(result.stdout.trim(), 'app launched')
 })
 
+test('a branch with a pull request runs CI once, not once per event', async () => {
+  for (const workflow of ['ci.yml', 'windows-security.yml']) {
+    const source = await readFile(new URL(`../../.github/workflows/${workflow}`, import.meta.url), 'utf8')
+    assert.match(source, /^  push:\n    branches: \[main\]\n/m, workflow)
+    assert.match(source, /^  pull_request:/m, workflow)
+  }
+})
+
 test('release actions cannot use mutable third-party refs', async () => {
   for (const workflow of ['ci.yml', 'release.yml']) {
     const source = await readFile(new URL(`../../.github/workflows/${workflow}`, import.meta.url), 'utf8')
@@ -103,7 +111,14 @@ test('electron-builder applies the custom entitlements to signed app contents', 
 test('CI gates releases on all Pi tests, macOS Rust tests and staged runtime sessions', async () => {
   const ci = await readFile(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8')
   const release = await readFile(new URL('../../.github/workflows/release.yml', import.meta.url), 'utf8')
-  assert.match(ci, /os: \[ubuntu-24\.04, macos-latest\]/)
+  assert.match(ci, /name: Rust daemon and Pi integration \(ubuntu-24\.04\)/)
+  const macos = ci.match(/^  macos:\n([\s\S]*?)(?=^  [a-z-]+:$)/m)?.[1]
+  assert(macos, 'Missing the macOS job')
+  assert.match(macos, /runs-on: macos-latest/)
+  assert.match(macos, /working-directory: backend\/hexbot-core\n\s+run: cargo test --locked --no-fail-fast/)
+  assert.match(macos, /node --test \.\.\/pi-runtime\/\*\.test\.mjs/)
+  assert.match(macos, /cargo test --locked --manifest-path backend\/hexbot-installer\/Cargo\.toml/)
+  assert.match(macos, /run e2e:lifecycle/)
   assert.match(ci, /node --test \.\.\/pi-runtime\/\*\.test\.mjs/)
   assert.match(ci, /HEXBOT_TEST_PI="\$GITHUB_WORKSPACE\/apps\/desktop\/resources\/hexbot-native\/pi\/hexbot-pi" cargo test .*--test runtime -- --ignored/)
   assert.match(release, /uses: \.\/\.github\/workflows\/ci\.yml/)

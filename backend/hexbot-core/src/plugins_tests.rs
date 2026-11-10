@@ -34,6 +34,82 @@ fn disabled_connector_with_an_incident_is_not_ready() {
 }
 
 #[test]
+fn a_server_or_package_with_an_empty_value_is_not_given_until_set_up() {
+    let home = setup();
+    common::write_config(
+        home.path(),
+        &json!({"mcp_servers": {
+            "files": {"command": "node", "env": {"FILES_TOKEN": ""}, "bots": []}
+        }}),
+    )
+    .unwrap();
+    let mut install = github();
+    install["bots"] = json!(["owl", "cat"]);
+    call(home.path(), "alice", "hexbot.plugins.install", install).unwrap();
+    let listed = call(home.path(), "alice", "hexbot.plugins.list", json!({})).unwrap();
+    let files = row(&listed, "connectors", "mcp:files");
+    assert_eq!(files["ready"], false);
+    assert_eq!(files["state_text"], "Needs FILES_TOKEN");
+    assert_eq!(row(&listed, "packages", "github")["ready"], false);
+    let give = |kind: &str, id: &str, bots: Value| {
+        call(
+            home.path(),
+            "alice",
+            "hexbot.plugins.set_bots",
+            json!({"kind": kind, "id": id, "bots": bots}),
+        )
+    };
+    assert_eq!(
+        give("connector", "mcp:files", json!(["owl"]))
+            .unwrap_err()
+            .code,
+        4209
+    );
+    assert_eq!(
+        connectors::set_enabled(home.path(), "owl", "mcp:files", true)
+            .unwrap_err()
+            .code,
+        4209
+    );
+    // Taking one bot away keeps the other's grant for when it is set up;
+    // giving one back waits for setup.
+    assert_eq!(
+        give("package", "github", json!(["owl"])).unwrap()["plugin"]["bots"],
+        json!([])
+    );
+    assert_eq!(
+        give("package", "github", json!(["owl", "cat"]))
+            .unwrap_err()
+            .code,
+        4209
+    );
+    plugins::configure(
+        home.path(),
+        "github",
+        &json!({"env": {"GITHUB_TOKEN": "secret"}}),
+    )
+    .unwrap();
+    let listed = call(home.path(), "alice", "hexbot.plugins.list", json!({})).unwrap();
+    assert_eq!(row(&listed, "packages", "github")["bots"], json!(["owl"]));
+    // Taking it away is always allowed.
+    assert_eq!(
+        give("package", "github", json!([])).unwrap()["plugin"]["bots"],
+        json!([])
+    );
+    call(
+        home.path(),
+        "alice",
+        "hexbot.plugins.configure",
+        json!({"kind":"connector","id":"mcp:files","env":{"FILES_TOKEN":"secret"}}),
+    )
+    .unwrap();
+    assert_eq!(
+        give("connector", "mcp:files", json!(["owl"])).unwrap()["plugin"]["bots"],
+        json!(["owl"])
+    );
+}
+
+#[test]
 fn recreated_bot_does_not_inherit_grants_after_cleanup_error() {
     let home = setup();
     common::write_config(
@@ -307,6 +383,11 @@ fn a_skill_ready_through_a_bots_own_key_can_be_given_to_that_bot() {
             json!({"kind":"skill","id":"needs-key","bots":bots}),
         )
     };
+    // The page offers it to Owl alone.
+    let listed = call(home.path(), "alice", "hexbot.plugins.list", json!({})).unwrap();
+    let needs_key = row(&listed, "skills", "needs-key");
+    assert_eq!(needs_key["ready"], false);
+    assert_eq!(needs_key["ready_bots"], json!(["owl"]));
     assign(json!([])).unwrap();
     assign(json!(["owl"])).unwrap();
     assert_eq!(assign(json!(["owl", "cat"])).unwrap_err().code, 4209);
@@ -415,6 +496,30 @@ fn migration_writes_each_servers_bots_and_drops_profile_copies() {
 }
 
 #[test]
+fn migration_keeps_the_bots_of_a_server_still_waiting_for_a_value() {
+    let home = setup();
+    common::write_config(
+        home.path(),
+        &json!({"mcp_servers":{"github":{"command":"node","env":{"GITHUB_TOKEN":""}}}}),
+    )
+    .unwrap();
+    db::migrate(home.path()).unwrap();
+    let root = common::read_config(home.path()).unwrap();
+    assert!(
+        !strings_of(&root["mcp_servers"]["github"]["bots"]).is_empty(),
+        "{root}"
+    );
+    assert!(!servers(home.path(), "owl").contains(&"github".into()));
+    crate::plugins::configure(
+        home.path(),
+        "github",
+        &json!({"env": {"GITHUB_TOKEN": "secret"}}),
+    )
+    .unwrap();
+    assert!(servers(home.path(), "owl").contains(&"github".into()));
+}
+
+#[test]
 fn a_skill_waiting_for_setup_is_hidden_and_cannot_be_given() {
     let home = setup();
     skill(
@@ -444,8 +549,8 @@ fn a_skill_waiting_for_setup_is_hidden_and_cannot_be_given() {
         tool["missing"],
         json!([{"kind":"command","name":"hexbot-test-missing-command"}])
     );
-    // Its bots are the ones it would reach once set up.
-    assert_eq!(tool["bots"], json!(["cat", "owl"]));
+    // Until it has what it needs, no bot has it.
+    assert_eq!(tool["bots"], json!([]));
     assert_eq!(
         row(&listed, "skills", "elsewhere")["missing"],
         json!([{"kind":"platform","name":["plan9"]}])
@@ -577,25 +682,34 @@ fn built_in_tools_are_not_plugins_any_more() {
 }
 
 #[test]
-fn a_connector_waiting_for_its_key_can_still_be_taken_away() {
+fn a_connector_waiting_for_its_key_is_given_to_nobody_until_set_up() {
     let home = setup();
     let listed = call(home.path(), "alice", "hexbot.plugins.list", json!({})).unwrap();
     let notion = row(&listed, "connectors", "notion");
     if notion["ready"] == true {
         return; // NOTION_API_KEY is set in this environment.
     }
-    assert_eq!(notion["bots"], json!(["cat", "owl"]));
-    call(
-        home.path(),
-        "alice",
-        "hexbot.plugins.set_bots",
-        json!({"kind":"connector","id":"notion","bots":["cat"]}),
-    )
-    .unwrap();
-    // Saving the key later must not bring it back to owl.
+    // On by default for every bot, but no bot has it before it is set up.
+    assert_eq!(notion["bots"], json!([]));
+    let give = |bots: Value| {
+        call(
+            home.path(),
+            "alice",
+            "hexbot.plugins.set_bots",
+            json!({"kind":"connector","id":"notion","bots":bots}),
+        )
+    };
+    // Taking it from Owl before setup sticks; giving it back has to wait.
+    give(json!(["cat"])).unwrap();
+    assert_eq!(give(json!(["cat", "owl"])).unwrap_err().code, 4209);
+    // Once set up, it reaches the bots it is still on for.
     fs::write(home.path().join(".env"), "NOTION_API_KEY=secret\n").unwrap();
     let listed = call(home.path(), "alice", "hexbot.plugins.list", json!({})).unwrap();
     assert_eq!(row(&listed, "connectors", "notion")["bots"], json!(["cat"]));
+    assert_eq!(
+        give(json!(["cat", "owl"])).unwrap()["plugin"]["bots"],
+        json!(["cat", "owl"])
+    );
 }
 
 #[test]
@@ -610,6 +724,16 @@ fn a_connector_ready_through_a_bots_own_key_can_be_given_to_that_bot() {
         "NOTION_API_KEY=owl-only\n",
     )
     .unwrap();
+    let listed = call(home.path(), "alice", "hexbot.plugins.list", json!({})).unwrap();
+    assert_eq!(
+        row(&listed, "connectors", "notion")["ready_bots"],
+        json!(["owl"])
+    );
+    // Cat's grant from new-bot defaults waits for setup, so clients keep it.
+    assert_eq!(
+        row(&listed, "connectors", "notion")["waiting_bots"],
+        json!(["cat"])
+    );
     let assign = |bots: Value| {
         call(
             home.path(),
@@ -669,7 +793,8 @@ async fn a_package_installs_its_server_and_skills_as_one_plugin() {
     let plugin =
         call(home.path(), "alice", "hexbot.plugins.install", install).unwrap()["plugin"].clone();
     assert_eq!(plugin["kind"], "package");
-    assert_eq!(plugin["bots"], json!(["owl"]));
+    // Installed for Owl, but no bot has it until its token is filled in.
+    assert_eq!(plugin["bots"], json!([]));
     assert_eq!(plugin["skills"][0]["name"], "github-issues");
     // A value left empty is for the user to fill in.
     assert_eq!(plugin["state"], "not_set_up");
@@ -691,12 +816,18 @@ async fn a_package_installs_its_server_and_skills_as_one_plugin() {
             "{id}"
         );
     }
-    assert_eq!(servers(home.path(), "owl"), ["github"]);
-    assert!(servers(home.path(), "cat").is_empty());
+    assert!(servers(home.path(), "owl").is_empty());
     assert_eq!(skill_on(home.path(), "owl", "github-issues"), Some(true));
     assert_eq!(skill_on(home.path(), "cat", "github-issues"), Some(false));
+    assert!(
+        !crate::catalog::enabled_skills(home.path(), "owl")
+            .unwrap()
+            .iter()
+            .any(|s| s["name"] == "github-issues")
+    );
 
-    // Settings keep who has it and never send values back.
+    // Filling it in gives it to the bots it was installed for, and Settings
+    // never send values back.
     let plugin = call(
         home.path(),
         "alice",
@@ -709,6 +840,8 @@ async fn a_package_installs_its_server_and_skills_as_one_plugin() {
     assert_eq!(plugin["server"]["env"][0]["hint"], "…6789");
     assert!(!plugin.to_string().contains("ghp_0123456789"));
     assert_eq!(plugin["bots"], json!(["owl"]));
+    assert_eq!(servers(home.path(), "owl"), ["github"]);
+    assert!(servers(home.path(), "cat").is_empty());
 
     // Giving it to Cat instead moves both parts.
     let plugin = call(
@@ -797,8 +930,11 @@ async fn a_package_installs_its_server_and_skills_as_one_plugin() {
     assert!(list["packages"].as_array().unwrap().is_empty());
     assert!(servers(home.path(), "cat").is_empty());
     assert_eq!(skill_on(home.path(), "cat", "github-issues"), None);
-    // Installed again for every bot, it is on for every bot of Alice's.
-    call(home.path(), "alice", "hexbot.plugins.install", github()).unwrap();
+    // Installed again for every bot, set up this time, it is on for every
+    // bot of Alice's.
+    let mut again = github();
+    again["mcp"]["env"]["GITHUB_TOKEN"] = json!("ghp_0123456789");
+    call(home.path(), "alice", "hexbot.plugins.install", again).unwrap();
     let list = call(home.path(), "alice", "hexbot.plugins.list", json!({})).unwrap();
     assert_eq!(
         row(&list, "packages", "github")["bots"],
@@ -880,6 +1016,7 @@ fn new_bots_get_packages_for_every_bot_but_not_those_for_some() {
     let home = setup();
     let mut scoped = github();
     scoped["bots"] = json!(["owl", "cat"]);
+    scoped["mcp"]["env"]["GITHUB_TOKEN"] = json!("ghp_0123456789");
     call(home.path(), "alice", "hexbot.plugins.install", scoped).unwrap();
     call(
         home.path(),
@@ -944,6 +1081,20 @@ fn a_bot_asking_for_itself_changes_only_itself() {
     let mut install = github();
     install["bots"] = json!(["owl"]);
     call(home.path(), "alice", "hexbot.plugins.install", install).unwrap();
+    // Its token is still empty, so no other bot can have it yet.
+    assert_eq!(
+        plugins::set_for_bot(home.path(), "alice", "package", "github", "cat", true)
+            .unwrap_err()
+            .code,
+        4209
+    );
+    call(
+        home.path(),
+        "alice",
+        "hexbot.plugins.configure",
+        json!({"kind":"package","id":"github","env":{"GITHUB_TOKEN":"ghp_0123456789"}}),
+    )
+    .unwrap();
     // Cat asks for it: Owl keeps it, and the scope gains only Cat, so a bot
     // created later still doesn't get it.
     plugins::set_for_bot(home.path(), "alice", "package", "github", "cat", true).unwrap();
@@ -1066,4 +1217,122 @@ fn a_package_whose_server_is_gone_does_not_block_new_bots() {
     plugins::set_for_bot(home.path(), "alice", "package", "github", "raven", false).unwrap();
     assert_eq!(skill_on(home.path(), "cat", "github-issues"), Some(false));
     assert_eq!(skill_on(home.path(), "raven", "github-issues"), Some(false));
+}
+
+#[test]
+fn a_package_of_skills_waiting_for_a_key_is_given_to_nobody_until_set_up() {
+    let home = setup();
+    call(
+        home.path(),
+        "alice",
+        "hexbot.plugins.install",
+        json!({"name":"notes","skills":[{"name":"notes-sync","content":
+            "---\ndescription: Sync notes.\nprerequisites:\n  env_vars: [HEXBOT_TEST_NOTES_KEY]\n---\nBody."}]}),
+    )
+    .unwrap();
+    let listed = call(home.path(), "alice", "hexbot.plugins.list", json!({})).unwrap();
+    let notes = row(&listed, "packages", "notes");
+    assert_eq!(notes["ready"], false);
+    assert_eq!(notes["bots"], json!([]));
+    assert_eq!(notes["state_text"], "Needs HEXBOT_TEST_NOTES_KEY");
+    let give = |bots: Value| {
+        call(
+            home.path(),
+            "alice",
+            "hexbot.plugins.set_bots",
+            json!({"kind":"package","id":"notes","bots":bots}),
+        )
+    };
+    // Taken away before setup, it can't be given back until set up.
+    give(json!([])).unwrap();
+    assert_eq!(give(json!(["owl"])).unwrap_err().code, 4209);
+    // The skill itself can't be switched on for a bot either; off still works.
+    let skill = |enabled: bool| {
+        crate::skills::call(
+            home.path(),
+            "alice",
+            "hexbot.skills.set_for_bot",
+            &json!({"name":"notes-sync","bot":"owl","enabled":enabled}),
+        )
+    };
+    assert_eq!(skill(true).unwrap_err().code, 4209);
+    skill(false).unwrap();
+    fs::write(home.path().join(".env"), "HEXBOT_TEST_NOTES_KEY=value\n").unwrap();
+    assert_eq!(
+        give(json!(["owl"])).unwrap()["plugin"]["bots"],
+        json!(["owl"])
+    );
+    skill(true).unwrap();
+}
+
+#[test]
+fn a_package_of_skills_set_up_through_a_bots_own_key_can_be_given_to_that_bot() {
+    let home = setup();
+    call(
+        home.path(),
+        "alice",
+        "hexbot.plugins.install",
+        json!({"name":"notes","skills":[{"name":"notes-sync","content":
+            "---\ndescription: Sync notes.\nprerequisites:\n  env_vars: [HEXBOT_TEST_OWL_NOTES_KEY]\n---\nBody."}]}),
+    )
+    .unwrap();
+    fs::write(
+        home.path().join("profiles/owl/.env"),
+        "HEXBOT_TEST_OWL_NOTES_KEY=value\n",
+    )
+    .unwrap();
+    let listed = call(home.path(), "alice", "hexbot.plugins.list", json!({})).unwrap();
+    let notes = row(&listed, "packages", "notes");
+    assert_eq!(notes["ready"], false);
+    assert_eq!(notes["ready_bots"], json!(["owl"]));
+    let give = |bots: Value| {
+        call(
+            home.path(),
+            "alice",
+            "hexbot.plugins.set_bots",
+            json!({"kind":"package","id":"notes","bots":bots}),
+        )
+    };
+    give(json!([])).unwrap();
+    assert_eq!(give(json!(["owl", "cat"])).unwrap_err().code, 4209);
+    assert_eq!(
+        give(json!(["owl"])).unwrap()["plugin"]["bots"],
+        json!(["owl"])
+    );
+    // A bot asking for itself is checked with its own keys too.
+    give(json!([])).unwrap();
+    plugins::set_for_bot(home.path(), "alice", "package", "notes", "owl", true).unwrap();
+    assert_eq!(
+        plugins::set_for_bot(home.path(), "alice", "package", "notes", "cat", true)
+            .unwrap_err()
+            .code,
+        4209
+    );
+}
+
+#[test]
+fn a_package_of_skills_does_not_wait_on_a_server_it_does_not_own() {
+    let home = setup();
+    // A standalone server that happens to share the package's name.
+    common::write_config(
+        home.path(),
+        &json!({"mcp_servers": {"notes": {"command": "node", "env": {"NOTES_TOKEN": ""}, "bots": []}}}),
+    )
+    .unwrap();
+    call(
+        home.path(),
+        "alice",
+        "hexbot.plugins.install",
+        json!({"name":"notes","skills":[{"name":"notes-tips","content":
+            "---\ndescription: Notes tips.\n---\nBody."}]}),
+    )
+    .unwrap();
+    let listed = call(home.path(), "alice", "hexbot.plugins.list", json!({})).unwrap();
+    assert_eq!(row(&listed, "packages", "notes")["ready"], true);
+    assert!(
+        crate::skills::resolve(home.path(), Some("owl"))
+            .unwrap()
+            .iter()
+            .any(|s| s.name == "notes-tips" && s.ready)
+    );
 }

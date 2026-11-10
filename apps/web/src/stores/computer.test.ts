@@ -45,10 +45,10 @@ describe('useComputer', () => {
       () => new Promise<ComputerStatus>(resolve => (answer = resolve))
     )
     useConnection.setState({ target: { kind: 'local', origin: 'http://127.0.0.1:1' } })
-    const taking = useComputer.getState().control('user')
+    const pausing = useComputer.getState().control('user')
     useConnection.setState({ target: { kind: 'local', origin: 'http://127.0.0.1:2' } })
     answer({ activity: null, actor: null, control: 'user', cursors: [], error: null, state: 'running' })
-    await taking
+    await pausing
     expect(useComputer.getState().status).toBeNull()
   })
 })

@@ -9,6 +9,7 @@ import { SkeletonLines } from '../../components/ui/skeleton'
 import { Switch } from '../../components/ui/switch'
 import { Textarea } from '../../components/ui/textarea'
 import {
+  accountsDisconnect,
   connectorsClear,
   connectorsRemoveMcp,
   connectorsTest,
@@ -16,6 +17,7 @@ import {
   skillsSetGlobal
 } from '../../lib/api'
 import { cn } from '../../lib/cn'
+import { canGive } from '../../lib/plugin-rows'
 import type { Plugin, PluginValue } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
@@ -187,7 +189,8 @@ export function PluginsSettings(): React.JSX.Element {
       </Heading>
       <div
         aria-label="Plugin kinds"
-        className="mb-5 flex gap-6 border-b border-foreground/[0.08]"
+        // The same pill segments as the bot panel's tabs: no rule underneath.
+        className="mb-5 flex w-fit max-w-full gap-0.5 rounded-full bg-foreground/[0.05] p-[3px]"
         role="tablist"
       >
         {CATEGORIES.map(item => (
@@ -195,10 +198,10 @@ export function PluginsSettings(): React.JSX.Element {
             aria-controls="plugins-panel"
             aria-selected={category === item.id}
             className={cn(
-              'hex-focus -mb-px flex h-9 items-center gap-1.5 border-b-2 text-[length:var(--text-body)] transition-colors duration-[var(--hex-motion-fast)]',
+              'hex-focus flex h-8 items-center gap-1.5 rounded-full px-3.5 text-[length:var(--text-secondary)] font-medium whitespace-nowrap transition-colors duration-[var(--hex-motion-fast)]',
               category === item.id
-                ? 'border-foreground font-medium text-foreground'
-                : 'border-transparent text-muted hover:text-foreground'
+                ? 'bg-background text-foreground shadow-card'
+                : 'text-muted hover:text-foreground'
             )}
             key={item.id}
             onClick={() => {
@@ -345,22 +348,34 @@ function PluginRow({
   const setBots = usePlugins(state => state.setBots)
   const [error, setError] = useState<null | string>(null)
 
-  const choose = (next: string[]) => {
+  const choose = (next: string[], keepWaiting = true) => {
     setError(null)
-    void setBots(plugin, next).catch(cause => setError(errorText(cause)))
+    void setBots(plugin, next, keepWaiting).catch(cause => setError(errorText(cause)))
   }
 
   const toggle = (bot: string, on: boolean) =>
     choose(on ? [...plugin.bots, bot] : plugin.bots.filter(name => name !== bot))
 
-  // A connector or skill can be ready for one bot through a key in its own
-  // `.env`, so only the daemon can tell whether a bot may have it.
+  // Until it is set up, a plugin can be taken away from bots but not given,
+  // except to a bot whose own settings hold its key.
+  const setupFirst = !plugin.ready
+  const givable = (bot: string) => canGive(plugin, bot)
+  const canSetUp = Boolean(plugin.kind === 'connector' && plugin.connector?.fields.length)
+
   const control = focus ? (
-    <Switch
-      aria-label={`${plugin.name} for ${focus.display_name}`}
-      checked={plugin.bots.includes(focus.name)}
-      onCheckedChange={on => toggle(focus.name, on)}
-    />
+    !givable(focus.name) && !plugin.bots.includes(focus.name) ? (
+      plugin.kind === 'skill' ? null : (
+        <Button onClick={canSetUp ? onSetup : expanded ? undefined : onExpand} size="sm">
+          Set up
+        </Button>
+      )
+    ) : (
+      <Switch
+        aria-label={`${plugin.name} for ${focus.display_name}`}
+        checked={plugin.bots.includes(focus.name)}
+        onCheckedChange={on => toggle(focus.name, on)}
+      />
+    )
   ) : (
     <span className="shrink-0 text-[length:var(--text-secondary)] text-muted">
       {botsText(plugin, bots)}
@@ -417,8 +432,17 @@ function PluginRow({
       ) : null}
       {expanded ? (
         <div className="hex-fade grid gap-4 px-4 pt-1 pb-4 pl-[56px] text-[length:var(--text-secondary)]">
-          {bots.length ? (
-            <BotPicker bots={bots} chosen={plugin.bots} name={plugin.name} onChange={choose} />
+          {setupFirst ? (
+            <p className="text-muted">Set up {plugin.name} before giving it to a bot.</p>
+          ) : null}
+          {bots.length && (bots.some(bot => givable(bot.name)) || plugin.bots.length) ? (
+            <BotPicker
+              bots={bots}
+              canGive={givable}
+              chosen={plugin.bots}
+              name={plugin.name}
+              onChange={choose}
+            />
           ) : null}
           {error ? (
             <p className="text-danger" role="alert">
@@ -432,31 +456,37 @@ function PluginRow({
   )
 }
 
-/** One pill per bot; a filled pill is on. */
+/** One pill per bot; a filled pill is on. A bot it can't be given to can only be turned off. */
 function BotPicker({
   bots,
+  canGive,
   chosen,
   name,
   onChange
 }: {
   bots: PluginBot[]
+  canGive: (bot: string) => boolean
   chosen: string[]
   name: string
-  onChange: (bots: string[]) => void
+  onChange: (bots: string[], keepWaiting?: boolean) => void
 }) {
   const all = bots.every(bot => chosen.includes(bot.name))
+  const turnOn = !all && bots.every(bot => canGive(bot.name))
+  // Turning off is offered only once it is on for a bot.
+  const bulk = bots.length > 1 && (turnOn || chosen.length > 0)
 
   return (
     <div>
       <div className="mb-1.5 flex items-center gap-3">
         <span className="text-muted">Bots</span>
-        {bots.length > 1 ? (
+        {bulk ? (
           <button
             className="text-[length:var(--text-meta)] text-muted underline-offset-2 hover:text-foreground hover:underline disabled:pointer-events-none disabled:opacity-50"
-            onClick={() => onChange(all ? [] : bots.map(bot => bot.name))}
+            // Off for every bot means every grant, those waiting for setup too.
+            onClick={() => (turnOn ? onChange(bots.map(bot => bot.name)) : onChange([], false))}
             type="button"
           >
-            {all ? 'Turn off for every bot' : 'Turn on for every bot'}
+            {turnOn ? 'Turn on for every bot' : 'Turn off for every bot'}
           </button>
         ) : null}
       </div>
@@ -473,6 +503,7 @@ function BotPicker({
                   ? 'bg-accent text-accent-fg'
                   : 'bg-foreground/[0.07] text-foreground hover:bg-foreground/[0.11]'
               )}
+              disabled={!on && !canGive(bot.name)}
               key={bot.name}
               onClick={() =>
                 onChange(on ? chosen.filter(item => item !== bot.name) : [...chosen, bot.name])
@@ -519,15 +550,27 @@ function PluginDetails({
       await refresh()
     })
 
+  // Google and Microsoft are set up by signing in; their fields only hold
+  // the user's own OAuth client, shown once one is saved.
+  const account = plugin.kind === 'connector' ? connector?.account : null
+  const shownFields = account ? connector!.fields.filter(field => field.set) : connector?.fields
+
   // A server added on its own; a package goes with its server and skills.
   const looseServer = plugin.kind === 'connector' && Boolean(plugin.server)
   const removable = plugin.kind === 'package' || looseServer
 
   return (
     <>
-      {plugin.kind === 'connector' && connector?.fields.length ? (
+      {account ? (
+        <p className="text-muted">
+          {account.signed_in
+            ? `Signed in as ${account.email || 'your account'}. Bots can read and draft; only you send.`
+            : 'Not signed in.'}
+        </p>
+      ) : null}
+      {plugin.kind === 'connector' && connector && shownFields?.length ? (
         <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
-          {connector.fields
+          {shownFields
             .filter(field => !field.provider || field.provider === connector.provider)
             .map(field => (
               <div className="contents" key={field.key}>
@@ -593,8 +636,36 @@ function PluginDetails({
           </Button>
         ) : null}
         {plugin.kind === 'connector' && connector?.fields.length ? (
-          <Button onClick={onSetup} size="sm">
-            {plugin.state === 'not_set_up' ? 'Set up' : 'Edit'}
+          <Button
+            onClick={onSetup}
+            size="sm"
+            variant={account && !account.signed_in ? 'primary' : undefined}
+          >
+            {account
+              ? plugin.state === 'ready'
+                ? 'Edit'
+                : account.signed_in
+                  ? 'Sign in again'
+                  : 'Sign in'
+              : plugin.state === 'not_set_up'
+                ? 'Set up'
+                : 'Edit'}
+          </Button>
+        ) : null}
+        {account?.signed_in ? (
+          <Button
+            onClick={() =>
+              void confirm({
+                detail: 'Bots lose their access to this mail until you sign in again.',
+                title: `Sign out of ${plugin.name}?`
+              }).then(yes =>
+                yes ? run(() => accountsDisconnect(account.service).then(refresh)) : undefined
+              )
+            }
+            size="sm"
+            variant="ghost"
+          >
+            Sign out
           </Button>
         ) : null}
         {connector && (plugin.kind !== 'connector' || plugin.state !== 'not_set_up') ? (
@@ -604,17 +675,21 @@ function PluginDetails({
         ) : null}
         {plugin.kind === 'connector' &&
         plugin.state !== 'not_set_up' &&
-        connector?.fields.length ? (
+        connector?.fields.some(field => field.set) ? (
           <Button
             onClick={() =>
-              void confirm({ title: `Remove the keys for ${plugin.name}?` }).then(yes =>
+              void confirm({
+                title: account
+                  ? `Remove your own OAuth client for ${plugin.name}?`
+                  : `Remove the keys for ${plugin.name}?`
+              }).then(yes =>
                 yes ? run(() => connectorsClear(plugin.id).then(refresh)) : undefined
               )
             }
             size="sm"
             variant="ghost"
           >
-            Remove keys
+            {account ? 'Remove your client' : 'Remove keys'}
           </Button>
         ) : null}
         {removable ? (
@@ -790,7 +865,7 @@ function AddServerForm({ onDone }: { onDone: () => void }) {
           .finally(() => setBusy(false))
       }}
     >
-      <div className="grid gap-3 sm:grid-cols-[12rem_1fr]">
+      <div className="grid gap-3 @min-[600px]:grid-cols-[12rem_1fr]">
         <label className="block">
           <span className={fieldLabel}>Name</span>
           <Input

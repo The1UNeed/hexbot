@@ -25,7 +25,7 @@ fn text<'a>(v: &'a Value, key: &str, default: &'a str) -> &'a str {
 fn descriptor(name: &str, description: &str, properties: Value, required: &[&str]) -> Value {
     json!({"name":name,"description":description,"parameters":{"type":"object","properties":properties,"required":required}})
 }
-fn credential(env: &std::collections::BTreeMap<String, String>, name: &str) -> String {
+pub(crate) fn credential(env: &std::collections::BTreeMap<String, String>, name: &str) -> String {
     env.get(name)
         .cloned()
         .or_else(|| std::env::var(name).ok())
@@ -185,7 +185,7 @@ fn artifacts_dir(home: &Path, bot: &str) -> Result<PathBuf> {
     }
     Ok(dir)
 }
-fn artifact(home: &Path, bot: &str, kind: &str, extension: &str) -> Result<PathBuf> {
+pub(crate) fn artifact(home: &Path, bot: &str, kind: &str, extension: &str) -> Result<PathBuf> {
     let root = artifacts_dir(home, bot)?;
     let dir = root.join(kind);
     fs::create_dir_all(&dir)?;
@@ -351,6 +351,11 @@ pub fn descriptors(home: &Path, bot: &str) -> Result<Vec<Value>> {
     let env = connectors::credentials(home, bot)?;
     let mut out = vec![];
     let mut ready = std::collections::HashMap::new();
+    // Web search and page reading work once the connector does.
+    ready.insert(
+        "web".to_owned(),
+        connectors::tool_available(home, bot, "web_search")?,
+    );
     let mut add = |family: &str, d: Value| {
         if enabled.iter().any(|v| v == family)
             && *ready
@@ -561,7 +566,9 @@ pub async fn call(
                 }
                 let cfg = common::merged_config(home, bot)?;
                 let env = connectors::credentials(home, bot)?;
-                let available = if name == "text_to_speech" {
+                let available = if family == "web" {
+                    connectors::tool_available(home, bot, "web_search")?
+                } else if name == "text_to_speech" {
                     speech_set_up(
                         home,
                         &cfg,
@@ -578,7 +585,7 @@ pub async fn call(
                     ));
                 }
                 match name {
-                    "web_search" => search(&cfg, &env, args).await,
+                    "web_search" => search(home, &cfg, &env, args).await,
                     "web_extract" => extract(home, bot, &cfg, &env, args).await,
                     "execute_code" => execute_code(home, bot, stored, &cfg, &env, args).await,
                     "vision_analyze" => vision(home, bot, &cfg, &env, args).await,
@@ -609,7 +616,27 @@ pub async fn call(
 #[cfg(test)]
 #[path = "native_tool_deletion_tests.rs"]
 mod deletion_tests;
-fn web_backend(
+#[cfg(test)]
+#[path = "web_search_tests.rs"]
+mod web_search_tests;
+/// Search services that cannot read pages; `web_extract` uses another.
+const SEARCH_ONLY: [&str; 5] = ["brave", "brave-free", "searxng", "wikipedia", "marginalia"];
+/// With no provider chosen, the first of these whose key or URL is saved.
+/// Settings reads the same order (`connectors::selected`).
+pub(crate) const WEB_BY_KEY: [(&str, &str); 8] = [
+    ("tavily", "TAVILY_API_KEY"),
+    ("exa", "EXA_API_KEY"),
+    ("parallel", "PARALLEL_API_KEY"),
+    ("keenable", "KEENABLE_API_KEY"),
+    ("firecrawl", "FIRECRAWL_API_KEY"),
+    ("searxng", "SEARXNG_URL"),
+    ("brave-free", "BRAVE_SEARCH_API_KEY"),
+    ("marginalia", "MARGINALIA_API_KEY"),
+];
+/// The service web search (or, with `extract`, page reading) uses: the one
+/// chosen, else the first whose key is saved, else the SearXNG Hexbot runs
+/// for search and the built-in reader for pages.
+pub(crate) fn web_backend(
     cfg: &Value,
     env: &std::collections::BTreeMap<String, String>,
     extract: bool,
@@ -623,28 +650,15 @@ fn web_backend(
         },
         text(&cfg["web"], "backend", "auto"),
     );
-    if selected != "auto"
-        && !selected.is_empty()
-        && !(extract && matches!(selected, "brave" | "brave-free" | "searxng"))
-    {
+    if selected != "auto" && !selected.is_empty() && !(extract && SEARCH_ONLY.contains(&selected)) {
         return selected.to_owned();
     }
-    for (backend, key) in [
-        ("tavily", "TAVILY_API_KEY"),
-        ("exa", "EXA_API_KEY"),
-        ("parallel", "PARALLEL_API_KEY"),
-        ("keenable", "KEENABLE_API_KEY"),
-        ("firecrawl", "FIRECRAWL_API_KEY"),
-        ("searxng", "SEARXNG_URL"),
-        ("brave-free", "BRAVE_SEARCH_API_KEY"),
-    ] {
-        if !credential(env, key).is_empty()
-            && !(extract && matches!(backend, "brave-free" | "searxng"))
-        {
+    for (backend, key) in WEB_BY_KEY {
+        if !credential(env, key).is_empty() && !(extract && SEARCH_ONLY.contains(&backend)) {
             return backend.to_owned();
         }
     }
-    "tavily".into()
+    if extract { "builtin" } else { "searxng" }.into()
 }
 fn authorize(
     request: reqwest::RequestBuilder,
@@ -662,6 +676,7 @@ fn authorize(
     }
 }
 async fn search(
+    home: &Path,
     cfg: &Value,
     env: &std::collections::BTreeMap<String, String>,
     args: &Value,
@@ -678,7 +693,63 @@ async fn search(
         .unwrap_or(5);
     let backend = web_backend(cfg, env, false);
     let client = http()?;
-    let response = match backend.as_str() {
+    let response = if backend == "searxng" && credential(env, "SEARXNG_URL").trim().is_empty() {
+        match crate::searxng::url(home).await {
+            Some(url) => searxng(&crate::searxng::client(60)?, &url, query).await?,
+            // Until SearXNG runs here, the free services that need no key.
+            None => match service(&client, env, "tavily", query, limit).await {
+                Ok(response) => response,
+                Err(_) => service(&client, env, "wikipedia", query, limit).await?,
+            },
+        }
+    } else {
+        service(&client, env, &backend, query, limit).await?
+    };
+    let values = response["results"]
+        .as_array()
+        .or_else(|| response["web"]["results"].as_array())
+        .or_else(|| response["data"]["web"].as_array())
+        .or_else(|| response["data"].as_array())
+        .ok_or_else(|| failure("search service returned no results array"))?;
+    let results = values
+        .iter()
+        .take(limit as usize)
+        .enumerate()
+        .map(|(i, row)| {
+            let description = row["description"]
+                .as_str()
+                .or_else(|| row["snippet"].as_str())
+                .or_else(|| row["content"].as_str())
+                .map(str::to_owned)
+                .unwrap_or_else(|| {
+                    row["highlights"]
+                        .as_array()
+                        .or_else(|| row["excerpts"].as_array())
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                });
+            json!({
+                "title": text(row, "title", ""),
+                "url": text(row, "url", ""),
+                "description": description,
+                "position": i + 1
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({"success":true,"data":{"web":results}}))
+}
+/// One search through one service, as that service answers it.
+async fn service(
+    client: &reqwest::Client,
+    env: &std::collections::BTreeMap<String, String>,
+    backend: &str,
+    query: &str,
+    limit: u64,
+) -> Result<Value> {
+    Ok(match backend {
         "keenable" => {
             request(authorize(
                 client
@@ -769,16 +840,13 @@ async fn search(
         }
         "searxng" => {
             let base = credential(env, "SEARXNG_URL");
-            if base.is_empty() {
+            if base.trim().is_empty() {
                 return Err(failure("SEARXNG_URL is not configured"));
             }
-            request(
-                client
-                    .get(format!("{}/search", base.trim_end_matches('/')))
-                    .query(&[("q", query), ("format", "json")]),
-            )
-            .await?
+            searxng(client, base.trim(), query).await?
         }
+        "wikipedia" => wikipedia(client, env, query, limit).await?,
+        "marginalia" => marginalia(client, env, query, limit).await?,
         "brave" | "brave-free" => {
             request(authorize(
                 client
@@ -799,42 +867,252 @@ async fn search(
                 "web search backend has not been ported: {other}"
             )));
         }
+    })
+}
+/// One search through the provider in use, for Settings' Test button.
+pub(crate) async fn test_search(home: &Path, bot: Option<&str>) -> Result<()> {
+    let (cfg, env) = match bot {
+        Some(bot) => (
+            common::merged_config(home, bot)?,
+            connectors::credentials(home, bot)?,
+        ),
+        None => (common::read_config(home)?, common::env_values(home)?),
     };
-    let values = response["results"]
+    search(home, &cfg, &env, &json!({"query":"hexbot","limit":1}))
+        .await
+        .map(|_| ())
+}
+/// How Hexbot names itself to services that ask, such as Wikipedia.
+fn agent() -> String {
+    format!("Hexbot/{} (https://hexbot.app)", crate::version())
+}
+/// A status and body, whatever the status, for services whose refusals say
+/// something worth telling the bot.
+async fn fetch(request: reqwest::RequestBuilder) -> Result<(u16, Vec<u8>)> {
+    let response = request.send().await.map_err(http_error)?;
+    let status = response.status().as_u16();
+    let body = crate::http::bytes(
+        response,
+        BODY_LIMIT,
+        http_error,
+        failure("tool response exceeds 24 MB"),
+    )
+    .await?;
+    Ok((status, body))
+}
+fn json_body(body: &[u8]) -> Result<Value> {
+    serde_json::from_slice(body).map_err(|_| failure("tool service returned invalid JSON"))
+}
+async fn searxng(client: &reqwest::Client, base: &str, query: &str) -> Result<Value> {
+    let (status, body) = fetch(
+        client
+            .get(format!("{}/search", base.trim_end_matches('/')))
+            .query(&[("q", query), ("format", "json")]),
+    )
+    .await?;
+    match status {
+        200..=299 => json_body(&body),
+        403 => Err(failure(
+            "This SearXNG does not answer in JSON. Add json to search.formats in its settings.yml.",
+        )),
+        _ => Err(failure(format!("SearXNG answered HTTP {status}"))),
+    }
+}
+async fn wikipedia(
+    client: &reqwest::Client,
+    env: &std::collections::BTreeMap<String, String>,
+    query: &str,
+    limit: u64,
+) -> Result<Value> {
+    let base = endpoint(env, "WIKIPEDIA_URL", "https://en.wikipedia.org");
+    let base = base.trim_end_matches('/');
+    let data = request(
+        client
+            .get(format!("{base}/w/api.php"))
+            .header(reqwest::header::USER_AGENT, agent())
+            .query(&[
+                ("action", "query"),
+                ("list", "search"),
+                ("format", "json"),
+                ("utf8", "1"),
+                ("srsearch", query),
+                ("srlimit", &limit.min(50).to_string()),
+            ]),
+    )
+    .await?;
+    let results = data["query"]["search"]
         .as_array()
-        .or_else(|| response["web"]["results"].as_array())
-        .or_else(|| response["data"]["web"].as_array())
-        .or_else(|| response["data"].as_array())
-        .ok_or_else(|| failure("search service returned no results array"))?;
-    let results = values
-        .iter()
-        .take(limit as usize)
-        .enumerate()
-        .map(|(i, row)| {
-            let description = row["description"]
-                .as_str()
-                .or_else(|| row["snippet"].as_str())
-                .or_else(|| row["content"].as_str())
-                .map(str::to_owned)
-                .unwrap_or_else(|| {
-                    row["highlights"]
-                        .as_array()
-                        .or_else(|| row["excerpts"].as_array())
-                        .into_iter()
-                        .flatten()
-                        .filter_map(Value::as_str)
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                });
+        .into_iter()
+        .flatten()
+        .map(|row| {
+            let title = text(row, "title", "");
+            let path = url::form_urlencoded::byte_serialize(title.replace(' ', "_").as_bytes())
+                .collect::<String>();
             json!({
-                "title": text(row, "title", ""),
-                "url": text(row, "url", ""),
-                "description": description,
-                "position": i + 1
+                "title": title,
+                "url": format!("{base}/wiki/{path}"),
+                "description": html_text(text(row, "snippet", "")),
             })
         })
         .collect::<Vec<_>>();
-    Ok(json!({"success":true,"data":{"web":results}}))
+    Ok(json!({ "results": results }))
+}
+/// Marginalia, with the user's own key or the shared `public` one, which
+/// every app without a key shares and which is often at its limit.
+async fn marginalia(
+    client: &reqwest::Client,
+    env: &std::collections::BTreeMap<String, String>,
+    query: &str,
+    limit: u64,
+) -> Result<Value> {
+    let own = credential(env, "MARGINALIA_API_KEY").trim().to_owned();
+    let key = if own.is_empty() { "public" } else { &own };
+    let base = endpoint(env, "MARGINALIA_URL", "https://api2.marginalia-search.com");
+    let (status, body) = fetch(
+        client
+            .get(format!("{}/search", base.trim_end_matches('/')))
+            .header("API-Key", key)
+            .query(&[("query", query), ("count", &limit.min(100).to_string())]),
+    )
+    .await?;
+    let busy = matches!(status, 429 | 503)
+        || String::from_utf8_lossy(&body[..body.len().min(200)]).contains("Limit Exceeded");
+    if busy {
+        return Err(failure(if own.is_empty() {
+            "Marginalia's shared key is busy. Try again in a minute, or add a free key of your own in Settings, Plugins, Web search."
+        } else {
+            "Marginalia's limit for this key is reached. Try again in a minute."
+        }));
+    }
+    match status {
+        200..=299 => json_body(&body),
+        401 | 403 => Err(failure("Marginalia refused the key.")),
+        _ => Err(failure(format!("Marginalia answered HTTP {status}"))),
+    }
+}
+/// Text from a fragment of HTML, such as a search snippet: tags dropped,
+/// entities decoded, spaces collapsed.
+fn html_text(html: &str) -> String {
+    static TAG: OnceLock<regex::Regex> = OnceLock::new();
+    let tag = TAG.get_or_init(|| regex::Regex::new(r"<[^>]*>").unwrap());
+    decode_entities(&tag.replace_all(html, " "))
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+fn decode_entities(text: &str) -> String {
+    static ENTITY: OnceLock<regex::Regex> = OnceLock::new();
+    let entity = ENTITY
+        .get_or_init(|| regex::Regex::new(r"&(#[xX][0-9a-fA-F]+|#[0-9]+|[a-zA-Z]+);").unwrap());
+    entity
+        .replace_all(text, |c: &regex::Captures| {
+            let name = &c[1];
+            let code = if let Some(hex) = name.strip_prefix("#x").or(name.strip_prefix("#X")) {
+                u32::from_str_radix(hex, 16).ok()
+            } else if let Some(decimal) = name.strip_prefix('#') {
+                decimal.parse().ok()
+            } else {
+                match name {
+                    "amp" => Some(38),
+                    "lt" => Some(60),
+                    "gt" => Some(62),
+                    "quot" => Some(34),
+                    "apos" => Some(39),
+                    "nbsp" => Some(32),
+                    _ => None,
+                }
+            };
+            code.and_then(char::from_u32)
+                .map_or_else(|| c[0].to_owned(), String::from)
+        })
+        .into_owned()
+}
+/// How much of one page the built-in reader downloads.
+const PAGE_LIMIT: usize = 10 * 1024 * 1024;
+/// The built-in reader: the page itself, already fetched here under the
+/// private-address rules every fetch follows, as Markdown. It reads what the
+/// server sends; a page that draws itself with JavaScript reads thin.
+async fn read_page(response: reqwest::Response) -> Value {
+    let url = response.url().to_string();
+    let status = response.status();
+    if !status.is_success() {
+        return json!({"url":url,"error":format!("The page answered HTTP {}.", status.as_u16())});
+    }
+    let kind = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    let body = match crate::http::bytes(
+        response,
+        PAGE_LIMIT,
+        http_error,
+        failure("The page is larger than 10 MB."),
+    )
+    .await
+    {
+        Ok(body) => body,
+        Err(e) => return json!({"url":url,"error":e.message}),
+    };
+    let text = String::from_utf8_lossy(&body);
+    if kind.contains("html") || (kind.is_empty() && text.trim_start().starts_with('<')) {
+        let (title, content) = page_markdown(&text);
+        json!({"url":url,"title":title,"content":content})
+    } else if kind.is_empty()
+        || kind.starts_with("text/")
+        || kind.contains("json")
+        || kind.contains("xml")
+    {
+        json!({"url":url,"content":text})
+    } else {
+        json!({"url":url,"error":format!("This is {kind}, not a web page.")})
+    }
+}
+/// A page's title and its text as Markdown: the article when the page marks
+/// one, without menus, footers, scripts or forms.
+fn page_markdown(html: &str) -> (String, String) {
+    static TITLE: OnceLock<regex::Regex> = OnceLock::new();
+    static GAPS: OnceLock<regex::Regex> = OnceLock::new();
+    let title = TITLE
+        .get_or_init(|| regex::Regex::new(r"(?is)<title[^>]*>(.*?)</title>").unwrap())
+        .captures(html)
+        .map(|c| html_text(&c[1]))
+        .unwrap_or_default();
+    let body = element(html, "main")
+        .or_else(|| element(html, "article"))
+        .unwrap_or(html);
+    let markdown = htmd::HtmlToMarkdown::builder()
+        .skip_tags(vec![
+            "head", "script", "style", "noscript", "template", "svg", "canvas", "iframe", "nav",
+            "footer", "aside", "form", "button", "select", "input", "textarea",
+        ])
+        .build()
+        .convert(body)
+        .unwrap_or_default();
+    let markdown = GAPS
+        .get_or_init(|| regex::Regex::new(r"\n[ \t]*\n(?:[ \t]*\n)+").unwrap())
+        .replace_all(&markdown, "\n\n");
+    (title, markdown.trim().to_owned())
+}
+/// From the first `<tag>` to the last `</tag>`, when the page has both.
+fn element<'a>(html: &'a str, tag: &str) -> Option<&'a str> {
+    // ASCII lowercasing keeps every byte where it was.
+    let lower = html.to_ascii_lowercase();
+    let open = format!("<{tag}");
+    let start = lower.match_indices(&open).map(|(i, _)| i).find(|i| {
+        lower
+            .as_bytes()
+            .get(i + open.len())
+            .is_some_and(|b| *b == b'>' || b.is_ascii_whitespace())
+    })?;
+    let close = format!("</{tag}>");
+    let end = lower.rfind(&close)? + close.len();
+    (end > start).then(|| &html[start..end])
 }
 async fn extract(
     home: &Path,
@@ -848,16 +1126,19 @@ async fn extract(
         .filter(|v| !v.is_empty() && v.len() <= 5)
         .ok_or_else(|| Error::new(4202, "urls must contain one to five URLs"))?;
     let allow_private = common::allow_private_urls(home, bot)?;
-    let mut checked_urls = Vec::with_capacity(urls.len());
+    let mut pages = Vec::with_capacity(urls.len());
     for value in urls {
         let url = value
             .as_str()
             .ok_or_else(|| Error::new(4202, "URL must be a string"))?;
-        // Check every redirect before handing the final URL to an extraction service.
-        let response = common::safe_get(url, allow_private).await?;
-        checked_urls.push(response.url().to_string());
+        // Check every redirect before handing the final URL to an extraction
+        // service; the built-in reader reads this response itself.
+        pages.push(common::safe_get(url, allow_private).await?);
     }
-    let urls = checked_urls;
+    let urls = pages
+        .iter()
+        .map(|page| page.url().to_string())
+        .collect::<Vec<_>>();
     let limit = args
         .get("char_limit")
         .map(|v| {
@@ -871,6 +1152,13 @@ async fn extract(
     let backend = web_backend(cfg, env, true);
     let client = http()?;
     let mut results = match backend.as_str() {
+        "builtin" => {
+            let mut values = vec![];
+            for page in pages {
+                values.push(read_page(page).await);
+            }
+            values
+        }
         "keenable" => {
             let mut values = vec![];
             for url in &urls {
@@ -3071,7 +3359,7 @@ mod safety_tests {
             );
         }
     }
-    fn fixture() -> common::TestHome {
+    pub(super) fn fixture() -> common::TestHome {
         let home = common::TestHome::new();
         crate::db::migrate(home.path()).unwrap();
         crate::db::open(home.path()).unwrap().execute("INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0)", []).unwrap();

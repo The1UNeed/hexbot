@@ -38,8 +38,12 @@ more freedom and more capability than a hosted product can offer.
 
 - Each bot has two files: its soul (persona; the user and the bot both edit
   it, and the bot says so when it does) and its memory (short entries the
-  bot writes during chat, each ending with the month it was learned, capped
-  at 2,200 characters, injected every turn).
+  bot writes during chat, each ending with the month it was learned,
+  injected every turn). Both have a character limit, by default 4,000 for
+  the soul and 2,200 for memory. The user sets the defaults in Settings,
+  Memory, and can give a bot its own in its settings; the limit applies to
+  every write, the user's included. Both sit in every prompt, so the limits
+  stay between 500 and 20,000.
   Beside them sit its daily notes: one file a day, up to 4,000 characters,
   that the bot appends to at natural pauses and reads back by day. Notes
   are never injected; the dream folds what lasts into memory, and a day is
@@ -77,6 +81,9 @@ more freedom and more capability than a hosted product can offer.
   the soul. What a job asks to remember is a proposal; the bot's next dream reviews it
   as an untrusted suggestion and keeps or drops it. Soul changes need the
   user.
+- A bot that schedules a job says so in its reply, and each run's result is
+  posted in its chat with a notification, unless the user asked for no
+  notifications (the job's `notify`). Jobs made in the app stay quiet.
 
 ### Rooms
 
@@ -118,6 +125,11 @@ more freedom and more capability than a hosted product can offer.
   even in Bypass.
   Network, service, and billing settings and every credential stay with
   the user.
+- It puts a bot only on a provider the user has connected, never one it
+  assumes. A new bot without a model takes the default model from Settings
+  when that is on the bot's provider, or no provider was named; otherwise
+  the tool refuses and the bot asks the user which provider and model to
+  use. The same holds for the default and fallback models in Settings.
 - Its tools and guidance are frozen with its chat like any other change of
   tools, so a bot made primary takes them with its next message, which
   misses the prompt cache once.
@@ -148,10 +160,25 @@ more freedom and more capability than a hosted product can offer.
   soul, `skill_view`, `hexbot_notify`, `hexbot_heartbeat`,
   `hexbot_connector_read`, `web_search` and `web_extract`; of Pi's, read,
   grep, find and ls. Connector tools still ask before changing anything, and
-  nobody can answer. Notion and Airtable work through skills and the shell
-  elsewhere; in a heartbeat, `hexbot_connector_read` makes their read
-  requests (GET, and Notion's search and queries) with the bot's key, which
-  the model never sees.
+  nobody can answer. Notion and Airtable work through skills that describe
+  their API, and no shell has their keys, so the daemon makes the requests
+  with the bot's key, which the model never sees: `hexbot_connector_read`
+  for reads (GET, and Notion's search and queries) and, outside heartbeats,
+  `hexbot_connector_write` for changes, which Auto reviews and Manual asks
+  about like a connected tool's.
+- Gmail and Outlook come through the Google Workspace and Microsoft 365
+  connectors, set up by signing in, not with a key. The daemon keeps the
+  grant and makes every request (`accounts.rs`, `mail.rs`); a bot's
+  `hexbot_mail` searches and reads, as plain text, and drafts. A draft is a
+  card in the bot's chat that the user edits, then sends or saves to Drafts
+  with their own click, in every approval mode: sending email is never the
+  bot's decision, and a reviewer can't tell a good email from a bad one.
+  The draft stays in the chat until then, so nothing half-written lands in
+  the mailbox, and the card says Sent only once the mailbox took it; a
+  refusal leaves the card open with the user's edits. Mail stays in the bot's own chat and its jobs; rooms and
+  threads between bots may have other readers. Google refuses Gmail scopes
+  to device codes, so it signs in with PKCE and returns to the daemon's
+  loopback port, or to a pasted address from another computer.
 - Its one way to speak is `hexbot_notify`: one message per run, eight a day
   from each bot. The message is posted as the bot's own message in its chat
   (made if it has none) and broadcast whole as `hexbot.heartbeat.message`:
@@ -351,8 +378,11 @@ more freedom and more capability than a hosted product can offer.
   change, or an update changes Hexbot's own tools, the chat is rebuilt with
   them at its next message; rooms, threads between bots, jobs and delegates
   keep what they started with. Skill reads use current bodies and grants.
-- Sidebar: one list of bots and rooms ordered by recent activity. A bot is one
-  row; opening it opens the chat.
+- Sidebar: one list of bots and rooms, newest message first, with the primary
+  bot pinned on top. A bot moves up when you write in its chat and when it
+  posts there; work out of sight (threads between bots, rooms, jobs,
+  heartbeat runs, dreams) leaves it in place. A bot is one row; opening it
+  opens the chat.
 
 ## 3. Client
 
@@ -378,6 +408,15 @@ more freedom and more capability than a hosted product can offer.
   that opens it beside the chat, where each visual gets a tab like a
   browser's. It follows the app's theme and runs sandboxed with no network
   access beyond a few script CDNs.
+- Shared files: a bot hands the user a file it chose, the way a person
+  attaches one (`hexbot_share_file`). It shows as a card under the reply and
+  opens beside the chat. The files a bot writes or edits while it works stay
+  out of the chat; the chat is for what the user asked for, not a log of
+  every file touched.
+- Media: a video or audio file you send plays in your message, then and after
+  a reload. A bot's voice replies, the pictures and clips it makes, and a
+  picture, video or audio file it shares show under its reply: video and audio
+  play there. Rooms name these files without playing them.
 
 ## 4. Network, auth, Connect
 

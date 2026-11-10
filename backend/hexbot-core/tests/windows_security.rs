@@ -503,11 +503,14 @@ async fn windows_security_runtime_runs_sections_and_scripts_in_the_sandbox() {
                 ask(&live, Some(json!({"tool":"hexbot_session_settings"}))).await["result"].clone();
             let snapshot = json!({"approvalMode":settings["approvalMode"],"cwd":settings["cwd"],"outputDirs":settings["outputDirs"],"fileWorkdir":settings["fileWorkdir"],"fileEpoch":settings["fileEpoch"]});
             let encode = |text: String| base64::engine::general_purpose::STANDARD.encode(text);
-            let request = |operation: &str, path: &Path, parent: Value| {
+            // `opened` is what edit_open returned: the file's identity and the
+            // version of the bytes it read, which a commit sends back.
+            let request = |operation: &str, path: &Path, opened: Value| {
                 Some(
-                    json!({"tool":"hexbot_pi_file","args":{"operation":operation,"path":path,"callId":"private-file","snapshot":snapshot,"content":encode(format!("{operation}-{mode}")),"parent":parent}}),
+                    json!({"tool":"hexbot_pi_file","args":{"operation":operation,"path":path,"callId":"private-file","snapshot":snapshot,"content":encode(format!("{operation}-{mode}")),"parent":opened["parent"],"opened":opened["version"]}}),
                 )
             };
+            let unopened = || json!({"parent":["0","0"],"version":"0".repeat(64)});
             let target = work.join(format!("bridge-{mode}")).join("file.txt");
             if mode == "off" {
                 // Bypass writes through Pi itself, never through the bridge.
@@ -536,7 +539,7 @@ async fn windows_security_runtime_runs_sections_and_scripts_in_the_sandbox() {
                 for operation in ["write", "edit_open", "edit_commit"] {
                     let reply = ask(
                         &live,
-                        request(operation, Path::new(path), json!(["0", "0"])),
+                        request(operation, Path::new(path), unopened()),
                     )
                     .await;
                     assert!(
@@ -577,7 +580,7 @@ async fn windows_security_runtime_runs_sections_and_scripts_in_the_sandbox() {
                 linked.join("config"),
             ] {
                 for operation in ["write", "edit_open", "edit_commit"] {
-                    let reply = ask(&live, request(operation, &path, json!(["0", "0"]))).await;
+                    let reply = ask(&live, request(operation, &path, unopened())).await;
                     assert!(
                         reply["error"]
                             .as_str()
@@ -620,7 +623,7 @@ async fn windows_security_runtime_runs_sections_and_scripts_in_the_sandbox() {
             fs::write(&target, "replacement").unwrap();
             let reply = ask(
                 &live,
-                request("edit_commit", &target, opened["result"]["parent"].clone()),
+                request("edit_commit", &target, opened["result"].clone()),
             )
             .await;
             assert!(
@@ -631,7 +634,7 @@ async fn windows_security_runtime_runs_sections_and_scripts_in_the_sandbox() {
             let opened = ask(&live, request("edit_open", &target, Value::Null)).await;
             let reply = ask(
                 &live,
-                request("edit_commit", &target, opened["result"]["parent"].clone()),
+                request("edit_commit", &target, opened["result"].clone()),
             )
             .await;
             assert_eq!(reply["result"], json!({"success":true}), "{reply}");

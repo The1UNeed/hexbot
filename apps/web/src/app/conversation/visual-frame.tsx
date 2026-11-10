@@ -1,4 +1,4 @@
-import { ChartColumn, ChevronsRight, ExternalLink, Maximize2, X } from 'lucide-react'
+import { ChartColumn, ChevronsRight, ExternalLink, FileText, Maximize2, X } from 'lucide-react'
 import {
   type KeyboardEvent,
   type ReactNode,
@@ -10,11 +10,13 @@ import {
   useSyncExternalStore
 } from 'react'
 
+import { ScrollArea } from '../../components/ui/scroll-area'
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
 import { useUi } from '../../stores/ui'
-import { useVisuals, visualsActions } from '../../stores/visuals'
+import { isFileTab, useVisuals, visualsActions } from '../../stores/visuals'
 
+import { closeTabs, FileTabView } from './file-tab'
 import {
   hostContext,
   mixHex,
@@ -376,62 +378,98 @@ export function VisualPanel() {
     }
   }
 
-  return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center gap-1 px-3 pt-3 pb-2">
-        <div
-          aria-label="Visuals"
-          className="flex min-w-0 flex-1 gap-1 overflow-x-auto"
-          onKeyDown={step}
-          role="tablist"
-        >
-          {tabs.map(tab => {
-            const shown = tab.toolId === active
+  const fileShown = tabs.some(tab => tab.toolId === active && isFileTab(tab))
 
-            return (
-              <div
-                className={cn(
-                  'flex h-8 max-w-[13rem] shrink-0 items-center rounded-full transition-colors duration-[var(--hex-motion-fast)]',
-                  shown
-                    ? 'bg-background text-foreground shadow-card'
-                    : 'text-muted hover:bg-foreground/[0.05] hover:text-foreground'
-                )}
-                key={tab.toolId}
-              >
-                <button
-                  aria-controls={`visual-tabpanel-${tab.toolId}`}
-                  aria-selected={shown}
-                  className="hex-focus flex h-full min-w-0 items-center gap-1.5 rounded-full pr-1 pl-3 text-[length:var(--text-secondary)] font-medium"
-                  id={`visual-tab-${tab.toolId}`}
-                  onClick={() => visualsActions().activate(tab.toolId)}
-                  role="tab"
-                  tabIndex={shown ? 0 : -1}
-                  type="button"
+  return (
+    // The tabs float as the chat's header does: visuals scroll under them, and an
+    // open file is a card that fills the space below them and scrolls inside.
+    <ScrollArea
+      className="h-full"
+      top={
+        <div className="flex items-center gap-2 px-3 pt-2.5 pb-2">
+          <div
+            aria-label="Beside the chat"
+            className="hex-glass flex min-w-0 gap-0.5 overflow-x-auto rounded-full p-[3px] [scrollbar-width:none]"
+            onKeyDown={step}
+            role="tablist"
+          >
+            {tabs.map(tab => {
+              const shown = tab.toolId === active
+
+              return (
+                <div
+                  className={cn(
+                    'flex h-[30px] max-w-[13rem] shrink-0 items-center rounded-full transition-colors duration-[var(--hex-motion-fast)]',
+                    shown
+                      ? 'bg-background text-foreground shadow-card'
+                      : 'text-muted hover:bg-foreground/[0.05] hover:text-foreground'
+                  )}
+                  key={tab.toolId}
                 >
-                  <ChartColumn className="shrink-0" size={13} />
-                  <span className="truncate">{tab.title}</span>
-                </button>
-                <button
-                  aria-label={`Close ${tab.title}`}
-                  className="hex-focus mr-1 grid size-5 shrink-0 place-items-center rounded-full text-muted hover:bg-foreground/[0.08] hover:text-foreground"
-                  onClick={() => visualsActions().close(tab.toolId)}
-                  type="button"
-                >
-                  <X size={11} />
-                </button>
-              </div>
-            )
-          })}
+                  <button
+                    aria-controls={`visual-tabpanel-${tab.toolId}`}
+                    aria-selected={shown}
+                    className="hex-focus flex h-full min-w-0 items-center gap-1.5 rounded-full pr-1 pl-3 text-[length:var(--text-secondary)] font-medium"
+                    id={`visual-tab-${tab.toolId}`}
+                    onClick={() => visualsActions().activate(tab.toolId)}
+                    role="tab"
+                    tabIndex={shown ? 0 : -1}
+                    type="button"
+                  >
+                    {isFileTab(tab) ? (
+                      <FileText className="shrink-0" size={13} />
+                    ) : (
+                      <ChartColumn className="shrink-0" size={13} />
+                    )}
+                    <span className="truncate">{tab.title}</span>
+                  </button>
+                  <button
+                    aria-label={`Close ${tab.title}`}
+                    className="hex-focus mr-1 grid size-5 shrink-0 place-items-center rounded-full text-muted hover:bg-foreground/[0.08] hover:text-foreground"
+                    onClick={() => void closeTabs([tab.toolId])}
+                    type="button"
+                  >
+                    <X size={11} />
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+          <button
+            aria-label="Close the side panel"
+            className="hex-glass hex-glass-press hex-focus ml-auto grid size-9 shrink-0 place-items-center rounded-full text-foreground/70 hover:text-foreground"
+            onClick={() => void closeTabs(tabs.map(tab => tab.toolId))}
+            title="Close the side panel"
+            type="button"
+          >
+            <ChevronsRight size={16} />
+          </button>
         </div>
-        <Action label="Close visuals" onClick={() => visualsActions().closeAll()}>
-          <ChevronsRight size={16} />
-        </Action>
+      }
+      viewportClassName={cn('px-3 pb-3', fileShown && 'overflow-hidden')}
+    >
+      {/* Every open file stays mounted, hidden when another tab shows, so an
+          edit that has not saved survives a switch of tabs. */}
+      {tabs.map(tab =>
+        isFileTab(tab) ? (
+          <div
+            className={cn(
+              'h-full overflow-hidden rounded-[16px] bg-background shadow-card',
+              tab.toolId !== active && 'hidden'
+            )}
+            key={tab.toolId}
+          >
+            <FileTabView shown={tab.toolId === active} tab={tab} />
+          </div>
+        ) : null
+      )}
+      <div className={cn(fileShown && 'hidden')}>
+        {tabs.map(tab =>
+          isFileTab(tab) ? null : (
+            <VisualTab key={tab.toolId} shown={tab.toolId === active} visual={tab} />
+          )
+        )}
       </div>
-      <div className="min-h-0 flex-1 overflow-auto px-3 pb-3">
-        {tabs.map(tab => (
-          <VisualTab key={tab.toolId} shown={tab.toolId === active} visual={tab} />
-        ))}
-      </div>
-    </div>
+    </ScrollArea>
   )
 }

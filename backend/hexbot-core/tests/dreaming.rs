@@ -521,6 +521,94 @@ async fn cron_freezes_model_workdir_and_tool_overrides_in_the_new_session() {
     dreams.shutdown().await;
     runtime.shutdown().await;
 }
+#[tokio::test]
+async fn a_job_with_notify_posts_its_result_in_the_chat_and_a_quiet_one_does_not() {
+    let home = setup();
+    let hub = EventHub::new();
+    let mut receiver = hub.subscribe();
+    let runtime =
+        Runtime::new(home.path().into(), hub.clone(), fake_pi(home.path(), false)).unwrap();
+    let dreams = Dreaming::new(home.path().into(), runtime.clone(), hub);
+    let posted = || -> i64 {
+        db::open(home.path())
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM heartbeat_messages WHERE bot='owl'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let loud = dreams
+        .tool_call(
+            "alice",
+            "owl",
+            &json!({"action":"create","name":"Inbox check","prompt":"Check","schedule":"every hour","notify":true}),
+        )
+        .await
+        .unwrap();
+    assert!(
+        loud["note"]
+            .as_str()
+            .unwrap()
+            .contains("Tell the user what you scheduled")
+    );
+    dreams
+        .tool_call(
+            "alice",
+            "owl",
+            &json!({"action":"run","job_id":loud["job"]["id"]}),
+        )
+        .await
+        .unwrap();
+    let message = event(&mut receiver, "hexbot.heartbeat.message").await;
+    assert_eq!(
+        message["text"],
+        "**Inbox check** finished.\n\nDream summary"
+    );
+    assert_eq!(
+        event(&mut receiver, "hexbot.scheduled.changed").await["job"]["last_status"],
+        "success"
+    );
+    let prompt = fs::read_to_string(home.path().join("prompts.log")).unwrap();
+    assert!(prompt.contains("Your final answer is posted in your chat with the user"));
+    assert_eq!(posted(), 1);
+
+    // The user asked for quiet: the run is saved and nothing is posted.
+    let quiet = dreams
+        .tool_call(
+            "alice",
+            "owl",
+            &json!({"action":"create","prompt":"Check","schedule":"every hour","notify":false}),
+        )
+        .await
+        .unwrap();
+    dreams
+        .tool_call(
+            "alice",
+            "owl",
+            &json!({"action":"run","job_id":quiet["job"]["id"]}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        event(&mut receiver, "hexbot.scheduled.changed").await["job"]["last_status"],
+        "success"
+    );
+    assert_eq!(posted(), 1);
+    assert!(
+        dreams
+            .tool_call(
+                "alice",
+                "owl",
+                &json!({"action":"update","job_id":quiet["job"]["id"],"notify":"yes"})
+            )
+            .await
+            .is_err()
+    );
+    dreams.shutdown().await;
+    runtime.shutdown().await;
+}
 
 #[test]
 fn digest_prefers_native_branch_and_legacy_fallback_resolves_session_keys_and_active_rows() {

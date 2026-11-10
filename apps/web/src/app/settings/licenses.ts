@@ -49,6 +49,11 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
         license: 'Apache-2.0',
         name: 'cloudflared',
         repository: 'https://github.com/cloudflare/cloudflared'
+      },
+      {
+        license: 'AGPL-3.0',
+        name: 'SearXNG',
+        repository: 'https://github.com/searxng/searxng'
       }
     ]
   },
@@ -302,6 +307,12 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
         name: 'keepass-rs',
         packages: ['keepass'],
         repository: 'https://github.com/sseemayer/keepass-rs'
+      },
+      {
+        license: 'Apache-2.0',
+        name: 'htmd',
+        packages: ['htmd'],
+        repository: 'https://github.com/letmutex/htmd'
       },
       {
         license: 'MIT',

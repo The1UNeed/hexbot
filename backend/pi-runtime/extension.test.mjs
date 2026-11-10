@@ -359,6 +359,39 @@ test('each new turn restores primary and uses live fallback without changing pro
   await f.handlers.agent_before_settle({outcome:'error'},f.ctx);
   assert.equal(f.ctx.model.id,'replacement');
 });
+test('fast mode asks each provider its own way, from the next run, and is billed at its price', async t => {
+  const f = fixture(t, 'manual', [], {provider:'anthropic'});
+  f.ctx.model = {provider:'anthropic', id:'primary', api:'anthropic-messages'};
+  const request = payload => f.handlers.before_provider_request({payload}, f.ctx);
+  await f.handlers.before_agent_start({}, f.ctx);
+  assert.equal(await request({model:'primary'}), undefined);
+  // The daemon turns it on; the run already going keeps its speed until the next
+  // one, even after a tool gate reads the new settings.
+  f.settings.fast = true;
+  await f.gate('read', {path:f.home});
+  assert.equal(await request({model:'primary'}), undefined);
+  await f.handlers.before_agent_start({}, f.ctx);
+  assert.deepEqual(await request({model:'primary', betas:['b']}), {model:'primary', betas:['b'], speed:'fast'});
+  // Pi prices the reply at the standard rate; a reply that ran fast costs twice that.
+  f.handlers.provider_stream_event({api:'anthropic-messages', data:{type:'message_delta', usage:{output_tokens:5, speed:'fast'}}});
+  const usage = {input:10, output:5, cost:{input:1, output:2, cacheRead:0.5, cacheWrite:0, total:3.5}};
+  const billed = f.handlers.message_end({message:{role:'assistant', usage}});
+  assert.deepEqual(billed.message.usage.cost, {input:2, output:4, cacheRead:1, cacheWrite:0, total:7});
+  assert.equal(f.handlers.message_end({message:{role:'assistant', usage}}), undefined, 'billed once');
+  // A reply at the standard speed is billed as Pi priced it.
+  await request({model:'primary'});
+  f.handlers.provider_stream_event({api:'anthropic-messages', data:{type:'message_start', message:{usage:{speed:'standard'}}}});
+  assert.equal(f.handlers.message_end({message:{role:'assistant', usage}}), undefined);
+  // ChatGPT takes its priority tier; a fallback model runs at its standard speed.
+  f.ctx.model = {provider:'openai-codex', id:'primary', api:'openai-codex-responses'};
+  assert.deepEqual(await request({model:'primary'}), {model:'primary', service_tier:'priority'});
+  f.ctx.model = {provider:'anthropic', id:'fallback', api:'anthropic-messages'};
+  assert.equal(await request({model:'fallback'}), undefined);
+  // Providers the daemon adapts get the fast request to adapt.
+  f.ctx.model = {provider:'openrouter', id:'primary', api:'openai-completions'};
+  await request({model:'primary'});
+  assert.deepEqual(f.requests.at(-1).args.payload, {model:'primary'});
+});
 test('heartbeat messages join the next turn after the user message, once, without touching the prompt', async t => {
   const f = fixture(t);
   const input = f.ctx.ui.input;
@@ -643,6 +676,37 @@ test('Auto asks before full access, with the bot reason, and before writes outsi
   await f.handlers.agent_before_settle({outcome:'error'}, f.ctx);
   assert.equal((await f.gate('write', {path:'/usr/local/hexbot-other.txt'}))?.block, true);
   assert.deepEqual(f.choices[6].model, {provider:'test', model:'fallback'});
+});
+
+test('connector reads run in every mode; changes run in Bypass, are reviewed in Auto and ask in Manual', async t => {
+  const change = {connector:'notion', method:'PATCH', path:'/v1/pages/abc', body:{archived:true}};
+  const read = {connector:'notion', method:'POST', path:'/v1/search', body:{query:'tasks'}};
+  for (const mode of ['off', 'smart', 'manual']) {
+    const f = fixture(t, mode);
+    assert.equal(await f.gate('hexbot_connector_read', read), undefined, mode);
+    assert.equal(f.choices.length, 0, mode);
+  }
+  const off = fixture(t, 'off');
+  assert.equal(await off.gate('hexbot_connector_write', change), undefined);
+  assert.equal(off.choices.length, 0);
+  const auto = fixture(t, 'smart');
+  assert.equal((await auto.gate('hexbot_connector_write', change))?.block, true);
+  assert.equal(auto.choices[0].tool, 'hexbot_connector_write');
+  assert.equal(auto.choices[0].command, 'notion PATCH /v1/pages/abc {"archived":true}');
+  assert.match(auto.choices[0].reason, /Auto mode asks before a connector changes anything/);
+  assert.equal(auto.choices[0].review, true);
+  assert.deepEqual(auto.choices[0].input, change);
+  const manual = fixture(t, 'manual');
+  manual.ctx.choice = 'session';
+  assert.equal(await manual.gate('hexbot_connector_write', change), undefined);
+  assert.equal(manual.choices[0].review, undefined);
+  assert.match(manual.choices[0].reason, /Manual mode asks/);
+  // Allowed for the section, it stops asking for that connector only.
+  assert.equal(await manual.gate('hexbot_connector_write', change), undefined);
+  assert.equal(manual.choices.length, 1);
+  manual.ctx.choice = 'deny';
+  assert.equal((await manual.gate('hexbot_connector_write', {...change, connector:'airtable', path:'/v0/app/Tasks'}))?.block, true);
+  assert.equal(manual.choices.length, 2);
 });
 
 test('Auto reviews every step outside the sandbox, whatever was allowed before', async t => {

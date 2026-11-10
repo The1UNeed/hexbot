@@ -12,7 +12,7 @@ A bot's soul is who it is: how it behaves and speaks. You edit it in the side pa
 
 ## Memory
 
-A bot's memory is what it has learned: facts, preferences, and lessons about working with you. The bot writes it on its own during a conversation. It is short by design, so the bot keeps it dense rather than long. You can read and edit it from the Memory card in the side panel's Fingerprint tab, or in the bot's settings under Memory. On the phone, the Memory card is in the bot's profile.
+A bot's memory is what it has learned: facts, preferences, and lessons about working with you. The bot writes it on its own during a conversation. It is short by design, so the bot keeps it dense rather than long. You can read and edit it from the Memory card in the side panel's Fingerprint tab. On the phone, the Memory card is in the bot's profile.
 
 Each entry the bot adds or replaces ends with the month it learned it, such as `[2026-10]`, so a dream can tell an old entry from a current one. Hexbot adds the stamp when the bot adds or replaces an entry, leaving headings, rules, blank lines, and fenced code alone. When the bot rewrites its whole memory at once, as a dream may, and when you edit it in the editor, the text is saved as written. A dream is asked to date new or merged entries during a whole-memory rewrite and keep dates on unchanged entries. An entry without a stamp is treated as yours or as older than stamps, and a dream judges it on what it says. A scheduled job running on its own cannot write memory; what it asks for waits as a proposal for the bot's next dream (see [Scheduled work](/docs/scheduling/#jobs-and-memory)).
 
@@ -21,6 +21,12 @@ Each entry the bot adds or replaces ends with the month it learned it, such as `
 Beside its memory, a bot keeps notes: a short line here and there about what happened, filed by day. It writes one at a natural pause, when something is worth keeping, and can read a day or a few days back when it needs them. Adding a note returns a short confirmation. The full day stays out of the conversation unless the bot reads it. Each night the bot's [dream](/docs/dreaming/) reads the notes from the day its last successful dream started first, folds what lasts into memory, and leaves the rest. A day's notes hold up to 4,000 characters, and days older than 30 days are removed when notes are read, listed, or added, or when a dream runs.
 
 You can read, edit, and delete notes by day in the bot's settings under Memory. If the bot appends new lines while you edit, Hexbot saves your edit with those lines kept below it. Other changes leave your draft in the editor and show an error; copy it before reloading. You cannot save notes for a future day or a day older than 30 days. Deleting a day also checks that its notes have not changed since you loaded them. If they have, Hexbot refreshes the list, keeps your selected day and draft, shows an error, and shows what changed below the editor so you can review it before trying again. Saving that draft works like any other save: added lines are kept below your edit.
+
+## Limits
+
+A soul holds up to 4,000 characters and a memory up to 2,200 by default. Both go into every message a bot sends to its model, so a longer limit costs more on each one. To change the defaults for every bot, go to Settings, Memory, Limits. To give one bot its own, set Soul limit under the bot's Soul settings or Memory limit under its Memory settings; leave the field empty to go back to the default. On the phone, the defaults are in the daemon's settings and a bot's own limits are in its profile. A limit is between 500 and 20,000 characters.
+
+The limit applies to every change, yours and the bot's. Lowering it below what a soul or memory already holds keeps the text, but the next change has to bring it under the limit.
 
 When a bot writes to its memory, its notes, or its soul during a conversation, nothing appears in the conversation. To see what changed, open the bot's settings.
 

@@ -107,6 +107,18 @@ export function ConnectorIcon({ className, icon }: { className?: string; icon: s
   const brand = BRAND_ICONS[icon]
   const box = 'inline-flex size-7 shrink-0 items-center justify-center rounded-control'
 
+  if (brand?.marks) {
+    return (
+      <span aria-hidden className={cn(box, 'border border-border bg-white', className)}>
+        <svg height="16" viewBox={brand.marksViewBox} width="16">
+          {brand.marks.map(mark => (
+            <path d={mark.d} fill={mark.fill} key={mark.d} />
+          ))}
+        </svg>
+      </span>
+    )
+  }
+
   if (brand) {
     return (
       <span aria-hidden className={cn(box, className)} style={{ backgroundColor: brand.color }}>

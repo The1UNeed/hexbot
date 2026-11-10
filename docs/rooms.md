@@ -64,8 +64,10 @@ appended events.
    rendered as `@handle: text` and `User: text` lines (capped at 40 lines
    and 96 KiB, oldest lines summarised into one line when over the cap), a
    header naming the room, the members and their titles, and the rules:
-   reply once, say `(pass)` to stay silent, mention a member to bring them
-   in, mention `@user` to ask the human and wait. A newly added bot has
+   reply once, say `(pass)` to stay silent, add only what others have not
+   said and speak only for yourself, mention a member to bring them in,
+   mention `@user` to ask the human and wait, and keep private
+   conversations private. A newly added bot has
    `last_read_seq = 0` and therefore sees the whole transcript.
 4. **Execution**: `prompt.submit` in-process on the bot's room session.
    The engine broadcasts `hexbot.rooms.event {room_id, event}` for every

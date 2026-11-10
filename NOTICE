@@ -62,6 +62,10 @@ Connector icons in apps/web/src/assets/connectors/ are from Simple Icons
 (https://simpleicons.org), released under CC0 1.0 Universal. Brand names and
 logos remain the property of their respective owners.
 
+The Google "G" and Gmail marks in apps/web/src/assets/brands/ are Google's,
+drawn in their own colours as Google's brand and sign-in branding guidelines
+require. Google and Gmail are trademarks of Google LLC.
+
 The licenses and notices of the third-party software each Hexbot package
 includes are in THIRD_PARTY_NOTICES beside this file, in the hexbot-install
 --license output, and in the app under Settings, About, Licenses.

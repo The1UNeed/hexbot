@@ -79,6 +79,7 @@ async fn private_pi_file_route_is_anchored_and_not_a_public_tool() {
     let opened = runtime.pi_file(&s, &event(&edit), &edit).unwrap();
     edit["operation"] = json!("edit_commit");
     edit["parent"] = opened["parent"].clone();
+    edit["opened"] = opened["version"].clone();
     let folder = path.parent().unwrap();
     let moved = folder.with_file_name("moved");
     fs::rename(folder, &moved).unwrap();
@@ -235,6 +236,7 @@ async fn private_pi_edit_commit_rechecks_live_mode_and_workdir_without_creating_
     let opened = runtime.pi_file(&s, &event(&request), &request).unwrap();
     request["operation"] = json!("edit_commit");
     request["parent"] = opened["parent"].clone();
+    request["opened"] = opened["version"].clone();
     db::open(home.path())
         .unwrap()
         .execute(
@@ -311,6 +313,7 @@ async fn private_pi_file_refuses_configured_git_metadata() {
             for operation in operations {
                 let mut request = args(&runtime, &s, &path, operation);
                 request["parent"] = json!(["0", "0"]);
+                request["opened"] = json!("0".repeat(64));
                 let error = runtime.pi_file(&s, &event(&request), &request).unwrap_err();
                 assert!(
                     error.message.contains("Git metadata is read-only"),

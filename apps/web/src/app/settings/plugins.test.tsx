@@ -223,21 +223,106 @@ describe('Settings, Plugins', () => {
     await waitFor(() => expect(screen.queryByText('github')).not.toBeInTheDocument())
   })
 
-  it('leaves a connector without a daemon key to the daemon, which knows bot keys', async () => {
+  it('offers set up, not bots, for a plugin that is not set up', async () => {
+    vi.mocked(pluginsSetBots).mockClear()
     const unset = { ...search, state: 'not_set_up' as const, state_text: 'Not set up' }
     vi.mocked(pluginsList).mockResolvedValue(
       list({ connectors: [{ ...unset, bots: [], kind: 'connector', ready: false }] })
     )
-    vi.mocked(pluginsSetBots).mockRejectedValueOnce(
-      new Error('Set up Web search before giving it to a bot.')
+    render(<PluginsSettings />)
+    fireEvent.click(await screen.findByText('Web search'))
+    expect(screen.getByText('Set up Web search before giving it to a bot.')).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Bots that use Web search' })).toBeNull()
+    fireEvent.click(screen.getByRole('tab', { name: 'Owl' }))
+    expect(screen.queryByRole('switch', { name: 'Web search for Owl' })).toBeNull()
+    expect(pluginsSetBots).not.toHaveBeenCalled()
+  })
+
+  it('still takes a plugin that is not set up away from a bot that has it', async () => {
+    const unset = { ...search, state: 'not_set_up' as const, state_text: 'Not set up' }
+    vi.mocked(pluginsList).mockResolvedValue(
+      list({ connectors: [{ ...unset, bots: ['owl'], kind: 'connector', ready: false }] })
     )
     render(<PluginsSettings />)
     fireEvent.click(await screen.findByText('Web search'))
     const picker = screen.getByRole('group', { name: 'Bots that use Web search' })
-    fireEvent.click(within(picker).getByRole('button', { name: 'HexBot' }))
-    expect(
-      await screen.findByText('Set up Web search before giving it to a bot.')
-    ).toBeInTheDocument()
+    expect(within(picker).getByRole('button', { name: 'HexBot' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Turn on for every bot' })).toBeNull()
+    fireEvent.click(within(picker).getByRole('button', { name: 'Owl' }))
+    await waitFor(() => expect(pluginsSetBots).toHaveBeenCalledWith('connector', 'web_search', []))
+  })
+
+  it('gives a plugin to a bot whose own settings hold its key', async () => {
+    const unset = { ...search, state: 'not_set_up' as const, state_text: 'Not set up' }
+    vi.mocked(pluginsList).mockResolvedValue(
+      list({
+        connectors: [{ ...unset, bots: [], kind: 'connector', ready: false, ready_bots: ['owl'] }]
+      })
+    )
+    render(<PluginsSettings />)
+    fireEvent.click(await screen.findByText('Web search'))
+    const picker = screen.getByRole('group', { name: 'Bots that use Web search' })
+    expect(within(picker).getByRole('button', { name: 'HexBot' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Turn on for every bot' })).toBeNull()
+    // On for no bot yet, so there is nothing to turn off.
+    expect(screen.queryByRole('button', { name: 'Turn off for every bot' })).toBeNull()
+    fireEvent.click(within(picker).getByRole('button', { name: 'Owl' }))
+    await waitFor(() =>
+      expect(pluginsSetBots).toHaveBeenCalledWith('connector', 'web_search', ['owl'])
+    )
+  })
+
+  it('keeps a grant waiting for setup when another bot changes', async () => {
+    vi.mocked(pluginsSetBots).mockClear()
+    const unset = { ...search, state: 'not_set_up' as const, state_text: 'Not set up' }
+    vi.mocked(pluginsList).mockResolvedValue(
+      list({
+        connectors: [
+          {
+            ...unset,
+            bots: ['owl'],
+            kind: 'connector',
+            ready: false,
+            ready_bots: ['owl'],
+            waiting_bots: ['hexbot']
+          }
+        ]
+      })
+    )
+    render(<PluginsSettings />)
+    fireEvent.click(await screen.findByText('Web search'))
+    const picker = screen.getByRole('group', { name: 'Bots that use Web search' })
+    expect(within(picker).getByRole('button', { name: 'HexBot' })).toHaveAttribute(
+      'aria-pressed',
+      'false'
+    )
+    fireEvent.click(within(picker).getByRole('button', { name: 'Owl' }))
+    await waitFor(() =>
+      expect(pluginsSetBots).toHaveBeenCalledWith('connector', 'web_search', ['hexbot'])
+    )
+  })
+
+  it('turning a plugin off for every bot also drops a grant waiting for setup', async () => {
+    vi.mocked(pluginsSetBots).mockClear()
+    const unset = { ...search, state: 'not_set_up' as const, state_text: 'Not set up' }
+    vi.mocked(pluginsList).mockResolvedValue(
+      list({
+        connectors: [
+          {
+            ...unset,
+            bots: ['owl'],
+            kind: 'connector',
+            ready: false,
+            ready_bots: ['owl'],
+            waiting_bots: ['hexbot']
+          }
+        ]
+      })
+    )
+    render(<PluginsSettings />)
+    fireEvent.click(await screen.findByText('Web search'))
+    fireEvent.click(screen.getByRole('button', { name: 'Turn off for every bot' }))
+    await waitFor(() => expect(pluginsSetBots).toHaveBeenCalledWith('connector', 'web_search', []))
   })
 
   it('turns a skill that is off for every bot back on', async () => {

@@ -210,6 +210,13 @@ pub fn migrate(home: &Path) -> Result<()> {
         "INSERT OR IGNORE INTO users(id,display_name,role,limits_json,created_at) VALUES ('local','Admin','admin','{}',?)",
         [now],
     )?;
+    // Earlier builds saved a run Hexbot stopped, such as a bot-to-bot request
+    // that ran out of time, as a failure when its abort said "This operation
+    // was aborted". Nothing failed; the bot's dot stayed red for good.
+    transaction.execute(
+        "UPDATE bot_incidents SET resolved_at=? WHERE kind='turn_failed' AND resolved_at IS NULL AND text='This operation was aborted'",
+        [now],
+    )?;
     #[allow(clippy::unnecessary_map_or)]
     if previous.map_or(true, |version| version < ONE_PERSON_VERSION) {
         name_from_about_you(&transaction, home)?;
@@ -506,4 +513,33 @@ fn title_case(value: &str) -> String {
         previous_cased = character.is_lowercase() || character.is_uppercase();
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migration_clears_stops_saved_as_failures_and_keeps_real_ones() {
+        let home = tempfile::tempdir().unwrap();
+        migrate(home.path()).unwrap();
+        open(home.path())
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO bot_incidents(id,bot,kind,text,created_at) VALUES
+                 ('stopped','owl','turn_failed','This operation was aborted',1),
+                 ('failed','owl','turn_failed','fetch failed',2);",
+            )
+            .unwrap();
+        migrate(home.path()).unwrap();
+        let open_ids: Vec<String> = open(home.path())
+            .unwrap()
+            .prepare("SELECT id FROM bot_incidents WHERE resolved_at IS NULL")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        assert_eq!(open_ids, ["failed"]);
+    }
 }

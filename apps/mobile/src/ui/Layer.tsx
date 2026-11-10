@@ -45,6 +45,25 @@ AccessibilityInfo.addEventListener?.('reduceMotionChanged', value => {
 const duration = (ms: number) => (reduceMotion ? 0 : ms)
 
 const DepthContext = createContext<((delta: number) => void) | null>(null)
+const CoverContext = createContext<((delta: number) => void) | null>(null)
+const CoveredContext = createContext(false)
+
+/**
+ * Counts a card or sheet while it is open. The screens under it then hold
+ * still when it brings up the keyboard, instead of rising beside it.
+ */
+export function useCover(visible: boolean) {
+  const change = useContext(CoverContext)
+
+  useEffect(() => {
+    if (!visible || !change) return
+    change(1)
+    return () => change(-1)
+  }, [change, visible])
+}
+
+/** A card or sheet is open over the screens. */
+export const useCovered = () => useContext(CoveredContext)
 
 /**
  * Wraps the whole app. While a card is open, the app behind it scales back
@@ -53,8 +72,10 @@ const DepthContext = createContext<((delta: number) => void) | null>(null)
  */
 export function LayerRoot({ children }: { children: ReactNode }) {
   const [depth, setDepth] = useState(0)
+  const [covers, setCovers] = useState(0)
   const progress = useRef(new Animated.Value(0)).current
   const change = useCallback((delta: number) => setDepth(value => Math.max(0, value + delta)), [])
+  const cover = useCallback((delta: number) => setCovers(value => Math.max(0, value + delta)), [])
 
   useEffect(() => {
     Animated.timing(progress, {
@@ -79,7 +100,9 @@ export function LayerRoot({ children }: { children: ReactNode }) {
             }
           ]}
         >
-          {children}
+          <CoverContext.Provider value={cover}>
+            <CoveredContext.Provider value={covers > 0}>{children}</CoveredContext.Provider>
+          </CoverContext.Provider>
         </Animated.View>
       </View>
     </DepthContext.Provider>
@@ -115,6 +138,7 @@ export function Layer({ visible, ...props }: LayerProps) {
   const offset = useRef(new Animated.Value(height)).current
   const change = useContext(DepthContext)
   const counted = useRef(false)
+  useCover(visible)
 
   useEffect(() => {
     if (visible) {
@@ -183,7 +207,9 @@ function LayerCard({
 }: Omit<LayerProps, 'visible'> & { offset: Animated.Value }) {
   const theme = useTheme()
   const insets = useSafeAreaInsets()
-  const { height } = useWindowDimensions()
+  const { height, width } = useWindowDimensions()
+  // On a wide screen the card keeps a readable width; sideways, it clears the side insets.
+  const side = Math.max(0, (width - CARD_MAX_WIDTH) / 2)
   const top = compact ? Math.max(insets.top + PEEK, height * 0.38) : insets.top + PEEK
   const close = useRef(onClose)
   close.current = onClose
@@ -231,6 +257,8 @@ function LayerCard({
           {
             backgroundColor: theme.grouped,
             borderColor: theme.chromeBorder,
+            left: Math.max(side, insets.left),
+            right: Math.max(side, insets.right),
             top,
             transform: [{ translateY: offset }]
           }
@@ -294,6 +322,8 @@ function LayerCard({
     </View>
   )
 }
+
+const CARD_MAX_WIDTH = 640
 
 const styles = StyleSheet.create({
   action: { minHeight: HIT, paddingHorizontal: 18 },

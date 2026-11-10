@@ -336,8 +336,9 @@ it('retries a failed message from history in place, after a reload', async () =>
   await mount()
   await stop('Provider stopped')
 
-  const bubble = screen.getByTestId('user-message')
-  fireEvent.click(within(bubble).getByRole('button', { name: 'Retry sending' }))
+  // The bot got the message: its bubble stays as sent, the Stopped card retries.
+  expect(screen.getByTestId('user-message').querySelector('.text-danger')).toBeNull()
+  fireEvent.click(within(screen.getByTestId('stopped-card')).getByRole('button', { name: 'Retry' }))
   await waitFor(() => expect(call).toHaveBeenCalledWith('prompt.submit', expect.anything()))
 
   const recalled = call.mock.calls.find(([method]) => method === 'session.recall')![1]
@@ -372,14 +373,17 @@ describe('the bot’s Stopped state under your last message', () => {
       })
     )
 
-  it('reads as your message not sent when it is about this chat', async () => {
+  it('is a Stopped card with the reason and Retry, not your message unsent', async () => {
     rows.push({ role: 'user', row_id: 'user-1', text: 'Read my plan', input_id: 'first' })
     await mount()
     stopped('chat')
     const card = await screen.findByTestId('stopped-card')
-    expect(card).toHaveTextContent('Not sent')
+    expect(card).toHaveTextContent('Owl stopped')
+    expect(card).toHaveTextContent('The requested model is not supported.')
+    expect(card).not.toHaveTextContent('Not sent')
+    expect(within(card).getByRole('button', { name: 'Retry' })).toBeVisible()
     const bubble = screen.getByTestId('user-message')
-    expect(within(bubble).getByRole('button', { name: 'Retry sending' })).toBeVisible()
+    expect(bubble.querySelector('.text-danger')).toBeNull()
   })
 
   it('stays its own card when a dream stopped, not your message', async () => {

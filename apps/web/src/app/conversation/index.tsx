@@ -2,11 +2,13 @@ import 'katex/dist/katex.min.css'
 
 import { JsonRpcGatewayError } from '@hermes/shared'
 import { useNavigate, useParams, useRouter } from '@tanstack/react-router'
-import { ArrowDown, Copy, File, PanelRight, Undo2, X } from 'lucide-react'
+import { ArrowDown, ChevronDown, Copy, PanelRight, Undo2, X } from 'lucide-react'
 import {
   type CSSProperties,
   isValidElement,
   memo,
+  type ReactElement,
+  startTransition,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -24,10 +26,13 @@ import { Avatar, useFaceColor } from '../../components/ui/avatar'
 import { Button } from '../../components/ui/button'
 import { Chip } from '../../components/ui/chip'
 import { Dialog } from '../../components/ui/dialog'
+import { fadeLengths } from '../../components/ui/scroll-area'
 import { StatusDot } from '../../components/ui/status-dot'
 import {
   approvalRespond,
   attachFile,
+  attachmentKind,
+  type AttachResult,
   botsClearStatus,
   newInputId,
   promptSubmit,
@@ -36,10 +41,10 @@ import {
   sessionRecall
 } from '../../lib/api'
 import { botFace } from '../../lib/avatar-builder'
-import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
 import { moodForStatus } from '../../lib/face'
 import { mathDelimiters } from '../../lib/math'
+import { mediaKind, mediaOf } from '../../lib/media'
 import { plainError } from '../../lib/plain-error'
 import { NotConnectedError } from '../../lib/rpc'
 import { useTurnCues } from '../../lib/sounds'
@@ -53,11 +58,13 @@ import type {
   ClarifyRequest
 } from '../../lib/types'
 import { openedElsewhere, selectionsSettled } from '../../lib/use-chat-selection'
+import { useHeight } from '../../lib/use-height'
 import { botMissing, useBot, useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { connectorsActions } from '../../stores/connectors'
 import { draftsActions } from '../../stores/drafts'
 import { useConversationFeelings, useEmotion } from '../../stores/emotions'
+import { holdCopy } from '../../stores/page-copies'
 import { useSearch } from '../../stores/search'
 import {
   knownChat,
@@ -81,11 +88,17 @@ import { useUi } from '../../stores/ui'
 import { AskingRow } from './asking-row'
 import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
+import { EmailDraftCard } from './email-draft-card'
+import { FileCard } from './file-card'
+import { filesOf, type FileTarget, mimeOf, openFile } from './file-tab'
+import { MediaView } from './media'
+import { NotificationsBanner } from './notifications-banner'
 import { PluginCard } from './plugin-card'
+import { providerGone, ProviderGoneCard } from './provider-gone-card'
 import { RoomConversation } from './room'
 import { useSearchJump } from './search-jump'
 import { SignInCard } from './sign-in-card'
-import { liveMood, liveMoodsOf } from './steps'
+import { asks, liveMood, liveMoodsOf } from './steps'
 import { DeliveryMark, NotSent, useLate } from './unsent'
 import { visualsOf } from './visual'
 import { Visuals } from './visual-frame'
@@ -129,9 +142,24 @@ export function ConnectedToolsNotice({ sectionId }: { sectionId: string }) {
 const dayKey = (time: number) => new Date(toMillis(time)).toDateString()
 
 /** "Today 9:13 PM", "Yesterday 4:02 PM", or "12 Aug 2:10 PM". */
+// Making a formatter costs more than formatting; a chat formats a date per message.
+const formatters = new Map<string, Intl.DateTimeFormat>()
+
+const formatter = (options: Intl.DateTimeFormatOptions) => {
+  const key = JSON.stringify(options)
+  let found = formatters.get(key)
+
+  if (!found) {
+    found = new Intl.DateTimeFormat(undefined, options)
+    formatters.set(key, found)
+  }
+
+  return found
+}
+
 export function dayLabel(time: number, now = Date.now()): string {
   const date = new Date(toMillis(time))
-  const clock = new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(date)
+  const clock = formatter({ timeStyle: 'short' }).format(date)
   const today = new Date(now)
   const yesterday = new Date(now - 86_400_000)
 
@@ -143,7 +171,7 @@ export function dayLabel(time: number, now = Date.now()): string {
     return `Yesterday ${clock}`
   }
 
-  const day = new Intl.DateTimeFormat(undefined, {
+  const day = formatter({
     day: 'numeric',
     month: 'short',
     ...(date.getFullYear() === today.getFullYear() ? {} : { year: 'numeric' })
@@ -184,7 +212,7 @@ export function BubbleActions({
   actions: { icon: React.ReactNode; label: string; onClick: () => void }[]
 }) {
   return (
-    <span className="flex shrink-0 items-center gap-0.5 self-end pb-1.5 opacity-0 transition-opacity duration-[var(--hex-motion-fast)] group-hover:opacity-100 focus-within:opacity-100">
+    <span className="flex shrink-0 items-center gap-0.5 self-end pb-1.5 opacity-0 transition-opacity duration-[var(--hex-motion-fast)] group-hover:opacity-100 focus-within:opacity-100 touch:opacity-100">
       {actions.map(action => (
         <button
           aria-label={action.label}
@@ -274,7 +302,7 @@ function CodeBlock({ children, className }: { children?: React.ReactNode; classN
       ) : null}
       <button
         aria-label="Copy code"
-        className="hex-focus absolute top-1.5 right-1.5 grid size-6 place-items-center rounded-full text-muted opacity-0 transition-[opacity,background-color,color] duration-[var(--hex-motion-fast)] group-hover/code:opacity-100 hover:bg-surface-2 hover:text-foreground focus-visible:opacity-100"
+        className="hex-focus absolute top-1.5 right-1.5 grid size-6 place-items-center rounded-full text-muted opacity-0 transition-[opacity,background-color,color] duration-[var(--hex-motion-fast)] group-hover/code:opacity-100 hover:bg-surface-2 hover:text-foreground focus-visible:opacity-100 touch:opacity-100"
         onClick={() => void navigator.clipboard.writeText(text)}
         type="button"
       >
@@ -322,48 +350,131 @@ const remarkPlugins: Options['remarkPlugins'] = [
 
 const rehypePlugins: Options['rehypePlugins'] = [rehypeKatex]
 
-export const Markdown = memo(function Markdown({ text }: { text: string }) {
-  return (
-    <ReactMarkdown
-      components={markdownComponents}
-      rehypePlugins={rehypePlugins}
-      remarkPlugins={remarkPlugins}
-    >
-      {mathDelimiters(text)}
-    </ReactMarkdown>
-  )
-})
+/**
+ * Parsed messages by text, newest last. Switching back to a chat draws its
+ * messages without parsing them again; the elements hold no state of their own.
+ */
+const parsed = new Map<string, ReactElement>()
+const PARSED = 400
 
-function Attachments({
-  attachments,
-  onImage
+export const Markdown = memo(function Markdown({
+  streaming = false,
+  text
 }: {
-  attachments: Attachment[]
-  onImage: (source: string) => void
+  /** Text still being written: each revision is drawn once, so none is kept. */
+  streaming?: boolean
+  text: string
 }) {
-  if (!attachments.length) {
-    return null
+  let element = parsed.get(text)
+
+  if (element) {
+    parsed.delete(text)
+  } else {
+    // react-markdown's sync renderer is a plain function of its options.
+    element = ReactMarkdown({
+      children: mathDelimiters(text),
+      components: markdownComponents,
+      rehypePlugins,
+      remarkPlugins
+    })
+
+    if (streaming) {
+      return element
+    }
+
+    if (parsed.size >= PARSED) {
+      parsed.delete(parsed.keys().next().value!)
+    }
   }
 
+  parsed.set(text, element)
+
+  return element
+})
+
+/**
+ * What a message carries, above its bubble: the files you sent, or the ones the
+ * bot made or sent. A picture shows whole and opens over the chat; a video or
+ * audio file plays where it is; every other file is a card that opens beside
+ * the chat, where it can be read and, when it is text, edited with the bot.
+ * Without `onFile` and a session (a room) a card only names the file.
+ */
+function Attachments({
+  attachments,
+  mine,
+  onFile,
+  onImage,
+  sessionId
+}: {
+  attachments: Attachment[]
+  mine: boolean
+  onFile?: (file: FileTarget) => void
+  onImage: (source: string) => void
+  sessionId?: string
+}) {
   return (
-    <div className="mt-2 flex flex-wrap gap-2">
-      {attachments.map(item =>
-        item.kind === 'image' && item.dataUrl ? (
-          <button key={item.id} onClick={() => onImage(item.dataUrl!)} type="button">
-            <img
-              alt={item.name}
-              className="max-h-64 rounded-panel object-contain"
-              src={item.dataUrl}
-            />
-          </button>
-        ) : (
-          <Chip key={item.id}>
-            <File size={12} />
-            {item.name}
-            <span>{Math.ceil(item.size / 1024)} KB</span>
-          </Chip>
+    <div className={cn('flex max-w-full flex-wrap gap-2', mine && 'justify-end')}>
+      {attachments.map(item => {
+        if (item.kind === 'image' && item.dataUrl) {
+          return (
+            <button
+              aria-label={`Open ${item.name}`}
+              className="hex-focus rounded-panel"
+              key={item.id}
+              onClick={() => onImage(item.dataUrl!)}
+              type="button"
+            >
+              <img
+                alt={item.name}
+                className="max-h-64 rounded-panel object-contain"
+                src={item.dataUrl}
+              />
+            </button>
+          )
+        }
+
+        const target = item.path || item.url
+
+        const card = (
+          <FileCard
+            key={item.id}
+            label={`Open ${item.name} beside the chat`}
+            name={item.name}
+            onOpen={
+              onFile && target
+                ? () =>
+                    onFile({
+                      mime: item.mime || mimeOf(item.name),
+                      name: item.name,
+                      path: item.path,
+                      url: item.url
+                    })
+                : undefined
+            }
+            size={item.size}
+          />
         )
-      )}
+
+        const plays = item.kind === 'video' || item.kind === 'audio' || item.kind === 'image'
+
+        // A file the daemon keeps plays from there; one just sent, from this page.
+        if (plays && (item.url || (item.path && sessionId))) {
+          return (
+            <MediaView
+              fallback={card}
+              key={item.id}
+              kind={item.kind}
+              name={item.name}
+              onImage={onImage}
+              path={item.path}
+              sessionId={sessionId}
+              url={item.url}
+            />
+          )
+        }
+
+        return card
+      })}
     </div>
   )
 }
@@ -422,14 +533,14 @@ export function humanConnector(id: null | string | undefined): string {
   return words.charAt(0).toUpperCase() + words.slice(1)
 }
 
-/** The small pill under a turn that did not finish. */
-const stoppedPill =
-  'hex-focus flex h-8 items-center rounded-full bg-bubble px-3.5 text-[length:var(--text-secondary)] transition-colors duration-[var(--hex-motion-fast)]'
-
 /**
- * A turn that did not finish, kept quiet. Right after your message it is that
- * message's "Not sent · Retry" line; anywhere else a red dot and a small Retry
- * bubble. Why it stopped is on hover and read out to screen readers.
+ * A failure in the chat. A request this app could not get to the daemon (a
+ * refused or failed send, an upload, a Recall) right after your message is
+ * that message's "Not sent · Retry" line, the reason on hover. A turn the bot
+ * started and could not finish, such as a provider error, did get your
+ * message: it is a "Stopped" card with the reason, Retry and close. A failed
+ * request with no message of its own (an upload, a Recall) has the same card,
+ * headed "Didn't go through": no turn of the bot's stopped.
  */
 export function StoppedCard({
   message,
@@ -441,20 +552,20 @@ export function StoppedCard({
   quiet = false
 }: {
   message: TranscriptMessage
-  /** Follows your message: it reads as that message not sent. */
+  /** Follows your message: a failed request reads as that message not sent. */
   mine?: boolean
   name: string
   onDismiss?: () => void
   onFix?: (connector: string) => void
   onRetry?: () => void
-  /** A newer line replaces it: kept for screen readers only. */
+  /** A newer failure for the same message replaces it: kept for screen readers only. */
   quiet?: boolean
 }) {
   const connector = message.errorDetail?.connector ?? null
   const connectorName = message.errorDetail?.connectorName ?? humanConnector(connector)
   const reason = plainError(message.error ?? '')
 
-  // Replaced by a newer line under the same message: only screen readers hear it.
+  // Replaced by a newer failure under the same message: only screen readers hear it.
   if (mine && quiet) {
     return (
       <div className="sr-only" data-testid="stopped-card" role="alert">
@@ -463,7 +574,7 @@ export function StoppedCard({
     )
   }
 
-  if (mine) {
+  if (mine && message.request) {
     return (
       <div
         className="hex-fade group flex items-center justify-end gap-1.5 px-1 pt-1 text-[length:var(--text-meta)] text-danger"
@@ -476,7 +587,7 @@ export function StoppedCard({
         {onDismiss ? (
           <button
             aria-label="Dismiss"
-            className="hex-focus grid size-4 place-items-center rounded-full text-muted opacity-0 transition-opacity duration-[var(--hex-motion-fast)] group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground"
+            className="hex-focus grid size-4 place-items-center rounded-full text-muted opacity-0 transition-opacity duration-[var(--hex-motion-fast)] group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground touch:opacity-100"
             onClick={onDismiss}
             title="Dismiss"
             type="button"
@@ -515,42 +626,51 @@ export function StoppedCard({
 
   return (
     <div
-      className="hex-fade group flex items-center gap-2 pt-4"
+      className="hex-bubble hex-fade mt-4 flex max-w-[min(85%,40rem)] flex-col gap-2 rounded-[20px] border border-danger/15 bg-danger/[0.05] px-3.5 py-3"
       data-testid="stopped-card"
       role="alert"
-      title={reason}
     >
-      <span aria-hidden className="size-2 shrink-0 rounded-full bg-danger" />
-      <span className="sr-only">{name} stopped.</span>
-      <span className="sr-only">{reason}</span>
-      {onRetry ? (
-        <button className={cn(stoppedPill, 'hover:bg-bubble/70')} onClick={onRetry} type="button">
-          Retry
-        </button>
-      ) : (
-        <span aria-hidden className={cn(stoppedPill, 'text-muted')}>
-          Stopped
+      <div className="flex items-center gap-2">
+        <span aria-hidden className="size-2 shrink-0 rounded-full bg-danger" />
+        <span className="font-medium">
+          {message.request ? "Didn't go through" : `${name} stopped`}
         </span>
-      )}
-      {connector && onFix ? (
-        <button
-          className={cn(stoppedPill, 'hover:bg-bubble/70')}
-          onClick={() => onFix(connector)}
-          type="button"
-        >
-          Fix {connectorName}
-        </button>
-      ) : null}
-      {onDismiss ? (
-        <button
-          aria-label="Dismiss"
-          className="hex-focus grid size-6 place-items-center rounded-full text-muted opacity-0 transition-opacity duration-[var(--hex-motion-fast)] group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground"
-          onClick={onDismiss}
-          title="Dismiss"
-          type="button"
-        >
-          <X size={14} />
-        </button>
+        <span className="ml-auto flex items-center gap-1">
+          {message.createdAt > 0 ? (
+            <time className="text-[length:var(--text-meta)] text-muted">
+              {new Date(toMillis(message.createdAt)).toLocaleTimeString([], {
+                hour: 'numeric',
+                minute: '2-digit'
+              })}
+            </time>
+          ) : null}
+          {onDismiss ? (
+            <button
+              aria-label="Dismiss"
+              className="hex-focus -my-1 -mr-1.5 grid size-6 place-items-center rounded-full text-muted transition-colors duration-[var(--hex-motion-fast)] hover:bg-foreground/[0.06] hover:text-foreground"
+              onClick={onDismiss}
+              title="Dismiss"
+              type="button"
+            >
+              <X size={14} />
+            </button>
+          ) : null}
+        </span>
+      </div>
+      <p className="text-[length:var(--text-secondary)] break-words">{reason}</p>
+      {(connector && onFix) || onRetry ? (
+        <div className="flex gap-2">
+          {connector && onFix ? (
+            <Button onClick={() => onFix(connector)} size="sm" variant="primary">
+              Fix {connectorName}
+            </Button>
+          ) : null}
+          {onRetry ? (
+            <Button onClick={onRetry} size="sm">
+              Retry
+            </Button>
+          ) : null}
+        </div>
       ) : null}
     </div>
   )
@@ -564,6 +684,7 @@ export const MessageRow = memo(function MessageRow({
   mine = false,
   quiet = false,
   onDismiss,
+  onFile,
   onFix,
   onImage,
   onRecall,
@@ -572,19 +693,22 @@ export const MessageRow = memo(function MessageRow({
   retryMessage,
   fresh = false,
   joined = false,
+  sessionId,
   showFace = false
 }: {
   bot?: Bot
-  /** Your message the bot failed on: the red mark beside it, its line under it. */
+  /** Your message that did not reach the bot: the red mark beside it, its line under it. */
   failed?: boolean
   /** A failure line already shows under your message: draw no second one. */
   lined?: boolean
   message: TranscriptMessage
-  /** An error row right after your message, drawn as its Not sent line. */
+  /** An error row right after your message: a failed request is its Not sent line. */
   mine?: boolean
   /** A failure line a newer one replaces: kept for screen readers only. */
   quiet?: boolean
   onDismiss?: (message: TranscriptMessage) => void
+  /** Opens a file beside the chat; a bot's own chat only. */
+  onFile?: (file: FileTarget) => void
   onFix?: (connector: string) => void
   onImage: (source: string) => void
   /** Your latest message, while the bot is on it or after its turn stopped. */
@@ -597,6 +721,8 @@ export const MessageRow = memo(function MessageRow({
   fresh?: boolean
   /** Follows a bubble from the same side: it sits 4 px under it, one stack. */
   joined?: boolean
+  /** The chat's live session, which reads the files it plays; a bot's own chat only. */
+  sessionId?: string
   /** Rooms draw a face beside every bot bubble; a bot's own chat does not. */
   showFace?: boolean
 }) {
@@ -655,10 +781,6 @@ export const MessageRow = memo(function MessageRow({
 
   const bubbles = words.filter(text => text.trim())
 
-  if (!bubbles.length && message.attachments.length && !message.streaming) {
-    bubbles.push('')
-  }
-
   // Bubbles drawn when the row first rendered stay still; later ones spring in.
   const still = settled.current ?? (settled.current = fresh ? 0 : bubbles.length)
 
@@ -676,12 +798,15 @@ export const MessageRow = memo(function MessageRow({
           : [])
       ]
 
+  // Files with no words: nothing to copy, but Recall still applies.
+  const recallOnly = actions.filter(action => action.label !== 'Copy')
   const last = bubbles.length - 1
   const name = bot?.display_name ?? 'Bot'
 
   // Visuals sit above the bot's final reply, under what it said before. They
   // take the column's full width; bubbles keep theirs.
   const visuals = assistant ? visualsOf(message) : []
+
   const replied = assistant && !message.streaming && Boolean(message.text.trim())
 
   const column = bubbles.map((text, index) => (
@@ -707,9 +832,6 @@ export const MessageRow = memo(function MessageRow({
               <Markdown text={text} />
             </div>
           ) : null}
-          {index === last ? (
-            <Attachments attachments={message.attachments} onImage={onImage} />
-          ) : null}
         </div>
       </div>
       {index === last && delivery ? <DeliveryMark delivery={delivery} onRetry={retryMark} /> : null}
@@ -727,6 +849,80 @@ export const MessageRow = memo(function MessageRow({
       0,
       <Visuals color={color} fresh={fresh} key="visuals" visuals={visuals} />
     )
+  }
+
+  // What the message carries sits above its words, outside the bubble. A
+  // message of files alone keeps its delivery mark and Recall beside them.
+  if (message.attachments.length) {
+    column.unshift(
+      <div
+        className={cn(
+          'flex max-w-full gap-1',
+          !assistant && 'flex-row-reverse',
+          delivery === 'sending' && 'hex-pending'
+        )}
+        key="attachments"
+      >
+        <Attachments
+          attachments={message.attachments}
+          mine={!assistant}
+          onFile={onFile}
+          onImage={onImage}
+          sessionId={sessionId}
+        />
+        {!bubbles.length && delivery ? (
+          <DeliveryMark delivery={delivery} onRetry={retryMark} />
+        ) : null}
+        {!bubbles.length &&
+        delivery !== 'sending' &&
+        recallOnly.length > 0 &&
+        !message.streaming ? (
+          <BubbleActions actions={recallOnly} />
+        ) : null}
+      </div>
+    )
+  }
+
+  // Under the reply: the files the bot shared and what its media tools made. A
+  // picture, video or audio file shows or plays there; any other is a card.
+  const shared: Attachment[] =
+    assistant && onFile
+      ? [
+          ...filesOf(message).map(file => ({
+            id: file.path!,
+            kind: mediaKind(file.mime, file.name),
+            mime: file.mime,
+            name: file.name,
+            path: file.path
+          })),
+          // A file it made and then shared shows once.
+          ...mediaOf(message.toolCalls)
+            .filter(file => !filesOf(message).some(shared => shared.path === file.path))
+            .map(file => ({ id: file.path, ...file }))
+        ]
+      : []
+
+  if (shared.length) {
+    column.push(
+      <Attachments
+        attachments={shared}
+        key="shared"
+        mine={false}
+        onFile={onFile}
+        onImage={onImage}
+        sessionId={sessionId}
+      />
+    )
+  }
+
+  // A step that only used tools shows nothing, so it takes no room: its
+  // padding would push the card after it away from the message before.
+  if (
+    !column.length &&
+    !(assistant && (isWorking(message) || asks(message).length)) &&
+    !(delivery === 'failed' && resend && !lined)
+  ) {
+    return null
   }
 
   // The column reads in order: the bot's messages, then at the foot the live
@@ -762,7 +958,7 @@ export const MessageRow = memo(function MessageRow({
           )}
         >
           {column}
-          {/* A refused send or a failed turn has its own Not sent line under this. */}
+          {/* A refused send has its own Not sent line under this; a failed turn, its Stopped card. */}
           {delivery === 'failed' && resend && !lined ? (
             <NotSent
               label="Not sent"
@@ -827,10 +1023,20 @@ export function CheckingRow({ bot, transcript }: { bot?: Bot; transcript?: Trans
 /**
  * A card the bot is waiting on, in the same row as its bubbles. Rooms pass the
  * bot so its face leads the card; a bot's own chat has no faces in the column.
+ * Like a bubble, it sits 4 px under the bot's bubble or card before it
+ * (`joined`) and a full step under yours.
  */
-export function CardRow({ bot, children }: { bot?: Bot; children: React.ReactNode }) {
+export function CardRow({
+  bot,
+  children,
+  joined = true
+}: {
+  bot?: Bot
+  children: React.ReactNode
+  joined?: boolean
+}) {
   return (
-    <div className="flex gap-2 pt-1">
+    <div className={cn('flex gap-2', joined ? 'pt-1' : 'pt-4')}>
       {bot ? <Avatar className="mt-1" {...botFace(bot)} name={bot.display_name} size="sm" /> : null}
       {children}
     </div>
@@ -856,6 +1062,10 @@ export function ApprovalCard({ approval }: { approval: ApprovalRequest }) {
     return <PluginCard approval={approval} form={approval.form} />
   }
 
+  if (approval.form?.kind === 'email_draft') {
+    return <EmailDraftCard approval={approval} form={approval.form} />
+  }
+
   if (approval.form) {
     return <SignInCard approval={approval} form={approval.form} />
   }
@@ -864,14 +1074,15 @@ export function ApprovalCard({ approval }: { approval: ApprovalRequest }) {
 }
 
 function ChoiceCard({ approval }: { approval: ApprovalRequest }) {
+  const [open, setOpen] = useState(false)
+
   const choose = async (choice: ApprovalChoice) => {
     await approvalRespond(approval.sessionId, approval.requestId, choice)
     transcriptActions().resolveApproval(approval.sessionId, approval.requestId, choice)
   }
 
-  return (
-    <div className="hex-bubble min-w-0 max-w-[min(85%,40rem)] flex-1 rounded-[20px] border border-warning/30 bg-bubble px-4 py-3">
-      <div className="font-semibold">Approval needed</div>
+  const details = (
+    <>
       {approval.command ? (
         <pre className="my-2 overflow-auto rounded-[12px] bg-background/80 p-2.5 font-mono text-[length:var(--text-secondary)]">
           {approval.command}
@@ -880,24 +1091,69 @@ function ChoiceCard({ approval }: { approval: ApprovalRequest }) {
       {approval.reason ? (
         <p className="mb-2 text-[length:var(--text-secondary)] text-muted">{approval.reason}</p>
       ) : null}
-      {approval.decision ? (
-        <Chip tone={approval.decision === 'deny' ? 'danger' : 'success'}>
-          {APPROVAL_CHOICES[approval.decision]}
-        </Chip>
-      ) : (
-        <div className="flex flex-wrap gap-2">
-          {approval.choices.map(choice => (
-            <Button
-              key={choice}
-              onClick={() => void choose(choice)}
-              size="sm"
-              variant={choice === 'once' ? 'primary' : undefined}
+    </>
+  )
+
+  // Once answered, the card folds to one line; the command stays a click away.
+  if (approval.decision) {
+    const summary = approval.command?.trim().split('\n')[0] || approval.reason
+
+    return (
+      <div className="hex-bubble min-w-0 max-w-[min(85%,40rem)] flex-1 rounded-[20px] bg-bubble px-2 py-1.5">
+        <button
+          aria-expanded={open}
+          className="group/approval hex-focus flex w-full items-center gap-2 rounded-[14px] px-2 py-1 text-left"
+          onClick={() => setOpen(!open)}
+          type="button"
+        >
+          <Chip className="shrink-0" tone={approval.decision === 'deny' ? 'danger' : 'success'}>
+            {APPROVAL_CHOICES[approval.decision]}
+          </Chip>
+          {summary ? (
+            <span
+              className={cn(
+                'min-w-0 flex-1 truncate text-[length:var(--text-meta)] text-muted',
+                approval.command && 'font-mono'
+              )}
             >
-              {APPROVAL_BUTTONS[choice]}
-            </Button>
-          ))}
-        </div>
-      )}
+              {summary}
+            </span>
+          ) : (
+            <span className="flex-1" />
+          )}
+          <ChevronDown
+            className={cn(
+              'shrink-0 text-muted opacity-0 transition-[opacity,transform] duration-[var(--hex-motion-fast)] group-hover/approval:opacity-100 group-focus-visible/approval:opacity-100',
+              open && 'rotate-180 opacity-100'
+            )}
+            size={12}
+          />
+        </button>
+        {open ? (
+          <div className="hex-unfold px-2">
+            <div>{details}</div>
+          </div>
+        ) : null}
+      </div>
+    )
+  }
+
+  return (
+    <div className="hex-bubble min-w-0 max-w-[min(85%,40rem)] flex-1 rounded-[20px] border border-warning/30 bg-bubble px-4 py-3">
+      <div className="font-semibold">Approval needed</div>
+      {details}
+      <div className="flex flex-wrap gap-2">
+        {approval.choices.map(choice => (
+          <Button
+            key={choice}
+            onClick={() => void choose(choice)}
+            size="sm"
+            variant={choice === 'once' ? 'primary' : undefined}
+          >
+            {APPROVAL_BUTTONS[choice]}
+          </Button>
+        ))}
+      </div>
     </div>
   )
 }
@@ -936,6 +1192,9 @@ async function submitOrReopen(
   const { current, files, uploads } = retry
   let pending = retry.pending
   const identified = useConnection.getState().daemon?.transcript_identity === true
+  // A message sent while the bot works cuts its reply off and goes next. A
+  // resend may already be the turn it works on, so it never stops one.
+  const interrupt = !retry.resend
 
   if (!current()) {
     return false
@@ -974,7 +1233,7 @@ async function submitOrReopen(
     await promptSubmit(
       sessionId,
       text,
-      identified ? { input_id: pending.inputId, attachments: uploads } : {}
+      identified ? { input_id: pending.inputId, attachments: uploads, interrupt } : {}
     )
 
     accepted()
@@ -1048,7 +1307,7 @@ async function submitOrReopen(
           begin()
           await promptSubmit(active, text, {
             attachments,
-            ...(identified && { input_id: pending.inputId })
+            ...(identified && { input_id: pending.inputId, interrupt })
           })
 
           accepted()
@@ -1125,6 +1384,32 @@ async function submitOrReopen(
       }
     }
   }
+}
+
+/**
+ * Sends a message to the chat from outside the composer, as the quick tools
+ * beside an open file do: it shows as the user's message and goes through
+ * the same submission and retry. It takes none of the composer's attached files.
+ */
+export async function sendText(
+  sessionId: string,
+  sectionId: null | string,
+  text: string
+): Promise<boolean> {
+  const { target, epoch, daemon } = useConnection.getState()
+
+  const current = () =>
+    target === useConnection.getState().target &&
+    epoch === useConnection.getState().epoch &&
+    daemon?.install_id === useConnection.getState().daemon?.install_id
+
+  const pending = transcriptActions().appendUserMessage(sessionId, text, [])
+
+  if (sectionId) {
+    sectionsActions().markTouched(sectionId, text)
+  }
+
+  return submitOrReopen(sessionId, sectionId, text, { current, files: [], pending, uploads: [] })
 }
 
 interface DraftAttachment {
@@ -1253,9 +1538,11 @@ function Composer({
     try {
       const identified = useConnection.getState().daemon?.transcript_identity === true
       const uploads: string[] = []
+      const answers: AttachResult[] = []
 
       for (const item of files) {
         const uploaded = await attachFile(sessionId, item.file)
+        answers.push(uploaded)
 
         if (!current()) {
           return
@@ -1268,18 +1555,28 @@ function Composer({
         uploads.push(typeof uploaded.id === 'string' ? uploaded.id : item.id)
       }
 
-      const attachments: Attachment[] = files.map((item, index) => ({
-        dataUrl: item.preview,
-        id: uploads[index] ?? item.id,
-        kind: item.file.type.startsWith('image/')
-          ? 'image'
-          : item.file.type === 'application/pdf'
-            ? 'pdf'
-            : 'file',
-        mime: item.file.type,
-        name: item.file.name,
-        size: item.file.size
-      }))
+      const attachments: Attachment[] = files.map((item, index) => {
+        // The same reading the upload used, so a .pdf with no type is a PDF here
+        // too; a video or audio file with no type is known by its name.
+        const sent = attachmentKind(item.file.type, item.file.name)
+        const media = mediaKind(item.file.type || mimeOf(item.file.name), item.file.name)
+        const kind = sent === 'file' && (media === 'video' || media === 'audio') ? media : sent
+
+        return {
+          dataUrl: item.preview,
+          id: uploads[index] ?? item.id,
+          kind,
+          mime: item.file.type,
+          name: item.file.name,
+          // A file the daemon keeps opens from there, and can be edited with the
+          // bot; a PDF it keeps only as page images, and a video or audio file, play from
+          // this page's copy.
+          path: kind === 'image' ? undefined : answers[index]?.path,
+          size: item.file.size,
+          url:
+            kind === 'pdf' || kind === 'video' || kind === 'audio' ? holdCopy(item.file) : undefined
+        }
+      })
 
       const pending = transcriptActions().appendUserMessage(sessionId, text.trim(), attachments)
 
@@ -1408,24 +1705,34 @@ function Composer({
       above={
         files.length ? (
           <div className="mb-2 flex flex-wrap gap-2">
-            {files.map(item => (
-              <Chip className="hex-glass py-1 pr-1.5 pl-1.5 text-foreground" key={item.id}>
-                {item.preview ? (
-                  <img alt="" className="size-5 rounded object-cover" src={item.preview} />
-                ) : (
-                  <File size={12} />
-                )}
-                {item.file.name}
-                <button
-                  aria-label={`Remove ${item.file.name}`}
-                  className="grid size-4 place-items-center rounded-full hover:bg-surface-3"
-                  onClick={() => setFiles(current => current.filter(file => file.id !== item.id))}
-                  type="button"
-                >
-                  <X size={11} />
-                </button>
-              </Chip>
-            ))}
+            {files.map(item => {
+              const remove = () => setFiles(current => current.filter(file => file.id !== item.id))
+
+              return item.preview ? (
+                <div className="relative" key={item.id} title={item.file.name}>
+                  <img
+                    alt={item.file.name}
+                    className="size-14 rounded-[14px] object-cover shadow-card"
+                    src={item.preview}
+                  />
+                  <button
+                    aria-label={`Remove ${item.file.name}`}
+                    className="hex-focus absolute -top-1.5 -right-1.5 grid size-5 place-items-center rounded-full bg-foreground text-background shadow-card"
+                    onClick={remove}
+                    type="button"
+                  >
+                    <X size={11} strokeWidth={2.5} />
+                  </button>
+                </div>
+              ) : (
+                <FileCard
+                  key={item.id}
+                  name={item.file.name}
+                  onRemove={remove}
+                  size={item.file.size}
+                />
+              )
+            })}
           </div>
         ) : null
       }
@@ -1499,26 +1806,41 @@ const bubbleShown = (message: TranscriptMessage) =>
 const joins = (a: TranscriptMessage, b: TranscriptMessage) =>
   a.role === b.role && bubbleShown(a) && bubbleShown(b) && !a.streaming
 
-/** Tracks an element's height, for content that scrolls under floating glass. */
-function useHeight<T extends HTMLElement>(): [React.RefObject<T | null>, number] {
-  const ref = useRef<T>(null)
-  const [height, setHeight] = useState(0)
+/**
+ * Whether the last thing drawn before `position` is the bot's own bubble or
+ * card, which a card or a bot bubble then joins. A step that only used
+ * tools draws nothing, so the search looks past it.
+ */
+const botBefore = (timeline: TimelineItem[], position: number) => {
+  for (let index = position - 1; index >= 0; index--) {
+    const item = timeline[index]!
 
-  useEffect(() => {
-    const node = ref.current
-
-    if (!node || typeof ResizeObserver === 'undefined') {
-      return
+    if (item.kind !== 'message') {
+      return true
     }
 
-    const observer = new ResizeObserver(() => setHeight(node.offsetHeight))
-    observer.observe(node)
+    const { message } = item
 
-    return () => observer.disconnect()
-  }, [])
+    if (message.role !== 'assistant' || message.error) {
+      return false
+    }
 
-  return [ref, height]
+    // Earlier words stay in parts when the last step only used a tool.
+    if (bubbleShown(message) || message.parts?.some(part => part.trim())) {
+      return !message.streaming
+    }
+
+    if (isWorking(message) || message.attachments.length) {
+      return false
+    }
+  }
+
+  return false
 }
+
+/** Messages drawn when a chat opens, and how many more each Load earlier adds. */
+const FIRST_PAINT = 10
+const PAGE = 60
 
 function BotConversation() {
   const params = useParams({ strict: false }) as { bot?: string; section?: string }
@@ -1574,6 +1896,18 @@ function BotConversation() {
   const ownerInput = ready && !resolved.peer
   const liveId = ready ? loadedLiveId : null
 
+  // Stable, so a streaming reply re-renders only its own row.
+  // A thread between bots is read-only for the user: its files open, but
+  // without quick tools that would post into it.
+  const openBeside = useCallback(
+    (file: FileTarget) => {
+      if (liveId) {
+        openFile(liveId, file, ownerInput, params.section)
+      }
+    },
+    [liveId, ownerInput, params.section]
+  )
+
   // While the owner chat validated here is checked again (a reconnect, a
   // daemon restart, the same URL), its composer stays, disabled, so staged
   // files survive. Another daemon, bot, chat or a peer thread starts without one.
@@ -1612,23 +1946,66 @@ function BotConversation() {
     }
   }, [params.bot])
   const [lightbox, setLightbox] = useState<string | null>(null)
-  const [historyWindow, setWindow] = useState({ section: params.section, count: 60 })
-  const visible = historyWindow.section === params.section ? historyWindow.count : 60
+  // A chat opens on its newest messages, so switching paints in one frame;
+  // the rest of the first page follows without holding up input.
+  const [historyWindow, setWindow] = useState({ section: params.section, count: FIRST_PAINT })
+  const visible = historyWindow.section === params.section ? historyWindow.count : FIRST_PAINT
 
   if (historyWindow.section !== params.section) {
-    setWindow({ section: params.section, count: 60 })
+    setWindow({ section: params.section, count: FIRST_PAINT })
   }
 
-  const earlierAnchor = useRef<{ height: number; top: number } | null>(null)
+  // Where the reader was before older messages went in above, in the chat it was taken in.
+  const earlierAnchor = useRef<{ height: number; section?: string; top: number } | null>(null)
+
+  useEffect(() => {
+    if (visible >= PAGE) {
+      return
+    }
+
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    // After the frame that shows the chat.
+    const frame = requestAnimationFrame(() => {
+      timer = setTimeout(() => {
+        const node = viewport.current
+
+        if (node) {
+          earlierAnchor.current = {
+            height: node.scrollHeight,
+            section: params.section,
+            top: node.scrollTop
+          }
+        }
+
+        startTransition(() =>
+          setWindow(window =>
+            window.section === params.section && window.count < PAGE
+              ? { section: params.section, count: PAGE }
+              : window
+          )
+        )
+      })
+    })
+
+    return () => {
+      cancelAnimationFrame(frame)
+      clearTimeout(timer)
+    }
+  }, [params.section, visible])
 
   const loadEarlier = () => {
     const node = viewport.current
 
     if (node) {
-      earlierAnchor.current = { height: node.scrollHeight, top: node.scrollTop }
+      earlierAnchor.current = {
+        height: node.scrollHeight,
+        section: params.section,
+        top: node.scrollTop
+      }
     }
 
-    setWindow({ section: params.section, count: visible + 60 })
+    setWindow({ section: params.section, count: Math.max(visible, PAGE) + PAGE })
   }
 
   const [atBottom, setAtBottom] = useState(true)
@@ -1637,7 +2014,7 @@ function BotConversation() {
     const node = viewport.current
     const anchor = earlierAnchor.current
 
-    if (node && anchor) {
+    if (node && anchor && anchor.section === params.section) {
       node.scrollTop = anchor.top + node.scrollHeight - anchor.height
     }
 
@@ -1647,6 +2024,9 @@ function BotConversation() {
   const togglePanel = useUi(state => state.toggleRightPanel)
   const panelOpen = useUi(state => state.rightPanelOpen)
   const [composerBox, composerHeight] = useHeight<HTMLDivElement>()
+  // The header grows when a notice joins the name pill; the chat clears it.
+  const [headerBox, headerHeight] = useHeight<HTMLElement>()
+  const clearTop = Math.max(60, headerHeight + 8)
   // Messages that arrive after the section opened spring in; history is drawn still.
   const opened = useRef({ at: Date.now(), id: liveId })
 
@@ -1678,7 +2058,8 @@ function BotConversation() {
   const jumpIndex = jump ? messages.findIndex(message => message.id === jump.id) : -1
 
   if (jumpIndex >= 0 && messages.length - jumpIndex > visible) {
-    setWindow({ section: params.section, count: messages.length - jumpIndex + 20 })
+    // At least a page, so filling the first page later cannot move the jump.
+    setWindow({ section: params.section, count: Math.max(PAGE, messages.length - jumpIndex + 20) })
   }
 
   const approvals = useMemo(() => transcript?.approvals ?? [], [transcript?.approvals])
@@ -1884,63 +2265,25 @@ function BotConversation() {
       toEnd()
     }
   }, [approvals.length, atBottom, clarifies, composerHeight, messages])
-  const wasStreaming = useRef(streaming)
-  useEffect(() => {
-    if (wasStreaming.current && !streaming) {
-      const body = messages.at(-1)?.text || 'New message'
-      const input = { body, sectionId: section?.id, title: bot?.display_name ?? 'Hexbot' }
-      const bridge = getBridge()
-
-      if (bridge) {
-        bridge.notify({ ...input, backgroundOnly: true })
-      } else if (
-        document.hidden &&
-        'Notification' in window &&
-        Notification.permission === 'granted'
-      ) {
-        new Notification(input.title, { body: input.body })
-      }
-    }
-
-    wasStreaming.current = streaming
-  }, [bot?.display_name, messages, section?.id, streaming])
+  // The turn, not its bubble: a card closes the bubble while the turn runs on.
+  const busy = Boolean(transcript?.turnActive) || streaming
+  // A finished reply notifies from lib/events.ts, for every bot's chat.
   useConversationFeelings(
     bot?.name,
     section?.id,
     messages,
     ready,
-    Boolean(transcript?.turnActive) || streaming
+    busy
   )
   const emotion = useEmotion(bot?.name)
   useTurnCues(section?.id, {
     failed: Boolean(messages.at(-1)?.error),
     ready,
-    // The turn, not its bubble: a card closes the bubble while the turn runs on.
-    streaming: Boolean(transcript?.turnActive) || streaming,
+    streaming: busy,
     waiting:
       approvals.filter(card => !card.decision).length +
       clarifies.filter(card => !card.expired && !Object.keys(card.answers).length).length
   })
-  const previousApprovalCount = useRef(approvals.length)
-  useEffect(() => {
-    if (
-      !getBridge() &&
-      document.hidden &&
-      approvals.length > previousApprovalCount.current &&
-      'Notification' in window &&
-      Notification.permission === 'granted'
-    ) {
-      new Notification(
-        approvals.at(-1)?.form?.kind === 'sign_in' ? 'Sign-in needed' : 'Approval needed',
-        {
-        body:
-          approvals.at(-1)?.command ?? approvals.at(-1)?.reason ?? 'A bot is asking for permission.'
-        }
-      )
-    }
-
-    previousApprovalCount.current = approvals.length
-  }, [approvals])
   const shown = messages.slice(-visible)
 
   // Messages, question cards and approval cards in the order they happened.
@@ -2051,9 +2394,9 @@ function BotConversation() {
     }
   }
 
-  // The bot's stopped state is your last message not sent only when it is
-  // about this chat and that message came before it: a failed dream or a
-  // send since then keeps the plain card.
+  // The bot's stopped state is about your last message only when it is about
+  // this chat and that message came before it: its Retry sends that message
+  // again. A failed dream or a send since then retries nothing of yours.
   const stoppedOwner =
     follows &&
     stoppedHere &&
@@ -2083,6 +2426,11 @@ function BotConversation() {
 
     return Boolean(card) && !quietLine(card!)
   }
+
+  // Your message that never reached the bot: a red ! beside it. A turn that
+  // failed on it got the message, so its Stopped card says so instead.
+  const unsent = (input: TranscriptMessage) =>
+    lined(input) && Boolean(lineFor.get(input.id)?.request)
 
   const canPrompt = useCallback(
     () =>
@@ -2487,14 +2835,22 @@ function BotConversation() {
         }
       }}
     >
+      {/* Messages fade out under the header and the composer, as every
+          scroller does (`.hex-fade-mask`), and are whole where they end. */}
       <div
-        className="absolute inset-0 overflow-y-auto"
+        className="hex-fade-mask absolute inset-0 overflow-y-auto"
         onScroll={event => {
           const node = event.currentTarget
           setAtBottom(node.scrollHeight - node.scrollTop - node.clientHeight < 80)
         }}
         ref={viewport}
-        style={{ paddingBottom: composerHeight + 8, paddingTop: 60 }}
+        style={{
+          ...fadeLengths({ bottom: composerHeight + 8, top: clearTop }),
+          paddingBottom: composerHeight + 8,
+          paddingTop: clearTop,
+          scrollPaddingBottom: composerHeight + 8,
+          scrollPaddingTop: clearTop
+        }}
       >
         {openFailure && openFailure.section === params.section ? (
           <div
@@ -2539,12 +2895,15 @@ function BotConversation() {
             ) : null}
           </div>
         ) : (
-          <div className={cn(transcriptClass, 'hex-fade')} key={params.section}>
-            {messages.length > visible ? <LoadEarlierMessages onClick={loadEarlier} /> : null}
+          <div className={transcriptClass} key={params.section}>
+            {/* Not while the first page fills in, or it flashes at the top. */}
+            {messages.length > Math.max(visible, PAGE) ? (
+              <LoadEarlierMessages onClick={loadEarlier} />
+            ) : null}
             {timeline.map((item, position) => {
               if (item.kind === 'clarify') {
                 return (
-                  <CardRow key={item.clarify.requestId}>
+                  <CardRow joined={botBefore(timeline, position)} key={item.clarify.requestId}>
                     <ClarifyCard bot={bot} clarify={item.clarify} />
                   </CardRow>
                 )
@@ -2552,7 +2911,7 @@ function BotConversation() {
 
               if (item.kind === 'approval') {
                 return (
-                  <CardRow key={item.approval.requestId}>
+                  <CardRow joined={botBefore(timeline, position)} key={item.approval.requestId}>
                     <ApprovalCard approval={item.approval} />
                   </CardRow>
                 )
@@ -2563,8 +2922,15 @@ function BotConversation() {
               const separator = separatedFrom(previous, message)
               const before = timeline[position - 1]
 
+              // The bot's words after its card join the card, as they join a bubble.
               const joined =
-                !separator && before?.kind === 'message' && joins(before.message, message)
+                !separator &&
+                (before?.kind === 'message'
+                  ? joins(before.message, message)
+                  : before !== undefined &&
+                    message.role === 'assistant' &&
+                    bubbleShown(message) &&
+                    botBefore(timeline, position))
 
               // A failure that holds your message's Retry draws under it.
               if (
@@ -2594,9 +2960,7 @@ function BotConversation() {
                 return (
                   <MessageRow
                     bot={bot}
-                    failed={
-                      lined(shownMessage) || (Boolean(stoppedHere) && stoppedOwner === shownMessage)
-                    }
+                    failed={unsent(shownMessage)}
                     fresh={toMillis(shownMessage.createdAt) > openedAt}
                     joined={shownMessage === message && joined}
                     key={shownMessage.id}
@@ -2604,6 +2968,7 @@ function BotConversation() {
                     message={shownMessage}
                     mine={Boolean(owner)}
                     onDismiss={shownMessage.error ? dismiss : undefined}
+                    onFile={liveId ? openBeside : undefined}
                     onFix={fixConnector}
                     onImage={setLightbox}
                     onRecall={canRecall(shownMessage) ? recall : undefined}
@@ -2611,6 +2976,7 @@ function BotConversation() {
                     onRetry={retryWith?.[0]}
                     quiet={shownMessage.error ? quietLine(shownMessage) : false}
                     retryMessage={retryWith?.[1]}
+                    sessionId={liveId ?? undefined}
                   />
                 )
               }
@@ -2642,15 +3008,14 @@ function BotConversation() {
           </div>
         )}
       </div>
-      <header className="hex-drag pointer-events-none absolute inset-x-0 top-0 z-20 flex flex-col items-center gap-2 px-24 pt-2.5">
-        <div
-          aria-hidden
-          className="absolute inset-x-0 top-0 h-9 bg-gradient-to-b from-background/70 to-transparent"
-        />
+      <header
+        className="hex-chrome hex-drag absolute inset-x-0 top-0 z-20 flex flex-col items-center gap-2 pt-2.5 pr-[max(6rem,calc(var(--hex-overlay,0px)+1rem))] pl-[max(1rem,calc(6rem-var(--hex-overlay,0px)))] max-[700px]:pl-[max(3.5rem,calc(6rem-var(--hex-overlay,0px)))] transition-[padding] duration-[var(--hex-motion-panel)] ease-[var(--hex-ease-out)]"
+        ref={headerBox}
+      >
         <button
           aria-expanded={panelOpen}
           aria-label={name}
-          className="hex-glass hex-glass-press hex-focus hex-no-drag pointer-events-auto flex h-9 max-w-[min(100%_-_7rem,30rem)] [--hex-press-scale:1.04] min-w-0 items-center gap-2 rounded-full pr-4 pl-1.5 @min-[54rem]:max-w-[min(100%_-_12.5rem,30rem)]"
+          className="hex-glass hex-glass-press hex-focus hex-no-drag pointer-events-auto flex h-9 max-w-[min(100%,30rem)] [--hex-press-scale:1.04] min-w-0 items-center gap-2 rounded-full pr-4 pl-1.5"
           onClick={() => togglePanel()}
           title={panelOpen ? 'Hide details' : 'Show details'}
           type="button"
@@ -2664,12 +3029,13 @@ function BotConversation() {
             />
             <StatusDot size="sm" status={status} />
           </span>
-          <span className="shrink-0 truncate text-[length:var(--text-secondary)] font-semibold">
+          <span className="min-w-0 truncate text-[length:var(--text-secondary)] font-semibold">
             {name}
           </span>
         </button>
         {status === 'needs_you' ? <WaitingBanner /> : null}
         <ConnectedToolsNotice sectionId={params.section ?? ''} />
+        <NotificationsBanner />
       </header>
       <div className="hex-no-drag absolute top-2.5 right-3 z-30 flex items-center gap-1.5">
         {panelOpen ? null : (
@@ -2686,7 +3052,7 @@ function BotConversation() {
       {!atBottom ? (
         <button
           aria-label="Jump to latest"
-          className="hex-glass hex-glass-press hex-focus hex-fade absolute left-1/2 z-20 grid size-9 -translate-x-1/2 place-items-center rounded-full text-foreground/80"
+          className="hex-glass hex-glass-press hex-focus hex-fade absolute left-[calc((100%-var(--hex-overlay,0px))/2)] z-20 grid size-9 -translate-x-1/2 place-items-center rounded-full text-foreground/80"
           onClick={() => {
             toEnd('smooth')
             setAtBottom(true)
@@ -2697,9 +3063,11 @@ function BotConversation() {
           <ArrowDown size={16} />
         </button>
       ) : null}
-      <div className="absolute inset-x-0 bottom-0 z-20" ref={composerBox}>
+      {/* Messages fade out under the composer instead of meeting the card's edge. */}
+      <div className="hex-chrome absolute inset-x-0 bottom-0 z-20" ref={composerBox}>
         {composer ? (
           <div className="relative mx-auto max-w-[52rem] px-1">
+            {providerGone(bot) ? <ProviderGoneCard bot={bot} /> : null}
             <Composer
               bot={bot}
               draftVersion={draftVersion}
@@ -2708,7 +3076,8 @@ function BotConversation() {
               sessionId={liveId}
               // A stopped turn is the Retry pill under it; the field stays calm.
               status={status === 'stopped' ? 'idle' : status}
-              streaming={streaming}
+              // Stop shows for the whole turn, tools and cards included.
+              streaming={Boolean(transcript?.turnActive) || streaming}
             />
           </div>
         ) : null}
@@ -2717,16 +3086,21 @@ function BotConversation() {
         onOpenChange={open => !open && setLightbox(null)}
         open={Boolean(lightbox)}
         toolbar={
-          <button aria-label="Close image" onClick={() => setLightbox(null)} type="button">
-            <X />
+          <button
+            aria-label="Close image"
+            className="hex-glass hex-glass-press hex-focus grid size-9 shrink-0 place-items-center rounded-full text-foreground/70 hover:text-foreground"
+            onClick={() => setLightbox(null)}
+            type="button"
+          >
+            <X size={16} />
           </button>
         }
       >
-        <div className="grid max-h-[85vh] place-items-center bg-black p-2">
+        <div className="grid max-h-[85dvh] place-items-center bg-black p-2">
           {lightbox ? (
             <img
               alt="Attachment preview"
-              className="max-h-[78vh] max-w-full object-contain"
+              className="max-h-[78dvh] max-w-full object-contain"
               src={lightbox}
             />
           ) : null}
@@ -2737,7 +3111,67 @@ function BotConversation() {
 }
 
 export function ConversationColumn() {
-  const params = useParams({ strict: false }) as { room?: string }
+  const params = useParams({ strict: false }) as { bot?: string; room?: string; section?: string }
+  const router = useRouter()
+  const shown = `${params.bot}/${params.section}/${params.room}`
+  const asked = useUi(state => state.openingBot)
+  // A bot clicked in the roster opens here once the daemon names its chat.
+  // Until then its face loads, as on the phone; the chat it leaves waits
+  // unseen, so it cannot show up in the meantime and stays as it was if the
+  // click comes to nothing. The roster lets go as it navigates, so the face
+  // stays until the new route renders.
+  const [held, setHeld] = useState<null | { bot: string; path: string; shown: string }>(null)
 
-  return params.room ? <RoomConversation /> : <BotConversation />
+  if (asked && held?.bot !== asked) {
+    setHeld({ bot: asked, path: router.history.location.pathname, shown })
+  } else if (
+    !asked &&
+    held &&
+    (shown !== held.shown || router.history.location.pathname === held.path)
+  ) {
+    setHeld(null)
+  }
+
+  const opening = held && held.bot !== params.bot ? held.bot : null
+
+  // The profile panel shows the bot opening here, and lets go with it.
+  useEffect(() => {
+    useUi.getState().setOpeningShown(opening)
+
+    return () => useUi.getState().setOpeningShown(null)
+  }, [opening])
+
+  return (
+    <div className="relative h-full">
+      <div className={cn('h-full', opening && 'invisible')} inert={Boolean(opening)}>
+        {params.room ? <RoomConversation /> : <BotConversation />}
+      </div>
+      {opening ? <OpeningChat name={opening} /> : null}
+    </div>
+  )
+}
+
+function OpeningChat({ name: botName }: { name: string }) {
+  const bot = useBot(botName)
+  const name = bot?.display_name ?? botName
+
+  return (
+    <div className="absolute inset-0 bg-background">
+      <div
+        aria-label={`Opening ${name}'s chat`}
+        className="hex-fade grid h-full place-content-center [animation-delay:150ms]"
+        role="status"
+      >
+        <Avatar {...botFace(bot)} mood="loading" name={name} size="xl" />
+      </div>
+      <header className="hex-drag pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center pt-2.5 pr-[max(6rem,calc(var(--hex-overlay,0px)+1rem))] pl-[max(1rem,calc(6rem-var(--hex-overlay,0px)))] max-[700px]:pl-[max(3.5rem,calc(6rem-var(--hex-overlay,0px)))] transition-[padding] duration-[var(--hex-motion-panel)] ease-[var(--hex-ease-out)]">
+        <div className="hex-glass flex h-9 max-w-[min(100%,30rem)] min-w-0 items-center gap-2 rounded-full pr-4 pl-1.5">
+          <Avatar {...botFace(bot)} name={name} size="sm" />
+          <span className="min-w-0 truncate text-[length:var(--text-secondary)] font-semibold">
+            {name}
+          </span>
+        </div>
+      </header>
+    </div>
+  )
 }

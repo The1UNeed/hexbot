@@ -370,7 +370,9 @@ async fn actual_pi_transcript_identity_fragments_tools_hidden_and_reconcile() {
     let mut events = f.until("clarify.request").await;
     let card = &events.last().unwrap()["payload"];
     assert!(card["turn_id"].is_string());
-    assert!(card.get("message_id").is_none());
+    // The card names the fragment whose tool asked, checked against its row below.
+    let card_fragment = card["message_id"].clone();
+    assert!(card_fragment.is_string());
     f.runtime
         .call(
             "alice",
@@ -419,6 +421,7 @@ async fn actual_pi_transcript_identity_fragments_tools_hidden_and_reconcile() {
     assert_eq!(assistants.len(), 2);
     assert_eq!(assistants[0]["reasoning"], "consider");
     assert_ne!(assistants[0]["row_id"], assistants[1]["row_id"]);
+    assert_eq!(card_fragment, assistants[0]["row_id"]);
     for row in &assistants {
         assert_eq!(row["turn_id"], *turn);
     }

@@ -101,9 +101,9 @@ native ZIPs, installer binaries and signatures before mutable app feeds and
 install manifests. Finalize still downloads only macOS packages for casks;
 it writes Windows filenames into the site manifest without downloading them.
 
-`ci.yml` runs `scripts/desktop/release-smoke.mjs` on every push: the version
-resolution, feed, manifest, and cask scripts against synthetic packages, so
-a broken release script fails before tag day.
+`ci.yml` runs `scripts/desktop/release-smoke.mjs` on every pull request and
+push to `main`: the version resolution, feed, manifest, and cask scripts
+against synthetic packages, so a broken release script fails before tag day.
 
 Full packages bundle the native daemon, pinned Node and Pi, checksum-verified
 ripgrep and fd, web assets and skills. Release targets are macOS arm64,
@@ -437,6 +437,27 @@ a ZIP when all Apple API secrets are present. The raw CLI binary cannot have
 a stapled ticket. Tauri receives the same certificate and password, the
 derived signing identity, and the API key ID, issuer and `.p8` path through
 its environment variables. See [Tauri's macOS signing documentation](https://v2.tauri.app/distribute/sign/macos/).
+
+### Google and Microsoft sign-in
+
+The Google Workspace and Microsoft 365 connectors sign in through Hexbot's
+own OAuth clients, compiled into the daemon by the `build` job. Without
+them a build still works; users add their own client under Advanced.
+
+- **Microsoft**: register a multitenant app in Microsoft Entra that also
+  takes personal accounts, turn on **Allow public client flows**, and add
+  the delegated Graph permissions `User.Read`, `Mail.ReadWrite` and
+  `Mail.Send`. Save its application (client) ID as the repository variable
+  `HEXBOT_MICROSOFT_CLIENT_ID`. Publisher verification removes the
+  "unverified" label on the consent screen.
+- **Google**: in a Google Cloud project, enable the Gmail API, set up the
+  OAuth consent screen with the scopes `gmail.readonly` and
+  `gmail.compose`, and create a **Desktop app** client. Save its client ID
+  as the variable `HEXBOT_GOOGLE_CLIENT_ID` and its client secret as the
+  secret `HEXBOT_GOOGLE_CLIENT_SECRET`; Google treats a desktop client's
+  secret as public, but it stays out of logs. Gmail's scopes are
+  restricted: until Google verifies the app and its yearly security
+  assessment passes, only the project's test users (up to 100) can sign in.
 
 ### Optional
 

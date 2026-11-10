@@ -1,9 +1,25 @@
 import { Ionicons } from '@expo/vector-icons'
-import { Children, Fragment, isValidElement, type ReactNode } from 'react'
+import {
+  Children,
+  createContext,
+  Fragment,
+  isValidElement,
+  type ReactNode,
+  useContext
+} from 'react'
 import { Pressable, StyleSheet, Switch, View } from 'react-native'
 
 import { Text } from './Text'
 import { HIT, radius, useTheme } from './theme'
+
+/**
+ * A settings page: rows, groups and fields take the desktop app's look, with
+ * plain titles, a line of muted text under them, and fields that sit inside
+ * their row instead of on a well of their own.
+ */
+export const PageLook = createContext(false)
+/** Inside a group's panel, where a field is one row among others. */
+export const InGroup = createContext(false)
 
 export interface RowProps {
   title: string
@@ -45,6 +61,7 @@ export function Row({
   trailing
 }: RowProps) {
   const theme = useTheme()
+  const page = useContext(PageLook)
   const label = accessibilityLabel ?? [title, subtitle, meta].filter(Boolean).join(', ')
   const interactive = !!(onPress || onLongPress)
 
@@ -53,6 +70,8 @@ export function Row({
       accessibilityHint={accessibilityHint}
       accessibilityLabel={label}
       accessibilityRole={interactive ? 'button' : undefined}
+      // A row that is not a button itself lets VoiceOver reach the controls in it.
+      accessible={interactive || !trailing}
       accessibilityState={{ disabled: !!disabled, selected }}
       disabled={disabled || !interactive}
       onLongPress={onLongPress}
@@ -68,19 +87,28 @@ export function Row({
         <View style={styles.titleLine}>
           <Text
             numberOfLines={1}
-            style={[styles.title, destructive && { color: theme.danger }]}
-            variant={subtitle ? 'headline' : 'body'}
+            style={[
+              styles.title,
+              // On a page a row that does something, rather than opening, is tinted, as on iOS.
+              page && interactive && !chevron && { color: theme.accent },
+              destructive && { color: theme.danger }
+            ]}
+            variant={subtitle && !page ? 'headline' : 'body'}
           >
             {title}
           </Text>
           {meta ? (
-            <Text numberOfLines={1} tone="muted" variant="footnote">
+            <Text numberOfLines={1} style={styles.meta} tone="muted" variant="footnote">
               {meta}
             </Text>
           ) : null}
         </View>
         {subtitle ? (
-          <Text numberOfLines={subtitleLines} tone="muted" variant="callout">
+          <Text
+            numberOfLines={page ? Math.max(subtitleLines, 2) : subtitleLines}
+            tone="muted"
+            variant={page ? 'footnote' : 'callout'}
+          >
             {subtitle}
           </Text>
         ) : null}
@@ -114,33 +142,54 @@ export function Group({
   title
 }: GroupProps) {
   const theme = useTheme()
+  const page = useContext(PageLook)
   const rows = Children.toArray(children).filter(isValidElement)
+  const label = page ? styles.pageLabel : styles.groupTitle
 
   return (
-    <View style={styles.group} testID={testID}>
+    <View style={[styles.group, page && styles.pageGroup]} testID={testID}>
       {title ? (
-        <Text accessibilityRole="header" style={styles.groupTitle} tone="muted" variant="footnote">
+        <Text
+          accessibilityRole="header"
+          style={[label, page && styles.pageTitle]}
+          tone="muted"
+          variant="footnote"
+        >
           {title}
         </Text>
       ) : null}
-      <View style={inset ? [styles.panel, { backgroundColor: theme.surface }] : null}>
-        {rows.map((row, index) => (
-          <Fragment key={row.key ?? index}>
-            {index > 0 ? (
-              <View
-                style={{
-                  backgroundColor: theme.hairline,
-                  height: StyleSheet.hairlineWidth,
-                  marginLeft: separatorInset
-                }}
-              />
-            ) : null}
-            {row}
-          </Fragment>
-        ))}
-      </View>
+      {rows.length === 0 ? null : (
+        <View
+          style={
+            inset
+              ? [
+                  styles.panel,
+                  { backgroundColor: theme.surface },
+                  page && [styles.pagePanel, { borderColor: theme.chromeBorder }]
+                ]
+              : null
+          }
+        >
+          <InGroup.Provider value={inset}>
+            {rows.map((row, index) => (
+              <Fragment key={row.key ?? index}>
+                {index > 0 ? (
+                  <View
+                    style={{
+                      backgroundColor: theme.hairline,
+                      height: StyleSheet.hairlineWidth,
+                      marginLeft: separatorInset
+                    }}
+                  />
+                ) : null}
+                {row}
+              </Fragment>
+            ))}
+          </InGroup.Provider>
+        </View>
+      )}
       {footer ? (
-        <Text style={styles.groupTitle} tone="muted" variant="footnote">
+        <Text style={label} tone="muted" variant="footnote">
           {footer}
         </Text>
       ) : null}
@@ -244,8 +293,11 @@ export function ChoiceRow({
           </Text>
         ) : null}
       </View>
-      <View style={styles.check}>
-        {selected ? <Ionicons color={theme.accent} name="checkmark" size={22} /> : null}
+      <View
+        style={[styles.check, { backgroundColor: selected ? theme.ink : theme.fill }]}
+        testID={selected ? `${testID}-selected` : undefined}
+      >
+        {selected ? <Ionicons color={theme.onInk} name="checkmark" size={14} /> : null}
       </View>
     </Pressable>
   )
@@ -253,10 +305,22 @@ export function ChoiceRow({
 
 const styles = StyleSheet.create({
   body: { flex: 1, gap: 2, justifyContent: 'center', minWidth: 0 },
-  check: { alignItems: 'flex-end', width: 24 },
+  check: {
+    alignItems: 'center',
+    borderRadius: 11,
+    height: 22,
+    justifyContent: 'center',
+    width: 22
+  },
   group: { gap: 6 },
   groupTitle: { paddingHorizontal: 16 },
   leading: { alignItems: 'center', justifyContent: 'center' },
+  // The title keeps its room; the detail beside it gives way first, as in iOS Settings.
+  meta: { flexShrink: 3, textAlign: 'right' },
+  pageGroup: { gap: 8 },
+  pageLabel: { paddingHorizontal: 4 },
+  pagePanel: { borderRadius: 16, borderWidth: StyleSheet.hairlineWidth },
+  pageTitle: { fontWeight: '500' },
   panel: { borderRadius: radius.card, overflow: 'hidden' },
   row: {
     alignItems: 'center',

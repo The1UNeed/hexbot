@@ -41,6 +41,7 @@ const FIELDS: &[&str] = &[
     "provider",
     "model",
     "reasoning_effort",
+    "fast",
     "avatar",
     "face",
     "dream_enabled",
@@ -49,6 +50,8 @@ const FIELDS: &[&str] = &[
     "notify",
     "approval_mode",
     "workdir",
+    "soul_char_limit",
+    "memory_char_limit",
 ];
 
 pub fn profile(home: &Path, name: &str) -> Result<PathBuf> {
@@ -118,6 +121,24 @@ fn section_row(home: &Path, caller: &str, id: &str) -> Result<Value> {
     .ok_or_else(|| Error::new(4204, format!("section not found: {id}")))?;
     owner(home, caller, row["owner_id"].as_str().unwrap_or(""))?;
     Ok(row)
+}
+/// A section's stored history, without starting its bot. Apps read it ahead
+/// of time so a chat shows at once; `hexbot.sections.open` still makes it live.
+pub fn section_history(home: &Path, caller: &str, p: &Value) -> Result<Value> {
+    let id = required(p, "id")?;
+    section_row(home, caller, id)?;
+    let (messages, cursor, delta) =
+        crate::runtime_store::history_since(home, id, p["history_cursor"].as_str())?;
+    Ok(json!({"messages":messages,"history_cursor":cursor,"history_delta":delta}))
+}
+/// A bot's place in the list is the last message in its chat with you, yours
+/// or its own. Threads between bots, rooms, jobs, heartbeat runs and dreams
+/// have no chat row here and leave it where it is. True when it moved.
+pub(crate) fn stamp_chat_activity(conn: &Connection, section: &str, at: f64) -> Result<bool> {
+    Ok(conn.execute(
+        "UPDATE bots SET last_activity_at=?1 WHERE name=(SELECT bot FROM sections WHERE id=?2 AND peer_bot IS NULL AND purpose IS NULL)",
+        params![at, section],
+    )? > 0)
 }
 // The profile identifies old schemas without ownership columns. When a schema
 // or a current mapping does carry ownership, never cross that boundary, even
@@ -1066,27 +1087,9 @@ pub fn one_chat_per_bot(home: &Path) -> Result<()> {
         )?;
     }
     tx.commit()?;
-    for (owner, bot, id) in doomed {
-        // Deleting stamps activity; this is not the bot's.
-        let deleted = conn
-            .query_row(
-                "SELECT last_activity_at FROM bots WHERE name=?",
-                [&bot],
-                |r| r.get::<_, Option<f64>>(0),
-            )
-            .optional()
-            .map_err(Error::from)
-            .and_then(|activity| {
-                let pending = delete_section(home, &owner, &id, true)?;
-                conn.execute(
-                    "UPDATE bots SET last_activity_at=? WHERE name=?",
-                    params![activity.flatten(), bot],
-                )?;
-                if let Some(error) = pending {
-                    return Err(error);
-                }
-                Ok(())
-            });
+    for (owner, _bot, id) in doomed {
+        let deleted =
+            delete_section(home, &owner, &id, true).and_then(|pending| pending.map_or(Ok(()), Err));
         if let Err(error) = deleted {
             eprintln!("Kept the sections not yet deleted: could not delete {id}: {error}");
             break;
@@ -1370,20 +1373,110 @@ fn check_face(value: &Value) -> Result<()> {
         )),
     }
 }
+/// Sets the face drawn for the bot. A face put aside for a photo is kept in
+/// `face.kept.json`, so the bot gets its own face back when the photo goes.
 fn set_face(home: &Path, name: &str, value: &Value) -> Result<()> {
-    let path = profile(home, name)?.join("assets/face.json");
+    let dir = profile(home, name)?.join("assets");
+    let path = dir.join("face.json");
+    let kept = dir.join("face.kept.json");
     safe(home, &path)?;
+    safe(home, &kept)?;
     if value.is_null() {
         if path.exists() {
-            fs::remove_file(path)?;
+            fs::rename(path, kept)?;
         }
         return Ok(());
     }
     let face = json!({"shape": value["shape"], "color": value["color"]});
-    atomic_write(&path, face.to_string().as_bytes())
+    atomic_write(&path, face.to_string().as_bytes())?;
+    if kept.exists() {
+        fs::remove_file(kept)?;
+    }
+    Ok(())
+}
+/// Holds a bot's picture and face still while one request changes them and
+/// gives the bot its face back, so an upload cannot land between the two. A
+/// create holds it until the new bot's row is in, so a create at the same time
+/// sees its face. One lock for every bot on purpose: these writes are rare and
+/// quick. Take it before the skills and config locks, never after them.
+fn face_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+fn has_photo(home: &Path, name: &str) -> Result<bool> {
+    let dir = profile(home, name)?.join("assets");
+    for ext in ["png", "jpg", "webp"] {
+        let path = dir.join(format!("avatar.{ext}"));
+        safe(home, &path)?;
+        if path.exists() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+/// The face put aside behind a photo, if any.
+fn kept_face(home: &Path, name: &str) -> Result<Value> {
+    let path = profile(home, name)?.join("assets/face.kept.json");
+    Ok(serde_json::from_str::<Value>(&read_text(home, &path)?)
+        .ok()
+        .filter(|v| !v.is_null() && check_face(v).is_ok())
+        .unwrap_or(Value::Null))
+}
+/// Every bot without a photo has a face of its own, which its name does not
+/// change: the one it had before a photo, else `fallback`.
+fn ensure_face_or(home: &Path, name: &str, fallback: impl FnOnce() -> Result<Value>) -> Result<()> {
+    if has_photo(home, name)? || !face(home, name)?.is_null() {
+        return Ok(());
+    }
+    let kept = kept_face(home, name)?;
+    let next = if kept.is_null() { fallback()? } else { kept };
+    set_face(home, name, &next)
+}
+/// A new face is random, one none of the owner's other bots has, shown or
+/// kept behind a photo, while any is left. A profile that cannot be read
+/// takes nothing.
+fn ensure_face(home: &Path, owner: &str, name: &str) -> Result<()> {
+    ensure_face_or(home, name, || {
+        let conn = db::open(home)?;
+        let mut taken = Vec::new();
+        for row in common::rows(
+            &conn,
+            "SELECT name FROM bots WHERE owner_id=? AND name<>?",
+            &[&owner, &name],
+        )? {
+            if let Some(other) = row["name"].as_str() {
+                taken.push(face(home, other).unwrap_or(Value::Null));
+                taken.push(kept_face(home, other).unwrap_or(Value::Null));
+            }
+        }
+        Ok(crate::faces::random(&taken))
+    })
+}
+/// Bots from before faces were stored drew theirs from their display name.
+/// Each one without a photo or a face keeps that face for good, so renaming
+/// it no longer changes how it looks. Runs at every start; a bot it has seen
+/// has a face, so it does nothing more. A bot it cannot fix is skipped.
+pub fn keep_name_faces(home: &Path) -> Result<()> {
+    let conn = db::open(home)?;
+    for row in common::rows(&conn, "SELECT name, display_name FROM bots", &[])? {
+        let Some(name) = row["name"].as_str() else {
+            continue;
+        };
+        let shown = row["display_name"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| display_name(name));
+        let _lock = face_lock();
+        if let Err(error) = ensure_face_or(home, name, || Ok(crate::faces::for_name(&shown))) {
+            eprintln!("Could not keep the face of {name}: {}", error.message);
+        }
+    }
+    Ok(())
 }
 /// Replaces the picture. Any face stored for the old one no longer describes
-/// it, so it goes too; a client picking a face sends `face` with the picture.
+/// it, so it is put aside; a client picking a face sends `face` with the picture.
 fn set_avatar(home: &Path, name: &str, value: &Value) -> Result<()> {
     let image = decode_avatar(value)?;
     let dir = profile(home, name)?.join("assets");
@@ -1482,6 +1575,17 @@ fn shape_bot(
 ) -> Result<Value> {
     let name = row["name"].as_str().unwrap_or("");
     let cfg = config(home, name)?;
+    let limits = crate::memory::MemoryStore::new(home.to_path_buf());
+    // Apps ask for a new provider and model while this is false, before the
+    // user types; a bot without a provider of its own has nothing to lose.
+    let provider_connected = match cfg["model"]["provider"].as_str().filter(|p| !p.is_empty()) {
+        Some(provider) => Value::Bool(crate::providers::connected(
+            home,
+            Some(&profile(home, name)?),
+            provider,
+        )?),
+        None => Value::Null,
+    };
     let sections = list_sections(home, caller, &json!({"bot":name,"include_archived":true}))?;
     let recent = sections
         .iter()
@@ -1582,16 +1686,23 @@ fn shape_bot(
         "notify": row["notify"].as_i64().unwrap_or(1) != 0,
         "approval_mode": row["approval_mode"].as_str().unwrap_or("inherit"),
         "workdir": row["workdir"],
+        "soul_char_limit": cfg["memory"][crate::memory::SOUL_LIMIT].as_i64(),
+        "memory_char_limit": cfg["memory"][crate::memory::MEMORY_LIMIT].as_i64(),
+        "soul_cap": limits.cap_in(&cfg, crate::memory::SOUL_LIMIT)?,
+        "memory_cap": limits.cap_in(&cfg, crate::memory::MEMORY_LIMIT)?,
         "status": status,
         "status_detail": detail,
         "provider": cfg["model"]["provider"],
+        "provider_connected": provider_connected,
         "model": cfg["model"]
             .as_str()
             .map(Value::from)
             .unwrap_or_else(|| cfg["model"]["default"].clone()),
         "reasoning_effort": cfg["model"]["reasoning_effort"],
+        "fast": cfg["model"]["fast"] == true,
         "avatar": avatar(home, name)?,
         "face": face(home, name)?,
+        "kept_face": kept_face(home, name)?,
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "last_activity_at": row["last_activity_at"],
@@ -1619,7 +1730,7 @@ fn validate_patch(home: &Path, p: &Value) -> Result<()> {
             return Err(Error::new(4201, format!("unknown bot field: {key}")));
         }
         match key.as_str() {
-            "notify" | "dream_enabled" if !value.is_boolean() => {
+            "notify" | "dream_enabled" | "fast" if !value.is_boolean() => {
                 return Err(Error::new(4202, format!("{key} must be a boolean")));
             }
             "approval_mode"
@@ -1640,6 +1751,19 @@ fn validate_patch(home: &Path, p: &Value) -> Result<()> {
                 if let Some(dir) = value.as_str() {
                     check_workdir(home, dir.trim())?;
                 }
+            }
+            "soul_char_limit" | "memory_char_limit"
+                if !value.is_null() && !crate::memory::valid_limit(value) =>
+            {
+                let range = crate::memory::LIMIT_RANGE;
+                return Err(Error::new(
+                    4202,
+                    format!(
+                        "{key} must be null or a whole number from {} to {}",
+                        range.start(),
+                        range.end()
+                    ),
+                ));
             }
             "skills" | "tools" => {
                 let items = value
@@ -1746,7 +1870,9 @@ fn profile_call(home: &Path, caller: &str, method: &str, p: &Value) -> Result<Va
                 p["data"].clone()
             };
             let size = decode_avatar(&value)?.map(|(_, v)| v.len()).unwrap_or(0);
+            let _lock = face_lock();
             set_avatar(home, name, &value)?;
+            ensure_face(home, caller, name)?;
             Ok(json!({"ok":true,"asset":"avatar","size":size}))
         }
         "profiles.configure" => {
@@ -1844,6 +1970,14 @@ fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
         Some(level) => cfg["model"]["reasoning_effort"] = level.clone(),
         None => {}
     }
+    // Read by each section as a run starts, so it moves no section.
+    match p.get("fast") {
+        Some(Value::Bool(true)) => cfg["model"]["fast"] = json!(true),
+        Some(_) => {
+            cfg["model"].as_object_mut().unwrap().remove("fast");
+        }
+        None => {}
+    }
     if let Some(tools) = p["tools"].as_array() {
         // Creating a bot configures its profile before the registry row exists.
         let mut enabled = cfg["tools"]["enabled_toolsets"]
@@ -1923,6 +2057,36 @@ fn configure(home: &Path, name: &str, p: &Value) -> Result<()> {
             .map(str::trim)
             .map(Value::from)
             .unwrap_or(Value::Null);
+    }
+    // A bot's own limits sit beside the memory limit the daemon has always
+    // read from its config; null returns it to the setting.
+    for key in [crate::memory::SOUL_LIMIT, crate::memory::MEMORY_LIMIT] {
+        match p.get(key) {
+            Some(Value::Null) => {
+                if let Some(memory) = cfg["memory"].as_object_mut() {
+                    memory.remove(key);
+                }
+            }
+            Some(limit) => {
+                if !cfg["memory"].is_object() {
+                    cfg["memory"] = json!({});
+                }
+                cfg["memory"][key] = limit.clone();
+            }
+            None => {}
+        }
+    }
+    // Checked against the limit this change leaves, before anything is written.
+    if let Some(text) = p["persona"].as_str() {
+        let cap = crate::memory::MemoryStore::new(home.to_path_buf())
+            .cap_in(&cfg, crate::memory::SOUL_LIMIT)?;
+        let length = text.chars().count();
+        if length as i64 > cap {
+            return Err(Error::new(
+                4221,
+                format!("The soul is {length} characters; the limit is {cap}."),
+            ));
+        }
     }
     writer.write(&dir, &cfg)?;
     let after = section_model(home, name)?;
@@ -2106,7 +2270,10 @@ fn create(home: &Path, caller: &str, p: &Value, primary: bool) -> Result<Value> 
             let global = creation_config(read_config(home)?);
             writer.write(&dir, &global)?;
         }
+        // Held until the row is in, so a create at the same time sees this face.
+        let _lock = face_lock();
         configure(home, name, &patch)?;
+        ensure_face(home, caller, name)?;
         let now = now();
         let mut conn = db::open(home)?;
         let tx = conn.transaction()?;
@@ -2199,7 +2366,7 @@ fn write_bot_columns(tx: &rusqlite::Transaction, name: &str, p: &Value) -> Resul
     Ok(())
 }
 /// The provider, model and thinking level a new section of this bot starts with.
-fn section_model(home: &Path, name: &str) -> Result<Value> {
+pub(crate) fn section_model(home: &Path, name: &str) -> Result<Value> {
     let mut model = config(home, name)?["model"].clone();
     if model.is_null() {
         model = common::read_config(home)?["model"].clone();
@@ -2221,7 +2388,11 @@ fn update_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
     if p.get("face").is_some_and(|v| !v.is_null()) && p.get("avatar").is_none_or(Value::is_null) {
         return Err(Error::new(4202, "face needs the avatar it describes"));
     }
-    configure(home, name, p)?;
+    {
+        let _lock = face_lock();
+        configure(home, name, p)?;
+        ensure_face(home, caller, name)?;
+    }
     let mut conn = db::open(home)?;
     let tx = conn.transaction()?;
     write_bot_columns(&tx, name, p)?;
@@ -2261,10 +2432,6 @@ fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<Op
                 caller,
             )?;
             crate::dreaming::heartbeat::forget_section(&tx, id)?;
-            tx.execute(
-                "UPDATE bots SET last_activity_at=? WHERE name=?",
-                params![now(), row["bot"].as_str()],
-            )?;
             #[cfg(all(test, unix))]
             section_delete_barrier(home, "before_commit")?;
             tx.commit()?;
@@ -2739,7 +2906,7 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
         | "hexbot.sections.touch"
         | "hexbot.sections.mark_read" => {
             let id = required(p, "id")?;
-            let row = section_row(home, caller, id)?;
+            section_row(home, caller, id)?;
             let now = now();
             let mut conn = db::open(home)?;
             let tx = conn.transaction()?;
@@ -2766,22 +2933,20 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
                         params![now, id],
                     )?;
                 }
+                // Activity only. The turn's end marks the chat unread
+                // (runtime.rs) before any app hears it finished, so an app's
+                // touch cannot undo a read made on another device.
                 "hexbot.sections.touch" => {
                     tx.execute(
-                        "UPDATE sections SET updated_at=?,done_at=? WHERE id=?",
-                        params![now, now, id],
+                        "UPDATE sections SET updated_at=? WHERE id=?",
+                        params![now, id],
                     )?;
                 }
                 _ => {
                     tx.execute("UPDATE sections SET done_at=NULL WHERE id=?", [id])?;
                 }
             }
-            if method != "hexbot.sections.mark_read" {
-                tx.execute(
-                    "UPDATE bots SET last_activity_at=? WHERE name=?",
-                    params![now, row["bot"].as_str()],
-                )?;
-            }
+            // None of these is a message: the bot keeps its place in the list.
             tx.commit()?;
             Ok(json!({"section":section(home,caller,id)?}))
         }
@@ -2803,6 +2968,11 @@ fn creation_config(mut config: Value) -> Value {
         object.remove("skills");
         // Connected servers are defined once and given to bots by name.
         object.remove("mcp_servers");
+        // A new bot follows the limits in Settings until it is given its own.
+        if let Some(memory) = object.get_mut("memory").and_then(Value::as_object_mut) {
+            memory.remove(crate::memory::SOUL_LIMIT);
+            memory.remove(crate::memory::MEMORY_LIMIT);
+        }
     }
     config
 }
@@ -2911,6 +3081,72 @@ mod parity_tests {
             .unwrap();
         home
     }
+    #[test]
+    fn fast_mode_turns_on_and_off_and_only_as_a_boolean() {
+        let home = home();
+        fs::create_dir_all(home.path().join("profiles/owl")).unwrap();
+        let update = |fast: Value| {
+            call(
+                home.path(),
+                "alice",
+                "hexbot.bots.update",
+                &json!({"name":"owl","fast":fast}),
+            )
+            .unwrap()
+        };
+        assert_eq!(update(json!(true)).unwrap()["bot"]["fast"], true);
+        assert_eq!(config(home.path(), "owl").unwrap()["model"]["fast"], true);
+        assert_eq!(update(json!(false)).unwrap()["bot"]["fast"], false);
+        assert!(
+            config(home.path(), "owl").unwrap()["model"]
+                .get("fast")
+                .is_none()
+        );
+        assert_eq!(update(json!("yes")).unwrap_err().code, 4202);
+    }
+    #[test]
+    fn a_bot_keeps_its_own_limits_and_its_soul_stays_within_one() {
+        let home = home();
+        fs::create_dir_all(home.path().join("profiles/owl")).unwrap();
+        let update = |patch: Value| {
+            let mut patch = patch;
+            patch["name"] = json!("owl");
+            call(home.path(), "alice", "hexbot.bots.update", &patch).unwrap()
+        };
+        let owl = update(json!({})).unwrap()["bot"].clone();
+        assert_eq!(owl["soul_char_limit"], Value::Null);
+        assert_eq!(owl["soul_cap"], 4000);
+        assert_eq!(owl["memory_cap"], 2200);
+        assert_eq!(
+            update(json!({"persona":"a".repeat(4001)}))
+                .unwrap_err()
+                .code,
+            4221
+        );
+        // A soul and the limit that lets it in may arrive together.
+        let owl =
+            update(json!({"persona":"a".repeat(4001),"soul_char_limit":5000})).unwrap()["bot"]
+                .clone();
+        assert_eq!(owl["soul_char_limit"], 5000);
+        assert_eq!(owl["soul_cap"], 5000);
+        assert_eq!(owl["persona"].as_str().unwrap().len(), 4001);
+        let owl = update(json!({"memory_char_limit":800})).unwrap()["bot"].clone();
+        assert_eq!(owl["memory_cap"], 800);
+        assert_eq!(owl["soul_cap"], 5000);
+        // Null returns a limit to the one in Settings.
+        crate::settings::update(home.path(), "alice", &json!({"soul_char_limit":6000})).unwrap();
+        let owl = update(json!({"soul_char_limit":null})).unwrap()["bot"].clone();
+        assert_eq!(owl["soul_char_limit"], Value::Null);
+        assert_eq!(owl["soul_cap"], 6000);
+        for patch in [
+            json!({"soul_char_limit":100}),
+            json!({"memory_char_limit":50000}),
+            json!({"memory_char_limit":"800"}),
+        ] {
+            assert_eq!(update(patch).unwrap_err().code, 4202);
+        }
+    }
+
     #[test]
     fn open_incident_finds_room_transcripts_by_stored_id_without_scans() {
         let home = home();

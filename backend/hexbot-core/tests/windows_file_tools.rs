@@ -174,8 +174,8 @@ fn edit_commits_only_to_the_file_it_read() {
     let raw = b"\xef\xbb\xbfkeep\r\n\xff";
     fs::write(&path, raw).unwrap();
     let open = || call(json!({"operation":"edit_open","path":path})).unwrap();
-    let commit = |parent: &Value, text: &str| {
-        call(json!({"operation":"edit_commit","path":path,"parent":parent,"content":content(text)}))
+    let commit = |opened: &Value, text: &str| {
+        call(json!({"operation":"edit_commit","path":path,"parent":opened["parent"],"opened":opened["version"],"content":content(text)}))
     };
     // Raw bytes come back with the file's identity, two strings of digits.
     let opened = open();
@@ -192,35 +192,42 @@ fn edit_commits_only_to_the_file_it_read() {
         part.as_str()
             .is_some_and(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
     }));
-    commit(&parent, "edited").unwrap();
+    commit(&opened, "edited").unwrap();
     assert_eq!(fs::read_to_string(&path).unwrap(), "edited");
     // The commit replaced the file, so the identity read before is stale.
-    let error = commit(&parent, "again").unwrap_err();
+    let error = commit(&opened, "again").unwrap_err();
     assert!(error.message.contains("file changed"), "{}", error.message);
     assert_eq!(fs::read_to_string(&path).unwrap(), "edited");
+    // The same file rewritten in place keeps its identity, so the version of
+    // the bytes the edit read refuses it.
+    let opened = open();
+    fs::write(&path, "saved since").unwrap();
+    let error = commit(&opened, "changed").unwrap_err();
+    assert_eq!(error.code, 4209, "{}", error.message);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "saved since");
     // Another file put in its place between the read and the commit refuses.
-    let parent = open()["parent"].clone();
+    let opened = open();
     let other = folder.join("other.txt");
     fs::write(&other, "replacement").unwrap();
     fs::rename(&other, &path).unwrap();
-    let error = commit(&parent, "changed").unwrap_err();
+    let error = commit(&opened, "changed").unwrap_err();
     assert!(error.message.contains("file changed"), "{}", error.message);
     assert_eq!(fs::read_to_string(&path).unwrap(), "replacement");
     // So does a deleted file, which a commit never recreates.
-    let parent = open()["parent"].clone();
+    let opened = open();
     fs::remove_file(&path).unwrap();
-    let error = commit(&parent, "changed").unwrap_err();
+    let error = commit(&opened, "changed").unwrap_err();
     assert!(error.message.contains("file changed"), "{}", error.message);
     assert!(!path.exists());
     // A new folder in place of the file's folder: the moved file keeps its
     // content and the new folder's file is untouched.
     fs::write(&path, "keep").unwrap();
-    let parent = open()["parent"].clone();
+    let opened = open();
     let moved = root.join("moved");
     fs::rename(&folder, &moved).unwrap();
     fs::create_dir(&folder).unwrap();
     fs::write(&path, "replacement").unwrap();
-    let error = commit(&parent, "changed").unwrap_err();
+    let error = commit(&opened, "changed").unwrap_err();
     assert!(error.message.contains("file changed"), "{}", error.message);
     assert_eq!(fs::read_to_string(&path).unwrap(), "replacement");
     assert_eq!(fs::read_to_string(moved.join("file.txt")).unwrap(), "keep");
@@ -229,7 +236,7 @@ fn edit_commits_only_to_the_file_it_read() {
     fs::remove_file(&path).unwrap();
     fs::remove_dir(&folder).unwrap();
     junction(&folder, &moved);
-    let error = commit(&parent, "changed").unwrap_err();
+    let error = commit(&opened, "changed").unwrap_err();
     assert!(
         error.message.contains("folder changed"),
         "{}",
@@ -242,7 +249,7 @@ fn edit_commits_only_to_the_file_it_read() {
     let alias = root.join("alias.txt");
     fs::hard_link(&source, &alias).unwrap();
     let opened = call(json!({"operation":"edit_open","path":alias})).unwrap();
-    call(json!({"operation":"edit_commit","path":alias,"parent":opened["parent"],"content":content("changed")}))
+    call(json!({"operation":"edit_commit","path":alias,"parent":opened["parent"],"opened":opened["version"],"content":content("changed")}))
         .unwrap();
     assert_eq!(fs::read_to_string(&alias).unwrap(), "changed");
     assert_eq!(fs::read_to_string(&source).unwrap(), "keep");
@@ -331,7 +338,7 @@ fn network_device_stream_and_short_name_paths_refuse_before_any_change() {
     ] {
         for operation in ["write", "edit_open", "edit_commit"] {
             let started = Instant::now();
-            let error = call(json!({"operation":operation,"path":path,"content":content("changed"),"parent":["0","0"]}))
+            let error = call(json!({"operation":operation,"path":path,"content":content("changed"),"parent":["0","0"],"opened":"0".repeat(64)}))
                 .unwrap_err();
             // A commit reports any walk that stops as a changed folder; the
             // daemon judges the text before the bridge and names the reason.

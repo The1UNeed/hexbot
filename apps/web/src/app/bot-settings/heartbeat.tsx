@@ -4,7 +4,6 @@ import { useEffect, useRef, useState } from 'react'
 import { Button } from '../../components/ui/button'
 import { Switch } from '../../components/ui/switch'
 import { Textarea } from '../../components/ui/textarea'
-import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
 import type { Bot, HeartbeatRun } from '../../lib/types'
 import { useHeartbeat } from '../../stores/heartbeat'
@@ -58,10 +57,6 @@ export function HeartbeatTab({ bot }: { bot: Bot }) {
   const [deleting, setDeleting] = useState(false)
   const [removing, setRemoving] = useState(false)
   const [error, setError] = useState<null | string>(null)
-
-  const [permission, setPermission] = useState(() =>
-    typeof Notification === 'undefined' ? 'unsupported' : Notification.permission
-  )
 
   useEffect(() => {
     void refresh(bot.name)
@@ -173,29 +168,19 @@ export function HeartbeatTab({ bot }: { bot: Bot }) {
             }
             title="Run one now"
           />
-          {/* Browsers notify only from HTTPS or this computer, not a LAN address. */}
-          {!getBridge() && permission !== 'unsupported' && !window.isSecureContext ? (
-            <Row
-              description="Browsers show notifications only for HTTPS pages. Open Hexbot through Hex Connect, use the Hexbot app, or let your phone notify you."
-              title="No notifications in this browser"
-            />
-          ) : null}
-          {!getBridge() && permission === 'default' && window.isSecureContext ? (
-            <Row
-              control={
-                <Button
-                  onClick={() =>
-                    void Notification.requestPermission().then(result => setPermission(result))
-                  }
-                  size="sm"
-                >
-                  Allow
-                </Button>
-              }
-              description="Show a notification in this browser when the tab is in the background."
-              title="Notify me here"
-            />
-          ) : null}
+          <Row
+            control={
+              <Link
+                className="text-[length:var(--text-secondary)] text-accent"
+                params={{ tab: 'notifications' }}
+                to="/settings/$tab"
+              >
+                Open
+              </Link>
+            }
+            description="What reaches this computer, your browser and your phones."
+            title="Notifications"
+          />
         </Group>
 
         <Group title="Recent">

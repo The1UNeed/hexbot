@@ -1,7 +1,15 @@
 import type { GatewayEvent } from '@hermes/shared'
+import { splitAttached } from '../../../web/src/lib/media'
 import type { PluginForm } from '../../../web/src/lib/types'
 
-import type { ChatMessage, ChatState, ChatTool, SignInForm, TurnState } from './types'
+import type {
+  ChatMessage,
+  ChatState,
+  ChatTool,
+  EmailDraftForm,
+  SignInForm,
+  TurnState
+} from './types'
 export const emptyTurn = (): TurnState => ({
   streaming: '',
   interim: [],
@@ -32,6 +40,23 @@ export const parseArgs = (value: unknown): unknown => {
     return value
   }
 }
+/** The file's own name: an attachment is kept as `<32-hex id>-<name>`. */
+const fileName = (path: string) =>
+  (path.split(/[\\/]/).filter(Boolean).at(-1) ?? path).replace(/^[0-9a-f]{32}-(?=.)/, '')
+/**
+ * The files a bot shared in a message (`hexbot_share_file`), once each, in the
+ * order it shared them. Files it only wrote or edited along the way stay out.
+ */
+export function sharedFiles(tools: ChatTool[] = []): { name: string; path: string }[] {
+  const seen = new Set<string>()
+  return tools.flatMap(tool => {
+    if (tool.name !== 'hexbot_share_file' || tool.status !== 'ok') return []
+    const path = (parseArgs(tool.args) as { path?: unknown } | null)?.path
+    if (typeof path !== 'string' || !path.trim() || seen.has(path)) return []
+    seen.add(path)
+    return [{ name: fileName(path), path }]
+  })
+}
 /** A sign-in card's fields, from an `approval.request`. */
 const isSignIn = (value: unknown): value is SignInForm =>
   typeof value === 'object' &&
@@ -49,6 +74,14 @@ const isPlugin = (value: unknown): value is PluginForm =>
   typeof (value as PluginForm).id === 'string' &&
   typeof (value as PluginForm).name === 'string' &&
   Array.isArray((value as PluginForm).fields)
+
+/** A draft card's email, from an `approval.request`. */
+const isEmailDraft = (value: unknown): value is EmailDraftForm =>
+  typeof value === 'object' &&
+  value !== null &&
+  (value as EmailDraftForm).kind === 'email_draft' &&
+  Array.isArray((value as EmailDraftForm).to) &&
+  typeof (value as EmailDraftForm).body === 'string'
 
 const detailOf = (value: unknown) =>
   typeof value === 'string' ? value : value == null ? '' : JSON.stringify(value, null, 2)
@@ -77,12 +110,15 @@ export function historyMessages(raw: unknown[]): ChatMessage[] {
       }
       target.tools = [...(target.tools ?? []), tool]
     } else if (row.role === 'user' || row.role === 'assistant') {
-      const text = textContent(row.content ?? row.text)
-      if (text || (Array.isArray(row.tool_calls) && row.tool_calls.length))
+      // The files you sent are listed under your words; each shows as it did live.
+      const said = textContent(row.content ?? row.text)
+      const { files, text } = row.role === 'user' ? splitAttached(said) : { files: [], text: said }
+      if (text || files.length || (Array.isArray(row.tool_calls) && row.tool_calls.length))
         messages.push({
           id: String(row.id ?? row.row_id ?? `history-${messages.length}`),
           role: row.role,
           text,
+          ...(files.length && { attachments: files }),
           // Rows carry `timestamp` in Unix seconds.
           ...(typeof row.timestamp === 'number' &&
             row.timestamp > 0 && { createdAt: row.timestamp * 1000 }),
@@ -106,7 +142,15 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
   const sessionId = event.session_id ?? ''
   switch (event.type) {
     case 'message.start':
-      return { ...state, busy: true, streaming: '', interim: [], tools: [], error: null }
+      return {
+        ...state,
+        busy: true,
+        streaming: '',
+        interim: [],
+        tools: [],
+        error: null,
+        turnAt: state.messages.length
+      }
     case 'message.delta':
       return { ...state, busy: true, streaming: state.streaming + text }
     case 'message.interim':
@@ -118,17 +162,20 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
     case 'message.complete': {
       const parts = [...state.interim, text || state.streaming].filter(Boolean)
       if (!parts.length && state.tools.length) parts.push('')
+      const at = Math.min(state.turnAt ?? state.messages.length, state.messages.length)
       return {
         ...state,
+        turnAt: undefined,
         messages: [
-          ...state.messages,
+          ...state.messages.slice(0, at),
           ...parts.map((part, index): ChatMessage => ({
             id: `${sessionId}-${String((event as GatewayEvent & { seq?: number }).seq ?? state.messages.length)}-${index}`,
             role: 'assistant',
             text: part,
             createdAt: Date.now(),
             tools: index === parts.length - 1 ? state.tools : undefined
-          }))
+          })),
+          ...state.messages.slice(at)
         ],
         busy: false,
         streaming: '',
@@ -146,13 +193,13 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
       // Only the daemon's empty `checking` line ends the label; other status
       // lines leave it, since another review may still be running.
       if (p.kind === 'checking') return { ...state, checking: text, activity: text }
+      if (p.kind === 'idle' || p.kind === 'done' || p.kind === 'error' || p.kind === 'interrupted')
+        // The daemon says the turn ended after its last message, so nothing is running.
+        return { ...state, activity: state.checking || text, busy: false, turnAt: undefined }
       return {
         ...state,
         activity: state.checking || text,
-        busy:
-          p.kind === 'idle' || p.kind === 'done' || p.kind === 'error' || p.kind === 'interrupted'
-            ? false
-            : state.busy || p.kind === 'working' || p.kind === 'waiting'
+        busy: state.busy || p.kind === 'working' || p.kind === 'waiting'
       }
     case 'thinking.delta':
       return { ...state, activity: state.checking || text }
@@ -164,6 +211,7 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
           {
             id: String(p.tool_id ?? `tool-${state.tools.length}`),
             name: String(p.name ?? p.tool_name ?? 'tool'),
+            ...(typeof p.context === 'string' && { action: p.context }),
             args: parseArgs(p.args ?? p.args_text),
             detail: '',
             status: 'running'
@@ -206,7 +254,7 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
         command: String(p.command ?? p.tool_name ?? 'Approve this action'),
         reason: typeof p.reason === 'string' ? p.reason : undefined,
         choices: Array.isArray(p.choices) ? (p.choices as string[]) : ['once', 'deny'],
-        ...((isSignIn(p.form) || isPlugin(p.form)) && { form: p.form })
+        ...((isSignIn(p.form) || isPlugin(p.form) || isEmailDraft(p.form)) && { form: p.form })
       }
       return {
         ...state,

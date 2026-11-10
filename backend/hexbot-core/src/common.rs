@@ -851,6 +851,11 @@ pub async fn safe_get(value: &str, allow_private: bool) -> Result<reqwest::Respo
         let addresses = url_addresses(&url, allow_private).await?;
         let client = reqwest::Client::builder()
             .no_proxy()
+            // Many sites refuse a request that does not say what sent it.
+            .user_agent(format!(
+                "Mozilla/5.0 (compatible; Hexbot/{}; +https://hexbot.app)",
+                crate::version()
+            ))
             .timeout(std::time::Duration::from_secs(90))
             .redirect(reqwest::redirect::Policy::none())
             .resolve_to_addrs(url.host_str().unwrap(), &addresses)

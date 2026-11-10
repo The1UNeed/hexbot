@@ -3,6 +3,7 @@
 // the sandbox helper gets and the extension's own path rules, not Windows
 // paths, junctions or the AppContainer itself.
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import childProcess from 'node:child_process';
@@ -76,7 +77,7 @@ try {
       if (request.name === 'hexbot_pi_file') {
         fileRequests.push(request.args);
         return JSON.stringify({result: request.args.operation === 'edit_open'
-          ? {content: Buffer.from('private', 'utf8').toString('base64'), parent: ['1', '2']}
+          ? {content: Buffer.from('private', 'utf8').toString('base64'), parent: ['1', '2'], version: createHash('sha256').update('private').digest('hex')}
           : {success: true}});
       }
       assert.equal(request.name, 'hexbot_sandbox_policy');

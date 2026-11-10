@@ -9,6 +9,8 @@ mod stop_tests;
 #[path = "runtime_admission_tests.rs"]
 mod admission_tests;
 
+#[path = "runtime_mail_tests.rs"]
+mod mail_tests;
 #[cfg(unix)]
 #[path = "runtime_passwords_tests.rs"]
 mod passwords_tests;
@@ -182,13 +184,32 @@ async fn a_bot_asks_before_installing_a_plugin_for_itself() {
     assert!(!home.path().join("plugins/echo").exists());
     let (_, installed) = ask("once").await;
     let installed = installed.unwrap();
-    assert_eq!(installed["on"], true);
+    // Its token is empty, so it reaches no bot until the user fills it in.
+    assert_eq!(installed["on"], false);
     let note = installed["note"].as_str().unwrap();
     assert!(
-        note.contains("skill_view") && note.contains("Needs ECHO_TOKEN"),
+        note.contains("Needs ECHO_TOKEN") && !note.contains("skill_view"),
         "{note}"
     );
-    // On for the bot that asked, and only for it.
+    assert!(
+        crate::connectors::mcp_servers(home.path(), "owl")
+            .unwrap()
+            .get("echo")
+            .is_none()
+    );
+    assert!(
+        !crate::catalog::enabled_skills(home.path(), "owl")
+            .unwrap()
+            .iter()
+            .any(|s| s["name"] == "echo-usage")
+    );
+    crate::plugins::configure(
+        home.path(),
+        "echo",
+        &json!({"env": {"ECHO_TOKEN": "secret"}}),
+    )
+    .unwrap();
+    // Then on for the bot that asked, and only for it.
     assert!(
         crate::connectors::mcp_servers(home.path(), "owl")
             .unwrap()
@@ -4441,6 +4462,17 @@ async fn scheduled_jobs_keep_the_creating_sections_workdir() {
         result["job"]["workdir"],
         json!(fs::canonicalize(workdir).unwrap())
     );
+    // A job a bot schedules reports back unless it was asked to stay quiet.
+    assert_eq!(result["job"]["notify"], true);
+    let quiet = runtime
+        .tool(
+            &section,
+            "cronjob_manage",
+            &json!({"action":"create","schedule":"every 1h","prompt":"check","notify":false}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(quiet["job"]["notify"], false);
     runtime.shutdown().await;
 }
 
@@ -5845,6 +5877,22 @@ emit({type:'response',id:c.id,command:c.type,success:true,data:{}});});
         if answer == "ok" {
             assert!(texts.iter().any(|t| t == "Older messages summarised."));
         }
+        // A compaction, done or failed, shows finished until it is read; no
+        // app's touch does that (`hexbot.sections.touch`). A refused message
+        // never started: its sender has the error.
+        let conn = db::open(&runtime.home).unwrap();
+        let done: Option<f64> = conn
+            .query_row("SELECT done_at FROM sections WHERE id='first'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            done.is_some(),
+            text == "/compact",
+            "{text} ending with {answer}"
+        );
+        conn.execute("UPDATE sections SET done_at=NULL WHERE id='first'", [])
+            .unwrap();
     }
     assert!(Arc::ptr_eq(&s, &runtime.sessions.lock().unwrap()["first"]));
     assert!(!s.state.lock().unwrap().busy);
@@ -6360,4 +6408,197 @@ async fn native_approval_parent_swap_never_writes_managed_runtime() {
         );
         runtime.shutdown().await;
     }
+}
+
+/// Notion and Airtable keys never reach a shell, so a bot that has either
+/// gets the daemon's connector tools, and its chat takes them at its next
+/// message. A heartbeat only reads.
+#[tokio::test]
+async fn a_bot_with_notion_on_gets_the_connector_tools() {
+    let (home, runtime, _hub) = setup();
+    let names = |overrides: Option<&Value>| {
+        runtime
+            .fresh_tools("alice", "owl", "first", None, overrides)
+            .unwrap()
+            .0
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_owned))
+            .filter(|name| name.starts_with("hexbot_connector"))
+            .collect::<Vec<_>>()
+    };
+    crate::connectors::set_enabled(home.path(), "owl", "notion", false).unwrap();
+    crate::connectors::set_enabled(home.path(), "owl", "airtable", false).unwrap();
+    assert!(names(None).is_empty());
+    runtime.open_session("alice", "owl", "first").await.unwrap();
+    assert!(!runtime.tools_stale("alice", "owl", "first").unwrap());
+    // Notion is given only once it is set up.
+    std::fs::write(
+        home.path().join("profiles/owl/.env"),
+        "NOTION_API_KEY=test\n",
+    )
+    .unwrap();
+    crate::connectors::set_enabled(home.path(), "owl", "notion", true).unwrap();
+    assert_eq!(
+        names(None),
+        ["hexbot_connector_read", "hexbot_connector_write"]
+    );
+    assert!(runtime.tools_stale("alice", "owl", "first").unwrap());
+    // Code reaches daemon tools without the extension's gate, so it cannot change a connector.
+    let s = runtime
+        .open_for_input("alice", "owl", "first")
+        .await
+        .unwrap();
+    assert!(s.tools.iter().any(|t| t["name"] == connector_tool::WRITE));
+    runtime.register_worker_bridge(&s);
+    let bridge = crate::native_tools::dispatcher(home.path(), "first").unwrap();
+    let error = bridge(
+        connector_tool::WRITE.into(),
+        json!({"connector":"notion","method":"PATCH","path":"/v1/pages/a"}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, 4302);
+    assert_eq!(
+        names(Some(&json!({"heartbeat":"run-1"}))),
+        ["hexbot_connector_read"]
+    );
+    // Turned off again, a request is refused before any key is read.
+    crate::connectors::set_enabled(home.path(), "owl", "notion", false).unwrap();
+    let s = runtime.open_session("alice", "owl", "first").await.unwrap();
+    let error = connector_tool::request(
+        home.path(),
+        "owl",
+        &json!({"connector":"notion","method":"POST","path":"/v1/search"}),
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, 4210);
+    assert!(
+        runtime
+            .tool(
+                &s,
+                connector_tool::WRITE,
+                &json!({"connector":"notion","method":"PATCH","path":"/v1/pages/a"})
+            )
+            .await
+            .is_err()
+    );
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_package_of_skills_set_up_through_a_bots_own_key_reads_as_ready_to_that_bot() {
+    let (home, runtime, _hub) = setup();
+    crate::plugins::call(
+        home.path(),
+        "alice",
+        "hexbot.plugins.install",
+        &json!({"name":"notes","skills":[{"name":"notes-sync","content":
+            "---\ndescription: Sync notes.\nprerequisites:\n  env_vars: [HEXBOT_TEST_OWL_NOTES_KEY]\n---\nBody."}]}),
+    )
+    .unwrap()
+    .unwrap();
+    let notes = |runtime: &Runtime| {
+        runtime.plugin_list("alice", "owl", false).unwrap()["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == "package:notes")
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(notes(&runtime)["ready"], false);
+    fs::write(
+        home.path().join("profiles/owl/.env"),
+        "HEXBOT_TEST_OWL_NOTES_KEY=value\n",
+    )
+    .unwrap();
+    // Owl's own key sets it up for Owl, so it is not sent to setup.
+    let row = notes(&runtime);
+    assert_eq!(row["ready"], true, "{row}");
+    assert!(row.get("state").is_none(), "{row}");
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn only_messages_in_a_bots_chat_move_it_up_the_list() {
+    let (home, runtime, hub) = setup();
+    db::open(home.path())
+        .unwrap()
+        .execute_batch("INSERT INTO bots(name,owner_id) VALUES('fox','alice');INSERT INTO sections(id,bot,owner_id,title,peer_bot) VALUES('thread','owl','alice','Fox asks','fox');")
+        .unwrap();
+    let activity = || {
+        db::open(home.path())
+            .unwrap()
+            .query_row(
+                "SELECT last_activity_at FROM bots WHERE name='owl'",
+                [],
+                |r| r.get::<_, Option<f64>>(0),
+            )
+            .unwrap()
+    };
+    let mut events = hub.subscribe();
+    // A whole turn in a thread between bots leaves the bot where it is.
+    let thread = runtime
+        .call("alice", "hexbot.sections.open", &json!({"id":"thread"}))
+        .await
+        .unwrap()
+        .unwrap()["section"]["live_session_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":thread,"text":"hello"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while events.recv().await.unwrap().frame["params"]["type"] != "message.complete" {}
+    })
+    .await
+    .unwrap();
+    assert_eq!(activity(), None);
+    // Nor does an app touching or renaming its chat.
+    for (method, params) in [
+        ("hexbot.sections.touch", json!({"id":"first"})),
+        (
+            "hexbot.sections.rename",
+            json!({"id":"first","title":"Renamed"}),
+        ),
+    ] {
+        crate::catalog::call(home.path(), "alice", method, &params)
+            .unwrap()
+            .unwrap();
+    }
+    assert_eq!(activity(), None);
+    // Writing in its chat moves it at once, before any reply, and every app hears.
+    let id = open(&runtime).await;
+    runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":id,"text":"wait"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(activity().is_some());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.frame["params"]["type"] == "hexbot.bots.changed"
+                && event.frame["params"]["payload"]["name"] == "owl"
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    runtime.shutdown().await;
 }

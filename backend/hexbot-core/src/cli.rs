@@ -31,7 +31,7 @@ pub const USAGE: &str = concat!(
     "hexbot bots list | create NAME [--title TEXT] [--description TEXT] [--persona TEXT] [--provider NAME] [--model NAME] [--reasoning-effort LEVEL] | delete NAME\n",
     "hexbot bots primary [NAME]\n",
     "hexbot heartbeat on | off | status BOT | now BOT | set BOT TEXT\n",
-    "hexbot computer [on | off | restart | reset | give-back | size small|medium|large]\n",
+    "hexbot computer [on | off | restart | reset | pause | resume | size small|medium|large]\n",
     "hexbot rooms list\n",
     "hexbot plugins [list [--bot NAME]] | assign connector|skill|package ID [BOT ...]\n",
     "hexbot devices list | revoke ID\n",
@@ -77,7 +77,11 @@ fn command(args: &[String]) -> Result<(&'static str, Value)> {
         ["computer", "off"] => Ok(("hexbot.computer.stop", json!({}))),
         ["computer", "restart"] => Ok(("hexbot.computer.restart", json!({}))),
         ["computer", "reset"] => Ok(("hexbot.computer.reset", json!({}))),
-        ["computer", "give-back"] => Ok(("hexbot.computer.control", json!({"holder":"bot"}))),
+        ["computer", "pause"] => Ok(("hexbot.computer.control", json!({"holder":"user"}))),
+        // `give-back` is what resuming was called before the user could share the screen.
+        ["computer", "resume" | "give-back"] => {
+            Ok(("hexbot.computer.control", json!({"holder":"bot"})))
+        }
         ["computer", "size", size] => Ok(("hexbot.computer.configure", json!({"size":size}))),
         ["plugins"] | ["plugins", "list"] => Ok(("hexbot.plugins.list", json!({}))),
         ["plugins", "list", "--bot", bot] => Ok(("hexbot.plugins.list", json!({"bot":bot}))),
@@ -589,8 +593,10 @@ pub async fn execute(home: &Path, args: &[String]) -> Result<Value> {
         && let Some(devices) = result["devices"].as_array_mut()
     {
         for device in devices {
+            // The CLI keeps the Python CLI's fields; apps read `push`.
             if let Some(d) = device.as_object_mut() {
                 d.remove("current");
+                d.remove("push");
             }
         }
     }
@@ -670,5 +676,16 @@ mod usage_data_tests {
         );
         assert!(command(&args(&["usage-data", "maybe"])).is_err());
         assert!(USAGE.contains("hexbot usage-data on | off"));
+    }
+
+    #[test]
+    fn the_computer_pauses_and_resumes_the_bots() {
+        let pause = ("hexbot.computer.control", json!({"holder":"user"}));
+        let resume = ("hexbot.computer.control", json!({"holder":"bot"}));
+        assert_eq!(command(&args(&["computer", "pause"])).unwrap(), pause);
+        assert_eq!(command(&args(&["computer", "resume"])).unwrap(), resume);
+        // The name from before sharing still resumes them.
+        assert_eq!(command(&args(&["computer", "give-back"])).unwrap(), resume);
+        assert!(USAGE.contains("pause | resume"));
     }
 }

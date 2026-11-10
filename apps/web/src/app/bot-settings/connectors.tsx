@@ -219,6 +219,8 @@ function ConnectorRow({
       <Switch
         aria-label={`${connector.name} for ${bot.display_name}`}
         checked={Boolean(connector.enabled_for_bot)}
+        // A server that still needs values can be turned off, not on.
+        disabled={connector.ready === false && !connector.enabled_for_bot}
         onCheckedChange={onToggle}
       />
     )
@@ -361,7 +363,7 @@ function AddMcpForm({ bot, onDone }: { bot: Bot; onDone: () => void }) {
           .finally(() => setBusy(false))
       }}
     >
-      <div className="grid gap-3 sm:grid-cols-[12rem_1fr]">
+      <div className="grid gap-3 @min-[600px]:grid-cols-[12rem_1fr]">
         <label className="block">
           <span className={fieldLabel}>Name</span>
           <Input

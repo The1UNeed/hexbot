@@ -15,7 +15,7 @@ import {
   pluginsRemove,
   pluginsSetBots
 } from '../lib/api'
-import { pluginRows } from '../lib/plugin-rows'
+import { pluginRows, withWaiting } from '../lib/plugin-rows'
 import type { Plugin, PluginKind } from '../lib/types'
 
 import { connectionRead } from './connection'
@@ -34,7 +34,8 @@ export interface PluginsState {
   remove: (plugin: Plugin) => Promise<void>
   /** Forget everything: another daemon has other plugins and bots. */
   reset: () => void
-  setBots: (plugin: Plugin, bots: string[]) => Promise<void>
+  /** `keepWaiting`: also keep grants still waiting for setup, which the picker does not show. */
+  setBots: (plugin: Plugin, bots: string[], keepWaiting?: boolean) => Promise<void>
 }
 
 /** Only the latest refresh may change the list or end the loading state. */
@@ -79,14 +80,18 @@ export const usePlugins = create<PluginsState>((set, get) => {
       set({ error: null, loaded: false, loading: false, plugins: [] })
     },
 
-    async setBots(plugin, bots) {
+    async setBots(plugin, bots, keepWaiting = true) {
       const key = `${plugin.kind}:${plugin.id}`
 
       // Show the switch where the user put it while the daemon catches up.
       replace(key, { ...plugin, bots })
 
       try {
-        await pluginsSetBots(plugin.kind as PluginKind, plugin.id, bots)
+        await pluginsSetBots(
+          plugin.kind as PluginKind,
+          plugin.id,
+          keepWaiting ? withWaiting(plugin, bots) : bots
+        )
       } catch (error) {
         replace(key, plugin)
 

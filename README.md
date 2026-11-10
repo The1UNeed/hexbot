@@ -167,7 +167,7 @@ Electron end-to-end tests.
 One workflow, `.github/workflows/release.yml`, modelled on
 [T3 Code](https://github.com/pingdotgg/t3code)'s:
 
-- Every push and pull request runs `ci.yml`: tests and builds, no publishing.
+- Every pull request and push to `main` runs `ci.yml`: tests and builds, no publishing.
 - **Stable**: `node scripts/desktop/set-version.mjs 0.x.y-alpha.N`, write
   `docs/releases/0.x.y-alpha.N.md`, commit, push the `v0.x.y-alpha.N` tag.
   The workflow runs CI, builds all eight packages, uploads the update feed to

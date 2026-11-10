@@ -34,7 +34,7 @@ import { useMe } from '../stores/me'
 import { refreshPasswordsIfLoaded } from '../stores/passwords'
 import { refreshPluginsIfLoaded } from '../stores/plugins'
 import { useRooms } from '../stores/rooms'
-import { keepHistory, useSections } from '../stores/sections'
+import { isThread, keepHistory, useSections } from '../stores/sections'
 import { useSettings } from '../stores/settings'
 import type {
   ApprovalRequestPayload,
@@ -44,23 +44,19 @@ import type {
 import { holdHeartbeatMessage, transcriptNotify, useTranscripts } from '../stores/transcripts'
 import { useUi } from '../stores/ui'
 
-import { getBridge } from './bridge'
+import { forgetUnsentDraft } from './draft-card'
 import type { HexbotRpcClient } from './rpc'
 import type {
   ApprovalChoice,
   ClarifyRequestPayload,
   ComputerStatus,
   ContextUsage,
+  EmailDraft,
   RoomEvent,
   RoomTurn,
   SessionInfo,
   Usage
 } from './types'
-
-/** A browser notification asks the app shell to open a section (routes/__root.tsx). */
-export const OPEN_SECTION_EVENT = 'hexbot:open-section'
-/** Under the app's notification limit (apps/desktop, `hexbot:notify`). */
-const NOTIFY_BODY = 1_000
 
 export interface EventRouterDeps {
   refreshBots?: () => void
@@ -106,6 +102,49 @@ export function botNotifies(bot?: string | null): boolean {
   const record = bot ? (useBots.getState().byName[bot] as BotSignals | undefined) : undefined
 
   return record?.notify !== false
+}
+
+/**
+ * A reply finished in a bot's own chat (`chat`, from the daemon), whichever
+ * chat this page shows. A failed turn has its own Stopped notification, and
+ * a stopped one needs none.
+ */
+function notifyReply(payload: Record<string, unknown>, sessionId: string): void {
+  const chat = replyChat(payload, sessionId)
+
+  if (!chat || payload.status !== 'complete' || payload.error || !botNotifies(chat.bot)) {
+    return
+  }
+
+  transcriptNotify({
+    body: text(payload).trim() || 'Finished.',
+    sectionId: chat.section,
+    title: useBots.getState().byName[chat.bot]?.display_name ?? chat.bot
+  })
+}
+
+/**
+ * The bot's chat a reply finished in, or null. A daemon from before `chat`
+ * names neither; then it is the session's own section, if that is a chat.
+ */
+function replyChat(
+  payload: Record<string, unknown>,
+  sessionId: string
+): null | { bot: string; section: string } {
+  if (payload.chat !== undefined) {
+    return payload.chat === true &&
+      typeof payload.bot === 'string' &&
+      typeof payload.section_id === 'string'
+      ? { bot: payload.bot, section: payload.section_id }
+      : null
+  }
+
+  const id = useTranscripts.getState().bySession[sessionId]?.sectionId
+  const section = id ? useSections.getState().byId[id] : undefined
+
+  return section?.bot && !isThread(section) && !section.purpose && !section.archived_at
+    ? { bot: section.bot, section: section.id }
+    : null
 }
 
 function botOfSection(sectionId?: string | null): string | undefined {
@@ -211,26 +250,7 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
 
       if (whole && botNotifies(bot)) {
         const title = useBots.getState().byName[bot]?.display_name ?? bot
-        // A notification shows a few lines; the whole message is in the chat.
-        const body = whole.length > NOTIFY_BODY ? `${whole.slice(0, NOTIFY_BODY - 1)}…` : whole
-        // The app notifies even with its window closed. A browser tab has no app
-        // to go through, so it shows its own while in the background.
-        transcriptNotify({ body, sectionId, title })
-
-        if (
-          !getBridge() &&
-          document.hidden &&
-          'Notification' in window &&
-          Notification.permission === 'granted'
-        ) {
-          new Notification(title, { body }).onclick = () => {
-            window.focus()
-
-            if (sectionId) {
-              window.dispatchEvent(new CustomEvent(OPEN_SECTION_EVENT, { detail: sectionId }))
-            }
-          }
-        }
+        transcriptNotify({ body: whole, sectionId, title })
       }
 
       return
@@ -429,14 +449,28 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
       return
 
     case 'approval.resolved':
+      if (typeof payload.request_id === 'string') {
+        forgetUnsentDraft(payload.request_id)
+      }
+
       if (typeof payload.request_id === 'string' && typeof payload.choice === 'string') {
-        transcripts.resolveApproval(sessionId, payload.request_id, payload.choice as ApprovalChoice)
+        transcripts.resolveApproval(
+          sessionId,
+          payload.request_id,
+          payload.choice as ApprovalChoice,
+          (payload.mail_action === 'send' || payload.mail_action === 'save') &&
+            payload.draft &&
+            typeof payload.draft === 'object'
+            ? { draft: payload.draft as EmailDraft, mail_action: payload.mail_action }
+            : undefined
+        )
       }
 
       return
 
     case 'approval.expire':
       if (typeof payload.request_id === 'string') {
+        forgetUnsentDraft(payload.request_id)
         transcripts.approvalExpire(sessionId, payload.request_id)
       }
 
@@ -470,6 +504,8 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
           keepHistory(section, sessionId)
         }
       }
+
+      notifyReply(payload, sessionId)
 
       return
 

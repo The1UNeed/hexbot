@@ -19,6 +19,7 @@ import { Group, Heading, Row } from '../bot-settings/shared'
 const STATE_TEXT: Record<ComputerState, string> = {
   absent: 'Made the first time a bot needs it',
   error: 'Stopped with an error',
+  repairing: 'Repairing…',
   resetting: 'Resetting…',
   restarting: 'Restarting…',
   running: 'On',
@@ -27,7 +28,7 @@ const STATE_TEXT: Record<ComputerState, string> = {
   stopping: 'Turning off…'
 }
 
-const BUSY: ComputerState[] = ['resetting', 'restarting', 'starting', 'stopping']
+const BUSY: ComputerState[] = ['repairing', 'resetting', 'restarting', 'starting', 'stopping']
 
 /** What bots do on the computer. Each is room for its own controls later. */
 const USES: { description: string; icon: LucideIcon; title: string }[] = [
@@ -42,7 +43,7 @@ const USES: { description: string; icon: LucideIcon; title: string }[] = [
     title: 'Browser'
   },
   {
-    description: 'See the screen, click and type in its apps. You can watch and take over.',
+    description: 'See the screen, click and type in its apps. You can watch and use it with them.',
     icon: AppWindow,
     title: 'Desktop'
   }
@@ -127,7 +128,7 @@ export function ComputerSettings(): React.JSX.Element {
               description={
                 status.state === 'starting'
                   ? 'The first start downloads the computer, a few GB.'
-                  : 'Open a bot’s Computer tab to watch it or take control.'
+                  : 'Open a bot’s Computer tab to watch it or use it.'
               }
               title={
                 <span className="flex items-baseline gap-2">

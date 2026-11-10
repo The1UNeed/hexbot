@@ -67,6 +67,25 @@ describe('frameNavigationAllowed', () => {
     ).toBe(false)
   })
 
+  it('lets a frame show a PDF blob the page made, never from a visual or another origin', () => {
+    expect(frameNavigationAllowed('blob:hexbot-app://app/5f1e', 'hexbot-app://app/b/owl')).toBe(
+      true
+    )
+    expect(
+      frameNavigationAllowed('blob:http://localhost:5173/5f1e', 'http://localhost:5173/b/owl')
+    ).toBe(true)
+    expect(frameNavigationAllowed('blob:https://evil.example/5f1e', 'hexbot-app://app/b/owl')).toBe(
+      false
+    )
+    expect(
+      frameNavigationAllowed(
+        'blob:hexbot-app://app/5f1e',
+        'hexbot-app://app/b/owl',
+        'hexbot-app://app/visual-frame.html'
+      )
+    ).toBe(false)
+  })
+
   it('lets frames load only the visual frame from the app origin', () => {
     expect(
       frameNavigationAllowed('hexbot-app://app/visual-frame.html', 'hexbot-app://app/b/owl')

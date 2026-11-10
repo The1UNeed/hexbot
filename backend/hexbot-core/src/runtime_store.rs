@@ -1148,6 +1148,41 @@ pub fn follow_bot_model(home: &Path, bot: &str, before: &Value, after: &Value) -
     }
     Ok(())
 }
+/// A section saved without a model of its own (`{}` or nothing, from when its
+/// bot had none) runs on Pi's default model, and `follow_bot_model` cannot
+/// match it to the bot's previous model. It takes the bot's model, and that
+/// model's thinking level, once the bot has one. A delegated task keeps its
+/// parent section's frozen choice.
+pub fn adopt_bot_model(home: &Path, stored: &str, bot_model: &Value) -> Result<()> {
+    let named = |value: &Value| value.as_str().is_some_and(|s| !s.is_empty());
+    if !named(&bot_model["model"]) {
+        return Ok(());
+    }
+    let conn = open(home)?;
+    let Some(raw) = conn
+        .query_row(
+            "SELECT options FROM native_sessions WHERE stored_id=? AND NOT EXISTS(SELECT 1 FROM native_deleted WHERE session_id=stored_id)",
+            [stored],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?
+    else {
+        return Ok(());
+    };
+    let mut options: Value =
+        serde_json::from_str(&raw).map_err(|e| crate::Error::new(5200, e.to_string()))?;
+    if !options["parent_session"].is_null() || named(&options["model"]) {
+        return Ok(());
+    }
+    options["provider"] = bot_model["provider"].clone();
+    options["model"] = bot_model["model"].clone();
+    options["reasoning_effort"] = bot_model["reasoning_effort"].clone();
+    conn.execute(
+        "UPDATE native_sessions SET options=? WHERE stored_id=? AND NOT EXISTS(SELECT 1 FROM native_deleted WHERE session_id=stored_id)",
+        params![options.to_string(), stored],
+    )?;
+    Ok(())
+}
 /// Records a section this daemon made: the store from before it has nothing
 /// to import into it, so it opens even while that store cannot be read.
 pub fn mark_fresh(home: &Path, stored: &str) -> Result<()> {

@@ -35,7 +35,30 @@ const textOf = value =>
     : Array.isArray(value)
       ? value.map(p => p.text || '').join('\n')
       : ''
+const gmailSent = []
 const model = createServer(async (req, res) => {
+  // Gmail and Microsoft's sign-in, as far as the draft card and the account
+  // panel need them.
+  const reply = (status, body) => {
+    res.writeHead(status, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(body))
+  }
+  if (req.method === 'POST' && req.url === '/gmail/v1/users/me/messages/send') {
+    const chunks = []
+    for await (const chunk of req) chunks.push(chunk)
+    gmailSent.push(JSON.parse(Buffer.concat(chunks).toString()))
+    return reply(200, { id: 'sent-1' })
+  }
+  if (req.method === 'POST' && req.url === '/common/oauth2/v2.0/devicecode')
+    return reply(200, {
+      device_code: 'device-1',
+      user_code: 'HXBT-4821',
+      verification_uri: 'https://microsoft.com/devicelogin',
+      expires_in: 900,
+      interval: 5
+    })
+  if (req.method === 'POST' && req.url === '/common/oauth2/v2.0/token')
+    return reply(400, { error: 'authorization_pending' })
   if (req.method === 'GET' && req.url.endsWith('/models')) {
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(
@@ -92,6 +115,16 @@ const model = createServer(async (req, res) => {
                   name: 'hexbot_passwords',
                   args: { action: 'ask', title: 'Northfield School', url: 'https://school.example/login' }
                 }
+            : !toolAnswered && prompt.includes('Draft an email to Ana')
+              ? {
+                  name: 'hexbot_mail',
+                  args: {
+                    action: 'draft',
+                    to: ['Lima, Ana <ana@example.com>'],
+                    subject: 'Launch review',
+                    body: 'Hi Ana,\n\nFriday at 4 works for me.\n\nAlex'
+                  }
+                }
             : !toolAnswered && prompt.includes('Set up Home Assistant')
               ? {
                   name: 'hexbot_plugins',
@@ -123,6 +156,8 @@ const model = createServer(async (req, res) => {
                   ? 'The mobile approval reached Pi.'
                   : prompt.includes('Sign in to the school site')
                     ? 'The school sign-in is saved.'
+                  : prompt.includes('Draft an email to Ana')
+                    ? 'Sent. Ana has your reply.'
                   : prompt.includes('Set up Home Assistant')
                     ? 'Home Assistant has its token.'
                   : 'Your daemon received this from mobile. The connection is working.'
@@ -188,7 +223,22 @@ try {
   const modelBase = `http://127.0.0.1:${model.address().port}/v1`
   await writeFile(
     path.join(home, 'config.yaml'),
-    `model:\n  provider: lmstudio\n  default: mobile-test\n  base_url: ${modelBase}\n  api_key: test-key\nmodel_overrides:\n  lmstudio:\n    mobile-test:\n      supports_reasoning: true\n    mobile-live:\n      supports_reasoning: false\n`
+    `model:\n  provider: lmstudio\n  default: mobile-test\n  base_url: ${modelBase}\n  api_key: test-key\nmodel_overrides:\n  lmstudio:\n    mobile-test:\n      supports_reasoning: true\n    mobile-live:\n      supports_reasoning: false\naccounts:\n  google:\n    endpoint: http://127.0.0.1:${model.address().port}\n  microsoft:\n    endpoint: http://127.0.0.1:${model.address().port}\n`
+  )
+  // Signed in to Google already; Microsoft signs in with the user's own client.
+  await writeFile(path.join(home, '.env'), 'MICROSOFT_OAUTH_CLIENT_ID="mobile-test"\n')
+  await mkdir(path.join(home, 'accounts'), { recursive: true })
+  await writeFile(
+    path.join(home, 'accounts/google.json'),
+    JSON.stringify({
+      email: 'alex@example.com',
+      client_id: 'c',
+      access_token: 'tok',
+      refresh_token: 'r',
+      expires_at: Date.now() / 1000 + 86400,
+      connected_at: 1
+    }),
+    { mode: 0o600 }
   )
   await mkdir(path.join(home, 'users/local'), { recursive: true })
   await writeFile(path.join(home, 'users/local/user.md'), '')
@@ -330,6 +380,11 @@ try {
   const shot = name => page.screenshot({ path: path.join(artifacts, `${name}.png`) })
   // Cards rise in; wait for them to settle before a picture.
   const settle = () => page.waitForTimeout(450)
+  // A bot's message in the open chat; the list under it shows the latest too.
+  const message = (text, options) =>
+    page.getByTestId(/^chat-message-/).getByText(text, options)
+  // The stack's own back button, named after the list it returns to.
+  const back = () => page.getByLabel('Chats, back', { exact: true }).click()
   page = await context.newPage()
   page.on('pageerror', e => errors.push(e.message))
   const sent = []
@@ -361,7 +416,7 @@ try {
   await shot('daemon-switcher')
   await page.getByTestId('daemon-switcher-close').click()
   await expect(page.getByTestId('daemon-switcher')).not.toBeVisible()
-  await page.getByRole('button', { name: 'Back', exact: true }).click()
+  await back()
   // The bot row opens its one chat.
   await page.getByTestId('bot-row-owl').click()
   await expect(page.getByTestId('chat-empty')).toBeVisible()
@@ -400,17 +455,27 @@ try {
   await page.getByTestId('chat-input').fill('Check the mobile connection')
   await page.getByTestId('chat-send').click()
   await expect(
-    page.getByText('Your daemon received this from mobile. The connection is working.', {
+    message('Your daemon received this from mobile. The connection is working.', {
       exact: true
     })
   ).toBeVisible({ timeout: 30000 })
+  // Read as it landed on screen, so the daemon does not wake this phone about it.
+  await expect
+    .poll(async () => (await owl()).sections_recent?.[0]?.done_at ?? null, { timeout: 10000 })
+    .toBe(null)
   await page.screenshot({ path: path.join(artifacts, 'chat.png') })
   await page.getByTestId('chat-input').fill('Ask two questions')
   await page.getByTestId('chat-send').click()
   await expect(page.getByTestId('question-choice-Morning')).toBeVisible({ timeout: 30000 })
   await page.getByTestId('question-sheet-close').click()
   const answerFile = page.waitForEvent('filechooser')
+  // The + offers the phone's photos, its camera, and its files.
   await page.getByTestId('chat-attach').click()
+  for (const source of ['library', 'camera', 'files'])
+    await expect(page.getByTestId(`chat-attach-${source}`)).toBeVisible()
+  await settle()
+  await shot('chat-attach-menu')
+  await page.getByTestId('chat-attach-files').click()
   await (
     await answerFile
   ).setFiles({
@@ -429,7 +494,7 @@ try {
   await page.getByTestId('question-choice-Two').click()
   await page.screenshot({ path: path.join(artifacts, 'questions.png') })
   await page.getByTestId('question-sheet-action').click()
-  await expect(page.getByText('Questions answered on mobile.', { exact: true })).toBeVisible({
+  await expect(message('Questions answered on mobile.', { exact: true })).toBeVisible({
     timeout: 30000
   })
   const answerRequest = modelRequests.at(-1)
@@ -443,7 +508,7 @@ try {
   await expect(page.getByText('answer-notes.txt', { exact: true })).not.toBeVisible()
   await page.getByTestId('chat-input').fill('Show a visual')
   await page.getByTestId('chat-send').click()
-  await expect(page.getByText('The mobile visual is ready.', { exact: true })).toBeVisible({
+  await expect(message('The mobile visual is ready.', { exact: true })).toBeVisible({
     timeout: 30000
   })
   await page.locator('[data-testid^="visual-open-"]').first().click()
@@ -455,6 +520,7 @@ try {
   await shot('chat-visual')
   const chooser = page.waitForEvent('filechooser')
   await page.getByTestId('chat-attach').click()
+  await page.getByTestId('chat-attach-files').click()
   await (
     await chooser
   ).setFiles({
@@ -474,7 +540,7 @@ try {
   })
   retainedUploadPath = left.path
   await page.getByTestId('chat-send').click()
-  await expect(page.getByText('The mobile attachment reached Pi.', { exact: true })).toBeVisible({
+  await expect(message('The mobile attachment reached Pi.', { exact: true })).toBeVisible({
     timeout: 30000
   })
   assert.match(JSON.stringify(modelRequests.at(-1).messages), /brief\.txt/)
@@ -483,7 +549,9 @@ try {
   // Exact selection keeps the other app's upload available, with its bytes intact.
   const retainedText = await readFile(left.path, 'utf8')
   assert.equal(retainedText, 'Not for this message.')
-  await expect(page.getByText('brief.txt', { exact: true })).not.toBeVisible()
+  // The composer lets the file go; your message keeps it, as a card.
+  await expect(page.getByTestId(/^chat-attachment-remove-/)).toHaveCount(0)
+  await expect(page.getByText('brief.txt', { exact: true })).toHaveCount(1)
   await expect
     .poll(async () => (await rpc('session.status', { session_id: live })).status)
     .toBe('idle')
@@ -494,7 +562,7 @@ try {
   }
   // The same paired app that staged it submits the returned ID through real RPC.
   const otherAck = await rpc('prompt.submit', otherSubmit)
-  await expect(page.getByText('The other app attachment reached Pi.', { exact: true })).toBeVisible(
+  await expect(message('The other app attachment reached Pi.', { exact: true })).toBeVisible(
     {
       timeout: 30000
     }
@@ -537,7 +605,7 @@ try {
   await assert.rejects(access(path.join(workspace, 'mobile-approval.txt')))
   await page.screenshot({ path: path.join(artifacts, 'approval.png') })
   await allowOnce.click()
-  await expect(page.getByText('The mobile approval reached Pi.', { exact: true })).toBeVisible({
+  await expect(message('The mobile approval reached Pi.', { exact: true })).toBeVisible({
     timeout: 30000
   })
   assert.equal(await readFile(path.join(workspace, 'mobile-approval.txt'), 'utf8'), 'approved')
@@ -562,7 +630,7 @@ try {
   await signIn.fill('mobile-secret-42')
   await page.screenshot({ path: path.join(artifacts, 'sign-in-card.png') })
   await page.locator('[data-testid^="sign-in-"][data-testid$="-submit"]').click()
-  await expect(page.getByText('The school sign-in is saved.', { exact: true })).toBeVisible({
+  await expect(message('The school sign-in is saved.', { exact: true })).toBeVisible({
     timeout: 30000
   })
   const saved = (await rpc('hexbot.passwords.list')).logins
@@ -589,13 +657,39 @@ try {
   await page.locator('[data-testid^="plugin-"][data-testid$="-HASS_TOKEN"]').fill('mobile-ha-token-42')
   await page.screenshot({ path: path.join(artifacts, 'plugin-card-open.png') })
   await page.locator('[data-testid^="plugin-"][data-testid$="-submit"]').click()
-  await expect(page.getByText('Home Assistant has its token.', { exact: true })).toBeVisible({
+  await expect(message('Home Assistant has its token.', { exact: true })).toBeVisible({
     timeout: 30000
   })
   const connectors = (await rpc('hexbot.connectors.list')).connectors
   assert.equal(connectors.find(c => c.id === 'home_assistant').ready, true)
   assert.doesNotMatch(JSON.stringify(modelRequests), /mobile-ha-token-42/)
   await shot('chat-plugin-saved')
+  // The bot drafts an email; the user edits it on the card and sends it.
+  // A name holding a comma stays one person.
+  await writeFile(
+    path.join(home, 'profiles/owl/config.yaml'),
+    `model:\n  provider: lmstudio\n  default: mobile-test\n  base_url: ${modelBase}\n  api_key: test-key\ntools:\n  enabled_toolsets: [file, hexbot, google_workspace]\napproval_mode: manual\n`
+  )
+  await page.getByTestId('chat-input').fill('Draft an email to Ana about the launch review')
+  await page.getByTestId('chat-send').click()
+  const subject = page.locator('[data-testid^="email-draft-"][data-testid$="-subject"]')
+  await expect(subject).toBeVisible({ timeout: 30000 })
+  await expect(page.locator('[data-testid^="email-draft-"][data-testid$="-to"]')).toHaveValue(
+    'Lima, Ana <ana@example.com>'
+  )
+  await subject.fill('Launch review, Friday 4pm')
+  await settle()
+  await shot('email-draft-card')
+  assert.equal(gmailSent.length, 0, 'nothing is sent before Send')
+  await page.locator('[data-testid^="email-draft-"][data-testid$="-send"]').click()
+  await expect(message('Sent. Ana has your reply.', { exact: true })).toBeVisible({
+    timeout: 30000
+  })
+  assert.equal(gmailSent.length, 1)
+  const sentMime = Buffer.from(gmailSent[0].raw, 'base64url').toString()
+  assert.match(sentMime, /^To: "Lima, Ana" <ana@example.com>\r\n/)
+  assert.match(sentMime, /\r\nSubject: Launch review, Friday 4pm\r\n/)
+  await shot('chat-email-sent')
   await page.getByTestId('chat-settings').click()
   await expect(page.getByTestId('fingerprint-soul')).toBeVisible()
   await settle()
@@ -651,9 +745,9 @@ try {
   await page.getByTestId('management-sheet-back').click()
   await page.getByTestId('management-sheet-close').click()
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
-  await expect(page.getByText('Flight BA 286 is two hours late.', { exact: true })).toBeVisible()
+  await expect(message('Flight BA 286 is two hours late.', { exact: true })).toBeVisible()
   await shot('heartbeat-chat')
-  await page.getByRole('button', { name: 'Back', exact: true }).click()
+  await back()
   // Rooms sit in the same list as chats and open like one.
   await expect(page.getByTestId(`room-row-${launch.id}`)).toBeVisible()
   await page.getByTestId(`room-row-${room.id}`).click()
@@ -661,7 +755,7 @@ try {
   await page.getByTestId('chat-input').fill('Check our team on mobile')
   await page.getByTestId('chat-send').click()
   await expect(
-    page.getByText('The mobile room is working. @user your team is ready.', { exact: true })
+    message('The mobile room is working. @user your team is ready.', { exact: true })
   ).toBeVisible({ timeout: 30000 })
   await page.screenshot({ path: path.join(artifacts, 'room.png') })
   await page.getByTestId('chat-settings').click()
@@ -685,7 +779,7 @@ try {
     .toBe(null)
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
   await expect(page.getByTestId('library-rooms')).not.toContainText('archived')
-  await page.getByRole('button', { name: 'Back', exact: true }).click()
+  await back()
   // A room archived elsewhere while open stays, and restoring it there keeps it open.
   await page.getByTestId(`room-row-${room.id}`).click()
   await expect(page.getByTestId('chat-title')).toContainText('Our team')
@@ -697,7 +791,7 @@ try {
   await expect(page.getByTestId('chat-archived')).not.toBeVisible()
   await expect(page.getByTestId('chat-title')).toContainText('Our team')
   await expect(page.getByTestId('chat-input')).toBeVisible()
-  await page.getByRole('button', { name: 'Back', exact: true }).click()
+  await back()
   await page.getByTestId('home-settings').click()
   await shot('settings')
   await page.getByTestId('daemon-about').click()
@@ -746,6 +840,46 @@ try {
       await page.getByTestId('management-sheet-back').click()
     }
     if (area === 'plugins') {
+      // Google's panel says who is signed in, and Sign out shows it at once.
+      await page.getByTestId('plugin-connector:google').click()
+      await expect(page.getByTestId('management-loading')).not.toBeVisible({ timeout: 30000 })
+      await expect(page.getByTestId('manage-connector')).toContainText('Account')
+      await page.getByTestId('manage-connector').click()
+      await expect(page.getByText('Signed in as alex@example.com', { exact: true })).toBeVisible()
+      await settle()
+      await shot('google-account')
+      page.once('dialog', dialog => void dialog.accept())
+      await page.getByTestId('action-sign-out').click()
+      await expect(page.getByText('Not signed in', { exact: true })).toBeVisible()
+      await expect(page.getByTestId('action-sign-out')).toHaveCount(0)
+      await page.getByTestId('management-sheet-back').click()
+      await page.getByTestId('management-sheet-back').click()
+      // Microsoft shows its code first, and opens its page only when asked.
+      const opened = []
+      const popups = popup => {
+        opened.push(popup.url())
+        void popup.close()
+      }
+      page.on('popup', popups)
+      await page.getByTestId('plugin-connector:microsoft').click()
+      await expect(page.getByTestId('management-loading')).not.toBeVisible({ timeout: 30000 })
+      await expect(page.getByTestId('manage-connector')).toContainText('Sign in')
+      await page.getByTestId('manage-connector').click()
+      await page.getByTestId('action-sign-in-with-microsoft').click()
+      await expect(page.getByTestId('account-code')).toContainText('HXBT-4821')
+      await expect(
+        page.getByText('Copy the code, then sign in on the Microsoft page.')
+      ).toBeVisible()
+      await settle()
+      assert.deepEqual(opened, [])
+      await shot('microsoft-code')
+      await page.getByTestId('action-copy-code-and-open-microsoft').click()
+      await expect.poll(() => opened.length).toBe(1)
+      await page.getByTestId('action-stop-signing-in').click()
+      await expect(page.getByTestId('account-code')).toHaveCount(0)
+      page.off('popup', popups)
+      await page.getByTestId('management-sheet-back').click()
+      await page.getByTestId('management-sheet-back').click()
       // One plugin card chooses the bots that get it.
       await page.getByTestId('plugin-skill:github').click()
       await expect(page.getByTestId('management-loading')).not.toBeVisible({ timeout: 30000 })
@@ -809,7 +943,7 @@ try {
     await page.getByTestId('management-sheet-close').click()
     await expect(page.getByTestId('management-sheet')).not.toBeVisible()
   }
-  await page.getByRole('button', { name: 'Back', exact: true }).click()
+  await back()
   await page.getByTestId('home-library').click()
   await settle()
   await shot('library')
@@ -849,7 +983,7 @@ try {
   await page.getByTestId('management-sheet-backdrop').click({ position: { x: 196, y: 20 } })
   await page.screenshot({ path: path.join(artifacts, 'daemons.png') })
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
-  await page.getByRole('button', { name: 'Back', exact: true }).click()
+  await back()
   await shot('home')
   await page.getByTestId('home-new').click()
   await expect(page.getByTestId('home-new-menu')).toBeVisible()
@@ -862,17 +996,34 @@ try {
   await page.getByTestId('management-sheet-close').click()
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
   await page.getByTestId('bot-row-owl').click()
-  await expect(
-    page.getByText('Your daemon received this from mobile. The connection is working.', {
+  // The chat opens at its newest message, and the list draws only the
+  // messages near it: scroll up to the first reply and the visual.
+  const scrolledTo = async locator => {
+    await expect(page.getByTestId('chat-input')).toBeVisible({ timeout: 30000 })
+    await expect
+      .poll(
+        async () => {
+          if (await locator.isVisible()) return true
+          await page.mouse.move(196, 400)
+          await page.mouse.wheel(0, -1500)
+          return false
+        },
+        { timeout: 30000 }
+      )
+      .toBe(true)
+  }
+  await scrolledTo(
+    message('Your daemon received this from mobile. The connection is working.', {
       exact: true
     })
-  ).toBeVisible({ timeout: 30000 })
+  )
+  await scrolledTo(page.locator('[data-testid^="visual-open-"]').first())
   await page.locator('[data-testid^="visual-open-"]').first().click()
   await expect(page.frameLocator('iframe').getByText('42 completed tasks')).toBeVisible()
   await page.getByTestId('visual-sheet-close').click()
   // A reload keeps metadata, but the browser preview intentionally has no persistent secrets.
   // Reconnect the same client by disconnecting and selecting its saved target.
-  await page.getByRole('button', { name: 'Back', exact: true }).click()
+  await back()
   await page.getByTestId('home-settings').click()
   await page.getByTestId('daemon-disconnect').click()
   await expect(page.getByTestId('connection-screen')).toBeVisible()
@@ -881,7 +1032,7 @@ try {
   await expect(page.getByTestId('bot-row-owl')).toBeVisible({ timeout: 30000 })
   await page.getByTestId('bot-row-owl').click()
   await expect(
-    page.getByText('Your daemon received this from mobile. The connection is working.', {
+    message('Your daemon received this from mobile. The connection is working.', {
       exact: true
     })
   ).toBeVisible({ timeout: 30000 })
@@ -904,6 +1055,8 @@ try {
       'attachment-only send delivered to Pi, clears chips after acceptance, and leaves out a file staged by another app',
       'retained paired-app upload keeps its bytes and submits exactly once without the mobile file',
       'approval gates a real file write',
+      'email draft card the user edits and sends, with a comma in a name',
+      'Google and Microsoft account panels: sign out, and a code before the page',
       'chat list, and one chat per bot opened from its row',
       'model menu lists connected providers from their live lists and shows the level the model runs at',
       'tool card',

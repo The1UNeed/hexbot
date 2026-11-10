@@ -56,7 +56,10 @@ export interface Store {
   enrollDaemonIdentity(id: string, publicKey: string): Promise<boolean>;
   /** False once the daemon is revoked: a revoke that lands while the poll fetches the tunnel token wins. */
   setDaemonTokenHash(id: string, tokenHash: string): Promise<boolean>;
+  /** Development only: with fake tunnels the heartbeat's port is the daemon's address. Through Cloudflare nothing in the background writes a daemon row. */
   updateDaemonHeartbeat(id: string, at: Date, ingressPort: number): Promise<void>;
+  /** Records that the daemon's address answered a probe made while someone listed their daemons, unless it was already seen since `staleBefore`. */
+  markDaemonSeen(id: string, at: Date, staleBefore: Date): Promise<void>;
   /** Compare-and-set: true only if the row still pointed at `from` and is not revoked, so two repairs cannot both win and a revoke always does. */
   swapDaemonTunnel(id: string, from: string, to: string): Promise<boolean>;
   /** Claims the daemon's single repair slot: true at most once per `cooldownMs`, never for a revoked row. Only the repair route uses the column behind this. */
@@ -67,7 +70,8 @@ export interface Store {
   createClientSession(input: Omit<ClientSession, "id" | "createdAt" | "lastSeenAt" | "revokedAt">): Promise<ClientSession>;
   findClientSessionByTokenHash(hash: string): Promise<ClientSession | null>;
   listClientSessions(userId: string): Promise<ClientSession[]>;
-  touchClientSession(id: string, at: Date): Promise<void>;
+  /** Moves the session's "last used" unless it already moved since `staleBefore`. */
+  touchClientSession(id: string, at: Date, staleBefore: Date): Promise<void>;
   revokeClientSession(id: string, userId: string, at: Date): Promise<boolean>;
   /** False when another account already approved this challenge or it was already collected. */
   approveClientAuthorization(input: Omit<ClientAuthorization, "id" | "createdAt" | "consumedAt">): Promise<boolean>;
@@ -113,6 +117,7 @@ export class MemoryStore implements Store {
   async enrollDaemonIdentity(id: string, publicKey: string) { const row = await this.getDaemon(id); if (!row || row.revokedAt || (row.identityKey != null && row.identityKey !== publicKey)) return false; row.identityKey = publicKey; return true; }
   async setDaemonTokenHash(id: string, tokenHash: string) { const row = await this.getDaemon(id); if (!row || row.revokedAt) return false; row.tokenHash = tokenHash; return true; }
   async updateDaemonHeartbeat(id: string, at: Date, ingressPort: number) { const row = await this.getDaemon(id); if (row) { row.lastSeenAt = at; row.ingressPort = ingressPort; } }
+  async markDaemonSeen(id: string, at: Date, staleBefore: Date) { const row = await this.getDaemon(id); if (row && (!row.lastSeenAt || row.lastSeenAt < staleBefore)) row.lastSeenAt = at; }
   private repairs = new Map<string, Date>();
   async swapDaemonTunnel(id: string, from: string, to: string) { const row = await this.getDaemon(id); if (!row || row.revokedAt || row.tunnelId !== from) return false; row.tunnelId = to; return true; }
   async claimTunnelRepair(id: string, at: Date, cooldownMs: number) { const row = await this.getDaemon(id); if (!row || row.revokedAt) return false; const last = this.repairs.get(id); if (last && at.getTime() - last.getTime() < cooldownMs) return false; this.repairs.set(id, at); return true; }
@@ -122,7 +127,7 @@ export class MemoryStore implements Store {
   async createClientSession(input: Omit<ClientSession, "id" | "createdAt" | "lastSeenAt" | "revokedAt">) { const row = { ...input, id: randomUUID(), createdAt: new Date(), lastSeenAt: null, revokedAt: null }; this.clientSessions.push(row); return row; }
   async findClientSessionByTokenHash(hash: string) { return this.clientSessions.find(x => x.tokenHash === hash) ?? null; }
   async listClientSessions(userId: string) { return this.clientSessions.filter(x => x.userId === userId && !x.revokedAt); }
-  async touchClientSession(id: string, at: Date) { const row = this.clientSessions.find(x => x.id === id); if (row) row.lastSeenAt = at; }
+  async touchClientSession(id: string, at: Date, staleBefore: Date) { const row = this.clientSessions.find(x => x.id === id); if (row && (!row.lastSeenAt || row.lastSeenAt < staleBefore)) row.lastSeenAt = at; }
   async revokeClientSession(id: string, userId: string, at: Date) { const row = this.clientSessions.find(x => x.id === id && x.userId === userId && !x.revokedAt); if (!row) return false; row.revokedAt = at; return true; }
   async approveClientAuthorization(input: Omit<ClientAuthorization, "id" | "createdAt" | "consumedAt">) {
     const cutoff = Date.now() - GRANT_CODE_RETENTION_MS; this.clientAuthorizations = this.clientAuthorizations.filter(x => x.expiresAt.getTime() > cutoff);
@@ -190,6 +195,8 @@ export class NeonStore implements Store {
   async enrollDaemonIdentity(id: string, publicKey: string) { const rows = await this.sql`UPDATE daemons SET identity_key=${publicKey} WHERE id=${id} AND revoked_at IS NULL AND (identity_key IS NULL OR identity_key=${publicKey}) RETURNING id`; return rows.length === 1; }
   async setDaemonTokenHash(id: string, h: string) { const rows = await this.sql`UPDATE daemons SET token_hash=${h} WHERE id=${id} AND revoked_at IS NULL RETURNING id`; return rows.length === 1; }
   async updateDaemonHeartbeat(id: string, at: Date, ingressPort: number) { await this.sql`UPDATE daemons SET last_seen_at=${at.toISOString()}, ingress_port=${ingressPort} WHERE id=${id}`; }
+  // Conditional in SQL, so concurrent listings write once and never move the time backwards.
+  async markDaemonSeen(id: string, at: Date, staleBefore: Date) { await this.sql`UPDATE daemons SET last_seen_at=${at.toISOString()} WHERE id=${id} AND (last_seen_at IS NULL OR last_seen_at < ${staleBefore.toISOString()})`; }
   async swapDaemonTunnel(id: string, from: string, to: string) { const rows = await this.sql`UPDATE daemons SET tunnel_id=${to} WHERE id=${id} AND tunnel_id=${from} AND revoked_at IS NULL RETURNING id`; return rows.length === 1; }
   async claimTunnelRepair(id: string, at: Date, cooldownMs: number) { const rows = await this.sql`UPDATE daemons SET tunnel_repair_at=${at.toISOString()} WHERE id=${id} AND revoked_at IS NULL AND (tunnel_repair_at IS NULL OR tunnel_repair_at < ${new Date(at.getTime() - cooldownMs).toISOString()}) RETURNING id`; return rows.length === 1; }
   async clearDaemonTunnel(id: string, deleted: string) { const rows = await this.sql`UPDATE daemons SET tunnel_id='' WHERE id=${id} AND tunnel_id=${deleted} AND revoked_at IS NOT NULL RETURNING id`; return rows.length === 1; }
@@ -198,7 +205,7 @@ export class NeonStore implements Store {
   async createClientSession(i: Omit<ClientSession, "id" | "createdAt" | "lastSeenAt" | "revokedAt">) { const rows = await this.sql`INSERT INTO client_sessions (user_id,token_hash,device_name) VALUES (${i.userId},${i.tokenHash},${i.deviceName}) RETURNING *`; return sessionRow(rows[0] as DbRow); }
   async findClientSessionByTokenHash(h: string) { const rows = await this.sql`SELECT * FROM client_sessions WHERE token_hash=${h} LIMIT 1`; return rows[0] ? sessionRow(rows[0] as DbRow) : null; }
   async listClientSessions(uid: string) { return (await this.sql`SELECT * FROM client_sessions WHERE user_id=${uid} AND revoked_at IS NULL ORDER BY created_at`).map(r => sessionRow(r as DbRow)); }
-  async touchClientSession(id: string, at: Date) { await this.sql`UPDATE client_sessions SET last_seen_at=${at.toISOString()} WHERE id=${id}`; }
+  async touchClientSession(id: string, at: Date, staleBefore: Date) { await this.sql`UPDATE client_sessions SET last_seen_at=${at.toISOString()} WHERE id=${id} AND (last_seen_at IS NULL OR last_seen_at < ${staleBefore.toISOString()})`; }
   async revokeClientSession(id: string, uid: string, at: Date) { const rows = await this.sql`UPDATE client_sessions SET revoked_at=${at.toISOString()} WHERE id=${id} AND user_id=${uid} AND revoked_at IS NULL RETURNING id`; return rows.length === 1; }
   async approveClientAuthorization(i: Omit<ClientAuthorization, "id" | "createdAt" | "consumedAt">) {
     await this.sql`DELETE FROM client_authorizations WHERE expires_at < ${new Date(Date.now() - GRANT_CODE_RETENTION_MS).toISOString()}`;

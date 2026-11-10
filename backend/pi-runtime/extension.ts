@@ -10,6 +10,13 @@ import { registerAcp } from './acp.ts';
 import { lazyStream } from '@earendil-works/pi-ai';
 import { builtinProviders } from '@earendil-works/pi-ai/providers/all';
 
+/** A request in fast mode: Anthropic's `speed`, ChatGPT's priority tier (its Fast). Other APIs are unchanged. */
+export function fastPayload(api: string | undefined, payload: any): any {
+  if (api === 'anthropic-messages') return {...payload, speed: 'fast'};
+  if (api === 'openai-codex-responses') return {...payload, service_tier: 'priority'};
+  return payload;
+}
+
 export const FILE_TRANSPORT_LIMIT = 1024 * 1024;
 const FILE_SIZE_ERROR = 'Restricted write/edit exceeds the 1 MiB transport limit (about 767 KiB of file data). Use a command for larger files.';
 export function fileRequestTitle(args: any): string {
@@ -20,7 +27,7 @@ export function fileRequestTitle(args: any): string {
   return title;
 }
 function fileOperations(ctx: any, callId: string, tool: string, target: string, snapshot: any) {
-  let opened: {bytes: Buffer, parent: string[]} | undefined;
+  let opened: {bytes: Buffer, parent: string[], version: string} | undefined;
   const checked = (path: string) => { if (path !== target) throw new Error('The file changed after it was checked. Try again.'); };
   const request = async (operation: string, extra: any = {}) => {
     const title = fileRequestTitle({operation, path:target, callId, snapshot, ...extra});
@@ -39,10 +46,10 @@ function fileOperations(ctx: any, callId: string, tool: string, target: string, 
     access: async (path: string) => {
       checked(path);
       const result = await request('edit_open');
-      if (typeof result.content !== 'string' || !Array.isArray(result.parent) || result.parent.length !== 2 || !result.parent.every((value: any) => typeof value === 'string' && /^\d+$/.test(value))) throw new Error('Invalid private file reply');
+      if (typeof result.content !== 'string' || typeof result.version !== 'string' || !/^[0-9a-f]{64}$/.test(result.version) || !Array.isArray(result.parent) || result.parent.length !== 2 || !result.parent.every((value: any) => typeof value === 'string' && /^\d+$/.test(value))) throw new Error('Invalid private file reply');
       const bytes = Buffer.from(result.content,'base64');
       if (bytes.toString('base64') !== result.content) throw new Error('Invalid private file reply');
-      opened = {bytes, parent:result.parent};
+      opened = {bytes, parent:result.parent, version:result.version};
     },
     readFile: async (path: string) => {
       checked(path);
@@ -52,9 +59,10 @@ function fileOperations(ctx: any, callId: string, tool: string, target: string, 
     writeFile: async (path: string, content: string) => {
       checked(path);
       if (tool === 'edit' && !opened) throw new Error('The private file bridge is unavailable.');
-      const parent = opened?.parent;
+      const parent = opened?.parent, version = opened?.version;
       opened = undefined;
-      const result = await request(tool === 'edit' ? 'edit_commit' : 'write', {content:Buffer.from(content,'utf8').toString('base64'), ...(parent ? {parent} : {})});
+      // The daemon refuses the edit if the file changed since it was opened.
+      const result = await request(tool === 'edit' ? 'edit_commit' : 'write', {content:Buffer.from(content,'utf8').toString('base64'), ...(parent ? {parent, opened:version} : {})});
       if (result.success !== true) throw new Error('Invalid private file reply');
     },
   };
@@ -272,7 +280,9 @@ export default function hexbot(pi: any) {
     const mcp = event.toolName.startsWith('mcp__');
     const resource = ['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource'].includes(event.toolName);
     const script = event.toolName === 'codemode' && typeof event.input?.code === 'string' && config.mcpServers?.length;
-    if (!LOCAL_TOOLS.includes(event.toolName) && !browser && !mcp && !resource && !script) return;
+    // Notion and Airtable changes the daemon sends with the bot's key.
+    const connector = event.toolName === 'hexbot_connector_write';
+    if (!LOCAL_TOOLS.includes(event.toolName) && !browser && !mcp && !resource && !script && !connector) return;
     try {
       await refresh(ctx);
       // Retain what this check saw, even if another gate refreshes live settings.
@@ -312,6 +322,12 @@ export default function hexbot(pi: any) {
           ask = {key: `mcp:${server}`, command: args === '{}' ? label : `${label} ${args.length > 300 ? args.slice(0, 300) + '…' : args}`,
             reason: live.approvalMode === 'manual' ? 'Manual mode asks before a connected tool runs.' : 'Auto mode asks before a connected tool changes anything.'};
         }
+      }
+      if (connector) {
+        const {connector: id, method, path, body} = event.input ?? {};
+        const data = body === undefined ? '' : JSON.stringify(body);
+        ask = {key: `connector:${id}`, command: `${id} ${method} ${path}${data ? ' ' + (data.length > 300 ? data.slice(0, 300) + '…' : data) : ''}`,
+          reason: live.approvalMode === 'manual' ? 'Manual mode asks before a connector changes anything.' : 'Auto mode asks before a connector changes anything.'};
       }
       if (['read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName)) {
         const input = event.input.path ?? '.';
@@ -371,7 +387,7 @@ export default function hexbot(pi: any) {
       // In Auto the daemon's reviewer answers routine steps outside the sandbox
       // one at a time, so a grant remembered in another mode does not cover them.
       // Host configuration uses user approvals; incomplete scans ask every time.
-      const review = mode === 'smart' && !ask.once && (REVIEWED.includes(ask.key) || ask.key.startsWith('mcp:'));
+      const review = mode === 'smart' && !ask.once && (REVIEWED.includes(ask.key) || ask.key.startsWith('mcp:') || ask.key.startsWith('connector:'));
       if (sessionAllowed.has(ask.key) && !ask.once && !review) return;
       // The reviewer reads the whole input the tool will run with, not the card's preview,
       // and uses the model Pi runs now, which is the fallback after the primary failed.
@@ -589,11 +605,35 @@ export default function hexbot(pi: any) {
     }}};
   });
 
+  // Anthropic prices fast mode at twice its standard rate and Pi bills the
+  // standard one, so a reply that ran fast is billed again here. Pi already
+  // prices ChatGPT's Fast tier from the reply.
+  let ranFast = false;
+  // The model this run asks to run fast, fixed as the run starts: tool gates
+  // refresh the settings mid-run, and a new speed waits for the next message.
+  let fastModel: string | undefined;
+  pi.on('provider_stream_event', (event: any) => {
+    if (event.api !== 'anthropic-messages') return;
+    const speed = event.data?.usage?.speed ?? event.data?.message?.usage?.speed;
+    if (speed) ranFast = speed === 'fast';
+  });
+  pi.on('message_end', (event: any) => {
+    const message = event.message;
+    if (message?.role !== 'assistant' || !ranFast) return;
+    ranFast = false;
+    const cost = message.usage?.cost;
+    if (!cost) return;
+    const doubled = {input: cost.input * 2, output: cost.output * 2, cacheRead: cost.cacheRead * 2, cacheWrite: cost.cacheWrite * 2};
+    return {message: {...message, usage: {...message.usage, cost: {...cost, ...doubled, total: doubled.input + doubled.output + doubled.cacheRead + doubled.cacheWrite}}}};
+  });
   pi.on('before_provider_request', async (event: any, ctx: any) => {
     pendingPrompt = undefined;
+    ranFast = false;
     const provider = ctx.model?.provider ?? config.provider;
-    if (!['qwen-oauth', 'nous', 'openrouter', 'kimi-coding', 'kimi-coding-cn', 'moonshotai', 'moonshotai-cn', 'deepseek', 'zai', 'minimax', 'minimax-cn', 'minimax-oauth', 'custom', 'ollama'].includes(provider)) return;
-    const raw = await ctx.ui.input('__HEXBOT_TOOL__' + JSON.stringify({name: 'hexbot_provider_request', args: {provider, model: ctx.model?.id, thinking: pi.getThinkingLevel(), payload: event.payload}}));
+    // The daemon says when this section runs fast; a fallback model never does.
+    const payload = fastModel !== undefined && ctx.model?.id === fastModel ? fastPayload(ctx.model?.api, event.payload) : event.payload;
+    if (!['qwen-oauth', 'nous', 'openrouter', 'kimi-coding', 'kimi-coding-cn', 'moonshotai', 'moonshotai-cn', 'deepseek', 'zai', 'minimax', 'minimax-cn', 'minimax-oauth', 'custom', 'ollama'].includes(provider)) return payload === event.payload ? undefined : payload;
+    const raw = await ctx.ui.input('__HEXBOT_TOOL__' + JSON.stringify({name: 'hexbot_provider_request', args: {provider, model: ctx.model?.id, thinking: pi.getThinkingLevel(), payload}}));
     if (!raw) throw new Error('Provider request interrupted');
     const reply = JSON.parse(raw);
     if (reply.error) throw new Error(reply.error);
@@ -614,6 +654,7 @@ export default function hexbot(pi: any) {
     // Whatever fails here, still return the prompt Pi is running.
     try {
       await refresh(ctx);
+      fastModel = live.fast === true ? live.model : undefined;
       await registerMcp(ctx);
       primary ??= ctx.model;
       const model = ctx.modelRegistry.find(live.provider, live.model) ?? primary;
@@ -814,7 +855,7 @@ function credentialName(path: string, home: string, denied: string[]): boolean {
   const local = relative(fold(root), fold(path)).split(sep).join('/');
   return !local.startsWith('../') && !isAbsolute(local) && (policyRegex(credentialPolicy.basename).test(name) || policyRegex(credentialPolicy.home).test(local));
 }
-// Steps outside the sandbox that Auto's reviewer may let through; connected tools too.
+// Steps outside the sandbox that Auto's reviewer may let through; connected tools and connector changes too.
 const REVIEWED = ['shell:full-access', 'file:outside', 'browser_console'];
 const NEVER_WRITTEN = 'Credential and system configuration files are never written by tools.';
 // credential-policy.json "write": deny entries are credential stores that tools

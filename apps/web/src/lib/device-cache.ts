@@ -221,6 +221,10 @@ export function pruneRoomLogs(
 
 export interface CachedHistory<Row = unknown> {
   rows: Row[]
+  /** The daemon's cursor for the end of `rows`; a later read sends only what follows. */
+  cursor?: string
+  /** False when `rows` are only the newest part of the history. */
+  complete?: boolean
 }
 export const CACHED_SECTIONS = 50
 export const HISTORY_ROWS = 500
@@ -259,6 +263,7 @@ export function rememberHistory(
   const access = cacheAccess(scope)
   // Bound before queuing so pending writes cannot retain entire forever chats.
   const rows = boundedHistory(history.rows)
+  const complete = history.complete !== false && rows.length === history.rows.length
 
   return queue(async () => {
     const current = () => cacheCurrent(access) && valid()
@@ -272,7 +277,10 @@ export function rememberHistory(
     await run(
       'readwrite',
       store => {
-        store.put({ rows }, [scope, `section:${id}`])
+        store.put(
+          { rows, ...(history.cursor && { cursor: history.cursor }), complete },
+          [scope, `section:${id}`]
+        )
         store.put(recent.slice(0, CACHED_SECTIONS), [scope, RECENT_KEY])
 
         for (const evicted of recent.slice(CACHED_SECTIONS)) {

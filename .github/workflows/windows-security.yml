@@ -2,9 +2,11 @@
 # run in the AppContainer and what they refuse. This publishes nothing.
 name: Windows security boundary
 
+# Pull requests check branches; push covers main only, so a branch with an
+# open pull request runs this once.
 on:
   push:
-    branches: ['**']
+    branches: [main]
     paths:
       - 'backend/pi-runtime/**'
       - 'backend/hexbot-core/**'

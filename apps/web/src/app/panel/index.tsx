@@ -1,6 +1,7 @@
 import { useNavigate } from '@tanstack/react-router'
 import {
   Bell,
+  BellRing,
   Brain,
   ChevronRight,
   ChevronsRight,
@@ -18,8 +19,10 @@ import {
 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
+import { ScrollArea } from '../../components/ui/scroll-area'
 import { Switch } from '../../components/ui/switch'
 import { cn } from '../../lib/cn'
+import { useBrowserNotifications } from '../../lib/notify'
 import type { Attachment, Bot } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { searchActions, useSearch } from '../../stores/search'
@@ -29,6 +32,7 @@ import { type PanelTab, useUi } from '../../stores/ui'
 import { visualsActions } from '../../stores/visuals'
 import { type BotSettingsTab, rememberedTab } from '../bot-settings'
 import { AvatarPicker, errorText, InlineField, type SaveBot } from '../bot-settings/shared'
+import { mimeOf, openFile } from '../conversation/file-tab'
 import { activityLabel } from '../conversation/steps'
 import { visualsOf } from '../conversation/visual'
 
@@ -63,6 +67,8 @@ const SETTINGS_LINKS: { icon: LucideIcon; label: string; tab: BotSettingsTab }[]
 
 function DetailsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   const navigate = useNavigate()
+  const browser = useBrowserNotifications()
+  const notify = bot.notify ?? true
 
   const open = (tab: BotSettingsTab) =>
     void navigate({ params: { bot: bot.name, tab }, to: '/b/$bot/settings/$tab' })
@@ -96,15 +102,33 @@ function DetailsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
           <span className="min-w-0 flex-1">
             <span className="block font-medium">Notify me</span>
             <span className="block text-[length:var(--text-meta)] text-muted">
-              When it stops or needs you
+              When it replies, stops or needs you
             </span>
           </span>
           <Switch
-            aria-label="Notify me when this bot stops or needs me"
-            checked={bot.notify ?? true}
-            onCheckedChange={checked => void onSave({ notify: checked })}
+            aria-label="Notify me when this bot replies, stops or needs me"
+            checked={notify}
+            onCheckedChange={checked => {
+              void onSave({ notify: checked })
+
+              // Turning it on is the click a browser needs before it asks.
+              if (checked) {
+                void browser.ask()
+              }
+            }}
           />
         </div>
+        {notify && browser.askable ? (
+          <button className={rowClass} onClick={() => void browser.ask()} type="button">
+            <RowIcon icon={BellRing} />
+            <span className="min-w-0 flex-1">
+              <span className="block font-medium">Allow in this browser</span>
+              <span className="block text-[length:var(--text-meta)] text-muted">
+                So this browser can notify you while the tab is open
+              </span>
+            </span>
+          </button>
+        ) : null}
       </section>
       <section className={listClass}>
         {SETTINGS_LINKS.map(link => (
@@ -128,7 +152,17 @@ function DetailsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
 }
 
 /** Every visual the bot drew, image and file shared in the section, newest first. */
-function LibraryTab({ messages, name }: { messages: TranscriptMessage[]; name: string }) {
+function LibraryTab({
+  messages,
+  name,
+  sectionId,
+  sessionId
+}: {
+  messages: TranscriptMessage[]
+  name: string
+  sectionId: null | string
+  sessionId: null | string
+}) {
   const items = useMemo(
     () => messages.flatMap(message => message.attachments).reverse(),
     [messages]
@@ -201,15 +235,47 @@ function LibraryTab({ messages, name }: { messages: TranscriptMessage[]; name: s
         <section>
           <h3 className={headingClass}>Files</h3>
           <ul className={listClass}>
-            {files.map((item: Attachment) => (
-              <li className={rowClass} key={item.id}>
-                <RowIcon icon={File} />
-                <span className="min-w-0 flex-1 truncate font-medium">{item.name}</span>
-                <span className="shrink-0 text-[length:var(--text-meta)] text-muted">
-                  {Math.ceil(item.size / 1024)} KB
-                </span>
-              </li>
-            ))}
+            {files.map((item: Attachment) => {
+              const row = (
+                <>
+                  <RowIcon icon={File} />
+                  <span className="min-w-0 flex-1 truncate font-medium">{item.name}</span>
+                  {item.size !== undefined ? (
+                    <span className="shrink-0 text-[length:var(--text-meta)] text-muted">
+                      {Math.ceil(item.size / 1024)} KB
+                    </span>
+                  ) : null}
+                </>
+              )
+
+              return (
+                <li key={item.id}>
+                  {sessionId && (item.path || item.url) ? (
+                    <button
+                      className={rowClass}
+                      onClick={() =>
+                        openFile(
+                          sessionId,
+                          {
+                            mime: item.mime || mimeOf(item.name),
+                            name: item.name,
+                            path: item.path,
+                            url: item.url
+                          },
+                          true,
+                          sectionId
+                        )
+                      }
+                      type="button"
+                    >
+                      {row}
+                    </button>
+                  ) : (
+                    <div className={rowClass}>{row}</div>
+                  )}
+                </li>
+              )
+            })}
           </ul>
         </section>
       ) : null}
@@ -230,15 +296,16 @@ function PanelActions({
   onSearch: () => void
   searching: boolean
 }) {
+  // Glass, like the chat's own buttons: the panel scrolls under them.
   const button =
-    'hex-focus grid size-8 shrink-0 place-items-center rounded-full text-muted transition-colors duration-[var(--hex-motion-fast)] hover:bg-foreground/[0.06] hover:text-foreground'
+    'hex-glass hex-glass-press hex-focus grid size-9 shrink-0 place-items-center rounded-full text-foreground/70 hover:text-foreground'
 
   return (
-    <div className="hex-no-drag hex-split flex w-[4.25rem] shrink-0 items-center justify-end gap-1 overflow-hidden">
+    <div className="hex-split flex w-[4.75rem] shrink-0 items-center justify-end gap-1">
       <button
         aria-label={searching ? 'Close search' : 'Search this chat'}
         aria-pressed={searching}
-        className={cn(button, 'hex-split-in', searching && 'bg-foreground/[0.07] text-foreground')}
+        className={cn(button, 'hex-split-in', searching && 'text-accent hover:text-accent')}
         onClick={onSearch}
         title="Search"
         type="button"
@@ -270,7 +337,10 @@ const memoryWrites = (messages: TranscriptMessage[]) =>
  * Search, beside Close, looks through the whole chat.
  */
 export function ProfilePanel(): React.JSX.Element {
-  const selected = useUi(state => state.lastSection)
+  const remembered = useUi(state => state.lastSection)
+  // A bot clicked in the roster shows here while its chat opens, as in the chat column.
+  const opening = useUi(state => state.openingShown)
+  const selected = opening ? { bot: opening, section: null } : remembered
   const bot = useBots(state => (selected?.bot ? state.byName[selected.bot] : undefined))
   const updateBot = useBots(state => state.update)
   const closePanel = useUi(state => state.toggleRightPanel)
@@ -333,19 +403,6 @@ export function ProfilePanel(): React.JSX.Element {
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="profile-panel">
-      <header className="hex-drag flex h-14 shrink-0 items-center justify-end gap-2 px-3">
-        {searching ? (
-          <SearchField
-            label={`Search your chat with ${bot.display_name}`}
-            onLeave={searchActions().close}
-          />
-        ) : null}
-        <PanelActions
-          onClose={() => closePanel(false)}
-          onSearch={() => searchActions().setOpen(!searching)}
-          searching={searching}
-        />
-      </header>
       {editing ? (
         <FingerprintEditor
           bot={bot}
@@ -356,8 +413,28 @@ export function ProfilePanel(): React.JSX.Element {
           onMemory={setMemory}
         />
       ) : null}
-      {searching ? (
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-5">
+      {/* The panel scrolls under its buttons, as the chat does under its header. */}
+      <ScrollArea
+        className="flex-1"
+        gap={0}
+        top={
+          <header className="flex h-14 items-center justify-end gap-2 px-3">
+            {searching ? (
+              <SearchField
+                label={`Search your chat with ${bot.display_name}`}
+                onLeave={searchActions().close}
+              />
+            ) : null}
+            <PanelActions
+              onClose={() => closePanel(false)}
+              onSearch={() => searchActions().setOpen(!searching)}
+              searching={searching}
+            />
+          </header>
+        }
+        viewportClassName="px-4 pb-5"
+      >
+        {searching ? (
           <SearchResults
             documents={documents}
             entries={entries}
@@ -365,101 +442,108 @@ export function ProfilePanel(): React.JSX.Element {
             onDocument={setEditing}
             onLeave={hideBotPanel}
           />
-        </div>
-      ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-5">
-          <div className="flex flex-col items-center">
-            <AvatarPicker bot={bot} hint={false} onSave={save} />
-            <InlineField
-              ariaLabel="Bot name"
-              className="mt-2 h-8 max-w-60 rounded-[10px] border-transparent bg-transparent px-2 text-center text-[18px] font-semibold shadow-none hover:bg-foreground/[0.04] focus-visible:border-transparent focus-visible:bg-background focus-visible:ring-0"
-              onSave={value => void save({ display_name: value })}
-              value={bot.display_name}
-            />
-            <InlineField
-              ariaLabel="Title"
-              className="h-7 max-w-52 rounded-[10px] border-transparent bg-transparent px-2 text-center text-[length:var(--text-secondary)] text-muted shadow-none placeholder:text-muted/70 hover:bg-foreground/[0.04] focus-visible:border-transparent focus-visible:bg-background focus-visible:text-foreground focus-visible:ring-0"
-              onSave={value => void save({ title: value })}
-              placeholder="Add a label"
-              value={bot.title}
-            />
-            {status ? (
-              <button
-                className="hex-bubble hex-focus mt-1.5 flex max-w-full items-center gap-1.5 rounded-full bg-info/10 px-2.5 py-1 text-[length:var(--text-meta)] font-medium text-info"
-                onClick={() => setTab('computer')}
-                type="button"
+        ) : (
+          <>
+            <div className="flex flex-col items-center">
+              <AvatarPicker bot={bot} hint={false} onSave={save} />
+              <InlineField
+                ariaLabel="Bot name"
+                className="mt-2 h-8 max-w-60 rounded-[10px] border-transparent bg-transparent px-2 text-center text-[18px] font-semibold shadow-none hover:bg-foreground/[0.04] focus-visible:border-transparent focus-visible:bg-background focus-visible:ring-0"
+                onSave={value => void save({ display_name: value })}
+                value={bot.display_name}
+              />
+              <InlineField
+                ariaLabel="Title"
+                className="h-7 max-w-52 rounded-[10px] border-transparent bg-transparent px-2 text-center text-[length:var(--text-secondary)] text-muted shadow-none placeholder:text-muted/70 hover:bg-foreground/[0.04] focus-visible:border-transparent focus-visible:bg-background focus-visible:text-foreground focus-visible:ring-0"
+                onSave={value => void save({ title: value })}
+                placeholder="Add a label"
+                value={bot.title}
+              />
+              {status ? (
+                <button
+                  className="hex-bubble hex-focus mt-1.5 flex max-w-full items-center gap-1.5 rounded-full bg-info/10 px-2.5 py-1 text-[length:var(--text-meta)] font-medium text-info"
+                  onClick={() => setTab('computer')}
+                  type="button"
+                >
+                  <span className="size-1.5 shrink-0 rounded-full bg-current" />
+                  <span className="truncate">{status}</span>
+                </button>
+              ) : null}
+            </div>
+            {error ? (
+              <p
+                className="mt-3 text-center text-[length:var(--text-secondary)] text-danger"
+                role="alert"
               >
-                <span className="size-1.5 shrink-0 rounded-full bg-current" />
-                <span className="truncate">{status}</span>
-              </button>
+                {error}
+              </p>
             ) : null}
-          </div>
-          {error ? (
-            <p
-              className="mt-3 text-center text-[length:var(--text-secondary)] text-danger"
-              role="alert"
+            <div
+              aria-label="Panel tabs"
+              className="mt-5 mb-5 flex w-full gap-0.5 rounded-full bg-foreground/[0.05] p-[3px]"
+              onKeyDown={event => {
+                const step = { ArrowLeft: -1, ArrowRight: 1 }[event.key]
+
+                if (!step) {
+                  return
+                }
+
+                event.preventDefault()
+                const index = TABS.findIndex(item => item.id === tab)
+                const next = TABS[(index + step + TABS.length) % TABS.length]!
+                setTab(next.id)
+                document.getElementById(`panel-tab-${next.id}`)?.focus()
+              }}
+              role="tablist"
             >
-              {error}
-            </p>
-          ) : null}
-          <div
-            aria-label="Panel tabs"
-            className="mt-5 mb-5 flex w-full gap-0.5 rounded-full bg-foreground/[0.05] p-[3px]"
-            onKeyDown={event => {
-              const step = { ArrowLeft: -1, ArrowRight: 1 }[event.key]
-
-              if (!step) {
-                return
-              }
-
-              event.preventDefault()
-              const index = TABS.findIndex(item => item.id === tab)
-              const next = TABS[(index + step + TABS.length) % TABS.length]!
-              setTab(next.id)
-              document.getElementById(`panel-tab-${next.id}`)?.focus()
-            }}
-            role="tablist"
-          >
-            {TABS.map(item => (
-              <button
-                aria-controls="panel-tabpanel"
-                aria-selected={tab === item.id}
-                className={cn(
-                  'hex-focus relative flex h-7 min-w-0 flex-1 items-center justify-center gap-1 rounded-full px-1.5 text-[12.5px] font-medium whitespace-nowrap transition-colors duration-[var(--hex-motion-fast)]',
-                  tab === item.id
-                    ? 'bg-background text-foreground shadow-card'
-                    : 'text-muted hover:text-foreground'
-                )}
-                id={`panel-tab-${item.id}`}
-                key={item.id}
-                onClick={() => setTab(item.id)}
-                role="tab"
-                tabIndex={tab === item.id ? 0 : -1}
-                type="button"
-              >
-                {item.label}
-                {item.id === 'computer' && running ? (
-                  <span aria-hidden className="size-1.5 rounded-full bg-info" />
-                ) : null}
-              </button>
-            ))}
-          </div>
-          <div
-            aria-labelledby={`panel-tab-${tab}`}
-            className="hex-fade"
-            id="panel-tabpanel"
-            key={tab}
-            role="tabpanel"
-          >
-            {tab === 'details' ? <DetailsTab bot={bot} onSave={save} /> : null}
-            {tab === 'library' ? <LibraryTab messages={messages} name={bot.display_name} /> : null}
-            {tab === 'fingerprint' ? (
-              <FingerprintTab bot={bot} memory={memory} onOpen={setEditing} />
-            ) : null}
-            {tab === 'computer' ? <ComputerTab bot={bot} onSave={save} /> : null}
-          </div>
-        </div>
-      )}
+              {TABS.map(item => (
+                <button
+                  aria-controls="panel-tabpanel"
+                  aria-selected={tab === item.id}
+                  className={cn(
+                    'hex-focus relative flex h-7 min-w-0 flex-1 items-center justify-center gap-1 rounded-full px-1.5 text-[12.5px] font-medium whitespace-nowrap transition-colors duration-[var(--hex-motion-fast)]',
+                    tab === item.id
+                      ? 'bg-background text-foreground shadow-card'
+                      : 'text-muted hover:text-foreground'
+                  )}
+                  id={`panel-tab-${item.id}`}
+                  key={item.id}
+                  onClick={() => setTab(item.id)}
+                  role="tab"
+                  tabIndex={tab === item.id ? 0 : -1}
+                  type="button"
+                >
+                  {item.label}
+                  {item.id === 'computer' && running ? (
+                    <span aria-hidden className="size-1.5 rounded-full bg-info" />
+                  ) : null}
+                </button>
+              ))}
+            </div>
+            <div
+              aria-labelledby={`panel-tab-${tab}`}
+              className="hex-fade"
+              id="panel-tabpanel"
+              key={tab}
+              role="tabpanel"
+            >
+              {tab === 'details' ? <DetailsTab bot={bot} onSave={save} /> : null}
+              {tab === 'library' ? (
+                <LibraryTab
+                  messages={messages}
+                  name={bot.display_name}
+                  sectionId={selected?.section ?? null}
+                  sessionId={liveId}
+                />
+              ) : null}
+              {tab === 'fingerprint' ? (
+                <FingerprintTab bot={bot} memory={memory} onOpen={setEditing} />
+              ) : null}
+              {tab === 'computer' ? <ComputerTab bot={bot} onSave={save} /> : null}
+            </div>
+          </>
+        )}
+      </ScrollArea>
     </div>
   )
 }
