@@ -300,7 +300,8 @@ with Viewport Segments place both poses on the exact halves.
   the bot's chat, so a red dot always has a message you can read and close.
 - Recall: your latest message in a bot's chat, while the bot works on it or
   after its turn stopped, shows Recall beside Copy on hover; the phone offers
-  it on a long press. The message and everything after it leave the chat, and
+  it in the long-press menu, after Copy and Select text (a bot's reply with
+  code also offers Copy code). The message and everything after it leave the chat, and
   its text goes back to the composer ahead of anything typed since.
 
 ### Status colours

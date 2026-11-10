@@ -106,7 +106,7 @@ In the web and desktop apps, choose the search button at the top of a bot's side
 
 ## Recall a message
 
-While the bot is working on your latest message, or after its answer stopped, you can take that message back. In the web and desktop apps, hover over it and choose **Recall**. On the phone, long-press it. A running answer stops first. The message and what the bot said after it leave the chat in every app, and the bot forgets them. The text goes back in the message box to edit; attached files do not, so attach them again. Anything the bot already did, such as changing a file, stays done.
+While the bot is working on your latest message, or after its answer stopped, you can take that message back. In the web and desktop apps, hover over it and choose **Recall**. On the phone, long-press it and choose **Recall**. A running answer stops first. The message and what the bot said after it leave the chat in every app, and the bot forgets them. The text goes back in the message box to edit; attached files do not, so attach them again. Anything the bot already did, such as changing a file, stays done.
 
 Only your latest message can be recalled, and only in a bot's chat, not in a room, a conversation between bots, or an earlier Check-ins. Recalling keeps the conversation before that message as it was, so the bot's next answer still uses the provider's prompt cache.
 
