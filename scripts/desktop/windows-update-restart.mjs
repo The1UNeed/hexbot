@@ -4,10 +4,11 @@ import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { once } from 'node:events'
+import { realpathSync } from 'node:fs'
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, resolve, toNamespacedPath } from 'node:path'
 import { promisify } from 'node:util'
 import { appId, productName } from './release-version.mjs'
 import { makeNativeUpdate } from './make-native-update.mjs'
@@ -30,6 +31,11 @@ const bundle = resolve('apps/desktop/resources/hexbot-native')
 const originalManifest = JSON.parse(await readFile(join(bundle, 'manifest.json'), 'utf8'))
 const nextVersion = '999.0.0-nightly.windows.contract'
 const debugExe = resolve('backend/hexbot-core/target/debug/hexbot.exe')
+// The selection names its executable as Windows resolves it (\\?\C:\...), and a
+// running daemon by the path it was started with, so the two are compared
+// as files, the way the desktop app compares them.
+const sameFile = (first, second) =>
+  toNamespacedPath(realpathSync.native(first)) === toNamespacedPath(realpathSync.native(second))
 const files = new Map()
 // The installer reads a manifest's signature at the immutable
 // install/<version>/<track>.json.sig, as release.yml publishes it.
@@ -141,13 +147,13 @@ try {
   assert.equal(alive(old.pid), false, 'Headless installer update must stop the previous owned task instance')
   selected = JSON.parse(await readFile(join(installHome, 'runtime/native-current.json'), 'utf8')).executable
   assert.equal((await run(selected, ['version'])).stdout.trim(), nextVersion)
-  assert.equal(installed.executable, selected)
+  assert.ok(sameFile(installed.executable, selected), `${installed.executable} is not ${selected}`)
   assert.equal(await lockState(), 'held')
   const repairOutput = await run(resolve('backend/hexbot-installer/target/debug/hexbot-install.exe'), ['--repair', '--yes', '--json'])
   console.log(repairOutput.stdout)
   const repaired = await waitJson(installerRunning, value => value.pid !== installed.pid)
   assert.equal(alive(installed.pid), false, 'Headless repair must replace the running owned task instance')
-  assert.equal(repaired.executable, selected)
+  assert.ok(sameFile(repaired.executable, selected), `${repaired.executable} is not ${selected}`)
   await run(selected, ['service', 'stop'])
   assert.equal(alive(repaired.pid), false)
   assert.equal(await lockState(), 'free')
@@ -197,7 +203,7 @@ try {
     assert.match(installedOutput.stdout, /"stage":"done"/)
     assert.equal(await readFile(join(changedHome, 'runtime/native-current.json'), 'utf8'), beforeSelection)
     const changedRunning = join(changedHome, 'runtime/native-running.json')
-    const changed = await waitJson(changedRunning, value => value.pid && value.executable === selected)
+    const changed = await waitJson(changedRunning, value => value.pid && value.executable && sameFile(value.executable, selected))
     assert.equal((await run(selected, ['version'])).stdout.trim(), retainedManifest.version)
     let receipt = JSON.parse(await readFile(join(changedHome, 'install.json'), 'utf8'))
     assert.equal(receipt.option, 'headless')
@@ -208,7 +214,7 @@ try {
     assert.match(repairedOutput.stdout, /"stage":"done"/)
     const repaired = await waitJson(changedRunning, value => value.pid && value.pid !== changed.pid)
     assert.equal(alive(changed.pid), false)
-    assert.equal(repaired.executable, selected)
+    assert.ok(sameFile(repaired.executable, selected), `${repaired.executable} is not ${selected}`)
     assert.equal(await readFile(join(changedHome, 'runtime/native-current.json'), 'utf8'), beforeSelection)
     receipt = JSON.parse(await readFile(join(changedHome, 'install.json'), 'utf8'))
     assert.equal(receipt.channel, track)
