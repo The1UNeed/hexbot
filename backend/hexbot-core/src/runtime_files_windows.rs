@@ -136,7 +136,7 @@ const ERROR_FILE_NOT_FOUND: i32 = 2;
 
 const CHANGED: &str = "The file changed. Try again.";
 const NOT_REGULAR: &str = "path is not a regular file";
-const LINKED: &str = "A folder on this path is a link, a junction or a cloud-synced folder, which the write and edit tools do not follow.";
+const LINKED: &str = "A folder on this path is a link, a junction or a cloud-synced folder, which Hexbot does not write through.";
 const ANOTHER_NAME: &str = "This path names a file or folder by another name, such as an 8.3 short name. Use its full path.";
 
 fn check(ok: i32) -> io::Result<()> {

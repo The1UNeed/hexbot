@@ -281,6 +281,12 @@ const MAX_HOPS: usize = 8;
 /// Pi's write or edit when the workspace scan stopped early: the change was
 /// already approved, so it is refused rather than written unchecked.
 const GIT_SCAN_REFUSED: &str = "The workspace safety scan could not check Git metadata, so this file change is refused. Choose a smaller workspace or try again.";
+/// Windows has no full_access to point a bot at.
+const GIT_READ_ONLY: &str = if cfg!(windows) {
+    "Git metadata is read-only."
+} else {
+    "Git metadata is read-only. Use an approved full_access command."
+};
 #[derive(Clone, Debug, Default)]
 struct Chain {
     /// Bot-to-bot messages sent since the turn that started the chain. Every
@@ -4334,10 +4340,7 @@ impl Runtime {
         match crate::credentials::git_write_protected(path, &roots) {
             Ok(false) => {}
             Ok(true) => {
-                return Err(Error::new(
-                    4302,
-                    "Git metadata is read-only. Use an approved full_access command.",
-                ));
+                return Err(Error::new(4302, GIT_READ_ONLY));
             }
             Err(error) if error.code == 5240 => {
                 return Err(Error::new(4302, GIT_SCAN_REFUSED));
@@ -7591,10 +7594,7 @@ fn guarded_file_path(
     };
     let reason = git_check.as_ref().err().map(ToString::to_string);
     if matches!(git_check, Ok(true)) {
-        return Err(Error::new(
-            4302,
-            "Git metadata is read-only. Use an approved full_access command.",
-        ));
+        return Err(Error::new(4302, GIT_READ_ONLY));
     }
     // Manual asks before every change, Auto before one outside the workspace.
     let mut ask = write

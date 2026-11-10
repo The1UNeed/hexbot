@@ -346,7 +346,7 @@ export default function hexbot(pi: any) {
             // the gate keeps the pure-name Git check and the asks it can
             // judge, not the Unix-only workspace scan.
             for (let parent = path; dirname(parent) !== parent; parent = dirname(parent)) {
-              if (gitDirectory(parent)) return {block: true, reason: 'Git metadata is read-only. Use an approved full_access command.'};
+              if (gitDirectory(parent)) return {block: true, reason: GIT_READ_ONLY};
             }
             ask = askFor();
           } else {
@@ -565,7 +565,7 @@ export default function hexbot(pi: any) {
           // opens; the pure-name Git check is kept here, the Unix-only scan
           // it cannot run is not.
           for (let parent = path; dirname(parent) !== parent; parent = dirname(parent)) {
-            if (gitDirectory(parent)) throw new Error('Git metadata is read-only. Use an approved full_access command.');
+            if (gitDirectory(parent)) throw new Error(GIT_READ_ONLY);
           }
           if (hostWriteTier(args.path ?? '.', cwd, true) === 'deny') throw new Error(NEVER_WRITTEN);
         } else {
@@ -858,6 +858,8 @@ function credentialName(path: string, home: string, denied: string[]): boolean {
 // Steps outside the sandbox that Auto's reviewer may let through; connected tools and connector changes too.
 const REVIEWED = ['shell:full-access', 'file:outside', 'browser_console'];
 const NEVER_WRITTEN = 'Credential and system configuration files are never written by tools.';
+// Windows has no full_access to point a bot at.
+const GIT_READ_ONLY = process.platform === 'win32' ? 'Git metadata is read-only.' : 'Git metadata is read-only. Use an approved full_access command.';
 // credential-policy.json "write": deny entries are credential stores that tools
 // never write; ask entries (shell profiles, login items) prompt in Manual and
 // Auto; fileDeny entries (system configuration) are denied to the file tools.
@@ -874,7 +876,7 @@ export function hostWriteTier(input: string, cwd: string, fileTool = false): 'de
 export function writeDenial(input: string, cwd: string, home: string, outputs: string[] = [], scan = workspaceProtected([cwd, ...outputs])): string | undefined {
   const path = canonicalPath(input, cwd);
   for (let parent = path; dirname(parent) !== parent; parent = dirname(parent)) {
-    if (gitDirectory(parent)) return 'Git metadata is read-only. Use an approved full_access command.';
+    if (gitDirectory(parent)) return GIT_READ_ONLY;
   }
   // A repository config can name any folder as its hooks path. One that holds a
   // writable root (hooksPath = / or the home) would refuse every write, so it is
@@ -882,7 +884,7 @@ export function writeDenial(input: string, cwd: string, home: string, outputs: s
   // workspace stay refused.
   const roots = [cwd, ...outputs, tmpdir(), '/tmp'].map(root => canonicalPath(root, cwd));
   const git = scan.git.filter(target => !roots.some(root => within(root, [target]) && fold(root) !== fold(target)));
-  if (git.some(root => under(path, root) || under(root, path))) return 'Git metadata is read-only. Use an approved full_access command.';
+  if (git.some(root => under(path, root) || under(root, path))) return GIT_READ_ONLY;
   if (protectedPath(path, home, outputs)) return 'This path is protected. Use the soul or memory tool for bot notes.';
   if (hostWriteTier(input, cwd, true) === 'deny') return NEVER_WRITTEN;
 }
