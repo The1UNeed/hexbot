@@ -512,8 +512,13 @@ pub(crate) fn open_disk_entry(path: &Path) -> std::io::Result<DiskEntry> {
     let Some(text) = path.to_str() else {
         return Ok(DiskEntry::Refused(NOT_UNICODE));
     };
-    if let Err(reason) = crate::windows_paths::sandbox::local(text) {
-        return Ok(DiskEntry::Refused(reason));
+    let plain = match crate::windows_paths::sandbox::local(text) {
+        Ok(plain) => plain,
+        Err(reason) => return Ok(DiskEntry::Refused(reason)),
+    };
+    // A mapped network drive is not local, whatever its letter says.
+    if crate::windows_sandbox::fixed_drive(&plain).is_err() {
+        return Ok(DiskEntry::Refused(crate::windows_paths::sandbox::DRIVE));
     }
     // The open below follows links on the way to the file.
     if !crate::credentials::local_link(path) {
@@ -577,15 +582,19 @@ pub fn expand_home(path: &str) -> Result<std::path::PathBuf> {
     )
 }
 fn expand_home_in(path: &str, home: Option<std::ffi::OsString>) -> Result<std::path::PathBuf> {
-    if path == "~" || path.starts_with("~/") {
-        // Without HOME the path would silently become relative to the daemon's cwd.
-        let home = home
-            .filter(|home| !home.is_empty())
-            .ok_or_else(|| Error::new(4202, "HOME is not set, so ~ cannot be expanded"))?;
-        Ok(std::path::PathBuf::from(home).join(path.strip_prefix("~/").unwrap_or("")))
-    } else {
-        Ok(std::path::PathBuf::from(path))
-    }
+    // Windows takes either separator after `~`.
+    let separator = |c: char| c == '/' || (cfg!(windows) && c == '\\');
+    let rest = path
+        .strip_prefix('~')
+        .filter(|rest| rest.is_empty() || rest.starts_with(separator));
+    let Some(rest) = rest else {
+        return Ok(std::path::PathBuf::from(path));
+    };
+    // Without HOME the path would silently become relative to the daemon's cwd.
+    let home = home
+        .filter(|home| !home.is_empty())
+        .ok_or_else(|| Error::new(4202, "HOME is not set, so ~ cannot be expanded"))?;
+    Ok(std::path::PathBuf::from(home).join(rest.strip_prefix(separator).unwrap_or("")))
 }
 
 /// Refuse a working directory inside the daemon home, symlinks included, without creating it.

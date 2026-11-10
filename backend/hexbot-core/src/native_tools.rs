@@ -144,6 +144,16 @@ fn media_path(home: &Path, bot: &str, value: &str) -> Result<PathBuf> {
     } else {
         cwd.join(input)
     };
+    // The bot names this path. On Windows it is judged by its text, and every
+    // link on the way by its target, before anything below resolves it, so a
+    // network share or device is never reached.
+    #[cfg(windows)]
+    if !crate::credentials::local_link(&input) {
+        return Err(Error::new(
+            4302,
+            "media path must be inside the working directory or artifacts folder",
+        ));
+    }
     let mut ancestor = input.as_path();
     let mut suffix = Vec::new();
     while !ancestor.try_exists()? {

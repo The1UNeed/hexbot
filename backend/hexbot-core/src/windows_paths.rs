@@ -241,6 +241,7 @@ pub mod sandbox {
     }
 
     pub const RESERVED: &str = "Paths cannot use a reserved Windows device name";
+    pub const DRIVE: &str = "Paths must be on a local fixed disk";
     /// A link on the way names a network share, a device or a drive that is
     /// no fixed disk, or the chain of links is too long to judge.
     pub const LINKED: &str = "Paths cannot pass through a link that leaves this computer's disks";
