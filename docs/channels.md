@@ -45,7 +45,7 @@ lives in a small set of files:
 | File | Channel | Role |
 | --- | --- | --- |
 | `.github/workflows/ci.yml` | all | Tests and builds on every pull request and push to `main`; all macOS checks share one job. Publishes nothing. Also called by `release.yml`. Ends with `release-smoke.mjs` |
-| `.github/workflows/release.yml` | stable, nightly | One workflow for both channels: `preflight` picks the channel and version, `check` runs CI, `build` makes eight packages, `installer` builds terminal and windowed installers, `publish` uploads the feeds and installers, creates the GitHub release, and after a nightly redeploys the site, `finalize` (stable only) commits the website manifest and casks |
+| `.github/workflows/release.yml` | stable, nightly | One workflow for both channels: `preflight` picks the channel and version, `check` runs CI, `windows` runs the Windows sandbox boundary probes, `build` makes eight packages, `installer` builds terminal and windowed installers, `publish` uploads the feeds and installers, creates the GitHub release, and after a nightly redeploys the site, `finalize` (stable only) commits the website manifest and casks |
 | `scripts/desktop/release-version.mjs` | stable, nightly | Channel and version rules: tag must match `package.json`, nightly version format, product names. Tested in `packaging.test.mjs` |
 | `scripts/desktop/set-version.mjs` | all | Writes one version into `apps/desktop/package.json`, which Rust reads at build time |
 | `scripts/desktop/dist.mjs` | all | `--channel stable\|nightly\|dev` sets the product name and app id passed to electron-builder |

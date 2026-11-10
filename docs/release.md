@@ -53,9 +53,11 @@ Do not retry an already accepted build. Full setup is in
   Linux, POSIX bootstrap syntax and ShellCheck, service handoff, web, desktop,
   site, Connect, and the desktop script tests. Windowed installer typecheck
   and tests run when its package exists. Nothing is built until CI passes.
-  The native Windows tests run in their own workflows on pull requests
-  (`windows-contract.yml`, `windows-security.yml`; see `docs/testing.md`),
-  not in the release run.
+- `windows` runs `windows-security.yml` on the release commit: the Pi
+  extension and the daemon's sandbox boundary probe as a standard Windows
+  user. Nothing is built until it passes either. The longer native Windows
+  suite, `windows-contract.yml` (AppContainer rules, NSIS install and repair,
+  the native runtime), runs on pull requests only; see `docs/testing.md`.
 - `testflight` (nightly only) starts the Expo iOS build and TestFlight upload
   for the release commit, using `EXPO_TOKEN`, and waits for the result.
 - `build` makes eight packages in parallel: full and client for macOS arm64,
@@ -270,7 +272,7 @@ node scripts/desktop/dist.mjs --mac --dir
      `v0.x.y-alpha.N` tag on the commit it built.
    - Or tag and push: `git tag v0.x.y-alpha.N && git push origin v0.x.y-alpha.N`.
 
-7. Watch the run: preflight, check, eight package builds, four installer builds,
+7. Watch the run: preflight, check, the Windows boundary, eight package builds, four installer builds,
    publish, finalize. Confirm the GitHub release lists 4 package DMGs, 4 ZIPs,
    2 AppImages, 2 debs, and 2 Windows NSIS EXEs with blockmaps. It also lists
    four CLI installers, including the Windows `.exe`, and, once

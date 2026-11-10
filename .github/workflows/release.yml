@@ -137,6 +137,15 @@ jobs:
     if: needs.preflight.outputs.build == 'true'
     uses: ./.github/workflows/ci.yml
 
+  # ci.yml has no native Windows boundary test, and the Windows workflows run
+  # on pull requests only, so a release proves the sandbox on the commit it
+  # ships: the Pi extension and the daemon's boundary probe as a standard user.
+  windows:
+    name: Windows boundary
+    needs: preflight
+    if: needs.preflight.outputs.build == 'true'
+    uses: ./.github/workflows/windows-security.yml
+
   testflight:
     name: iOS TestFlight
     needs: [preflight, check]
@@ -158,7 +167,7 @@ jobs:
 
   build:
     name: Build ${{ matrix.edition }} ${{ matrix.build }}
-    needs: [preflight, check]
+    needs: [preflight, check, windows]
     if: needs.preflight.outputs.build == 'true'
     strategy:
       fail-fast: false
@@ -336,7 +345,7 @@ jobs:
 
   installer:
     name: Build installer ${{ matrix.build }}
-    needs: [preflight, check]
+    needs: [preflight, check, windows]
     if: needs.preflight.outputs.build == 'true'
     strategy:
       fail-fast: false

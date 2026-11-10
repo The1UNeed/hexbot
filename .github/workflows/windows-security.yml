@@ -34,6 +34,8 @@ on:
       - 'scripts/desktop/native-runtime.mjs'
       - 'scripts/desktop/stage-busybox.mjs'
       - '.github/workflows/windows-security.yml'
+  # release.yml runs these before it builds, whatever a release changed.
+  workflow_call:
 
 permissions:
   contents: read
