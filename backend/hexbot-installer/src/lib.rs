@@ -439,6 +439,11 @@ impl Installer {
         if !journal.is_file() {
             return;
         }
+        // The reset walks every file it granted, which takes a while.
+        progress(Progress::new(
+            "remove",
+            "Removing the sandbox's permissions from your working folders.",
+        ));
         let reset = Command::new(self.paths.executable())
             .args(["sandbox", "reset"])
             .env("HEXBOT_HOME", home)
@@ -458,7 +463,7 @@ impl Installer {
         if left || !reset.is_ok_and(|status| status.success()) {
             progress(Progress::new(
                 "warning",
-                "The sandbox's permissions on your working folders could not be removed.",
+                "The sandbox's permissions on your working folders could not all be removed. What stays gives no access once Hexbot is gone.",
             ));
         }
     }
