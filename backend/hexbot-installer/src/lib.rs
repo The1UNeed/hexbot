@@ -430,6 +430,29 @@ impl Installer {
         Ok(result)
     }
 
+    /// `hexbot sandbox reset`, when this home has sandbox grants. Best effort:
+    /// an uninstall goes on without it and says what stays.
+    #[cfg(windows)]
+    fn reset_sandbox(&self, progress: &mut ProgressCallback<'_>) {
+        let home = &self.paths.hexbot_home;
+        if !home.join("runtime/sandbox/grants.json").is_file() {
+            return;
+        }
+        let reset = Command::new(self.paths.executable())
+            .args(["sandbox", "reset"])
+            .env("HEXBOT_HOME", home)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if !reset.is_ok_and(|status| status.success()) {
+            progress(Progress::new(
+                "warning",
+                "The sandbox's permissions on your working folders could not be removed.",
+            ));
+        }
+    }
+
     pub fn uninstall(&self, remove_data: bool, progress: &mut ProgressCallback<'_>) -> Result<()> {
         self.preflight_uninstall()?;
         let _install_lock = self.lock_installation(progress)?;
@@ -475,6 +498,13 @@ impl Installer {
                     )?;
                 }
             }
+        }
+        // The Windows sandbox wrote its grants into the permissions of every
+        // file in the working folders. Only the daemon, with the journal in
+        // the home, takes them back, so it does before both are removed.
+        #[cfg(windows)]
+        if remove_data {
+            self.reset_sandbox(progress);
         }
         // The runtimes are not user data; bots, memory and settings stay.
         self.remove_owned_path(&self.paths.executable())?;
