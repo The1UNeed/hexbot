@@ -435,7 +435,8 @@ impl Installer {
     #[cfg(windows)]
     fn reset_sandbox(&self, progress: &mut ProgressCallback<'_>) {
         let home = &self.paths.hexbot_home;
-        if !home.join("runtime/sandbox/grants.json").is_file() {
+        let journal = home.join("runtime/sandbox/grants.json");
+        if !journal.is_file() {
             return;
         }
         let reset = Command::new(self.paths.executable())
@@ -445,7 +446,16 @@ impl Installer {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
-        if !reset.is_ok_and(|status| status.success()) {
+        // A reset that could not reach a folder keeps it in the journal.
+        let left = fs::read(&journal)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .is_none_or(|journal| {
+                journal["roots"]
+                    .as_array()
+                    .is_some_and(|roots| !roots.is_empty())
+            });
+        if left || !reset.is_ok_and(|status| status.success()) {
             progress(Progress::new(
                 "warning",
                 "The sandbox's permissions on your working folders could not be removed.",
