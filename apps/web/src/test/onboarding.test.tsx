@@ -564,7 +564,13 @@ describe('onboarding', () => {
               connectors: [
                 tool({}),
                 tool({ group: 'work', id: 'notion', name: 'Notion' }),
-                tool({ group: 'social_home', id: 'x_search', name: 'X search' })
+                tool({ group: 'social_home', id: 'x_search', name: 'X search' }),
+                tool({
+                  account: { email: null, service: 'google', signed_in: false },
+                  group: 'work',
+                  id: 'google',
+                  name: 'Google Workspace'
+                })
               ]
             }
           : {
@@ -583,6 +589,8 @@ describe('onboarding', () => {
     const key = await screen.findByLabelText('Tavily API key')
     expect(screen.getByText('X search')).toBeVisible()
     expect(screen.getByText('Notion')).toBeVisible()
+    // Google signs in from Settings, Plugins, not here.
+    expect(screen.queryByText('Google Workspace')).toBeNull()
     expect(screen.getByRole('button', { name: 'Skip for now' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Save and test' })).toBeDisabled()
 

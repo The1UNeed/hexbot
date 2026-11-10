@@ -1144,7 +1144,10 @@ function ToolPanel({
   )
 }
 
-/** The tools that need an account: a bot can only use the ones set up here. */
+/**
+ * The tools that need an account: a bot can only use the ones set up here.
+ * Google and Microsoft sign in from Settings, Plugins, so they stay out.
+ */
 const SETUP_TOOL_GROUPS = new Set(['search', 'social_home', 'work'])
 
 export function ToolsStep({
@@ -1159,7 +1162,11 @@ export function ToolsStep({
 
   useEffect(() => {
     connectorsList()
-      .then(result => setTools(result.connectors.filter(item => SETUP_TOOL_GROUPS.has(item.group))))
+      .then(result =>
+        setTools(
+          result.connectors.filter(item => SETUP_TOOL_GROUPS.has(item.group) && !item.account)
+        )
+      )
       .catch(reason => onError(String(reason)))
   }, [onError])
 
