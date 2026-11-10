@@ -334,29 +334,35 @@ async fn a_bot_asks_for_a_plugins_keys_on_a_card() {
     };
 
     // A connector's keys, even in Bypass: the card names the fields only.
-    let task = tool(json!({"action":"setup","id":"connector:home_assistant"}));
+    // Nothing answers for X here, so its test fails.
+    let mut env = fs::read_to_string(home.path().join(".env")).unwrap_or_default();
+    env.push_str("\nHEXBOT_X_API_BASE_URL=http://127.0.0.1:9\n");
+    fs::write(home.path().join(".env"), env).unwrap();
+    let task = tool(json!({"action":"setup","id":"connector:x_search"}));
     let shown = card(&mut events).await;
     let form = &shown["form"];
     assert_eq!(form["kind"], "plugin");
     assert_eq!(form["action"], "setup");
-    assert_eq!(form["name"], "Home Assistant");
-    assert_eq!(form["icon"], "homeassistant");
+    assert_eq!(form["name"], "X search");
+    assert_eq!(form["icon"], "x");
+    assert_eq!(form["provider"], "supergrok");
+    assert_eq!(form["providers"][0]["sign_in"], "xai-oauth");
     let keys = form["fields"]
         .as_array()
         .unwrap()
         .iter()
         .map(|f| f["key"].clone())
         .collect::<Vec<_>>();
-    assert_eq!(keys, [json!("HASS_URL"), json!("HASS_TOKEN")]);
+    assert_eq!(keys, [json!("XAI_API_KEY"), json!("X_BEARER_TOKEN")]);
     // A key left out keeps the card waiting; one it lacks is ignored.
-    let missing = respond(&shown, json!({"values":{"HASS_URL":"http://127.0.0.1:9"}}))
+    let missing = respond(&shown, json!({"provider":"x_api","values":{}}))
         .await
         .unwrap_err();
     assert_eq!(missing.code, 4202);
-    assert_eq!(missing.message, "Enter the Long-lived access token.");
+    assert_eq!(missing.message, "Enter the X API bearer token.");
     respond(
         &shown,
-        json!({"values":{"HASS_URL":"http://127.0.0.1:9","HASS_TOKEN":"ha-secret-token","OPENAI_API_KEY":"sk-nope"}}),
+        json!({"provider":"x_api","values":{"X_BEARER_TOKEN":"ha-secret-token","OPENAI_API_KEY":"sk-nope"}}),
     )
     .await
     .unwrap();
@@ -367,7 +373,7 @@ async fn a_bot_asks_for_a_plugins_keys_on_a_card() {
         "{done}"
     );
     assert!(!done.to_string().contains("ha-secret-token"));
-    let connector = crate::connectors::get(home.path(), None, "home_assistant").unwrap();
+    let connector = crate::connectors::get(home.path(), None, "x_search").unwrap();
     assert_eq!(connector["ready"], true);
     // Nothing typed reaches an event.
     while let Ok(event) = events.try_recv() {
@@ -6410,8 +6416,8 @@ async fn native_approval_parent_swap_never_writes_managed_runtime() {
     }
 }
 
-/// Notion and Airtable keys never reach a shell, so a bot that has either
-/// gets the daemon's connector tools, and its chat takes them at its next
+/// Notion keys never reach a shell, so a bot that has Notion on gets the
+/// daemon's connector tools, and its chat takes them at its next
 /// message. A heartbeat only reads.
 #[tokio::test]
 async fn a_bot_with_notion_on_gets_the_connector_tools() {
@@ -6427,7 +6433,6 @@ async fn a_bot_with_notion_on_gets_the_connector_tools() {
             .collect::<Vec<_>>()
     };
     crate::connectors::set_enabled(home.path(), "owl", "notion", false).unwrap();
-    crate::connectors::set_enabled(home.path(), "owl", "airtable", false).unwrap();
     assert!(names(None).is_empty());
     runtime.open_session("alice", "owl", "first").await.unwrap();
     assert!(!runtime.tools_stale("alice", "owl", "first").unwrap());

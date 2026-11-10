@@ -422,7 +422,7 @@ impl Runtime {
                 form["providers"] = json!(
                     providers
                         .iter()
-                        .map(|p| json!({"id": p["id"], "label": p["label"], "description": p["description"]}))
+                        .map(|p| json!({"id": p["id"], "label": p["label"], "description": p["description"], "sign_in": p["sign_in"], "configured": p["configured"]}))
                         .collect::<Vec<_>>()
                 );
                 form["provider"] = match &plugin["provider"] {

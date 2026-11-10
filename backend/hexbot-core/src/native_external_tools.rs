@@ -1,4 +1,5 @@
-//! HTTP tools used by the Hexbot connector catalog. No legacy daemon dependency.
+//! X search, the HTTP tool of the Hexbot connector catalog: through Grok
+//! with a SuperGrok sign-in or an xAI key, or with X's own search API.
 use crate::{Error, Result, common, connectors};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::Path, time::Duration};
@@ -9,13 +10,6 @@ fn config(home: &Path, bot: &str, section: &str) -> Result<Value> {
 
 fn client(seconds: u64) -> Result<reqwest::Client> {
     crate::http::client(seconds, 0).map_err(|e| Error::new(5200, e.to_string()))
-}
-async fn response(request: reqwest::RequestBuilder) -> Result<Value> {
-    let response = request
-        .send()
-        .await
-        .map_err(|_| Error::new(5200, "Tool provider request failed"))?;
-    decode_response(response).await
 }
 async fn decode_response(response: reqwest::Response) -> Result<Value> {
     if !response.status().is_success() {
@@ -68,15 +62,7 @@ pub async fn call(
     name: &str,
     args: Value,
 ) -> Option<Result<Value>> {
-    if !matches!(
-        name,
-        "x_search"
-            | "ha_list_entities"
-            | "ha_get_state"
-            | "ha_list_services"
-            | "ha_call_service"
-            | "video_generate"
-    ) {
+    if name != "x_search" {
         return None;
     }
     Some(
@@ -85,259 +71,112 @@ pub async fn call(
             if !connectors::tool_available(home, bot, name)? {
                 return Err(Error::new(4302, "Tool is disabled or unconfigured"));
             }
-            let env = connectors::credentials(home, bot)?;
-            match name {
-                "x_search" => x_search(home, bot, &args).await,
-                "video_generate" => video(home, bot, &env, &args).await,
-                _ => home_assistant(&env, name, &args).await,
-            }
+            x_search(home, bot, &args).await
         }
         .await,
     )
 }
-fn service_name(s: &str) -> bool {
-    s.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
-        && s.bytes()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
+
+/// What a search asks for, checked before any request goes out.
+struct Search<'a> {
+    query: &'a str,
+    allowed: Vec<&'a str>,
+    excluded: Vec<&'a str>,
+    from: Option<chrono::NaiveDate>,
+    to: Option<chrono::NaiveDate>,
+    filters: Vec<&'static str>,
 }
-fn entity(s: &str) -> bool {
-    s.split_once('.').is_some_and(|(d, n)| {
-        !n.is_empty()
-            && (service_name(d)
-                || d.starts_with('_')
-                    && d.bytes()
-                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_'))
-            && n.bytes()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
-    })
-}
-async fn home_assistant(env: &BTreeMap<String, String>, name: &str, p: &Value) -> Result<Value> {
-    let key = credential(env, "HASS_TOKEN")?;
-    let base = env
-        .get("HASS_URL")
-        .map(String::as_str)
-        .unwrap_or("http://homeassistant.local:8123")
-        .trim_end_matches('/');
-    let client = client(15)?;
-    let domain = string(p, "domain", "");
-    let result = match name {
-        "ha_get_state" => {
-            let id = common::required(p, "entity_id")?;
-            if !entity(id) {
-                return Err(Error::new(4200, "Invalid entity_id"));
-            }
-            response(
-                client
-                    .get(format!("{base}/api/states/{id}"))
-                    .bearer_auth(key),
-            )
-            .await?
-        }
-        "ha_list_entities" => {
-            let states =
-                response(client.get(format!("{base}/api/states")).bearer_auth(key)).await?;
-            let area = string(p, "area", "").to_lowercase();
-            let entities = states
-                .as_array()
-                .ok_or_else(|| Error::new(5200, "Home Assistant returned invalid states"))?
-                .iter()
-                .filter(|s| {
-                    (domain.is_empty()
-                        || string(s, "entity_id", "").starts_with(&format!("{domain}.")))
-                        && (area.is_empty()
-                            || string(&s["attributes"], "friendly_name", "")
-                                .to_lowercase()
-                                .contains(&area)
-                            || string(&s["attributes"], "area", "")
-                                .to_lowercase()
-                                .contains(&area))
-                })
-                .map(|s| {
-                    json!({
-                        "entity_id": s["entity_id"],
-                        "state": s["state"],
-                        "friendly_name": string(&s["attributes"], "friendly_name", "")
-                    })
-                })
-                .collect::<Vec<_>>();
-            json!({"count":entities.len(),"entities":entities})
-        }
-        "ha_list_services" => {
-            let services =
-                response(client.get(format!("{base}/api/services")).bearer_auth(key)).await?;
-            let mut domains = vec![];
-            for d in services
-                .as_array()
-                .ok_or_else(|| Error::new(5200, "Home Assistant returned invalid services"))?
-            {
-                if !domain.is_empty() && d["domain"] != domain {
-                    continue;
-                }
-                let mut entries = json!({});
-                if let Some(map) = d["services"].as_object() {
-                    for (name, info) in map {
-                        let mut entry = json!({"description":string(info,"description","")});
-                        if let Some(fields) = info["fields"].as_object().filter(|f| !f.is_empty()) {
-                            entry["fields"] = json!({});
-                            for (k, v) in fields {
-                                if v.is_object() {
-                                    entry["fields"][k] = json!(string(v, "description", ""));
-                                }
-                            }
-                        }
-                        entries[name] = entry;
-                    }
-                }
-                domains.push(json!({"domain":d["domain"],"services":entries}));
-            }
-            json!({"count":domains.len(),"domains":domains})
-        }
-        "ha_call_service" => {
-            let service = common::required(p, "service")?;
-            if !service_name(domain) || !service_name(service) {
-                return Err(Error::new(4200, "Invalid service or domain"));
-            }
-            if [
-                "shell_command",
-                "command_line",
-                "python_script",
-                "pyscript",
-                "hassio",
-                "rest_command",
-            ]
-            .contains(&domain)
-            {
-                return Err(Error::new(4302, "Home Assistant service domain is blocked"));
-            }
-            let mut data = p
-                .get("data")
-                .filter(|v| !v.is_null())
-                .cloned()
-                .unwrap_or_else(|| json!({}));
-            if let Some(encoded) = data.as_str() {
-                data = if encoded.trim().is_empty() {
-                    json!({})
-                } else {
-                    serde_json::from_str(encoded)
-                        .map_err(|_| Error::new(4200, "Invalid JSON string in service data"))?
-                };
-            }
-            if !data.is_object() {
-                return Err(Error::new(4200, "Service data must be an object"));
-            }
-            if let Some(id) = p["entity_id"].as_str().filter(|s| !s.is_empty()) {
-                if !entity(id) {
-                    return Err(Error::new(4200, "Invalid entity_id"));
-                }
-                data["entity_id"] = json!(id);
-            }
-            let result = response(
-                client
-                    .post(format!("{base}/api/services/{domain}/{service}"))
-                    .bearer_auth(key)
-                    .json(&data),
-            )
-            .await?;
-            let affected = result
-                .as_array()
-                .map(|a| {
-                    a.iter()
-                        .map(|s| json!({"entity_id":s["entity_id"],"state":s["state"]}))
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            json!({"success":true,"service":format!("{domain}.{service}"),"affected_entities":affected})
-        }
-        _ => unreachable!(),
-    };
-    Ok(json!({"result":result}))
-}
-async fn x_search(home: &Path, bot: &str, p: &Value) -> Result<Value> {
+
+fn parse(p: &Value) -> Result<Search<'_>> {
     let query = common::required(p, "query")?.trim();
     if query.is_empty() {
         return Err(Error::new(4200, "query is required"));
     }
-    let cfg = config(home, bot, "x_search")?;
-    let mut search = json!({"type":"x_search"});
     let mut filters = vec![];
-    for field in ["allowed_x_handles", "excluded_x_handles"] {
-        if let Some(values) = p.get(field).filter(|v| !v.is_null()) {
-            let values = values
-                .as_array()
-                .ok_or_else(|| Error::new(4200, format!("{field} must be an array")))?;
-            let handles = values
-                .iter()
-                .filter_map(Value::as_str)
-                .map(|s| s.trim().trim_start_matches('@'))
-                .filter(|s| !s.is_empty())
-                .collect::<Vec<_>>();
-            if handles.len() > 10 {
-                return Err(Error::new(4200, "At most 10 handles are supported"));
-            }
-            if !handles.is_empty() {
-                search[field] = json!(handles);
-                filters.push(field);
-            }
+    let mut handles = |field: &'static str| -> Result<Vec<&str>> {
+        let Some(values) = p.get(field).filter(|v| !v.is_null()) else {
+            return Ok(vec![]);
+        };
+        let values = values
+            .as_array()
+            .ok_or_else(|| Error::new(4200, format!("{field} must be an array")))?;
+        let handles = values
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|s| s.trim().trim_start_matches('@'))
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>();
+        if handles.len() > 10 {
+            return Err(Error::new(4200, "At most 10 handles are supported"));
         }
-    }
-    if search.get("allowed_x_handles").is_some() && search.get("excluded_x_handles").is_some() {
+        if !handles.is_empty() {
+            filters.push(field);
+        }
+        Ok(handles)
+    };
+    let allowed = handles("allowed_x_handles")?;
+    let excluded = handles("excluded_x_handles")?;
+    if !allowed.is_empty() && !excluded.is_empty() {
         return Err(Error::new(
             4200,
             "Allowed and excluded handles cannot be combined",
         ));
     }
-    let mut dates = vec![];
-    for field in ["from_date", "to_date"] {
+    let mut dates = [None, None];
+    for (slot, field) in dates.iter_mut().zip(["from_date", "to_date"]) {
         let raw = string(p, field, "").trim();
-        if !raw.is_empty() {
-            let date = chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d")
-                .map_err(|_| Error::new(4200, "Dates must be YYYY-MM-DD"))?;
-            if raw != date.format("%Y-%m-%d").to_string() {
-                return Err(Error::new(4200, "Dates must be YYYY-MM-DD"));
-            }
-            if field == "from_date" && date > chrono::Utc::now().date_naive() {
-                return Err(Error::new(4200, "from_date cannot be in the future"));
-            }
-            search[field] = json!(raw);
-            dates.push(date);
-            filters.push(field);
+        if raw.is_empty() {
+            continue;
         }
+        let date = chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d")
+            .map_err(|_| Error::new(4200, "Dates must be YYYY-MM-DD"))?;
+        if raw != date.format("%Y-%m-%d").to_string() {
+            return Err(Error::new(4200, "Dates must be YYYY-MM-DD"));
+        }
+        if field == "from_date" && date > chrono::Utc::now().date_naive() {
+            return Err(Error::new(4200, "from_date cannot be in the future"));
+        }
+        *slot = Some(date);
+        filters.push(field);
     }
-    if dates.len() == 2 && dates[0] > dates[1] {
+    let [from, to] = dates;
+    if let (Some(from), Some(to)) = (from, to)
+        && from > to
+    {
         return Err(Error::new(4200, "from_date must precede to_date"));
     }
-    for key in ["enable_image_understanding", "enable_video_understanding"] {
-        if p[key] == true {
-            search[key] = json!(true);
-        }
+    Ok(Search {
+        query,
+        allowed,
+        excluded,
+        from,
+        to,
+        filters,
+    })
+}
+
+/// Search X the way the user set X search up: through Grok with a SuperGrok
+/// sign-in or an xAI key, or with X's own search API.
+async fn x_search(home: &Path, bot: &str, p: &Value) -> Result<Value> {
+    let search = parse(p)?;
+    let cfg = config(home, bot, "x_search")?;
+    match connectors::x_search_provider(home, bot)?.as_deref() {
+        Some("x_api") => x_api_search(home, bot, &cfg, p, &search).await,
+        Some("supergrok") => grok_search(home, bot, &cfg, p, &search, Some("xai-oauth")).await,
+        Some("xai") => grok_search(home, bot, &cfg, p, &search, Some("xai")).await,
+        _ => grok_search(home, bot, &cfg, p, &search, None).await,
     }
-    let model = string(&cfg, "model", "grok-4.5");
-    let mut body = json!({"model":model,"input":[{"role":"user","content":query}],"tools":[search],"store":false});
-    if let Some(effort) = cfg["reasoning_effort"].as_str().filter(|s| !s.is_empty()) {
-        if !["low", "medium", "high", "xhigh"].contains(&effort) {
-            return Err(Error::new(4200, "Invalid X search reasoning effort"));
-        }
-        body["reasoning"] = json!({"effort":effort});
-    }
-    let auth = crate::providers::xai_credentials(home, bot).await?;
-    let key = common::required(&auth, "api_key")?;
-    let base = string(&auth, "base_url", "https://api.x.ai/v1").trim_end_matches('/');
-    let client = client(
-        cfg["timeout_seconds"]
-            .as_u64()
-            .unwrap_or(180)
-            .clamp(30, 600),
-    )?;
+}
+
+/// Send a request, again after a server error or a dropped connection.
+async fn send(
+    cfg: &Value,
+    request: impl Fn() -> reqwest::RequestBuilder,
+) -> Result<reqwest::Response> {
     let retries = cfg["retries"].as_u64().unwrap_or(2).min(10);
     let mut attempt = 0;
-    let data = loop {
-        let sent = client
-            .post(format!("{base}/responses"))
-            .bearer_auth(key)
-            .header("user-agent", "Hexbot Rust X search")
-            .json(&body)
-            .send()
-            .await;
+    loop {
+        let sent = request().send().await;
         let retry = match &sent {
             Ok(response) => response.status().is_server_error(),
             Err(error) => error.is_timeout() || error.is_connect(),
@@ -347,9 +186,64 @@ async fn x_search(home: &Path, bot: &str, p: &Value) -> Result<Value> {
             tokio::time::sleep(Duration::from_millis((1500 * attempt).min(5000))).await;
             continue;
         }
-        break decode_response(sent.map_err(|_| Error::new(5200, "Tool provider request failed"))?)
-            .await?;
-    };
+        return sent.map_err(|_| Error::new(5200, "Tool provider request failed"));
+    }
+}
+
+fn timeout(cfg: &Value) -> u64 {
+    cfg["timeout_seconds"]
+        .as_u64()
+        .unwrap_or(180)
+        .clamp(30, 600)
+}
+
+async fn grok_search(
+    home: &Path,
+    bot: &str,
+    cfg: &Value,
+    p: &Value,
+    s: &Search<'_>,
+    source: Option<&str>,
+) -> Result<Value> {
+    let mut search = json!({"type":"x_search"});
+    if !s.allowed.is_empty() {
+        search["allowed_x_handles"] = json!(s.allowed);
+    }
+    if !s.excluded.is_empty() {
+        search["excluded_x_handles"] = json!(s.excluded);
+    }
+    if let Some(from) = s.from {
+        search["from_date"] = json!(from.format("%Y-%m-%d").to_string());
+    }
+    if let Some(to) = s.to {
+        search["to_date"] = json!(to.format("%Y-%m-%d").to_string());
+    }
+    for key in ["enable_image_understanding", "enable_video_understanding"] {
+        if p[key] == true {
+            search[key] = json!(true);
+        }
+    }
+    let model = string(cfg, "model", "grok-4.5");
+    let mut body = json!({"model":model,"input":[{"role":"user","content":s.query}],"tools":[search],"store":false});
+    if let Some(effort) = cfg["reasoning_effort"].as_str().filter(|s| !s.is_empty()) {
+        if !["low", "medium", "high", "xhigh"].contains(&effort) {
+            return Err(Error::new(4200, "Invalid X search reasoning effort"));
+        }
+        body["reasoning"] = json!({"effort":effort});
+    }
+    let auth = crate::providers::xai_credentials_from(home, bot, source).await?;
+    let key = common::required(&auth, "api_key")?;
+    let base = string(&auth, "base_url", "https://api.x.ai/v1").trim_end_matches('/');
+    let client = client(timeout(cfg))?;
+    let response = send(cfg, || {
+        client
+            .post(format!("{base}/responses"))
+            .bearer_auth(key)
+            .header("user-agent", "Hexbot Rust X search")
+            .json(&body)
+    })
+    .await?;
+    let data = decode_response(response).await?;
     let mut parts = vec![];
     let mut inline = vec![];
     for output in data["output"].as_array().into_iter().flatten() {
@@ -365,14 +259,14 @@ async fn x_search(home: &Path, bot: &str, p: &Value) -> Result<Value> {
         }
     }
     let citations = data["citations"].as_array().cloned().unwrap_or_default();
-    let degraded = !filters.is_empty() && citations.is_empty() && inline.is_empty();
+    let degraded = !s.filters.is_empty() && citations.is_empty() && inline.is_empty();
     Ok(json!({
         "success": true,
         "provider": "xai",
         "credential_source": auth["provider"],
         "tool": "x_search",
         "model": model,
-        "query": query,
+        "query": s.query,
         "answer": data["output_text"]
             .as_str()
             .map(str::to_owned)
@@ -383,323 +277,177 @@ async fn x_search(home: &Path, bot: &str, p: &Value) -> Result<Value> {
         "degraded_reason": if degraded {
             Some(format!(
                 "no citations returned despite filters: {}",
-                filters.join(", ")
+                s.filters.join(", ")
             ))
         } else {
             None
         }
     }))
 }
-fn fal_payload(family: &Value, p: &Value) -> Value {
-    let mut body = json!({"prompt":p["prompt"]});
-    let image = string(p, "image_url", "");
-    if !image.is_empty() {
-        body[string(family, "image_param_key", "image_url")] = json!(image);
+
+/// The search X's API understands: the query with its handle filters. The
+/// query goes in parentheses first, since AND binds before OR in X's syntax.
+fn x_api_query(s: &Search<'_>) -> String {
+    if s.allowed.is_empty() && s.excluded.is_empty() {
+        return s.query.to_owned();
     }
-    if family["seed"] != false && !p["seed"].is_null() {
-        body["seed"] = p["seed"].clone();
+    let mut query = format!("({})", s.query);
+    if !s.allowed.is_empty() {
+        let from = s
+            .allowed
+            .iter()
+            .map(|h| format!("from:{h}"))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        query = format!("{query} ({from})");
     }
-    for (param, list, default) in [
-        ("aspect_ratio", "aspect_ratios", "16:9"),
-        ("resolution", "resolutions", "720p"),
-    ] {
-        let mut value = string(p, param, default).to_owned();
-        if param == "resolution" {
-            value = family["resolution_aliases"][value.to_lowercase()]
-                .as_str()
-                .unwrap_or(&value)
-                .to_owned();
-        }
-        if family[list]
-            .as_array()
-            .is_some_and(|a| a.contains(&json!(value)))
-        {
-            body[param] = json!(value);
-        }
+    for handle in &s.excluded {
+        query.push_str(&format!(" -from:{handle}"));
     }
-    if let Some(duration) = p["duration"].as_i64() {
-        let ds = family["durations"]
-            .as_array()
-            .map(|a| a.iter().filter_map(Value::as_i64).collect::<Vec<_>>())
-            .unwrap_or_default();
-        if !ds.is_empty() {
-            let d = if ds.len() == 2 && ds[1] - ds[0] > 1 {
-                duration.clamp(ds[0], ds[1])
-            } else {
-                *ds.iter().min_by_key(|d| (**d - duration).abs()).unwrap()
-            };
-            body["duration"] = if family["duration_int"] == true {
-                json!(d)
-            } else {
-                json!(format!("{d}{}", string(family, "duration_suffix", "")))
-            };
-        }
-    }
-    if family["audio"] == true && !p["audio"].is_null() {
-        body["generate_audio"] = p["audio"].clone();
-    }
-    if family["negative"] == true && !p["negative_prompt"].is_null() {
-        body["negative_prompt"] = p["negative_prompt"].clone();
-    }
-    if !image.is_empty() {
-        for k in family["image_drop_keys"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-        {
-            body.as_object_mut().unwrap().remove(k);
-        }
-    }
-    if let Some(extra) = family["static_payload"].as_object() {
-        for (k, v) in extra {
-            body.as_object_mut().unwrap().entry(k).or_insert(v.clone());
-        }
-    }
-    body
-}
-async fn fal_request(
-    client: &reqwest::Client,
-    base: &str,
-    key: &str,
-    endpoint: &str,
-    payload: &Value,
-) -> Result<Value> {
-    let auth = format!("Key {key}");
-    let submitted = response(
-        client
-            .post(format!("{base}/{endpoint}"))
-            .header("authorization", &auth)
-            .json(payload),
-    )
-    .await?;
-    if submitted.get("video").is_some() {
-        return Ok(submitted);
-    }
-    let id = common::required(&submitted, "request_id")?;
-    if !id
-        .bytes()
-        .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
-    {
-        return Err(Error::new(5200, "Invalid FAL request id"));
-    }
-    let origin = url::Url::parse(base).map_err(|_| Error::new(4200, "Invalid FAL base URL"))?;
-    let fallback = format!("{base}/{endpoint}/requests/{id}");
-    let result_url = string(&submitted, "response_url", &fallback);
-    let status_fallback = format!("{result_url}/status");
-    let status_url = string(&submitted, "status_url", &status_fallback);
-    for url in [result_url, status_url] {
-        let parsed = url::Url::parse(url).map_err(|_| Error::new(5200, "Invalid FAL queue URL"))?;
-        if parsed.origin() != origin.origin()
-            || !parsed.username().is_empty()
-            || parsed.password().is_some()
-        {
-            return Err(Error::new(
-                5200,
-                "FAL queue changed origin or supplied credentials",
-            ));
-        }
-    }
-    tokio::time::timeout(Duration::from_secs(900), async {
-        loop {
-            let status = response(client.get(status_url).header("authorization", &auth)).await?;
-            match string(&status, "status", "") {
-                "COMPLETED" => {
-                    return response(client.get(result_url).header("authorization", &auth)).await;
-                }
-                "IN_QUEUE" | "IN_PROGRESS" => tokio::time::sleep(Duration::from_secs(1)).await,
-                _ => return Err(Error::new(5200, "Video generation failed")),
-            }
-        }
-    })
-    .await
-    .map_err(|_| Error::new(5200, "Video generation timed out"))?
-}
-async fn video(home: &Path, bot: &str, env: &BTreeMap<String, String>, p: &Value) -> Result<Value> {
-    let prompt = common::required(p, "prompt")?;
-    let cfg = config(home, bot, "video_gen")?;
-    if p.get("operation").is_some() || p.get("video_url").is_some() {
-        return Err(Error::new(
-            4200,
-            "video_generate does not support edit or extend",
-        ));
-    }
-    let provider = string(&cfg, "provider", "fal");
-    if provider != "fal" {
-        return Err(Error::new(
-            4211,
-            format!("Video provider {provider} is not configured through the Hexbot FAL connector"),
-        ));
-    }
-    static CATALOG: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
-    let catalog = CATALOG.get_or_init(|| {
-        serde_json::from_str(include_str!("fal_video_models.json")).expect("FAL video catalog")
-    });
-    let model = p["model"]
-        .as_str()
-        .or_else(|| env.get("FAL_VIDEO_MODEL").map(String::as_str))
-        .or(cfg["fal"]["model"].as_str())
-        .or(cfg["model"].as_str())
-        .unwrap_or("pixverse-v6");
-    let (model, family) = catalog
-        .as_object()
-        .unwrap()
-        .iter()
-        .find(|(id, f)| {
-            id.as_str() == model || f["text_endpoint"] == model || f["image_endpoint"] == model
-        })
-        .ok_or_else(|| Error::new(4200, "Unknown FAL video model"))?;
-    let is_image = !string(p, "image_url", "").is_empty();
-    let endpoint = family[if is_image {
-        "image_endpoint"
-    } else {
-        "text_endpoint"
-    }]
-    .as_str()
-    .ok_or_else(|| Error::new(4200, "This model requires an image"))?;
-    let key = credential(env, "FAL_KEY")?;
-    let base = env
-        .get("FAL_QUEUE_URL")
-        .map(String::as_str)
-        .unwrap_or("https://queue.fal.run")
-        .trim_end_matches('/');
-    let client = client(180)?;
-    let mut payload_args = p.clone();
-    if is_image {
-        payload_args["image_url"] =
-            json!(crate::native_tools::image_data(home, bot, string(p, "image_url", "")).await?);
-    }
-    let mut data = fal_request(
-        &client,
-        base,
-        &key,
-        endpoint,
-        &fal_payload(family, &payload_args),
-    )
-    .await?;
-    let mut url = data["video"]["url"]
-        .as_str()
-        .or(data["video"].as_str())
-        .ok_or_else(|| Error::new(5200, "FAL returned no video"))?
-        .to_owned();
-    let mut upscaled = false;
-    if p["upscale"] == true
-        && let Ok(result) = fal_request(
-            &client,
-            base,
-            &key,
-            "fal-ai/seedvr/upscale/video",
-            &json!({"video_url":url,"upscale_mode":"factor","upscale_factor":2}),
-        )
-        .await
-        && let Some(next) = result["video"]["url"].as_str()
-    {
-        url = next.into();
-        upscaled = true;
-        data = result;
-    }
-    let mut result = json!({
-        "success": true,
-        "video": url,
-        "model": model,
-        "prompt": prompt,
-        "modality": if is_image { "image" } else { "text" },
-        "aspect_ratio": string(p, "aspect_ratio", "16:9"),
-        "duration": p["duration"].as_i64().unwrap_or(0),
-        "provider": "fal",
-        "upscaled": upscaled,
-        "metadata": data
-    });
-    // FAL's link expires; a copy in the bot's artifacts plays in the chat. The
-    // link still answers if the copy cannot be made.
-    if let Ok(path) = keep_video(home, bot, &url).await {
-        result["file_path"] = json!(path);
-        result["media"] = json!(format!("MEDIA:{}", path.display()));
-    }
-    Ok(result)
-}
-async fn keep_video(home: &Path, bot: &str, url: &str) -> Result<std::path::PathBuf> {
-    let response = common::safe_get(url, common::allow_private_urls(home, bot)?).await?;
-    if !response.status().is_success() {
-        return Err(Error::new(5200, "FAL video download failed"));
-    }
-    let data = crate::http::bytes(
-        response,
-        45 * 1024 * 1024,
-        |_| Error::new(5200, "FAL video download interrupted"),
-        Error::new(5200, "FAL video exceeds 45 MiB"),
-    )
-    .await?;
-    let path = crate::native_tools::artifact(home, bot, "videos", "mp4")?;
-    common::atomic_write(&path, &data)?;
-    Ok(path)
+    query
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn external_tools_use_the_shared_merge_and_reject_profile_symlinks() {
-        let home = tempfile::tempdir().unwrap();
-        common::write_config(
-            home.path(),
-            &json!({"video_gen":{"fal":{"model":"A","timeout":60}}}),
-        )
-        .unwrap();
-        common::write_config(
-            &home.path().join("profiles/owl"),
-            &json!({"video_gen":{"fal":{"model":"B"}}}),
-        )
-        .unwrap();
-        assert_eq!(
-            config(home.path(), "owl", "video_gen").unwrap()["fal"],
-            json!({"model":"B","timeout":60})
-        );
-        let outside = tempfile::tempdir().unwrap();
-        std::os::unix::fs::symlink(outside.path(), home.path().join("profiles/link")).unwrap();
-        assert!(config(home.path(), "link", "video_gen").is_err());
+/// Search with X's own API. Recent search covers the last seven days; an
+/// older date goes to the full archive.
+async fn x_api_search(
+    home: &Path,
+    bot: &str,
+    cfg: &Value,
+    p: &Value,
+    s: &Search<'_>,
+) -> Result<Value> {
+    let token = credential(&connectors::credentials(home, bot)?, "X_BEARER_TOKEN")
+        .map_err(|_| Error::new(4211, "Save an X API bearer token to use X search"))?;
+    let base = connectors::x_api_base(home, Some(bot))?;
+    let query = x_api_query(s);
+    let now = chrono::Utc::now();
+    let day = |date: chrono::NaiveDate| date.and_time(chrono::NaiveTime::MIN).and_utc();
+    let oldest = s.from.or(s.to).map(day);
+    let archive = oldest.is_some_and(|t| t < now - chrono::Duration::days(7));
+    let mut params = vec![
+        ("query", query.clone()),
+        (
+            "max_results",
+            cfg["max_results"]
+                .as_u64()
+                .unwrap_or(20)
+                .clamp(10, 100)
+                .to_string(),
+        ),
+        ("sort_order", "relevancy".to_owned()),
+        (
+            "tweet.fields",
+            "created_at,author_id,public_metrics,conversation_id".to_owned(),
+        ),
+        ("expansions", "author_id".to_owned()),
+        ("user.fields", "name,username,verified".to_owned()),
+    ];
+    if let Some(from) = s.from {
+        params.push((
+            "start_time",
+            day(from).format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        ));
     }
-    #[test]
-    fn video_schema_has_a_complete_description_and_parameters() {
-        let schemas: Vec<Value> =
-            serde_json::from_str(include_str!("external_tool_schemas.json")).unwrap();
-        let schema = schemas
-            .iter()
-            .find(|s| s["name"] == "video_generate")
-            .unwrap();
-        assert!(
-            schema["description"]
-                .as_str()
-                .unwrap()
-                .starts_with("Generate a video")
-        );
-        for (key, kind) in [
-            ("image_url", "string"),
-            ("negative_prompt", "string"),
-            ("audio", "boolean"),
-            ("seed", "integer"),
-            ("upscale", "boolean"),
-        ] {
-            assert_eq!(schema["parameters"]["properties"][key]["type"], kind);
+    // X wants the end at least ten seconds in the past; a later one is now.
+    if let Some(to) = s.to
+        && let Some(end) = to.succ_opt().map(day)
+        && end < now - chrono::Duration::seconds(30)
+    {
+        params.push(("end_time", end.format("%Y-%m-%dT%H:%M:%SZ").to_string()));
+    }
+    let path = if archive { "all" } else { "recent" };
+    let client = client(timeout(cfg))?;
+    let response = send(cfg, || {
+        client
+            .get(format!("{base}/2/tweets/search/{path}"))
+            .bearer_auth(&token)
+            .header("user-agent", "Hexbot X search")
+            .query(&params)
+    })
+    .await?;
+    match response.status().as_u16() {
+        401 | 403 => {
+            return Err(Error::new(
+                4211,
+                format!(
+                    "X refused the bearer token (HTTP {}). Check it in Settings, Plugins, X search.",
+                    response.status().as_u16()
+                ),
+            ));
         }
-    }
-    #[test]
-    fn fal_model_capabilities_preserve_wire_quirks() {
-        let models: Value = serde_json::from_str(include_str!("fal_video_models.json")).unwrap();
-        let args = json!({"prompt":"A test","duration":99,"resolution":"1080p","aspect_ratio":"16:9","image_url":"https://example.test/image.png","seed":2,"audio":false});
-        let body = fal_payload(&models["minimax-h3"], &args);
-        assert_eq!(body["duration"], 15);
-        assert_eq!(body["resolution"], "2K");
-        assert!(body.get("aspect_ratio").is_none());
-        assert!(body.get("seed").is_none());
-        assert_eq!(fal_payload(&models["veo3.1"], &args)["duration"], "8s");
-    }
-    #[test]
-    fn homeassistant_path_components_reject_traversal() {
-        for bad in ["../light", "shell_command/../light", "a%2fb", "A", "x.y"] {
-            assert!(!service_name(bad));
+        402 => {
+            return Err(Error::new(
+                4211,
+                "The X API account has no credits left. Add some in the X developer console.",
+            ));
         }
-        assert!(entity("sensor.temperature_1"));
-        assert!(!entity("sensor../config"));
+        429 => {
+            return Err(Error::new(
+                5200,
+                "The X API rate limit is reached. Try again in a few minutes.",
+            ));
+        }
+        _ => {}
     }
+    let data = decode_response(response).await?;
+    let users = data["includes"]["users"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|u| Some((u["id"].as_str()?, u)))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut posts = vec![];
+    let mut lines = vec![];
+    for post in data["data"].as_array().into_iter().flatten() {
+        let id = post["id"].as_str().unwrap_or_default();
+        let author = post["author_id"].as_str().and_then(|a| users.get(a));
+        let username = author.and_then(|u| u["username"].as_str());
+        let url = match username {
+            Some(name) => format!("https://x.com/{name}/status/{id}"),
+            None => format!("https://x.com/i/status/{id}"),
+        };
+        let text = post["text"].as_str().unwrap_or_default();
+        let created = post["created_at"].as_str().unwrap_or_default();
+        lines.push(format!(
+            "@{} ({}): {text}\n{url}",
+            username.unwrap_or("unknown"),
+            created.get(..10).unwrap_or(created)
+        ));
+        posts.push(json!({
+            "id": id,
+            "url": url,
+            "text": text,
+            "created_at": post["created_at"],
+            "author": author.map(|u| json!({"username":u["username"],"name":u["name"],"verified":u["verified"]})),
+            "metrics": post["public_metrics"],
+        }));
+    }
+    let citations = posts.iter().map(|p| p["url"].clone()).collect::<Vec<_>>();
+    let ignored = ["enable_image_understanding", "enable_video_understanding"]
+        .iter()
+        .any(|key| p[key] == true);
+    Ok(json!({
+        "success": true,
+        "provider": "x_api",
+        "credential_source": "x_api",
+        "tool": "x_search",
+        "query": s.query,
+        "search_query": query,
+        "archive": archive,
+        "answer": if lines.is_empty() {
+            "No posts matched.".to_owned()
+        } else {
+            lines.join("\n\n")
+        },
+        "posts": posts,
+        "citations": citations,
+        "inline_citations": [],
+        "degraded": false,
+        "degraded_reason": null,
+        "note": if ignored {
+            Some("X's own search returns posts only; it does not analyze their images or videos.")
+        } else {
+            None
+        }
+    }))
 }

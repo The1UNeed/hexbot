@@ -1,6 +1,10 @@
-import { type FormEvent, useId, useState } from 'react'
+import { type FormEvent, useCallback, useId, useState } from 'react'
 
-import { connectorFieldMissing } from '../../components/connector-fields'
+import {
+  connectorFieldMissing,
+  connectorSignInMissing,
+  SubscriptionSignIn
+} from '../../components/connector-fields'
 import { Button } from '../../components/ui/button'
 import { ConnectorIcon } from '../../components/ui/connector-icon'
 import { approvalRespond } from '../../lib/api'
@@ -35,11 +39,21 @@ export function PluginCard({ approval, form }: { approval: ApprovalRequest; form
   const [provider, setProvider] = useState(form.provider ?? form.providers?.[0]?.id ?? null)
   const [busy, setBusy] = useState<'cancel' | 'submit' | null>(null)
   const [error, setError] = useState<null | string>(null)
+  const [signedIn, setSignedIn] = useState(false)
+  const [renewing, setRenewing] = useState(false)
+  const onSignedIn = useCallback(() => setSignedIn(true), [])
   const id = useId()
   const setup = form.action === 'setup'
   const fields = form.fields.filter(field => !field.provider || field.provider === provider)
-  const missing = setup && fields.some(field => connectorFieldMissing(field, values))
-  const about = form.providers?.find(option => option.id === provider)?.description
+  const chosen = form.providers?.find(option => option.id === provider)
+
+  // A subscription waits for its sign-in, whatever the card is for.
+  const needsSignIn = connectorSignInMissing(chosen, signedIn, renewing)
+
+  const missing =
+    (setup && fields.some(field => connectorFieldMissing(field, values))) || needsSignIn
+
+  const about = chosen?.description
 
   const answer = async (choice: 'deny' | 'once') => {
     setBusy(choice === 'once' ? 'submit' : 'cancel')
@@ -133,6 +147,18 @@ export function PluginCard({ approval, form }: { approval: ApprovalRequest; form
             </div>
           ) : null}
           {about ? <p className="text-[length:var(--text-secondary)] text-muted">{about}</p> : null}
+          {chosen?.sign_in ? (
+            <SubscriptionSignIn
+              configured={Boolean(chosen.configured) || signedIn}
+              grant={chosen.sign_in}
+              key={chosen.id}
+              label={chosen.label}
+              onRenewingChange={setRenewing}
+              onSignedIn={onSignedIn}
+              renewing={renewing}
+              size="sm"
+            />
+          ) : null}
           {fields.map((field, index) => (
             <CardField
               autoFocus={setup && index === 0}
@@ -152,15 +178,18 @@ export function PluginCard({ approval, form }: { approval: ApprovalRequest; form
             </p>
           ) : null}
           <div className="flex flex-wrap gap-2">
-            <Button
-              busy={busy === 'submit'}
-              disabled={missing || busy !== null}
-              size="sm"
-              type="submit"
-              variant="primary"
-            >
-              {VERBS[form.action]}
-            </Button>
+            {/* One primary button: the sign-in first, then this. */}
+            {needsSignIn ? null : (
+              <Button
+                busy={busy === 'submit'}
+                disabled={missing || busy !== null}
+                size="sm"
+                type="submit"
+                variant="primary"
+              >
+                {VERBS[form.action]}
+              </Button>
+            )}
             <Button
               busy={busy === 'cancel'}
               disabled={busy !== null}

@@ -162,7 +162,17 @@ export interface PluginForm {
   kind: 'plugin'
   name: string
   provider?: null | string
-  providers?: { description?: null | string; id: string; label: string }[] | null
+  providers?:
+    | {
+        /** Signed in already, for a provider with `sign_in`. */
+        configured?: boolean
+        description?: null | string
+        id: string
+        label: string
+        /** The model provider whose browser sign-in it uses instead of a key. */
+        sign_in?: null | string
+      }[]
+    | null
 }
 
 /** What a plugin card answers with. */
@@ -392,7 +402,7 @@ export type BotUpdatePatch = Partial<Omit<BotCreateInput, 'avatar' | 'name'>> & 
   memory_char_limit?: null | number
 }
 
-export type ConnectorGroup = 'mcp' | 'media' | 'search' | 'social_home' | 'work'
+export type ConnectorGroup = 'mcp' | 'search' | 'social_home' | 'work'
 
 export type ConnectorState = 'error' | 'not_set_up' | 'ready'
 
@@ -418,6 +428,11 @@ export interface ConnectorProviderOption {
   description?: null | string
   id: string
   label: string
+  /**
+   * The model provider whose browser sign-in it uses instead of a key, such
+   * as `xai-oauth` for SuperGrok. Older daemons leave it out.
+   */
+  sign_in?: null | string
 }
 
 /** One row of the connector catalog, with daemon and per-bot state. */

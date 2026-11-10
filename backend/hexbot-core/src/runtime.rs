@@ -1456,7 +1456,7 @@ impl Runtime {
         // on the world (heartbeat.rs); connectors still ask before changing
         // anything, and nobody can answer.
         let heartbeat_run = overrides.is_some_and(|o| o["heartbeat"].is_string());
-        // Notion and Airtable: the daemon sends their requests with the key,
+        // Notion: the daemon sends its requests with the key,
         // which no shell has (runtime_connectors.rs).
         if !heartbeat_run && connector_tool::offered(&self.home, bot)? {
             tools.push(connector_tool::read_descriptor());

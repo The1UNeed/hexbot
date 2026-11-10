@@ -69,12 +69,6 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
       },
       {
         license: 'MIT',
-        name: 'baoyu-skills',
-        repository: 'https://github.com/JimLiu/baoyu-skills',
-        skills: ['baoyu-infographic']
-      },
-      {
-        license: 'MIT',
         name: 'Get Shit Done',
         repository: 'https://github.com/gsd-build/get-shit-done',
         skills: ['spike']

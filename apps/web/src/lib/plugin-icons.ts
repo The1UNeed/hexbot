@@ -20,7 +20,6 @@ const SKILL_ICONS: Record<string, string> = {
   'architecture-diagram': 'glyph:network',
   arxiv: 'arxiv',
   'ascii-video': 'glyph:clapperboard',
-  'baoyu-infographic': 'glyph:chart-pie',
   'blocked-page-recovery': 'glyph:shield-alert',
   box: 'box',
   'claude-code': 'claude',

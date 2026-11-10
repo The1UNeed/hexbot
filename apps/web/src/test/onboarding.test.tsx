@@ -560,7 +560,19 @@ describe('onboarding', () => {
     const call = vi.fn((method: string) =>
       Promise.resolve(
         method === 'hexbot.connectors.list'
-          ? { connectors: [tool({}), tool({ group: 'work', id: 'notion', name: 'Notion' })] }
+          ? {
+              connectors: [
+                tool({}),
+                tool({ group: 'work', id: 'notion', name: 'Notion' }),
+                tool({ group: 'social_home', id: 'x_search', name: 'X search' }),
+                tool({
+                  account: { email: null, service: 'google', signed_in: false },
+                  group: 'work',
+                  id: 'google',
+                  name: 'Google Workspace'
+                })
+              ]
+            }
           : {
               connector: tool({ state: 'ready', state_text: 'Key saved · Tavily' }),
               test: { message: 'Key saved.', ok: true }
@@ -573,9 +585,12 @@ describe('onboarding', () => {
     const onContinue = vi.fn()
     render(<ToolsStep onContinue={onContinue} onError={vi.fn()} />)
 
-    // Web search is open already; work connectors wait for bot settings.
+    // Web search is open already; every connector that needs an account is offered.
     const key = await screen.findByLabelText('Tavily API key')
-    expect(screen.queryByText('Notion')).not.toBeInTheDocument()
+    expect(screen.getByText('X search')).toBeVisible()
+    expect(screen.getByText('Notion')).toBeVisible()
+    // Google signs in from Settings, Plugins, not here.
+    expect(screen.queryByText('Google Workspace')).toBeNull()
     expect(screen.getByRole('button', { name: 'Skip for now' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Save and test' })).toBeDisabled()
 
@@ -671,5 +686,60 @@ describe('onboarding', () => {
       })
     )
     expect(await screen.findByText('Connected · Wikipedia')).toBeVisible()
+  })
+
+  it('tests a SuperGrok sign-in the model step already saved', async () => {
+    const xSearch = {
+      description: 'Search posts and profiles on X.',
+      enabled_bots: [],
+      enabled_for_bot: null,
+      fields: [],
+      group: 'social_home',
+      icon: 'brand:x',
+      id: 'x_search',
+      last_error: null,
+      name: 'X search',
+      provider: 'supergrok',
+      providers: [
+        {
+          configured: true,
+          description: 'Sign in with your subscription.',
+          id: 'supergrok',
+          label: 'SuperGrok or X Premium+',
+          sign_in: 'xai-oauth'
+        }
+      ],
+      scope: 'daemon',
+      state: 'ready',
+      state_text: 'Signed in · SuperGrok or X Premium+'
+    }
+
+    const call = vi.fn((method: string) =>
+      Promise.resolve(
+        method === 'hexbot.connectors.list'
+          ? { connectors: [xSearch] }
+          : {
+              connector: { ...xSearch, state_text: 'Connected · SuperGrok or X Premium+' },
+              test: { message: 'Connected.', ok: true }
+            }
+      )
+    )
+
+    setActiveRpc({ call } as never)
+    render(<ToolsStep onContinue={vi.fn()} onError={vi.fn()} />)
+
+    fireEvent.click(await screen.findByTestId('onboarding-tool-item-x_search'))
+    // Signed in is not yet tested: xAI may still refuse the sign-in.
+    const save = await screen.findByRole('button', { name: 'Save and test' })
+    expect(save).toBeEnabled()
+    fireEvent.click(save)
+    await waitFor(() =>
+      expect(call).toHaveBeenCalledWith('hexbot.connectors.setup', {
+        id: 'x_search',
+        provider: 'supergrok',
+        values: {}
+      })
+    )
+    expect(await screen.findByText('Connected · SuperGrok or X Premium+')).toBeVisible()
   })
 })

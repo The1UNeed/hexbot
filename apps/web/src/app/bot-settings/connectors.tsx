@@ -17,9 +17,8 @@ import { errorText, fieldLabel, formatTimestamp, Group, Heading } from './shared
 
 const GROUPS: { id: ConnectorGroup; title: string }[] = [
   { id: 'search', title: 'Search and browsing' },
-  { id: 'media', title: 'Images and voice' },
   { id: 'work', title: 'Notes and work' },
-  { id: 'social_home', title: 'Social and home' },
+  { id: 'social_home', title: 'Social' },
   { id: 'mcp', title: 'Connected tools' }
 ]
 
@@ -79,7 +78,7 @@ export function ConnectorsTab({ bot, initialConnector }: { bot: Bot; initialConn
 
   return (
     <div>
-      <Heading description="Services this bot can reach. Keys are stored once on this daemon and shared by every bot.">
+      <Heading description="Services this bot can reach. Keys and sign-ins are stored once on this daemon and shared by every bot.">
         Connectors
       </Heading>
       <div className="mb-6 flex flex-wrap items-center gap-2">

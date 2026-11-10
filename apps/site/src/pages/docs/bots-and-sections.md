@@ -56,7 +56,7 @@ You can also ask the bot in its chat to keep an eye on something; it adds the li
 
 The message shows in the bot's chat and as a notification in the app, in a browser tab you allowed (browsers notify only over HTTPS, such as through Hex Connect), and on your phone. Reply in the chat and the bot knows what it told you. Each bot sends at most one message per heartbeat and eight a day. Its Notify me switch silences the notifications; the messages still arrive in the chat.
 
-The same page shows when the next heartbeat runs, runs one now, and lists recent heartbeats with what each looked at. Turn heartbeats off for every bot there or in Settings. A heartbeat runs unattended, like a scheduled job, with your keys. It only looks: it can read files, search and read the web, and read its connectors, including Notion and Airtable, but it can't run commands, use the browser or the computer, change anything through a connector, or ask you anything, and it suggests memory changes for its next dream instead of writing them.
+The same page shows when the next heartbeat runs, runs one now, and lists recent heartbeats with what each looked at. Turn heartbeats off for every bot there or in Settings. A heartbeat runs unattended, like a scheduled job, with your keys. It only looks: it can read files, search and read the web, and read its connectors, including Notion, but it can't run commands, use the browser or the computer, change anything through a connector, or ask you anything, and it suggests memory changes for its next dream instead of writing them.
 
 The heartbeat replaced your primary bot's check-ins. If it sent you any, its Check-ins conversation stays until you delete it under Heartbeat in its settings or in its profile on the phone app.
 

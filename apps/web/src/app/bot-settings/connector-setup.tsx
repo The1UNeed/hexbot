@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 
 import { AccountSignInPanel } from '../../components/account-sign-in'
 import {
   ConnectorFields,
   connectorFieldsFor,
+  connectorSignInMissing,
   connectorValues
 } from '../../components/connector-fields'
 import { Button } from '../../components/ui/button'
@@ -222,6 +223,7 @@ function KeySetupSheet({
   onClose: () => void
 }) {
   const setup = useConnectors(state => state.setup)
+  const refresh = useConnectors(state => state.refresh)
   const [values, setValues] = useState<Record<string, string>>({})
 
   const [provider, setProvider] = useState<string | undefined>(
@@ -236,12 +238,33 @@ function KeySetupSheet({
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<ConnectorTest | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [signedIn, setSignedIn] = useState(false)
+  const [renewing, setRenewing] = useState(false)
+  const botName = bot?.name
+
+  const onSignedIn = useCallback(() => {
+    setSignedIn(true)
+
+    if (botName) {
+      void refresh(botName)
+    }
+  }, [botName, refresh])
 
   const forProvider = connectorFieldsFor(connector, provider)
   const failed = result && !result.ok
   const changed = forProvider.some(field => values[field.key]?.trim())
   const alreadySet = forProvider.some(field => field.set)
   const providerChanged = Boolean(provider && provider !== connector.provider)
+
+  const chosen = connector.providers?.find(item => item.id === provider)
+  const needsSignIn = connectorSignInMissing(chosen, signedIn, renewing)
+  // A subscription has no fields to change: once signed in, it can always be tested.
+  const subscription = Boolean(chosen?.sign_in)
+  // A value for one bot is a second account on the provider the other bots
+  // use; the daemon refuses one that would move them to another provider.
+  const canKeepForBot = connector.scope === 'daemon' && !subscription && !providerChanged
+  const keepForBot = botOnly && canKeepForBot
+
   const others = connector.enabled_bots.filter(name => name !== bot?.name)
 
   const submit = async () => {
@@ -257,7 +280,7 @@ function KeySetupSheet({
       }
 
       const test = bot
-        ? await setup({ ...input, bot: bot.name, bot_only: botOnly, enable_for_bot: enable })
+        ? await setup({ ...input, bot: bot.name, bot_only: keepForBot, enable_for_bot: enable })
         : (await connectorsSetup(input)).test
 
       setResult(test)
@@ -275,7 +298,7 @@ function KeySetupSheet({
   return (
     <Dialog
       description={
-        bot && botOnly
+        bot && keepForBot
           ? `Stored for ${bot.display_name} only. Other bots keep the shared value.`
           : 'Stored once on this daemon. Every bot you turn it on for uses it.'
       }
@@ -300,8 +323,12 @@ function KeySetupSheet({
             connector={connector}
             invalid={Boolean(failed)}
             onProviderChange={setProvider}
+            onRenewingChange={setRenewing}
+            onSignedIn={onSignedIn}
             onValuesChange={setValues}
             provider={provider}
+            renewing={renewing}
+            signedIn={signedIn}
             values={values}
           />
         </div>
@@ -318,7 +345,8 @@ function KeySetupSheet({
               description={others.length ? `Also on for ${others.join(', ')}.` : undefined}
               title={`Turn on for ${bot.display_name}`}
             />
-            {connector.scope === 'daemon' ? (
+            {/* A sign-in is the daemon's; there is no value to keep for one bot. */}
+            {canKeepForBot ? (
               <Row
                 control={
                   <Switch aria-label="Bot only" checked={botOnly} onCheckedChange={setBotOnly} />
@@ -343,14 +371,17 @@ function KeySetupSheet({
           <Button onClick={onClose} variant="ghost">
             Cancel
           </Button>
-          <Button
-            busy={busy}
-            disabled={!changed && !alreadySet && !providerChanged}
-            type="submit"
-            variant="primary"
-          >
-            Connect and test
-          </Button>
+          {/* One primary button: the sign-in first, then this. */}
+          {needsSignIn ? null : (
+            <Button
+              busy={busy}
+              disabled={!subscription && !changed && !alreadySet && !providerChanged}
+              type="submit"
+              variant="primary"
+            >
+              Connect and test
+            </Button>
+          )}
         </div>
       </form>
     </Dialog>
