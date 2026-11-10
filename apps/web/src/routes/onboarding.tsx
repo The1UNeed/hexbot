@@ -1061,17 +1061,17 @@ function ToolPanel({
   const onSignedIn = useCallback(() => setSignedIn(true), [])
   const sending = connectorValues(connector, provider, values)
 
-  // A free provider needs nothing typed; one already in use, nothing new.
+  const chosen = connector.providers?.find(item => item.id === provider)
+
+  // A free provider needs nothing typed; one already in use, nothing new. A
+  // subscription has nothing to type, so once signed in it can always be tested.
   const unchanged =
+    !chosen?.sign_in &&
     Object.keys(sending).length === 0 &&
     provider === connector.provider &&
     connector.state === 'ready'
 
-  const needsSignIn = connectorSignInMissing(
-    connector.providers?.find(item => item.id === provider),
-    signedIn,
-    renewing
-  )
+  const needsSignIn = connectorSignInMissing(chosen, signedIn, renewing)
 
   const blocked =
     unchanged ||
