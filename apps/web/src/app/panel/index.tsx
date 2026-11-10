@@ -31,7 +31,7 @@ import { type TranscriptMessage, useTranscript } from '../../stores/transcripts'
 import { type PanelTab, useUi } from '../../stores/ui'
 import { visualsActions } from '../../stores/visuals'
 import { type BotSettingsTab, rememberedTab } from '../bot-settings'
-import { AvatarPicker, errorText, InlineField, type SaveBot } from '../bot-settings/shared'
+import { errorText, InlineField, ProfileFace, type SaveBot } from '../bot-settings/shared'
 import { mimeOf, openFile } from '../conversation/file-tab'
 import { activityLabel } from '../conversation/steps'
 import { visualsOf } from '../conversation/visual'
@@ -445,7 +445,7 @@ export function ProfilePanel(): React.JSX.Element {
         ) : (
           <>
             <div className="flex flex-col items-center">
-              <AvatarPicker bot={bot} hint={false} onSave={save} />
+              <ProfileFace bot={bot} />
               <InlineField
                 ariaLabel="Bot name"
                 className="mt-2 h-8 max-w-60 rounded-[10px] border-transparent bg-transparent px-2 text-center text-[18px] font-semibold shadow-none hover:bg-foreground/[0.04] focus-visible:border-transparent focus-visible:bg-background focus-visible:ring-0"

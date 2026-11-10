@@ -233,6 +233,28 @@ describe('original faces', () => {
     vi.useRealTimers()
   })
 
+  it('hops when excited and sinks when sheepish', () => {
+    vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'cancelAnimationFrame', 'performance'] })
+    const { container, rerender } = render(<LiveFace color="pink" eyes="white" mood="idle" />)
+    const head = container.querySelector('[data-part="head"]')!
+    // The head's lift, from `translate(x y)`: smaller is higher.
+    const lift = () => Number(/translate\(\S+ (\S+)\)/.exec(head.getAttribute('transform')!)![1])
+
+    const at = (mood: 'excited' | 'sheepish') => {
+      rerender(<LiveFace color="pink" eyes="white" mood="idle" />)
+      act(() => vi.advanceTimersByTime(2000))
+      const before = lift()
+      rerender(<LiveFace color="pink" eyes="white" mood={mood} />)
+      act(() => vi.advanceTimersByTime(120))
+
+      return lift() - before
+    }
+
+    expect(at('excited')).toBeLessThan(-2)
+    expect(at('sheepish')).toBeGreaterThan(0.5)
+    vi.useRealTimers()
+  })
+
   it('rests under reduced motion', () => {
     vi.stubGlobal('matchMedia', (query: string) => ({
       addEventListener: () => undefined,

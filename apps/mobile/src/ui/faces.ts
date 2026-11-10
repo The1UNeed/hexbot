@@ -8,7 +8,10 @@ import {
   AVATAR_COLORS as FACE_COLORS,
   AVATAR_SHAPES as FACE_SHAPES,
   type AvatarStyle as FaceStyle,
-  EYES as FACE_EYES
+  EYES as FACE_EYES,
+  NAME_COLORS,
+  NAME_SHAPES,
+  NEUTRAL_COLORS
 } from './face-geometry'
 
 export {
@@ -43,11 +46,10 @@ function hueFromString(value: string): number {
  */
 export function faceForName(name: string): FaceStyle {
   const hue = hueFromString(name)
-  const colors = FACE_COLORS.filter(item => !['white', 'gray', 'brown'].includes(item.id))
 
   return {
-    color: colors[hue % colors.length]!.id,
-    shape: FACE_SHAPES[Math.floor(hue / 7) % FACE_SHAPES.length]!.id
+    color: NAME_COLORS[hue % NAME_COLORS.length]!,
+    shape: NAME_SHAPES[Math.floor(hue / 7) % NAME_SHAPES.length]!
   }
 }
 
@@ -57,7 +59,7 @@ export function faceForName(name: string): FaceStyle {
  * whatever it is called.
  */
 export function randomFace(taken: readonly (FaceStyle | null | undefined)[] = []): FaceStyle {
-  const colors = FACE_COLORS.filter(item => !['white', 'gray', 'brown'].includes(item.id))
+  const colors = FACE_COLORS.filter(item => !NEUTRAL_COLORS.includes(item.id))
   const all = FACE_SHAPES.flatMap(shape =>
     colors.map(color => ({ color: color.id, shape: shape.id }))
   )

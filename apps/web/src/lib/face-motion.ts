@@ -1,7 +1,7 @@
 /**
  * The motion of a live bot face. Springs carry the head, the eyes and the gaze
- * toward what the mood asks for, so a face sways, bobs, hops, nods, blinks,
- * glances and now and then turns all the way round; thinking, writing and
+ * toward what the mood asks for, so a face sways, bobs, hops, nods, giggles,
+ * sighs, blinks, glances and now and then turns all the way round; thinking, writing and
  * loading fold the face into dots, a pencil or a whirl, and on the computer
  * the face shrinks and rides beside a pointer. Emotions are moods
  * too, each with its own pose and motion, and moving from one mood to the
@@ -162,6 +162,12 @@ const BEHAVIOUR: Record<FaceMood, Behaviour> = {
     spinEvery: [6, 10]
   },
   writing: { blinks: false, glance: 0, poseEvery: [4, 4], poses: [rest('writing')] },
+  amused: {
+    blinks: false,
+    glance: 0,
+    poseEvery: [0.3, 0.45],
+    poses: [rest('amused'), pair({ ...EYE_MOODS.amused, dy: -3, squash: 0.26 })]
+  },
   bored: {
     blinks: true,
     glance: 0,
@@ -180,6 +186,12 @@ const BEHAVIOUR: Record<FaceMood, Behaviour> = {
     poseEvery: [0.5, 0.7],
     poses: [rest('celebrating'), pair({ dy: -4, lean: -18, size: 11, squash: 0.5, turn: 90 })]
   },
+  cheerful: {
+    blinks: false,
+    glance: 0,
+    poseEvery: [0.7, 1],
+    poses: [rest('cheerful'), pair({ ...EYE_MOODS.cheerful, dy: -2, lean: -12 })]
+  },
   confused: { blinks: true, glance: 3, poseEvery: [0.7, 1.1], poses: [lopsided(-1), lopsided(1)] },
   curious: {
     blinks: true,
@@ -187,10 +199,30 @@ const BEHAVIOUR: Record<FaceMood, Behaviour> = {
     poseEvery: [1, 1.6],
     poses: [rest('curious'), pair({ ...EYE_MOODS.curious, dx: -2, lean: 6 })]
   },
+  determined: { blinks: false, glance: 0, poseEvery: [4, 4], poses: [rest('determined')] },
   drowsy: { blinks: false, glance: 0, poseEvery: [4, 4], poses: [rest('drowsy')] },
+  excited: {
+    blinks: false,
+    glance: 0,
+    hopEvery: [0.8, 1],
+    poseEvery: [0.5, 0.8],
+    poses: [rest('excited'), pair({ ...EYE_MOODS.excited, dy: -4, size: 21 })]
+  },
   frustrated: { blinks: false, glance: 0, poseEvery: [4, 4], poses: [rest('frustrated')] },
   proud: { blinks: false, glance: 0, poseEvery: [4, 4], poses: [rest('proud')] },
+  relieved: { blinks: false, glance: 0, poseEvery: [4, 4], poses: [rest('relieved')] },
   sad: { blinks: true, glance: 0, poseEvery: [4, 4], poses: [rest('sad')] },
+  sheepish: {
+    blinks: true,
+    glance: 0,
+    poseEvery: [0.7, 1],
+    poses: [
+      rest('sheepish'),
+      pair({ ...EYE_MOODS.sheepish, dx: 8, dy: 2 }),
+      rest('sheepish'),
+      pair({ ...EYE_MOODS.sheepish, dx: 0 })
+    ]
+  },
   shy: {
     blinks: true,
     glance: 0,
@@ -308,6 +340,44 @@ function ambient(mood: FaceMood, t: number, side: number, since: number): Head {
       return { r: rest.r + 4 * droop, sx: 1, sy: 1 - 0.02 * droop, x: 0, y: rest.y + 5 * droop }
     }
 
+    case 'excited':
+      return { ...rest, r: 3 * wave(4.5), x: wave(4.5) }
+    case 'amused': {
+      // A giggle: quick little bounces that die away.
+      const giggle = Math.exp(-0.7 * since) * Math.abs(Math.sin(11 * since))
+
+      return { ...rest, r: rest.r + 2 * wave(12), y: rest.y - 2.5 * giggle }
+    }
+
+    case 'cheerful': {
+      // Tips to one side and nods hello, twice.
+      const nod = since < 1.2 ? Math.max(0, Math.sin(Math.PI * 2 * (since / 0.6))) : 0
+
+      return { ...rest, r: rest.r + wave(1.6), y: rest.y + 3 * nod }
+    }
+
+    case 'sheepish':
+      return { ...rest, r: rest.r + 1.2 * wave(1.8), y: rest.y + 0.5 * wave(1.8) }
+    case 'determined': {
+      // One firm nod, then it holds.
+      const nod = Math.exp(-3 * since) * Math.sin(13 * since)
+
+      return { ...rest, sy: rest.sy + 0.008 * wave(2.2), y: rest.y + 2.5 * nod }
+    }
+
+    case 'relieved': {
+      // A sigh: rises as it breathes in, then settles lower than it began.
+      const breath = Math.sin(Math.PI * Math.min(1, since / 1.5))
+      const settled = Math.min(1, since / 1.5)
+
+      return {
+        ...rest,
+        sx: rest.sx - 0.02 * breath + 0.015 * settled,
+        sy: rest.sy + 0.05 * breath - 0.02 * settled,
+        y: rest.y - 3 * breath + 1.5 * settled
+      }
+    }
+
     default:
       return STILL_HEAD
   }
@@ -315,13 +385,19 @@ function ambient(mood: FaceMood, t: number, side: number, since: number): Head {
 
 /** Where the head rests in each mood that does not stand upright. */
 const REST_HEADS: Partial<Record<FaceMood, Head>> = {
+  amused: { ...STILL_HEAD, r: 4, y: -1 },
   bored: { ...STILL_HEAD, y: 2 },
+  cheerful: { ...STILL_HEAD, r: 8, x: 1.5, y: -1 },
   confused: { ...STILL_HEAD, r: 6, x: 1 },
   curious: { ...STILL_HEAD, r: 8, sy: 1.02, x: 1.5, y: -1 },
+  determined: { ...STILL_HEAD, sx: 1.02, sy: 0.97, y: 2 },
   drowsy: { ...STILL_HEAD, r: 2, y: 2 },
+  excited: { ...STILL_HEAD, sy: 1.03, y: -2 },
   frustrated: { ...STILL_HEAD, sx: 1.02, sy: 0.97, y: 1 },
   proud: { ...STILL_HEAD, r: -3, sy: 1.04, y: -2 },
+  relieved: { ...STILL_HEAD, r: -2 },
   sad: { r: -3, sx: 1.01, sy: 0.95, x: -1, y: 4 },
+  sheepish: { r: 5, sx: 0.98, sy: 0.96, x: 1.5, y: 3 },
   shy: { r: -7, sx: 0.97, sy: 0.97, x: -2.5, y: 2 },
   sleeping: { ...STILL_HEAD, r: 5, x: -1.5, y: 5 },
   surprised: { ...STILL_HEAD, y: -2 }
@@ -750,15 +826,40 @@ export class FaceMotion {
 
         break
 
+      case 'excited':
+        head.y.velocity -= 65
+        squash.sy.velocity += 1.8
+
+        break
+
       case 'proud':
+
+      case 'cheerful':
         head.y.velocity -= 35
         squash.sy.velocity += 1
 
         break
 
+      case 'amused':
+        squash.sy.velocity += 1
+
+        break
+
       case 'sad':
+
+      case 'sheepish':
         squash.sy.velocity -= 1
 
+        break
+
+      case 'determined':
+        head.y.velocity += 40
+        squash.sx.velocity += 0.8
+
+        break
+
+      case 'relieved':
+        // The sigh is the whole gesture: no blink, no dip.
         break
 
       case 'frustrated':

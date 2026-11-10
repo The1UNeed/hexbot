@@ -7,6 +7,7 @@ import {
   Plug,
   ShieldCheck,
   SlidersHorizontal,
+  Smile,
   Sparkles,
   UserRound,
   Wrench
@@ -54,6 +55,7 @@ const ICONS: Record<BotSettingsTab, SettingsTabItem['icon']> = {
   advanced: SlidersHorizontal,
   approvals: ShieldCheck,
   connectors: Plug,
+  face: Smile,
   heartbeat: HeartPulse,
   memory: Brain,
   model: Cpu,
@@ -64,7 +66,7 @@ const ICONS: Record<BotSettingsTab, SettingsTabItem['icon']> = {
 }
 
 const GROUPS: { ids: BotSettingsTab[]; label?: string }[] = [
-  { ids: ['profile', 'persona', 'model'] },
+  { ids: ['profile', 'face', 'persona', 'model'] },
   { ids: ['memory', 'tools', 'connectors', 'skills'], label: 'Abilities' },
   { ids: ['approvals', 'heartbeat', 'advanced'], label: 'Manage' }
 ]

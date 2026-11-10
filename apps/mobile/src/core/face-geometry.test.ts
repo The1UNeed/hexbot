@@ -9,8 +9,8 @@ import {
 } from '../ui/face-geometry'
 
 describe('settled mobile poses', () => {
-  it('draws two capsule eyes for every activity and keeps the eight outlines', () => {
-    expect(AVATAR_SHAPES).toHaveLength(8)
+  it('draws two capsule eyes for every activity and keeps the outlines the web app draws', () => {
+    expect(AVATAR_SHAPES).toHaveLength(19)
     for (const mood of Object.keys(EYE_MOODS) as (keyof typeof EYE_MOODS)[]) {
       const eyes = eyePlacements(mood)
       expect(eyes).toHaveLength(2)

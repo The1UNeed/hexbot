@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef } from 'react'
+import { type Ref, useEffect, useId, useRef } from 'react'
 import { AccessibilityInfo, Animated, Easing, Image, StyleSheet, View } from 'react-native'
 import Svg, { Circle, Defs, Ellipse, G, LinearGradient, Path, Stop } from 'react-native-svg'
 
@@ -71,12 +71,17 @@ function useStatusColor(status?: BotStatus) {
   }
 }
 
-/** The bare drawing: a shape in a colour with two capsule eyes on its ball. */
+/**
+ * The bare drawing: a shape in a colour with two capsule eyes on its ball.
+ * `drawing` reaches the picture itself, to save it as a PNG.
+ */
 export function FaceDrawing({
+  drawing,
   mood = 'idle',
   size,
   style
 }: {
+  drawing?: Ref<Svg>
   mood?: FaceMood
   size: number
   style: FaceStyle
@@ -84,7 +89,7 @@ export function FaceDrawing({
   const { color, eyes, shape } = resolveFace(style)
 
   return (
-    <Svg height={size} viewBox="0 0 100 100" width={size}>
+    <Svg height={size} ref={drawing} viewBox="0 0 100 100" width={size}>
       <Path d={shape.path} fill={color.value} />
       <G transform={ballTransform(shape.ball)}>
         <G transform={facePose(mood)}>

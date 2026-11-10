@@ -310,6 +310,22 @@ try {
   await page.getByRole('textbox', { name: 'Soul', exact: true }).fill('You are Owl. Give clear, short answers.')
   await page.getByRole('textbox', { name: 'Soul', exact: true }).blur()
   await expect.poll(async () => (await rpc('hexbot.bots.get', { name: 'owl' })).bot.persona).toBe('You are Owl. Give clear, short answers.')
+  // The face is picked on its own page, which the button on Profile opens.
+  // Each pick is saved at once, with its picture.
+  await visit('/b/owl/settings/profile')
+  await page.getByRole('button', { name: 'Change face', exact: true }).click()
+  await expect(page).toHaveURL(/\/b\/owl\/settings\/face$/)
+  await expect(page.getByRole('heading', { name: 'Face', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Star', exact: true }).click()
+  await page.getByRole('button', { name: 'Lemon', exact: true }).click()
+  await expect.poll(async () => (await rpc('hexbot.bots.get', { name: 'owl' })).bot.face).toEqual({ color: 'yellow', shape: 'star' })
+  assert.equal((await rpc('hexbot.bots.get', { name: 'owl' })).bot.avatar?.mime, 'image/png', 'A picked face is saved with its picture')
+  await expect(page.getByRole('button', { name: 'Star', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await page.screenshot({ path: path.join(artifacts, 'face.png') })
+  // Shuffle gives a face no bot has.
+  await page.getByRole('button', { name: 'Shuffle', exact: true }).click()
+  await expect.poll(async () => JSON.stringify((await rpc('hexbot.bots.get', { name: 'owl' })).bot.face)).not.toBe(JSON.stringify({ color: 'yellow', shape: 'star' }))
+  assert.notDeepEqual((await rpc('hexbot.bots.get', { name: 'owl' })).bot.face, (await rpc('hexbot.bots.get', { name: 'fox' })).bot.face)
   await visit('/settings/memory')
   await page.getByRole('textbox', { name: 'About you', exact: true }).fill('I prefer jasmine tea.')
   await page.getByRole('button', { name: 'Save', exact: true }).click()
@@ -335,7 +351,7 @@ try {
   }
   assert.deepEqual(errors, [], 'No uncaught browser or local model errors')
   assert(requests.length >= 4, 'The real Pi process must call the local streaming model')
-  console.log(JSON.stringify({ passed: true, client: desktop ? 'electron' : 'browser', edition: desktop ? edition : undefined, scenarios: ['cold room deep link and reload', 'warm room navigation', 'chat', 'multi-agent room and @user', 'per-bot memory', 'soul editing', 'About you', 'one chat per bot and history'], modelRequests: requests.length, artifacts }, null, 2))
+  console.log(JSON.stringify({ passed: true, client: desktop ? 'electron' : 'browser', edition: desktop ? edition : undefined, scenarios: ['cold room deep link and reload', 'warm room navigation', 'chat', 'multi-agent room and @user', 'per-bot memory', 'soul editing', 'face page', 'About you', 'one chat per bot and history'], modelRequests: requests.length, artifacts }, null, 2))
 } catch (error) {
   await writeFile(path.join(artifacts, 'model-requests.json'), JSON.stringify(requests, null, 2))
   if (electronApp)

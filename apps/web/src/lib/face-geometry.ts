@@ -1,8 +1,9 @@
 /**
- * Hexbot's 100-unit outlines and palette, extracted from avatar-builder.ts,
- * with the capsule eyes of the Hexbot icon. Every mood is a pose of the same
- * capsule. No third-party geometry or behaviour data. See
- * docs/face-provenance.md.
+ * Hexbot's 100-unit outlines and palette, with the capsule eyes of the
+ * Hexbot icon. Every mood is a pose of the same capsule. New shapes go after
+ * the ones there are, and the daemon lists every id too
+ * (`backend/hexbot-core/src/faces.rs`). No third-party geometry or behaviour
+ * data. See docs/face-provenance.md.
  */
 
 export interface AvatarStyle {
@@ -71,24 +72,131 @@ export const AVATAR_SHAPES: AvatarShape[] = [
     id: 'drop',
     label: 'Drop',
     path: 'M50 5c12.7 19.8 38 36.3 38 52a38 38 0 0 1-76 0C12 41.3 37.3 24.8 50 5Z'
+  },
+  {
+    ball: { cy: 56, r: 29 },
+    id: 'star',
+    label: 'Star',
+    path: 'M43.9 9.5A7 7 0 0 1 56.1 9.5L65.6 26.6A9 9 0 0 0 71.7 31L90.9 34.8A7 7 0 0 1 94.7 46.4L81.4 60.7A9 9 0 0 0 79 67.9L81.4 87.3A7 7 0 0 1 71.5 94.5L53.8 86.3A9 9 0 0 0 46.2 86.3L28.5 94.5A7 7 0 0 1 18.6 87.3L21 67.9A9 9 0 0 0 18.6 60.7L5.3 46.4A7 7 0 0 1 9.1 34.8L28.3 31A9 9 0 0 0 34.4 26.6Z'
+  },
+  {
+    ball: { cy: 46, r: 31 },
+    id: 'heart',
+    label: 'Heart',
+    path: 'M50 23.4A24 24 0 0 0 4 33C4 54 29 71 50 92C71 71 96 54 96 33A24 24 0 0 0 50 23.4Z'
+  },
+  {
+    ball: { cy: 52, r: 38 },
+    id: 'flower',
+    label: 'Flower',
+    path: 'M86.5 50A19 19 0 0 1 68.3 81.6A19 19 0 0 1 31.7 81.6A19 19 0 0 1 13.5 50A19 19 0 0 1 31.7 18.4A19 19 0 0 1 68.3 18.4A19 19 0 0 1 86.5 50Z'
+  },
+  {
+    ball: { cy: 52, r: 35 },
+    id: 'clover',
+    label: 'Clover',
+    path: 'M73.9 26.1A24 24 0 0 0 26.1 26.1A24 24 0 0 0 26.1 73.9A24 24 0 0 0 73.9 73.9A24 24 0 0 0 73.9 26.1Z'
+  },
+  {
+    ball: { cy: 47, r: 38 },
+    id: 'ghost',
+    label: 'Ghost',
+    path: 'M10 46A40 40 0 0 1 90 46V83a8 8 0 0 1-16 0a8 8 0 0 0-16 0a8 8 0 0 1-16 0a8 8 0 0 0-16 0a8 8 0 0 1-16 0Z'
+  },
+  {
+    ball: { cy: 57, r: 38 },
+    id: 'cat',
+    label: 'Cat',
+    path: 'M17 9c-4-1.5-7 1-7 5v42a40 40 0 0 0 80 0V14c0-4-3-6.5-7-5L64 18.5a40 40 0 0 0-28 0Z'
+  },
+  {
+    ball: { cy: 58, r: 37 },
+    id: 'egg',
+    label: 'Egg',
+    path: 'M50 5C73 5 89 35 89 57a39 38 0 0 1-78 0C11 35 27 5 50 5Z'
+  },
+  {
+    ball: { cy: 52, r: 32 },
+    id: 'diamond',
+    label: 'Diamond',
+    path: 'M40.8 11.2A13 13 0 0 1 59.2 11.2L88.8 40.8A13 13 0 0 1 88.8 59.2L59.2 88.8A13 13 0 0 1 40.8 88.8L11.2 59.2A13 13 0 0 1 11.2 40.8Z'
+  },
+  {
+    ball: { cy: 46, r: 39 },
+    id: 'shield',
+    label: 'Shield',
+    path: 'M22 7h56a10 10 0 0 1 10 10v31C88 70 72 86 50 95C28 86 12 70 12 48V17A10 10 0 0 1 22 7Z'
+  },
+  {
+    ball: { cy: 52, r: 39 },
+    id: 'burst',
+    label: 'Burst',
+    path: 'M45.3 6.6Q50 -2 54.7 6.6Q59.3 15.2 67.7 10.1Q76 5 75.7 14.8Q75.5 24.5 85.2 24.3Q95 24 89.9 32.3Q84.8 40.7 93.4 45.3Q102 50 93.4 54.7Q84.8 59.3 89.9 67.7Q95 76 85.2 75.7Q75.5 75.5 75.7 85.2Q76 95 67.7 89.9Q59.3 84.8 54.7 93.4Q50 102 45.3 93.4Q40.7 84.8 32.3 89.9Q24 95 24.3 85.2Q24.5 75.5 14.8 75.7Q5 76 10.1 67.7Q15.2 59.3 6.6 54.7Q-2 50 6.6 45.3Q15.2 40.7 10.1 32.3Q5 24 14.8 24.3Q24.5 24.5 24.3 14.8Q24 5 32.3 10.1Q40.7 15.2 45.3 6.6Z'
+  },
+  {
+    ball: { cy: 53, r: 40 },
+    id: 'leaf',
+    label: 'Leaf',
+    path: 'M50 6h34a10 10 0 0 1 10 10v34a44 44 0 0 1-44 44H16A10 10 0 0 1 6 84V50A44 44 0 0 1 50 6Z'
   }
 ]
 
 /** Ink for eyes on a body too light for white ones. */
 export const INK = '#151517'
 
+/** Round the colour wheel from red, between the two neutrals; pale colours take ink eyes. */
 export const AVATAR_COLORS: { eyes?: string; id: string; label: string; value: string }[] = [
   { eyes: INK, id: 'white', label: 'Chalk', value: '#ececf0' },
   { id: 'brown', label: 'Cocoa', value: '#9a6242' },
+  { id: 'crimson', label: 'Berry', value: '#be123c' },
   { id: 'red', label: 'Cherry', value: '#ef4444' },
+  { id: 'coral', label: 'Coral', value: '#fb7185' },
   { id: 'orange', label: 'Tangerine', value: '#f97316' },
+  { eyes: INK, id: 'peach', label: 'Peach', value: '#fdba74' },
   { id: 'amber', label: 'Honey', value: '#f5a524' },
+  { eyes: INK, id: 'yellow', label: 'Lemon', value: '#facc15' },
+  { id: 'lime', label: 'Lime', value: '#7cc21a' },
   { id: 'green', label: 'Mint', value: '#22a55b' },
+  { id: 'pine', label: 'Pine', value: '#15803d' },
   { id: 'teal', label: 'Lagoon', value: '#14b8a6' },
   { id: 'blue', label: 'Sky', value: '#3b82f6' },
+  { id: 'navy', label: 'Midnight', value: '#1e3a8a' },
+  { id: 'indigo', label: 'Blueberry', value: '#4f46e5' },
   { id: 'violet', label: 'Iris', value: '#8b5cf6' },
+  { eyes: INK, id: 'lilac', label: 'Lilac', value: '#c4b5fd' },
+  { id: 'magenta', label: 'Orchid', value: '#c026d3' },
   { id: 'pink', label: 'Bubblegum', value: '#ec2f8a' },
   { id: 'gray', label: 'Slate', value: '#8e8e93' }
+]
+
+/** The neutrals: a bot picks them, but none is given one at random. */
+export const NEUTRAL_COLORS: readonly string[] = ['white', 'brown', 'gray']
+
+/**
+ * The shapes and colours a display name gave a bot before faces were stored,
+ * in the order the name indexes them. The daemon keeps the same lists
+ * (`faces.rs`); they never grow, so a name gives the face it always did.
+ */
+export const NAME_SHAPES: readonly string[] = [
+  'round',
+  'squircle',
+  'square',
+  'pill',
+  'triangle',
+  'hexagon',
+  'cloud',
+  'drop'
+]
+
+export const NAME_COLORS: readonly string[] = [
+  'red',
+  'orange',
+  'amber',
+  'green',
+  'teal',
+  'blue',
+  'violet',
+  'pink'
 ]
 
 export const DEFAULT_AVATAR_STYLE: AvatarStyle = { color: 'pink', shape: 'hexagon' }
@@ -101,14 +209,20 @@ export const EYES = '#ffffff'
  * until it passes (lib/emotions.ts decides when).
  */
 export type FaceEmotion =
+  | 'amused'
   | 'bored'
   | 'celebrating'
+  | 'cheerful'
   | 'confused'
   | 'curious'
+  | 'determined'
   | 'drowsy'
+  | 'excited'
   | 'frustrated'
   | 'proud'
+  | 'relieved'
   | 'sad'
+  | 'sheepish'
   | 'shy'
   | 'surprised'
 
@@ -170,22 +284,34 @@ export const EYE_MOODS: Record<FaceMood, EyePose> = {
   thinking: { dx: 2, dy: -4, size: 11, squash: 1, turn: 0 },
   working: { dx: 0, dy: 1, size: 12.5, squash: 1, turn: 0 },
   writing: { dx: 0, dy: 5, size: 12, squash: 0.7, turn: 0 },
+  // Squeezed shut into steep arcs.
+  amused: { dx: 0, dy: -2, lean: -34, size: 9.5, squash: 0.34, turn: 90 },
   // Flat, heavy bars.
   bored: { dx: 0, dy: 4, size: 7.5, squash: 1.1, turn: 90 },
   // Squinted arcs, raised.
   celebrating: { dx: 0, dy: -3, lean: -14, size: 10.5, squash: 0.6, turn: 90 },
+  // Soft, level arcs.
+  cheerful: { dx: 0, dy: -1, lean: -7, size: 11.5, squash: 0.5, turn: 90 },
   // Tipped apart and narrowed a little.
   confused: { dx: 0, dy: 0, lean: 12, size: 13, squash: 0.8, turn: 0 },
   // One step up and to the side, wide open.
   curious: { dx: 1, dy: -2, lean: -6, size: 13.5, squash: 1, turn: 0 },
+  // Tall, narrow slits.
+  determined: { dx: 0, dy: 1, size: 7, squash: 1.9, turn: 0 },
   // Lids nearly shut, drooping outward.
   drowsy: { dx: 0, dy: 5, lean: -6, size: 8.5, squash: 0.45, turn: 90 },
+  // As big as they go, and as wide as they are tall.
+  excited: { dx: 0, dy: -3, size: 20, squash: 0.45, turn: 0 },
   // Flat and slanted down toward the middle.
   frustrated: { dx: 0, dy: 1, lean: 16, size: 11, squash: 0.45, turn: 90 },
   // Content squint, chin up.
   proud: { dx: 0, dy: -3, lean: -12, size: 10, squash: 0.55, turn: 90 },
+  // Closed into long, thin lines.
+  relieved: { dx: 0, dy: -1, lean: -9, size: 12, squash: 0.2, turn: 90 },
   // Small, low and drooping outward.
   sad: { dx: 0, dy: 6, lean: -12, size: 11.5, squash: 0.85, turn: 0 },
+  // Shrunk to dots, looking aside.
+  sheepish: { dx: 4, dy: 1, size: 8.5, squash: 0.4333, turn: 0 },
   // Squinted and looking down and away.
   shy: { dx: -3, dy: 4, lean: -10, size: 9.5, squash: 0.6, turn: 90 },
   // As wide as they go.

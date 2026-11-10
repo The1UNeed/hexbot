@@ -28,7 +28,13 @@ export const FACE_EMOTIONS = [
   'proud',
   'celebrating',
   'bored',
-  'drowsy'
+  'drowsy',
+  'excited',
+  'amused',
+  'cheerful',
+  'sheepish',
+  'determined',
+  'relieved'
 ] as const satisfies readonly FaceEmotion[]
 
 export const FACE_VIEWBOX = '0 0 100 100'

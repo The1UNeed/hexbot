@@ -3,7 +3,7 @@ import { Hexagon, Plus, Search, Settings, SquarePen } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Avatar, PersonAvatar } from '../../components/ui/avatar'
-import { AvatarBuilder } from '../../components/ui/avatar-builder'
+import { FaceChoices } from '../../components/ui/avatar-builder'
 import { Button } from '../../components/ui/button'
 import { Dialog } from '../../components/ui/dialog'
 import { Input } from '../../components/ui/input'
@@ -764,7 +764,15 @@ export function RosterColumn() {
               .finally(() => setCreatingBot(false))
           }}
         >
-          <AvatarBuilder onChange={setNewStyle} value={newStyle} />
+          <NewBotFace
+            onChange={setNewStyle}
+            onShuffle={() =>
+              setNewStyle(
+                randomStyle([newStyle, ...ordered.flatMap(bot => [bot.face, bot.kept_face])])
+              )
+            }
+            value={newStyle}
+          />
           <Field label="Name">
             <Input
               aria-label="Bot name"
@@ -843,6 +851,50 @@ export function RosterColumn() {
         </form>
       </Dialog>
       <NewRoomDialog onClose={() => setRoomDialog(false)} onCreated={openRoom} open={roomDialog} />
+    </div>
+  )
+}
+
+/**
+ * A new bot's face: the one it was given, a shuffle for another, and every
+ * shape and colour behind Change face.
+ */
+function NewBotFace({
+  onChange,
+  onShuffle,
+  value
+}: {
+  onChange: (style: AvatarStyle) => void
+  onShuffle: () => void
+  value: AvatarStyle
+}) {
+  const [choosing, setChoosing] = useState(false)
+
+  return (
+    <div className="grid justify-items-center gap-3">
+      <Avatar
+        className="hex-pop-in size-24"
+        key={`${value.shape}-${value.color}`}
+        name="Preview"
+        style={value}
+      />
+      <div className="flex gap-2">
+        <Button onClick={onShuffle} size="sm" type="button">
+          Shuffle
+        </Button>
+        <Button
+          aria-expanded={choosing}
+          onClick={() => setChoosing(open => !open)}
+          size="sm"
+          type="button"
+          variant="ghost"
+        >
+          Change face
+        </Button>
+      </div>
+      {choosing ? (
+        <FaceChoices className="w-full max-w-[340px]" onChange={onChange} value={value} />
+      ) : null}
     </div>
   )
 }
