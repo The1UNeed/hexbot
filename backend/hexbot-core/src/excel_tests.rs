@@ -187,6 +187,35 @@ fn dates_and_numbers_read_as_people_write_them() {
     assert!(!date_format(166, Some("[Red]#,##0.00_);(0)")));
     assert_eq!(number(3.0), json!(3));
     assert_eq!(number(0.1 + 0.2), json!(0.3));
+    // Small numbers and long fractions keep what Excel keeps.
+    assert_eq!(number(1e-12), json!(1e-12));
+    assert_eq!(number(1.234567890123), json!(1.234567890123));
+}
+
+/// Excel writes a formula filled across cells once, in the first of them.
+#[test]
+fn a_formula_filled_across_cells_reads_in_each() {
+    assert_eq!(moved("B1*2", 1, 0), "B2*2");
+    assert_eq!(
+        moved(
+            "SUM($A$1:A1)+LOG10(B$1)+'Q1 2026'!C3&\"A1\"+Sheet2!$D4+T1[A1]+1E5",
+            2,
+            1
+        ),
+        "SUM($A$1:B3)+LOG10(C$1)+'Q1 2026'!D5&\"A1\"+Sheet2!$D6+T1[A1]+1E5"
+    );
+    assert_eq!(moved("A1+1", -1, 0), "#REF!+1");
+    let file = Archive::open(zip::build(&[
+        (WORKBOOK, format!(r#"<workbook {MAIN}><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>"#).into_bytes()),
+        ("xl/_rels/workbook.xml.rels", br#"<Relationships><Relationship Id="rId1" Type="x/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#.to_vec()),
+        ("xl/worksheets/sheet1.xml", format!(r#"<worksheet {MAIN}><sheetData><row r="1"><c r="A1"><f t="shared" ref="A1:B2" si="0">C1*$D$1</f><v>2</v></c><c r="B1"><f t="shared" si="0"/><v>3</v></c></row><row r="2"><c r="A2"><f t="shared" si="0"/><v>4</v></c><c r="B2"><f>A2+1</f><v>5</v></c></row></sheetData></worksheet>"#).into_bytes()),
+    ]))
+    .unwrap();
+    assert_eq!(
+        shown(&file, "S", "A1:B2", true),
+        json!([["=C1*$D$1", "=D1*$D$1"], ["=C2*$D$1", "=A2+1"]])
+    );
+    assert_eq!(shown(&file, "S", "A1:B2", false), json!([[2, 3], [4, 5]]));
 }
 
 #[test]

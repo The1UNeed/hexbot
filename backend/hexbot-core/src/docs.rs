@@ -364,8 +364,12 @@ fn append_requests(blocks: &[Block], end: usize, empty: bool) -> Vec<Value> {
     for (para, start) in paras.iter().zip(&starts) {
         let stop = start + units(&para.text) + 1;
         match (para.item, &mut open) {
-            (Some(_), Some(group)) => group.1 = stop,
-            (Some(ordered), None) => open = Some((*start, stop, ordered)),
+            (Some(ordered), Some(group)) if group.2 == ordered => group.1 = stop,
+            // A list of the other kind is a list of its own.
+            (Some(ordered), _) => {
+                groups.extend(open.take());
+                open = Some((*start, stop, ordered));
+            }
             (None, _) => groups.extend(open.take()),
         }
     }

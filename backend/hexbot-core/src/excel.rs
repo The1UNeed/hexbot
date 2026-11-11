@@ -365,13 +365,83 @@ fn serial_text(serial: f64, from_1904: bool) -> Option<String> {
 }
 
 /// A number as JSON holds it: whole when it is whole, without the noise
-/// binary fractions leave.
+/// binary fractions leave. Fifteen digits are kept, as many as Excel keeps.
 fn number(n: f64) -> Value {
     if n.fract() == 0.0 && n.abs() < 9.0e15 {
         return json!(n as i64);
     }
-    let rounded = format!("{n:.10}").parse::<f64>().unwrap_or(n);
+    let rounded = format!("{n:.14e}").parse::<f64>().unwrap_or(n);
     serde_json::Number::from_f64(rounded).map_or(Value::Null, Value::Number)
+}
+
+/// A shared formula as the cell `rows` down and `columns` right of its first
+/// cell holds it. Excel writes a formula filled across cells once, in the
+/// first; in the others every cell it names without a `$` moves with them.
+/// Whole rows and columns (`A:A`, `1:1`) stay as written.
+fn moved(formula: &str, rows: i64, columns: i64) -> String {
+    let named = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'$') || b >= 0x80;
+    let bytes = formula.as_bytes();
+    let mut out = String::with_capacity(formula.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        // Text, a quoted sheet name and a table's column pass as they are.
+        let close = match bytes[i] {
+            b'"' => Some(b'"'),
+            b'\'' => Some(b'\''),
+            b'[' => Some(b']'),
+            _ => None,
+        };
+        let end = match close {
+            Some(close) => bytes[i + 1..]
+                .iter()
+                .position(|b| *b == close)
+                .map_or(bytes.len(), |at| i + at + 2),
+            None if named(bytes[i]) => {
+                i + bytes[i..]
+                    .iter()
+                    .position(|b| !named(*b))
+                    .unwrap_or(bytes.len() - i)
+            }
+            None => i + 1,
+        };
+        let word = &formula[i..end];
+        // A name before `(`, `!` or `[` is a function, a sheet or a table.
+        let cell = (close.is_none() && !matches!(bytes.get(end), Some(b'(' | b'!' | b'[')))
+            .then(|| moved_cell(word, rows, columns))
+            .flatten();
+        out.push_str(cell.as_deref().unwrap_or(word));
+        i = end;
+    }
+    out
+}
+
+/// `word` moved when it is one cell's name, like `B2` or `$B2`.
+fn moved_cell(word: &str, rows: i64, columns: i64) -> Option<String> {
+    let (fixed_column, rest) = match word.strip_prefix('$') {
+        Some(rest) => (true, rest),
+        None => (false, word),
+    };
+    let split = rest.find(|c: char| !c.is_ascii_alphabetic())?;
+    let (letters, rest) = rest.split_at(split);
+    let (fixed_row, digits) = match rest.strip_prefix('$') {
+        Some(rest) => (true, rest),
+        None => (false, rest),
+    };
+    if letters.is_empty() || digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let column = i64::from(column_number(letters)?) + if fixed_column { 0 } else { columns };
+    let row = digits.parse::<i64>().ok()? + if fixed_row { 0 } else { rows };
+    if !(1..=i64::from(MAX_ROWS)).contains(&row) || !(1..=i64::from(MAX_COLUMNS)).contains(&column)
+    {
+        return Some("#REF!".into());
+    }
+    Some(format!(
+        "{}{}{}{row}",
+        if fixed_column { "$" } else { "" },
+        column_name(column as u32),
+        if fixed_row { "$" } else { "" },
+    ))
 }
 
 /// The most text the cells of one sheet may hold together. Every cell that
@@ -432,6 +502,9 @@ pub(crate) fn grid(file: &Archive, sheet: &Sheet) -> Result<Grid> {
     // The cell being read: its type, style, value, formula and own text.
     let mut cell: Option<(String, Option<usize>)> = None;
     let (mut value, mut formula, mut inline) = (String::new(), None::<String>, String::new());
+    // Shared formulas by their number: the cell that holds each, and it.
+    let mut shared: BTreeMap<String, (u32, u32, String)> = BTreeMap::new();
+    let mut sharing: Option<String> = None;
     let mut inside = "";
     let mut held = 0usize;
     for tok in tokens(&xml) {
@@ -451,6 +524,7 @@ pub(crate) fn grid(file: &Archive, sheet: &Sheet) -> Result<Grid> {
             value.clear();
             inline.clear();
             formula = None;
+            sharing = None;
             if is_empty(&tok) {
                 cell = None;
             }
@@ -458,6 +532,9 @@ pub(crate) fn grid(file: &Archive, sheet: &Sheet) -> Result<Grid> {
             inside = if is_empty(&tok) { "" } else { "v" };
         } else if cell.is_some() && opens(&tok, "f") {
             inside = if is_empty(&tok) { "" } else { "f" };
+            if attr(tok.raw(), "t").as_deref() == Some("shared") {
+                sharing = attr(tok.raw(), "si");
+            }
         } else if cell.is_some() && opens(&tok, "t") {
             inside = if is_empty(&tok) { "" } else { "t" };
         } else if closes(&tok, "v") || closes(&tok, "f") || closes(&tok, "t") {
@@ -493,6 +570,21 @@ pub(crate) fn grid(file: &Archive, sheet: &Sheet) -> Result<Grid> {
                     Err(_) => json!(value),
                 },
             };
+            if let Some(number) = sharing.take() {
+                match (&formula, shared.get(&number)) {
+                    (Some(first), _) => {
+                        shared.insert(number, (row, column, first.clone()));
+                    }
+                    (None, Some((from_row, from_column, first))) => {
+                        formula = Some(moved(
+                            first,
+                            i64::from(row) - i64::from(*from_row),
+                            i64::from(column) - i64::from(*from_column),
+                        ));
+                    }
+                    (None, None) => {}
+                }
+            }
             held += shown.as_str().map_or(0, str::len) + formula.as_ref().map_or(0, String::len);
             if held > SHEET_TEXT_CAP {
                 return Err(Error::new(

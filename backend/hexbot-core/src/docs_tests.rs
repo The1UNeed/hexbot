@@ -155,6 +155,25 @@ fn appended_markdown_becomes_text_with_styles_placed_in_utf16_units() {
             ("NUMBERED_DECIMAL_ALPHA_ROMAN", 1)
         ]
     );
+    // A list right after one of the other kind is a list of its own.
+    let requests = append_requests(&markdown::blocks("- a\n\n1. b\n2. c"), 2, true);
+    let lists = requests
+        .iter()
+        .filter_map(|r| r.get("createParagraphBullets"))
+        .map(|r| {
+            (
+                r["bulletPreset"].as_str().unwrap(),
+                r["range"]["startIndex"].as_u64().unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lists,
+        [
+            ("NUMBERED_DECIMAL_ALPHA_ROMAN", 3),
+            ("BULLET_DISC_CIRCLE_SQUARE", 1)
+        ]
+    );
     assert!(append_requests(&[], 2, true).is_empty());
 }
 
