@@ -79,7 +79,7 @@ test('Windows CI builds the production source and never publishes its probes', a
   for (const [name, job] of Object.entries(jobs)) {
     assert.equal(job.includes('upload-artifact'), name === 'client-and-installer', `${name}: artifact boundary`)
     assert.match(job, /runs-on: windows-latest/)
-    assert.match(job, new RegExp(`timeout-minutes: ${name.startsWith('client-') ? 45 : 60}\\b`))
+    assert.match(job, new RegExp(`timeout-minutes: ${{ 'client-and-installer': 45, sandbox: 60, 'native-runtime': 150, 'client-nightly': 45, 'full-nightly': 90 }[name]}\\b`))
     assert(!/^    needs:/m.test(job), `${name}: independent VM`)
     assert.match(job, /HEXBOT_WINDOWS_NSIS_PROBE: '1'/)
   }

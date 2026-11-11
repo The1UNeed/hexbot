@@ -26,17 +26,20 @@ checked-out source itself:
   Client artifact.
 - `sandbox`, 60 minutes, runs the AppContainer tests as a new standard user
   ([Windows security](windows-security.md#verification)).
-- `native-runtime`, 60 minutes, retains all native, Pi, bootstrap, Stable Full
+- `native-runtime`, 150 minutes, retains all native, Pi, bootstrap, Stable Full
   NSIS, signed ZIP/Connect and refusal controls.
 - `client-nightly`, 45 minutes, runs the unchanged Client Nightly NSIS probe.
-- `full-nightly`, 60 minutes, runs the unchanged Full Nightly NSIS probe. It
+- `full-nightly`, 90 minutes, runs the unchanged Full Nightly NSIS probe. It
   builds its own Full and Client Nightly packages.
 
 The old combined 45-minute Client job would have needed an estimated 59 minutes.
 Its complete Stable NSIS test passed in 1298.53 seconds before Nightly was
-cancelled at the job deadline. The split's runtime estimates remain unverified. Stable Full
-NSIS duration and the complete native-runtime total remain unknown; no other
-controls move. Separate VMs isolate registry, protocol and sibling-prefix
+cancelled at the job deadline. `native-runtime` reaches the Stable Full NSIS
+probe after 53 minutes, once the bootstrap and update probes pass, and its
+60-minute deadline cancelled that probe 7 minutes in. `full-nightly` passes in
+about 47 minutes and was cancelled at 60 on a slower VM. Stable Full NSIS
+duration and the complete native-runtime total remain unknown, so its budget
+is a ceiling and not an estimate; no other controls move. Separate VMs isolate registry, protocol and sibling-prefix
 fixtures. Nightly probes run on VMs without a Stable install, so they do not prove
 coinstalled-track behavior. Nothing is published, and only the Client artifact
 is uploaded.
