@@ -20,6 +20,19 @@ struct Engine {
     created: u64,
     handle: OwnedHandle,
 }
+/// How long a process whose identity cannot be read may take to finish
+/// exiting. Stop is what ends the daemon, so it is often caught mid-exit:
+/// Windows refuses its token and image ("Access is denied") a moment before
+/// its handle is signalled. A process that is still there after this is live.
+const EXITING: u32 = 2_000;
+/// Which process a failed identity read was about; the OS error alone says
+/// "Access is denied" with nothing to act on.
+fn unverified(pid: u32, error: io::Error) -> io::Error {
+    io::Error::new(
+        error.kind(),
+        format!("Cannot verify process {pid} of the Windows task: {error}"),
+    )
+}
 struct Completion {
     engines: Vec<Engine>,
     children: Vec<OwnedHandle>,
@@ -57,8 +70,8 @@ impl Completion {
                 Ok(created) => created,
                 // Only a signalled retained handle proves the acquisition race
                 // ended. Access denied/new/live identities never become absence.
-                Err(_) if identity::wait(handle.as_raw_handle(), 0)? => continue,
-                Err(error) => return Err(error),
+                Err(_) if identity::wait(handle.as_raw_handle(), EXITING)? => continue,
+                Err(error) => return Err(unverified(pid, error)),
             };
             engines.push(Engine {
                 pid,
@@ -119,8 +132,8 @@ impl Completion {
                         candidates.push((pid, engine.pid, engine.created, child, handle))
                     }
                     Ok(None) => {}
-                    Err(_) if identity::wait(handle.as_raw_handle(), 0)? => {}
-                    Err(error) => return Err(error),
+                    Err(_) if identity::wait(handle.as_raw_handle(), EXITING)? => {}
+                    Err(error) => return Err(unverified(pid, error)),
                 }
             }
             let second = identity::snapshot()?;
