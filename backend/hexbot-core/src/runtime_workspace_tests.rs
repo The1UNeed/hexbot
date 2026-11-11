@@ -360,6 +360,10 @@ fn a_far_cell_or_a_large_range_reads_in_parts() {
         error.message,
         "Row 7 holds too much text to read whole. Read it in parts, starting with B7:C7."
     );
+    // Many short cells count with the commas between them.
+    let wide = vec![json!(vec!["x"; 16_384])];
+    let asked = excel::range("A1:XFD1").unwrap().1;
+    assert!(workspace_tool::put_rows(&mut json!({}), wide, asked, None).is_err());
 }
 
 /// These tools reach the user's own things, so a room, a thread between

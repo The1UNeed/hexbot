@@ -358,11 +358,12 @@ pub(super) fn put_rows(
 ) -> Result<()> {
     let cells = rows.first().and_then(Value::as_array);
     if let Some(cells) = cells.filter(|cells| cells.len() > 1) {
-        let mut size = 0;
+        // As the row is written: a bracket, then each cell and its comma.
+        let mut size = 1;
         let fit = cells
             .iter()
             .take_while(|cell| {
-                size += cell.to_string().len();
+                size += cell.to_string().len() + 1;
                 size <= TEXT_CAP
             })
             .count();
