@@ -189,6 +189,13 @@ fn dates_and_numbers_read_as_people_write_them() {
     assert!(!date_format(165, Some("0.0 \"days\"")));
     assert!(!date_format(0, Some("General")));
     assert!(!date_format(166, Some("[Red]#,##0.00_);(0)")));
+    // A length of time runs past a day; it is not a date.
+    assert!(elapsed_format(46, None));
+    assert!(elapsed_format(170, Some("[h]:mm:ss")));
+    assert!(!elapsed_format(20, None));
+    assert!(!elapsed_format(171, Some("[Red]h:mm")));
+    assert_eq!(elapsed_text(1.5).as_deref(), Some("36:00:00"));
+    assert_eq!(elapsed_text(-0.25).as_deref(), Some("-6:00:00"));
     assert_eq!(number(3.0), json!(3));
     assert_eq!(number(0.1 + 0.2), json!(0.3));
     // Small numbers and long fractions keep what Excel keeps.

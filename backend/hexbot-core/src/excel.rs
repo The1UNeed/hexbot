@@ -295,8 +295,43 @@ fn date_format(id: u32, code: Option<&str>) -> bool {
     bare != "general" && bare.chars().any(|c| "ymdhs".contains(c))
 }
 
-/// For each cell style, whether it shows a date.
-fn date_styles(file: &Archive) -> Result<Vec<bool>> {
+/// Whether a number format shows a length of time, like `[h]:mm:ss`: hours
+/// that run past a day, where a date format would start a new one.
+fn elapsed_format(id: u32, code: Option<&str>) -> bool {
+    id == 46
+        || code.is_some_and(|code| {
+            let code = code.to_ascii_lowercase();
+            ["[h]", "[hh]", "[m]", "[mm]", "[s]", "[ss]"]
+                .iter()
+                .any(|unit| code.contains(unit))
+        })
+}
+
+/// A number of days as hours, minutes and seconds, like `36:00:00`.
+fn elapsed_text(days: f64) -> Option<String> {
+    let seconds = (days.abs() * 86_400.0).round();
+    (seconds < 1.0e12).then(|| {
+        let seconds = seconds as i64;
+        format!(
+            "{}{}:{:02}:{:02}",
+            if days < 0.0 && seconds > 0 { "-" } else { "" },
+            seconds / 3_600,
+            seconds % 3_600 / 60,
+            seconds % 60
+        )
+    })
+}
+
+/// What a cell style makes of a number.
+#[derive(Clone, Copy, PartialEq)]
+enum Shows {
+    Number,
+    Date,
+    Elapsed,
+}
+
+/// For each cell style, whether it shows a date or a length of time.
+fn date_styles(file: &Archive) -> Result<Vec<Shows>> {
     let Some(rel) = ooxml::rels(file, WORKBOOK)?
         .into_iter()
         .find(|r| r.kind == "styles")
@@ -325,7 +360,14 @@ fn date_styles(file: &Archive) -> Result<Vec<bool>> {
             let id = attr(tok.raw(), "numFmtId")
                 .and_then(|v| v.parse::<u32>().ok())
                 .unwrap_or(0);
-            styles.push(date_format(id, formats.get(&id).map(String::as_str)));
+            let code = formats.get(&id).map(String::as_str);
+            styles.push(if elapsed_format(id, code) {
+                Shows::Elapsed
+            } else if date_format(id, code) {
+                Shows::Date
+            } else {
+                Shows::Number
+            });
         }
     }
     Ok(styles)
@@ -566,10 +608,12 @@ pub(crate) fn grid(file: &Archive, sheet: &Sheet) -> Result<Grid> {
                 "str" | "e" => json!(value),
                 "b" => json!(value.trim() == "1"),
                 _ => match value.trim().parse::<f64>() {
-                    Ok(n) if style.and_then(|s| dates.get(s)).copied().unwrap_or(false) => {
-                        serial_text(n, from_1904).map_or_else(|| number(n), |d| json!(d))
+                    Ok(n) => match style.and_then(|s| dates.get(s)) {
+                        Some(Shows::Date) => serial_text(n, from_1904),
+                        Some(Shows::Elapsed) => elapsed_text(n),
+                        _ => None,
                     }
-                    Ok(n) => number(n),
+                    .map_or_else(|| number(n), |text| json!(text)),
                     Err(_) => json!(value),
                 },
             };
