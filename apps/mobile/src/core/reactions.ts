@@ -59,6 +59,18 @@ export function toggleReaction(
   return { emoji: next, state: { ...state, byMessage: withMessage(state, message, reactions) } }
 }
 
+/**
+ * Your reaction was refused: the message goes back to what it showed in
+ * `before`. Every other message keeps what arrived in the meantime.
+ */
+export function restoreReactions(
+  state: ChatReactions,
+  before: ChatReactions,
+  message: string
+): ChatReactions {
+  return { ...state, byMessage: withMessage(state, message, before.byMessage[message] ?? []) }
+}
+
 /** The reactions on a message, by its row or the key it was sent with. */
 export function reactionsOn(
   state: ChatReactions,

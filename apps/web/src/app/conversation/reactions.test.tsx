@@ -118,6 +118,20 @@ describe('reactions', () => {
     expect(screen.queryByRole('button', { name: /Remove/ })).toBeNull()
   })
 
+  it("shows the bot's reaction under a message of files alone", () => {
+    useReactions.getState().apply({
+      message_id: 'u2',
+      reactions: [{ at: 1, bot: 'owl', by: 'bot', emoji: '👍', message_id: 'u2' }],
+      section_id: 'chat'
+    })
+    row({
+      attachments: [{ id: 'f', kind: 'file', mime: 'application/pdf', name: 'plan.pdf' }],
+      id: 'u2',
+      role: 'user'
+    })
+    expect(screen.getByRole('img', { name: 'Owl reacted with thumbs up' })).toBeVisible()
+  })
+
   it('reads a chat\'s reactions and forgets them for another daemon', async () => {
     const call = vi.fn(() =>
       Promise.resolve({

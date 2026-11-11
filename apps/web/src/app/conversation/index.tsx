@@ -905,6 +905,22 @@ export const MessageRow = memo(function MessageRow({
         ) : null}
       </div>
     )
+
+    // Files alone have no bubble: the bot's reaction sits under them.
+    if (!bubbles.length && !assistant) {
+      column.splice(
+        1,
+        0,
+        <BubbleReactions
+          botName={name}
+          inputId={message.inputId}
+          key="attachment-reactions"
+          messageId={message.id}
+          mine
+          sectionId={reactIn}
+        />
+      )
+    }
   }
 
   // Under the reply: the files the bot shared and what its media tools made. A

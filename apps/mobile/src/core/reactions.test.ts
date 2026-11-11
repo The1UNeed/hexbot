@@ -5,6 +5,7 @@ import {
   emptyReactions,
   indexReactions,
   reactionsOn,
+  restoreReactions,
   toggleReaction
 } from './reactions'
 
@@ -28,6 +29,22 @@ describe('reactions', () => {
     const third = toggleReaction(second.state, 'a1', '❤️')
     expect(third.emoji).toBeNull()
     expect(third.state.byMessage).toEqual({})
+  })
+
+  it('puts back only the message whose reaction was refused', () => {
+    const before = indexReactions([{ at: 1, by: 'user', emoji: '👍', message_id: 'a1' }])
+    const shown = toggleReaction(before, 'a1', '❤️').state
+    // The bot reacted to another message while the daemon was asked.
+    const meanwhile = applyReactions(shown, {
+      input_id: 'in-1',
+      message_id: 'u1',
+      reactions: [{ at: 2, bot: 'owl', by: 'bot', emoji: '🎉', message_id: 'u1' }],
+      section_id: 'chat'
+    })
+    const restored = restoreReactions(meanwhile, before, 'a1')
+    expect(restored.byMessage.a1?.[0]?.emoji).toBe('👍')
+    expect(restored.byMessage.u1?.[0]?.emoji).toBe('🎉')
+    expect(restored.inputs).toEqual({ 'in-1': 'u1' })
   })
 
   it("finds the bot's reaction on a message of yours by the key it was sent with", () => {

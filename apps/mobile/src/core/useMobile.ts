@@ -31,6 +31,7 @@ import {
   applyReactions,
   emptyReactions,
   indexReactions,
+  restoreReactions,
   toggleReaction
 } from './reactions'
 import { modelLists, providerModels } from './models'
@@ -669,8 +670,8 @@ export function useMobile() {
         })
         setReactions(current => applyReactions(current, changed))
       } catch {
-        // Refused, such as a message the chat no longer shows: back as it was.
-        setReactions(before)
+        // Refused, such as a message the chat no longer shows: that message back as it was.
+        setReactions(current => restoreReactions(current, before, messageId))
       }
     },
     [reactIn, rpc]
