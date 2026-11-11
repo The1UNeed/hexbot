@@ -271,7 +271,12 @@ pub(crate) async fn list(
     });
     let more = cut || tasks.len() > max;
     tasks.truncate(max);
-    Ok(json!({"account": svc.provider.id, "tasks": tasks, "more": more}))
+    let mut out = json!({"account": svc.provider.id, "tasks": tasks, "more": more});
+    // Lists past the cap are named: a bot must not take them for empty.
+    if list.is_none_or(str::is_empty) && all.len() > MAX_LISTS {
+        out["lists_not_read"] = all[MAX_LISTS..].iter().map(|l| l["name"].clone()).collect();
+    }
+    Ok(out)
 }
 
 /// What a bot asks a task to be. A field left out of a change stays.

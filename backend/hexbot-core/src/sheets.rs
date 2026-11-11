@@ -327,8 +327,9 @@ pub(crate) async fn write(
     Ok(done["updatedRange"].as_str().unwrap_or("").to_owned())
 }
 
-/// Adds `rows` under the last row of `sheet` that holds anything, and says
-/// which range they filled.
+/// Adds `rows` under the table that starts at A1 of `sheet`, which is how
+/// Sheets appends, and says which range they filled. Rows under it move
+/// down; nothing is written over.
 pub(crate) async fn append(
     home: &Path,
     svc: &Service,

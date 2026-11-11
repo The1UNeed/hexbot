@@ -209,6 +209,27 @@ async fn microsoft_to_do_uses_its_default_list_and_its_own_shapes() {
     );
 }
 
+/// A list past the cap is named: a bot must not take it for empty.
+#[tokio::test]
+async fn task_lists_left_out_of_a_list_are_named() {
+    let (origin, _log) = stand_in(|asked| match asked.path.as_str() {
+        "/tasks/v1/users/@me/lists" => Reply::Json(
+            200,
+            json!({"items": (1..=22).map(|n| json!({"id": format!("l{n}"), "title": format!("List {n}")})).collect::<Vec<_>>()}),
+        ),
+        _ => Reply::Json(200, json!({"items": []})),
+    })
+    .await;
+    let home = connected(&["google_tasks"], &origin);
+    let svc = accounts::service("google_tasks").unwrap();
+    let found = list(home.path(), svc, None, false, 25).await.unwrap();
+    assert_eq!(found["lists_not_read"], json!(["List 21", "List 22"]));
+    let found = list(home.path(), svc, Some("l22"), false, 25)
+        .await
+        .unwrap();
+    assert!(found.get("lists_not_read").is_none());
+}
+
 /// Neither service sorts by due date, so a list is read to its end before
 /// the soonest are picked; one too long to finish says there is more.
 #[tokio::test]

@@ -1311,7 +1311,8 @@ or a clear.
   - `hexbot_tasks` (Google Tasks, Microsoft To Do): `lists`, `list {list?,
     done?, max?}`; `add {title, notes?, due?, list?}`, `update {id, list?,
     title?, notes?, due?, done?}`, `delete {id, title, list?}`. `due` is a
-    date; To Do's is read and written in the mailbox's time zone.
+    date; To Do's is read and written in the mailbox's time zone. A `list`
+    over every list reads at most 20, and `lists_not_read` names the rest.
   - `hexbot_drive` (Google Drive, OneDrive): `search {query?, type?,
     folder?, max?}`, `read {id, offset?}`, `download {id}` (saved among the
     chat's attachments, a Google file as its Office kind); `upload {path,
@@ -1328,7 +1329,8 @@ or a clear.
     text to clear it, or null to leave it. Text stays text; in Google
     Sheets a date like `2026-11-12` becomes a date. One read holds at most
     20,000 cells and 60,000 characters, and `next_range` names the rest. A
-    row longer than that is refused, with the part of it to read first.
+    row longer than that is refused, with the part of it to read first. In
+    Google Sheets `append` adds under the table that starts at A1.
   - `hexbot_presentations` (Google Slides, PowerPoint): `search`, `read
     {id}`; `create {title, slides}`, `add {id, slides}`, `replace {id, find,
     replace_with}`. A slide is `{title, body}`, the body one line per line.
