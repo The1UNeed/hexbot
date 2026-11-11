@@ -1035,7 +1035,7 @@ impl Runtime {
                 }
                 let (file, archive) =
                     office_file(home, svc, id, "presentation", "powerpoint").await?;
-                let before = powerpoint::read(&archive)?.len();
+                let before = powerpoint::count(&archive)?;
                 let changed = powerpoint::add(&archive, &outline)?;
                 drive::put_over(home, svc, &file, &changed, drive::PPTX).await?;
                 Ok(json!({"id": id, "added": outline.len(), "slides": before + outline.len()}))

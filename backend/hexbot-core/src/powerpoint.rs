@@ -173,6 +173,11 @@ pub(crate) fn read(file: &Archive) -> Result<Vec<Slide>> {
     read_within(file, ooxml::TEXT_BUDGET)
 }
 
+/// How many slides the presentation holds.
+pub(crate) fn count(file: &Archive) -> Result<usize> {
+    Ok(slide_parts(file)?.len())
+}
+
 /// The slides, as long as their text together stays within `budget`.
 fn read_within(file: &Archive, budget: usize) -> Result<Vec<Slide>> {
     let mut slides = vec![];
