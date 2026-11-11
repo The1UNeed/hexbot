@@ -3,7 +3,14 @@ import { describe, expect, it } from 'vitest'
 import type { Connector, Message, ToolCall } from '../../lib/types'
 import { useConnectors } from '../../stores/connectors'
 
-import { activityLabel, liveMood, liveMoodsOf, runningLabel, toolLabel } from './steps'
+import {
+  activityLabel,
+  liveMood,
+  liveMoodsOf,
+  runningLabel,
+  toolLabel,
+  workspaceLabel
+} from './steps'
 
 const call = (partial: Partial<ToolCall>): ToolCall => ({
   args: null,
@@ -173,5 +180,33 @@ describe('liveMoodsOf', () => {
         )
       })
     ).toEqual({ one: 'writing', three: 'thinking' })
+  })
+})
+
+describe('steps for the Google and Microsoft tools', () => {
+  it('words each action as what the bot did, never as a tool name', () => {
+    const step = (name: string, summary: string, status: ToolCall['status'] = 'ok') =>
+      call({ name, status, summary })
+
+    expect(toolLabel(step('hexbot_calendar', 'list', 'running'))).toBe('Checking the calendar')
+    expect(toolLabel(step('hexbot_calendar', 'create'))).toBe('Added an event')
+    expect(toolLabel(step('hexbot_tasks', 'update'))).toBe('Updated a task')
+    expect(toolLabel(step('hexbot_drive', 'download'))).toBe('Downloaded a file')
+    expect(toolLabel(step('hexbot_documents', 'append'))).toBe('Added to a document')
+    expect(toolLabel(step('hexbot_spreadsheets', 'write', 'running'))).toBe(
+      'Writing to a spreadsheet'
+    )
+    expect(toolLabel(step('hexbot_presentations', 'add'))).toBe('Added slides')
+    expect(activityLabel(step('hexbot_documents', 'read', 'running'), 'Owl')).toBe(
+      'Owl is reading a document'
+    )
+    // Mail keeps its own words.
+    expect(toolLabel(step('hexbot_mail', 'search'))).toBe('Searched email')
+  })
+
+  it('falls back to a plain phrase for an action a newer daemon adds', () => {
+    expect(workspaceLabel('hexbot_calendar', 'respond', 'done')).toBe('Used the calendar')
+    expect(workspaceLabel('hexbot_drive', undefined, 'live')).toBe('Working with your files')
+    expect(workspaceLabel('web_search', 'list', 'done')).toBeNull()
   })
 })

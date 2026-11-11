@@ -1077,8 +1077,8 @@ fn take_browser_login(app: &App, headers: &HeaderMap, state: &str) -> Result<Bro
     }
     Ok(logins.remove(state).expect("checked login"))
 }
-/// Where Google sends the browser after a sign-in for the Google Workspace
-/// connector (`accounts.rs`). Only a browser on this computer gets here, as
+/// Where Google sends the browser after a sign-in for one of its
+/// connectors (`accounts.rs`). Only a browser on this computer gets here, as
 /// Google returns to the loopback address; the state names the sign-in.
 async fn google_return(
     State(app): State<Arc<App>>,

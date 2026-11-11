@@ -305,6 +305,12 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
       },
       {
         license: 'MIT',
+        name: 'pulldown-cmark',
+        packages: ['pulldown-cmark'],
+        repository: 'https://github.com/raphlinus/pulldown-cmark'
+      },
+      {
+        license: 'MIT',
         name: 'jsonwebtoken',
         packages: ['jsonwebtoken'],
         repository: 'https://github.com/Keats/jsonwebtoken'

@@ -9,7 +9,7 @@ import {
 } from 'react'
 import { Pressable, StyleSheet, Switch, View } from 'react-native'
 
-import { Text } from './Text'
+import { Text, type TextTone } from './Text'
 import { HIT, radius, useTheme } from './theme'
 
 /**
@@ -38,6 +38,8 @@ export interface RowProps {
   selected?: boolean
   /** Lines of subtitle before it truncates. */
   subtitleLines?: number
+  /** The subtitle's colour: muted unless it reports something wrong. */
+  subtitleTone?: TextTone
   accessibilityLabel?: string
   accessibilityHint?: string
 }
@@ -56,6 +58,7 @@ export function Row({
   selected,
   subtitle,
   subtitleLines = 1,
+  subtitleTone = 'muted',
   testID,
   title,
   trailing
@@ -106,7 +109,7 @@ export function Row({
         {subtitle ? (
           <Text
             numberOfLines={page ? Math.max(subtitleLines, 2) : subtitleLines}
-            tone="muted"
+            tone={subtitleTone}
             variant={page ? 'footnote' : 'callout'}
           >
             {subtitle}

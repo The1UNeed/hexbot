@@ -32,7 +32,6 @@ import type {
   Device,
   EmailDraftAnswer,
   HeartbeatStatus,
-  MailService,
   Message,
   ModelOption,
   NetworkInfo,
@@ -274,8 +273,15 @@ export function connectorsClear(
 // Google and Microsoft accounts
 // ---------------------------------------------------------------------------
 
-export function accountsSignInStart(service: MailService): Promise<AccountSignIn> {
-  return rpcCall<AccountSignIn>('hexbot.accounts.sign_in_start', { service })
+/**
+ * Starts a sign-in for the connector `service`. `also` names other
+ * connectors of the same account to connect with the same sign-in.
+ */
+export function accountsSignInStart(service: string, also: string[] = []): Promise<AccountSignIn> {
+  return rpcCall<AccountSignIn>('hexbot.accounts.sign_in_start', {
+    service,
+    ...(also.length ? { also } : {})
+  })
 }
 
 export function accountsSignInPoll(loginId: string): Promise<AccountSignIn> {
@@ -291,8 +297,9 @@ export function accountsSignInCancel(loginId: string): Promise<AccountSignIn> {
   return rpcCall<AccountSignIn>('hexbot.accounts.sign_in_cancel', { login_id: loginId })
 }
 
-export function accountsDisconnect(service: MailService): Promise<{ disconnected: MailService }> {
-  return rpcCall<{ disconnected: MailService }>('hexbot.accounts.disconnect', { service })
+/** Disconnects the connector `service`; the account's other connectors stay. */
+export function accountsDisconnect(service: string): Promise<{ disconnected: string }> {
+  return rpcCall<{ disconnected: string }>('hexbot.accounts.disconnect', { service })
 }
 
 export function connectorsSetForBot(

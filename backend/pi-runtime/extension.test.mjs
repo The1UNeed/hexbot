@@ -705,6 +705,68 @@ test('connector reads run in every mode; changes run in Bypass, are reviewed in 
   assert.equal(manual.choices.length, 2);
 });
 
+test('calendar, task, file and document tools read in every mode, and their changes pass the gate', async t => {
+  const reads = [
+    ['hexbot_calendar', {action:'list', from:'2026-11-12'}], ['hexbot_calendar', {action:'calendars'}],
+    ['hexbot_tasks', {action:'list'}], ['hexbot_tasks', {action:'lists'}],
+    ['hexbot_drive', {action:'search', query:'budget'}], ['hexbot_drive', {action:'read', id:'f1'}], ['hexbot_drive', {action:'download', id:'f1'}],
+    ['hexbot_documents', {action:'read', id:'d1'}], ['hexbot_spreadsheets', {action:'read', id:'s1'}], ['hexbot_presentations', {action:'search'}],
+  ];
+  for (const mode of ['off', 'smart', 'manual']) {
+    const f = fixture(t, mode);
+    for (const [tool, input] of reads) assert.equal(await f.gate(tool, input), undefined, `${mode} ${tool} ${input.action}`);
+    assert.equal(f.choices.length, 0, mode);
+  }
+  const changes = [
+    ['hexbot_calendar', {action:'create', title:'Lunch', start:'2026-11-12T12:00', attendees:['ana@example.com']}],
+    ['hexbot_calendar', {action:'delete', id:'e1', title:'Lunch'}],
+    ['hexbot_tasks', {action:'add', title:'Call Ana'}],
+    ['hexbot_drive', {action:'upload', path:'report.pdf'}],
+    ['hexbot_documents', {action:'append', id:'d1', content:'More.'}],
+    ['hexbot_spreadsheets', {action:'write', id:'s1', range:'A1', rows:[[1]]}],
+    ['hexbot_presentations', {action:'add', id:'p1', slides:[{title:'Next'}]}],
+    // An action the gate has never heard of is a change, not a read.
+    ['hexbot_tasks', {action:'purge'}], ['hexbot_calendar', {}],
+  ];
+  const off = fixture(t, 'off');
+  for (const [tool, input] of changes) assert.equal(await off.gate(tool, input), undefined);
+  assert.equal(off.choices.length, 0);
+  const auto = fixture(t, 'smart');
+  for (const [tool, input] of changes) assert.equal((await auto.gate(tool, input))?.block, true, `${tool} ${input.action}`);
+  assert.equal(auto.choices.length, changes.length);
+  assert.equal(auto.choices[0].tool, 'hexbot_calendar');
+  assert.equal(auto.choices[0].command, 'Calendar: create · title: Lunch, start: 2026-11-12T12:00, attendees: ["ana@example.com"]');
+  assert.equal(auto.choices[1].command, 'Calendar: delete · id: e1, title: Lunch');
+  assert.match(auto.choices[0].reason, /Auto mode asks before a connector changes anything/);
+  assert.equal(auto.choices[0].review, true);
+  assert.deepEqual(auto.choices[0].input, changes[0][1]);
+  const manual = fixture(t, 'manual');
+  manual.ctx.choice = 'session';
+  assert.equal(await manual.gate(...changes[0]), undefined);
+  assert.match(manual.choices[0].reason, /Manual mode asks/);
+  // Allowed for the section, the calendar stops asking; tasks still ask.
+  assert.equal(await manual.gate(...changes[1]), undefined);
+  assert.equal(manual.choices.length, 1);
+  manual.ctx.choice = 'deny';
+  assert.equal((await manual.gate(...changes[2]))?.block, true);
+  assert.equal(manual.choices.length, 2);
+  // Nobody to ask, as in a scheduled job: a change waits for a chat.
+  const job = fixture(t, 'smart');
+  job.settings.canAsk = false;
+  assert.match((await job.gate(...changes[2])).reason, /needs approval/);
+  assert.equal(await job.gate('hexbot_tasks', {action:'list'}), undefined);
+});
+
+test('a change card names the tool and what it was given, cut short', async () => {
+  const {accountChange, ACCOUNT_READS} = await import('./extension.ts');
+  assert.equal(accountChange('hexbot_documents', {action:'create', account:'google', title:'Plan', content:'x'.repeat(500)}),
+    `Documents (google): create · title: Plan, content: ${'x'.repeat(120)}…`);
+  assert.equal(accountChange('hexbot_spreadsheets', {action:'append', id:'s1', rows:Array.from({length:9}, (_, i) => [i])}),
+    'Spreadsheets: append · id: s1, rows: [[0],[1],[2],[3],[4],[5],"… 3 more"]');
+  assert.ok(accountChange('hexbot_presentations', {action:'add', slides:Array.from({length:6}, () => ({title:'t'.repeat(200), body:'b'.repeat(200)}))}).length <= 601);
+  assert.deepEqual(Object.keys(ACCOUNT_READS).sort(), ['hexbot_calendar', 'hexbot_documents', 'hexbot_drive', 'hexbot_presentations', 'hexbot_spreadsheets', 'hexbot_tasks']);
+});
+
 test('Auto reviews every step outside the sandbox, whatever was allowed before', async t => {
   const f = fixture(t, 'manual', ['terminal']);
   // An Allow for now grant from Manual does not carry into Auto's reviewed steps.

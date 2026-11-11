@@ -1,4 +1,5 @@
 use super::*;
+use crate::accounts::GOOGLE;
 use axum::{
     Json, Router,
     extract::{Path as UrlPath, RawQuery},
@@ -24,7 +25,11 @@ fn signed_in(service: &str, origin: &str) -> tempfile::TempDir {
     .unwrap();
     std::fs::create_dir_all(home.path().join("accounts")).unwrap();
     std::fs::write(
-        home.path().join(format!("accounts/{service}.json")),
+        // The grant of the account's mail connector: Gmail or Outlook.
+        home.path().join(format!(
+            "accounts/{}.json",
+            if service == "google" { "gmail" } else { "outlook" }
+        )),
         json!({"email":"me@example.com","client_id":"c","access_token":"tok","refresh_token":"r","expires_at":crate::common::now() + 3600.0}).to_string(),
     )
     .unwrap();

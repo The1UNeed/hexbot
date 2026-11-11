@@ -24,7 +24,7 @@ const google: AccountSignIn = {
   message: '',
   mode: 'browser',
   redirect_uri: 'http://127.0.0.1:9119/oauth/google',
-  service: 'google',
+  service: 'gmail',
   status: 'pending',
   url: 'https://accounts.google.com/o/oauth2/v2/auth?x=1'
 }
@@ -53,8 +53,19 @@ describe('account sign-in', () => {
       status: 'done'
     })
     const onDone = vi.fn()
-    render(<AccountSignInPanel onDone={onDone} service="google" />)
+    render(
+      <AccountSignInPanel
+        also={['google_calendar']}
+        onDone={onDone}
+        provider="google"
+        service="gmail"
+      />
+    )
     fireEvent.click(screen.getByRole('button', { name: 'Sign in with Google' }))
+    // The connector, and the others to connect with the same sign-in.
+    await waitFor(() =>
+      expect(accountsSignInStart).toHaveBeenCalledWith('gmail', ['google_calendar'])
+    )
     await screen.findByText(/Finish signing in on the Google page/)
     expect(opened).toEqual([google.url])
 
@@ -80,7 +91,7 @@ describe('account sign-in', () => {
       login_id: 'l2',
       message: '',
       mode: 'device',
-      service: 'microsoft',
+      service: 'outlook',
       status: 'pending',
       url: 'https://microsoft.com/devicelogin'
     })
@@ -88,12 +99,12 @@ describe('account sign-in', () => {
       login_id: 'l2',
       message: '',
       mode: 'device',
-      service: 'microsoft',
+      service: 'outlook',
       status: 'done',
       url: ''
     })
     const onDone = vi.fn()
-    render(<AccountSignInPanel onDone={onDone} service="microsoft" />)
+    render(<AccountSignInPanel onDone={onDone} provider="microsoft" service="outlook" />)
     fireEvent.click(screen.getByRole('button', { name: 'Sign in with Microsoft' }))
     expect(await screen.findByTestId('account-code')).toHaveTextContent('ABCD-1234')
     // The page waits until the user has the code.
@@ -119,7 +130,7 @@ describe('account sign-in', () => {
       login_id: 'l3',
       message: '',
       mode: 'device' as const,
-      service: 'microsoft' as const,
+      service: 'outlook',
       status: 'pending' as const,
       url: 'https://microsoft.com/devicelogin'
     }
@@ -127,7 +138,7 @@ describe('account sign-in', () => {
     vi.mocked(accountsSignInStart).mockResolvedValue(device)
     let answer: (value: typeof device) => void = () => undefined
     vi.mocked(accountsSignInPoll).mockReturnValue(new Promise(resolve => (answer = resolve)))
-    render(<AccountSignInPanel onDone={vi.fn()} service="microsoft" />)
+    render(<AccountSignInPanel onDone={vi.fn()} provider="microsoft" service="outlook" />)
     fireEvent.click(screen.getByRole('button', { name: 'Sign in with Microsoft' }))
     await screen.findByTestId('account-code')
     await act(async () => {
@@ -145,7 +156,7 @@ describe('account sign-in', () => {
     vi.mocked(accountsSignInStart).mockRejectedValue(
       new Error('This Hexbot build has no Google sign-in of its own.')
     )
-    render(<AccountSignInPanel onDone={vi.fn()} service="google" />)
+    render(<AccountSignInPanel onDone={vi.fn()} provider="google" service="gmail" />)
     fireEvent.click(screen.getByRole('button', { name: 'Sign in with Google' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('no Google sign-in of its own')
   })

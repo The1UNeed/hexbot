@@ -165,10 +165,42 @@ more freedom and more capability than a hosted product can offer.
   for reads (GET, and Notion's search and queries) and, outside heartbeats,
   `hexbot_connector_write` for changes, which Auto reviews and Manual asks
   about like a connected tool's.
-- Gmail and Outlook come through the Google Workspace and Microsoft 365
-  connectors, set up by signing in, not with a key. The daemon keeps the
-  grant and makes every request (`accounts.rs`, `mail.rs`); a bot's
-  `hexbot_mail` searches and reads, as plain text, and drafts. A draft is a
+- Google and Microsoft each have one connector per service, not one for
+  the whole account: Gmail, Calendar, Drive, Docs, Sheets, Slides and Tasks;
+  Outlook, Outlook Calendar, OneDrive, Word, Excel, PowerPoint and To Do.
+  The user connects the ones they want, and each asks its provider for only
+  the permissions it needs, so a bot with the calendar has no way into the
+  mailbox. A connector is connected by signing in, not with a key, and
+  several of one account can share one sign-in; each still keeps a grant of
+  its own (`accounts/<connector>.json`), so disconnecting one leaves the
+  others. The daemon keeps the grants and makes every request
+  (`accounts.rs`); the model never sees a token.
+- Each kind of thing has one tool for both accounts, as mail does: a
+  calendar, tasks, files, documents, spreadsheets and presentations
+  (`runtime_workspace.rs`). A bot has a tool once either of its connectors
+  is on and connected, and names the account only when it has both. Reads
+  run in every mode. A change passes the extension's gate like a
+  connector's: Bypass runs it, Auto's reviewer checks it, Manual asks.
+  Deleting an event or a task takes its title as well as its id, so the
+  approval names what goes and a wrong id deletes nothing. Google Drive is
+  read whole but changed only where Hexbot added the file, which Google
+  enforces (`drive.file`); OneDrive keeps every version it replaces.
+- Google has an API for a document's, a sheet's and a deck's content;
+  Microsoft has none for Word and PowerPoint, and its workbook API does not
+  serve personal accounts. So Word, Excel and PowerPoint files are read and
+  changed as the files they are (`word.rs`, `excel.rs`, `powerpoint.rs`,
+  over `ooxml.rs` and `zip.rs`): the daemon fetches the file, changes the
+  parts a change names, leaves every other part byte for byte, and puts it
+  back only if the file is still the version it read. For anything past
+  adding, replacing and writing cells, a bot downloads the file, works on
+  it with a skill, and uploads the next version.
+- Times on a calendar are the calendar's own local time, with its zone
+  named beside them. The daemon has no time zone database and never
+  converts one: Google and Outlook resolve a local time in the zone they
+  are given, and a day asked for in local time is fetched as every instant
+  it could be and cut to the day here (`calendar.rs`).
+- A bot's `hexbot_mail` searches and reads Gmail and Outlook, as plain
+  text, and drafts. A draft is a
   card in the bot's chat that the user edits, then sends or saves to Drafts
   with their own click, in every approval mode: sending email is never the
   bot's decision, and a reviewer can't tell a good email from a bad one.

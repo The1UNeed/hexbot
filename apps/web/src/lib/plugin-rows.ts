@@ -4,7 +4,85 @@
  */
 
 import { serverIcon, skillIcon } from './plugin-icons'
-import type { Plugin, PluginsList, SkillRequirement } from './types'
+import type {
+  AccountProvider,
+  ConnectorAccount,
+  Plugin,
+  PluginsList,
+  SkillRequirement
+} from './types'
+
+/** Google or Microsoft, as people call the account. */
+export const ACCOUNT_NAMES: Record<AccountProvider, string> = {
+  google: 'Google',
+  microsoft: 'Microsoft'
+}
+
+/**
+ * The account a connector signs in to. A daemon from before each service
+ * had its own connector names the account as the service.
+ */
+export function accountProvider(account: ConnectorAccount): AccountProvider {
+  return account.provider ?? (account.service === 'microsoft' ? 'microsoft' : 'google')
+}
+
+/**
+ * Where a connector that is not connected yet is offered. Google's and
+ * Microsoft's sit together under their account, the rest by what they do.
+ */
+export const CONNECTOR_SHELVES: { description?: string; id: string; title: string }[] = [
+  {
+    description:
+      'Connect the ones you want, one at a time or several in one sign-in. Bots reach only what you connect.',
+    id: 'google',
+    title: 'Google'
+  },
+  {
+    description:
+      'Connect the ones you want, one at a time or several in one sign-in. Bots reach only what you connect.',
+    id: 'microsoft',
+    title: 'Microsoft'
+  },
+  { id: 'search', title: 'Search and browsing' },
+  { id: 'work', title: 'Notes and work' },
+  { id: 'social_home', title: 'Social' }
+]
+
+/** The shelf a connector sits on: its account's, or its group's. */
+export function shelfOf(plugin: Plugin): string {
+  return (
+    plugin.connector?.family ??
+    (plugin.connector?.account ? accountProvider(plugin.connector.account) : plugin.category)
+  )
+}
+
+/** Set up, working or not: anything past "not set up" is the user's to look after. */
+export function isConnected(plugin: Plugin): boolean {
+  return plugin.state !== 'not_set_up'
+}
+
+/**
+ * The other connectors of `plugin`'s account that still wait for a sign-in:
+ * the ones one sign-in can connect along with it.
+ */
+export function accountSiblings(plugin: Plugin, plugins: Plugin[]): Plugin[] {
+  const account = plugin.connector?.account
+
+  if (!account) {
+    return []
+  }
+
+  const provider = accountProvider(account)
+
+  return plugins.filter(
+    item =>
+      item.kind === 'connector' &&
+      item.id !== plugin.id &&
+      item.connector?.account &&
+      accountProvider(item.connector.account) === provider &&
+      !item.connector.account.signed_in
+  )
+}
 
 /** "Needs memo installed", as the bot's Skills tab words it. */
 function needs(missing: SkillRequirement[] = []): string {
@@ -33,6 +111,21 @@ export function canGive(plugin: Plugin, bot: string): boolean {
  */
 export function withWaiting(plugin: Plugin, next: string[]): string[] {
   return [...new Set([...next, ...(plugin.waiting_bots ?? [])])]
+}
+
+/**
+ * The bots a plugin's switches show as on. A Google or Microsoft connector
+ * whose sign-in stopped working keeps its bots waiting for a new one; they
+ * show as on, so the user can take the connector away from them before
+ * signing in again. `exact` says the switches hold every grant, so a
+ * change sends just what they show and adds no waiting grant back.
+ */
+export function shownBots(plugin: Plugin): { bots: string[]; exact: boolean } {
+  const expired = Boolean(plugin.connector?.account?.signed_in) && !plugin.ready
+
+  return expired
+    ? { bots: [...new Set([...plugin.bots, ...(plugin.waiting_bots ?? [])])], exact: true }
+    : { bots: plugin.bots, exact: false }
 }
 
 /** One list of rows, whatever their kind. */

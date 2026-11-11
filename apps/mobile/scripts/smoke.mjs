@@ -229,7 +229,7 @@ try {
   await writeFile(path.join(home, '.env'), 'MICROSOFT_OAUTH_CLIENT_ID="mobile-test"\n')
   await mkdir(path.join(home, 'accounts'), { recursive: true })
   await writeFile(
-    path.join(home, 'accounts/google.json'),
+    path.join(home, 'accounts/gmail.json'),
     JSON.stringify({
       email: 'alex@example.com',
       client_id: 'c',
@@ -703,7 +703,7 @@ try {
   // A name holding a comma stays one person.
   await writeFile(
     path.join(home, 'profiles/owl/config.yaml'),
-    `model:\n  provider: lmstudio\n  default: mobile-test\n  base_url: ${modelBase}\n  api_key: test-key\ntools:\n  enabled_toolsets: [file, hexbot, google_workspace]\napproval_mode: manual\n`
+    `model:\n  provider: lmstudio\n  default: mobile-test\n  base_url: ${modelBase}\n  api_key: test-key\ntools:\n  enabled_toolsets: [file, hexbot, gmail]\napproval_mode: manual\n`
   )
   await page.getByTestId('chat-input').fill('Draft an email to Ana about the launch review')
   await page.getByTestId('chat-send').click()
@@ -925,8 +925,8 @@ try {
       await page.getByTestId('management-sheet-back').click()
     }
     if (area === 'plugins') {
-      // Google's panel says who is signed in, and Sign out shows it at once.
-      await page.getByTestId('plugin-connector:google').click()
+      // Gmail's panel says who is signed in, and Disconnect shows it at once.
+      await page.getByTestId('plugin-connector:gmail').click()
       await expect(page.getByTestId('management-loading')).not.toBeVisible({ timeout: 30000 })
       await expect(page.getByTestId('manage-connector')).toContainText('Account')
       await page.getByTestId('manage-connector').click()
@@ -934,9 +934,12 @@ try {
       await settle()
       await shot('google-account')
       page.once('dialog', dialog => void dialog.accept())
-      await page.getByTestId('action-sign-out').click()
-      await expect(page.getByText('Not signed in', { exact: true })).toBeVisible()
-      await expect(page.getByTestId('action-sign-out')).toHaveCount(0)
+      await page.getByTestId('action-disconnect').click()
+      await expect(page.getByText('Not connected', { exact: true })).toBeVisible()
+      await expect(page.getByTestId('action-disconnect')).toHaveCount(0)
+      // Not connected, it offers the account's other connectors to connect
+      // with the same sign-in, and the bots that get it.
+      await expect(page.getByTestId('account-also-google_calendar-row')).toBeVisible()
       await page.getByTestId('management-sheet-back').click()
       await page.getByTestId('management-sheet-back').click()
       // Microsoft shows its code first, and opens its page only when asked.
@@ -946,11 +949,11 @@ try {
         void popup.close()
       }
       page.on('popup', popups)
-      await page.getByTestId('plugin-connector:microsoft').click()
+      await page.getByTestId('plugin-connector:outlook').click()
       await expect(page.getByTestId('management-loading')).not.toBeVisible({ timeout: 30000 })
-      await expect(page.getByTestId('manage-connector')).toContainText('Sign in')
+      await expect(page.getByTestId('manage-connector')).toContainText('Connect')
       await page.getByTestId('manage-connector').click()
-      await page.getByTestId('action-sign-in-with-microsoft').click()
+      await page.getByTestId('account-microsoft-sign-in').click()
       await expect(page.getByTestId('account-code')).toContainText('HXBT-4821')
       await expect(
         page.getByText('Copy the code, then sign in on the Microsoft page.')
@@ -1141,7 +1144,7 @@ try {
       'retained paired-app upload keeps its bytes and submits exactly once without the mobile file',
       'approval gates a real file write',
       'email draft card the user edits and sends, with a comma in a name',
-      'Google and Microsoft account panels: sign out, and a code before the page',
+      'Gmail and Outlook account panels: disconnect, connect with others, and a code before the page',
       'chat list, and one chat per bot opened from its row',
       'a long press pins a chat and renames it from its face',
       'model menu lists connected providers from their live lists and shows the level the model runs at',

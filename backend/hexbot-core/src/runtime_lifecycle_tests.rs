@@ -19,6 +19,8 @@ mod passwords_tests;
 mod pi_file_tests;
 #[path = "runtime_recall_tests.rs"]
 mod recall_tests;
+#[path = "runtime_workspace_tests.rs"]
+mod workspace_tests;
 
 fn setup() -> (common::TestHome, Arc<Runtime>, EventHub) {
     let home = common::TestHome::new();

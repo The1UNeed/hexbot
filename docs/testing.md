@@ -423,6 +423,21 @@ listener, managed Python and voice executable. Desktop unit tests cover bad uv
 checksums, consecutive updates, failed activation, running-runtime retention and
 service migration. Rust tests cover update pruning and legacy listener refusal.
 
+### Office files
+
+`word.rs`, `excel.rs` and `powerpoint.rs` write and change Word, Excel and
+PowerPoint files themselves. Their unit tests read back what they write; to
+see the files in Office, write one of each kind and open them:
+
+```sh
+HEXBOT_OFFICE_SAMPLES=/tmp/hexbot-office cargo test --locked \
+  --manifest-path backend/hexbot-core/Cargo.toml --lib -- --ignored writes_sample_files
+```
+
+Word, Excel and PowerPoint should open every file without offering to repair
+it, and Quick Look (`qlmanage -p`) should draw them. Check after any change
+to those three modules, `ooxml.rs` or `zip.rs`.
+
 ### Bot faces
 
 `node apps/web/scripts/face-rest.mjs --check` checks that mobile uses the

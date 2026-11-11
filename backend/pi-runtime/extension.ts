@@ -221,7 +221,11 @@ export default function hexbot(pi: any) {
     const script = event.toolName === 'codemode' && typeof event.input?.code === 'string' && config.mcpServers?.length;
     // Notion changes the daemon sends with the bot's key.
     const connector = event.toolName === 'hexbot_connector_write';
-    if (!['bash', 'read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName) && !browser && !mcp && !resource && !script && !connector) return;
+    // A change to the user's calendar, tasks, files or documents: every
+    // action of these tools that is not one of its reads.
+    const reads = ACCOUNT_READS[event.toolName];
+    const account = reads !== undefined && !reads.includes(event.input?.action);
+    if (!['bash', 'read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName) && !browser && !mcp && !resource && !script && !connector && !account) return;
     try {
       await refresh(ctx);
       // Retain what this check saw, even if another gate refreshes live settings.
@@ -267,6 +271,10 @@ export default function hexbot(pi: any) {
         const {connector: id, method, path, body} = event.input ?? {};
         const data = body === undefined ? '' : JSON.stringify(body);
         ask = {key: `connector:${id}`, command: `${id} ${method} ${path}${data ? ' ' + (data.length > 300 ? data.slice(0, 300) + '…' : data) : ''}`,
+          reason: live.approvalMode === 'manual' ? 'Manual mode asks before a connector changes anything.' : 'Auto mode asks before a connector changes anything.'};
+      }
+      if (account) {
+        ask = {key: `connector:${event.toolName}`, command: accountChange(event.toolName, event.input),
           reason: live.approvalMode === 'manual' ? 'Manual mode asks before a connector changes anything.' : 'Auto mode asks before a connector changes anything.'};
       }
       if (['read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName)) {
@@ -662,6 +670,34 @@ function credentialName(path: string, home: string, denied: string[]): boolean {
 }
 // Steps outside the sandbox that Auto's reviewer may let through; connected tools and connector changes too.
 const REVIEWED = ['shell:full-access', 'file:outside', 'browser_console'];
+// The actions of each Google and Microsoft tool that only read; the gate
+// treats every other action as a change. Kept in step with `TOOLS` in
+// runtime_workspace.rs, where a test holds the two together.
+export const ACCOUNT_READS: Record<string, string[]> = {
+  hexbot_calendar: ['list', 'calendars'],
+  hexbot_tasks: ['lists', 'list'],
+  hexbot_drive: ['search', 'read', 'download'],
+  hexbot_documents: ['search', 'read'],
+  hexbot_spreadsheets: ['search', 'read'],
+  hexbot_presentations: ['search', 'read'],
+};
+const ACCOUNT_NAMES: Record<string, string> = {
+  hexbot_calendar: 'Calendar', hexbot_tasks: 'Tasks', hexbot_drive: 'Files',
+  hexbot_documents: 'Documents', hexbot_spreadsheets: 'Spreadsheets', hexbot_presentations: 'Presentations',
+};
+// What a change does, as its approval card words it: the tool, the action,
+// then what it was given, with long text cut short.
+export const accountChange = (tool: string, input: any) => {
+  const {action, account, ...rest} = input ?? {};
+  const short = (value: any): any => typeof value === 'string' && value.length > 120 ? value.slice(0, 120) + '…'
+    : Array.isArray(value) ? value.length > 6 ? [...value.slice(0, 6).map(short), `… ${value.length - 6} more`] : value.map(short)
+    : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, short(item)]))
+    : value;
+  const details = Object.entries(rest).filter(([, value]) => value !== undefined && value !== null && value !== '')
+    .map(([key, value]) => `${key}: ${typeof value === 'string' ? short(value) : JSON.stringify(short(value))}`).join(', ');
+  const text = `${ACCOUNT_NAMES[tool] ?? tool}${account ? ` (${account})` : ''}: ${action ?? 'change'}${details ? ` · ${details}` : ''}`;
+  return text.length > 600 ? text.slice(0, 600) + '…' : text;
+};
 const NEVER_WRITTEN = 'Credential and system configuration files are never written by tools.';
 // credential-policy.json "write": deny entries are credential stores that tools
 // never write; ask entries (shell profiles, login items) prompt in Manual and

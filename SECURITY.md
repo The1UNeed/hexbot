@@ -265,14 +265,39 @@ also holds the key file can. Same-user malware can ask the keychain for the key.
 Bots' shells and file tools can read neither file in Manual or Auto; Bypass has
 no sandbox, so a bot in Bypass can.
 
-The Google Workspace and Microsoft 365 sign-ins are OAuth grants in
-`accounts/<service>.json`, plain JSON in an owner-only file, like provider
-credentials. They hold a refresh token that can read, draft and send mail as
-the user. `hexbot_mail` sends only what the user sends from a draft card, in
-every approval mode, and only from the account the card showed. Bots' shells
-and file tools can't read the grant in Manual or Auto; Bypass has no sandbox,
-so a bot in Bypass can, and could send mail with it outside the card. Sign
-out removes the file, and for Google withdraws the grant.
+The Google and Microsoft connectors' sign-ins are OAuth grants, one file per
+connector in `accounts/<connector>.json`, plain JSON in an owner-only file,
+like provider credentials. Each holds a refresh token for that connector's
+permissions: Gmail's and Outlook's can read, draft and send mail as the user;
+Calendar's can read and change events; Drive's can read every file and change
+the ones Hexbot added; OneDrive's, Word's, Excel's and PowerPoint's can read
+and change the user's files; the others their documents, sheets, slides or
+tasks. A connector connected on its own gets a grant with only its
+permissions. Connectors connected in one sign-in were allowed together, so
+Google's token for each covers all of them; the daemon still uses each
+connector's grant for its own tool alone, and a Microsoft token is renewed
+for its connector's permissions only.
+
+`hexbot_mail` sends only what the user sends from a draft card, in every
+approval mode, and only from the account the card showed. The other tools
+read in every mode; their changes follow the bot's approval mode like a
+connector's: Bypass runs them, Auto's reviewer checks each one, Manual asks.
+The reviewer is a model's judgment, not containment. A calendar change with
+guests makes the calendar email them, so a bot in Bypass can send invitations
+without asking. A token goes only to its provider's own hosts: an upload or a
+download that points elsewhere gets no token, and an upload elsewhere is not
+followed. A download counts as reading, so it runs in every mode, Manual
+included: it adds a new file among the chat's own files, never in the
+workspace and never over another file. An upload takes a file from the bot's
+own folders and refuses credential files. What these tools read was written by other people; bots are
+told to treat it as information, which lowers the risk of an injected
+instruction and does not remove it.
+
+Bots' shells and file tools can't read a grant in Manual or Auto; Bypass has
+no sandbox, so a bot in Bypass can, and could use it outside the tools.
+Disconnecting a connector removes its file. Google ends every grant an
+account gave Hexbot at once, so its grant is withdrawn there only with that
+account's last connector.
 
 A bot never receives a password in its conversation. The daemon types it into
 the page the bot names, and only when the browser's page is on the login's own

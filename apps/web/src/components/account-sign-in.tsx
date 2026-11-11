@@ -7,33 +7,36 @@ import {
   accountsSignInPoll,
   accountsSignInStart
 } from '../lib/api'
-import { BRAND_ICONS } from '../lib/connector-icons'
-import type { AccountSignIn, MailService } from '../lib/types'
+import { SIGN_IN_BUTTONS } from '../lib/brand-logos'
+import type { AccountProvider, AccountSignIn } from '../lib/types'
 
 import { openInBrowser } from './provider-panel'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
-import { Spinner } from './ui/spinner'
 
-const NAMES: Record<MailService, string> = { google: 'Google', microsoft: 'Microsoft' }
+const NAMES: Record<AccountProvider, string> = { google: 'Google', microsoft: 'Microsoft' }
 
 const errorText = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause))
 
 /**
- * Signs the daemon in to Google or Microsoft for their connector. Microsoft
+ * Signs the daemon in to Google or Microsoft for the connector `service`,
+ * and for the connectors in `also` with the same sign-in. Microsoft
  * shows a code to enter on its page. Google opens its page and comes back
  * to the daemon by itself when the browser runs on the daemon's computer;
  * a browser anywhere else ends on a page that can't load, and pasting that
  * page's address here finishes the sign-in.
  */
 export function AccountSignInPanel({
-  again = false,
+  also = [],
   onDone,
+  provider,
   service
 }: {
-  again?: boolean
+  /** Other connectors of the same account to connect with this sign-in. */
+  also?: string[]
   onDone: (login: AccountSignIn) => void
-  service: MailService
+  provider: AccountProvider
+  service: string
 }) {
   const [login, setLogin] = useState<AccountSignIn | null>(null)
   const [pasted, setPasted] = useState('')
@@ -41,7 +44,7 @@ export function AccountSignInPanel({
   // Copied, or the browser wouldn't (plain http on a LAN has no clipboard).
   const [copied, setCopied] = useState<'no' | 'yes' | null>(null)
   const [error, setError] = useState<null | string>(null)
-  const name = NAMES[service]
+  const name = NAMES[provider]
   const loginId = login?.login_id
   const pending = login?.status === 'pending'
   const active = useRef<null | string>(null)
@@ -91,7 +94,7 @@ export function AccountSignInPanel({
     setPasted('')
 
     try {
-      const started = await accountsSignInStart(service)
+      const started = await accountsSignInStart(service, also)
       settle(started)
 
       // Google's page opens at once; Microsoft's waits until the code is
@@ -249,49 +252,49 @@ export function AccountSignInPanel({
 
   return (
     <div className="grid gap-2">
-      {service === 'google' ? (
-        <GoogleSignInButton busy={busy} onClick={() => void start()} />
-      ) : (
-        <Button
-          busy={busy}
-          className="justify-self-start"
-          icon={<ExternalLink size={14} />}
-          onClick={() => void start()}
-          variant="primary"
-        >
-          {again ? `Sign in to ${name} again` : `Sign in with ${name}`}
-        </Button>
-      )}
+      <BrandSignInButton busy={busy} onClick={() => void start()} provider={provider} />
       {alert}
     </div>
   )
 }
 
 /**
- * Google's own button: its words, its colours and its "G", as its sign-in
- * branding guidelines require of an app Google verifies. The same words
- * sign in again.
+ * Sign in with Google, or with Microsoft: the owner's own button, as its
+ * sign-in branding guidelines ask of an app, shown as the image it
+ * publishes so its logo, words, colours and shape stay as they are. The
+ * same button signs in again.
  */
-function GoogleSignInButton({ busy, onClick }: { busy: boolean; onClick: () => void }) {
-  const google = BRAND_ICONS.google!
+function BrandSignInButton({
+  busy,
+  onClick,
+  provider
+}: {
+  busy: boolean
+  onClick: () => void
+  provider: AccountProvider
+}) {
+  const button = SIGN_IN_BUTTONS[provider]
 
   return (
     <button
-      className="hex-google-button hex-focus justify-self-start"
+      aria-busy={busy}
+      aria-label={`Sign in with ${NAMES[provider]}`}
+      className="hex-brand-button hex-focus justify-self-start"
       disabled={busy}
       onClick={onClick}
       type="button"
     >
-      {busy ? (
-        <Spinner size="sm" />
-      ) : (
-        <svg aria-hidden height="20" viewBox={google.marksViewBox} width="20">
-          {google.marks!.map(mark => (
-            <path d={mark.d} fill={mark.fill} key={mark.d} />
-          ))}
-        </svg>
-      )}
-      Sign in with Google
+      {(['light', 'dark'] as const).map(scheme => (
+        <img
+          alt=""
+          data-scheme={scheme}
+          draggable={false}
+          height={button.height}
+          key={scheme}
+          src={button[scheme]}
+          width={button.width}
+        />
+      ))}
     </button>
   )
 }
