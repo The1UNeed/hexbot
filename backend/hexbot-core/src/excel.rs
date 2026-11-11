@@ -757,20 +757,16 @@ struct Row {
     rest: String,
 }
 
-/// `tag` without its `name="…"` attribute.
+/// `tag` without its `name` attribute, however it is quoted and spaced.
 fn without_attr(tag: &str, name: &str) -> String {
-    let needle = format!(" {name}=\"");
-    match tag.find(&needle) {
-        Some(start) => match tag[start + needle.len()..].find('"') {
-            Some(len) => format!(
-                "{}{}",
-                &tag[..start],
-                &tag[start + needle.len() + len + 1..]
-            ),
-            None => tag.to_owned(),
-        },
-        None => tag.to_owned(),
-    }
+    regex::Regex::new(&format!(
+        r#"\s{}\s*=\s*(?:"[^"]*"|'[^']*')"#,
+        regex::escape(name)
+    ))
+    .map_or_else(
+        |_| tag.to_owned(),
+        |attr| attr.replace(tag, "").into_owned(),
+    )
 }
 
 /// The sheet's XML with `rows` written from (`row`, `column`) down and
@@ -865,6 +861,23 @@ fn write_sheet(xml: &str, row: u32, column: u32, rows: &[Vec<Cell>]) -> Result<S
         }
         sheet.push(current);
     }
+    // The cells one formula fills together, like {=B1:B3*2}: only the first
+    // says so, and Excel lets none of them be changed on its own.
+    let mut arrays: Vec<Range> = vec![];
+    for (_, xml) in sheet.iter().flat_map(|row| &row.cells) {
+        if !xml.contains("array") {
+            continue;
+        }
+        for tok in tokens(xml) {
+            if opens(&tok, "f")
+                && attr(tok.raw(), "t").as_deref() == Some("array")
+                && let Some(Ok((_, filled))) = attr(tok.raw(), "ref").map(|r| range(&r))
+                && filled.from != filled.to
+            {
+                arrays.push(filled);
+            }
+        }
+    }
     // Write the new cells over them.
     for (offset, cells) in rows.iter().enumerate() {
         let number = row + offset as u32;
@@ -883,6 +896,30 @@ fn write_sheet(xml: &str, row: u32, column: u32, rows: &[Vec<Cell>]) -> Result<S
                 at
             }
         };
+        if let Some(taken) = cells
+            .iter()
+            .enumerate()
+            .filter(|(_, cell)| **cell != Cell::Skip)
+            .find_map(|(offset, _)| {
+                let column = column + offset as u32;
+                arrays
+                    .iter()
+                    .find(|a| {
+                        (a.from.0..=a.to.0).contains(&number)
+                            && (a.from.1..=a.to.1).contains(&column)
+                    })
+                    .map(|a| (column, a.name()))
+            })
+        {
+            return Err(Error::new(
+                4202,
+                format!(
+                    "{} belongs to a formula that fills {}, so it can't be written over here. Download the workbook, change it, and upload it.",
+                    cell_name(number, taken.0),
+                    taken.1
+                ),
+            ));
+        }
         let target = &mut sheet[at];
         // A hint of the row's width that the new cells may break.
         target.open = without_attr(&target.open, "spans");

@@ -99,6 +99,17 @@ fn a_new_presentation_reads_back_as_its_outline() {
     }
 }
 
+/// A small file can unpack to far more text than it weighs.
+#[test]
+fn a_presentation_with_too_much_text_is_refused() {
+    let file = Archive::open(create("Q3", &deck())).unwrap();
+    assert!(read_within(&file, 1_000).is_ok());
+    assert_eq!(
+        read_within(&file, 20).unwrap_err().message,
+        "This presentation can't be read: it holds too much text."
+    );
+}
+
 #[test]
 fn slides_are_added_after_the_last_in_the_presentations_own_layout() {
     let file = Archive::open(create("Q3", &deck())).unwrap();

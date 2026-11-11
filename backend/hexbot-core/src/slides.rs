@@ -278,7 +278,7 @@ pub(crate) async fn add(
         svc,
         Method::GET,
         &format!(
-            "/v1/presentations/{id}?fields=slides.objectId,layouts(objectId,layoutProperties.name,pageElements.shape.placeholder.type)"
+            "/v1/presentations/{id}?fields=slides(objectId,slideProperties.masterObjectId),layouts(objectId,layoutProperties(name,masterObjectId),pageElements.shape.placeholder.type)"
         ),
         None,
     )
@@ -291,7 +291,16 @@ pub(crate) async fn add(
             .flatten()
             .any(|e| e["shape"]["placeholder"]["type"] == kind)
     };
-    let layouts = found["layouts"].as_array().cloned().unwrap_or_default();
+    // New slides go after the last one and take its master: Slides
+    // refuses a layout that belongs to another.
+    let master = &found["slides"][count.saturating_sub(1)]["slideProperties"]["masterObjectId"];
+    let layouts = found["layouts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|l| !master.is_string() || l["layoutProperties"]["masterObjectId"] == *master)
+        .cloned()
+        .collect::<Vec<_>>();
     let chosen = layouts
         .iter()
         .find(|l| {

@@ -308,6 +308,7 @@ fn slides_json(slides: &[powerpoint::Slide]) -> Value {
 /// name, then its rows with a tab between cells.
 pub(super) fn workbook_text(file: &Archive) -> Result<String> {
     let mut out = vec![];
+    let mut held = 0;
     for sheet in excel::sheets(file)? {
         let grid = excel::grid(file, &sheet)?;
         let whole = excel::Range {
@@ -338,6 +339,13 @@ pub(super) fn workbook_text(file: &Archive) -> Result<String> {
             rows.push_str(&format!(
                 "\n[Rows {} to {} are not shown.]",
                 rest.from.0, rest.to.0
+            ));
+        }
+        held += rows.len();
+        if held > ooxml::TEXT_BUDGET {
+            return Err(Error::new(
+                4202,
+                "This workbook can't be read: it holds too much text.",
             ));
         }
         out.push(format!("## {}\n{rows}", sheet.name));

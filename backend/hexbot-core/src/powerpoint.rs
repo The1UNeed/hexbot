@@ -170,7 +170,13 @@ fn slide_text(xml: &str) -> (String, String) {
 }
 
 pub(crate) fn read(file: &Archive) -> Result<Vec<Slide>> {
+    read_within(file, ooxml::TEXT_BUDGET)
+}
+
+/// The slides, as long as their text together stays within `budget`.
+fn read_within(file: &Archive, budget: usize) -> Result<Vec<Slide>> {
     let mut slides = vec![];
+    let mut held = 0;
     for part in slide_parts(file)? {
         let Some(xml) = file.text(&part)? else {
             continue;
@@ -186,6 +192,13 @@ pub(crate) fn read(file: &Archive) -> Result<Vec<Slide>> {
                 .unwrap_or_default(),
             None => String::new(),
         };
+        held += title.len() + text.len() + notes.len();
+        if held > budget {
+            return Err(Error::new(
+                4202,
+                "This presentation can't be read: it holds too much text.",
+            ));
+        }
         slides.push(Slide { title, text, notes });
     }
     Ok(slides)

@@ -333,6 +333,30 @@ fn a_write_that_would_break_the_workbook_is_refused() {
         "{}",
         error.message
     );
+    // A formula that fills cells together lets none of them go alone, and
+    // an attribute it must replace goes however it is quoted.
+    let filled = Archive::open(zip::build(&[
+        (WORKBOOK, format!(r#"<workbook {MAIN}><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets><calcPr calcId='1' fullCalcOnLoad = '0'/></workbook>"#).into_bytes()),
+        ("xl/_rels/workbook.xml.rels", br#"<Relationships><Relationship Id="rId1" Type="x/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#.to_vec()),
+        ("xl/worksheets/sheet1.xml", format!(r#"<worksheet {MAIN}><sheetData><row r="1"><c r="A1"><f t="array" ref="A1:A3">B1:B3*2</f><v>2</v></c></row><row r="2"><c r="A2"><v>4</v></c></row></sheetData></worksheet>"#).into_bytes()),
+    ]))
+    .unwrap();
+    let error = write(&filled, &sheet, 2, 1, &one).unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("A2 belongs to a formula that fills A1:A3"),
+        "{}",
+        error.message
+    );
+    let changed = Archive::open(write(&filled, &sheet, 4, 1, &one).unwrap()).unwrap();
+    assert!(
+        changed
+            .text(WORKBOOK)
+            .unwrap()
+            .unwrap()
+            .contains(r#"<calcPr calcId='1' fullCalcOnLoad="1"/>"#)
+    );
     // One that only uses it can be written over, and a new workbook part is made.
     let changed = Archive::open(write(&file, &sheet, 2, 1, &one).unwrap()).unwrap();
     assert!(

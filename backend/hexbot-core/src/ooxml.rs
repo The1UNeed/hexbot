@@ -303,6 +303,10 @@ pub(crate) fn before_close(xml: &str, name: &str, addition: &str) -> Result<Stri
     Ok(format!("{}{addition}{}", &xml[..at], &xml[at..]))
 }
 
+/// The most text one read of a file keeps: a small file can unpack to far
+/// more than it weighs.
+pub(crate) const TEXT_BUDGET: usize = 32 * 1024 * 1024;
+
 /// `xml` with `find` replaced by `with` in every paragraph that holds it,
 /// and how many times. A paragraph's words are spread over runs wherever
 /// their style changes, so a match is found in the paragraph's whole text

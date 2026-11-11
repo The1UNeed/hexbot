@@ -41,10 +41,12 @@ fn slides_api(asked: &crate::accounts::testing::Asked) -> Reply {
         ("GET", "/v1/presentations/p1") => Reply::Json(
             200,
             json!({
-                "slides": [{"objectId": "a"}, {"objectId": "b"}],
+                "slides": [{"objectId": "a"}, {"objectId": "b", "slideProperties": {"masterObjectId": "m2"}}],
                 "layouts": [
-                    {"objectId": "blank", "layoutProperties": {"name": "BLANK"}},
-                    {"objectId": "custom", "layoutProperties": {"name": "Brand"}, "pageElements": [{"shape": {"placeholder": {"type": "TITLE"}}}, {"shape": {"placeholder": {"type": "BODY"}}}]},
+                    // Another master's layout, which Slides would refuse here.
+                    {"objectId": "other", "layoutProperties": {"name": "TITLE_AND_BODY", "masterObjectId": "m1"}, "pageElements": [{"shape": {"placeholder": {"type": "TITLE"}}}, {"shape": {"placeholder": {"type": "BODY"}}}]},
+                    {"objectId": "blank", "layoutProperties": {"name": "BLANK", "masterObjectId": "m2"}},
+                    {"objectId": "custom", "layoutProperties": {"name": "Brand", "masterObjectId": "m2"}, "pageElements": [{"shape": {"placeholder": {"type": "TITLE"}}}, {"shape": {"placeholder": {"type": "BODY"}}}]},
                 ],
             }),
         ),
