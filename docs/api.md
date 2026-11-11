@@ -1156,7 +1156,7 @@ threads between bots, subagents and scheduled jobs. The owner's reactions
 never change the conversation Pi holds. The daemon hands them to the chat
 with the owner's next message, as a hidden note after it, by the way
 heartbeat messages enter (`hexbot_heartbeat_context`, whose ids for
-reactions are `reaction:<row_id>`): at most the eight newest, offered at
+reactions are `reaction:<row_id>:<emoji>`): at most the eight newest, offered at
 most twice, marked taken when Pi reports the note. A reaction on a message
 the chat no longer shows, such as a recalled one, is dropped.
 

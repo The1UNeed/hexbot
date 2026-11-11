@@ -209,12 +209,13 @@ pub(crate) fn take_context(home: &Path, section: &str) -> Result<Option<Value>> 
             Some((end, _)) => format!("{}\u{2026}", &text[..end]),
             None => text,
         };
+        let emoji = row["emoji"].as_str().unwrap_or("");
         lines.push(format!(
-            "- {} on your message \"{}\"",
-            row["emoji"].as_str().unwrap_or(""),
+            "- {emoji} on your message \"{}\"",
             quote.replace('"', "'")
         ));
-        ids.push(json!(format!("{CONTEXT_ID}{message}")));
+        // The emoji is part of the id: one changed before Pi answers is still to be told.
+        ids.push(json!(format!("{CONTEXT_ID}{message}:{emoji}")));
     }
     if lines.is_empty() {
         return Ok(None);
@@ -232,16 +233,17 @@ pub(crate) fn take_context(home: &Path, section: &str) -> Result<Option<Value>> 
 /// are heartbeat messages and are left to `heartbeat::acknowledge`.
 pub(crate) fn acknowledge(home: &Path, section: &str, ids: &Value) -> Result<()> {
     let conn = db::open(home)?;
-    for message in ids
+    for (message, emoji) in ids
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(Value::as_str)
         .filter_map(|id| id.strip_prefix(CONTEXT_ID))
+        .filter_map(|id| id.split_once(':'))
     {
         conn.execute(
-            "UPDATE message_reactions SET noted_at=? WHERE section_id=? AND message_id=? AND by_bot='' AND noted_at IS NULL",
-            params![common::now(), section, message],
+            "UPDATE message_reactions SET noted_at=? WHERE section_id=? AND message_id=? AND emoji=? AND by_bot='' AND noted_at IS NULL",
+            params![common::now(), section, message, emoji],
         )?;
     }
     Ok(())
@@ -395,7 +397,7 @@ mod tests {
         react(home.path(), "local", "owl", "chat", Some("👍")).unwrap();
         assert!(pending_context(home.path(), "chat").unwrap());
         let offer = take_context(home.path(), "chat").unwrap().unwrap();
-        assert_eq!(offer["ids"], json!(["reaction:a1"]));
+        assert_eq!(offer["ids"], json!(["reaction:a1:🎉"]));
     }
 
     #[test]
@@ -407,7 +409,7 @@ mod tests {
         set(home.path(), "local", &thumbs).unwrap();
         assert!(pending_context(home.path(), "chat").unwrap());
         let offer = take_context(home.path(), "chat").unwrap().unwrap();
-        assert_eq!(offer["ids"], json!(["reaction:a1"]));
+        assert_eq!(offer["ids"], json!(["reaction:a1:👍"]));
         let text = offer["text"].as_str().unwrap();
         assert!(
             text.contains("- 👍 on your message \"Booked the '9am' flight.\""),
@@ -418,7 +420,7 @@ mod tests {
         acknowledge(
             home.path(),
             "chat",
-            &json!(["some-heartbeat", "reaction:a1"]),
+            &json!(["some-heartbeat", "reaction:a1:👍"]),
         )
         .unwrap();
         assert!(!pending_context(home.path(), "chat").unwrap());
@@ -431,6 +433,9 @@ mod tests {
             &json!({"section_id":"chat","message_id":"a1","emoji":"❤️"}),
         )
         .unwrap();
+        // Pi answering for the emoji it was shown does not take the new one.
+        acknowledge(home.path(), "chat", &json!(["reaction:a1:👍"])).unwrap();
+        assert!(pending_context(home.path(), "chat").unwrap());
         // A lost reply: offered twice, then no more.
         assert!(take_context(home.path(), "chat").unwrap().is_some());
         assert!(take_context(home.path(), "chat").unwrap().is_some());

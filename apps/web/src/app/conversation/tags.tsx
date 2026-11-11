@@ -19,6 +19,7 @@ import {
 } from 'react'
 
 import { Avatar, useFaceColor } from '../../components/ui/avatar'
+import { sectionsThread } from '../../lib/api'
 import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 import { mimeOf } from '../../lib/media'
@@ -230,17 +231,23 @@ export function BotTag({
 
   const open = () => {
     if (thread) {
-      const sections = Object.values(useSections.getState().byId)
+      const speaker = from!
 
-      const asked = (bot: string, peer: string) =>
-        sections.some(section => section.bot === bot && section.peer_bot === peer)
+      // The thread belongs to the bot that was asked. The app keeps no list
+      // of threads, so the daemon says which way round this one is.
+      const there = async (bot: string, peer: string) =>
+        (await sectionsThread(bot, peer).catch(() => null))?.section?.id
 
-      // The thread belongs to the bot that was asked; show the one that exists.
-      uiActions().openThread(
-        !asked(handle, from!) && asked(from!, handle)
-          ? { bot: from!, peer: handle }
-          : { bot: handle, peer: from! }
-      )
+      void (async () => {
+        const asked = await there(handle, speaker)
+        const asking = asked ? undefined : await there(speaker, handle)
+
+        uiActions().openThread(
+          asking
+            ? { bot: speaker, peer: handle, sectionId: asking }
+            : { bot: handle, peer: speaker, sectionId: asked }
+        )
+      })()
 
       return
     }

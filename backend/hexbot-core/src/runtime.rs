@@ -7539,7 +7539,7 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
                 .unwrap()
                 .contains("- 👍 on your message \"Booked.\"")
         );
-        assert_eq!(context["ids"], json!(["reaction:a1"]));
+        assert_eq!(context["ids"], json!(["reaction:a1:👍"]));
         crate::reactions::acknowledge(home.path(), &s.stored, &context["ids"]).unwrap();
         assert_eq!(
             runtime.session_settings(&s).unwrap()["pendingHeartbeat"],

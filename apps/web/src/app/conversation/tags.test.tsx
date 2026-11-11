@@ -1,7 +1,9 @@
 import type * as Router from '@tanstack/react-router'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type * as Api from '../../lib/api'
+import { sectionsThread } from '../../lib/api'
 import type { Bot, Room, Section } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { usePlugins } from '../../stores/plugins'
@@ -14,6 +16,11 @@ import { TagScope } from './tags'
 import { Markdown } from './index'
 
 const navigate = vi.fn()
+
+vi.mock('../../lib/api', async original => ({
+  ...(await original<typeof Api>()),
+  sectionsThread: vi.fn()
+}))
 
 vi.mock('@tanstack/react-router', async original => ({
   ...(await original<typeof Router>()),
@@ -33,6 +40,8 @@ const said = (text: string, scope: Partial<Parameters<typeof TagScope>[0]> = {})
 describe('tags in a message', () => {
   beforeEach(() => {
     navigate.mockClear()
+    // No thread yet between any two bots.
+    vi.mocked(sectionsThread).mockReset().mockResolvedValue({ section: null })
     useBots.setState({
       byName: { biology: bot('biology', 'Biology'), hexbot: bot('hexbot', 'HexBot') }
     })
@@ -42,23 +51,29 @@ describe('tags in a message', () => {
     usePlugins.setState({ sought: null })
   })
 
-  it('draws a bot by its face and name, and opens its conversation with the speaker', () => {
+  it('draws a bot by its face and name, and opens its conversation with the speaker', async () => {
     said('@biology is created, and I shared your course context.')
     const tag = screen.getByRole('button', { name: 'Open the conversation with Biology' })
     expect(tag).toHaveTextContent('Biology')
     expect(tag).not.toHaveTextContent('@biology')
     expect(screen.getByRole('img', { name: 'Biology' })).toBeVisible()
     fireEvent.click(tag)
-    expect(useUi.getState().thread).toEqual({ bot: 'biology', peer: 'hexbot' })
+    await waitFor(() => expect(useUi.getState().thread).toEqual({ bot: 'biology', peer: 'hexbot' }))
   })
 
-  it('opens the thread that exists when the named bot was the one that asked', () => {
-    useSections.setState({
-      byId: { t: { bot: 'hexbot', id: 't', peer_bot: 'biology' } as unknown as Section }
-    })
+  it('opens the thread that exists when the named bot was the one that asked', async () => {
+    // The daemon holds threads; the app's own list of sections has none.
+    vi.mocked(sectionsThread).mockImplementation(async (asked, asker) => ({
+      section:
+        asked === 'hexbot' && asker === 'biology'
+          ? ({ bot: 'hexbot', id: 't', peer_bot: 'biology' } as unknown as Section)
+          : null
+    }))
     said('[Biology](hexbot:bot/biology) asked me for the dates.')
     fireEvent.click(screen.getByRole('button', { name: 'Open the conversation with Biology' }))
-    expect(useUi.getState().thread).toEqual({ bot: 'hexbot', peer: 'biology' })
+    await waitFor(() =>
+      expect(useUi.getState().thread).toEqual({ bot: 'hexbot', peer: 'biology', sectionId: 't' })
+    )
   })
 
   it("opens the bot's chat with you when you named it, or it named itself", () => {

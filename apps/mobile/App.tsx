@@ -918,7 +918,8 @@ function MobileApp({ children }: { children?: ReactNode }) {
         id: `${turn.sessionId}-interim-${i}`,
         role: 'bot',
         text,
-        author
+        author,
+        speaker: turn.bot || undefined
       })
     )
     if (turn.streaming)
@@ -928,7 +929,8 @@ function MobileApp({ children }: { children?: ReactNode }) {
         role: 'bot',
         text: turn.streaming,
         streaming: true,
-        author
+        author,
+        speaker: turn.bot || undefined
       })
     if (turn.error)
       items.push({
@@ -1061,19 +1063,18 @@ function MobileApp({ children }: { children?: ReactNode }) {
       const between = (asked: string, asker: string) =>
         current.sections.find(s => s.bot === asked && s.peer_bot === asker && !s.archived_at)
       const known = between(bot, peer) ?? between(peer, bot)
-      const owner = current.bots.find(b => b.name === (known?.bot ?? bot))
-      if (!owner) return
+      // A thread this phone has not listed yet is the daemon's to name.
+      const asked = (asked: string, asker: string) =>
+        current
+          .rpc<{ section: Section | null }>('hexbot.sections.thread', { bot: asked, peer: asker })
+          .then(
+            found => found.section,
+            () => null
+          )
       act(async () => {
-        // A thread this phone has not listed yet is the daemon's to name.
-        const section =
-          known ??
-          (await current
-            .rpc<{ section: Section | null }>('hexbot.sections.thread', { bot, peer })
-            .then(
-              found => found.section,
-              () => null
-            ))
-        await mobileRef.current.openSection(owner, section ?? undefined)
+        const section = known ?? (await asked(bot, peer)) ?? (await asked(peer, bot))
+        const owner = current.bots.find(b => b.name === (section?.bot ?? bot))
+        if (owner) await mobileRef.current.openSection(owner, section ?? undefined)
       })
     },
     [act]
