@@ -32,7 +32,7 @@ ConvertTo-Json -InputObject $result -Compress`
   assert.deepEqual(JSON.parse(stdout), cases.map(([, , match]) => match))
 })
 
-test('pinned Electron registers at app startup while pinned NSIS has no protocol cleanup hook', async () => {
+test('pinned Electron registers at app startup and both editions supply guarded NSIS cleanup', async () => {
   const desktop = createRequire(resolve('apps/desktop/package.json'))
   assert.equal(desktop('electron/package.json').version, '42.11.16')
   const builder = createRequire(desktop.resolve('electron-builder'))
@@ -50,6 +50,29 @@ test('pinned Electron registers at app startup while pinned NSIS has no protocol
   const base = packager('js-yaml').load(await readFile('apps/desktop/electron-builder.base.yml', 'utf8'))
   assert.deepEqual(base.protocols[0].schemes, ['hexbot'])
   assert.equal(base.fileAssociations, undefined)
+  assert.equal(base.nsis.include, './scripts/windows-uninstall.nsh')
+  for (const config of ['electron-builder.yml', 'electron-builder.client.yml']) {
+    const edition = packager('js-yaml').load(await readFile(`apps/desktop/${config}`, 'utf8'))
+    assert.equal(edition.extends, './electron-builder.base.yml')
+    assert.equal(edition.nsis, undefined)
+  }
+  const cleanup = await readFile(resolve('apps/desktop', base.nsis.include), 'utf8')
+  assert.match(cleanup, /!macro customUnInstall/)
+  assert.match(cleanup, /\$\{ifNot\} \$\{isUpdated\}/)
+  assert.match(cleanup, /ReadRegStr \$0 HKCU "Software\\Classes\\hexbot\\shell\\open\\command" ""/)
+  assert.match(cleanup, /StrCpy \$1 '"\$INSTDIR\\\$\{APP_EXECUTABLE_FILENAME\}" "%1"'/)
+  const compare = cleanup.indexOf('StrCmp $2 2 0 hexbot_protocol_done')
+  const typeCheck = cleanup.indexOf('$5 == 1 # REG_SZ only')
+  const lengthCheck = cleanup.indexOf('$6 == $7')
+  const deletion = cleanup.indexOf('advapi32::RegDeleteValueW')
+  assert(compare >= 0 && typeCheck > compare && lengthCheck > typeCheck && deletion > lengthCheck)
+  // The deletion must sit inside the not-an-upgrade branch, not after it.
+  const notUpdate = cleanup.indexOf('${ifNot} ${isUpdated}')
+  const branchEnd = cleanup.indexOf('${endif}', deletion)
+  assert(notUpdate >= 0 && deletion > notUpdate && branchEnd > deletion)
+  assert.match(cleanup, /CompareStringOrdinal/)
+  assert.match(cleanup, /RegQueryValueExW/)
+  assert.doesNotMatch(cleanup, /DeleteRegKey|RegDeleteTree|HKLM/)
 })
 
 test('composed cleanup preflight preserves one/two string candidates with native and legacy JSON enumeration', { skip: !powershell }, async () => {

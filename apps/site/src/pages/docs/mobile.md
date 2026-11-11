@@ -20,6 +20,13 @@ iOS 26 uses native Liquid Glass for floating controls. Older iOS uses system
 blur. Android and Reduce Transparency use solid controls. The app follows
 light and dark appearance and supports larger text.
 
+One list holds every bot and room. Your initials open Settings, + makes a bot
+or a room, and the grid button beside Search opens Bots & jobs. On iPhone Duo
+open and on iPad, the list sits beside the chat, like Messages. On iPhone and
+on iPhone Duo closed, a chat opens over the list with the system's back
+button, and on the closed Duo its buttons sit in the rail by the clock. It
+works in portrait and landscape.
+
 ## Build from source
 
 There is no App Store or Play Store release yet. From the repository root:
@@ -81,8 +88,8 @@ the phone from Devices returns it to pairing.
 Bots lists each bot with its role and description. Tap a bot to open your chat
 with it; each bot has one, which keeps going. Long-press a bot, or use the
 button at the top right of the chat, for its settings, where you pick its model
-and thinking level from the providers you have connected. A new model applies
-from the chat's next message.
+and thinking level from the providers you have connected, and turn on fast mode
+where the model offers it. A new model applies from the chat's next message.
 
 Rooms shows one room at a time, with a switcher when you have several. Daemon shows what your bots are doing now and
 opens settings, models, plugins (connectors, MCP servers, skills and built-in tools), jobs, About you, usage, bot
@@ -95,15 +102,24 @@ replaces Send until its bot finishes. Removing a room's last bot deletes the
 room, and the app asks first.
 
 Job details show the last status, error and up to 12,000 characters of output
-saved on the daemon. Attachments can be sent without text. The app asks the bot
+saved on the daemon. The + next to the message field attaches photos and
+videos from your phone, a photo or video you take with the camera, or any
+file. Attachments can be sent without text. The app asks the bot
 to review the files and keeps attachment chips until the send succeeds. A
 message carries only the files picked for it, and files picked for a chat you
 leave without sending are removed from the daemon. Older
 daemons show an update notice for unavailable attachment or job controls.
 
-When a bot's [heartbeat](/docs/bots-and-sections#heartbeat) writes to you,
-the phone gets a notification, if you allowed notifications and the daemon is
-on Hex Connect. The notification only says one of your bots has a message;
+When a bot's [heartbeat](/docs/bots-and-sections#heartbeat) writes to you, a
+bot finishes a reply you have not read within 30 seconds on any device, or a
+bot has waited 30 seconds for your approval or answer, the phone gets a
+notification, if you allowed notifications, the bot's Notify me is on and the
+daemon is on Hex Connect. A reply counts as read only once you look at it: a
+computer whose Hexbot window sits behind another app does not count. Settings,
+Notifications shows whether this phone takes them, sends a test, and has each
+bot's Notify me; while they are off, a banner over the chat list offers to
+turn them on. The notification only says one of your
+bots has a message;
 the message stays on your daemon until you open it. Tap it to open that bot's
 chat, on the right daemon if you have several. Each bot's checklist is under
 Heartbeat in its profile. The app does not

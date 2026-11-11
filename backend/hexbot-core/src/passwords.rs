@@ -2,9 +2,11 @@
 //! `users/<id>/passwords/passwords.kdbx`. Its key is a random 256-bit secret
 //! kept in the OS keychain (the macOS Keychain, or the Secret Service on
 //! Linux), or, where there is none, in `users/<id>/passwords/passwords.key`,
-//! readable by its owner only. Both, and the temporary files written on the
-//! way, stay in that one folder, which bots' shells can't read. The key is the
-//! vault's KeePass password, so KeePassXC and other KeePass apps open it too.
+//! readable by its owner only: its folder is mode 0700, or on Windows has a
+//! DACL for SYSTEM and the user alone (`osutil::private_dir`). Both, and the
+//! temporary files written on the way, stay in that one folder, which bots'
+//! shells can't read. The key is the vault's KeePass password, so KeePassXC
+//! and other KeePass apps open it too.
 //!
 //! Bots never read a password. They list logins (title, site, username),
 //! ask the user for one through a sign-in card, and have the daemon type it
@@ -68,14 +70,12 @@ fn dir(home: &Path, owner: &str) -> Result<PathBuf> {
     Ok(home.join("users").join(owner).join("passwords"))
 }
 /// The folder for the vault, its key and their temporary files, owner only.
+/// It is made private before anything is written into it, so on Windows the
+/// files inherit its DACL.
 fn private_dir(home: &Path, owner: &str) -> Result<()> {
     let dir = dir(home, owner)?;
     std::fs::create_dir_all(&dir)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
-    }
+    crate::osutil::private_dir(&dir)?;
     Ok(())
 }
 fn vault_path(home: &Path, owner: &str) -> Result<PathBuf> {

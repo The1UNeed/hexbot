@@ -1,6 +1,15 @@
 import { describe, it, expect } from 'vitest'
-import { heartbeatMessage, emptyChat, reduceChat, historyMessages, replayChat } from './chat'
+import { mediaOf } from '../../../web/src/lib/media'
+import {
+  heartbeatMessage,
+  emptyChat,
+  reduceChat,
+  historyMessages,
+  replayChat,
+  sharedFiles
+} from './chat'
 import type { GatewayEvent } from '@hermes/shared'
+import type { ChatState } from './types'
 const event = (type: string, payload: Record<string, unknown> = {}): GatewayEvent => ({
   type,
   session_id: 's1',
@@ -17,6 +26,21 @@ describe('chat event projection', () => {
     expect(s.messages.map(m => m.text)).toEqual(['Checking files.', 'Found two.'])
     expect(s.busy).toBe(false)
     expect(s.streaming).toBe('')
+  })
+  it('keeps a reply cut off by your next message ahead of that message', () => {
+    let s: ChatState = { ...emptyChat(), messages: [{ id: 'a', role: 'user', text: 'Write an essay' }] }
+    s = reduceChat(s, event('message.start'))
+    s = reduceChat(s, event('message.delta', { text: 'Bridges are' }))
+    s = { ...s, messages: [...s.messages, { id: 'b', role: 'user', text: 'Stop that' }] }
+    s = reduceChat(s, event('message.complete', { text: 'Bridges are' }))
+    s = reduceChat(s, event('message.start'))
+    s = reduceChat(s, event('message.complete', { text: 'A bridge spans a gap.' }))
+    expect(s.messages.map(m => m.text)).toEqual([
+      'Write an essay',
+      'Bridges are',
+      'Stop that',
+      'A bridge spans a gap.'
+    ])
   })
   it('shows Auto mode checking a step and keeps the turn busy after', () => {
     let s = reduceChat(emptyChat(), event('status.update', { kind: 'working', text: 'Working' }))
@@ -83,6 +107,30 @@ describe('chat event projection', () => {
     )
     expect(s.approvals[0].form).toBeUndefined()
   })
+  it("keeps a draft card's email so the phone can edit it", () => {
+    const form = {
+      kind: 'email_draft',
+      service: 'microsoft',
+      service_name: 'Outlook',
+      from: 'sam@contoso.com',
+      to: ['ana@example.com'],
+      cc: [],
+      bcc: [],
+      subject: 'Budget',
+      body: 'Numbers attached.',
+      reply_to: null
+    }
+    const s = reduceChat(
+      emptyChat(),
+      event('approval.request', { request_id: 'r1', command: 'Email to ana@example.com', form })
+    )
+    expect(s.approvals[0].form).toEqual(form)
+    const bad = reduceChat(
+      emptyChat(),
+      event('approval.request', { request_id: 'r2', form: { kind: 'email_draft', to: 'x' } })
+    )
+    expect(bad.approvals[0].form).toBeUndefined()
+  })
   it('moves a question card forward on a re-send with newer answers, never back', () => {
     const questions = [
       { qid: 'q1', question: 'Colour?' },
@@ -148,6 +196,36 @@ describe('restored tools and questions', () => {
       args: { html: '<p>42</p>' },
       status: 'ok'
     })
+  })
+  it('brings back the files you sent and the media a bot made', () => {
+    const kept = '/h/runtime/sessions/s/attachments/0123456789abcdef0123456789abcdef-clip.mp4'
+    const messages = historyMessages([
+      { role: 'user', content: `Watch this\n\nAttached files:\n${kept}` },
+      { role: 'assistant', text: '', tool_calls: [{ id: 'tts', function: { arguments: '{}' } }] },
+      {
+        role: 'tool',
+        name: 'text_to_speech',
+        tool_call_id: 'tts',
+        text: '{"media":"MEDIA:/h/profiles/owl/artifacts/audio/a1.mp3","success":true}'
+      },
+      { role: 'assistant', text: 'Here it is.' }
+    ])
+    expect(messages[0]).toMatchObject({
+      text: 'Watch this',
+      attachments: [{ kind: 'video', name: 'clip.mp4', path: kept }]
+    })
+    expect(
+      mediaOf(
+        (messages[1].tools ?? []).map(t => ({ name: t.name, result: t.detail, status: t.status }))
+      )
+    ).toEqual([
+      {
+        kind: 'audio',
+        mime: 'audio/mpeg',
+        name: 'a1.mp3',
+        path: '/h/profiles/owl/artifacts/audio/a1.mp3'
+      }
+    ])
   })
   it('restores only unanswered questions and preserves multiple-choice selection', () => {
     const state = reduceChat(
@@ -249,7 +327,12 @@ describe('heartbeat messages', () => {
   it('join the open thread once', () => {
     const once = heartbeatMessage(emptyChat(), 'heartbeat-1', 'BA 286 is two hours late.')
     expect(once.messages).toEqual([
-      { id: 'heartbeat-1', role: 'assistant', text: 'BA 286 is two hours late.', createdAt: expect.any(Number) }
+      {
+        id: 'heartbeat-1',
+        role: 'assistant',
+        text: 'BA 286 is two hours late.',
+        createdAt: expect.any(Number)
+      }
     ])
     expect(heartbeatMessage(once, 'heartbeat-1', 'BA 286 is two hours late.')).toBe(once)
     // Already in the history it loaded, under the same row id.
@@ -258,5 +341,29 @@ describe('heartbeat messages', () => {
       messages: historyMessages([{ role: 'assistant', text: 'Hi', row_id: 'heartbeat-2' }])
     }
     expect(heartbeatMessage(loaded, 'heartbeat-2', 'Hi')).toBe(loaded)
+  })
+})
+
+describe('sharedFiles', () => {
+  it('lists the files a bot shared once each, not the ones it only wrote', () => {
+    const tool = (id: string, name: string, path: string, status: 'ok' | 'error' = 'ok') => ({
+      args: JSON.stringify({ path }),
+      detail: '',
+      id,
+      name,
+      status
+    })
+    expect(
+      sharedFiles([
+        tool('a', 'write', '/work/make_audiobook.py'),
+        tool('b', 'hexbot_share_file', '/work/chapter-1.mp3'),
+        tool('c', 'hexbot_share_file', '/work/chapter-1.mp3'),
+        tool('d', 'hexbot_share_file', '/s/attachments/4157abc3ebd7498086605acf7dd52ace-notes.md'),
+        tool('e', 'hexbot_share_file', '/work/missing.md', 'error')
+      ])
+    ).toEqual([
+      { name: 'chapter-1.mp3', path: '/work/chapter-1.mp3' },
+      { name: 'notes.md', path: '/s/attachments/4157abc3ebd7498086605acf7dd52ace-notes.md' }
+    ])
   })
 })

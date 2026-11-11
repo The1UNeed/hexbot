@@ -8,7 +8,7 @@ use std::{
     path::Path,
 };
 
-pub const PLATFORM_HINT: &str = "You are chatting in Hexbot, a desktop app. Markdown renders with GitHub flavor: headings, lists, tables and fenced code. To hand over a file, give its absolute path or URL; the user opens it themselves. Scheduled jobs run on their own and their output is not delivered back into this conversation.";
+pub const PLATFORM_HINT: &str = "Hexbot renders GitHub-flavored Markdown. Hand over files by absolute path or URL. Scheduled job output doesn't come back to this chat.";
 
 pub fn defaults() -> Value {
     json!({
@@ -25,7 +25,9 @@ pub fn defaults() -> Value {
         "heartbeat_enabled": true,
         "default_model": null,
         "fallback_model": null,
-        "usage_data": false
+        "usage_data": false,
+        "soul_char_limit": crate::memory::DEFAULT_SOUL_CAP,
+        "memory_char_limit": crate::memory::DEFAULT_BOT_CAP
     })
 }
 
@@ -74,6 +76,7 @@ fn validate(patch: &Value) -> Result<()> {
                 .as_str()
                 .is_some_and(|s| !s.is_empty() && !s.contains('\0')),
             "dream_time" => value.as_str().is_some_and(clock),
+            "soul_char_limit" | "memory_char_limit" => crate::memory::valid_limit(value),
             "room_bot_turns_per_human_turn"
             | "room_budget_tokens_per_human_turn"
             | "bot_daily_token_budget" => value.is_null() || value.as_u64().is_some(),
@@ -188,6 +191,28 @@ pub fn update(home: &Path, caller: &str, patch: &Value) -> Result<Value> {
         None => {}
     }
     Ok(settings)
+}
+
+/// Drops the default and fallback model when they ran on a provider the user
+/// just removed, so nothing still points at it; apps then ask for a new one.
+pub fn forget_provider(home: &Path, caller: &str, provider: &str) -> Result<bool> {
+    let slug = crate::providers::canonical_provider(provider);
+    let settings = get(home)?;
+    let mut patch = serde_json::Map::new();
+    for key in ["default_model", "fallback_model"] {
+        if settings[key]
+            .as_str()
+            .and_then(|choice| choice.split_once('/'))
+            .is_some_and(|(p, _)| crate::providers::canonical_provider(p) == slug)
+        {
+            patch.insert(key.into(), Value::Null);
+        }
+    }
+    if patch.is_empty() {
+        return Ok(false);
+    }
+    update(home, caller, &Value::Object(patch))?;
+    Ok(true)
 }
 
 fn routes(home: &Path, user: &str) -> Result<BTreeMap<String, BTreeSet<String>>> {

@@ -44,8 +44,8 @@ lives in a small set of files:
 
 | File | Channel | Role |
 | --- | --- | --- |
-| `.github/workflows/ci.yml` | all | Tests and builds on every push and pull request. Publishes nothing. Also called by `release.yml`. Ends with `release-smoke.mjs` |
-| `.github/workflows/release.yml` | stable, nightly | One workflow for both channels: `preflight` picks the channel and version, `check` runs CI, `build` makes six packages, `installer` builds terminal and windowed installers, `publish` uploads the feeds and installers, creates the GitHub release, and after a nightly redeploys the site, `finalize` (stable only) commits the website manifest and casks |
+| `.github/workflows/ci.yml` | all | Tests and builds on every pull request and push to `main`; all macOS checks share one job. Publishes nothing. Also called by `release.yml`. Ends with `release-smoke.mjs` |
+| `.github/workflows/release.yml` | stable, nightly | One workflow for both channels: `preflight` picks the channel and version, `check` runs CI, `windows` runs the Windows sandbox boundary probes, `build` makes eight packages, `installer` builds terminal and windowed installers, `publish` uploads the feeds and installers, creates the GitHub release, and after a nightly redeploys the site, `finalize` (stable only) commits the website manifest and casks |
 | `scripts/desktop/release-version.mjs` | stable, nightly | Channel and version rules: tag must match `package.json`, nightly version format, product names. Tested in `packaging.test.mjs` |
 | `scripts/desktop/set-version.mjs` | all | Writes one version into `apps/desktop/package.json`, which Rust reads at build time |
 | `scripts/desktop/dist.mjs` | all | `--channel stable\|nightly\|dev` sets the product name and app id passed to electron-builder |
@@ -54,7 +54,7 @@ lives in a small set of files:
 | `install/<track>.json`, `install/<track>.txt` on the update server | stable, nightly | Current installer manifest and POSIX bootstrap index, rewritten with `no-cache` |
 | `install/<version>/` on the update server | stable, nightly | Immutable terminal installer binaries and Hexbot Installer DMG/AppImage files for each target |
 | `scripts/desktop/finalize-release.mjs` | stable | Rewrites `apps/site/public/downloads/manifest.json` and both Homebrew casks for a version |
-| `scripts/desktop/release-smoke.mjs` | stable, nightly | Runs the scripts above the way `release.yml` does, against synthetic packages. CI runs it on every push |
+| `scripts/desktop/release-smoke.mjs` | stable, nightly | Runs the scripts above the way `release.yml` does, against synthetic packages. CI runs it on every pull request and push to `main` |
 | `scripts/dev/run.mjs` | dev | `pnpm dev`: daemon and web bundle (or Electron) from the checkout with a per-checkout home and ports |
 | `.devcontainer/devcontainer.json` | dev | Rust from `rust-toolchain.toml`, Node 26 and locked agent dependencies; Python 3.11 and uv for handoff tests |
 | `apps/desktop/electron-builder.yml`, `electron-builder.client.yml` | all | Full and client-only package definitions and their feed URLs; channel flags override `productName` and `appId` |
@@ -89,7 +89,7 @@ and the casks.
 ## Nightly
 
 `release.yml` runs at 09:00 UTC. If `main` has not moved since the last
-nightly it stops in `preflight`. Otherwise it builds all six packages as
+nightly it stops in `preflight`. Otherwise it builds all eight packages as
 `<base>-nightly.<YYYYMMDD>.<run number>` and publishes a GitHub prerelease
 with that tag. `<base>` is the version the nightly leads to: the next patch
 after a plain `X.Y.Z` in `package.json`, or the same `X.Y.Z` when
@@ -142,24 +142,32 @@ builds. `HEXBOT_CHANNEL` is set at build time by `dist.mjs`.
 `updates.hexbot.app` is a Cloudflare R2 bucket behind a custom domain. The
 desktop app's electron-updater uses the generic provider against it, so
 updates do not depend on the GitHub repository being public and no code runs
-on the server. `release.yml` uploads this tree on every stable and nightly
-release:
+on the server. `release.yml` builds Full and Client for macOS arm64,
+macOS x64, Linux x64 and Windows x64. The Windows jobs use `windows-latest`, NSIS x64 for the
+app packages, and `x86_64-pc-windows-msvc` for the CLI installer. There is
+no Windows ARM target or Windows Tauri installer. Windows builds remain
+unsigned until signing credentials are wired. It uploads this tree on every
+stable and nightly release:
 
 ```
 full/mac/arm64/latest-mac.yml       stable feed  (electron-updater channel "latest")
 full/mac/arm64/nightly-mac.yml      nightly feed
 full/mac/arm64/Hexbot-<v>-mac-arm64.zip|.dmg
 full/mac/x64/...
-full/linux/x64/latest-linux.yml, nightly-linux.yml, Hexbot-<v>-linux-x64.AppImage|.deb
+full/linux/x64/latest-linux.yml, nightly-linux.yml
+full/linux/x64/Hexbot-<v>-linux-x86_64.AppImage, Hexbot-<v>-linux-amd64.deb
+full/win/x64/latest.yml, nightly.yml, Hexbot-<v>-win-x64.exe, .exe.blockmap
 client/...                          the same for HexbotClient-*
 daemon/native/<v>/<target>/manifest.json   native archive url/path, version, target and SHA-256
 daemon/native/<v>/<target>/manifest.json.sig   immutable release signatures
-daemon/native/<v>/<target>/hexbot-native-<v>-<target>.tar.gz
+daemon/native/<v>/<target>/hexbot-native-<v>-<target>.tar.gz   macOS/Linux
+daemon/native/<v>/windows-x86_64/hexbot-native-<v>-windows-x86_64.zip
 daemon/hexbot-src-<v>.tar.gz               handoff for existing Python services
 install/stable.json, install/nightly.json   install options, URLs, sizes and checksums
 install/stable.txt, install/nightly.txt     <target> <sha256> <url> for the CLI installer only
 install/<v>/<track>.json.sig               immutable install manifest signatures
-install/<v>/hexbot-install-<v>-<target>     terminal installer, one per native target
+install/<v>/hexbot-install-<v>-<target>     terminal installer, macOS/Linux
+install/<v>/hexbot-install-<v>-windows-x86_64.exe   Windows CLI installer
 install/<v>/HexbotInstaller-<v>-mac-arm64.dmg|mac-x64.dmg|linux-x86_64.AppImage
 ```
 
@@ -185,9 +193,10 @@ notice with no buttons until the app closes and reopens on the new version.
 Every check, download, and failure is written to `<home>/logs/desktop.log`.
 A nightly install ignores a stable version in the bucket and the other way
 round; switching tracks in Settings runs a check on the new track at once,
-with downgrades allowed. Windows has no published build or feed; how a track
-switch behaves in its local and CI probe builds is an open Windows gate
-(`docs/windows-build-contract.md`).
+with downgrades allowed. Windows release feeds use `full/win/x64/` and
+`client/win/x64/`, with
+`latest.yml` for Stable and `nightly.yml` for Nightly. The native Windows
+checks are in `docs/windows-build-contract.md`.
 
 ### Updating a daemon from a client
 
@@ -205,10 +214,13 @@ its machine. The daemon says how, through `update_capability` in
   `<home>/runtime/update-status.json` for `hexbot.update.status`, then
   relaunches and starts the new daemon. The app's track decides what is
   installed, so an app on the stable track cannot be pushed a nightly.
-- `service`: launchd or systemd runs the daemon. It downloads the manifest at
+- `service`: launchd, systemd or, on Windows, a per-user logon task runs the
+  daemon. It downloads the manifest at
   `daemon/native/<v>/<target>/manifest.json`, verifies its release signature,
   then downloads the matching archive and checks its SHA-256 and reported
-  version. It switches `runtime/native-executable` and restarts. Targets are `macos-aarch64`, `macos-x86_64` and `linux-x86_64`.
+  version. It switches `runtime/native-executable` (on Windows,
+  `runtime/native-current.json`) and restarts. Targets are `macos-aarch64`,
+  `macos-x86_64`, `linux-x86_64` and `windows-x86_64`.
   It retains the active runtime and its predecessor, protecting any older
   runtime still used by a running daemon. `HEXBOT_UPDATE_URL` selects an HTTPS
   mirror. Signed manifests retain an absolute `url` for older clients and add
@@ -267,8 +279,8 @@ Different on purpose:
   self-hosted; switching to `provider: github` is a one-line change in
   `electron-builder.base.yml` if that ever makes sense.
 - Nightlies run once a day, not every 30 minutes with a six-hour gap.
-- Two editions (full and client) instead of one app, and no Windows build
-  yet.
+- Two editions (full and client) instead of one app. Windows x64 uses the
+  same release matrix and feed generator as macOS and Linux.
 - No npm package to publish: the daemon ships inside the full package and the
   app updates it on launch.
 - Old nightlies are pruned to the last 14 on GitHub.

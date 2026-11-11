@@ -2,7 +2,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { ChevronRight } from 'lucide-react'
 import { type CSSProperties, lazy, Suspense, useEffect, useState } from 'react'
 
-import { type BotMemory, botMemoryGet, botMemorySet } from '../../lib/api'
+import { type BotMemory, botMemoryGet, botMemorySet, MEMORY_RESTORED } from '../../lib/api'
 import type { Bot } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 
@@ -17,7 +17,8 @@ const DocumentEditor = lazy(() =>
 
 /**
  * The bot's memory, read when the panel needs it and again after the bot
- * writes it (`writes` counts its finished memory steps in the chat).
+ * writes it (`writes` counts its finished memory steps in the chat) or a
+ * dream is restored in its settings.
  */
 export function useBotMemory(
   bot: string,
@@ -25,6 +26,16 @@ export function useBotMemory(
   writes: number
 ): [BotMemory | null, (memory: BotMemory) => void] {
   const [memory, setMemory] = useState<{ bot: string; value: BotMemory } | null>(null)
+  const [restores, setRestores] = useState(0)
+
+  useEffect(() => {
+    const reread = (event: Event) =>
+      (event as CustomEvent<string>).detail === bot && setRestores(count => count + 1)
+
+    window.addEventListener(MEMORY_RESTORED, reread)
+
+    return () => window.removeEventListener(MEMORY_RESTORED, reread)
+  }, [bot])
 
   useEffect(() => {
     if (!enabled) {
@@ -40,20 +51,21 @@ export function useBotMemory(
     return () => {
       live = false
     }
-  }, [bot, enabled, writes])
+  }, [bot, enabled, writes, restores])
 
   return [memory?.bot === bot ? memory.value : null, value => setMemory({ bot, value })]
 }
 
-/** 10.25.26, in the reader's own order of day and month. */
+/** 25/10/2026: day, month, year, whatever the reader's locale. */
 export function cardDate(seconds: null | number | undefined): string {
   if (!seconds) {
     return 'Not written yet'
   }
 
-  return new Date(seconds * 1000)
-    .toLocaleDateString(undefined, { day: '2-digit', month: '2-digit', year: '2-digit' })
-    .replace(/[/-]/g, '.')
+  const date = new Date(seconds * 1000)
+  const pad = (value: number) => String(value).padStart(2, '0')
+
+  return `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear()}`
 }
 
 /** A grain over the card's colour, drawn once: no motion, no repaint. */
@@ -159,7 +171,7 @@ export function FingerprintEditor({
     <Suspense fallback={null}>
       <DocumentEditor
         about={about(file, bot.display_name)}
-        cap={file === 'memory' ? memory?.cap : undefined}
+        cap={file === 'memory' ? (bot.memory_cap ?? memory?.cap) : bot.soul_cap}
         fileName={card.fileName}
         onClose={onClose}
         onSave={async text => {

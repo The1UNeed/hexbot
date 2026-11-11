@@ -12,13 +12,26 @@ use std::{
         process::CommandExt,
     },
     path::{Component, Path},
-    process::{Command, Stdio},
+    process::Stdio,
     time::{Duration, Instant},
 };
 struct Engine {
     pid: u32,
     created: u64,
     handle: OwnedHandle,
+}
+/// How long a process whose identity cannot be read may take to finish
+/// exiting. Stop is what ends the daemon, so it is often caught mid-exit:
+/// Windows refuses its token and image ("Access is denied") a moment before
+/// its handle is signalled. A process that is still there after this is live.
+const EXITING: u32 = 2_000;
+/// Which process a failed identity read was about; the OS error alone says
+/// "Access is denied" with nothing to act on.
+fn unverified(pid: u32, error: io::Error) -> io::Error {
+    io::Error::new(
+        error.kind(),
+        format!("Cannot verify process {pid} of the Windows task: {error}"),
+    )
 }
 struct Completion {
     engines: Vec<Engine>,
@@ -57,8 +70,8 @@ impl Completion {
                 Ok(created) => created,
                 // Only a signalled retained handle proves the acquisition race
                 // ended. Access denied/new/live identities never become absence.
-                Err(_) if identity::wait(handle.as_raw_handle(), 0)? => continue,
-                Err(error) => return Err(error),
+                Err(_) if identity::wait(handle.as_raw_handle(), EXITING)? => continue,
+                Err(error) => return Err(unverified(pid, error)),
             };
             engines.push(Engine {
                 pid,
@@ -119,8 +132,8 @@ impl Completion {
                         candidates.push((pid, engine.pid, engine.created, child, handle))
                     }
                     Ok(None) => {}
-                    Err(_) if identity::wait(handle.as_raw_handle(), 0)? => {}
-                    Err(error) => return Err(error),
+                    Err(_) if identity::wait(handle.as_raw_handle(), EXITING)? => {}
+                    Err(error) => return Err(unverified(pid, error)),
                 }
             }
             let second = identity::snapshot()?;
@@ -179,20 +192,18 @@ fn query(file: &Path, home: &Path, operation: &str, deadline: Instant) -> io::Re
     }
     let mut stdout = tempfile::tempfile()?;
     let mut stderr = tempfile::tempfile()?;
-    let mut child = Command::new(crate::windows_paths::system_program(
-        "WindowsPowerShell/v1.0/powershell.exe",
-    )?)
-    .args([
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        &super::control(file, home, operation)?,
-    ])
-    .creation_flags(0x08000000)
-    .stdin(Stdio::null())
-    .stdout(stdout.try_clone()?)
-    .stderr(stderr.try_clone()?)
-    .spawn()?;
+    let mut child = crate::windows_paths::system_powershell()?
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &super::control(file, home, operation)?,
+        ])
+        .creation_flags(0x08000000)
+        .stdin(Stdio::null())
+        .stdout(stdout.try_clone()?)
+        .stderr(stderr.try_clone()?)
+        .spawn()?;
     let remaining = deadline.saturating_duration_since(Instant::now());
     let waited = if remaining.is_zero() {
         Ok(false)
@@ -269,6 +280,7 @@ mod tests {
     use std::{
         io::{BufRead, BufReader, Write},
         os::windows::io::AsHandle,
+        process::Command,
         sync::mpsc,
         thread,
     };

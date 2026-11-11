@@ -1,6 +1,7 @@
 //! Native control for the pinned availability probes on the actual I386 and
-//! AMD64 Windows PowerShell hosts. Test-only: production never sets a policy
-//! or edits the module path. Runs before any package or download work.
+//! AMD64 Windows PowerShell hosts. Test-only: production never sets a policy,
+//! and names each host's own modules as its module path. Runs before any
+//! package or download work.
 use super::*;
 
 fn probe(

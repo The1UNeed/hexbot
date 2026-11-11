@@ -34,7 +34,8 @@ export interface ComposerShellProps {
 
 /**
  * The floating glass pill that wraps a message field: attach on the left,
- * an optional accessory and send or stop on the right. The 30px buttons sit
+ * an optional accessory and send or stop on the right. While the bot works
+ * the button is Stop until you type: then it is Send, which cuts the reply off. The 30px buttons sit
  * 8px from the pill's outer edge on every side, so they stay concentric with
  * its 23px corners as the field grows (46px tall for one line). They are
  * sized in px because the root font is 14px, which makes `size-8` 28px. The
@@ -58,7 +59,7 @@ export function ComposerShell({
   const tone = TONES[status]
 
   return (
-    <div className={cn('relative shrink-0 px-4 pt-2 pb-4', className)}>
+    <div className={cn('hex-composer-dock relative shrink-0 px-4 pt-2 pb-4', className)}>
       {above}
       {notice ? (
         <p
@@ -94,7 +95,7 @@ export function ComposerShell({
         )}
         <div className="min-w-0 flex-1 px-1">{children}</div>
         {accessory}
-        {streaming ? (
+        {streaming && !canSend ? (
           <button
             aria-label="Stop"
             className="hex-glass-press hex-focus hex-fade grid size-[30px] shrink-0 place-items-center rounded-full bg-foreground text-background hover:opacity-85"
@@ -125,4 +126,4 @@ export function ComposerShell({
 }
 
 export const composerFieldClass =
-  'block max-h-44 w-full resize-none border-0 bg-transparent px-1 py-1 text-[length:var(--text-body)] leading-[22px] text-foreground outline-none placeholder:text-muted disabled:opacity-50'
+  'block max-h-[min(--spacing(44),30dvh)] w-full resize-none border-0 bg-transparent px-1 py-1 text-[length:var(--text-body)] leading-[22px] text-foreground outline-none placeholder:text-muted disabled:opacity-50'

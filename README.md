@@ -28,6 +28,9 @@ also over SSH:
 curl -fsSL https://hexbot.app/install.sh | sh
 ```
 
+On Windows, download `hexbot-install-<version>-windows-x86_64.exe` from the
+download page and run it in PowerShell. Windows has no Hexbot Installer yet.
+
 Both offer three options and download only the one you choose:
 
 - **Full** (`Hexbot`): the app plus the daemon. Install where your bots
@@ -39,8 +42,9 @@ Both offer three options and download only the one you choose:
 
 Run the installer again to update or repair, change options, or uninstall;
 `~/.hexbot` is kept unless you ask to delete it. Full and Client are also
-direct downloads for macOS (Apple Silicon and Intel) and Linux (AppImage and
-deb). [Install](https://hexbot.app/docs/install/) has the details.
+direct downloads for macOS (Apple Silicon and Intel), Linux (AppImage and
+deb), and Windows 10 or later, 64-bit (installer .exe).
+[Install](https://hexbot.app/docs/install/) has the details.
 
 **Hexbot for iPhone** is in beta on
 [TestFlight](https://testflight.apple.com/join/byKAKWMW). Like Client, it
@@ -166,10 +170,10 @@ Electron end-to-end tests.
 One workflow, `.github/workflows/release.yml`, modelled on
 [T3 Code](https://github.com/pingdotgg/t3code)'s:
 
-- Every push and pull request runs `ci.yml`: tests and builds, no publishing.
+- Every pull request and push to `main` runs `ci.yml`: tests and builds, no publishing.
 - **Stable**: `node scripts/desktop/set-version.mjs 0.x.y-alpha.N`, write
   `docs/releases/0.x.y-alpha.N.md`, commit, push the `v0.x.y-alpha.N` tag.
-  The workflow runs CI, builds all six packages, uploads the update feed to
+  The workflow runs CI, builds all eight packages, uploads the update feed to
   `updates.hexbot.app`, creates the GitHub release, and commits the website
   manifest and Homebrew casks back to `main`.
 - **Nightly**: every day at 09:00 UTC when `main` moved, the same workflow
@@ -194,7 +198,7 @@ One workflow, `.github/workflows/release.yml`, modelled on
 ## Status
 
 Milestones 1 through 6 of `DESIGN.md` are implemented: daemon, pairing, the
-desktop app on macOS and Linux, sections and memory, Connect end to end,
+desktop app on macOS, Linux and Windows, sections and memory, Connect end to end,
 rooms and the turn engine, dreaming, and packaging. Milestone 5 now makes
 a daemon one person's; rooms with other people will go through Hex Connect. The first
 public alpha waits on Apple signing credentials and the Connect production

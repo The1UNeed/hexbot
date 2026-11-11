@@ -476,6 +476,32 @@ async fn fal_video_submits_scoped_payload_and_polls_same_origin_queue() {
     assert!(!out.to_string().contains("owl-fal-key"));
 }
 #[tokio::test]
+async fn fal_video_keeps_a_copy_in_the_bots_artifacts_for_the_chat() {
+    let mock = Mock::new().await;
+    let home = setup(&mock.base);
+    let env = home.path().join("profiles/owl/.env");
+    let mut text = fs::read_to_string(&env).unwrap();
+    text.push_str("HERMES_ALLOW_PRIVATE_URLS='true'\n");
+    fs::write(&env, text).unwrap();
+    let clip = format!("{}/files/clip.mp4", mock.base);
+    mock.reply("POST", VIDEO_ENDPOINT, json!({"video":{"url":clip}}));
+    mock.raw("GET", "/files/clip.mp4", StatusCode::OK, "fake mp4 bytes");
+    let out = call(
+        home.path(),
+        "owl",
+        "video_generate",
+        json!({"prompt":"A calm lake"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["video"], clip);
+    let path = Path::new(out["file_path"].as_str().unwrap());
+    assert!(path.starts_with(home.path().join("profiles/owl/artifacts/videos")));
+    assert_eq!(path.extension().unwrap(), "mp4");
+    assert_eq!(fs::read_to_string(path).unwrap(), "fake mp4 bytes");
+    assert_eq!(out["media"], format!("MEDIA:{}", path.display()));
+}
+#[tokio::test]
 async fn fal_video_uses_model_capabilities_for_images_and_optional_upscale() {
     let mock = Mock::new().await;
     let home = setup(&mock.base);

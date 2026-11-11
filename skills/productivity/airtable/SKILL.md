@@ -16,6 +16,10 @@ metadata:
 
 # Airtable — Bases, Tables & Records
 
+## In Hexbot
+
+The user saves the Airtable key in Settings, Plugins. Your shell never has it, so the token, install and `curl` steps below do not apply. Send each request in this skill with `hexbot_connector_read` (reads) or `hexbot_connector_write` (changes): the method, the path such as `/v0/BASE_ID/TABLE`, and the JSON body. Hexbot adds the host, the key. Never ask the user for their Airtable password or key, and do not sign in with a browser.
+
 ## Workspace and user setup
 
 Write generated files and nonsecret configuration drafts under `./hexbot-setup/` in the section working directory. Home paths below are final installation locations, including paths used by helper scripts and references. The user must run installation, migration, sign-in, and credential/configuration writes outside the bot shell. Do not write to `~/.hexbot` or `$HEXBOT_HOME` from a tool, and do not copy credentials into workspace drafts.
@@ -207,7 +211,7 @@ done
 
 ## Typical Hexbot Workflow
 
-1. **Confirm auth.** `curl -s -o /dev/null -w "%{http_code}\n" https://api.airtable.com/v0/meta/bases -H "Authorization: Bearer $AIRTABLE_API_KEY"` — expect `200`.
+1. **Confirm auth.** `hexbot_connector_read` with `GET /v0/meta/bases` — expect status `200`.
 2. **Find the base.** List bases (step above) OR ask the user for the `app...` ID directly if the token lacks `schema.bases:read`.
 3. **Inspect the schema.** `GET /v0/meta/bases/$BASE_ID/tables` — cache the exact field names and primary-field name locally in the session before mutating anything.
 4. **Read before you write.** For "update X where Y", `filterByFormula` first to resolve the `rec...` ID, then `PATCH /v0/$BASE_ID/$TABLE/$RECORD_ID`. Never guess record IDs.
@@ -225,8 +229,8 @@ done
 
 ## Important Notes for Hexbot
 
-- **Always use the `terminal` tool with `curl`.** Do NOT use `web_extract` (it can't send auth headers) or `browser_navigate` (needs UI auth and is slow).
-- **`AIRTABLE_API_KEY` flows from `${HERMES_HOME:-~/.hexbot}/.env` into the subprocess automatically** when this skill is loaded — no need to re-export it before each `curl` call.
+- **Always use `hexbot_connector_read` and `hexbot_connector_write`.** Do NOT use `curl` (your shell has no key), `web_extract` (it can't send auth headers) or a browser (needs UI auth and is slow).
+- **Hexbot adds the key.** Never ask the user for it or for their password.
 - **Escape curly braces in formulas carefully.** In a heredoc body, `{Status}` is literal. In a shell argument, `{Status}` is safe outside `{...}` brace-expansion context — but pass dynamic strings through `python urllib.parse.quote` before splicing into a URL.
 - **Pretty-print with `python -m json.tool`** (always present) rather than `jq` (optional). Only reach for `jq` when you need filtering/projection.
 - **Pagination is per-page, not global.** Airtable's 100-record cap is a hard limit; there is no way to bump it. Loop with `offset` until the field is absent.

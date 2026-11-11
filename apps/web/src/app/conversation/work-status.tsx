@@ -25,10 +25,11 @@ import {
 } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 
+import { ScrollArea } from '../../components/ui/scroll-area'
 import { cn } from '../../lib/cn'
 import type { Message, ToolCall } from '../../lib/types'
 
-import { ASKING_TOOL, asks, toolLabel } from './steps'
+import { activityLabel, ASKING_TOOL, asks, toolLabel } from './steps'
 
 const format = (value: unknown) =>
   typeof value === 'string' ? value : JSON.stringify(value, null, 2)
@@ -43,6 +44,7 @@ const ICONS: Record<string, LucideIcon> = {
   execute_code: Code,
   hexbot_passwords: KeyRound,
   hexbot_plugins: Puzzle,
+  hexbot_share_file: FileText,
   hexbot_show_html: ChartColumn,
   hexbot_soul: Sparkles,
   image_generate: Image,
@@ -121,14 +123,24 @@ export function StepRow({ call, meta }: { call: ToolCall; meta?: ReactNode }) {
         <div className="hex-unfold">
           <div className="mt-1 mb-2 ml-[34px] grid gap-1.5">
             {call.args != null ? (
-              <pre className="max-h-40 overflow-auto rounded-[10px] bg-foreground/[0.04] p-2.5 font-mono text-[length:var(--text-meta)] leading-relaxed">
-                {format(call.args)}
-              </pre>
+              <ScrollArea
+                className="max-h-40 overflow-hidden rounded-[10px] bg-foreground/[0.04]"
+                viewportClassName="overflow-auto"
+              >
+                <pre className="p-2.5 font-mono text-[length:var(--text-meta)] leading-relaxed">
+                  {format(call.args)}
+                </pre>
+              </ScrollArea>
             ) : null}
             {call.result !== null ? (
-              <pre className="max-h-60 overflow-auto rounded-[10px] bg-foreground/[0.04] p-2.5 font-mono text-[length:var(--text-meta)] leading-relaxed">
-                {format(call.result)}
-              </pre>
+              <ScrollArea
+                className="max-h-60 overflow-hidden rounded-[10px] bg-foreground/[0.04]"
+                viewportClassName="overflow-auto"
+              >
+                <pre className="p-2.5 font-mono text-[length:var(--text-meta)] leading-relaxed">
+                  {format(call.result)}
+                </pre>
+              </ScrollArea>
             ) : null}
           </div>
         </div>
@@ -147,11 +159,18 @@ const stepRunning = (message: Message) =>
  */
 export const isWorking = (message: Message) => message.streaming || stepRunning(message)
 
+/** The bots' computer step still running in this message, if any. */
+const computerStep = (message: Message) =>
+  message.toolCalls.findLast(call => call.status === 'running' && call.name === 'computer_use')
+
 /**
  * The live line at the foot of a running turn. It stays until the whole turn
  * is done: the bot's face, in the mood of its work, and "General is
- * working", no bubble behind it and nothing to open. A conversation shows what bots say, not how they
- * got there; the side panel's Computer tab still lists every step.
+ * working", no bubble behind it and nothing to open. On the bots' computer
+ * the face is a moving pointer and the words say what it does there:
+ * "General is clicking on the computer". A conversation shows what bots
+ * say, not how they got there; the side panel's Computer tab still lists
+ * every step.
  */
 export function LiveStatus({
   face,
@@ -168,7 +187,8 @@ export function LiveStatus({
     return null
   }
 
-  const label = `${name} is working`
+  const computer = message.checking ? undefined : computerStep(message)
+  const label = computer ? activityLabel(computer, name) : `${name} is working`
 
   return (
     <div

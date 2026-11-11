@@ -144,6 +144,8 @@ fn write_all(home: &Path, section: &str, key: &str, value: Value) -> Result<()> 
     }
     Ok(())
 }
+/// The provider in use: the one chosen, else the first whose key or setting
+/// is saved, else the connector's default (SearXNG for web search).
 fn selected(home: &Path, spec: &Value) -> Result<Option<Value>> {
     let config = read_config(home)?;
     let providers = spec["providers"].as_array().cloned().unwrap_or_default();
@@ -157,12 +159,51 @@ fn selected(home: &Path, spec: &Value) -> Result<Option<Value>> {
             return Ok(Some(p.clone()));
         }
     }
-    for p in providers {
-        if has_keys(home, None, &strings(&p["keys"]))? {
-            return Ok(Some(p));
+    if spec["id"] == "web_search" {
+        // In the order the search itself picks (`native_tools::web_backend`).
+        for (backend, key) in crate::native_tools::WEB_BY_KEY {
+            if value(home, None, key)?.is_some()
+                && let Some(p) = providers.iter().find(|p| {
+                    strings(&p["selection"])
+                        .get(2)
+                        .is_some_and(|b| b == backend)
+                })
+            {
+                return Ok(Some(p.clone()));
+            }
+        }
+    } else {
+        for p in &providers {
+            if has_keys(home, None, &strings(&p["keys"]))? {
+                return Ok(Some(p.clone()));
+            }
         }
     }
-    Ok(None)
+    Ok(spec["default_provider"]
+        .as_str()
+        .and_then(|id| providers.into_iter().find(|p| p["id"] == id)))
+}
+/// The fields that belong to one provider alone.
+fn provider_fields(spec: &Value, provider: &Value) -> Vec<String> {
+    spec["fields"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|f| f["provider"] == provider["id"])
+        .filter_map(|f| f["key"].as_str().map(str::to_owned))
+        .collect()
+}
+/// Whether a connector works for `bot` (or the daemon): its provider needs
+/// no key, as the free web searches do, or every key it needs is saved.
+fn set_up_for(home: &Path, bot: Option<&str>, spec: &Value, required: &[String]) -> Result<bool> {
+    // Google and Microsoft are set up once the user signs in (accounts.rs).
+    if let Some(account) = spec["account"].as_str() {
+        return crate::accounts::connected(home, account);
+    }
+    if required.is_empty() && selected(home, spec)?.is_some() {
+        return Ok(true);
+    }
+    has_keys(home, bot, required)
 }
 fn has_keys(home: &Path, bot: Option<&str>, keys: &[String]) -> Result<bool> {
     for k in keys {
@@ -239,8 +280,22 @@ fn assigned(entry: &Value, bot: &str) -> bool {
 }
 /// The servers a bot may use: daemon-level ones assigned to it, plus servers
 /// defined only in its own profile. A profile entry never redefines a
-/// daemon-level server; one marked disabled still withholds it.
+/// daemon-level server; one marked disabled still withholds it. A daemon-level
+/// server still waiting for a value reaches no bot.
 pub fn mcp_servers(home: &Path, bot: &str) -> Result<Value> {
+    let root = read_config(home)?;
+    let mut servers = granted_servers(home, bot)?;
+    if let Some(servers) = servers.as_object_mut() {
+        servers.retain(|name, entry| {
+            !root["mcp_servers"].get(name).is_some_and(Value::is_object)
+                || missing_values(entry).is_empty()
+        });
+    }
+    Ok(servers)
+}
+/// The servers given to a bot, set up or not: what assignments and their
+/// migration count, so a value still missing never takes a server's bots.
+fn granted_servers(home: &Path, bot: &str) -> Result<Value> {
     let root = read_config(home)?;
     let config = read_config(&profile(home, bot)?)?;
     let mut servers = root["mcp_servers"].as_object().cloned().unwrap_or_default();
@@ -319,7 +374,7 @@ pub(crate) fn mcp_bots(home: &Path, server: &str) -> Result<Vec<String>> {
 pub(crate) fn assigned_bots(home: &Path, server: &str) -> Result<Vec<String>> {
     let mut bots = vec![];
     for bot in names(home)? {
-        if mcp_servers(home, &bot)?.get(server).is_some() {
+        if granted_servers(home, &bot)?.get(server).is_some() {
             bots.push(bot);
         }
     }
@@ -364,11 +419,7 @@ fn mcp_cwd(home: &Path, bot: Option<&str>) -> Result<PathBuf> {
     }
     let path = home.join("runtime/mcp").join(bot.unwrap_or("probe"));
     fs::create_dir_all(&path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
-    }
+    crate::osutil::private_dir(&path)?;
     Ok(fs::canonicalize(path)?)
 }
 
@@ -430,7 +481,15 @@ pub(crate) fn enabled(home: &Path, bot: &str, id: &str) -> Result<bool> {
     }
     Ok(strings(&s["toolsets"]).iter().all(|t| tools.contains(t)))
 }
+/// Turn a connector on or off for one bot. One that is not set up for that
+/// bot can be turned off but not on.
 pub(crate) fn set_enabled(home: &Path, bot: &str, id: &str, on: bool) -> Result<()> {
+    if on {
+        let row = get(home, Some(bot), id)?;
+        if row["ready"] != true {
+            return Err(not_set_up(row["name"].as_str().unwrap_or(id)));
+        }
+    }
     if !id.starts_with("mcp:") {
         let s = spec(id)?;
         if let Some(skill) = s["skill"].as_str() {
@@ -449,6 +508,10 @@ pub(crate) fn set_enabled(home: &Path, bot: &str, id: &str, on: bool) -> Result<
         });
     }
     set_toolsets(home, bot, id, on)
+}
+/// Why a plugin that is not set up can't be given to a bot.
+pub(crate) fn not_set_up(name: &str) -> Error {
+    Error::new(4209, format!("Set up {name} before giving it to a bot."))
 }
 /// Turn a catalog connector's toolsets on or off for one bot.
 pub(crate) fn set_toolsets(home: &Path, bot: &str, id: &str, on: bool) -> Result<()> {
@@ -510,7 +573,8 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
     for s in catalog() {
         let id = s["id"].as_str().unwrap();
         let provider = selected(home, &s)?;
-        let ready = has_keys(home, bot, &required_keys(home, &s)?)?;
+        let required = required_keys(home, &s)?;
+        let ready = set_up_for(home, bot, &s, &required)?;
         let last = if ready { last_test(home, id)? } else { None };
         let err = incidents.iter().find(|i| i["connector"] == id);
         let (state, mut state_text) = if let Some(err) = err {
@@ -541,18 +605,42 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
                 "ready",
                 if last.as_ref().is_some_and(|v| v["probed"] == true) {
                     "Connected"
+                } else if required.is_empty() {
+                    "Ready"
                 } else {
                     "Key saved"
                 }
                 .to_string(),
             )
+        } else if let Some(account) = s["account"].as_str()
+            && crate::accounts::summary(home, account)?.is_some_and(|a| a["expired"] == true)
+        {
+            ("error", "Sign in again".to_string())
         } else {
             ("not_set_up", "Not set up".to_string())
         };
+        let account = match s["account"].as_str() {
+            Some(account) => crate::accounts::summary(home, account)?,
+            None => None,
+        };
+        if state == "ready"
+            && let Some(email) = account
+                .as_ref()
+                .and_then(|a| a["email"].as_str())
+                .filter(|e| !e.is_empty())
+        {
+            state_text = email.to_owned();
+        }
         if state == "ready"
             && let Some(p) = &provider
         {
             state_text.push_str(&format!(" · {}", p["label"].as_str().unwrap_or("")));
+            // The SearXNG Hexbot runs: starting, or why it is not running.
+            if p["id"] == "searxng"
+                && let Some(note) = crate::searxng::note(home)
+            {
+                state_text.push_str(&format!(" ({note})"));
+            }
         }
         let mut fields = s["fields"].as_array().unwrap().clone();
         for field in &mut fields {
@@ -571,16 +659,27 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
         let providers = if let Some(ps) = s["providers"].as_array() {
             let mut result = vec![];
             for p in ps {
-                result.push(json!({"id":p["id"],"label":p["label"],"configured":has_keys(home,None,&strings(&p["keys"]))?}));
+                result.push(json!({"id":p["id"],"label":p["label"],"description":p["description"],"configured":has_keys(home,None,&strings(&p["keys"]))?}));
             }
             json!(result)
         } else {
             Value::Null
         };
+        // A bot has a connector once it is on and set up for that bot; a
+        // default left on before setup gives it to nobody. A key in a bot's
+        // own `.env` sets it up for that bot alone.
         let mut bots = vec![];
+        let mut ready_bots = vec![];
+        // On for a bot but waiting for its key: kept, and given once set up.
+        let mut waiting_bots = vec![];
         for n in &names {
-            if enabled(home, n, id)? {
-                bots.push(n.clone())
+            if set_up_for(home, Some(n), &s, &required)? {
+                ready_bots.push(n.clone());
+                if enabled(home, n, id)? {
+                    bots.push(n.clone())
+                }
+            } else if enabled(home, n, id)? {
+                waiting_bots.push(n.clone());
             }
         }
         out.push(json!({
@@ -598,6 +697,13 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
             "fields": fields,
             "enabled_for_bot": bot.map(|b| bots.iter().any(|n| n == b)),
             "enabled_bots": bots,
+            "ready_bots": ready_bots,
+            "account": s["account"].as_str().map(|service| json!({
+                "service": service,
+                "email": account.as_ref().map(|a| a["email"].clone()),
+                "signed_in": account.is_some(),
+            })),
+            "waiting_bots": waiting_bots,
             "last_error": err.map(|e| {
                 json!({
                 "text":e["text"],
@@ -614,15 +720,33 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
             }
             let id = format!("mcp:{name}");
             let err = incidents.iter().find(|e| e["connector"] == id);
+            let disabled = entry["disabled"] == true;
+            let missing = missing_values(entry);
+            let ready = !disabled && missing.is_empty();
             let mut bots = vec![];
             for n in &names {
                 if enabled(home, n, &id)? {
                     bots.push(n.clone())
                 }
             }
-            let disabled = entry["disabled"] == true;
             let tested = last_test(home, &id)?;
             let failed = tested.as_ref().is_some_and(|v| v["ok"] == false);
+            // A value left empty keeps the server from starting, so it
+            // outranks an error from an earlier run.
+            let (state, state_text) = if !missing.is_empty() {
+                ("not_set_up", format!("Needs {}", missing.join(", ")))
+            } else if let Some(e) = err {
+                (
+                    "error",
+                    e["text"].as_str().unwrap_or("").chars().take(80).collect(),
+                )
+            } else if failed {
+                ("error", "Test failed".to_string())
+            } else if disabled {
+                ("not_set_up", "Disabled".to_string())
+            } else {
+                ("ready", "Running".to_string())
+            };
             let description = entry["url"].as_str().map(str::to_owned).unwrap_or_else(|| {
                 std::iter::once(entry["command"].as_str().unwrap_or("").to_string())
                     .chain(strings(&entry["args"]))
@@ -636,24 +760,9 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
                 "group": "mcp",
                 "icon": "glyph:server",
                 "scope": "daemon",
-                "ready": !disabled,
-                "state": if err.is_some() || failed {
-                    "error"
-                } else if disabled {
-                    "not_set_up"
-                } else {
-                    "ready"
-                },
-                "state_text": err
-                    .map(|e| {
-                        e["text"]
-                            .as_str()
-                            .unwrap_or("")
-                            .chars()
-                            .take(80)
-                            .collect::<String>()
-                    })
-                    .unwrap_or_else(|| if disabled { "Disabled" } else if failed { "Test failed" } else { "Running" }.to_string()),
+                "ready": ready,
+                "state": state,
+                "state_text": state_text,
                 "providers": null,
                 "provider": null,
                 "fields": [],
@@ -680,6 +789,16 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
         }
     }
     Ok(json!({"connectors":out}))
+}
+/// The env or header values a server was added with but left empty: the
+/// user still has to fill them in before it can start.
+pub(crate) fn missing_values(entry: &Value) -> Vec<String> {
+    [&entry["env"], &entry["headers"]]
+        .into_iter()
+        .flat_map(|v| v.as_object().into_iter().flatten())
+        .filter(|(_, v)| v.as_str().is_some_and(str::is_empty))
+        .map(|(k, _)| k.clone())
+        .collect()
 }
 pub(crate) fn get(home: &Path, bot: Option<&str>, id: &str) -> Result<Value> {
     list(home, bot)?["connectors"]
@@ -769,6 +888,19 @@ async fn probe(home: &Path, id: &str, bot: Option<&str>) -> Result<Value> {
         return Ok(result);
     }
     let s = spec(id)?;
+    if let Some(account) = s["account"].as_str() {
+        let result = crate::accounts::probe(home, account).await?;
+        save_test(home, id, &result, true)?;
+        return Ok(result);
+    }
+    if id == "web_search"
+        && let Some(provider) = selected(home, &s)?
+        && strings(&provider["keys"]).is_empty()
+    {
+        let (result, probed) = probe_free_search(home, bot, &provider).await;
+        save_test(home, id, &result, probed)?;
+        return Ok(result);
+    }
     let keys = required_keys(home, &s)?;
     if keys.is_empty() {
         return Ok(json!({"ok":false,"message":"Choose a provider first."}));
@@ -853,6 +985,43 @@ async fn probe(home: &Path, id: &str, bot: Option<&str>) -> Result<Value> {
     };
     save_test(home, id, &result, true)?;
     Ok(result)
+}
+/// Test a web search that needs no key with one real search. The SearXNG
+/// Hexbot runs starts first; until it runs, bots search with Tavily and
+/// Wikipedia, and the answer says so. Returns the result and whether a
+/// service answered.
+async fn probe_free_search(home: &Path, bot: Option<&str>, provider: &Value) -> (Value, bool) {
+    const FALLBACK: &str = "Until it runs, bots search with Tavily and Wikipedia.";
+    if provider["id"] == "searxng" && crate::searxng::chosen(home) {
+        if !crate::searxng::wanted(home) {
+            return (
+                json!({"ok":true,"message":format!("SearXNG needs Docker on the daemon's computer. {FALLBACK}")}),
+                false,
+            );
+        }
+        // A first start downloads SearXNG; it runs on after the test stops
+        // waiting, which it does before the apps' 30-second request deadline.
+        let owned = home.to_owned();
+        let task = tokio::spawn(async move { crate::searxng::ensure(&owned).await });
+        return match tokio::time::timeout(Duration::from_secs(25), task).await {
+            Ok(Ok(Ok(_))) => (
+                json!({"ok":true,"message":"SearXNG is running on this computer."}),
+                true,
+            ),
+            Ok(Ok(Err(e))) => (
+                json!({"ok":true,"message":format!("SearXNG did not start: {}. {FALLBACK}", e.message)}),
+                false,
+            ),
+            _ => (
+                json!({"ok":true,"message":format!("SearXNG is still starting. {FALLBACK}")}),
+                false,
+            ),
+        };
+    }
+    match crate::native_tools::test_search(home, bot).await {
+        Ok(()) => (json!({"ok":true,"message":"Connected."}), true),
+        Err(e) => (json!({"ok":false,"message":e.message}), true),
+    }
 }
 /// The bots a plugin goes to after the caller picks `value`, a list of bot
 /// names they own. Bots in `current` that belong to someone else stay.
@@ -1031,8 +1200,20 @@ async fn dispatch(home: &Path, caller: &str, method: &str, p: &Value) -> Result<
                 let chosen = if let Some(name) = p["provider"].as_str().filter(|s| !s.is_empty()) {
                     ps.iter().find(|p| p["id"] == name).cloned()
                 } else {
+                    // The provider whose keys were sent, then one whose own
+                    // optional setting was, then the one in use.
                     ps.iter()
-                        .find(|p| strings(&p["keys"]).iter().all(|k| values.contains_key(k)))
+                        .find(|p| {
+                            let keys = strings(&p["keys"]);
+                            !keys.is_empty() && keys.iter().all(|k| values.contains_key(k))
+                        })
+                        .or_else(|| {
+                            ps.iter().find(|p| {
+                                provider_fields(&s, p)
+                                    .iter()
+                                    .any(|k| values.contains_key(k))
+                            })
+                        })
                         .cloned()
                         .or(selected(home, &s)?)
                 };
@@ -1112,9 +1293,12 @@ async fn dispatch(home: &Path, caller: &str, method: &str, p: &Value) -> Result<
                     let a = strings(&p["selection"]);
                     write_all(home, &a[0], &a[1], Value::Null)?;
                 }
-                for bot in names(home)? {
-                    if enabled(home, &bot, id)? {
-                        set_enabled(home, &bot, id, false)?;
+                // Web search goes back to its free default and stays on.
+                if id != "web_search" || get(home, None, id)?["ready"] != true {
+                    for bot in names(home)? {
+                        if enabled(home, &bot, id)? {
+                            set_enabled(home, &bot, id, false)?;
+                        }
                     }
                 }
             }
@@ -1756,7 +1940,7 @@ pub fn tool_available(home: &Path, bot: &str, tool: &str) -> Result<bool> {
     for spec in catalog() {
         if strings(&spec["tools"]).iter().any(|name| name == tool) {
             return Ok(enabled(home, bot, spec["id"].as_str().unwrap())?
-                && has_keys(home, Some(bot), &required_keys(home, &spec)?)?);
+                && set_up_for(home, Some(bot), &spec, &required_keys(home, &spec)?)?);
         }
     }
     Ok(true)

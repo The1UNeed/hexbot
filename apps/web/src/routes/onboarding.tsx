@@ -3,7 +3,12 @@ import { ArrowRight, ArrowUp, Plus } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { UsageDataSummary } from '../app/settings/privacy'
-import { ConnectorFields, connectorValues } from '../components/connector-fields'
+import {
+  connectorFieldMissing,
+  ConnectorFields,
+  connectorFieldsFor,
+  connectorValues
+} from '../components/connector-fields'
 import { isSubscription, ProviderPanel, supportsApiKey } from '../components/provider-panel'
 import { Avatar } from '../components/ui/avatar'
 import { Button } from '../components/ui/button'
@@ -11,6 +16,7 @@ import { Chip } from '../components/ui/chip'
 import { ConnectorIcon } from '../components/ui/connector-icon'
 import type { HexbotActName } from '../components/ui/hexbot-act'
 import { Input } from '../components/ui/input'
+import { ScrollArea } from '../components/ui/scroll-area'
 import { Select } from '../components/ui/select'
 import { Switch } from '../components/ui/switch'
 import { Textarea } from '../components/ui/textarea'
@@ -28,7 +34,7 @@ import {
   userMemoryGet,
   userMemorySet
 } from '../lib/api'
-import { avatarPng, type AvatarStyle, botFace, styleForName } from '../lib/avatar-builder'
+import { avatarPng, type AvatarStyle, botFace, randomStyle } from '../lib/avatar-builder'
 import { type DaemonProgress, getBridge, hasLocalRuntime, isElectron } from '../lib/bridge'
 import { cn } from '../lib/cn'
 import { connectTo, setLocalDaemonPort } from '../lib/connection'
@@ -149,7 +155,7 @@ export function ContinueStep({
       <div className="grid w-full flex-1 place-items-center py-8">
         <Avatar {...botFace(bot)} name={bot.display_name} size="xl" />
       </div>
-      <SetupActions className="pb-[12vh]">
+      <SetupActions className="pb-[12dvh]">
         <Button
           busy={busy}
           className={PILL}
@@ -253,10 +259,10 @@ function SetupFrame({
   title: string
 }) {
   return (
-    <main className="relative flex min-h-screen flex-col items-center bg-background px-6 text-foreground">
+    <main className="relative flex min-h-dvh flex-col items-center bg-background px-6 text-foreground">
       <div aria-hidden className="hex-drag absolute inset-x-0 top-0 h-11" />
       <div className="hex-rise flex w-full max-w-[520px] flex-1 flex-col items-center" key={title}>
-        <h1 className="pt-[13vh] text-center text-[22px] leading-snug font-medium">{title}</h1>
+        <h1 className="pt-[13dvh] text-center text-[22px] leading-snug font-medium">{title}</h1>
         {subtitle ? <p className="mt-1 text-center text-secondary text-muted">{subtitle}</p> : null}
         {children}
       </div>
@@ -286,7 +292,7 @@ function TourPage({
   return (
     <SetupFrame title={title}>
       <div className="grid w-full flex-1 place-items-center py-8">{children}</div>
-      <SetupActions className="pb-[12vh]">
+      <SetupActions className="pb-[12dvh]">
         <Button className={PILL} data-testid="onboarding-next" onClick={next} variant="primary">
           Next
         </Button>
@@ -411,9 +417,9 @@ export function InstallStep({
         </div>
         <details className="w-full pb-10 text-center text-secondary text-muted" open>
           <summary className="cursor-pointer">Install log</summary>
-          <pre className="mt-2 max-h-40 overflow-y-auto text-left whitespace-pre-wrap font-mono text-meta">
-            {log}
-          </pre>
+          <ScrollArea className="mt-2 max-h-40">
+            <pre className="text-left whitespace-pre-wrap font-mono text-meta">{log}</pre>
+          </ScrollArea>
         </details>
       </SetupFrame>
     )
@@ -450,9 +456,9 @@ export function InstallStep({
       </div>
       <details className="w-full pb-10 text-center text-secondary text-muted">
         <summary className="cursor-pointer">Install log</summary>
-        <pre className="mt-2 max-h-40 overflow-y-auto text-left whitespace-pre-wrap font-mono text-meta">
-          {log}
-        </pre>
+        <ScrollArea className="mt-2 max-h-40">
+          <pre className="text-left whitespace-pre-wrap font-mono text-meta">{log}</pre>
+        </ScrollArea>
       </details>
     </SetupFrame>
   )
@@ -581,7 +587,7 @@ export function ChoiceStep({
       <div className="grid w-full flex-1 place-items-center py-8">
         <HexbotMark size={64} />
       </div>
-      <SetupActions className="pb-[12vh]">
+      <SetupActions className="pb-[12dvh]">
         <Button
           autoFocus
           className={PILL}
@@ -653,49 +659,51 @@ function ProvidersStep({
         placeholder="Search providers"
         value={search}
       />
-      <ul className="max-h-[42vh] divide-y divide-border overflow-y-auto rounded-panel border border-border">
-        {filtered.map(item => {
-          const open = selected === item.id
+      <ScrollArea className="max-h-[42dvh] overflow-hidden rounded-2xl bg-foreground/[0.04]">
+        <ul className="divide-y divide-foreground/[0.07]">
+          {filtered.map(item => {
+            const open = selected === item.id
 
-          return (
-            <li key={item.id}>
-              <button
-                aria-expanded={open}
-                className={cn(
-                  'flex w-full items-center justify-between gap-3 px-4 py-3 text-left outline-none transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent',
-                  open && 'bg-surface-2'
-                )}
-                data-testid={`onboarding-provider-item-${item.id}`}
-                onClick={() => setSelected(open ? null : item.id)}
-                type="button"
-              >
-                <span className="font-medium">{item.label}</span>
-                <Chip
-                  tone={item.configured ? 'success' : isSubscription(item) ? 'accent' : 'neutral'}
+            return (
+              <li key={item.id}>
+                <button
+                  aria-expanded={open}
+                  className={cn(
+                    'flex w-full items-center justify-between gap-3 px-4 py-3 text-left outline-none transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent',
+                    open && 'bg-surface-2'
+                  )}
+                  data-testid={`onboarding-provider-item-${item.id}`}
+                  onClick={() => setSelected(open ? null : item.id)}
+                  type="button"
                 >
-                  {item.configured
-                    ? 'Connected'
-                    : isSubscription(item)
-                      ? 'Subscription'
-                      : supportsApiKey(item)
-                        ? 'API key'
-                        : 'Setup required'}
-                </Chip>
-              </button>
-              {open ? (
-                <div className="border-t border-border bg-background px-4 py-4">
-                  <ProviderPanel onConfigured={refresh} provider={item} />
-                </div>
-              ) : null}
+                  <span className="font-medium">{item.label}</span>
+                  <Chip
+                    tone={item.configured ? 'success' : isSubscription(item) ? 'accent' : 'neutral'}
+                  >
+                    {item.configured
+                      ? 'Connected'
+                      : isSubscription(item)
+                        ? 'Subscription'
+                        : supportsApiKey(item)
+                          ? 'API key'
+                          : 'Setup required'}
+                  </Chip>
+                </button>
+                {open ? (
+                  <div className="border-t border-foreground/[0.07] px-4 py-4">
+                    <ProviderPanel onConfigured={refresh} provider={item} />
+                  </div>
+                ) : null}
+              </li>
+            )
+          })}
+          {filtered.length === 0 ? (
+            <li className="px-4 py-6 text-center text-secondary text-muted">
+              {providers ? 'No providers match.' : 'Loading providers'}
             </li>
-          )
-        })}
-        {filtered.length === 0 ? (
-          <li className="px-4 py-6 text-center text-secondary text-muted">
-            {providers ? 'No providers match.' : 'Loading providers'}
-          </li>
-        ) : null}
-      </ul>
+          ) : null}
+        </ul>
+      </ScrollArea>
       <p className="text-center text-secondary text-muted">
         {configured.length === 0
           ? 'Connect at least one provider to continue.'
@@ -1079,6 +1087,16 @@ function ToolPanel({
   const [error, setError] = useState<string | null>(null)
   const sending = connectorValues(connector, provider, values)
 
+  // A free provider needs nothing typed; one already in use, nothing new.
+  const unchanged =
+    Object.keys(sending).length === 0 &&
+    provider === connector.provider &&
+    connector.state === 'ready'
+
+  const blocked =
+    unchanged ||
+    connectorFieldsFor(connector, provider).some(field => connectorFieldMissing(field, values))
+
   const save = async () => {
     setBusy(true)
     setError(null)
@@ -1129,7 +1147,7 @@ function ToolPanel({
         busy={busy}
         className="justify-self-end"
         data-testid={`onboarding-tool-save-${connector.id}`}
-        disabled={Object.keys(sending).length === 0}
+        disabled={blocked}
         type="submit"
         variant="primary"
       >
@@ -1162,48 +1180,52 @@ export function ToolsStep({
 
   return (
     <div className="w-full space-y-4 py-8">
-      <ul className="max-h-[52vh] divide-y divide-border overflow-y-auto rounded-panel border border-border">
-        {(tools ?? []).map(item => {
-          const open = selected === item.id
+      <ScrollArea className="max-h-[52dvh] overflow-hidden rounded-2xl bg-foreground/[0.04]">
+        <ul className="divide-y divide-foreground/[0.07]">
+          {(tools ?? []).map(item => {
+            const open = selected === item.id
 
-          return (
-            <li key={item.id}>
-              <button
-                aria-expanded={open}
-                className={cn(
-                  'flex w-full items-center gap-3 px-4 py-3 text-left outline-none transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent',
-                  open && 'bg-surface-2'
-                )}
-                data-testid={`onboarding-tool-item-${item.id}`}
-                onClick={() => setSelected(open ? null : item.id)}
-                type="button"
-              >
-                <ConnectorIcon icon={item.icon} />
-                <span className="min-w-0 flex-1">
-                  <span className="block font-medium">{item.name}</span>
-                  <span className="block text-secondary text-muted">{item.description}</span>
-                </span>
-                <Chip tone={item.state === 'ready' ? 'success' : 'neutral'}>{item.state_text}</Chip>
-              </button>
-              {open ? (
-                <div className="border-t border-border bg-background px-4 py-4">
-                  <ToolPanel
-                    connector={item}
-                    onSaved={saved =>
-                      setTools(current =>
-                        (current ?? []).map(tool => (tool.id === saved.id ? saved : tool))
-                      )
-                    }
-                  />
-                </div>
-              ) : null}
-            </li>
-          )
-        })}
-        {tools === null ? (
-          <li className="px-4 py-6 text-center text-secondary text-muted">Loading tools</li>
-        ) : null}
-      </ul>
+            return (
+              <li key={item.id}>
+                <button
+                  aria-expanded={open}
+                  className={cn(
+                    'flex w-full items-center gap-3 px-4 py-3 text-left outline-none transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent',
+                    open && 'bg-surface-2'
+                  )}
+                  data-testid={`onboarding-tool-item-${item.id}`}
+                  onClick={() => setSelected(open ? null : item.id)}
+                  type="button"
+                >
+                  <ConnectorIcon icon={item.icon} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-medium">{item.name}</span>
+                    <span className="block text-secondary text-muted">{item.description}</span>
+                  </span>
+                  <Chip tone={item.state === 'ready' ? 'success' : 'neutral'}>
+                    {item.state_text}
+                  </Chip>
+                </button>
+                {open ? (
+                  <div className="border-t border-foreground/[0.07] px-4 py-4">
+                    <ToolPanel
+                      connector={item}
+                      onSaved={saved =>
+                        setTools(current =>
+                          (current ?? []).map(tool => (tool.id === saved.id ? saved : tool))
+                        )
+                      }
+                    />
+                  </div>
+                ) : null}
+              </li>
+            )
+          })}
+          {tools === null ? (
+            <li className="px-4 py-6 text-center text-secondary text-muted">Loading tools</li>
+          ) : null}
+        </ul>
+      </ScrollArea>
       <p className="text-center text-secondary text-muted">
         {ready.length === 0
           ? "Bots cannot use a tool until it is set up. You can do it later in a bot's Connectors."
@@ -1255,7 +1277,8 @@ function OnboardingPage() {
     setCreating(true)
 
     try {
-      const face = styleForName('hexbot')
+      // A random face, as every bot gets; its name never picks it.
+      const face = randomStyle()
       const avatar = await avatarPng(face)
 
       if (current()) {
@@ -1433,7 +1456,7 @@ function OnboardingPage() {
 
   if (creating) {
     return (
-      <main className="grid min-h-screen place-items-center bg-background text-foreground">
+      <main className="grid min-h-dvh place-items-center bg-background text-foreground">
         <div className="hex-rise">
           <div className="flex flex-col items-center gap-5">
             <HexbotMark act="type" className={ACT_ROOM} size={132} />
@@ -1446,7 +1469,7 @@ function OnboardingPage() {
 
   if (step === 'welcome') {
     return (
-      <main className="relative grid min-h-screen place-items-center bg-background px-6 text-foreground">
+      <main className="relative grid min-h-dvh place-items-center bg-background px-6 text-foreground">
         <div aria-hidden className="hex-drag absolute inset-x-0 top-0 h-11" />
         <WelcomeStep onStart={() => setStep('meet')} />
       </main>

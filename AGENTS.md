@@ -48,8 +48,8 @@ Use these words consistently in code, UI copy, docs, and commit messages.
 - **Daemon**: the Hexbot server process (`hexbot serve`) that runs bots, rooms, memory, tools, and serves the WebSocket API and the web UI. A daemon belongs to one person: no invites, roles, or other accounts. One person may run several daemons and switch between them; rooms with other people go through Hex Connect.
 - **App**: the Electron desktop shell in `apps/desktop/` hosting the React bundle from `apps/web/`. The same bundle is served by the daemon to LAN browsers.
 - **Full package**: the app with a local daemon. **Client-only**: the same app connected to a daemon elsewhere. Together, the two **editions**. The installer and its UI call them **Full** and **Client**.
-- **Headless**: the install option for the daemon alone, without the app: the native runtime in `~/.hexbot/runtime`, a launchd or systemd user service (`hexbot service`), and the `hexbot` CLI in `~/.local/bin`. Used from another computer with Client or Full. Not an edition. Internal id `headless`.
-- **Installer**: the one installer for Headless, Client, and Full, with two ways in: the terminal installer (`curl -fsSL https://hexbot.app/install.sh | sh`, which runs `hexbot-install`) and the windowed **Hexbot Installer** (.dmg, AppImage). Both use the engine in `backend/hexbot-installer/`, read `install/<track>.json` on the update server, download only the chosen option, and on a second run offer Update or repair, Change, and Uninstall. `~/.hexbot` is kept unless the user asks to delete it.
+- **Headless**: the install option for the daemon alone, without the app: the native runtime in `~/.hexbot/runtime`, a launchd or systemd user service or, on Windows, a logon task (`hexbot service`), and the `hexbot` CLI in `~/.local/bin`. Used from another computer with Client or Full. Not an edition. Internal id `headless`.
+- **Installer**: the one installer for Headless, Client, and Full, with two ways in: the terminal installer (`curl -fsSL https://hexbot.app/install.sh | sh`, which runs `hexbot-install`; on Windows, `hexbot-install.exe` run directly) and the windowed **Hexbot Installer** (.dmg, AppImage; none on Windows). Both use the engine in `backend/hexbot-installer/`, read `install/<track>.json` on the update server, download only the chosen option, and on a second run offer Update or repair, Change, and Uninstall. `~/.hexbot` is kept unless the user asks to delete it.
 - **Channel**: how a build is named and published. **Stable** (tagged `v<version>`, updatable; named `Hexbot [alpha]` while the version is `0.x`), **Nightly** (`Hexbot Nightly`, daily from `main`, updatable on its own track), **Dev** (the source tree). See `docs/channels.md`.
 - **Track**: the channel an installed app takes updates from, Stable or Nightly. Defaults to the channel the build came from; the user switches it in Settings, Updates.
 - **Update server**: `updates.hexbot.app`, a Cloudflare R2 bucket holding every package, the electron-updater feed files, the native daemon archives, and the installers with their `install/<track>.json` manifests. Written only by `release.yml`.
@@ -62,9 +62,10 @@ Use these words consistently in code, UI copy, docs, and commit messages.
 - **Turn**: one user message and everything the bots do in response. The room turn engine (`backend/hexbot-core/src/rooms.rs`) decides who speaks.
 - **Soul**: a bot's persona, the `SOUL.md` in its profile. The user and the bot both edit it; the bot says so when it does.
 - **Visual**: an interactive HTML page (chart, table, diagram, mockup) a bot shows in its chat with `hexbot_show_html`. It sits in a bubble above the bot's final reply, in a sandboxed frame, and can open beside the chat as a tab. Not available in rooms.
-- **Plugin**: anything a bot can use beyond its own tools, all in Settings, Plugins, on three tabs, where the user chooses the bots that get each one: a **connector** (a service Hexbot supports, such as web search or Notion, set up with a key), an **MCP server** (one the user or a bot adds), or a **skill**. Every row has an icon: a brand glyph where one fits, otherwise a plain one; skills the user or a bot writes share one. A **plugin package** installs an MCP server with the skills that explain it, or several skills, as one, in `~/.hexbot/plugins/<name>/`. A bot asks for a plugin with `hexbot_plugins`; installing or turning one on always asks the user, even in Bypass, and puts it on for that bot only. The primary bot can do the same for any bot from its own chat and remove packages. Internal names `plugins.rs`, `hexbot.plugins.*`.
+- **Plugin**: anything a bot can use beyond its own tools, all in Settings, Plugins, on three tabs, where the user chooses the bots that get each one: a **connector** (a service Hexbot supports, such as web search or Notion, set up with a key or a sign-in), an **MCP server** (one the user or a bot adds), or a **skill**. Every row has an icon: a brand glyph where one fits, otherwise a plain one; skills the user or a bot writes share one. A **plugin package** installs an MCP server with the skills that explain it, or several skills, as one, in `~/.hexbot/plugins/<name>/`. A bot asks for a plugin with `hexbot_plugins`; installing or turning one on always asks the user, even in Bypass, and puts it on for that bot only. The primary bot can do the same for any bot from its own chat and remove packages. Internal names `plugins.rs`, `hexbot.plugins.*`.
 - **Computer use**: the bots' own computer, one Cua sandbox per daemon, a Linux desktop separate from the user's. Every bot has it: bots run code, install programs, browse and use apps there, never on the daemon's computer. It replaced the Code execution, Browser and Cloud browser tools. Settings, Manuals, Computer use holds its size and controls; a bot's Computer tab shows its screen. Internal names `computers.rs`, `computer_use`, `hexbot.computer.*`.
 - **Passwords**: the sign-ins a user saves for their bots, in Settings, Passwords, kept in one KeePass (KDBX 4) vault per user, `users/<id>/passwords/passwords.kdbx`, whose key is in the OS keychain or an owner-only key file. A bot lists the logins it may use and has the daemon type one into a page with `hexbot_passwords`; it never sees a password. When none fits, it shows a **sign-in card** in its chat, and what the user types there is saved for every bot. The user, or the primary bot from its own chat, chooses which bots get each login. Internal names `passwords.rs`, `runtime_passwords.rs`, `hexbot.passwords.*`.
+- **Email**: Gmail and Outlook, through the **Google Workspace** and **Microsoft 365** connectors, set up by signing in once per daemon in Settings, Plugins (Microsoft with a device code, Google with a browser that returns to the daemon or an address pasted back). The grant stays in `accounts/<service>.json`, which bots' tools can't read except in Bypass (`SECURITY.md`). A bot searches and reads mail and writes a **draft card** in its chat: the user edits it, then sends it or saves it to Drafts, and the card settles once the mailbox took it. The mail tool can't send any other way, in any approval mode. Own chat and scheduled jobs only. Internal names `accounts.rs`, `mail.rs`, `runtime_mail.rs`, `hexbot_mail`, `hexbot.accounts.*`.
 - **Notes**: a bot's daily record in `memories/notes/YYYY-MM-DD.md`. The bot appends during conversations; dreaming folds what lasts into memory. The user can edit or delete a day. Days older than 30 days are removed when notes are read, listed, appended, or a dream runs.
 - **Memory**: a bot's durable facts, preferences, and lessons, the `MEMORY.md` in its profile. The bot writes it during chat, dreaming curates it, the user can edit it.
 - **About you**: one text per user, written only by the user and read by every bot they own (`users/<id>/user.md`).
@@ -178,7 +179,7 @@ pnpm --filter ./apps/connect run typecheck && pnpm --filter ./apps/connect run t
 node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs && node scripts/desktop/release-smoke.mjs
 ```
 
-`ci.yml` runs all of these on every push and pull request, and `release.yml`
+`ci.yml` runs all of these on every pull request and push to `main`, and `release.yml`
 runs it again before building packages.
 
 Backend tests wait on events and RPC replies, never on `sleep`.
@@ -192,6 +193,11 @@ A change is done when it works in every place the feature appears:
 - **Install options**: Full, Client, and Headless. A daemon feature that a
   user sets up in the app must also be reachable from a paired app or the
   `hexbot` CLI when no app runs on the daemon's computer.
+- **Platforms**: macOS, Linux x64, and Windows x64; no Linux or Windows ARM
+  packages. Daemon code that touches files, processes, services, or the
+  sandbox needs its Windows path too. On macOS or Linux,
+  `cargo check --target x86_64-pc-windows-gnu` shows it still compiles
+  (`docs/testing.md`, "Windows"); the Windows workflows run it natively.
 - **Clients**: the Electron app, the browser bundle served by the daemon,
   and the mobile app in `apps/mobile` (iOS and Android). A change a user can
   see or use in `apps/web` lands in `apps/mobile` in the same PR, or the PR
@@ -214,12 +220,12 @@ Code"): one `release.yml` for both channels, a stable tag, a scheduled
 nightly, and a finalize step that commits bookkeeping back to `main`.
 
 - `main` is always buildable. CI (`ci.yml`) runs tests and builds on every
-  push and pull request and publishes nothing.
+  pull request and push to `main` and publishes nothing.
 - A **stable** release is a `v<version>` tag on `main` where `<version>`
   equals `apps/desktop/package.json` (`preflight` refuses anything else).
   Push the tag, or dispatch `release.yml` on `main` with channel `stable`
   and the run creates it.
-  `release.yml` runs CI, builds six packages, uploads the feed to
+  `release.yml` runs CI, builds eight packages, uploads the feed to
   `updates.hexbot.app`, creates the GitHub release (prerelease while the
   version has a suffix, "latest" for a plain `X.Y.Z`), then `finalize`
   commits the website manifest and the Homebrew casks to `main`.
@@ -264,6 +270,14 @@ exercise the graph.
   and every bot's profile, scheduled jobs and all rooms behind the grid
   button next to Search. There are no tabs. A new feature finds its place
   in one of these; it does not add a tab or a home-screen section.
+- Native components only where the system has to place something. On iOS
+  that is SwiftUI's `NavigationSplitView` (`@expo/ui`,
+  `apps/mobile/src/shell/SplitView.tsx`), which puts the list beside the
+  chat on iPhone Duo open and iPad, its navigation stack, which pushes
+  settings areas, profiles and room settings beside the list, and the top
+  bars' items, which iOS moves into iPhone Duo's side rail. Everything inside
+  the columns, the list, its grid button and Search, the chat and its
+  composer, every settings page, is Hexbot's own.
 
 ## Cursor Cloud specific instructions
 

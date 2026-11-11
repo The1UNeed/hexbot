@@ -238,3 +238,43 @@ async fn sections_open_sends_only_new_history_after_a_cursor() {
     assert_eq!(same["pending_requests"], json!([]));
     runtime.shutdown().await;
 }
+
+/// Apps read a chat ahead of time: its bot stays asleep, the cursor works the
+/// same as `hexbot.sections.open`, and nobody else can read it.
+#[tokio::test]
+async fn section_history_reads_without_starting_the_bot() {
+    let (home, runtime, _) = setup();
+    let h = home.path();
+    store::append(h, "first", json!({"role":"user","text":"Early"})).unwrap();
+    let read = crate::catalog::section_history(h, "alice", &json!({"id":"first"})).unwrap();
+    assert_eq!(read["history_delta"], false);
+    assert_eq!(read["messages"][0]["text"], "Early");
+    assert!(runtime.sessions.lock().unwrap().is_empty());
+    assert!(!h.join("processes.jsonl").exists());
+    store::append(h, "first", json!({"role":"assistant","text":"Later"})).unwrap();
+    let next = crate::catalog::section_history(
+        h,
+        "alice",
+        &json!({"id":"first","history_cursor":read["history_cursor"]}),
+    )
+    .unwrap();
+    assert_eq!(next["history_delta"], true);
+    assert_eq!(next["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(next["messages"][0]["text"], "Later");
+    let opened = runtime
+        .call(
+            "alice",
+            "hexbot.sections.open",
+            &json!({"id":"first","history_cursor":next["history_cursor"]}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(opened["history_delta"], true);
+    assert_eq!(opened["messages"], json!([]));
+    let error = crate::catalog::section_history(h, "bob", &json!({"id":"first"})).unwrap_err();
+    assert_eq!(error.code, 4302);
+    let error = crate::catalog::section_history(h, "alice", &json!({"id":"gone"})).unwrap_err();
+    assert_eq!(error.code, 4204);
+    runtime.shutdown().await;
+}

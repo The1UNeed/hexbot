@@ -1,38 +1,13 @@
 import type { SearchEntry, SearchFile } from '../../lib/search'
 import type { Message, RoomEvent } from '../../lib/types'
+import { filesOf } from '../conversation/shared-files'
 import { visualsOf } from '../conversation/visual'
 
 export * from '../../lib/search'
 
-/** Tools that write a file at their `path` argument: Pi's and the earlier names. */
-const WRITE_TOOLS = new Set(['edit', 'patch', 'write', 'write_file'])
-
-const baseName = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path
-
-/** The files a bot's message wrote, from its finished write and edit calls. */
-function writtenFiles(message: Pick<Message, 'toolCalls'>): SearchFile[] {
-  return message.toolCalls.flatMap(call => {
-    if (!WRITE_TOOLS.has(call.name) || call.status !== 'ok') {
-      return []
-    }
-
-    const args = typeof call.args === 'string' ? parse(call.args) : call.args
-    const record = args && typeof args === 'object' ? (args as Record<string, unknown>) : {}
-
-    const path = [record.path, record.file_path].find(
-      (value): value is string => typeof value === 'string' && value.trim() !== ''
-    )
-
-    return path ? [{ name: baseName(path), path }] : []
-  })
-}
-
-function parse(text: string): unknown {
-  try {
-    return JSON.parse(text)
-  } catch {
-    return null
-  }
+/** The files a bot's message shared, as the chat shows them. */
+function sharedFiles(message: Pick<Message, 'toolCalls'>): SearchFile[] {
+  return filesOf(message).map(({ name, path }) => ({ name, path }))
 }
 
 /** A bot's chat as search entries. */
@@ -53,7 +28,7 @@ export function chatEntries(
         author: assistant ? names.bot : (names.you ?? 'You'),
         files: [
           ...message.attachments.map(attachment => ({ attachment, name: attachment.name })),
-          ...(assistant ? writtenFiles(message) : [])
+          ...(assistant ? sharedFiles(message) : [])
         ],
         id: message.id,
         text: [...(message.parts ?? []), message.text].filter(Boolean).join('\n'),

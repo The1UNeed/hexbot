@@ -1,6 +1,7 @@
-import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
 
+import * as api from '../../lib/api'
 import type { Message } from '../../lib/types'
 import {
   resetTranscriptEffects,
@@ -81,6 +82,26 @@ describe('MessageRow', () => {
     expect(screen.queryByRole('button')).toBeNull()
     expect(screen.queryByText(/Soul updated|Memory updated|Thought for|Worked for/)).toBeNull()
     expect(screen.queryByText(/short answers|Warm but efficient|Files are local/)).toBeNull()
+  })
+
+  it('draws nothing for a step that only used tools, but keeps the gap above an ask', () => {
+    const call = (name: string, args: Record<string, unknown> = {}) => ({
+      args,
+      durationS: 1,
+      name,
+      result: null,
+      startedAt: 1,
+      status: 'ok' as const,
+      toolId: name
+    })
+
+    const { container } = row({ toolCalls: [call('hexbot_plugins')] })
+    expect(container).toBeEmptyDOMElement()
+    container.remove()
+
+    row({ toolCalls: [call('message_bot', { to: 'writer' })] })
+    expect(screen.getByTestId('bot-message')).toHaveClass('pt-4')
+    expect(screen.getByTestId('asking-rows')).toBeInTheDocument()
   })
 
   it('keeps Copy beside your own messages', () => {
@@ -191,5 +212,267 @@ describe('CheckingRow', () => {
     )
 
     expect(screen.getAllByRole('status')).toHaveLength(1)
+  })
+})
+
+describe('MessageRow files', () => {
+  const file = {
+    id: 'f',
+    kind: 'file' as const,
+    mime: 'text/csv',
+    name: 'pins.csv',
+    path: '/s/attachments/pins.csv',
+    size: 2048
+  }
+
+  const image = {
+    dataUrl: 'data:image/png;base64,AA==',
+    id: 'i',
+    kind: 'image' as const,
+    mime: 'image/png',
+    name: 'board.png',
+    size: 10
+  }
+
+  it('opens a picture over the chat and any other file beside it', () => {
+    const onFile = vi.fn()
+    const onImage = vi.fn()
+    render(
+      <MessageRow
+        message={message({ attachments: [file, image], role: 'user', text: 'Check these' })}
+        onFile={onFile}
+        onImage={onImage}
+        onRetry={() => {}}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open pins.csv beside the chat' }))
+    expect(onFile).toHaveBeenCalledWith({
+      mime: 'text/csv',
+      name: 'pins.csv',
+      path: '/s/attachments/pins.csv',
+      url: undefined
+    })
+    expect(onImage).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByAltText('board.png'))
+    expect(onImage).toHaveBeenCalledWith('data:image/png;base64,AA==')
+  })
+
+  it('keeps Recall on a message of files alone, with nothing to copy', () => {
+    const onRecall = vi.fn()
+    render(
+      <MessageRow
+        message={message({ attachments: [file], role: 'user', text: '' })}
+        onFile={() => {}}
+        onImage={() => {}}
+        onRecall={onRecall}
+        onRetry={() => {}}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Recall' }))
+    expect(onRecall).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('button', { name: 'Copy' })).toBeNull()
+  })
+
+  it('plays a video where it is', () => {
+    render(
+      <MessageRow
+        message={message({
+          attachments: [
+            {
+              id: 'v',
+              kind: 'video',
+              mime: 'video/mp4',
+              name: 'bench.mp4',
+              size: 4000,
+              url: 'blob:bench'
+            }
+          ],
+          role: 'user',
+          text: ''
+        })}
+        onFile={() => {}}
+        onImage={() => {}}
+        onRetry={() => {}}
+      />
+    )
+
+    const video = screen.getByLabelText('bench.mp4')
+    expect(video.tagName).toBe('VIDEO')
+    expect(video).toHaveAttribute('src', 'blob:bench')
+    expect(video).toHaveAttribute('controls')
+  })
+
+  it('plays what the bot made or shared from the daemon, under its reply', async () => {
+    const read = vi.spyOn(api, 'filesRead').mockImplementation(async (_session, path) => ({
+      data_url: `data:${path.endsWith('.mp3') ? 'audio/mpeg' : 'video/mp4'};base64,AAAA`,
+      mime: path.endsWith('.mp3') ? 'audio/mpeg' : 'video/mp4',
+      modified: 0,
+      name: path.split('/').pop()!,
+      path,
+      size: 3,
+      version: 'v'
+    }))
+
+    const made = vi.fn(() => 'blob:made')
+    URL.createObjectURL = made
+    URL.revokeObjectURL = vi.fn()
+
+    const voice = '/home/profiles/owl/artifacts/audio/a1.mp3'
+
+    render(
+      <MessageRow
+        message={message({
+          text: 'Here it is.',
+          toolCalls: [
+            {
+              args: { text: 'Hello' },
+              durationS: 0,
+              name: 'text_to_speech',
+              // Live, a Pi result: its text and its details name the file once.
+              result: {
+                content: [{ text: JSON.stringify({ media: `MEDIA:${voice}` }), type: 'text' }],
+                details: { file_path: voice, media: `MEDIA:${voice}` }
+              },
+              startedAt: 0,
+              status: 'ok',
+              toolId: 't'
+            },
+            {
+              args: { path: 'clip.mp4' },
+              durationS: 0,
+              name: 'hexbot_share_file',
+              result: '{"name":"clip.mp4","shared":true,"size":3}',
+              startedAt: 0,
+              status: 'ok',
+              toolId: 's'
+            },
+            {
+              // It shared the voice reply too: it still shows once.
+              args: { path: voice },
+              durationS: 0,
+              name: 'hexbot_share_file',
+              result: '{"name":"a1.mp3","shared":true,"size":3}',
+              startedAt: 0,
+              status: 'ok',
+              toolId: 'v'
+            },
+            {
+              args: { path: 'notes.md' },
+              durationS: 0,
+              name: 'hexbot_share_file',
+              result: '{"name":"notes.md","shared":true,"size":3}',
+              startedAt: 0,
+              status: 'ok',
+              toolId: 'n'
+            },
+            {
+              args: {},
+              durationS: 0,
+              name: 'video_generate',
+              // From history, the result's text.
+              result: '{"media":"MEDIA:/art/videos/lake.mp4","video":"https://fal.test/lake"}',
+              startedAt: 0,
+              status: 'ok',
+              toolId: 'g'
+            },
+            {
+              args: { text: 'Again' },
+              durationS: 0,
+              name: 'text_to_speech',
+              result: { error: 'speech provider did not create audio' },
+              startedAt: 0,
+              status: 'error',
+              toolId: 'e'
+            }
+          ]
+        })}
+        onFile={() => {}}
+        onImage={() => {}}
+        onRetry={() => {}}
+        sessionId="live-1"
+      />
+    )
+
+    const [audio, ...again] = await screen.findAllByLabelText('a1.mp3')
+    expect(again).toEqual([])
+    expect(audio!.tagName).toBe('AUDIO')
+    expect(audio).toHaveAttribute('src', 'blob:made')
+    expect((await screen.findByLabelText('clip.mp4')).tagName).toBe('VIDEO')
+    expect((await screen.findByLabelText('lake.mp4')).tagName).toBe('VIDEO')
+    // A shared document stays a card that opens beside the chat.
+    expect(
+      screen.getByRole('button', { name: 'Open notes.md beside the chat' })
+    ).toBeInTheDocument()
+    expect(read.mock.calls.map(call => call[1]).sort()).toEqual(
+      ['/art/videos/lake.mp4', 'clip.mp4', voice].sort()
+    )
+    // The players sit under the reply, with the files it shared.
+    expect(
+      audio!.compareDocumentPosition(screen.getByText('Here it is.')) &
+        Node.DOCUMENT_POSITION_PRECEDING
+    ).toBeTruthy()
+    read.mockRestore()
+  })
+
+  it('shows no media in a room', () => {
+    row({
+      text: 'Here it is.',
+      toolCalls: [
+        {
+          args: {},
+          durationS: 0,
+          name: 'text_to_speech',
+          result: '{"media":"MEDIA:/home/artifacts/audio/a1.mp3"}',
+          startedAt: 0,
+          status: 'ok',
+          toolId: 't'
+        }
+      ]
+    })
+
+    expect(screen.getByText('Here it is.')).toBeInTheDocument()
+    expect(screen.queryByText('a1.mp3')).toBeNull()
+  })
+
+  it('offers the files the bot shared, not the ones it only wrote, and none in a room', () => {
+    const step = (name: string, path: string, toolId: string) => ({
+      args: { content: '# Plan', path },
+      durationS: 0,
+      name,
+      result: null,
+      startedAt: 0,
+      status: 'ok' as const,
+      toolId
+    })
+
+    const wrote = message({
+      text: 'I drafted it.',
+      toolCalls: [
+        step('write', '/work/make_plan.py', 'w1'),
+        step('write', '/work/plan.md', 'w2'),
+        step('hexbot_share_file', '/work/plan.md', 's')
+      ]
+    })
+
+    const onFile = vi.fn()
+
+    const { unmount } = render(
+      <MessageRow message={wrote} onFile={onFile} onImage={() => {}} onRetry={() => {}} />
+    )
+
+    expect(screen.queryByRole('button', { name: 'Open make_plan.py beside the chat' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Open plan.md beside the chat' }))
+    expect(onFile).toHaveBeenCalledWith({
+      mime: 'text/markdown',
+      name: 'plan.md',
+      path: '/work/plan.md'
+    })
+    unmount()
+
+    render(<MessageRow message={wrote} onImage={() => {}} onRetry={() => {}} />)
+    expect(screen.queryByRole('button', { name: 'Open plan.md beside the chat' })).toBeNull()
   })
 })

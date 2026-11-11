@@ -1,5 +1,5 @@
 use hexbot_core::{
-    Error, Result, auth, common, db,
+    Error, Result, auth, common, db, osutil,
     server::{self, App},
     services,
 };
@@ -94,15 +94,6 @@ fn finish_native_transition(home: &Path) -> Result<()> {
         && std::fs::symlink_metadata(venv.join("bin")).is_ok_and(|m| m.file_type().is_dir())
         && std::fs::read(venv.join("bin/hexbot"))
             .is_ok_and(|bytes| bytes.starts_with(b"#!/bin/sh\n"));
-    fn remove(path: &Path) -> Result<()> {
-        match std::fs::symlink_metadata(path) {
-            Ok(meta) if meta.file_type().is_dir() => std::fs::remove_dir_all(path)?,
-            Ok(_) => std::fs::remove_file(path)?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-        Ok(())
-    }
     if keep_shim {
         // Leave the old entrypoint continuously available, including if cleanup
         // is interrupted by a crash or the service manager restarting us.
@@ -112,22 +103,32 @@ fn finish_native_transition(home: &Path) -> Result<()> {
                 for binary in std::fs::read_dir(entry.path())? {
                     let binary = binary?;
                     if binary.file_name() != "hexbot" {
-                        remove(&binary.path())?;
+                        osutil::remove_entry(&binary.path())?;
                     }
                 }
             } else {
-                remove(&entry.path())?;
+                osutil::remove_entry(&entry.path())?;
             }
         }
     } else {
-        remove(&venv)?;
+        osutil::remove_entry(&venv)?;
     }
-    remove(&runtime.join("src"))?;
+    osutil::remove_entry(&runtime.join("src"))?;
     std::fs::remove_file(marker)?;
     Ok(())
 }
 
+/// The app's readiness probe, `hexbot service`, setup and the installer check
+/// the home lock by taking it for a moment. Only a process that keeps it owns
+/// the home, so a starting daemon gives a check three seconds to let go.
+const HOME_LOCK_ATTEMPTS: u32 = 60;
+
 fn lock_home(home: &Path) -> Result<std::fs::File> {
+    lock_home_with(home, || {
+        std::thread::sleep(std::time::Duration::from_millis(50))
+    })
+}
+fn lock_home_with(home: &Path, mut pause: impl FnMut()) -> Result<std::fs::File> {
     std::fs::create_dir_all(home)?;
     let path = home.join("native-daemon.lock");
     let mut options = std::fs::OpenOptions::new();
@@ -138,14 +139,69 @@ fn lock_home(home: &Path) -> Result<std::fs::File> {
         options.mode(0o600);
     }
     let mut file = options.open(path)?;
-    if file.try_lock().is_err() {
-        return Err(Error::new(4208, "a daemon already owns this home"));
+    let mut attempt = 1;
+    loop {
+        match file.try_lock() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock) if attempt < HOME_LOCK_ATTEMPTS => {
+                attempt += 1;
+                pause();
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(Error::new(4208, "a daemon already owns this home"));
+            }
+            Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
+        }
     }
     refuse_legacy_listener(home)?;
     file.set_len(0)?;
     write!(file, "{}", std::process::id())?;
     file.sync_all()?;
     Ok(file)
+}
+/// The app's readiness probe, setup and the installers read these records
+/// while the daemon starts. On Windows `common::atomic_write` replaces with
+/// MoveFileEx, which fails with "Access is denied" while any reader holds the
+/// old file open (tests/windows_contract.rs, `publication`). std's rename
+/// then retries with POSIX semantics, which replaces the file when every
+/// reader shares delete, as Node, Rust and the app's readiness probe do.
+#[cfg(windows)]
+fn publish_record(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let parent = path
+        .parent()
+        .ok_or_else(|| Error::new(4202, "invalid path"))?;
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_default();
+    let step = |phase: &str| common::io_context(format!("{phase} {name}"));
+    std::fs::create_dir_all(parent).map_err(step("create directory for"))?;
+    // Only the daemon holding the home lock publishes, so its PID and a
+    // counter keep names unique. std creates it with ordinary attributes.
+    let temporary = parent.join(format!(
+        ".{name}.{}-{}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut file =
+        std::fs::File::create_new(&temporary).map_err(step("create temporary file for"))?;
+    let written = file
+        .write_all(bytes)
+        .map_err(step("write"))
+        .and_then(|()| file.sync_all().map_err(step("flush")));
+    drop(file);
+    let published =
+        written.and_then(|()| std::fs::rename(&temporary, path).map_err(step("replace")));
+    if published.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    published
+}
+#[cfg(not(windows))]
+fn publish_record(path: &Path, bytes: &[u8]) -> Result<()> {
+    common::atomic_write(path, bytes)
 }
 /// Only print a startup link to an unsupervised terminal. macOS shells inherit
 /// XPC_SERVICE_NAME=0, which does not name a launchd service.
@@ -177,6 +233,12 @@ async fn run() -> Result<()> {
     #[cfg(all(windows, debug_assertions))]
     if command == "__dev-child" {
         std::process::exit(hexbot_core::pi::dev_child::run(&arguments[1..]).await);
+    }
+    // A contained command's policy names its home. Callers clear the
+    // environment, so `sandbox exec` never reads HEXBOT_HOME.
+    #[cfg(windows)]
+    if command == "sandbox" && arguments.get(1).is_some_and(|arg| arg == "exec") {
+        hexbot_core::windows_container::exec(&arguments[2..]);
     }
     let home = home()?;
 
@@ -293,7 +355,7 @@ async fn run() -> Result<()> {
     let running_record =
         serde_json::to_vec(&serde_json::json!({"pid":std::process::id(),"executable":executable}))
             .unwrap();
-    common::atomic_write(&home.join("runtime/native-running.json"), &running_record)?;
+    publish_record(&home.join("runtime/native-running.json"), &running_record)?;
     diagnostics.launch_phase("Lock the home directory", phase);
     let phase = Instant::now();
     db::migrate(&home)?;
@@ -354,7 +416,7 @@ async fn run() -> Result<()> {
         if first {
             diagnostics.launch_phase("Start bots, rooms and memory", phase);
         }
-        common::atomic_write(
+        publish_record(
             &home.join("serve-state.json"),
             serde_json::json!({"host":address.ip().to_string(),"port":port})
                 .to_string()
@@ -422,8 +484,14 @@ async fn run() -> Result<()> {
         // Windows observers cannot read the held byte-range lock's PID. Keep
         // the early retention record and publish its readiness event after the
         // HTTP identity service exists, including after a listener rebind.
+        // The record has not changed since startup, so this replace is only a
+        // wakeup: a reader blocking it must not stop a serving daemon.
         #[cfg(windows)]
-        common::atomic_write(&home.join("runtime/native-running.json"), &running_record)?;
+        if let Err(error) =
+            publish_record(&home.join("runtime/native-running.json"), &running_record)
+        {
+            eprintln!("Runtime record: {error}");
+        }
         println!("HERMES_BACKEND_READY port={port}");
         std::io::stdout().flush()?;
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(250));
@@ -576,8 +644,29 @@ fn desktop_parent_shutdown() -> impl std::future::Future<Output = ()> {
     }
 }
 
-#[tokio::main]
-async fn main() {
+/// Windows gives a program's first thread 1 MB of stack, where Linux and
+/// macOS give 8 MB. `hexbot lan on` and `hexbot devices list` need more than
+/// 1 MB in a debug build, so every command runs on a thread with the same
+/// room on every platform.
+const STACK: usize = 8 << 20;
+
+fn main() {
+    let commands = std::thread::Builder::new()
+        .stack_size(STACK)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("Tokio runtime")
+                .block_on(commands())
+        })
+        .expect("command thread");
+    if commands.join().is_err() {
+        std::process::exit(101)
+    }
+}
+
+async fn commands() {
     if let Err(error) = run().await {
         if std::env::args().nth(1).as_deref() == Some("setup")
             && std::env::args().any(|arg| arg == "--json")
@@ -619,6 +708,43 @@ mod tests {
         drop(listener);
         assert!(lock_home(home.path()).is_ok());
     }
+    #[test]
+    fn a_lock_check_does_not_stop_a_starting_daemon_but_an_owner_does() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("native-daemon.lock");
+        // The app's readiness probe takes the free lock for a moment while a
+        // service daemon starts, as in the full-nightly run of `e0e30404`.
+        let check = std::fs::File::create(&path).unwrap();
+        check.lock().unwrap();
+        let mut check = Some(check);
+        let mut pauses = 0;
+        let daemon = lock_home_with(home.path(), || {
+            pauses += 1;
+            drop(check.take());
+        })
+        .unwrap();
+        assert_eq!(pauses, 1);
+        let other = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        assert!(matches!(
+            other.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+        drop(daemon);
+        // A process that keeps the lock owns the home.
+        other.lock().unwrap();
+        let mut pauses = 0;
+        let error = lock_home_with(home.path(), || pauses += 1).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("a daemon already owns this home")
+        );
+        assert_eq!(pauses, HOME_LOCK_ATTEMPTS - 1);
+    }
     #[cfg(unix)]
     #[test]
     fn transition_cleanup_refuses_symlink_runtime_roots() {
@@ -629,6 +755,22 @@ mod tests {
         std::os::unix::fs::symlink(outside.path(), home.path().join("runtime")).unwrap();
         assert!(finish_native_transition(home.path()).is_err());
         assert!(outside.path().join("src/data").is_file());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn transition_cleanup_removes_links_as_links() {
+        let home = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        common::atomic_write(&outside.path().join("keep"), b"keep").unwrap();
+        let runtime = home.path().join("runtime");
+        common::atomic_write(&runtime.join("native-transition-pending"), b"remove-shim").unwrap();
+        std::fs::create_dir_all(runtime.join("venv/lib")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), runtime.join("venv/lib/linked")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), runtime.join("src")).unwrap();
+        finish_native_transition(home.path()).unwrap();
+        assert!(!runtime.join("venv").exists());
+        assert!(std::fs::symlink_metadata(runtime.join("src")).is_err());
+        assert!(outside.path().join("keep").is_file());
     }
     #[test]
     fn transition_cleanup_removes_python_but_preserves_data_and_service_shim() {

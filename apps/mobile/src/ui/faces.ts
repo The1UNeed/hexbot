@@ -37,7 +37,10 @@ function hueFromString(value: string): number {
   return hash % 360
 }
 
-/** A stable face for a bot that has no uploaded avatar; matches the web app. */
+/**
+ * The face a bot without a stored one draws: an older daemon's bots, and room
+ * members known only by name. The daemon stores a face for every bot it has.
+ */
 export function faceForName(name: string): FaceStyle {
   const hue = hueFromString(name)
   const colors = FACE_COLORS.filter(item => !['white', 'gray', 'brown'].includes(item.id))
@@ -46,6 +49,24 @@ export function faceForName(name: string): FaceStyle {
     color: colors[hue % colors.length]!.id,
     shape: FACE_SHAPES[Math.floor(hue / 7) % FACE_SHAPES.length]!.id
   }
+}
+
+/**
+ * A random face for a new bot, one none of `taken` has while any is left; the
+ * daemon picks the same way when a client sends none. The bot keeps it
+ * whatever it is called.
+ */
+export function randomFace(taken: readonly (FaceStyle | null | undefined)[] = []): FaceStyle {
+  const colors = FACE_COLORS.filter(item => !['white', 'gray', 'brown'].includes(item.id))
+  const all = FACE_SHAPES.flatMap(shape =>
+    colors.map(color => ({ color: color.id, shape: shape.id }))
+  )
+  const free = all.filter(
+    face => !taken.some(other => other?.shape === face.shape && other?.color === face.color)
+  )
+  const pool = free.length ? free : all
+
+  return pool[Math.floor(Math.random() * pool.length)]!
 }
 
 export function resolveFace(style: FaceStyle) {
@@ -91,6 +112,20 @@ export function faceWash(source: FaceSourceLike, fill: string, scheme: 'dark' | 
   )
 
   return `#${mixed.map(channel => channel.toString(16).padStart(2, '0')).join('')}`
+}
+
+/**
+ * A bot's face colour and the colour its eyes are painted in, for things drawn
+ * in the bot's colour. Null for a bot with an uploaded picture.
+ */
+export function faceColor(source: FaceSourceLike): { color: string; on: string } | null {
+  if (source.imageUri) {
+    return null
+  }
+
+  const { color, eyes } = resolveFace(source.face ?? faceForName(source.name))
+
+  return { color: color.value, on: eyes }
 }
 
 /**

@@ -34,21 +34,37 @@ The operating-system sandbox is the containment boundary for untrusted shell
 commands and code execution. Prompt instructions, approval text, output
 redaction, and pattern checks do not provide equivalent containment.
 
-Windows remains unsupported. Its build work does not implement a sandbox.
-Auto and Manual refuse local shell commands, Python code, and Pi's file tools
-before approval or execution, including `full_access` and remembered grants.
-Windows metadata scanning and the Unix file-path walker also refuse to run;
-they do not open untrusted Windows files or discover Git through `PATH`.
-Scheduled scripts and monitors, their create/update validation, and ACP entry
-points refuse on Windows in every mode. Session settings also refuse before
-resolving workdirs or creating outputs in Auto and Manual. This blocks settings
-refresh, MCP/model changes, approvals and primary/memory/job tools using that
-bridge; Auto chat is not a supported Windows feature. Bypass retains Pi's Bash
-tool, requiring an installed Bash such as Git Bash, and removes containment and
-credential protection. It does not substitute `cmd.exe` for Bash or show a
-Linux bubblewrap approval. The native Windows security workflow tests refusal
-under a standard user; it does not prove confinement parity or authorize
-Windows releases. See [the remaining Windows requirements](docs/windows-security.md).
+On Windows, Auto and Manual run every local command in an AppContainer
+through the daemon's own `hexbot sandbox exec`: Pi's bash tool, the user's
+own commands and scheduled scripts. There is one container per policy, which a bot's conversations share, with
+no network and access only to the roots the policy grants. Those are the
+working folder and output folders (read-only in Manual), the managed Python,
+the runtime's BusyBox and Git for Windows. The user's profile, the Hexbot
+home and credential stores are never granted, nor is the managed runtime for
+writing; project secrets and credential files under a granted root keep no
+access, and Git metadata in a writable root stays read-only. An AppContainer ignores deny entries for its own SID,
+so both are protected by what their allow entries leave out, never by a
+deny. Scheduled scripts run there: `.py` with the managed Python, `.exe`, and
+`.sh` and `.bash` in the POSIX shell (ash) of the busybox-w32 the runtime
+ships, as Pi's bash tool and the user's own commands do, once a probe has run
+it in a container; Git for Windows' MSYS runtime cannot start in one, so only
+Bypass uses Git Bash.
+Network, device and stream paths
+are refused by their text before anything opens them, and the Git scan reads
+settings with its own parser rather than a Git found through `PATH`. Pi's
+read, grep, find and ls keep credential files private and never follow a
+link to a path they refuse. Pi's write and edit tools run through the
+daemon's Windows bridge, which reaches each file through handles that follow
+no link or junction, replaces it at once, and commits an edit only to the
+file it read. If the startup probe cannot run a contained command, Auto and
+Manual refuse local commands and file tools, and scheduled scripts do not
+run; they never fall back to an approval. `full_access` and the daemon's
+retired Python worker refuse in Auto and Manual, and Copilot (ACP) refuses
+in every mode. Bypass retains Pi's Bash tool, requiring an installed Bash
+such as Git Bash, and removes containment and credential protection. It
+does not substitute `cmd.exe` for Bash. See
+[Windows security](docs/windows-security.md) for the guarantees and the
+residual risks.
 
 - Auto runs shell commands and Python code in a workspace sandbox. macOS uses
   `sandbox-exec` to deny inbound and outbound network access, writes outside
@@ -137,7 +153,8 @@ entry instead of truncating its inode. Those writes preserve other hard-link
 names, including preexisting aliases and aliases inserted after the file gate.
 Restricted Pi write/edit use a private daemon bridge whose final operations are
 relative to nonfollowing directory handles. Edit reads return bytes and the
-parent's device/inode identity; commit opens the parent again and refuses a
+file's identity — the parent's device and inode on Unix, the volume serial and
+128-bit file ID on Windows; commit opens the parent again and refuses a
 different identity. Pi's existing edit matching, BOM and line-ending handling
 stay in Pi. Existing files must pass the OS writability check, and replacements
 preserve ordinary permission bits without setuid/setgid bits. New files remain
@@ -145,9 +162,9 @@ private (`0600` subject to umask); new directories use `0777` subject to umask.
 Each private request and encoded reply is limited to 1 MiB, about 767 KiB of file
 data after base64 and metadata. Oversized write/edit requests fail before parent
 creation or writing; oversized edit reads fail without truncation. Use a command
-for larger files, under its ordinary approval and sandbox policy. Missing bridge
-support refuses instead of falling back to pathname writes. The native file
-callback's existing 256 KiB UTF-8 read limit and write behavior are unchanged.
+for larger files, under its ordinary approval and sandbox policy. The
+native file callback's existing 256 KiB UTF-8 read limit and write behavior are
+unchanged.
 These file operations do not close the shell/code hard-link class or establish whole-process or
 whole-filesystem containment. See the [Linux hard-link semantics](https://man7.org/linux/man-pages/man2/link.2.html).
 
@@ -165,15 +182,17 @@ in `git status`. Review those changes before running them. When `hooks`,
 symbolic link to a folder or file in the workspace, that target is protected
 like the metadata.
 
-Linux protects repositories and secret files that exist when a command starts.
-Repositories created during a command are **not protected** on Linux. The scan
+Linux and Windows protect repositories and secret files that exist when a
+command starts. Repositories created during a command are **not protected**
+on either. The scan
 visits workspace and output roots breadth-first, including read-only workspaces
 in Manual, through three nested folders. It resolves `.env` symlinks and Git
 pointers, and skips dependency/runtime folders listed in `credential-policy.json`
 plus shared temporary roots. Repositories and secrets beyond these limits are
-not covered by the Linux scan. If more than 1,000 directories need scanning,
-or the folders it reads hold more than 50,000 entries, only Linux bubblewrap
-commands refuse to run and require an approved `full_access` retry. For
+not covered by the scan on Linux or Windows. If more than 1,000 directories need scanning,
+or the folders it reads hold more than 50,000 entries, Linux bubblewrap and
+Windows commands refuse to run. Linux then needs an approved `full_access`
+retry; Windows, which has none, needs a smaller workspace or Bypass. For
 `execute_code`, use a smaller workspace or run the Python code through the
 terminal tool with `full_access` and a reason; a scheduled script needs a
 smaller workspace. macOS
@@ -264,6 +283,15 @@ beside the vault. A backup of the vault alone can't be opened; a backup that
 also holds the key file can. Same-user malware can ask the keychain for the key.
 Bots' shells and file tools can read neither file in Manual or Auto; Bypass has
 no sandbox, so a bot in Bypass can.
+
+The Google Workspace and Microsoft 365 sign-ins are OAuth grants in
+`accounts/<service>.json`, plain JSON in an owner-only file, like provider
+credentials. They hold a refresh token that can read, draft and send mail as
+the user. `hexbot_mail` sends only what the user sends from a draft card, in
+every approval mode, and only from the account the card showed. Bots' shells
+and file tools can't read the grant in Manual or Auto; Bypass has no sandbox,
+so a bot in Bypass can, and could send mail with it outside the card. Sign
+out removes the file, and for Google withdraws the grant.
 
 A bot never receives a password in its conversation. The daemon types it into
 the page the bot names, and only when the browser's page is on the login's own

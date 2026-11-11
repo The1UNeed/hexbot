@@ -13,6 +13,7 @@ import {
 import type { UpdateState } from '../../lib/bridge'
 import { pairWithDaemon } from '../../lib/connection'
 import type { DaemonInfo } from '../../lib/types'
+import { useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { useMe } from '../../stores/me'
 import { useSettings } from '../../stores/settings'
@@ -26,6 +27,7 @@ import {
   MemorySettings,
   NetworkSettings,
   ProvidersSettings,
+  updateLabel,
   UpdatesSettings
 } from './index'
 
@@ -397,7 +399,7 @@ describe('settings', () => {
     expect(await screen.findByRole('status')).toHaveTextContent(/older than the app/)
   })
 
-  it('shows the Windows notice when the daemon runs on Windows without a sandbox', async () => {
+  it('shows the Windows notice without a sandbox, and names the shell commands run in with one', async () => {
     useSettings.setState({ refresh: vi.fn().mockResolvedValue(undefined) })
     vi.mocked(daemonInfo).mockResolvedValueOnce({
       approvals: 'sandbox',
@@ -405,12 +407,43 @@ describe('settings', () => {
       sandbox: null,
       version: '0.1.5'
     } as DaemonInfo)
-    render(<ApprovalsSettings />)
+    const first = render(<ApprovalsSettings />)
     const notice = await screen.findByRole('status')
     expect(notice).toHaveTextContent(
-      'The Windows sandbox is unavailable, so Auto and Manual refuse local commands, code runs, and file tools, including approved full access, and scheduled scripts do not run. Bypass has no sandbox or credential protection.'
+      'The Windows sandbox could not start, so Auto and Manual refuse local commands and file tools, and scheduled scripts do not run. Bypass has no sandbox or credential protection.'
     )
     expect(notice).not.toHaveTextContent(/bubblewrap/i)
+    // Without the sandbox nothing runs in its shell, so the page names none.
+    expect(screen.queryByText(/BusyBox/)).toBeNull()
+    first.unmount()
+    // A Windows daemon whose AppContainer started has nothing to warn about,
+    // and says which shell its commands run in.
+    vi.mocked(daemonInfo).mockResolvedValueOnce({
+      approvals: 'sandbox',
+      platform: 'windows',
+      sandbox: 'appcontainer',
+      version: '0.1.5'
+    } as DaemonInfo)
+    const second = render(<ApprovalsSettings />)
+    expect(
+      await screen.findByText(
+        'On Windows, Auto and Manual run commands in BusyBox, a POSIX shell, not Bash. Bypass runs them in Git Bash.'
+      )
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('status')).toBeNull()
+    second.unmount()
+    // Other platforms' sandboxes run the system's shell and say nothing of it.
+    vi.mocked(daemonInfo).mockResolvedValueOnce({
+      approvals: 'sandbox',
+      platform: 'linux',
+      sandbox: 'bubblewrap',
+      version: '0.1.5'
+    } as DaemonInfo)
+    render(<ApprovalsSettings />)
+    await act(async () => {
+      await vi.mocked(daemonInfo).mock.results.at(-1)?.value
+    })
+    expect(screen.queryByText(/BusyBox/)).toBeNull()
   })
 
   it('applies a selected theme to the document', () => {
@@ -515,6 +548,44 @@ describe('settings', () => {
     expect(await screen.findByRole('button', { name: 'Sign in and register' })).toBeVisible()
     expect(screen.getByText('Sign in to get an address for this daemon.')).toBeVisible()
     expect(screen.queryByText(/Removed in Hex Connect/)).toBeNull()
+  })
+
+  it('shows the friendly Windows updater error and retains existing labels elsewhere', () => {
+    const failed: UpdateState = {
+      availableVersion: null,
+      channel: 'stable',
+      checkedAt: null,
+      currentVersion: '1.0.0',
+      downloadedVersion: null,
+      errorContext: 'check',
+      message: 'No update is available on this track yet.',
+      rawError: 'HTTP 404 https://updates.hexbot.app/full/win/x64/latest.yml',
+      percent: null,
+      status: 'error'
+    }
+
+    expect(updateLabel(failed)).toBe(
+      'Update check failed: No update is available on this track yet.'
+    )
+    expect(updateLabel({ ...failed, message: 'offline', rawError: undefined })).toBe(
+      'Update check failed: offline'
+    )
+    expect(
+      updateLabel({
+        ...failed,
+        message: 'Signature mismatch',
+        rawError: 'Signature mismatch',
+        errorContext: 'install'
+      })
+    ).toBe('Install failed: Signature mismatch')
+    expect(
+      updateLabel({
+        ...failed,
+        message: 'disk full',
+        rawError: undefined,
+        errorContext: 'download'
+      })
+    ).toBe('Download failed: disk full')
   })
 
   it('walks an app update from check to restart', async () => {
@@ -689,6 +760,41 @@ describe('settings', () => {
     fireEvent.change(name, { target: { value: '  Alex ' } })
     fireEvent.blur(name)
     expect(rename).toHaveBeenCalledWith('Alex')
+  })
+
+  it('sets the default soul and memory limits and tells the bots', async () => {
+    const patch = vi.fn().mockResolvedValue(undefined)
+    const refreshBots = vi.fn().mockResolvedValue(undefined)
+    useBots.setState({ refresh: refreshBots })
+    useSettings.setState({
+      patch,
+      refresh: vi.fn().mockResolvedValue(undefined),
+      settings: { memory_char_limit: 2200, soul_char_limit: 4000 } as never
+    })
+    useMe.setState({ me: { display_name: 'Admin', id: 'local' } })
+    render(<MemorySettings />)
+    const soul = screen.getByLabelText('Soul limit')
+    expect(soul).toHaveValue('4000')
+    expect(screen.getByLabelText('Memory limit')).toHaveValue('2200')
+    // A default can't be emptied; the field goes back to the number.
+    fireEvent.change(soul, { target: { value: '' } })
+    fireEvent.blur(soul)
+    expect(soul).toHaveValue('4000')
+    fireEvent.change(soul, { target: { value: '6000' } })
+    fireEvent.blur(soul)
+    await waitFor(() => expect(refreshBots).toHaveBeenCalled())
+    expect(patch).toHaveBeenCalledTimes(1)
+    expect(patch).toHaveBeenCalledWith({ soul_char_limit: 6000 })
+  })
+
+  it('leaves the limits out on daemons that have none', () => {
+    useSettings.setState({
+      refresh: vi.fn().mockResolvedValue(undefined),
+      settings: { dream_enabled: true, dream_time: '03:00' } as never
+    })
+    useMe.setState({ me: { display_name: 'Admin', id: 'local' } })
+    render(<MemorySettings />)
+    expect(screen.queryByLabelText('Soul limit')).toBeNull()
   })
 
   it('hides the name editor on older daemons', () => {

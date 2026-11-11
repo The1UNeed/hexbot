@@ -62,6 +62,29 @@ export function PluginIcon({ icon, size = 28 }: { icon: string; size?: number })
   const theme = useTheme()
   const brand = BRAND_ICONS[icon]
 
+  // A mark its owner allows only in its own colours, as is on white.
+  if (brand?.marks) {
+    return (
+      <View
+        style={[
+          styles.box,
+          box(size),
+          {
+            backgroundColor: '#ffffff',
+            borderColor: theme.hairline,
+            borderWidth: StyleSheet.hairlineWidth
+          }
+        ]}
+      >
+        <Svg height={16} viewBox={brand.marksViewBox} width={16}>
+          {brand.marks.map(mark => (
+            <Path d={mark.d} fill={mark.fill} key={mark.d} />
+          ))}
+        </Svg>
+      </View>
+    )
+  }
+
   if (brand) {
     return (
       <View style={[styles.box, box(size), { backgroundColor: brand.color }]}>

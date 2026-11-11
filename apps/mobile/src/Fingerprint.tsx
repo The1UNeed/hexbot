@@ -9,12 +9,12 @@ import { Group, mono, radius, Row, Segmented, Text, useTheme } from './ui'
 
 export type FingerprintFile = 'memory' | 'soul'
 
-/** 10.25.26, in the reader's own order of day and month, as the app shows it. */
+/** 25/10/2026: day, month, year, whatever the reader's locale. */
 export function cardDate(seconds: null | number | undefined): string {
   if (!seconds) return 'Not written yet'
-  return new Date(seconds * 1000)
-    .toLocaleDateString(undefined, { day: '2-digit', month: '2-digit', year: '2-digit' })
-    .replace(/[/-]/g, '.')
+  const date = new Date(seconds * 1000)
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear()}`
 }
 
 const CARDS: Record<
@@ -50,6 +50,8 @@ function FileCard({
 }) {
   const card = CARDS[file]
   const id = useId().replace(/:/g, '')
+  // Measured: a percentage-sized drawing does not always fill the card.
+  const [size, setSize] = useState({ height: 0, width: 0 })
 
   return (
     <Pressable
@@ -57,6 +59,12 @@ function FileCard({
       accessibilityLabel={`${card.title}, edited ${cardDate(date)}`}
       accessibilityRole="button"
       disabled={disabled}
+      onLayout={event => {
+        const { height, width } = event.nativeEvent.layout
+        setSize(current =>
+          current.width === width && current.height === height ? current : { height, width }
+        )
+      }}
       onPress={onPress}
       style={({ pressed }) => [
         styles.card,
@@ -65,7 +73,7 @@ function FileCard({
       ]}
       testID={`fingerprint-${file}`}
     >
-      <Svg height="100%" style={StyleSheet.absoluteFill} width="100%">
+      <Svg height={size.height} style={StyleSheet.absoluteFill} width={size.width}>
         <Defs>
           <LinearGradient id={`${id}b`} x1="0" x2="1" y1="0" y2="1">
             <Stop offset="0" stopColor={card.base[0]} />

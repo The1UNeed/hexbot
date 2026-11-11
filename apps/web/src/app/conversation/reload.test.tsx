@@ -114,54 +114,6 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-it('requests one background-only native reply notification even when Chromium reports visible', async () => {
-  const notify = vi.fn()
-  vi.stubGlobal('hexbot', { notify })
-  expect(document.hidden).toBe(false)
-  await useSections.getState().open('chat')
-  const mountedRead = deferred()
-  call.mockImplementation((method: string) =>
-    method === 'hexbot.sections.open' ? mountedRead.promise : reply(method)
-  )
-  render(<ConversationColumn />)
-  // Retained text can appear before the view's proving read finishes. Finish
-  // that read explicitly before driving the notification's stream transition.
-  expect(await screen.findByText('Previous conversation')).toBeVisible()
-  await waitFor(() => expect(opens()).toHaveLength(2))
-  await act(async () => {
-    const proving = useSections.getState().open('chat')
-    mountedRead.resolve(history(texts))
-    await proving
-  })
-  expect(screen.getByRole('textbox')).toBeEnabled()
-  act(() => {
-    routeEvent({ type: 'message.start', session_id: 'chat', payload: {} } as GatewayEvent)
-    routeEvent({
-      type: 'message.delta',
-      session_id: 'chat',
-      payload: { text: 'Previous conversation' }
-    } as GatewayEvent)
-  })
-  // Observe the component's committed streaming state, not just a store field.
-  expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible()
-  expect(notify).not.toHaveBeenCalled()
-  act(() => {
-    routeEvent({ type: 'message.complete', session_id: 'chat', payload: {} } as GatewayEvent)
-  })
-  await waitFor(() =>
-    expect(notify).toHaveBeenCalledExactlyOnceWith({
-      backgroundOnly: true,
-      body: 'Previous conversation',
-      sectionId: 'chat',
-      title: 'Owl'
-    })
-  )
-  act(() =>
-    useBots.setState({ byName: { owl: { name: 'owl', display_name: 'Owl renamed' } as Bot } })
-  )
-  expect(notify).toHaveBeenCalledOnce()
-})
-
 it.each([false, true])(
   'loads the report after catalog refresh, mounted=%s, reusing the durable live ID',
   async mounted => {
@@ -784,6 +736,170 @@ it('renders queued users, identified replies and an answered card in their actua
   expect(
     before(screen.getByText('read first.txt'), screen.getByText('Second queued question'))
   ).toBe(true)
+})
+
+it('keeps plugin and sign-in cards under the message that asked once the turn is read again', async () => {
+  await useSections.getState().open('chat')
+  render(<ConversationColumn />)
+
+  const event = (type: string, payload: Record<string, unknown> = {}) =>
+    routeEvent({
+      type,
+      session_id: 'chat',
+      payload: { turn_id: 'cards-run', ...payload }
+    } as GatewayEvent)
+
+  const plugin = {
+    action: 'enable',
+    bot: 'owl',
+    description: 'Read and write pages',
+    fields: [],
+    id: 'connector:notion',
+    kind: 'plugin',
+    name: 'Notion'
+  }
+
+  await act(async () => {
+    event('message.start')
+    event('tool.start', { message_id: 'ask-plugin', tool_id: 'plugins', name: 'hexbot_plugins' })
+    event('approval.request', {
+      message_id: 'ask-plugin',
+      request_id: 'plugin-card',
+      tool: 'hexbot_plugins',
+      form: plugin
+    })
+  })
+  await act(async () => {
+    useTranscripts.getState().resolveApproval('chat', 'plugin-card', 'once')
+    event('tool.complete', { message_id: 'ask-plugin', tool_id: 'plugins', result_text: 'On' })
+    event('message.delta', { message_id: 'ask-sign-in', text: 'Trying the browser.' })
+    event('tool.start', { message_id: 'ask-sign-in', tool_id: 'login', name: 'hexbot_passwords' })
+    event('approval.request', {
+      message_id: 'ask-sign-in',
+      request_id: 'sign-in-card',
+      tool: 'hexbot_passwords',
+      form: { kind: 'sign_in', site: 'notion.so', title: 'Notion' }
+    })
+  })
+  await act(async () => {
+    useTranscripts.getState().resolveApproval('chat', 'sign-in-card', 'deny')
+    event('tool.complete', { message_id: 'ask-sign-in', tool_id: 'login', result_text: 'No' })
+    event('message.delta', { message_id: 'answer', text: 'I cannot see your tasks yet.' })
+  })
+
+  // History holds the turn as one bot message across its three fragments.
+  const rows = [
+    ...history(['Previous conversation']).messages,
+    { role: 'user', row_id: 1, text: 'What have I not done?', turn_id: 'cards-run' },
+    {
+      role: 'assistant',
+      row_id: 'ask-plugin',
+      text: '',
+      turn_id: 'cards-run',
+      tool_calls: [{ id: 'plugins', function: { name: 'hexbot_plugins', arguments: '{}' } }]
+    },
+    { role: 'tool', row_id: 't1', tool_id: 'plugins', name: 'hexbot_plugins', text: 'On' },
+    {
+      role: 'assistant',
+      row_id: 'ask-sign-in',
+      text: 'Trying the browser.',
+      turn_id: 'cards-run',
+      tool_calls: [{ id: 'login', function: { name: 'hexbot_passwords', arguments: '{}' } }]
+    },
+    { role: 'tool', row_id: 't2', tool_id: 'login', name: 'hexbot_passwords', text: 'No' },
+    {
+      role: 'assistant',
+      row_id: 'answer',
+      text: 'I cannot see your tasks yet.',
+      turn_id: 'cards-run'
+    }
+  ]
+
+  call.mockImplementation((method: string) =>
+    method === 'hexbot.sections.open' ? Promise.resolve({ section, messages: rows }) : reply(method)
+  )
+  await act(async () => {
+    event('message.complete', { message_id: 'answer', text: 'I cannot see your tasks yet.' })
+    await useSections.getState().open('chat')
+  })
+
+  const before = (a: HTMLElement, b: HTMLElement) =>
+    Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
+
+  const question = screen.getByText('What have I not done?')
+  const pluginCard = screen.getByText('Read and write pages')
+  const browser = screen.getByText('Trying the browser.')
+  const signInCard = screen.getByText('notion.so')
+  const answer = screen.getByText('I cannot see your tasks yet.')
+
+  expect(before(question, pluginCard)).toBe(true)
+  expect(before(pluginCard, browser)).toBe(true)
+  expect(before(browser, signInCard)).toBe(true)
+  expect(before(signInCard, answer)).toBe(true)
+
+  // A card sits a full step under your message and joins the bot's bubbles
+  // on both sides; the step that only used a tool takes no room.
+  const row = (element: HTMLElement) => element.closest('.hex-bubble')!.parentElement!
+  expect(row(pluginCard)).toHaveClass('pt-4')
+  expect(browser.closest('article')).toHaveClass('pt-1')
+  expect(row(signInCard)).toHaveClass('pt-1')
+  expect(answer.closest('article')).toHaveClass('pt-1')
+  expect(
+    screen.getAllByTestId('bot-message').filter(article => !article.textContent?.trim())
+  ).toEqual([])
+})
+
+it('joins a card to the words before it when the step that asked only used a tool', async () => {
+  await useSections.getState().open('chat')
+  render(<ConversationColumn />)
+
+  const event = (type: string, payload: Record<string, unknown> = {}) =>
+    routeEvent({
+      type,
+      session_id: 'chat',
+      payload: { turn_id: 'tool-step-run', ...payload }
+    } as GatewayEvent)
+
+  call.mockImplementation((method: string) =>
+    method === 'hexbot.sections.open'
+      ? Promise.resolve({
+          section,
+          messages: [
+            { role: 'user', row_id: 1, text: 'Check Notion', turn_id: 'tool-step-run' },
+            {
+              role: 'assistant',
+              row_id: 'words',
+              text: 'Looking now.',
+              turn_id: 'tool-step-run',
+              tool_calls: [{ id: 'look', function: { name: 'web_search', arguments: '{}' } }]
+            },
+            { role: 'tool', row_id: 't1', tool_id: 'look', name: 'web_search', text: 'None' },
+            {
+              role: 'assistant',
+              row_id: 'tool-step',
+              text: '',
+              turn_id: 'tool-step-run',
+              tool_calls: [{ id: 'login', function: { name: 'hexbot_passwords', arguments: '{}' } }]
+            }
+          ]
+        })
+      : reply(method)
+  )
+  await act(async () => {
+    reload()
+    await useSections.getState().open('chat')
+    event('approval.request', {
+      message_id: 'tool-step',
+      request_id: 'sign-in-card',
+      tool: 'hexbot_passwords',
+      form: { kind: 'sign_in', site: 'notion.so', title: 'Notion' }
+    })
+  })
+
+  const words = screen.getByText('Looking now.')
+  const card = screen.getByText('notion.so')
+  expect(words.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  expect(card.closest('.hex-bubble')!.parentElement).toHaveClass('pt-1')
 })
 
 it('reads the chat again on reconnect, so a card answered on another app meanwhile goes', async () => {

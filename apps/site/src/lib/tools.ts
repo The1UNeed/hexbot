@@ -12,7 +12,7 @@ export const toolGroups: ToolGroup[] = [
     tools: [
       { name: 'Terminal', does: 'Run shell commands and long-running processes.', note: 'Risky commands ask first in Manual mode' },
       { name: 'Files', does: 'Read, write, edit, and search files.' },
-      { name: 'Computer use', does: "Work on the bots' own Linux computer: run code, browse in Chrome, click and type in its apps. Watch it live and take over.", note: 'Every bot has it. Needs Cua and Docker' },
+      { name: 'Computer use', does: "Work on the bots' own Linux computer: run code, browse in Chrome, click and type in its apps. Watch it live and use it with them.", note: 'Every bot has it. Needs Cua and Docker' },
       { name: 'Vision', does: 'Look at images and screenshots you attach.', note: 'Needs a model that can see' },
       { name: 'Voice', does: 'Speak replies aloud with the built-in voice.', note: 'Premium voices are a connector' },
     ],
@@ -52,7 +52,7 @@ export const toolGroups: ToolGroup[] = [
     title: 'Plugins',
     summary: 'Opt in, with your own account. Set one up once in Settings, Plugins, then choose the bots that get it.',
     tools: [
-      { name: 'Web search', does: 'Search the web and read pages.', note: 'Exa, Tavily, Brave, Firecrawl, Parallel, Keenable, or your own SearXNG' },
+      { name: 'Web search', does: 'Search the web and read pages.', note: 'Free out of the box with SearXNG, which Hexbot runs for you, or Tavily, Wikipedia or Marginalia. Exa, Brave, Firecrawl, Parallel and Keenable with your key' },
       { name: 'Image generation', does: 'Make and edit images.', note: 'FAL or Krea' },
       { name: 'Video generation', does: 'Generate short clips.', note: 'FAL' },
       { name: 'Voice', does: 'Speak replies aloud.', note: 'ElevenLabs, OpenAI, or Mistral' },

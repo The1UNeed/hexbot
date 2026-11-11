@@ -598,7 +598,7 @@ async fn video(home: &Path, bot: &str, env: &BTreeMap<String, String>, p: &Value
         upscaled = true;
         data = result;
     }
-    Ok(json!({
+    let mut result = json!({
         "success": true,
         "video": url,
         "model": model,
@@ -609,7 +609,30 @@ async fn video(home: &Path, bot: &str, env: &BTreeMap<String, String>, p: &Value
         "provider": "fal",
         "upscaled": upscaled,
         "metadata": data
-    }))
+    });
+    // FAL's link expires; a copy in the bot's artifacts plays in the chat. The
+    // link still answers if the copy cannot be made.
+    if let Ok(path) = keep_video(home, bot, &url).await {
+        result["file_path"] = json!(path);
+        result["media"] = json!(format!("MEDIA:{}", path.display()));
+    }
+    Ok(result)
+}
+async fn keep_video(home: &Path, bot: &str, url: &str) -> Result<std::path::PathBuf> {
+    let response = common::safe_get(url, common::allow_private_urls(home, bot)?).await?;
+    if !response.status().is_success() {
+        return Err(Error::new(5200, "FAL video download failed"));
+    }
+    let data = crate::http::bytes(
+        response,
+        45 * 1024 * 1024,
+        |_| Error::new(5200, "FAL video download interrupted"),
+        Error::new(5200, "FAL video exceeds 45 MiB"),
+    )
+    .await?;
+    let path = crate::native_tools::artifact(home, bot, "videos", "mp4")?;
+    common::atomic_write(&path, &data)?;
+    Ok(path)
 }
 
 #[cfg(test)]

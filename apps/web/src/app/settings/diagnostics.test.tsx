@@ -1,8 +1,8 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, vi } from 'vitest'
 
-import { diagnosticsGet, diagnosticsTrace } from '../../lib/api'
-import type { DiagnosticsSnapshot } from '../../lib/types'
+import { diagnosticsGet, diagnosticsLogs, diagnosticsTrace } from '../../lib/api'
+import type { DiagnosticsLogs, DiagnosticsSnapshot } from '../../lib/types'
 
 import {
   DiagnosticsSettings,
@@ -15,6 +15,7 @@ import {
 vi.mock('../../lib/api', async importOriginal => ({
   ...(await importOriginal()),
   diagnosticsGet: vi.fn(),
+  diagnosticsLogs: vi.fn(),
   diagnosticsTrace: vi.fn(),
   gatewayPing: vi.fn().mockResolvedValue({ pong: true })
 }))
@@ -209,6 +210,28 @@ function snapshot(): DiagnosticsSnapshot {
   }
 }
 
+function logs(overrides: Partial<DiagnosticsLogs> = {}): DiagnosticsLogs {
+  return {
+    before: 0,
+    file: 'daemon.log',
+    files: [
+      { modified: NOW - 60_000, name: 'daemon.log', size: 2048 },
+      { modified: NOW - 120_000, name: 'desktop.log', size: 4096 }
+    ],
+    lines: [
+      { level: null, offset: 0, text: 'HERMES_BACKEND_READY port=9119' },
+      {
+        level: 'error',
+        offset: 31,
+        text: 'Connect identity enrollment: Hex Connect service returned HTTP 500 error'
+      }
+    ],
+    more: false,
+    size: 2048,
+    ...overrides
+  }
+}
+
 describe('diagnostics', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -340,6 +363,128 @@ describe('diagnostics', () => {
       await screen.findByText(
         'This daemon does not report diagnostics. Update it to see them here.'
       )
+    ).toBeInTheDocument()
+  })
+
+  it("reads the daemon's own log, newest lines last, with failures marked", async () => {
+    vi.mocked(diagnosticsLogs).mockResolvedValue(logs())
+    render(<DiagnosticsSettings />)
+    fireEvent.click(await screen.findByRole('tab', { name: 'Logs' }))
+
+    const line = await screen.findByText(/Hex Connect service returned HTTP 500/)
+
+    expect(diagnosticsLogs).toHaveBeenCalledWith({})
+    expect(line).toHaveClass('text-danger')
+    expect(screen.getByText('HERMES_BACKEND_READY port=9119')).not.toHaveClass('text-danger')
+    expect(screen.getByText('2 lines from the whole file.')).toBeInTheDocument()
+  })
+
+  it('filters a log to errors and search, and pages back to older lines', async () => {
+    vi.mocked(diagnosticsLogs).mockResolvedValue(logs({ before: 1024, more: true }))
+    render(<DiagnosticsSettings />)
+    fireEvent.click(await screen.findByRole('tab', { name: 'Logs' }))
+    await screen.findByText('HERMES_BACKEND_READY port=9119')
+
+    vi.mocked(diagnosticsLogs).mockResolvedValueOnce(
+      logs({
+        before: 0,
+        lines: [{ level: 'error', offset: 0, text: 'One-shot call failed for english' }],
+        more: false
+      })
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Show older lines' }))
+
+    expect(await screen.findByText('One-shot call failed for english')).toBeInTheDocument()
+    expect(diagnosticsLogs).toHaveBeenLastCalledWith({ before: 1024, file: 'daemon.log' })
+    expect(screen.getByText('HERMES_BACKEND_READY port=9119')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Show older lines' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Errors only' }))
+    await waitFor(() => expect(diagnosticsLogs).toHaveBeenLastCalledWith({ errors: true }))
+
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search the log' }), {
+      target: { value: ' english ' }
+    })
+    await waitFor(() =>
+      expect(diagnosticsLogs).toHaveBeenLastCalledWith({ errors: true, query: 'english' })
+    )
+  })
+
+  it('waits for a new filter to load before it shows older lines', async () => {
+    vi.mocked(diagnosticsLogs).mockResolvedValue(logs({ before: 1024, more: true }))
+    render(<DiagnosticsSettings />)
+    fireEvent.click(await screen.findByRole('tab', { name: 'Logs' }))
+    await screen.findByText('HERMES_BACKEND_READY port=9119')
+
+    vi.mocked(diagnosticsLogs).mockReturnValueOnce(new Promise(() => {}))
+    fireEvent.click(screen.getByRole('switch', { name: 'Errors only' }))
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Show older lines' })).toBeDisabled()
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Show older lines' }))
+
+    expect(diagnosticsLogs).not.toHaveBeenCalledWith(expect.objectContaining({ before: 1024 }))
+  })
+
+  it('shows the chosen file with its error, not the old lines, when a switch fails', async () => {
+    vi.mocked(diagnosticsLogs).mockResolvedValue(logs({ before: 1024, more: true }))
+    render(<DiagnosticsSettings />)
+    fireEvent.click(await screen.findByRole('tab', { name: 'Logs' }))
+    await screen.findByText('HERMES_BACKEND_READY port=9119')
+
+    vi.mocked(diagnosticsLogs).mockRejectedValueOnce(new Error('could not read desktop.log'))
+    fireEvent.click(screen.getByRole('switch', { name: 'Errors only' }))
+    expect(await screen.findByText('could not read desktop.log')).toBeInTheDocument()
+
+    expect(screen.queryByText('HERMES_BACKEND_READY port=9119')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Show older lines' })).not.toBeInTheDocument()
+    expect(screen.getByText('Could not read daemon.log.')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    await waitFor(() => expect(diagnosticsLogs).toHaveBeenLastCalledWith({ errors: true }))
+  })
+
+  it('keeps the picker on a file that failed to open, and Refresh retries it', async () => {
+    vi.mocked(diagnosticsLogs).mockResolvedValue(logs())
+    render(<DiagnosticsSettings />)
+    fireEvent.click(await screen.findByRole('tab', { name: 'Logs' }))
+    await screen.findByText('HERMES_BACKEND_READY port=9119')
+
+    vi.mocked(diagnosticsLogs).mockRejectedValueOnce(new Error('no log named desktop.log'))
+    const picker = screen.getByRole('combobox', { name: 'File' })
+
+    // As a person would: focus the picker, type the start of the name, press Enter.
+    picker.focus()
+
+    for (const key of 'desk') {
+      fireEvent.keyDown(document.activeElement ?? document.body, { key })
+      await act(async () => undefined)
+    }
+
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Enter' })
+    expect(await screen.findByText('no log named desktop.log')).toBeInTheDocument()
+
+    expect(screen.getByRole('combobox', { name: 'File' })).toHaveTextContent('desktop.log')
+    expect(screen.queryByText('HERMES_BACKEND_READY port=9119')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    await waitFor(() => expect(diagnosticsLogs).toHaveBeenLastCalledWith({ file: 'desktop.log' }))
+  })
+
+  it('says when no log has been kept and when the daemon is too old for logs', async () => {
+    vi.mocked(diagnosticsLogs).mockResolvedValue(logs({ file: null, files: [], lines: [] }))
+    const { unmount } = render(<DiagnosticsSettings />)
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Logs' }))
+    expect(await screen.findByText('No logs yet')).toBeInTheDocument()
+    unmount()
+
+    vi.mocked(diagnosticsLogs).mockRejectedValue(
+      Object.assign(new Error('unknown method'), { code: -32601 })
+    )
+    render(<DiagnosticsSettings />)
+    fireEvent.click(await screen.findByRole('tab', { name: 'Logs' }))
+    expect(
+      await screen.findByText('This daemon does not show its logs. Update it to see them here.')
     ).toBeInTheDocument()
   })
 })

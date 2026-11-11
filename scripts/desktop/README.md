@@ -16,7 +16,7 @@
 | `make-update-feed.mjs --channel stable\|nightly [--version v] [--client] <builder-output> [feed-root]` | Builds the `updates.hexbot.app` tree: artifacts plus `latest-*.yml` or `nightly-*.yml`. |
 | `make-install-manifest.mjs --channel stable\|nightly --version V <updates-root> [--base-url URL] [--allow-missing]` | Reads app feeds, native manifests and installer artifacts, verifies payloads, and writes `install/<channel>.json` and `.txt`. |
 | `finalize-release.mjs <version> <full-dir> <client-dir>` | Rewrites the website downloads manifest and both Homebrew casks after a stable release. |
-| `release-smoke.mjs` | Runs `release-version`, `set-version`, `make-update-feed`, `make-install-manifest`, and `finalize-release` the way `release.yml` does, against synthetic packages in a temporary directory. CI runs it on every push. |
+| `release-smoke.mjs` | Runs `release-version`, `set-version`, `make-update-feed`, `make-install-manifest`, and `finalize-release` the way `release.yml` does, against synthetic packages in a temporary directory. CI runs it on every pull request and push to `main`. |
 | `update-cask.mjs [--client] <release-dir> [version]` | The cask part of finalize, on its own. |
 | `make-channel-icons.mjs [dev\|nightly]` | Compiles `build/icon-dev.icon` and `build/icon-nightly.icon` into their ICNS and PNG fallbacks using Xcode 26. |
 | `make-icons.py` | Renders `build/icon.png`, `build/icon.icns`, and the tray images from `apps/desktop/build/Hexbot.icon`. |

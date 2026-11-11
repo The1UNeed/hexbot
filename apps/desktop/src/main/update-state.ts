@@ -25,10 +25,23 @@ export interface UpdateState {
   percent: number | null
   /** Why updates are disabled, or the last error. */
   message: string | null
+  /** Original Windows updater error, retained for diagnostics. */
+  rawError?: string | null
   /** When the last check finished. */
   checkedAt: string | null
   /** The step the last error came from, so the UI offers the right retry. */
   errorContext: 'check' | 'download' | 'install' | null
+}
+
+export interface UpdateError {
+  message: string
+  raw: string
+}
+
+function errorFields(error: string | UpdateError): Pick<UpdateState, 'message' | 'rawError'> {
+  return typeof error === 'string'
+    ? { message: error, rawError: null }
+    : { message: error.message, rawError: error.raw }
 }
 
 export type UpdateAction = 'check' | 'download' | 'install' | null
@@ -72,6 +85,7 @@ export const onCheckStart = (state: UpdateState): UpdateState => ({
   ...state,
   status: 'checking',
   message: null,
+  rawError: null,
   errorContext: null
 })
 
@@ -81,6 +95,7 @@ export const onAvailable = (state: UpdateState, version: string, at: string): Up
   availableVersion: version,
   percent: state.downloadedVersion === version ? 100 : null,
   message: null,
+  rawError: null,
   checkedAt: at,
   errorContext: null
 })
@@ -92,14 +107,19 @@ export const onUpToDate = (state: UpdateState, at: string): UpdateState => ({
   downloadedVersion: null,
   percent: null,
   message: null,
+  rawError: null,
   checkedAt: at,
   errorContext: null
 })
 
-export const onCheckError = (state: UpdateState, message: string, at: string): UpdateState => ({
+export const onCheckError = (
+  state: UpdateState,
+  error: string | UpdateError,
+  at: string
+): UpdateState => ({
   ...state,
   status: 'error',
-  message,
+  ...errorFields(error),
   percent: null,
   checkedAt: at,
   errorContext: 'check'
@@ -110,6 +130,7 @@ export const onDownloadStart = (state: UpdateState): UpdateState => ({
   status: 'downloading',
   percent: 0,
   message: null,
+  rawError: null,
   errorContext: null
 })
 
@@ -123,13 +144,14 @@ export const onDownloaded = (state: UpdateState, version: string): UpdateState =
   downloadedVersion: version,
   percent: 100,
   message: null,
+  rawError: null,
   errorContext: null
 })
 
-export const onDownloadError = (state: UpdateState, message: string): UpdateState => ({
+export const onDownloadError = (state: UpdateState, error: string | UpdateError): UpdateState => ({
   ...state,
   status: 'error',
-  message,
+  ...errorFields(error),
   percent: null,
   errorContext: 'download'
 })
@@ -139,13 +161,14 @@ export const onInstallStart = (state: UpdateState): UpdateState => ({
   ...state,
   status: 'installing',
   message: null,
+  rawError: null,
   errorContext: null
 })
 
-export const onInstallError = (state: UpdateState, message: string): UpdateState => ({
+export const onInstallError = (state: UpdateState, error: string | UpdateError): UpdateState => ({
   ...state,
   status: 'error',
-  message,
+  ...errorFields(error),
   errorContext: 'install'
 })
 

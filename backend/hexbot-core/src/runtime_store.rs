@@ -1069,19 +1069,16 @@ fn delete_native(home: &Path, stored: &str) -> Result<()> {
 }
 fn remove_session_files(home: &Path, stored: &str) -> Result<()> {
     common::identifier(stored)?;
-    for parent in [home.join("runtime"), home.join("runtime/sessions")] {
-        if fs::symlink_metadata(parent).is_ok_and(|m| m.file_type().is_symlink()) {
+    let sessions = home.join("runtime/sessions");
+    match crate::osutil::directory_below(home, &sessions) {
+        Ok(true) => crate::osutil::remove_entry(&sessions.join(stored))?,
+        Ok(false) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {
             return Err(crate::Error::new(
                 4202,
                 "session path must not contain symlinks",
             ));
         }
-    }
-    let path = home.join("runtime/sessions").join(stored);
-    match fs::symlink_metadata(&path) {
-        Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(path)?,
-        Ok(_) => fs::remove_file(path)?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
     Ok(())
@@ -1149,6 +1146,41 @@ pub fn follow_bot_model(home: &Path, bot: &str, before: &Value, after: &Value) -
             )?;
         }
     }
+    Ok(())
+}
+/// A section saved without a model of its own (`{}` or nothing, from when its
+/// bot had none) runs on Pi's default model, and `follow_bot_model` cannot
+/// match it to the bot's previous model. It takes the bot's model, and that
+/// model's thinking level, once the bot has one. A delegated task keeps its
+/// parent section's frozen choice.
+pub fn adopt_bot_model(home: &Path, stored: &str, bot_model: &Value) -> Result<()> {
+    let named = |value: &Value| value.as_str().is_some_and(|s| !s.is_empty());
+    if !named(&bot_model["model"]) {
+        return Ok(());
+    }
+    let conn = open(home)?;
+    let Some(raw) = conn
+        .query_row(
+            "SELECT options FROM native_sessions WHERE stored_id=? AND NOT EXISTS(SELECT 1 FROM native_deleted WHERE session_id=stored_id)",
+            [stored],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?
+    else {
+        return Ok(());
+    };
+    let mut options: Value =
+        serde_json::from_str(&raw).map_err(|e| crate::Error::new(5200, e.to_string()))?;
+    if !options["parent_session"].is_null() || named(&options["model"]) {
+        return Ok(());
+    }
+    options["provider"] = bot_model["provider"].clone();
+    options["model"] = bot_model["model"].clone();
+    options["reasoning_effort"] = bot_model["reasoning_effort"].clone();
+    conn.execute(
+        "UPDATE native_sessions SET options=? WHERE stored_id=? AND NOT EXISTS(SELECT 1 FROM native_deleted WHERE session_id=stored_id)",
+        params![options.to_string(), stored],
+    )?;
     Ok(())
 }
 /// Records a section this daemon made: the store from before it has nothing
@@ -3241,6 +3273,51 @@ pub(crate) fn check_deleted(conn: &Connection, stored: &str) -> Result<()> {
 #[cfg(test)]
 mod deletion_attempt_tests {
     use super::*;
+
+    /// A session's files go without following a link: a linked session goes
+    /// as a link, and a linked runtime or sessions folder is refused.
+    #[cfg(unix)]
+    #[test]
+    fn session_files_are_removed_without_following_links() {
+        use std::os::unix::fs::symlink;
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("keep"), "keep").unwrap();
+        remove_session_files(h, "absent").unwrap();
+        let sessions = h.join("runtime/sessions");
+        fs::create_dir_all(sessions.join("tree/nested")).unwrap();
+        fs::write(sessions.join("tree/nested/conversation.jsonl"), "x").unwrap();
+        symlink(outside.path(), sessions.join("tree/nested/link")).unwrap();
+        symlink(outside.path(), sessions.join("linked")).unwrap();
+        fs::write(sessions.join("file"), "x").unwrap();
+        for stored in ["tree", "linked", "file"] {
+            remove_session_files(h, stored).unwrap();
+            assert!(
+                fs::symlink_metadata(sessions.join(stored)).is_err(),
+                "{stored}"
+            );
+        }
+        assert!(outside.path().join("keep").is_file());
+        // A linked sessions folder, then a linked runtime folder.
+        fs::create_dir(outside.path().join("victim")).unwrap();
+        fs::remove_dir(&sessions).unwrap();
+        symlink(outside.path(), &sessions).unwrap();
+        assert_eq!(remove_session_files(h, "victim").unwrap_err().code, 4202);
+        assert!(outside.path().join("victim").is_dir());
+        fs::remove_file(&sessions).unwrap();
+        fs::remove_dir(h.join("runtime")).unwrap();
+        symlink(outside.path(), h.join("runtime")).unwrap();
+        fs::create_dir(outside.path().join("sessions")).unwrap();
+        fs::rename(
+            outside.path().join("victim"),
+            outside.path().join("sessions/victim"),
+        )
+        .unwrap();
+        assert_eq!(remove_session_files(h, "victim").unwrap_err().code, 4202);
+        assert!(outside.path().join("sessions/victim").is_dir());
+        assert!(remove_session_files(h, "../escape").is_err());
+    }
 
     #[test]
     fn unknown_retirement_never_gains_a_branch_during_restart() {

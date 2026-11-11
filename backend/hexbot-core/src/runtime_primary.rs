@@ -17,14 +17,13 @@ pub(super) const TOOL_NAMES: &[&str] = &[
 pub(super) const GUIDANCE: &str = r###"
 
 # Primary bot
-You are the user's primary bot. Besides your own work, you look after their Hexbot:
-- hexbot_bots lists, creates, changes and deletes their bots. Check the list before creating one. Give a new bot a clear purpose, a soul written for that purpose, and only the tools it needs. When you change another bot's soul, tell the user what you changed.
-- hexbot_rooms creates rooms and manages who is in them.
-- hexbot_jobs schedules work for any of their bots.
-- hexbot_settings reads and changes Hexbot's settings, skills and connectors.
-- hexbot_plugins with bot installs plugins for any bot, turns them on or off for it, and removes packages for every bot.
-Deleting a bot, room or job, changing a bot's or room's approval mode or a bot's or job's working folder, and changing settings always ask the user first. Do the rest when the user asks. You never see API keys or connector credentials: when a plugin needs one, call hexbot_plugins setup, which shows the user a card to enter it.
-These tools work only in your own sections."###;
+You also look after the user's Hexbot, from your own chat only:
+- hexbot_bots: list, create, change and delete bots. Check the list first; it also shows the providers the user has connected and the default model from Settings. Give a new bot a clear purpose, a soul for it, and only the tools it needs. A bot runs only on a connected provider, never one you assume. A new bot without a model takes the default from Settings when it is on the bot's provider; when it is not, there is none, or the user wants another, ask which provider and model to use before creating. Tell the user what changed when you edit another bot's soul.
+- hexbot_rooms: rooms and their members.
+- hexbot_jobs: scheduled work for any bot.
+- hexbot_settings: settings, skills and connectors.
+- hexbot_plugins with bot: install plugins for any bot, turn them on or off, remove packages.
+Always ask first before deleting a bot, room or job, changing an approval mode or working folder, or changing settings. Do the rest when the user asks. You never see keys: when a plugin needs one, call hexbot_plugins setup to show the user a card."###;
 
 const BOT_FIELDS: &[&str] = &[
     "name",
@@ -35,12 +34,15 @@ const BOT_FIELDS: &[&str] = &[
     "provider",
     "model",
     "reasoning_effort",
+    "fast",
     "tools",
     "skills",
     "approval_mode",
     "workdir",
     "dream_enabled",
     "notify",
+    "soul_char_limit",
+    "memory_char_limit",
 ];
 const JOB_FIELDS: &[&str] = &[
     "action",
@@ -54,6 +56,7 @@ const JOB_FIELDS: &[&str] = &[
     "enabled_toolsets",
     "workdir",
     "reasoning_effort",
+    "notify",
 ];
 const ROOM_FIELDS: &[&str] = &["id", "name", "members", "main_bot", "approval_mode"];
 /// Daemon settings the primary bot may change. Network, service and billing
@@ -68,6 +71,8 @@ const SETTINGS: &[&str] = &[
     "room_bot_turns_per_human_turn",
     "room_budget_tokens_per_human_turn",
     "bot_daily_token_budget",
+    "soul_char_limit",
+    "memory_char_limit",
 ];
 
 pub(super) fn descriptors() -> Vec<Value> {
@@ -76,7 +81,7 @@ pub(super) fn descriptors() -> Vec<Value> {
         json!({
             "name": "hexbot_bots",
             "label": "Bots",
-            "description": "List, read, create, change and delete the user's bots. get returns a bot's soul. create needs name (lowercase letters, digits, - or _) and display_name. update changes only the fields given; tools and skills replace the whole list. Deleting a bot, or setting approval_mode or workdir, asks the user first.",
+            "description": "List, read, create, change and delete the user's bots. list also returns providers, the ones the user has connected, and default_model from Settings. get returns a bot's soul. create needs name (lowercase letters, digits, - or _) and display_name; without a model it takes the default model from Settings when that is on its provider, or no provider is given, and is refused otherwise, so ask the user. update changes only the fields given; tools and skills replace the whole list. Deleting a bot, or setting approval_mode or workdir, asks the user first.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -86,15 +91,18 @@ pub(super) fn descriptors() -> Vec<Value> {
                     "title": { "type": "string", "description": "A few words on what the bot is for" },
                     "description": { "type": "string" },
                     "persona": { "type": "string", "description": "The bot's soul, complete" },
-                    "provider": { "type": "string" },
-                    "model": { "type": "string" },
+                    "provider": { "type": "string", "description": "The id of a provider the user has connected, as list shows it" },
+                    "model": { "type": "string", "description": "A model id of that provider" },
                     "reasoning_effort": { "type": "string", "description": "An empty string returns to the model's default" },
+                    "fast": { "type": "boolean", "description": "Fast mode: the same model answers faster at a higher price. It applies only on models that offer it, such as Claude Opus 5.5, and never to scheduled jobs or heartbeats" },
                     "tools": { "type": "array", "items": { "type": "string", "enum": ["terminal", "files", "computer_use", "vision", "voice", "message_bots", "delegate", "scheduling"] } },
                     "skills": strings,
                     "approval_mode": { "type": "string", "enum": ["inherit", "manual", "smart", "off"], "description": "inherit follows Settings; smart is Auto; off is Bypass" },
                     "workdir": { "type": "string", "description": "A folder on this computer; an empty string returns the bot to the Settings workspace" },
                     "dream_enabled": { "type": "boolean" },
-                    "notify": { "type": "boolean" }
+                    "notify": { "type": "boolean" },
+                    "soul_char_limit": { "type": ["integer", "null"], "minimum": 500, "maximum": 20000, "description": "The most characters its soul may hold; null follows Settings" },
+                    "memory_char_limit": { "type": ["integer", "null"], "minimum": 500, "maximum": 20000, "description": "The most characters its memory may hold; null follows Settings" }
                 },
                 "required": ["action"]
             }
@@ -121,7 +129,7 @@ pub(super) fn descriptors() -> Vec<Value> {
         json!({
             "name": "hexbot_jobs",
             "label": "Scheduled jobs",
-            "description": "Create and manage scheduled jobs for any of the user's bots. Actions: create, list, update, pause, resume, remove, run. Each job runs as that bot in a fresh session and saves its output locally. Removing a job, or setting its workdir, asks the user first.",
+            "description": "Create and manage scheduled jobs for any of the user's bots. Actions: create, list, update, pause, resume, remove, run. Each job runs as that bot in a fresh session and saves its output locally. When you create one, tell the user what you scheduled, for which bot, and when it first runs. With notify on, the default, each run's result is posted in that bot's chat and notifies the user; set notify to false when the user asks for no notifications, and say nothing about the job unless they ask. Removing a job, or setting its workdir, asks the user first.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -136,7 +144,8 @@ pub(super) fn descriptors() -> Vec<Value> {
                     "skills": strings,
                     "enabled_toolsets": strings,
                     "workdir": { "type": "string" },
-                    "reasoning_effort": { "type": "string" }
+                    "reasoning_effort": { "type": "string" },
+                    "notify": { "type": "boolean", "description": "Post each run's result in the bot's chat and notify the user. Defaults to true when you create a job." }
                 },
                 "required": ["bot", "action"]
             }
@@ -151,7 +160,7 @@ pub(super) fn descriptors() -> Vec<Value> {
                     "action": { "type": "string", "enum": ["get", "set", "skill", "connector"] },
                     "patch": {
                         "type": "object",
-                        "description": "With set: approval_mode (manual, smart or off), default_model and fallback_model (provider/model), workspace_dir, dream_enabled, dream_time (HH:MM), room_bot_turns_per_human_turn, room_budget_tokens_per_human_turn, bot_daily_token_budget"
+                        "description": "With set: approval_mode (manual, smart or off), default_model and fallback_model (provider/model, on a connected provider), workspace_dir, dream_enabled, dream_time (HH:MM), room_bot_turns_per_human_turn, room_budget_tokens_per_human_turn, bot_daily_token_budget, soul_char_limit and memory_char_limit (500 to 20000 characters, the default for every bot without its own)"
                     },
                     "name": { "type": "string", "description": "With skill: the skill's name" },
                     "id": { "type": "string", "description": "With connector: the connector's id" },
@@ -187,6 +196,7 @@ fn compact_bot(bot: &Value, soul: bool) -> Value {
             "provider",
             "model",
             "reasoning_effort",
+            "fast",
             "tools",
             "available_tools",
             "skills",
@@ -194,6 +204,10 @@ fn compact_bot(bot: &Value, soul: bool) -> Value {
             "workdir",
             "dream_enabled",
             "notify",
+            "soul_char_limit",
+            "memory_char_limit",
+            "soul_cap",
+            "memory_cap",
             "status",
         ],
     );
@@ -204,9 +218,8 @@ fn compact_bot(bot: &Value, soul: bool) -> Value {
 }
 
 impl Runtime {
-    /// `hexbot_notify` and `hexbot_connector_read` in a heartbeat;
-    /// `hexbot_heartbeat` there and in the bot's own chat. Each is frozen only
-    /// into those.
+    /// `hexbot_notify` in a heartbeat; `hexbot_heartbeat` there and in the
+    /// bot's own chat. Each is frozen only into those.
     pub(super) async fn heartbeat_tool(
         &self,
         s: &Live,
@@ -234,9 +247,6 @@ impl Runtime {
                 run,
                 required(args, "message")?,
             ),
-            ("hexbot_connector_read", _) => {
-                heartbeat::connector_read(&self.home, &s.bot, args).await
-            }
             _ => match args["action"].as_str().unwrap_or("read") {
                 "read" => Ok(json!({
                     "text": heartbeat::read(&self.home, &s.bot)?,
@@ -303,6 +313,89 @@ impl Runtime {
         Ok(())
     }
 
+    /// The providers the user has connected, as Settings, Providers lists them.
+    async fn connected_providers(&self, owner: &str) -> Result<Vec<Value>> {
+        let result = self
+            .dispatch(owner, "hexbot.providers.list", json!({}))
+            .await?;
+        Ok(result["providers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|p| p["configured"] == true)
+            .map(|p| json!({"id":p["id"],"label":p["label"]}))
+            .collect())
+    }
+
+    /// A bot runs only on a provider the user has connected; the primary bot
+    /// never assumes one. A new bot without a model takes the default from
+    /// Settings when that is on its provider; otherwise the bot has to ask.
+    async fn choose_model(&self, owner: &str, action: &str, patch: &mut Value) -> Result<()> {
+        for key in ["provider", "model"] {
+            if patch[key].as_str().is_some_and(|v| v.trim().is_empty()) {
+                patch.as_object_mut().unwrap().remove(key);
+            }
+        }
+        let providers = self.connected_providers(owner).await?;
+        if let Some(provider) = patch["provider"].as_str().map(str::to_owned) {
+            patch["provider"] = json!(check_connected(&providers, &provider)?);
+        }
+        if action != "create" {
+            return Ok(());
+        }
+        let provider = patch["provider"].as_str().map(str::to_owned);
+        if patch.get("model").is_some() {
+            if provider.is_none() {
+                return Err(Error::new(
+                    4202,
+                    format!(
+                        "model needs its provider, the id of a connected one. {}",
+                        provider_choices(&providers)
+                    ),
+                ));
+            }
+            return Ok(());
+        }
+        // No model named: the default from Settings, when it is on the chosen
+        // provider or none was chosen. A provider alone would leave the bot
+        // to Pi's own default.
+        let settings = self
+            .dispatch(owner, "hexbot.settings.get", json!({}))
+            .await?;
+        let default = settings["default_model"]
+            .as_str()
+            .and_then(|s| s.split_once('/'));
+        match (provider, default) {
+            (None, Some((provider, model))) => {
+                patch["provider"] = json!(check_connected(&providers, provider)?);
+                patch["model"] = json!(model);
+            }
+            (Some(id), Some((provider, model)))
+                if crate::providers::canonical_provider(provider) == id =>
+            {
+                patch["model"] = json!(model);
+            }
+            (None, None) => {
+                return Err(Error::new(
+                    4202,
+                    format!(
+                        "No model chosen, and Settings has no default model. Ask the user which provider and model the bot should use. {}",
+                        provider_choices(&providers)
+                    ),
+                ));
+            }
+            (Some(id), _) => {
+                return Err(Error::new(
+                    4202,
+                    format!(
+                        "No model chosen for {id}. Ask the user which model on {id} the bot should use."
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub(super) async fn primary_tool(&self, s: &Live, name: &str, args: &Value) -> Result<Value> {
         // The tools are frozen into the primary bot's own chat only; a
         // job or a delegate never gets them, but refuse here too.
@@ -324,7 +417,15 @@ impl Runtime {
                     .flatten()
                     .map(|b| compact_bot(b, false))
                     .collect::<Vec<_>>();
-                Ok(json!({"bots":bots}))
+                let providers = self.connected_providers(owner).await?;
+                let settings = self
+                    .dispatch(owner, "hexbot.settings.get", json!({}))
+                    .await?;
+                Ok(json!({
+                    "bots":bots,
+                    "providers":providers,
+                    "default_model":settings["default_model"]
+                }))
             }
             ("hexbot_bots", "get") => {
                 let result = self
@@ -345,6 +446,7 @@ impl Runtime {
                         patch[key] = Value::Null;
                     }
                 }
+                self.choose_model(owner, action, &mut patch).await?;
                 if ["approval_mode", "workdir"]
                     .iter()
                     .any(|k| patch.get(*k).is_some())
@@ -543,6 +645,10 @@ impl Runtime {
                 if job["repeat"] == 0 {
                     job["repeat"] = Value::Null;
                 }
+                // A job a bot schedules reports back unless the user asked for quiet.
+                if action == "create" && job["notify"].is_null() {
+                    job["notify"] = json!(true);
+                }
                 job["bot"] = json!(bot);
                 let method = format!("hexbot.jobs.{action}");
                 self.dispatch(owner, &method, job).await
@@ -561,7 +667,20 @@ impl Runtime {
                         format!("{key} can only be changed by the user in Settings"),
                     ));
                 }
-                let summary = settings_summary(patch);
+                // A model choice lands with its provider's id, whatever name the bot used.
+                let mut patch = patch.clone();
+                for key in ["default_model", "fallback_model"] {
+                    if let Some(choice) = patch.get(key).and_then(Value::as_str).map(str::to_owned)
+                    {
+                        let (provider, model) = choice.split_once('/').unwrap_or((&choice, ""));
+                        let id =
+                            check_connected(&self.connected_providers(owner).await?, provider)?;
+                        if !model.is_empty() {
+                            patch.insert(key.into(), json!(format!("{id}/{model}")));
+                        }
+                    }
+                }
+                let summary = settings_summary(&patch);
                 self.confirm(s, name, format!("Change settings: {summary}"), args)
                     .await?;
                 self.dispatch(owner, "hexbot.settings.set", json!({"patch":patch}))
@@ -616,6 +735,41 @@ impl Runtime {
     }
 }
 
+/// The connected providers as the primary bot tells the user about them.
+fn provider_choices(providers: &[Value]) -> String {
+    if providers.is_empty() {
+        return "No provider is connected yet; the user adds one in Settings, Providers.".into();
+    }
+    let names = providers
+        .iter()
+        .map(|p| {
+            format!(
+                "{} ({})",
+                p["label"].as_str().unwrap_or(""),
+                p["id"].as_str().unwrap_or("")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("Connected providers: {names}.")
+}
+
+/// The connected provider's id for a name the bot used, such as claude or
+/// codex. Refuses one the user has not connected, naming the ones they have.
+fn check_connected(providers: &[Value], provider: &str) -> Result<String> {
+    let id = crate::providers::canonical_provider(provider);
+    if let Some(row) = providers.iter().find(|p| p["id"] == id) {
+        return Ok(row["id"].as_str().unwrap_or(&id).to_owned());
+    }
+    Err(Error::new(
+        4202,
+        format!(
+            "{provider} isn't connected, so a bot can't run on it. Ask the user which to use. {}",
+            provider_choices(providers)
+        ),
+    ))
+}
+
 /// The folder a job create or update moves the job to, if it names one;
 /// an empty or null `workdir` is the Settings workspace.
 pub(super) fn job_folder(args: &Value) -> Option<String> {
@@ -660,6 +814,8 @@ fn setting_label(key: &str) -> &str {
         "room_bot_turns_per_human_turn" => "bot turns per message in rooms",
         "room_budget_tokens_per_human_turn" => "token budget per message in rooms",
         "bot_daily_token_budget" => "daily token budget for each bot",
+        "soul_char_limit" => "soul limit in characters",
+        "memory_char_limit" => "memory limit in characters",
         other => other,
     }
 }
@@ -682,6 +838,38 @@ mod tests {
     fn only_the_user_can_turn_on_usage_data() {
         // Consent to usage data is the user's alone (docs/usage-data.md).
         assert!(!SETTINGS.contains(&"usage_data"));
+    }
+
+    #[test]
+    fn only_connected_providers_pass_and_the_refusal_names_them() {
+        let providers = vec![json!({"id":"openai-codex","label":"OpenAI Codex"})];
+        // Any name for a provider lands as its id.
+        assert_eq!(
+            check_connected(&providers, "codex").unwrap(),
+            "openai-codex"
+        );
+        assert_eq!(
+            check_connected(&providers, "Codex").unwrap(),
+            "openai-codex"
+        );
+        assert_eq!(
+            check_connected(&providers, "openai-codex").unwrap(),
+            "openai-codex"
+        );
+        let err = check_connected(&providers, "openrouter").unwrap_err();
+        assert_eq!(err.code, 4202);
+        assert_eq!(
+            err.message,
+            "openrouter isn't connected, so a bot can't run on it. Ask the user which to use. Connected providers: OpenAI Codex (openai-codex)."
+        );
+        assert!(
+            check_connected(&[], "openrouter")
+                .unwrap_err()
+                .message
+                .ends_with(
+                    "No provider is connected yet; the user adds one in Settings, Providers."
+                )
+        );
     }
 
     #[test]

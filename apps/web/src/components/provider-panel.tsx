@@ -22,7 +22,7 @@ export function supportsApiKey(provider: Pick<Provider, 'key_supported'>): boole
   return provider.key_supported !== false
 }
 
-function openInBrowser(url: string) {
+export function openInBrowser(url: string) {
   const bridge = getBridge()
 
   if (bridge) {

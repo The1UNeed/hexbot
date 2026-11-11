@@ -19,7 +19,7 @@ Open Bot settings, Tools. Each switch controls one capability. Computer use isn'
 | Terminal | Runs shell commands on the daemon computer. |
 | Files | Reads, writes, and searches files. |
 | Vision | Reads images you attach. |
-| Voice | Speaks replies with the built-in voice; premium voice uses a connector. |
+| Voice | Speaks replies with the built-in voice, which play in the chat; premium voice uses a connector. |
 | Message other bots | Asks a named teammate for help privately. |
 | Delegate | Hands a subtask to an isolated subagent. |
 | Scheduling | Creates and manages reminders and recurring jobs. |
@@ -28,19 +28,31 @@ Tools execute where the daemon runs, even when you use the client app on another
 
 ### Your bots' computer
 
-Your bots share one computer of their own: a Cua sandbox, a Linux desktop with a browser and a terminal, running in Docker on the daemon computer. Every bot has it. Bots run code, install the programs a job needs, browse and use apps there, so nothing they install lands on the daemon computer. It is made the first time a bot needs it, and it is separate from your computer and from the bots' workspaces. Settings, Manuals, Computer use shows whether it is on, turns it on or off, resets it and sets its size. Install Cua there with `uv tool install cua` and start Docker; the first start downloads the computer, a few GB.
+Your bots share one computer of their own: a Cua sandbox, a Linux desktop with a browser and a terminal, running in Docker on the daemon computer. Every bot has it. Bots run code, install the programs a job needs, browse and use apps there, so nothing they install lands on the daemon computer. It is made the first time a bot needs it, and it is separate from your computer and from the bots' workspaces. Settings, Manuals, Computer use shows whether it is on, turns it on or off, resets it and sets its size. Install Cua there with `uv tool install cua` and start Docker; the first start downloads the computer, a few GB. Once on, it stays on until you turn it off. If it stops, or Docker stops with it, as when the daemon computer restarts for an update, Hexbot starts Docker again (Colima, OrbStack or Docker Desktop) and brings the computer back with its files, within a minute of the daemon starting. If it can't, your primary bot tells you why in its chat, with a notification on your devices; fix that, then choose **Turn on**. If the computer's container was removed, **Reset** makes a new one.
 
-Open the side panel's Computer tab to watch the screen live; on the phone, tap the computer button at the top of a bot's chat. Each bot that works on it has a cursor with its face, which moves to where it clicks and types, and the line under the screen says who is doing what. Bots take turns one action at a time. If something goes wrong, choose **Take control**: the screen opens large and takes your clicks and keys, and the bots wait until you choose **Give back**. The tab's menu restarts the computer, turns it off, or resets it to a fresh one. It also sets the screen's quality on this device: **Auto**, the default, streams as sharp and smooth as your connection allows and drops to no less than 720p at 30 fps when it is slow; or hold 1080p or 720p at 60 or 30 fps. The phone has the same choice on the computer card. The screen plays only over a secure connection: through Hex Connect, or in Hexbot on the daemon computer. A phone or app paired at a plain `http://` address on your network says so instead of showing it. Settings, Manuals, Computer use sets its size (small, medium or large); a new size applies after Reset. Without the app, `hexbot computer` shows it, and `on`, `off`, `restart`, `reset`, `give-back` and `size` change it.
+Open the side panel's Computer tab to watch the screen live; on the phone, tap the computer button at the top of a bot's chat. Each bot that works on it has a cursor with its face, which moves to where it clicks and types, and the line under the screen says who is doing what. Bots take turns one action at a time. Click the screen to open it large and use it alongside them: your clicks and keys go to the computer while the bots keep working. To have it to yourself, choose **Pause bots**; they stop after the action they're on and wait until you choose **Resume bots**. The tab's menu restarts the computer, turns it off, or resets it to a fresh one. It also sets the screen's quality on this device: **Auto**, the default, streams as sharp and smooth as your connection allows and drops to no less than 720p at 30 fps when it is slow; or hold 1080p or 720p at 60 or 30 fps. The phone has the same choice on the computer card. The screen plays only over a secure connection: through Hex Connect, or in Hexbot on the daemon computer. A phone or app paired at a plain `http://` address on your network says so instead of showing it. Settings, Manuals, Computer use sets its size (small, medium or large); a new size applies after Reset. Without the app, `hexbot computer` shows it, and `on`, `off`, `restart`, `reset`, `pause`, `resume` and `size` change it.
 
 The **Working directory** is the bot's workspace. Choose a project folder outside `~/.hexbot`; the daemon refuses its own data directory as a workspace. [Approvals](/docs/approvals/) explains sandbox access, network requests, and credential protection.
 
 ## Connect outside services
 
-Connectors are the services Hexbot supports: web search, image and video generation, premium voice, Notion, Home Assistant, and others. The [tool catalog](/tools/) lists the capabilities.
+Connectors are the services Hexbot supports: web search, image and video generation, premium voice, Gmail and Outlook through Google Workspace and Microsoft 365, Notion, Home Assistant, and others. Google Workspace and Microsoft 365 are set up by signing in rather than with a key; see [Email](/docs/email/). The [tool catalog](/tools/) lists the capabilities.
 
 You set up a connector in Settings, Plugins, or in Bot settings, Connectors, by choosing its provider and entering the requested credentials. Each bot has its own on/off switch. A connector must be ready and enabled for that bot before its tools appear in the bot's chat.
 
-**Connected** means an authenticated probe answered. **Key saved** means Hexbot stored the key but has not verified it with a live probe. Use the connector's test action if a service stops working, and check its reported error before replacing credentials.
+Notion and Airtable keys stay with the daemon. A bot reads and changes your workspace through Hexbot, which adds the key to each request; the bot never sees the key, and its commands never have it. It does not need your Notion or Airtable password. Reading runs in every approval mode. A change runs in Bypass, is checked first in Auto, and asks you in Manual. Notion only shows a bot the pages you connect to your integration: on the page, open **...**, then **Connections**.
+
+**Connected** means an authenticated probe answered. **Key saved** means Hexbot stored the key but has not verified it with a live probe. **Ready** means the provider needs no key. Use the connector's test action if a service stops working, and check its reported error before replacing credentials.
+
+### Web search
+
+Web search works without an account. By default Hexbot runs SearXNG, a free search engine that asks Google, Bing and others for you, in Docker on the daemon computer: the first start downloads about 100 MB, and it listens only on that computer. It starts with your bots' first search and stops with the daemon. Hexbot uses whatever Docker is running there but never starts Docker for it. Until SearXNG runs, as on a server without Docker, searches go to Tavily's free tier, then Wikipedia. Settings, Plugins, Web search says which: **Ready · SearXNG**, or why it isn't running yet.
+
+You can choose another provider there. Wikipedia and Marginalia need no key: Wikipedia searches Wikipedia only; Marginalia finds the small, independent web, and its shared key is often busy, so ask Marginalia for a free key of your own. Tavily works without a key at lower limits. Exa, Brave, Firecrawl, Parallel and Keenable need yours. If you already run SearXNG, enter its URL under **Show advanced**; it must allow JSON results.
+
+To read a page, a bot uses the provider's own reader when it has one. Otherwise Hexbot fetches the page itself, with the same rules about private addresses as every other fetch, and turns it into text. A page that draws itself with JavaScript reads thin that way; the bot can open it in its computer instead.
+
+Removing the keys returns web search to SearXNG, and every bot keeps it. To keep SearXNG off the daemon computer, set `web.searxng.docker: off` in `~/.hexbot/config.yaml`.
 
 Your model provider and your connectors may bill separately. A model subscription does not include an image service or premium voice account.
 

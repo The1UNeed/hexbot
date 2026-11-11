@@ -24,6 +24,7 @@ import {
   RoomFace,
   Screen,
   Text,
+  type Theme,
   useKeyboardVisible,
   useTheme
 } from '../ui'
@@ -49,11 +50,13 @@ export interface HomeScreenProps {
    * creates HexBot; without it, the user promotes a bot from its profile.
    */
   primaryChoice?: { onAdd?: () => void } | null
+  /** Set while this phone does not show Hexbot's notifications. */
+  notificationsPrompt?: { onEnable: () => void; onClose: () => void } | null
 
   daemon: DaemonOverview | null
   /** Signed-in person on this daemon; their initials open Settings. */
   user?: { name: string } | null
-  onOpenSettings: () => void
+  onOpenSettings?: () => void
   /** Every bot and scheduled job, behind the grid button. */
   onOpenLibrary?: () => void
   /** Set when there is another daemon to switch to; the header names this one. */
@@ -61,9 +64,19 @@ export interface HomeScreenProps {
   onReconnect?: () => void
 
   refreshing?: boolean
-  onRefresh?: () => void
+  /** Settles when the refresh does, for a native pull to refresh that waits. */
+  onRefresh?: () => Promise<void> | void
   /** First load: the list is empty because nothing has arrived yet. */
   loading?: boolean
+
+  /**
+   * The system draws the header, as on iOS: your initials and + are its
+   * toolbar items, so iOS can move them into iPhone Duo's side rail. The
+   * grid button and Search stay the screen's own dock.
+   */
+  systemHeader?: boolean
+  /** The open conversation's row (`${kind}-${id}`), marked where the list sits beside it. */
+  selected?: string | null
 }
 
 const STATE: Record<ConnectionState, string> = {
@@ -72,6 +85,35 @@ const STATE: Record<ConnectionState, string> = {
   offline: 'Offline',
   reconnecting: 'Reconnecting',
   unauthorized: 'Signed out'
+}
+
+/** The conversations a search keeps, the primary bot first and then newest first. */
+export const listConversations = (conversations: ConversationSummary[], query: string) =>
+  conversations
+    .filter(c => matches(query, c))
+    .sort(
+      (a, b) => Number(!!b.primary) - Number(!!a.primary) || (b.updatedAt ?? 0) - (a.updatedAt ?? 0)
+    )
+
+/**
+ * A row's second line: what is happening now, in its colour, or else the
+ * last thing said.
+ */
+export const conversationLine = (
+  c: ConversationSummary,
+  theme: Pick<Theme, 'accent' | 'danger' | 'info'>
+) => {
+  const live =
+    c.status === 'working'
+      ? { color: theme.info, text: c.activity || 'Working…' }
+      : c.status === 'needs_you'
+        ? { color: theme.accent, text: 'Waiting for you' }
+        : c.status === 'stopped'
+          ? { color: theme.danger, text: 'Stopped' }
+          : null
+  const text = live?.text ?? c.preview ?? (c.kind === 'room' ? roomLine(c) : null)
+
+  return { color: live?.color, text: text?.replace(/\s+/g, ' ') ?? null }
 }
 
 const matches = (query: string, c: ConversationSummary) => {
@@ -97,53 +139,34 @@ export function HomeScreen(props: HomeScreenProps) {
   const keyboard = useKeyboardVisible()
   const [query, setQuery] = useState('')
   const [creating, setCreating] = useState(false)
-  const shown = useMemo(
-    () =>
-      conversations
-        .filter(c => matches(query, c))
-        .sort(
-          (a, b) =>
-            Number(!!b.primary) - Number(!!a.primary) || (b.updatedAt ?? 0) - (a.updatedAt ?? 0)
-        ),
-    [conversations, query]
-  )
+  const system = !!props.systemHeader
+  const shown = useMemo(() => listConversations(conversations, query), [conversations, query])
   const canCreate = !!(props.onNewBot || props.onNewRoom)
 
   return (
-    <Screen avoidKeyboard testID="home-screen">
-      <View style={styles.header}>
-        <AccountButton daemon={daemon} onPress={props.onOpenSettings} user={props.user} />
-        <View style={styles.headerCenter}>
-          {props.onSwitchDaemon && daemon ? (
-            <Pressable
-              accessibilityHint="Switch to another daemon"
-              accessibilityLabel={`${daemon.name}, ${STATE[daemon.state]}`}
-              accessibilityRole="button"
-              hitSlop={8}
-              onPress={props.onSwitchDaemon}
-              style={({ pressed }) => [styles.daemonName, { opacity: pressed ? 0.6 : 1 }]}
-              testID="daemon-pill"
-            >
-              <Text numberOfLines={1} style={styles.shrink} tone="muted" variant="subhead">
-                {daemon.name}
-              </Text>
-              <Ionicons color={theme.muted} name="chevron-expand" size={14} />
-            </Pressable>
-          ) : null}
+    <Screen avoidKeyboard edges={system ? ['left', 'right'] : undefined} testID="home-screen">
+      {system ? null : (
+        <View style={styles.header}>
+          <AccountButton daemon={daemon} onPress={props.onOpenSettings} user={props.user} />
+          <View style={styles.headerCenter}>
+            {props.onSwitchDaemon && daemon ? (
+              <DaemonSwitch daemon={daemon} onPress={props.onSwitchDaemon} />
+            ) : null}
+          </View>
+          {canCreate ? (
+            <IconButton
+              accessibilityLabel="New bot or room"
+              icon="add"
+              iconSize={26}
+              onPress={() => setCreating(true)}
+              testID="home-new"
+              variant="glass"
+            />
+          ) : (
+            <View style={styles.headerSpacer} />
+          )}
         </View>
-        {canCreate ? (
-          <IconButton
-            accessibilityLabel="New bot or room"
-            icon="add"
-            iconSize={26}
-            onPress={() => setCreating(true)}
-            testID="home-new"
-            variant="glass"
-          />
-        ) : (
-          <View style={styles.headerSpacer} />
-        )}
-      </View>
+      )}
 
       {daemon && daemon.state !== 'connected' ? (
         <View style={styles.banner}>
@@ -153,7 +176,9 @@ export function HomeScreen(props: HomeScreenProps) {
               daemon.state === 'unauthorized'
                 ? `${daemon.name} no longer accepts this device. Pair again in Settings.`
                 : daemon.state === 'offline'
-                  ? `Cannot reach ${daemon.name}. Showing what was loaded last.`
+                  ? conversations.length
+                    ? `Cannot reach ${daemon.name}. Showing what was loaded last.`
+                    : `Cannot reach ${daemon.name}. It may be asleep or off the network.`
                   : `Reconnecting to ${daemon.name}…`
             }
             onAction={props.onReconnect}
@@ -193,10 +218,24 @@ export function HomeScreen(props: HomeScreenProps) {
                 />
               </View>
             ) : null}
+            {props.notificationsPrompt && !query ? (
+              <View style={styles.banner}>
+                <Banner
+                  actionLabel="Enable"
+                  message="Know when a bot replies or needs you."
+                  onAction={props.notificationsPrompt.onEnable}
+                  onDismiss={props.notificationsPrompt.onClose}
+                  testID="home-notifications"
+                  title="Turn on notifications"
+                  tone="info"
+                />
+              </View>
+            ) : null}
             {query ? null : <WaitingStrip bots={props.waiting ?? []} onOpen={props.onOpenPulse} />}
           </>
         }
         contentContainerStyle={styles.list}
+        contentInsetAdjustmentBehavior={system ? 'automatic' : undefined}
         data={shown}
         keyExtractor={c => `${c.kind}-${c.id}`}
         keyboardDismissMode="on-drag"
@@ -209,6 +248,7 @@ export function HomeScreen(props: HomeScreenProps) {
             conversation={item}
             onLongPress={props.onLongPress}
             onPress={props.onOpen}
+            selected={props.selected === `${item.kind}-${item.id}`}
           />
         )}
         style={styles.fill}
@@ -257,12 +297,14 @@ export function HomeScreen(props: HomeScreenProps) {
         </Glass>
       </View>
 
-      <NewMenu
-        onClose={() => setCreating(false)}
-        onNewBot={props.onNewBot}
-        onNewRoom={props.onNewRoom}
-        visible={creating}
-      />
+      {system ? null : (
+        <NewMenu
+          onClose={() => setCreating(false)}
+          onNewBot={props.onNewBot}
+          onNewRoom={props.onNewRoom}
+          visible={creating}
+        />
+      )}
     </Screen>
   )
 }
@@ -340,6 +382,32 @@ function NewMenu({
   )
 }
 
+/** This daemon's name; a press switches to another one. */
+export function DaemonSwitch({ daemon, onPress }: { daemon: DaemonOverview; onPress: () => void }) {
+  const theme = useTheme()
+
+  return (
+    <Pressable
+      accessibilityHint="Switch to another daemon"
+      accessibilityLabel={`${daemon.name}, ${STATE[daemon.state]}`}
+      accessibilityRole="button"
+      hitSlop={8}
+      onPress={onPress}
+      style={({ pressed }) => [styles.daemonName, { opacity: pressed ? 0.6 : 1 }]}
+      testID="daemon-pill"
+    >
+      <Text numberOfLines={1} style={styles.shrink} tone="muted" variant="subhead">
+        {daemon.name}
+      </Text>
+      <Ionicons color={theme.muted} name="chevron-expand" size={14} />
+    </Pressable>
+  )
+}
+
+/** What your initials say to a screen reader: Settings, and the daemon's state. */
+export const accountLabel = (daemon: DaemonOverview | null) =>
+  `Settings${daemon ? `, ${daemon.name} ${STATE[daemon.state].toLowerCase()}` : ''}`
+
 /** Your initials, with a dot for the connection; opens Settings. */
 function AccountButton({
   daemon,
@@ -348,7 +416,33 @@ function AccountButton({
 }: {
   daemon: DaemonOverview | null
   user?: { name: string } | null
-  onPress: () => void
+  onPress?: () => void
+}) {
+  return (
+    <Pressable
+      accessibilityLabel={accountLabel(daemon)}
+      accessibilityRole="button"
+      onPress={onPress}
+      style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
+      testID="home-settings"
+    >
+      <AccountFace daemon={daemon} glass user={user} />
+    </Pressable>
+  )
+}
+
+/**
+ * Your initials with the connection's dot. On its own glass in the screen's
+ * header; bare in a system toolbar item, which brings its own.
+ */
+export function AccountFace({
+  daemon,
+  glass,
+  user
+}: {
+  daemon: DaemonOverview | null
+  user?: { name: string } | null
+  glass?: boolean
 }) {
   const theme = useTheme()
   const dot =
@@ -359,24 +453,23 @@ function AccountButton({
         : daemon?.state === 'connecting' || daemon?.state === 'reconnecting'
           ? theme.warning
           : theme.danger
+  const face = user?.name ? (
+    <PersonFace name={user.name} size={glass ? HIT - 6 : 32} />
+  ) : (
+    <Ionicons color={theme.text} name="person" size={20} />
+  )
 
   return (
-    <Pressable
-      accessibilityLabel={`Settings${daemon ? `, ${daemon.name} ${STATE[daemon.state].toLowerCase()}` : ''}`}
-      accessibilityRole="button"
-      onPress={onPress}
-      style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
-      testID="home-settings"
-    >
-      <Glass interactive radius={HIT / 2} style={styles.account}>
-        {user?.name ? (
-          <PersonFace name={user.name} size={HIT - 6} />
-        ) : (
-          <Ionicons color={theme.text} name="person" size={20} />
-        )}
-      </Glass>
+    <View>
+      {glass ? (
+        <Glass interactive radius={HIT / 2} style={styles.account}>
+          {face}
+        </Glass>
+      ) : (
+        face
+      )}
       <View style={[styles.accountDot, { backgroundColor: dot, borderColor: theme.background }]} />
-    </Pressable>
+    </View>
   )
 }
 
@@ -384,22 +477,16 @@ function AccountButton({
 function ConversationRow({
   conversation: c,
   onLongPress,
-  onPress
+  onPress,
+  selected
 }: {
   conversation: ConversationSummary
   onPress: (c: ConversationSummary) => void
   onLongPress?: (c: ConversationSummary) => void
+  selected?: boolean
 }) {
   const theme = useTheme()
-  const live =
-    c.status === 'working'
-      ? { color: theme.info, text: c.activity || 'Working…' }
-      : c.status === 'needs_you'
-        ? { color: theme.accent, text: 'Waiting for you' }
-        : c.status === 'stopped'
-          ? { color: theme.danger, text: 'Stopped' }
-          : null
-  const line = live?.text ?? c.preview ?? (c.kind === 'room' ? roomLine(c) : null)
+  const { color, text: line } = conversationLine(c, theme)
   const time = formatListTime(c.updatedAt)
 
   return (
@@ -407,12 +494,13 @@ function ConversationRow({
       accessibilityHint={c.kind === 'room' ? 'Opens the room' : 'Opens the conversation'}
       accessibilityLabel={[c.name, line, time].filter(Boolean).join(', ')}
       accessibilityRole="button"
+      accessibilityState={selected ? { selected } : undefined}
       delayLongPress={350}
       onLongPress={onLongPress ? () => onLongPress(c) : undefined}
       onPress={() => onPress(c)}
       style={({ pressed }) => [
         styles.row,
-        { backgroundColor: pressed ? theme.pressed : 'transparent' }
+        { backgroundColor: pressed ? theme.pressed : selected ? theme.fill : 'transparent' }
       ]}
       testID={`${c.kind === 'bot' ? 'bot' : c.kind}-row-${c.id}`}
     >
@@ -433,13 +521,8 @@ function ConversationRow({
           ) : null}
         </View>
         {line ? (
-          <Text
-            numberOfLines={1}
-            style={live ? { color: live.color } : null}
-            tone="muted"
-            variant="callout"
-          >
-            {line.replace(/\s+/g, ' ')}
+          <Text numberOfLines={1} style={color ? { color } : null} tone="muted" variant="callout">
+            {line}
           </Text>
         ) : null}
       </View>
@@ -447,7 +530,7 @@ function ConversationRow({
   )
 }
 
-const roomLine = (c: ConversationSummary) => {
+function roomLine(c: ConversationSummary) {
   const names = (c.members ?? []).map(m => m.name)
 
   return names.length ? `${names.join(', ')} and you` : 'No bots yet'
@@ -489,6 +572,7 @@ function WaitingStrip({ bots, onOpen }: { bots: BotSummary[]; onOpen?: (id: stri
 
 function Empty({
   conversations,
+  daemon,
   loading,
   onNewBot,
   primaryChoice,
@@ -508,8 +592,20 @@ function Empty({
     )
   }
 
-  if (conversations.length) {
+  if (conversations.length || daemon?.state === 'unauthorized') {
     return null
+  }
+
+  // Nothing has loaded from this daemon yet, so there is nothing to say about its bots.
+  if (daemon && daemon.state !== 'connected') {
+    return (
+      <EmptyState
+        face={{ name: 'Hexbot' }}
+        message={`Your chats and rooms show here once ${daemon.name} answers.`}
+        testID="home-waiting-daemon"
+        title="Nothing loaded yet"
+      />
+    )
   }
 
   return (

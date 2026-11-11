@@ -4,7 +4,7 @@ description: "Work on the bots' shared computer: look, act, look again; hand ove
 version: 3.0.0
 author: Hexbot
 license: MIT
-platforms: [macos, linux]
+platforms: [macos, linux, windows]
 metadata:
   hermes:
     tags: [computer-use, desktop, automation, gui, cua]
@@ -23,8 +23,9 @@ Other bots may work on it too. You take turns one action at a time, so the
 screen can change between your actions: look before you act, and leave
 other bots' windows alone unless the user asks. The user can watch the
 screen live in the Computer tab, where each bot's cursor shows its face,
-and can take over at any time. While they have it, your actions are
-refused: wait until they give it back, then look again before you continue.
+and can click and type there while you work, so the screen can change under
+you then too. They can also pause the bots. While paused, your actions are
+refused: wait until they resume, then look again before you continue.
 
 ## The loop
 
@@ -63,8 +64,8 @@ has focus before you type anything long.
 ## When to stop and ask
 
 - A sign-in, a payment, a CAPTCHA, or anything the user's rules say to ask
-  about: tell the user what you need. They can take over, do it, and give the
-  computer back.
+  about: tell the user what you need. They can do it on the screen while you
+  wait, pausing the bots if they want it to themselves.
 - The same step fails twice: say what you see instead of trying a third time.
 - The computer is off or still starting: the first start downloads it, which
   can take a few minutes. Wait, then look again.

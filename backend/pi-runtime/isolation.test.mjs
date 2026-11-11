@@ -2,10 +2,21 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {spawn, execFileSync} from 'node:child_process';
 import {mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, linkSync, symlinkSync, chmodSync} from 'node:fs';
-import {join} from 'node:path';
+import {dirname, join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createInterface} from 'node:readline';
-import {isolatedCommand, probeIsolation, sandboxProfile, bwrapArguments} from './isolation.ts';
+import {isolatedCommand, probeIsolation, sandboxProfile, bwrapArguments, WINDOWS_ISOLATION_UNAVAILABLE, NO_CONTAINED_SHELL, SHELL_ARGUMENTS} from './isolation.ts';
+
+// The extension refuses with the daemon's own words when settings give no
+// reason, and starts the shell the daemon names as the daemon does.
+test('Windows refusals and the contained shell match the daemon', () => {
+  const rust = readFileSync(new URL('../hexbot-core/src/windows_sandbox.rs', import.meta.url), 'utf8');
+  const daemon = name => JSON.parse(rust.match(new RegExp(`pub const ${name}: &str = ("(?:[^"\\\\]|\\\\.)*");`))[1]);
+  assert.equal(WINDOWS_ISOLATION_UNAVAILABLE, daemon('UNAVAILABLE'));
+  assert.equal(NO_CONTAINED_SHELL, daemon('NO_SHELL'));
+  assert.deepEqual(Object.keys(SHELL_ARGUMENTS), [daemon('SHELL_KIND')]);
+  assert.deepEqual(SHELL_ARGUMENTS[daemon('SHELL_KIND')], [daemon('SHELL_APPLET')]);
+});
 
 // Scans read the user's own Git configuration. These tests use none, so the
 // developer's ~/.gitconfig and system config cannot change their results.
@@ -106,10 +117,17 @@ test('the sandbox keeps the parent of a nested store in place but lets siblings 
   const output = spawnSync(process.execPath, ['--input-type=module', '-e', run], {env:{...process.env, HOME:user}, encoding:'utf8'});
   assert.equal(output.stdout, 'done\n', output.stderr);
   assert.equal(readFileSync(join(user, '.config/gh/hosts.yml'), 'utf8'), 'keep');
-  // Only the directories between the home and a store are pinned, each once.
+  // Only the directories between the home and a store are pinned, each once:
+  // ~/.config for ~/.config/gh. The Windows stores live in windowsWriteDeny
+  // and never pin anything here.
   const profile = execFileSync(process.execPath, ['--input-type=module', '-e', `const {sandboxProfile} = await import(${JSON.stringify(new URL('./isolation.ts', import.meta.url).href)}); process.stdout.write(sandboxProfile(${JSON.stringify(home)}));`], {env:{...process.env, HOME:user}, encoding:'utf8'});
-  assert.ok(profile.includes(`(deny file-write-unlink (literal ${JSON.stringify(join(user, '.config'))}))`), profile);
-  assert.ok(!profile.includes(`file-write-unlink (literal ${JSON.stringify(user)})`));
+  const policy = JSON.parse(readFileSync(new URL('./credential-policy.json', import.meta.url), 'utf8'));
+  const ancestors = [];
+  for (const store of policy.write.deny) for (let dir = dirname(join(user, store)); dir !== user; dir = dirname(dir)) if (!ancestors.includes(dir)) ancestors.push(dir);
+  assert.ok(ancestors.includes(join(user, '.config')));
+  assert.ok(!ancestors.includes(join(user, 'AppData/Roaming')));
+  assert.ok(profile.includes(`(deny file-write-unlink ${ancestors.map(dir => `(literal ${JSON.stringify(dir)})`).join(' ')})`), profile);
+  assert.ok(!profile.includes(`(literal ${JSON.stringify(user)})`));
 });
 
 // Masked files are bound to /dev/null, which a user namespace mounts nodev, so

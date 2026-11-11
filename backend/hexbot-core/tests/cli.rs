@@ -718,6 +718,28 @@ async fn terminal_approval_and_ctrl_c_do_not_leave_blocking_stdin_readers() {
     }
 }
 
+/// Windows gives a program's first thread 1 MB of stack. This gives the
+/// commands the same here, where the first thread has 8 MB by default.
+#[cfg(unix)]
+#[test]
+fn commands_run_in_the_stack_windows_gives_the_first_thread() {
+    let home = tempfile::tempdir().unwrap();
+    for arguments in [&["lan", "on"][..], &["devices", "list"]] {
+        let mut command = std::process::Command::new("sh");
+        command
+            .args(["-c", r#"ulimit -s 1024 && exec "$@""#, "sh"])
+            .arg(env!("CARGO_BIN_EXE_hexbot"))
+            .args(arguments)
+            .env("HEXBOT_HOME", home.path());
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{arguments:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
 #[tokio::test]
 async fn help_and_invalid_command_describe_all_native_commands() {
     let home = tempfile::tempdir().unwrap();

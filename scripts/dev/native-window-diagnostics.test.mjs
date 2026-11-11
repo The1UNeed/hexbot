@@ -43,6 +43,7 @@ function fixture(write) {
       return this.minimized
     }
     isFocused() {
+      calls.push('isFocused')
       return this.focused
     }
     show(...args) {
@@ -147,7 +148,7 @@ test('actual production notify predicates and native-show decisions are observed
   // Execute the production guard itself, with native API stand-ins. No copied guard.
   const executable = stripTypeScriptTypes(source)
     .replace(/^import .* from 'electron'\s*$/m, '')
-    .replace('export function notify', 'function notify')
+    .replace(/^export function /gm, 'function ')
   const notify = vm.runInNewContext(`${executable}\nnotify`, { Notification })
   f.api.observeNotifications()
   const payload = {
@@ -158,13 +159,16 @@ test('actual production notify predicates and native-show decisions are observed
   }
   const handler = (_event, value) => notify(value, () => win)
   f.ipcMain.handle('hexbot:notify', handler)
-  for (const [visible, minimized, expectedGetters, expectedShows] of [
-    [false, false, ['isVisible'], 1],
-    [true, true, ['isVisible', 'isMinimized'], 1],
-    [true, false, ['isVisible', 'isMinimized'], 0]
+  // A window open behind another app still notifies; only one in front is silent.
+  for (const [visible, minimized, focused, expectedGetters, expectedShows] of [
+    [false, false, true, ['isVisible'], 1],
+    [true, true, true, ['isVisible', 'isMinimized'], 1],
+    [true, false, false, ['isVisible', 'isMinimized', 'isFocused'], 1],
+    [true, false, true, ['isVisible', 'isMinimized', 'isFocused'], 0]
   ]) {
     win.visible = visible
     win.minimized = minimized
+    win.focused = focused
     f.calls.length = 0
     const before = f.trace.length,
       shownBefore = shown
@@ -177,7 +181,7 @@ test('actual production notify predicates and native-show decisions are observed
     )
     assert.deepEqual(
       records.filter(entry => entry.event === 'notify-predicate').map(entry => entry.value),
-      expectedGetters.map(name => (name === 'isVisible' ? visible : minimized))
+      expectedGetters.map(name => ({ isVisible: visible, isMinimized: minimized, isFocused: focused })[name])
     )
     assert.equal(shown - shownBefore, expectedShows)
     assert.equal(records.at(-1).nativeShowCalls, expectedShows)

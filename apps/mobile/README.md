@@ -7,25 +7,46 @@ Transparency use solid controls. Lists and messages use solid backgrounds.
 
 ## Layout
 
-A messaging app with no tabs. One list holds every bot's chat and every room,
-newest first, with the primary bot pinned on top. A Check-ins conversation from
-before the heartbeat stays in it until you delete it.
-Each row shows the face, the name, the time and the last thing said, or what
-the bot is doing while it works. Search at the bottom filters the list. A row
-opens its conversation; a long press opens the bot's profile or the room's
-settings. Rooms open full screen like a bot's chat, and archiving the open
-room returns to the list. A bot waiting on you in a conversation with another
-bot gets a line at the top of the list that opens it.
+A messaging app. One list holds every bot's chat and every room, newest first,
+with the primary bot pinned on top. A Check-ins conversation from before the
+heartbeat stays in it until you delete it. Each row shows the face, the name,
+the time and the last thing said, or what the bot is doing while it works.
+Your initials at the top left open Settings, + makes a bot or a room, and the
+grid button beside Search at the bottom opens every bot's profile, scheduled
+jobs and all rooms. A row opens its conversation; a long press opens the
+bot's profile or the room's settings. Archiving the open room returns to the
+list. A bot waiting on you in a conversation with another bot gets a line at
+the top of the list that opens it.
 
-Your initials at the top left open Settings: the daemon, what bots are doing
-right now, About you, models, connectors, skills, usage, devices, pairing,
-Hex Connect and updates. + at the top right makes a new bot or room. The grid
-button next to Search opens Bots & jobs: every bot's profile, scheduled jobs,
-and all rooms, archived ones included. With more than one daemon saved, its
-name above the list switches daemons; otherwise Settings does.
+The screens are Hexbot's own; only what the system has to place is native.
+On iOS the app is SwiftUI's `NavigationSplitView`, from `@expo/ui`
+(`src/shell/SplitView.tsx`, mounted by `app/_layout.ios.tsx`). On iPhone Duo
+open and on iPad the list is its sidebar and what you choose opens beside
+it; on iPhone and on iPhone Duo closed it collapses to the list and pushes
+what you choose, with native back. Your initials, +, and a chat's title and
+buttons (Search, the bots' computer, the profile or room settings) are the
+system bars' items, so iOS places them: in the side rail by the clock on the
+closed Duo, against the fold when it is half open. On Android, an Expo Router
+`Stack` (`app/`) pushes a chat, Settings and Bots & jobs over the list. A
+chat's back closes it, except while files upload. The app turns with the
+phone and builds with the iOS 27 SDK, whose scene life cycle Expo SDK 58 sets
+up.
 
-Profiles, settings areas, tool steps, visuals and the bots' computer open as
-front cards (`src/ui/Layer.tsx`) that leave the screen below in view. The
+Settings is the daemon and what bots are doing right now, then the desktop
+app's groups: Models (providers, usage), Bots (plugins, passwords, bot
+activity), Manuals (Computer use), Devices (network, paired devices, Hex
+Connect), You (About you, daemon settings) and App (updates, licenses); it
+also switches daemons. + in the Chats bar makes a new bot or room. Bots & jobs
+is every bot's profile, scheduled jobs, and all rooms, archived ones included.
+
+Settings areas, profiles and room settings are pages styled like the desktop
+app's settings: a line saying what the page is for, small group labels,
+cards of rows with fields inside them, and filled circles for choices
+(`PageLook` in `src/ui/Row.tsx`). On iOS they push on the system's
+navigation stack beside the list, with native back and swipe back, their
+title and Save in the bar (`src/shell/SplitView.tsx`). On Android and in the
+browser they open as front cards (`src/ui/Layer.tsx`), as tool steps,
+visuals and the bots' computer do everywhere. The
 model pill lists the providers with a key or sign-in, plus the bot's own, each from
 `hexbot.models.list {provider}` so the provider's current list is used, as in
 the web app. Thinking levels come from `reasoning_levels`; a model the daemon
@@ -65,7 +86,7 @@ when Connect supplies one, and exchanges the grant directly with that daemon.
 | --- | --- |
 | Bots | Chat list and Bots & jobs; create, edit, delete, soul, picture, model and thinking level, tools, approvals, workspace, notifications and dreaming |
 | Conversations | heartbeat messages in each bot's chat; streamed chat, stop, file/image/PDF attachments, Markdown, tool steps with their results, visuals, questions and approvals |
-| Computer | The bots' shared computer on its own card from a chat's computer button: the live screen with each bot's face cursor, what is happening on it, Take control and Give back, Turn on, Restart, Turn off and Reset; its size in a bot's Tools |
+| Computer | The bots' shared computer on its own card from a chat's computer button: the live screen with each bot's face cursor, what is happening on it, Pause bots and Resume bots, Turn on, Restart, Turn off and Reset; its size in a bot's Tools |
 | Rooms | Rooms in the chat list: chat, stop, bot membership, main bot, budgets, approvals, archive, restore from All rooms, and delete |
 | Memory | Edit each bot's memory and your About you text; inspect dreaming and restore memory |
 | Models | Provider API keys and device sign-in, model selection, daemon defaults and fallback model |
@@ -91,7 +112,10 @@ opens at its latest 200 events and pages back with `before_seq` on
 `hexbot.rooms.log`; older daemons ignore it and the app reads the whole log.
 A bot's chat takes one message at a time, so Stop replaces Send while it works.
 
-Attachments stay on the phone until Send. Sending files without text uses
+The composer's + offers Photos and videos (up to 10 at once, HEIC arrives as
+JPEG), Camera (a photo or a video; Android, whose camera does one at a time,
+shows Take photo and Record video) and Files. Attachments stay on the phone
+until Send. Sending files without text uses
 "Please review the attached files." Chips clear only after the daemon accepts
 the message. Answer bot questions before sending attached files; the files stay
 ready for the next message. Failed uploads can be retried without

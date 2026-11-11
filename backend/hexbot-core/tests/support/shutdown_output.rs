@@ -23,7 +23,7 @@ impl Output {
             "Windows service creator already exited",
             "Cannot identify the Windows service creator",
             "a daemon already owns this home",
-            "Windows tool isolation is not implemented",
+            "The Windows sandbox could not start",
         ];
         let mut tail = labels
             .into_iter()

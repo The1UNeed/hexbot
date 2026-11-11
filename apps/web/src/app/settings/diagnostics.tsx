@@ -1,14 +1,19 @@
-import { ChevronDown, Copy } from 'lucide-react'
-import { useEffect, useId, useRef, useState } from 'react'
+import { ChevronDown, Copy, RefreshCw } from 'lucide-react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 
 import { Button } from '../../components/ui/button'
 import { Chip } from '../../components/ui/chip'
+import { Input } from '../../components/ui/input'
+import { ScrollArea } from '../../components/ui/scroll-area'
 import { Select } from '../../components/ui/select'
 import { SkeletonLines } from '../../components/ui/skeleton'
-import { diagnosticsGet, diagnosticsTrace, gatewayPing } from '../../lib/api'
+import { Switch } from '../../components/ui/switch'
+import { diagnosticsGet, diagnosticsLogs, diagnosticsTrace, gatewayPing } from '../../lib/api'
 import { cn } from '../../lib/cn'
 import type {
   DiagnosticsCacheRow,
+  DiagnosticsLogLine,
+  DiagnosticsLogs,
   DiagnosticsProcess,
   DiagnosticsSnapshot,
   DiagnosticsSpan,
@@ -26,6 +31,7 @@ const VIEWS = [
   ['resources', 'Resources'],
   ['traces', 'Traces'],
   ['failures', 'Failures'],
+  ['logs', 'Logs'],
   ['caches', 'Caches']
 ] as const
 
@@ -156,6 +162,28 @@ function windowTiming(): {
   }
 }
 
+/**
+ * Copies text, or where the browser can't use the clipboard (plain `http://`),
+ * saves it as a file instead.
+ */
+async function copyOrSave(text: string, name: string, type: string): Promise<'Copied' | 'Saved'> {
+  try {
+    await navigator.clipboard.writeText(text)
+
+    return 'Copied'
+  } catch {
+    const link = document.createElement('a')
+    const url = URL.createObjectURL(new Blob([text], { type }))
+
+    link.href = url
+    link.download = name
+    link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+
+    return 'Saved'
+  }
+}
+
 function errorText(error: unknown): string {
   return error instanceof Error
     ? error.message
@@ -225,21 +253,7 @@ export function DiagnosticsSettings(): React.JSX.Element {
 
     const report = JSON.stringify(snapshot, null, 2)
 
-    try {
-      await navigator.clipboard.writeText(report)
-      setCopied('Copied')
-    } catch {
-      // Browsers only allow the clipboard on HTTPS or localhost; save a file instead.
-      const link = document.createElement('a')
-      const url = URL.createObjectURL(new Blob([report], { type: 'application/json' }))
-
-      link.href = url
-      link.download = 'hexbot-diagnostics.json'
-      link.click()
-      setTimeout(() => URL.revokeObjectURL(url), 1000)
-      setCopied('Saved')
-    }
-
+    setCopied(await copyOrSave(report, 'hexbot-diagnostics.json', 'application/json'))
     setTimeout(() => setCopied(''), 1500)
   }
 
@@ -284,7 +298,11 @@ export function DiagnosticsSettings(): React.JSX.Element {
           </button>
         ))}
       </div>
-      {snapshot ? (
+      {view === 'logs' ? (
+        <div className="space-y-8" role="tabpanel">
+          <Logs />
+        </div>
+      ) : snapshot ? (
         <div className="space-y-8" role="tabpanel">
           {error ? (
             <p
@@ -370,7 +388,7 @@ function Overview({
 
   return (
     <>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+      <div className="grid grid-cols-2 gap-3 @min-[600px]:grid-cols-3">
         <Tile label="Launch time" note="Start to ready" value={formatMs(launch.total_ms)} />
         <Tile
           label="Uptime"
@@ -1313,6 +1331,287 @@ function Failures({
             title={<span className="line-clamp-3 [overflow-wrap:anywhere]">{failure.message}</span>}
           />
         ))}
+      </Group>
+    </>
+  )
+}
+
+// --------------------------------------------------------------------- logs
+
+/** A leading timestamp, muted so the message reads first. */
+const STAMP = /^(\[?\d{4}-\d{2}-\d{2}[T ][\d:.,]+(?:Z|[+-]\d{2}:?\d{2})?\]?)(\s+)/
+
+function LogLine({ line }: { line: DiagnosticsLogLine }) {
+  const stamp = STAMP.exec(line.text)
+
+  return (
+    <div
+      className={cn(
+        'px-4 py-px whitespace-pre-wrap [overflow-wrap:anywhere]',
+        line.level === 'error' && 'bg-danger/[0.06] text-danger',
+        line.level === 'warning' && 'text-warning'
+      )}
+    >
+      {stamp ? (
+        <>
+          <span className="text-muted">{stamp[1]}</span>
+          {stamp[2]}
+          {line.text.slice(stamp[0].length)}
+        </>
+      ) : (
+        line.text
+      )}
+    </div>
+  )
+}
+
+/** The files in `<home>/logs`, read from the end, newest lines last. */
+function Logs() {
+  const [file, setFile] = useState('')
+  const [search, setSearch] = useState('')
+  const [query, setQuery] = useState('')
+  const [errorsOnly, setErrorsOnly] = useState(false)
+  const [reload, setReload] = useState(0)
+  const [page, setPage] = useState<DiagnosticsLogs | null>(null)
+  const [error, setError] = useState<unknown>(null)
+  const [busy, setBusy] = useState<'' | 'older' | 'tail'>('')
+  const [copied, setCopied] = useState<'' | 'Copied' | 'Saved'>('')
+  const scroller = useRef<HTMLDivElement>(null)
+  // Distance from the bottom to keep when older lines arrive; null scrolls to the end.
+  const keep = useRef<null | number>(null)
+  const request = useRef(0)
+
+  useEffect(() => {
+    const timer = setTimeout(() => setQuery(search.trim()), 300)
+
+    return () => clearTimeout(timer)
+  }, [search])
+
+  useEffect(() => {
+    const id = ++request.current
+    setBusy('tail')
+    diagnosticsLogs({
+      errors: errorsOnly || undefined,
+      file: file || undefined,
+      query: query || undefined
+    }).then(
+      next => {
+        if (id === request.current) {
+          keep.current = null
+          setPage(next)
+          setError(null)
+          setBusy('')
+        }
+      },
+      caught => {
+        if (id === request.current) {
+          // The lines on screen no longer match the file and filters chosen;
+          // show none, so every control and Refresh act on what was chosen.
+          setPage(
+            shown =>
+              shown && { ...shown, before: 0, file: file || shown.file, lines: [], more: false }
+          )
+          setError(caught)
+          setBusy('')
+        }
+      }
+    )
+  }, [errorsOnly, file, query, reload])
+
+  useLayoutEffect(() => {
+    const box = scroller.current
+
+    if (box) {
+      box.scrollTop = keep.current == null ? box.scrollHeight : box.scrollHeight - keep.current
+    }
+  }, [page])
+
+  const older = async () => {
+    // While another file or filter loads, `page` still holds the previous one.
+    if (!page?.file || busy) {
+      return
+    }
+
+    const id = ++request.current
+
+    setBusy('older')
+
+    try {
+      const next = await diagnosticsLogs({
+        errors: errorsOnly || undefined,
+        before: page.before,
+        file: page.file,
+        query: query || undefined
+      })
+
+      if (id === request.current) {
+        const box = scroller.current
+
+        keep.current = box ? box.scrollHeight - box.scrollTop : null
+        setPage({ ...next, lines: [...next.lines, ...page.lines] })
+        setError(null)
+      }
+    } catch (caught) {
+      if (id === request.current) {
+        setError(caught)
+      }
+    }
+
+    if (id === request.current) {
+      setBusy('')
+    }
+  }
+
+  const copy = async () => {
+    if (!page?.file) {
+      return
+    }
+
+    const text = page.lines.map(line => line.text).join('\n')
+
+    setCopied(await copyOrSave(text, page.file, 'text/plain'))
+    setTimeout(() => setCopied(''), 1500)
+  }
+
+  if (!page) {
+    return error ? (
+      <p className="text-[length:var(--text-secondary)] text-muted" role="status">
+        {unknownMethod(error)
+          ? 'This daemon does not show its logs. Update it to see them here.'
+          : `Logs are unavailable: ${errorText(error)}`}
+      </p>
+    ) : (
+      <SkeletonLines label="Loading logs" lines={6} />
+    )
+  }
+
+  if (!page.file) {
+    return (
+      <Group title="Logs">
+        <Row
+          description="The app and the service keep the daemon's output here. A daemon started in a terminal prints there instead."
+          title="No logs yet"
+        />
+      </Group>
+    )
+  }
+
+  const now = Date.now()
+  const current = page.files.find(entry => entry.name === page.file)
+  const filtered = Boolean(query) || errorsOnly
+  const read = page.size - page.before
+
+  return (
+    <>
+      {error ? (
+        <p
+          className="rounded-[12px] bg-warning/10 px-4 py-3 text-[length:var(--text-secondary)] text-warning"
+          role="status"
+        >
+          {errorText(error)}
+        </p>
+      ) : null}
+      <Group
+        action={
+          <div className="flex gap-1">
+            <Button
+              busy={busy === 'tail'}
+              icon={<RefreshCw size={14} />}
+              onClick={() => setReload(value => value + 1)}
+              size="sm"
+              variant="ghost"
+            >
+              Refresh
+            </Button>
+            <Button
+              disabled={!page.lines.length}
+              icon={<Copy size={14} />}
+              onClick={() => void copy()}
+              size="sm"
+              variant="ghost"
+            >
+              {copied || 'Copy lines'}
+            </Button>
+          </div>
+        }
+        description={
+          current
+            ? `${formatBytes(current.size)}${current.modified ? ` · changed ${ago(current.modified, now)}` : ''}. Newest lines at the bottom.`
+            : undefined
+        }
+        footer={
+          error && !page.lines.length
+            ? undefined
+            : read >= page.size
+              ? `${count(page.lines.length, 'line', 'lines')} from the whole file.`
+              : `${count(page.lines.length, 'line', 'lines')} from the last ${formatBytes(read)} of ${formatBytes(page.size)}.`
+        }
+        title="Logs"
+      >
+        <div className="flex flex-wrap items-end gap-3 px-4 py-3">
+          <div className="w-full sm:w-60">
+            <Select
+              label="File"
+              onValueChange={name => {
+                setFile(name)
+              }}
+              options={page.files.map(entry => ({
+                label: `${entry.name} · ${formatBytes(entry.size)}`,
+                value: entry.name
+              }))}
+              value={page.file}
+            />
+          </div>
+          <Input
+            aria-label="Search the log"
+            className="min-w-40 flex-1"
+            onChange={event => setSearch(event.target.value)}
+            placeholder="Search"
+            type="search"
+            value={search}
+          />
+          <label className="flex h-[36px] items-center gap-2 text-[length:var(--text-secondary)]">
+            <Switch aria-label="Errors only" checked={errorsOnly} onCheckedChange={setErrorsOnly} />
+            Errors only
+          </label>
+        </div>
+        <ScrollArea
+          className="max-h-[60vh] min-h-40"
+          viewportClassName="overflow-auto py-2 font-mono text-[length:var(--text-meta)] leading-[1.55]"
+          viewportProps={{
+            'aria-busy': busy !== '' || undefined,
+            'aria-label': `Lines of ${page.file}`,
+            role: 'log'
+          }}
+          viewportRef={scroller}
+        >
+          {page.more ? (
+            <div className="px-4 pb-2">
+              <Button
+                busy={busy === 'older'}
+                disabled={busy === 'tail'}
+                onClick={() => void older()}
+                size="sm"
+                variant="ghost"
+              >
+                {filtered && !page.lines.length ? 'Search older lines' : 'Show older lines'}
+              </Button>
+            </div>
+          ) : null}
+          {page.lines.length ? (
+            page.lines.map(line => <LogLine key={line.offset} line={line} />)
+          ) : (
+            <p className="px-4 py-2 font-sans text-[length:var(--text-secondary)] text-muted">
+              {error
+                ? `Could not read ${page.file}.`
+                : filtered
+                  ? page.more
+                    ? `No matches in the last ${formatBytes(read)}.`
+                    : 'No lines match.'
+                  : 'This file is empty.'}
+            </p>
+          )}
+        </ScrollArea>
       </Group>
     </>
   )

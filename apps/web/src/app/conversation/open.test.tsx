@@ -67,6 +67,7 @@ const reply = (method: string, input: { id?: string } = {}) =>
         : { connectors: [] }
   )
 
+afterEach(() => vi.useRealTimers())
 beforeEach(() => {
   params = { bot: 'owl', section: 'old' }
   navigate.mockReset()
@@ -414,14 +415,21 @@ it('resets the rendered history window when navigating to another section', asyn
         })
       : reply(method, input)
   )
+  // Frames wait for the test, so the first one is seen before the page fills in.
+  vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'cancelAnimationFrame'] })
+  const firstFrame = async (text: string) => {
+    await screen.findByText(text)
+    // The newest few draw first, so switching paints at once; the page follows.
+    expect(screen.getAllByTestId('bot-message')).toHaveLength(10)
+    act(() => void vi.advanceTimersToNextFrame())
+    await waitFor(() => expect(screen.getAllByTestId('bot-message')).toHaveLength(60))
+  }
   const view = render(<ConversationColumn />)
-  await screen.findByText('old 129')
-  expect(screen.getAllByTestId('bot-message')).toHaveLength(60)
+  await firstFrame('old 129')
   fireEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }))
   expect(screen.getAllByTestId('bot-message')).toHaveLength(120)
   params = { bot: 'owl', section: 'new' }
   useSections.setState({ byId: { new: section('new') } })
   view.rerender(<ConversationColumn />)
-  await screen.findByText('new 129')
-  expect(screen.getAllByTestId('bot-message')).toHaveLength(60)
+  await firstFrame('new 129')
 })

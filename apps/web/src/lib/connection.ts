@@ -22,6 +22,7 @@ import {
 } from '@hermes/shared'
 
 import { botsActions } from '../stores/bots'
+import { prefetchChats } from '../stores/chat-prefetch'
 import { connectionActions, invalidateConnectionReads } from '../stores/connection'
 import { useHeartbeat } from '../stores/heartbeat'
 import { useMe } from '../stores/me'
@@ -158,6 +159,16 @@ export async function probeDaemon(origin: string, deps: ConnectionDeps = {}): Pr
   } catch (error) {
     throw new UnreachableError(error instanceof Error ? error.message : String(error))
   }
+}
+
+function withDeadline<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new UnreachableError(message)), ms)
+  })
+
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer))
 }
 
 /** Bearer token used for HTTP calls against a gated daemon. */
@@ -356,6 +367,8 @@ export class ConnectionSupervisor {
   private stopped = true
   private target: ConnectionTarget | null = null
   private starting: Promise<void> | null = null
+  /** The handshake in flight, so a second one cannot open another socket. */
+  private connecting: Promise<void> | null = null
 
   constructor(private readonly deps: ConnectionDeps = {}) {}
 
@@ -391,7 +404,7 @@ export class ConnectionSupervisor {
 
   /** Drop the backoff and try again now (the "Retry" button). */
   retryNow(): Promise<void> {
-    if (!this.target) {
+    if (!this.target || this.client) {
       return Promise.resolve()
     }
 
@@ -413,6 +426,7 @@ export class ConnectionSupervisor {
     this.generation += 1
     this.stopped = true
     this.starting = null
+    this.connecting = null
 
     if (this.retryTimer) {
       clearTimeout(this.retryTimer)
@@ -427,7 +441,28 @@ export class ConnectionSupervisor {
     connectionActions().setDaemon(null)
   }
 
-  private async attemptConnect(): Promise<void> {
+  /**
+   * One handshake at a time. Two would each open a socket and route its
+   * events, so the chat would get every event twice: Reconnect now during a
+   * slow Connect handshake showed a bot's visual twice until a restart.
+   */
+  private attemptConnect(): Promise<void> {
+    if (this.connecting) {
+      return this.connecting
+    }
+
+    const attempt = this.tryConnect().finally(() => {
+      if (this.connecting === attempt) {
+        this.connecting = null
+      }
+    })
+
+    this.connecting = attempt
+
+    return attempt
+  }
+
+  private async tryConnect(): Promise<void> {
     if (this.stopped || !this.target) {
       return
     }
@@ -468,8 +503,13 @@ export class ConnectionSupervisor {
   }
 
   private async open(target: ConnectionTarget, generation: number): Promise<void> {
-    await probeDaemon(targetOrigin(target), this.deps)
-    const wsUrl = await resolveWsUrl(target, this.deps)
+    // A request can stall without failing. Give up on it, or the one attempt
+    // allowed at a time would hold Reconnect now forever.
+    const wsUrl = await withDeadline(
+      probeDaemon(targetOrigin(target), this.deps).then(() => resolveWsUrl(target, this.deps)),
+      READY_TIMEOUT_MS,
+      'The daemon did not answer.'
+    )
 
     if (generation !== this.generation) {
       return
@@ -514,6 +554,9 @@ export class ConnectionSupervisor {
     this.client = client
     this.detach = attachEventRouting(client)
     setActiveRpc(client)
+    // The handshake is done. A drop while hydrating must start a new one,
+    // not join this attempt.
+    this.connecting = null
 
     client.onState(state => {
       if (state === 'closed' || state === 'error') {
@@ -610,6 +653,11 @@ export class ConnectionSupervisor {
         useMe.getState().refresh(),
         sectionsActions().refresh()
       ])
+
+      // Every bot's chat comes over in the background, so switching shows it at once.
+      if (current()) {
+        prefetchChats()
+      }
     })
 
     try {

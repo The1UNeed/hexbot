@@ -430,6 +430,44 @@ impl Installer {
         Ok(result)
     }
 
+    /// `hexbot sandbox reset`, when this home has sandbox grants. Best effort:
+    /// an uninstall goes on without it and says what stays.
+    #[cfg(windows)]
+    fn reset_sandbox(&self, progress: &mut ProgressCallback<'_>) {
+        let home = &self.paths.hexbot_home;
+        let journal = home.join("runtime/sandbox/grants.json");
+        if !journal.is_file() {
+            return;
+        }
+        // The reset walks every file it granted, which takes a while.
+        progress(Progress::new(
+            "remove",
+            "Removing the sandbox's permissions from your working folders.",
+        ));
+        let reset = Command::new(self.paths.executable())
+            .args(["sandbox", "reset"])
+            .env("HEXBOT_HOME", home)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        // A reset that could not reach a folder keeps it in the journal.
+        let left = fs::read(&journal)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .is_none_or(|journal| {
+                journal["roots"]
+                    .as_array()
+                    .is_some_and(|roots| !roots.is_empty())
+            });
+        if left || !reset.is_ok_and(|status| status.success()) {
+            progress(Progress::new(
+                "warning",
+                "The sandbox's permissions on your working folders could not all be removed. What stays gives no access once Hexbot is gone.",
+            ));
+        }
+    }
+
     pub fn uninstall(&self, remove_data: bool, progress: &mut ProgressCallback<'_>) -> Result<()> {
         self.preflight_uninstall()?;
         let _install_lock = self.lock_installation(progress)?;
@@ -475,6 +513,13 @@ impl Installer {
                     )?;
                 }
             }
+        }
+        // The Windows sandbox wrote its grants into the permissions of every
+        // file in the working folders. Only the daemon, with the journal in
+        // the home, takes them back, so it does before both are removed.
+        #[cfg(windows)]
+        if remove_data {
+            self.reset_sandbox(progress);
         }
         // The runtimes are not user data; bots, memory and settings stay.
         self.remove_owned_path(&self.paths.executable())?;
@@ -983,9 +1028,9 @@ impl Installer {
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
-            windows_nsis_process::check(&self.paths, &destination, id, &installer)?;
             // NSIS requires /D last, without quotes even when it contains spaces.
-            let mut command = self.paths.command(&installer);
+            let mut command =
+                windows_nsis_process::checked_command(&self.paths, &destination, id, &installer)?;
             command
                 .arg("/S")
                 .arg("/currentuser")
@@ -1202,8 +1247,12 @@ impl Installer {
                 }
                 self.check_windows_registration(&app.path, &app.app_id, Some(&uninstallers[0]))?;
                 let protocol = windows_protocol::binding(&app.path, &app.app_id);
-                windows_nsis_process::check(&self.paths, &app.path, &app.app_id, &uninstallers[0])?;
-                let mut command = self.paths.command(&uninstallers[0]);
+                let mut command = windows_nsis_process::checked_command(
+                    &self.paths,
+                    &app.path,
+                    &app.app_id,
+                    &uninstallers[0],
+                )?;
                 command
                     .arg("/S")
                     .arg("/currentuser")
@@ -1285,11 +1334,15 @@ impl Installer {
                 "$ErrorActionPreference='Stop';{}\n$root=[HexbotFinalPath]::Resolve($env:HEXBOT_APP_PROBE)+[IO.Path]::DirectorySeparatorChar; @(Get-CimInstance Win32_Process | Where-Object {{ if($_.Name -notin @('Hexbot.exe','HexbotClient.exe')){{return $false}};if(!$_.ExecutablePath){{throw 'Cannot verify whether the Windows app is running'}};[HexbotFinalPath]::Resolve($_.ExecutablePath).StartsWith($root,[StringComparison]::OrdinalIgnoreCase) }}).Count",
                 include_str!("../../hexbot-core/assets/windows-runtime-selection.ps1")
             );
+            let program =
+                crate::windows_paths::system_program("WindowsPowerShell/v1.0/powershell.exe")?;
             let output = self
                 .paths
-                .command(crate::windows_paths::system_program(
-                    "WindowsPowerShell/v1.0/powershell.exe",
-                )?)
+                .command(&program)
+                .env(
+                    "PSModulePath",
+                    crate::windows_paths::powershell_modules(&program),
+                )
                 .env("HEXBOT_APP_PROBE", app)
                 .args(["-NoProfile", "-NonInteractive", "-Command", &script])
                 .output()?;

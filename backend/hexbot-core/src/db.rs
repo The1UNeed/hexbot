@@ -138,15 +138,7 @@ const COLUMNS: &[(&str, &str, &str)] = &[
 
 /// Open the explicitly selected database without running schema migrations.
 pub fn open(home: &Path) -> Result<Connection> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(home)?;
-        fs::set_permissions(home, fs::Permissions::from_mode(0o700))?;
-    }
+    crate::osutil::create_private_dir_all(home)?;
     let database = home.join("hexbot.db");
     if fs::symlink_metadata(&database).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
         return Err(Error::new(5200, "database must not be a symlink"));
@@ -216,6 +208,13 @@ pub fn migrate(home: &Path) -> Result<()> {
         .as_secs_f64();
     transaction.execute(
         "INSERT OR IGNORE INTO users(id,display_name,role,limits_json,created_at) VALUES ('local','Admin','admin','{}',?)",
+        [now],
+    )?;
+    // Earlier builds saved a run Hexbot stopped, such as a bot-to-bot request
+    // that ran out of time, as a failure when its abort said "This operation
+    // was aborted". Nothing failed; the bot's dot stayed red for good.
+    transaction.execute(
+        "UPDATE bot_incidents SET resolved_at=? WHERE kind='turn_failed' AND resolved_at IS NULL AND text='This operation was aborted'",
         [now],
     )?;
     #[allow(clippy::unnecessary_map_or)]
@@ -514,4 +513,33 @@ fn title_case(value: &str) -> String {
         previous_cased = character.is_lowercase() || character.is_uppercase();
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migration_clears_stops_saved_as_failures_and_keeps_real_ones() {
+        let home = tempfile::tempdir().unwrap();
+        migrate(home.path()).unwrap();
+        open(home.path())
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO bot_incidents(id,bot,kind,text,created_at) VALUES
+                 ('stopped','owl','turn_failed','This operation was aborted',1),
+                 ('failed','owl','turn_failed','fetch failed',2);",
+            )
+            .unwrap();
+        migrate(home.path()).unwrap();
+        let open_ids: Vec<String> = open(home.path())
+            .unwrap()
+            .prepare("SELECT id FROM bot_incidents WHERE resolved_at IS NULL")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        assert_eq!(open_ids, ["failed"]);
+    }
 }

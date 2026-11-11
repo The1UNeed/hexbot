@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import type { WriteStream } from 'node:fs'
 import { mkdir, mkdtemp, rm, writeFile, realpath } from 'node:fs/promises'
 import net from 'node:net'
 import http from 'node:http'
@@ -17,6 +18,16 @@ import {
 
 const spawnDaemon = vi.hoisted(() => vi.fn())
 vi.mock('node:child_process', () => ({ spawn: spawnDaemon }))
+const logs = vi.hoisted(() => [] as WriteStream[])
+vi.mock('node:fs', async original => {
+  const fs = await original<typeof import('node:fs')>()
+  const createWriteStream = ((...options: Parameters<typeof fs.createWriteStream>) => {
+    const log = fs.createWriteStream(...options)
+    logs.push(log)
+    return log
+  }) as typeof fs.createWriteStream
+  return { ...fs, createWriteStream }
+})
 vi.mock('electron', () => ({ app: { on: () => undefined, isPackaged: true } }))
 beforeEach(() => spawnDaemon.mockReset())
 
@@ -313,6 +324,32 @@ d2('parseReadyLine dashboard mode', () => {
   i2('accepts HERMES_DASHBOARD_READY', () => {
     e2(p2('HERMES_DASHBOARD_READY port=9134')).toBe(9134)
   })
+})
+
+it('keeps an owned daemon running when its log cannot be written', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'hexbot-manager-log-'))
+  const previous = process.env.HEXBOT_HOME
+  process.env.HEXBOT_HOME = home
+  // A folder where the log file belongs fails the open.
+  await mkdir(join(home, 'logs', 'daemon.log'), { recursive: true })
+  const child = Object.assign(new EventEmitter(), {
+    stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough(), pid: process.pid,
+    kill: vi.fn(() => { child.emit('exit', 0, null); return true })
+  })
+  child.stdin.on('finish', () => child.emit('exit', 0, null))
+  spawnDaemon.mockReturnValueOnce(child)
+  const manager = new DaemonManager(9120)
+  try {
+    const { port } = await manager.start()
+    await new Promise<void>(closed => logs.at(-1)!.once('close', closed))
+    child.stdout.write(`HERMES_BACKEND_READY port=${port}\n`)
+    await vi.waitFor(() => expect(manager.status()).toMatchObject({ state: 'running', port }))
+    expect((await manager.stop()).state).toBe('stopped')
+  } finally {
+    if (previous === undefined) delete process.env.HEXBOT_HOME
+    else process.env.HEXBOT_HOME = previous
+    await rm(home, { recursive: true, force: true })
+  }
 })
 
 it('requests Windows cleanup through the owned pipe, without force termination', async () => {
