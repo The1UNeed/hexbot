@@ -177,7 +177,7 @@ try {
     env.HEXBOT_HOME = changedHome
     env.HEXBOT_INSTALL_APPS_DIR = join(changedUser, 'apps')
     const fullInstall = Buffer.from(JSON.stringify({ schema: 1, channel: 'stable', version: originalManifest.version, minInstaller: '0.1.5-0',
-      targets: { 'windows-x86_64': { full: { path: 'cross-track-full.exe', size: fullNsis.length,
+      targets: { 'windows-x86_64': { full: { url: `${base}/cross-track-full.exe`, path: 'cross-track-full.exe', size: fullNsis.length,
         sha256: createHash('sha256').update(fullNsis).digest('hex'), format: 'exe', appId: appId('stable'), productName: productName('stable', originalManifest.version) } } } }))
     publishInstall('stable', fullInstall)
     assert.match((await run(installer, ['--full', '--stable', '--yes', '--json'])).stdout, /"stage":"done"/)
@@ -201,7 +201,7 @@ try {
     const oldArchive = await makeNativeUpdate(offered, join(root, `cross-track-update-${track}`))
     files.set(oldArchive.manifest.path, await readFile(join(root, `cross-track-update-${track}`, oldArchive.manifest.path)))
     const offeredInstall = Buffer.from(JSON.stringify({ schema: 1, channel: track, version: offeredManifest.version, minInstaller: '0.1.5-0',
-      targets: { 'windows-x86_64': { headless: { path: oldArchive.manifest.path, size: oldArchive.manifest.size, sha256: oldArchive.manifest.sha256, format: 'zip' } } } }))
+      targets: { 'windows-x86_64': { headless: { url: `${base}/${oldArchive.manifest.path}`, path: oldArchive.manifest.path, size: oldArchive.manifest.size, sha256: oldArchive.manifest.sha256, format: 'zip' } } } }))
     publishInstall(track, offeredInstall)
     const installedOutput = await run(installer, ['--headless', `--${track}`, '--yes', '--json'])
     assert.match(installedOutput.stdout, /"stage":"done"/)
