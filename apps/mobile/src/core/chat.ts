@@ -85,12 +85,32 @@ const isEmailDraft = (value: unknown): value is EmailDraftForm =>
 
 const detailOf = (value: unknown) =>
   typeof value === 'string' ? value : value == null ? '' : JSON.stringify(value, null, 2)
-export function historyMessages(raw: unknown[]): ChatMessage[] {
+/**
+ * A section's history as messages. Hidden rows are dropped, with one
+ * exception, as in the web app: in a thread between bots (`sender` given),
+ * the asking bot's questions arrive as hidden user rows `@<sender>: <text>`
+ * and become its messages, prefix stripped.
+ */
+export function historyMessages(raw: unknown[], sender?: string | null): ChatMessage[] {
   const messages: ChatMessage[] = []
   const args = new Map<string, unknown>()
+  const prefix = sender ? `@${sender}: ` : null
   for (const value of raw) {
     const row = value as Record<string, unknown>
-    if (row.hidden || row.display_kind === 'hidden') continue
+    if (row.hidden || row.display_kind === 'hidden') {
+      const asked = prefix && row.role === 'user' ? textContent(row.content ?? row.text) : ''
+      if (prefix && asked.startsWith(prefix))
+        messages.push({
+          id: String(row.id ?? row.row_id ?? `history-${messages.length}`),
+          // The asking bot's bubble, drawn with its face like a bot in a room.
+          role: 'assistant',
+          sender: sender!,
+          text: asked.slice(prefix.length),
+          ...(typeof row.timestamp === 'number' &&
+            row.timestamp > 0 && { createdAt: row.timestamp * 1000 })
+        })
+      continue
+    }
     for (const call of Array.isArray(row.tool_calls) ? row.tool_calls : []) {
       args.set(String(call.id), parseArgs(call.function?.arguments))
     }
@@ -134,7 +154,7 @@ export function heartbeatMessage(state: ChatState, id: string, text: string): Ch
   if (state.messages.some(m => m.id === id)) return state
   return {
     ...state,
-    messages: [...state.messages, { id, role: 'assistant', text, createdAt: Date.now() }]
+    messages: [...state.messages, { id, role: 'assistant', rowId: id, text, createdAt: Date.now() }]
   }
 }
 export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {

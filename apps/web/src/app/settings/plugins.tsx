@@ -123,8 +123,10 @@ export function PluginsSettings(): React.JSX.Element {
 
   // A tag in a message named a plugin or a skill: show its tab, searched for it.
   const sought = usePlugins(state => state.sought)
+  const loaded = usePlugins(state => state.loaded)
   useEffect(() => {
-    if (!sought || loading) {
+    // Not before the list is in: the first visit starts with none.
+    if (!sought || loading || !loaded) {
       return
     }
 
@@ -139,7 +141,7 @@ export function PluginsSettings(): React.JSX.Element {
     setCategory(found ? categoryOf(found) : sought.kind === 'skill' ? 'skills' : 'connectors')
     setQuery(found?.name ?? sought.name)
     usePlugins.setState({ sought: null })
-  }, [loading, plugins, sought])
+  }, [loaded, loading, plugins, sought])
 
   // A bot that was deleted while it was chosen falls back to every bot.
   const focused = bots.find(bot => bot.name === focus) ?? null

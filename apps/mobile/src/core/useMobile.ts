@@ -357,7 +357,7 @@ export function useMobile() {
             : (await rpc<{ status: string }>('session.status', { session_id: restoredLiveId }))
                 .status === 'working'
         if (sequence !== openSequence.current) return
-        const messages = historyMessages(rows.rows)
+        const messages = historyMessages(rows.rows, target.section.peer_bot)
         let snapshot: ChatState = {
           ...emptyChat(),
           busy,
@@ -886,7 +886,11 @@ export function useMobile() {
       liveId.current = null
       // What is held shows now; sending waits for the read that makes the chat live.
       const kept = changed.current.has(selected.id) ? undefined : heldRows(selected.id)
-      setChat(kept ? { ...emptyChat(), messages: historyMessages(kept.rows) } : emptyChat())
+      setChat(
+        kept
+          ? { ...emptyChat(), messages: historyMessages(kept.rows, selected.peer_bot) }
+          : emptyChat()
+      )
       setReadId(null)
       await syncChat()
     } catch (e) {

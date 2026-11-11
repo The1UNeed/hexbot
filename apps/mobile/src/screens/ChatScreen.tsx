@@ -405,8 +405,7 @@ function ChatBody(props: ChatScreenProps) {
       const item = latest.current.find(
         (entry): entry is MessageItem => entry.kind === 'message' && entry.id === id
       )
-      // The browser preview selects with the mouse; a press there only recalls.
-      if (Platform.OS === 'web' || !item?.text) return recall?.()
+      if (!item?.text) return recall?.()
       // What the bubble shows: a bot's Markdown marks are drawn, not written.
       const text =
         item.role === 'user' || !renderMessageText ? item.text : messageText(item.text)
@@ -419,6 +418,8 @@ function ChatBody(props: ChatScreenProps) {
         })
         return
       }
+      // The browser preview selects with the mouse; a press there only recalls.
+      if (Platform.OS === 'web') return recall?.()
       messageMenu({
         copy: () => void Clipboard.setStringAsync(text),
         select: () => setSelecting(text),
@@ -704,7 +705,12 @@ const TranscriptEntry = memo(function TranscriptEntry({
           loadMedia={loadMedia}
           onOpenFile={onOpenFile}
           onReact={onReact}
-          showAuthor={room && entry.role !== 'user' && !continued}
+          // In a room every bot is named; in a thread between bots, the one that asks.
+          showAuthor={
+            (room || (!!entry.author && entry.author.name !== face?.name)) &&
+            entry.role !== 'user' &&
+            !continued
+          }
         />
       )
     }

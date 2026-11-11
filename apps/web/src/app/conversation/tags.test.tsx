@@ -105,7 +105,7 @@ describe('tags in a message', () => {
     expect(screen.getByText('the report')).toBeVisible()
   })
 
-  it('opens a room by its name, scheduled jobs, a Settings page and a plugin', () => {
+  it('opens a room by its name, a Settings page and a plugin, and only marks scheduled jobs', () => {
     useRooms.setState({ byId: { r1: { id: 'r1', name: 'Study group' } as unknown as Room } })
     said(
       'See [Study group](hexbot:room/study%20group), [my jobs](hexbot:jobs), ' +
@@ -114,11 +114,9 @@ describe('tags in a message', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: 'Study group' }))
     expect(navigate).toHaveBeenLastCalledWith({ params: { room: 'r1' }, to: '/r/$room' })
-    fireEvent.click(screen.getByRole('button', { name: 'my jobs' }))
-    expect(navigate).toHaveBeenLastCalledWith({
-      params: { bot: 'hexbot', tab: 'advanced' },
-      to: '/b/$bot/settings/$tab'
-    })
+    // This app has no page for scheduled jobs.
+    expect(screen.queryByRole('button', { name: 'my jobs' })).toBeNull()
+    expect(screen.getByText('my jobs')).toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: 'Passwords' }))
     expect(navigate).toHaveBeenLastCalledWith({ params: { tab: 'passwords' }, to: '/settings/$tab' })
     fireEvent.click(screen.getByRole('button', { name: 'Notion' }))

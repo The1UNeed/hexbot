@@ -221,7 +221,8 @@ with Viewport Segments place both poses on the exact halves.
   text so it reads on every bubble; a file, a room, scheduled jobs, a
   Settings page, a plugin and a skill with a line glyph. The underline is a
   quiet tint that strengthens on hover. A tag for something that is not
-  there reads as its plain words. The row that marks one bot messaging
+  there reads as its plain words; a scheduled jobs tag keeps its glyph and
+  opens nothing, since this app has no page for jobs. The row that marks one bot messaging
   another ("Messaged Biology", "Biology helped") sits in the middle of the
   column, like the time separators, in the same small muted type.
 - Reactions: a face button appears beside a bot's bubble on hover (always on

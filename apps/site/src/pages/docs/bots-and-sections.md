@@ -90,7 +90,7 @@ While a bot works, a line under its messages says what it is doing: "Thinking…
 
 ## Tags
 
-What a message names can be clicked. A web page shows its site's icon and opens in your browser. A bot shows its face and its name in its colour, and opens the private conversation between it and the bot that named it. A file opens beside the chat. A room, a bot's scheduled jobs, a Settings page, a plugin, and a skill open where they live. When a bot messages another bot, a centred line under its turn marks it with that bot's tag: "Messaged Biology", or "Biology helped" once a reply came back.
+What a message names can be clicked. A web page shows its site's icon and opens in your browser. A bot shows its face and its name in its colour, and opens the private conversation between it and the bot that named it. A file opens beside the chat. A room, a Settings page, a plugin, and a skill open where they live. A bot's scheduled jobs open in the phone app, which has the page for them. When a bot messages another bot, a centred line under its turn marks it with that bot's tag: "Messaged Biology", or "Biology helped" once a reply came back.
 
 Tags work in chats and rooms, in the web, desktop, and mobile apps. The mobile app shows a globe in place of a site's icon, and a bot's name in its colour without its face. A site's icon is asked of that site and no one else, and never of an address on your own network.
 

@@ -275,9 +275,9 @@ export function BotTag({
  * A link in a message. One that names something Hexbot knows is a tag: an
  * icon and underlined words that open it. A web page shows its site's icon
  * and opens in the browser; a file opens beside the chat; a bot, a room, a
- * bot's scheduled jobs, a Settings page, a plugin or a skill opens where it
- * lives. A tag for something that is not there (a bot or a room since
- * deleted) reads as its plain words.
+ * Settings page, a plugin or a skill opens where it lives. Scheduled jobs
+ * have no page in this app, so their tag is only marked. A tag for something
+ * that is not there (a bot or a room since deleted) reads as its plain words.
  */
 export function MessageLink({
   children,
@@ -333,8 +333,6 @@ export function MessageLink({
     )
   }
 
-  const jobsBot = tag.kind === 'jobs' ? (tag.bot ?? scope.speaker) : null
-
   const open =
     tag.kind === 'file'
       ? scope.onFile &&
@@ -342,12 +340,8 @@ export function MessageLink({
       : tag.kind === 'room'
         ? room && (() => void router?.navigate({ params: { room: room.id }, to: '/r/$room' }))
         : tag.kind === 'jobs'
-          ? jobsBot &&
-            (() =>
-              void router?.navigate({
-                params: { bot: jobsBot, tab: 'advanced' },
-                to: '/b/$bot/settings/$tab'
-              }))
+          ? // This app has no page for scheduled jobs; the phone app opens its own.
+            undefined
           : tag.kind === 'settings'
             ? () => void router?.navigate({ params: { tab: tag.page }, to: '/settings/$tab' })
             : () => {
@@ -358,10 +352,11 @@ export function MessageLink({
   const Glyph = GLYPHS[tag.kind]
   const words = wordsOf(children).trim() ? children : tag.kind === 'file' ? tag.name : href
 
-  // Nothing to open from here: a file outside a bot's own chat, a room that is gone.
+  // Nothing to open from here: a file outside a bot's own chat, scheduled
+  // jobs, a room that is gone.
   if (!open) {
-    return tag.kind === 'file' ? (
-      <span data-tag="file">
+    return tag.kind === 'file' || tag.kind === 'jobs' ? (
+      <span data-tag={tag.kind}>
         <Glyph aria-hidden className={glyphClass} />
         {words}
       </span>

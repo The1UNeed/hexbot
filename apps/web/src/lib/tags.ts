@@ -109,7 +109,10 @@ function parseUrl(value: string): null | URL {
 }
 
 /** A host a favicon may be asked of: a public name, never an address on your network. */
-function publicHost(host: string): boolean {
+function publicHost(name: string): boolean {
+  // `localhost.` is `localhost`: a trailing dot only says the name is complete.
+  const host = name.replace(/\.$/, '')
+
   return (
     host.includes('.') &&
     !/^[\d.]+$/.test(host) &&
@@ -173,6 +176,12 @@ export function tagOf(href: string | null | undefined): null | Tag {
 
   if (ABSOLUTE_PATH.test(target)) {
     return fileTag(decode(target))
+  }
+
+  if (target.startsWith('@')) {
+    const handle = target.slice(1).toLowerCase()
+
+    return HANDLE.test(handle) ? { handle, kind: 'bot' } : null
   }
 
   if (!target.toLowerCase().startsWith(TAG_SCHEME)) {

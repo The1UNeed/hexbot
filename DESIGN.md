@@ -448,6 +448,8 @@ more freedom and more capability than a hosted product can offer.
   (`hexbot:jobs/<handle>`), a Settings page (`hexbot:settings/<page>`), a
   plugin or a skill (`hexbot:plugin/<name>`, `hexbot:skill/<name>`). A page
   opens in the browser, a file beside the chat, and the rest where it lives.
+  Scheduled jobs have a page only in the mobile app; the web and desktop
+  apps mark the tag and open nothing.
   A bot's name opens the private conversation between it and the bot that
   named it; named by you, its chat. The daemon's prompt teaches bots the
   list; a tag for something that is gone reads as its plain words.

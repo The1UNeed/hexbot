@@ -28,6 +28,8 @@ describe('tagOf', () => {
 
   it('reads the places in Hexbot', () => {
     expect(tagOf('hexbot:bot/biology')).toEqual({ handle: 'biology', kind: 'bot' })
+    expect(tagOf('@Biology')).toEqual({ handle: 'biology', kind: 'bot' })
+    expect(tagOf('@not a handle')).toBeNull()
     expect(tagOf('hexbot://bot/@Biology')).toEqual({ handle: 'biology', kind: 'bot' })
     expect(tagOf('hexbot:room/Study%20group')).toEqual({ kind: 'room', room: 'Study group' })
     expect(tagOf('hexbot:jobs')).toEqual({ bot: null, kind: 'jobs' })
@@ -76,6 +78,8 @@ describe('faviconOf', () => {
     expect(faviconOf('http://example.com')).toBeNull()
     expect(faviconOf('https://192.168.1.4/')).toBeNull()
     expect(faviconOf('https://nas.local/')).toBeNull()
+    expect(faviconOf('https://localhost./')).toBeNull()
+    expect(faviconOf('https://nas.local./')).toBeNull()
   })
 })
 

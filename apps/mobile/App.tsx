@@ -1117,8 +1117,11 @@ function MobileApp({ children }: { children?: ReactNode }) {
               mobile.rooms.find(r => r.name.trim().toLowerCase() === wanted)
             return room ? { onPress: () => act(() => mobileRef.current.openRoom(room)) } : null
           }
-          case 'jobs':
-            return open('jobs')
+          case 'jobs': {
+            // The named bot's jobs, or those of the bot that is speaking.
+            const bot = mobile.bots.find(b => b.name === (tag.bot ?? speaker))
+            return { onPress: () => setPanels([{ kind: 'jobs', bot }]) }
+          }
           case 'settings': {
             const kind = SETTINGS_PANELS[tag.page]
             return kind ? open(kind) : null
