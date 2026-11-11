@@ -40,7 +40,25 @@ async fn catalog_shapes_and_errors_match_clients() {
         rows.iter()
             .map(|r| r["id"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["web_search", "google", "microsoft", "notion", "x_search"]
+        [
+            "web_search",
+            "gmail",
+            "google_calendar",
+            "google_drive",
+            "google_docs",
+            "google_sheets",
+            "google_slides",
+            "google_tasks",
+            "outlook",
+            "outlook_calendar",
+            "onedrive",
+            "word",
+            "excel",
+            "powerpoint",
+            "microsoft_todo",
+            "notion",
+            "x_search"
+        ]
     );
     let providers = rows[0]["providers"].as_array().unwrap();
     assert_eq!(
@@ -1221,54 +1239,125 @@ async fn account_connectors_are_ready_once_signed_in() {
             .clone()
     };
     let list = rpc(h, "hexbot.connectors.list", json!({"bot":"owl"})).await;
-    let google = row(&list, "google");
-    assert_eq!(google["state"], "not_set_up");
-    assert_eq!(google["account"]["signed_in"], false);
-    assert_eq!(google["enabled_for_bot"], false);
+    let gmail = row(&list, "gmail");
+    assert_eq!(gmail["state"], "not_set_up");
+    assert_eq!(gmail["state_text"], "Not connected");
+    assert_eq!(gmail["family"], "google");
+    // A sign-in names the connector; the account it belongs to is beside it.
+    assert_eq!(
+        gmail["account"],
+        json!({"service":"gmail","provider":"google","email":null,"signed_in":false})
+    );
+    assert_eq!(gmail["enabled_for_bot"], false);
+    assert!(gmail["abilities"].as_array().is_some_and(|a| !a.is_empty()));
     let refused = call(
         h,
         "alice",
         "hexbot.connectors.set_for_bot",
-        json!({"bot":"owl","id":"google","enabled":true}),
+        json!({"bot":"owl","id":"gmail","enabled":true}),
     )
     .await
     .unwrap_err();
     assert_eq!(refused.code, 4209);
     fs::create_dir_all(h.join("accounts")).unwrap();
     fs::write(
-        h.join("accounts/google.json"),
+        h.join("accounts/gmail.json"),
         json!({"email":"ana@example.com","client_id":"c","access_token":"t","refresh_token":"r","expires_at":0}).to_string(),
     )
     .unwrap();
     rpc(
         h,
         "hexbot.connectors.set_for_bot",
-        json!({"bot":"owl","id":"google","enabled":true}),
+        json!({"bot":"owl","id":"gmail","enabled":true}),
     )
     .await;
     let list = rpc(h, "hexbot.connectors.list", json!({"bot":"owl"})).await;
-    let google = row(&list, "google");
-    assert_eq!(google["state"], "ready");
-    assert_eq!(google["state_text"], "ana@example.com");
-    assert_eq!(google["account"]["email"], "ana@example.com");
-    assert_eq!(google["enabled_for_bot"], true);
-    assert!(!google.to_string().contains("refresh"));
-    // Microsoft stays off: each connector has its own toolset.
-    assert_eq!(row(&list, "microsoft")["enabled_for_bot"], false);
+    let gmail = row(&list, "gmail");
+    assert_eq!(gmail["state"], "ready");
+    assert_eq!(gmail["state_text"], "ana@example.com");
+    assert_eq!(gmail["account"]["email"], "ana@example.com");
+    assert_eq!(gmail["enabled_for_bot"], true);
+    assert!(!gmail.to_string().contains("refresh"));
+    // Signing in to Gmail connects Gmail alone: the same account's other
+    // connectors, and Microsoft's, each wait for their own.
+    for other in ["google_calendar", "google_drive", "outlook"] {
+        let other = row(&list, other);
+        assert_eq!(other["state"], "not_set_up", "{other}");
+        assert_eq!(other["enabled_for_bot"], false);
+    }
     // A revoked grant shows as needing a sign-in, and the bot keeps waiting for it.
     fs::write(
-        h.join("accounts/google.json"),
+        h.join("accounts/gmail.json"),
         json!({"email":"ana@example.com","client_id":"c","refresh_token":"r","expired":true})
             .to_string(),
     )
     .unwrap();
-    let google = row(
+    let gmail = row(
         &rpc(h, "hexbot.connectors.list", json!({"bot":"owl"})).await,
-        "google",
+        "gmail",
     );
-    assert_eq!(google["state"], "error");
-    assert_eq!(google["state_text"], "Sign in again");
-    assert_eq!(google["waiting_bots"], json!(["owl"]));
+    assert_eq!(gmail["state"], "error");
+    assert_eq!(gmail["state_text"], "Sign in again");
+    assert_eq!(gmail["waiting_bots"], json!(["owl"]));
+}
+
+/// A bot that had Google Workspace or Microsoft 365, which did mail alone,
+/// has Gmail or Outlook: its saved toolset is read by its new name.
+#[tokio::test]
+async fn the_connectors_that_covered_a_whole_account_become_gmail_and_outlook() {
+    let home = setup();
+    let h = home.path();
+    fs::write(
+        h.join("profiles/owl/config.yaml"),
+        "tools:\n  enabled_toolsets: [file, google_workspace, microsoft_365]\n",
+    )
+    .unwrap();
+    let sets = connectors::toolsets(h, "owl").unwrap();
+    assert!(sets.iter().any(|s| s == "gmail") && sets.iter().any(|s| s == "outlook"));
+    assert!(
+        !sets
+            .iter()
+            .any(|s| s == "google_workspace" || s == "microsoft_365")
+    );
+    assert!(connectors::enabled(h, "owl", "gmail").unwrap());
+    assert!(connectors::enabled(h, "owl", "outlook").unwrap());
+    assert!(!connectors::enabled(h, "owl", "google_calendar").unwrap());
+    // The grants move with them, once, and a newer one is never replaced.
+    fs::create_dir_all(h.join("accounts")).unwrap();
+    fs::write(
+        h.join("accounts/google.json"),
+        r#"{"email":"old@example.com"}"#,
+    )
+    .unwrap();
+    fs::write(
+        h.join("accounts/microsoft.json"),
+        r#"{"email":"old@contoso.com"}"#,
+    )
+    .unwrap();
+    fs::write(
+        h.join("accounts/outlook.json"),
+        r#"{"email":"new@contoso.com"}"#,
+    )
+    .unwrap();
+    crate::accounts::migrate(h).unwrap();
+    assert!(!h.join("accounts/google.json").exists());
+    assert_eq!(
+        crate::accounts::summary(h, "gmail").unwrap().unwrap()["email"],
+        "old@example.com"
+    );
+    assert_eq!(
+        crate::accounts::summary(h, "outlook").unwrap().unwrap()["email"],
+        "new@contoso.com"
+    );
+    // A tool two connectors share is there once either is.
+    fs::write(
+        h.join("accounts/outlook.json"),
+        json!({"email":"new@contoso.com","refresh_token":"r"}).to_string(),
+    )
+    .unwrap();
+    fs::remove_file(h.join("accounts/gmail.json")).unwrap();
+    assert!(connectors::tool_available(h, "owl", "hexbot_mail").unwrap());
+    assert!(!connectors::tool_available(h, "owl", "hexbot_calendar").unwrap());
 }
 
 #[tokio::test]

@@ -117,7 +117,7 @@ data model. The native transport and event projection live in
   `hexbot.connectors.setup` or `hexbot.plugins.configure` saves them, and,
   like a sign-in, reach no event, log or history row. A `form` with
   `kind: "email_draft"` is the draft card `hexbot_mail` shows: `{service:
-  "google" | "microsoft", service_name, from, grant, to, cc, bcc, subject,
+  "google" | "microsoft"` (the account), `service_name` (Gmail or Outlook), `from, grant, to, cc, bcc, subject,
   body, reply_to}`, the address lists as arrays. A `reply_to` that names no
   message returns its error to the bot (4215, or 4202 for a malformed id)
   and shows no card. `grant` names the sign-in
@@ -1187,7 +1187,7 @@ providers: [{id, label, description, sign_in, configured}] | null, provider | nu
 fields: [{key, provider, label, help, url, secret, advanced, optional?, set,
 hint}], enabled_for_bot | null, enabled_bots: [string],
 last_error | null, mcp?: {name, transport, tool_count, test_failed, running}}`. `state` is
-`not_set_up`, `ready`, or `error`; `icon` is a Simple Icons slug or `glyph:*`.
+`not_set_up`, `ready`, or `error`; `icon` is a brand icon's key (`BRAND_ICONS`) or `glyph:*`.
 `fields` carries every provider's fields, each tagged with its `provider`
 (`null` = common to all), so a client can show the right ones before a choice
 is saved. `optional` fields, such as a free provider's own key, may stay
@@ -1234,43 +1234,108 @@ or a clear.
 - `hexbot.connectors.set_for_bot {id, bot, enabled}` → `{connector}`. A
   connector that is not `ready` for the bot can be turned off but not on:
   4209, "Set up NAME before giving it to a bot."
-- The `google` (Google Workspace) and `microsoft` (Microsoft 365) connectors
-  are set up by signing in, not with a key. Their rows carry `account:
-  {service, email, signed_in}`; `ready` means signed in with a grant that
-  still works, `state_text` is the account's address, and a revoked grant
-  reads `error`, "Sign in again". Their fields hold only the user's own OAuth
-  client (`GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`,
-  `MICROSOFT_OAUTH_CLIENT_ID`), which replaces Hexbot's; `test` reads the
-  account's profile.
-- `hexbot.accounts.sign_in_start {service}` → `AccountSignIn {login_id,
-  service, mode, status, url, code?, redirect_uri?, message}`. Microsoft's
-  `mode` is `device`: open `url` and enter `code`. Google's is `browser`:
-  open `url`; Google returns to `redirect_uri`, the daemon's own
+- Google and Microsoft have one connector per service: `gmail`,
+  `google_calendar`, `google_drive`, `google_docs`, `google_sheets`,
+  `google_slides`, `google_tasks`; `outlook`, `outlook_calendar`, `onedrive`,
+  `word`, `excel`, `powerpoint`, `microsoft_todo`. Each is connected by
+  signing in, not with a key. Their rows carry `family: "google" |
+  "microsoft"`, `abilities` (what a bot can do, a few words each) and
+  `account: {service, provider, email, signed_in}`, where `service` is the
+  connector's own id, which a sign-in and a disconnect name, and `provider`
+  the account. `ready` means signed in with a grant that still works,
+  `state_text` is the account's address, "Not connected" before a sign-in,
+  and a revoked grant reads `error`, "Sign in again". Their fields hold only
+  the user's own OAuth client (`GOOGLE_OAUTH_CLIENT_ID`,
+  `GOOGLE_OAUTH_CLIENT_SECRET`, `MICROSOFT_OAUTH_CLIENT_ID`), which every
+  connector of the account uses in place of Hexbot's; `test` makes a light
+  request on the connector's own API. The `google` and `microsoft`
+  connectors of earlier versions, which did mail alone, are `gmail` and
+  `outlook`: a bot that had one has the other, and its grant moves at start.
+- `hexbot.accounts.sign_in_start {service, also?}` → `AccountSignIn
+  {login_id, service, services, provider, mode, status, url, code?,
+  redirect_uri?, message}`. `service` is a connector; `also` lists others of
+  the same account to connect with the same sign-in (4202 for one of another
+  account). The sign-in asks for each connector's permissions, once.
+  Microsoft's `mode` is `device`: open `url` and enter `code`. Google's is
+  `browser`: open `url`; Google returns to `redirect_uri`, the daemon's own
   `http://127.0.0.1:<port>/oauth/google`, which finishes the sign-in when the
-  browser runs on the daemon's computer. 4210 when the build has no client
-  of its own and none is saved. Starting another replaces a pending one.
+  browser runs on the daemon's computer. When another connector of the
+  account is signed in, Google is offered that address first. 4210 when the
+  build has no client of its own and none is saved. Starting another for
+  the same connector replaces a pending one.
 - `hexbot.accounts.sign_in_poll {login_id}` and `sign_in_cancel {login_id}`
   → `AccountSignIn`; `status` is `pending | done | error | cancelled`, and
-  `done` carries `email`. Only the user who started it can read it.
+  `done` carries `email`, `connected` (the connectors it connected) and
+  `skipped` (those whose permissions the user left unticked at Google, which
+  stay not connected). A sign-in that connected none is an `error`. Only the
+  user who started it can read it.
 - `hexbot.accounts.sign_in_finish {login_id, url}` → `AccountSignIn`: the
   address a browser on another computer ended on, for Google. Its `state`
   must match the sign-in. 4202 for an address with no code.
-- `hexbot.accounts.disconnect {service}` → `{disconnected}`: the grant is
-  deleted, and revoked at Google. Bots keep the connector on and wait for a
-  new sign-in. Finishing and disconnecting send `hexbot.connectors.changed`.
-- The grant lives in `accounts/<service>.json`, owner-only and in the
+- `hexbot.accounts.disconnect {service}` → `{disconnected}`: that
+  connector's grant is deleted; the account's other connectors stay
+  connected. Google's grant is revoked there only with the account's last
+  connector, since Google ends every grant an account gave at once. Bots
+  keep the connector on and wait for a new sign-in. Finishing and
+  disconnecting send `hexbot.connectors.changed`.
+- A grant lives in `accounts/<connector>.json`, owner-only and in the
   credential policy, so no bot shell or file tool reads it in Manual or
   Auto; Bypass has no sandbox (`SECURITY.md`). Tokens refresh
-  when under a minute is left; a refused refresh marks the account expired.
-  `accounts.<service>.endpoint` in the root `config.yaml` points every
-  request at one server, for tests; HTTP only on loopback.
+  when under a minute is left; a refused refresh marks the connector expired.
+  `accounts.google.endpoint` and `accounts.microsoft.endpoint` in the root
+  `config.yaml` point every request for that account at one server, for
+  tests; HTTP only on loopback. A token is sent only to the provider's own
+  hosts or that endpoint.
 - `hexbot_mail {action: search | read | draft, account?, query?, max?, id?,
   to?, cc?, bcc?, subject?, body?, reply_to?}` is a bot's tool once it has
-  either connector, in its own chat and its scheduled jobs; rooms, threads
+  Gmail or Outlook, in its own chat and its scheduled jobs; rooms, threads
   between bots and heartbeats never get it. `search` and `read` need no
   approval and return plain text. `draft` shows the draft card and returns
   `{sent | saved_to_drafts: true, to, cc, subject, body}` as the user left
   it; there is no other way to send. A job can't draft (4302).
+- The other Google and Microsoft tools are offered in the same places, each
+  once either of its connectors is on and connected for the bot. `account`
+  (`google` or `microsoft`) is needed only when the bot has both. The
+  daemon sends the action as the call's summary. Every action below after
+  the semicolon is a change: it runs in Bypass, is reviewed in Auto, asks in
+  Manual, and is refused where nobody can answer.
+  - `hexbot_calendar` (Google Calendar, Outlook Calendar): `list {from?,
+    to?, query?, calendar?, max?}`, `calendars`; `create {title, start,
+    end?, time_zone?, location?, description?, attendees?, calendar?}`,
+    `update {id, calendar?, …}`, `delete {id, title, calendar?}`. Times are
+    the calendar's local time (`2026-11-12T09:00`) or a date for a whole
+    day, whose last day is included; answers name `time_zone`. An `update`
+    with a new `start` and no `end` keeps the event's length. `delete` needs
+    the event's title. A `list` over every shown calendar reads at most 12,
+    and `calendars_not_read` names any it left out or could not read.
+  - `hexbot_tasks` (Google Tasks, Microsoft To Do): `lists`, `list {list?,
+    done?, max?}`; `add {title, notes?, due?, list?}`, `update {id, list?,
+    title?, notes?, due?, done?}`, `delete {id, title, list?}`. `due` is a
+    date; To Do's is read and written in the mailbox's time zone. A `list`
+    over every list reads at most 20, and `lists_not_read` names the rest.
+  - `hexbot_drive` (Google Drive, OneDrive): `search {query?, type?,
+    folder?, max?}`, `read {id, offset?}`, `download {id}` (saved among the
+    chat's attachments, a Google file as its Office kind); `upload {path,
+    name?, folder?, replace?}`. A new file never writes over another;
+    `replace` makes the next version of one, in Drive only of a file Hexbot
+    added. Credential files are refused.
+  - `hexbot_documents` (Google Docs, Word): `search`, `read {id, offset?}`;
+    `create {title, content}`, `append {id, content}`, `replace {id, find,
+    replace_with}`. `content` is Markdown.
+  - `hexbot_spreadsheets` (Google Sheets, Excel): `search`, `read {id,
+    sheet?, range?, formulas?}`; `create {title, rows? | sheets?}`, `write
+    {id, sheet?, range, rows}`, `append {id, sheet?, rows}`. A cell is a
+    number, text, a boolean, text starting with `=` for a formula, empty
+    text to clear it, or null to leave it. Text stays text; in Google
+    Sheets a date like `2026-11-12` becomes a date. One read holds at most
+    20,000 cells and 60,000 characters, and `next_range` names the rest. A
+    row longer than that is refused, with the part of it to read first. In
+    Google Sheets `append` adds under the table that starts at A1.
+  - `hexbot_presentations` (Google Slides, PowerPoint): `search`, `read
+    {id}`; `create {title, slides}`, `add {id, slides}`, `replace {id, find,
+    replace_with}`. A slide is `{title, body}`, the body one line per line.
+  A Word, Excel or PowerPoint change is refused with 4209 when the file
+  changed since it was read or is locked for editing elsewhere.
 - `hexbot.connectors.add_mcp {name, command?, args?, env?, url?, transport?,
   bots?, bot?}` → `{connector}`; `hexbot.connectors.remove_mcp {name}` →
   `{removed: true}`. MCP servers are defined once, in the root `config.yaml`,

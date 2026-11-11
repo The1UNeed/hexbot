@@ -250,6 +250,7 @@ pub fn migrate(home: &Path) -> Result<()> {
     transaction.commit()?;
     crate::skills::migrate(home)?;
     crate::connectors::migrate(home)?;
+    crate::accounts::migrate(home)?;
     Ok(())
 }
 

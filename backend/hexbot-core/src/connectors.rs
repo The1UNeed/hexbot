@@ -231,9 +231,10 @@ fn signed_in(home: &Path, bot: Option<&str>, grant: &str) -> Result<bool> {
 /// no key, as the free web searches do, its sign-in is saved, or every key
 /// it needs is.
 fn set_up_for(home: &Path, bot: Option<&str>, spec: &Value) -> Result<bool> {
-    // Google and Microsoft are set up once the user signs in (accounts.rs).
-    if let Some(account) = spec["account"].as_str() {
-        return crate::accounts::connected(home, account);
+    // A Google or Microsoft connector is set up once the user signs in to
+    // it (accounts.rs).
+    if spec["account"].is_string() {
+        return crate::accounts::connected(home, spec["id"].as_str().unwrap_or(""));
     }
     let Some(provider) = selected_for(home, bot, spec)? else {
         return has_keys(home, bot, &strings(&spec["keys"]));
@@ -278,9 +279,21 @@ const RETIRED_TOOLSETS: &[&str] = &[
 /// Every bot has Computer use; it works once the computer is set up.
 const BUILT_IN_TOOLSET: &str = "computer_use";
 
+/// Google Workspace and Microsoft 365 each covered a whole account and did
+/// mail alone; a bot that had one has Gmail or Outlook.
+const RENAMED_TOOLSETS: &[(&str, &str)] =
+    &[("google_workspace", "gmail"), ("microsoft_365", "outlook")];
+
 pub fn toolsets(home: &Path, bot: &str) -> Result<Vec<String>> {
     let mut sets = configured_toolsets(home, bot)?;
     sets.retain(|set| !RETIRED_TOOLSETS.contains(&set.as_str()));
+    for set in &mut sets {
+        if let Some((_, new)) = RENAMED_TOOLSETS.iter().find(|(old, _)| old == set) {
+            *set = (*new).to_owned();
+        }
+    }
+    let mut seen = BTreeSet::new();
+    sets.retain(|set| seen.insert(set.clone()));
     if !sets.iter().any(|set| set == BUILT_IN_TOOLSET) {
         sets.push(BUILT_IN_TOOLSET.to_owned());
     }
@@ -615,6 +628,15 @@ fn save_test(home: &Path, id: &str, result: &Value, probed: bool) -> Result<()> 
     )?;
     Ok(())
 }
+/// Forgets the last test of a connector: after a new sign-in or a sign-out
+/// it says nothing about the connector as it is now.
+pub(crate) fn forget_test(home: &Path, id: &str) -> Result<()> {
+    db::open(home)?.execute(
+        "DELETE FROM settings WHERE key=?",
+        [format!("connector_test:{id}")],
+    )?;
+    Ok(())
+}
 pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
     if let Some(b) = bot {
         profile(home, b)?;
@@ -671,16 +693,19 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
                 }
                 .to_string(),
             )
-        } else if let Some(account) = s["account"].as_str()
-            && crate::accounts::summary(home, account)?.is_some_and(|a| a["expired"] == true)
+        } else if s["account"].is_string()
+            && crate::accounts::summary(home, id)?.is_some_and(|a| a["expired"] == true)
         {
             ("error", "Sign in again".to_string())
+        } else if s["account"].is_string() {
+            ("not_set_up", "Not connected".to_string())
         } else {
             ("not_set_up", "Not set up".to_string())
         };
-        let account = match s["account"].as_str() {
-            Some(account) => crate::accounts::summary(home, account)?,
-            None => None,
+        let account = if s["account"].is_string() {
+            crate::accounts::summary(home, id)?
+        } else {
+            None
         };
         if state == "ready"
             && let Some(email) = account
@@ -746,6 +771,10 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
             "name": s["name"],
             "description": s["description"],
             "group": s["group"],
+            // Google or Microsoft: the connectors of one account sit together.
+            "family": s["family"],
+            // What a bot can do with it, in a few words each.
+            "abilities": s["abilities"],
             "icon": s["icon"],
             "scope": "daemon",
             "ready": ready,
@@ -757,8 +786,10 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
             "enabled_for_bot": bot.map(|b| bots.iter().any(|n| n == b)),
             "enabled_bots": bots,
             "ready_bots": ready_bots,
-            "account": s["account"].as_str().map(|service| json!({
-                "service": service,
+            // `service` is what a sign-in or sign-out names: the connector.
+            "account": s["account"].as_str().map(|provider| json!({
+                "service": id,
+                "provider": provider,
                 "email": account.as_ref().map(|a| a["email"].clone()),
                 "signed_in": account.is_some(),
             })),
@@ -947,8 +978,8 @@ async fn probe(home: &Path, id: &str, bot: Option<&str>) -> Result<Value> {
         return Ok(result);
     }
     let s = spec(id)?;
-    if let Some(account) = s["account"].as_str() {
-        let result = crate::accounts::probe(home, account).await?;
+    if s["account"].is_string() {
+        let result = crate::accounts::probe(home, id).await?;
         save_test(home, id, &result, true)?;
         return Ok(result);
     }
@@ -1447,8 +1478,12 @@ async fn dispatch(home: &Path, caller: &str, method: &str, p: &Value) -> Result<
                     let a = strings(&p["selection"]);
                     write_all(home, &a[0], &a[1], Value::Null)?;
                 }
-                // Web search goes back to its free default and stays on.
-                if id != "web_search" || get(home, None, id)?["ready"] != true {
+                // Web search goes back to its free default and stays on. A
+                // Google or Microsoft connector keeps its sign-in: only the
+                // user's own OAuth client went.
+                if s["account"].is_null()
+                    && (id != "web_search" || get(home, None, id)?["ready"] != true)
+                {
                     for bot in names(home)? {
                         if enabled(home, &bot, id)? {
                             set_enabled(home, &bot, id, false)?;
@@ -2088,13 +2123,20 @@ pub async fn close_bot(home: &Path, bot: &str) {
 
 /// Gate the connector tools before freezing a conversation's tool catalog.
 pub fn tool_available(home: &Path, bot: &str, tool: &str) -> Result<bool> {
+    // A tool two connectors share, as Gmail and Outlook share the mail
+    // tool, is there once either is.
+    let mut named = false;
     for spec in catalog() {
         if strings(&spec["tools"]).iter().any(|name| name == tool) {
-            return Ok(enabled(home, bot, spec["id"].as_str().unwrap())?
-                && set_up_for(home, Some(bot), &spec)?);
+            named = true;
+            if enabled(home, bot, spec["id"].as_str().unwrap())?
+                && set_up_for(home, Some(bot), &spec)?
+            {
+                return Ok(true);
+            }
         }
     }
-    Ok(true)
+    Ok(!named)
 }
 
 // Keep the Hermes save-time and spawn-time MCP checks for known malicious

@@ -4,16 +4,11 @@ title: Email
 description: Let bots read Gmail or Outlook and draft email you edit and send.
 ---
 
-The **Google Workspace** and **Microsoft 365** connectors let a bot read your Gmail or Outlook and draft email for you. A bot never sends email by itself: it shows you a draft in its chat, and you send it.
+The **Gmail** and **Outlook** connectors let a bot read your mail and draft email for you. A bot never sends email by itself: it shows you a draft in its chat, and you send it.
 
-## Sign in
+## Connect
 
-Open **Settings**, **Plugins**, and choose **Google Workspace** or **Microsoft 365**, then **Sign in**. You sign in once on the daemon, and then choose the bots that get it, as with any plugin.
-
-- **Microsoft** shows a code. Choose **Copy code and open Microsoft**, paste the code there, and sign in. Hexbot sees the sign-in finish on its own.
-- **Google** opens its own page. When your browser runs on the daemon's computer, as with the Full app, Google comes back to Hexbot by itself. When the daemon is on another computer, or you sign in from your phone, Google ends on a page that doesn't load. Copy that page's address, paste it into Hexbot, and choose **Finish**.
-
-Hexbot keeps the sign-in on the daemon, in a file bots can't open unless they run in Bypass, which has no sandbox. The bot asks Hexbot to read or draft, and Hexbot makes the request; the bot never sees your password or the sign-in itself. **Sign out** in the same place removes it, and at Google withdraws it too.
+Open **Settings**, **Plugins**, choose **Gmail** or **Outlook**, and sign in. [Google and Microsoft](/docs/google-and-microsoft/) explains signing in, the other connectors of the same account, and how to disconnect one.
 
 ## What a bot can do
 
@@ -28,9 +23,4 @@ Bots read and draft email in their own chat and in scheduled jobs. Rooms, thread
 
 ## Your own OAuth client
 
-Official builds sign in through Hexbot's own apps at Google and Microsoft. Some Google Workspace organisations allow only apps they approve. In that case, or in a build without Hexbot's apps, choose **Use your own OAuth client** when you set it up:
-
-- **Google**: a **Desktop app** client from Google Cloud, with the Gmail API enabled. Paste its client ID and client secret.
-- **Microsoft**: an app in Microsoft Entra with **Allow public client flows** on and the delegated permissions `User.Read`, `Mail.ReadWrite` and `Mail.Send`. Paste its application (client) ID.
-
-Save it, then sign in.
+Some organisations allow only apps they approve. [Google and Microsoft](/docs/google-and-microsoft/#your-own-oauth-client) explains how to sign in with a client of your own.

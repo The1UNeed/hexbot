@@ -36,26 +36,12 @@ pub(super) fn descriptor() -> Value {
     })
 }
 
-/// The mail services `bot` has on and signed in, Google first.
-fn services(home: &Path, bot: &str) -> Result<Vec<&'static str>> {
-    let mut on = vec![];
-    for id in [GOOGLE, MICROSOFT] {
-        if crate::connectors::enabled(home, bot, id)? && accounts::connected(home, id)? {
-            on.push(id);
-        }
-    }
-    Ok(on)
-}
+/// Gmail and Outlook, by the account each belongs to.
+pub(super) const CONNECTORS: &[(&str, &str)] = &[(GOOGLE, "gmail"), (MICROSOFT, "outlook")];
 
-/// In the bot's own chat and its scheduled jobs, once it has a mail service.
-pub(super) fn offered(
-    home: &Path,
-    bot: &str,
-    own: bool,
-    overrides: Option<&Value>,
-) -> Result<bool> {
-    let job = overrides.is_some_and(|o| o["job"].is_string());
-    Ok(((own && overrides.is_none()) || job) && !services(home, bot)?.is_empty())
+/// Once the bot has a mail connector on and connected.
+pub(super) fn offered(home: &Path, bot: &str) -> Result<bool> {
+    Ok(!account_tool::on(home, bot, CONNECTORS)?.is_empty())
 }
 
 /// What every client of the owner is told when a draft card settles: sent
@@ -166,7 +152,7 @@ impl Runtime {
                 4210,
                 format!(
                     "{} is turned off for this bot now. Turn it on in Settings, Plugins to send this.",
-                    svc.mail
+                    svc.name
                 ),
             ));
         }
@@ -183,15 +169,15 @@ impl Runtime {
                 match now {
                     None => format!(
                         "{} is signed out. Sign in under Settings, Plugins to send this.",
-                        svc.mail
+                        svc.name
                     ),
                     Some(_) if email.is_empty() || email.eq_ignore_ascii_case(from) => format!(
                         "{} was signed in again since this draft. Discard it and ask for a new one.",
-                        svc.mail
+                        svc.name
                     ),
                     Some(_) => format!(
                         "{} is signed in as {email} now, not {from}. Discard this and ask for a new draft.",
-                        svc.mail
+                        svc.name
                     ),
                 },
             ));
@@ -208,42 +194,13 @@ impl Runtime {
         if !s.tools.iter().any(|t| t["name"] == NAME) {
             return Err(Error::new(4210, "This tool is disabled for this section."));
         }
-        let on = services(&self.home, &s.bot)?;
-        let id = match args["account"].as_str().filter(|a| !a.is_empty()) {
-            Some(want) if on.contains(&want) => want,
-            Some(want) => {
-                let svc = accounts::service(want)?;
-                return Err(Error::new(
-                    4210,
-                    format!(
-                        "{} isn't connected for you. The user signs in and turns it on in Settings, Plugins.",
-                        svc.mail
-                    ),
-                ));
-            }
-            None => match on.as_slice() {
-                [one] => *one,
-                [] => {
-                    return Err(Error::new(
-                        4210,
-                        "No mail account is connected for you. The user signs in to Google or Microsoft in Settings, Plugins.",
-                    ));
-                }
-                _ => {
-                    return Err(Error::new(
-                        4202,
-                        "The user has Gmail and Outlook. Pass account: google or microsoft.",
-                    ));
-                }
-            },
-        };
-        let svc = accounts::service(id)?;
+        let svc = account_tool::pick(&self.home, &s.bot, CONNECTORS, args, "mail account")?;
         match required(args, "action")? {
             "search" => {
                 let max = args["max"].as_u64().unwrap_or(10) as usize;
                 let query = args["query"].as_str().unwrap_or("");
                 let messages = crate::mail::search(&self.home, svc, query, max).await?;
-                Ok(json!({"account": svc.id, "messages": messages}))
+                Ok(json!({"account": svc.provider.id, "messages": messages}))
             }
             "read" => crate::mail::read(&self.home, svc, required(args, "id")?).await,
             "draft" => self.mail_draft(s, svc, args).await,
@@ -307,11 +264,12 @@ impl Runtime {
         let request = json!({
             "tool": NAME,
             "toolCall": {"title": if to.is_empty() { "Draft an email".to_owned() } else { format!("Email to {to}") }},
-            "reason": format!("Only you can send it. Hexbot sends it from {} when you press Send.", svc.mail),
+            "reason": format!("Only you can send it. Hexbot sends it from {} when you press Send.", svc.name),
             "form": {
                 "kind": "email_draft",
-                "service": svc.id,
-                "service_name": svc.mail,
+                // The account, as apps from before the connectors split read it.
+                "service": svc.provider.id,
+                "service_name": svc.name,
                 "from": account.as_ref().and_then(|a| a["email"].as_str()).unwrap_or(""),
                 // The grant it goes from: a sign-in since then won't send it.
                 "grant": account.as_ref().map(|a| a["connected_at"].clone()),
@@ -335,7 +293,7 @@ impl Runtime {
         let send = answer["action"] == "send";
         let draft = &answer["draft"];
         let mut out = json!({
-            "account": svc.id,
+            "account": svc.provider.id,
             "id": answer["id"],
             "to": draft["to"],
             "cc": draft["cc"],

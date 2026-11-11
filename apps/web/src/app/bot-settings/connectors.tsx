@@ -9,13 +9,16 @@ import { SkeletonLines } from '../../components/ui/skeleton'
 import { Switch } from '../../components/ui/switch'
 import { connectorsTest } from '../../lib/api'
 import { cn } from '../../lib/cn'
-import type { Bot, Connector, ConnectorGroup } from '../../lib/types'
+import type { Bot, Connector } from '../../lib/types'
 import { useConnectors, useConnectorsForBot } from '../../stores/connectors'
 
 import { ConnectorSetupSheet } from './connector-setup'
 import { errorText, fieldLabel, formatTimestamp, Group, Heading } from './shared'
 
-const GROUPS: { id: ConnectorGroup; title: string }[] = [
+/** Google's and Microsoft's connectors sit under their account; the rest by what they do. */
+const GROUPS: { id: string; title: string }[] = [
+  { id: 'google', title: 'Google' },
+  { id: 'microsoft', title: 'Microsoft' },
   { id: 'search', title: 'Search and browsing' },
   { id: 'work', title: 'Notes and work' },
   { id: 'social_home', title: 'Social' },
@@ -128,7 +131,7 @@ export function ConnectorsTab({ bot, initialConnector }: { bot: Bot; initialConn
       {loading && !connectors.length ? <SkeletonLines label="Loading connectors" /> : null}
       <div className="space-y-8">
         {GROUPS.map(group => {
-          const rows = visible.filter(item => item.group === group.id)
+          const rows = visible.filter(item => (item.family ?? item.group) === group.id)
 
           if (!rows.length && !(group.id === 'mcp' && filter === 'all' && !query)) {
             return null
@@ -212,7 +215,7 @@ function ConnectorRow({
       </Button>
     ) : !connector.mcp && connector.state === 'not_set_up' ? (
       <Button onClick={onSetup} size="sm">
-        Set up
+        {connector.account ? 'Connect' : 'Set up'}
       </Button>
     ) : (
       <Switch

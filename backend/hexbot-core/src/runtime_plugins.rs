@@ -183,6 +183,9 @@ impl Runtime {
                 if on && was && kind != "package" {
                     return Ok(json!({"plugin": full, "on": true, "note": "Already on."}));
                 }
+                if on {
+                    needs_sign_in(&plugin)?;
+                }
                 let title = format!(
                     "{} the plugin {} for {whom}",
                     if on { "Turn on" } else { "Turn off" },
@@ -228,6 +231,7 @@ impl Runtime {
                 let full = required(args, "id")?;
                 let (kind, id) = split(full)?;
                 let settings = self.session_settings(s)?;
+                needs_sign_in(&crate::plugins::find(&self.home, owner, kind, id)?)?;
                 let mut form = self.plugin_form(owner, &target, &whom, full, "setup")?;
                 form["other"] = json!(!own);
                 let name = form["name"].as_str().unwrap_or(id).to_owned();
@@ -642,6 +646,29 @@ pub(super) fn answer(form: &Value, p: &Value) -> Result<Value> {
         }
     }
     Ok(json!({"values": values, "provider": provider}))
+}
+
+/// A Google or Microsoft connector is connected by signing in, which only
+/// the user can do, in Settings: no card in a chat takes a sign-in. A bot
+/// that asks for one that isn't connected is told so at once, before any
+/// card, so it tells the user where to go.
+fn needs_sign_in(plugin: &Value) -> Result<()> {
+    if !plugin["account"].is_object() || plugin["ready"] != false {
+        return Ok(());
+    }
+    let name = plugin["name"].as_str().unwrap_or("This connector");
+    Err(Error::new(
+        4209,
+        if plugin["account"]["signed_in"] == true {
+            format!(
+                "{name}'s sign-in stopped working, and only the user can sign in again: Settings, Plugins, {name}, Fix. Tell them."
+            )
+        } else {
+            format!(
+                "{name} is connected by signing in, which only the user can do: Settings, Plugins, {name}, Connect. Tell them, and call enable again once it is connected."
+            )
+        },
+    ))
 }
 
 /// What the bot should know once a plugin is on.

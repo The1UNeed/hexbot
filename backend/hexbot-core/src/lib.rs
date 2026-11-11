@@ -50,6 +50,20 @@ mod update_path;
 pub mod update_signature;
 pub mod usage;
 
+// The services and file formats of the Google and Microsoft connectors.
+mod calendar;
+mod docs;
+mod drive;
+mod excel;
+mod markdown;
+mod ooxml;
+mod powerpoint;
+mod sheets;
+mod slides;
+mod tasks;
+mod word;
+mod zip;
+
 pub fn version() -> String {
     serde_json::from_str::<serde_json::Value>(include_str!("../../../apps/desktop/package.json"))
         .expect("valid desktop package")["version"]

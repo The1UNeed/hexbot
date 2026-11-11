@@ -49,7 +49,13 @@ export function Dialog({
   return (
     <Root onOpenChange={onOpenChange} open={open}>
       <BaseDialog.Portal>
-        <BaseDialog.Backdrop className="hex-fade fixed inset-0 z-50 bg-black/25 backdrop-blur-md" />
+        {/* Rendered for a dialog opened over another too, as a plugin's sheet
+            is over Settings: without it the window below shows through the
+            glass, sharp and undimmed. */}
+        <BaseDialog.Backdrop
+          className="hex-fade fixed inset-0 z-50 bg-black/25 backdrop-blur-md"
+          forceRender
+        />
         <BaseDialog.Popup
           aria-label={title ? undefined : label}
           className={cn(

@@ -4,7 +4,7 @@
 //! cannot send on its own (`runtime_mail.rs`).
 use crate::{
     Error, Result,
-    accounts::{self, GOOGLE, Service},
+    accounts::{self, Service, UNCERTAIN, enc},
 };
 use base64::Engine;
 use serde_json::{Value, json};
@@ -12,7 +12,6 @@ use std::path::Path;
 
 const MAX_RESULTS: usize = 20;
 const BODY_CAP: usize = 40_000;
-const ANSWER_CAP: usize = 4_000_000;
 
 fn b64url(bytes: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
@@ -36,9 +35,7 @@ async fn request(
 }
 
 /// A request with the grant `grant` names (its `connected_at`), when given:
-/// a draft goes from the account its card showed, or not at all. A request
-/// that reached the service but got no whole answer is 5244: it may have
-/// been carried out. Only a refused connection is certain to have done nothing.
+/// a draft goes from the account its card showed, or not at all.
 async fn request_as(
     home: &Path,
     svc: &Service,
@@ -48,84 +45,10 @@ async fn request_as(
     body: Option<&Value>,
     headers: &[(&str, &str)],
 ) -> Result<Value> {
-    let token = accounts::access_token_for(home, svc, grant).await?;
-    let client = crate::http::client(30, 0).map_err(|e| Error::new(5240, e.to_string()))?;
-    let mut req = client
-        .request(method, accounts::api_url(home, svc, path)?)
-        .bearer_auth(token);
-    for (name, value) in headers {
-        req = req.header(*name, *value);
-    }
-    if let Some(body) = body {
-        req = req.json(body);
-    }
-    let response = req.send().await.map_err(|e| {
-        let connected = !e.is_connect();
-        let mut error = crate::http::error(
-            e,
-            5240,
-            [
-                "The mail service timed out.",
-                "The mail service could not be reached.",
-                "The mail request failed.",
-            ],
-        );
-        if connected {
-            error.code = UNCERTAIN;
-        }
-        error
-    })?;
-    let status = response.status().as_u16();
-    let bytes = crate::http::bytes(
-        response,
-        ANSWER_CAP,
-        |e| {
-            Error::new(
-                UNCERTAIN,
-                format!("The mail service stopped answering: {e}"),
-            )
-        },
-        Error::new(5240, "That message is too large to read here."),
+    accounts::api(
+        home, svc, grant, method, svc.api, path, body, headers, "message",
     )
-    .await?;
-    let data: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    if status >= 400 {
-        let detail = data["error"]["message"]
-            .as_str()
-            .or(data["error"].as_str())
-            .unwrap_or("");
-        return Err(Error::new(
-            match status {
-                // Gmail and Graph answer a malformed id with 400.
-                400 => 4202,
-                401 | 403 => 4210,
-                // Not the card's 4204 ("no longer waiting"): no such message.
-                404 => 4215,
-                _ => 5240,
-            },
-            match status {
-                404 => format!("{} has no such message.", svc.mail),
-                // Read by the user on the draft card as well as by the bot.
-                401 | 403 => format!(
-                    "{} refused it{}. Signing in again under Settings, Plugins may fix this.",
-                    svc.mail,
-                    if detail.is_empty() {
-                        format!(" (HTTP {status})")
-                    } else {
-                        format!(": {}", detail.trim_end_matches('.'))
-                    }
-                ),
-                _ => format!("{} answered HTTP {status}. {detail}", svc.mail)
-                    .trim()
-                    .to_owned(),
-            },
-        ));
-    }
-    Ok(data)
-}
-
-fn enc(part: &str) -> String {
-    url::form_urlencoded::byte_serialize(part.as_bytes()).collect()
+    .await
 }
 
 // --- Reading --------------------------------------------------------------
@@ -139,7 +62,7 @@ pub(crate) async fn search(
     max: usize,
 ) -> Result<Vec<Value>> {
     let max = max.clamp(1, MAX_RESULTS);
-    if svc.id == GOOGLE {
+    if svc.google() {
         let q = if query.trim().is_empty() {
             "in:inbox"
         } else {
@@ -266,7 +189,7 @@ pub(crate) async fn subject_of(home: &Path, svc: &Service, id: &str) -> Result<S
     if id.is_empty() || id.len() > 512 {
         return Err(Error::new(4202, "id must be a message id from search"));
     }
-    let path = if svc.id == GOOGLE {
+    let path = if svc.google() {
         format!(
             "/gmail/v1/users/me/messages/{}?format=metadata&metadataHeaders=Subject",
             enc(id)
@@ -275,7 +198,7 @@ pub(crate) async fn subject_of(home: &Path, svc: &Service, id: &str) -> Result<S
         format!("/v1.0/me/messages/{}?$select=subject", enc(id))
     };
     let m = request(home, svc, reqwest::Method::GET, &path, None, &[]).await?;
-    Ok(if svc.id == GOOGLE {
+    Ok(if svc.google() {
         header(&m, "Subject").to_owned()
     } else {
         m["subject"].as_str().unwrap_or("").to_owned()
@@ -287,7 +210,7 @@ pub(crate) async fn read(home: &Path, svc: &Service, id: &str) -> Result<Value> 
     if id.is_empty() || id.len() > 512 {
         return Err(Error::new(4202, "id must be a message id from search"));
     }
-    if svc.id == GOOGLE {
+    if svc.google() {
         let m = request(
             home,
             svc,
@@ -513,7 +436,7 @@ pub fn split(text: &str) -> Vec<String> {
 }
 
 /// The address in `Name <a@b.c>`, or the whole of `a@b.c`.
-fn bare(address: &str) -> &str {
+pub(crate) fn bare(address: &str) -> &str {
     match (address.rfind('<'), address.rfind('>')) {
         (Some(open), Some(close)) if open < close => address[open + 1..close].trim(),
         _ => address.trim(),
@@ -614,9 +537,6 @@ fn recipients(list: &[String]) -> Value {
     )
 }
 
-/// A request that may have been carried out without a whole answer.
-const UNCERTAIN: i64 = 5244;
-
 /// Sends `draft`, or with `send` false saves it to Drafts, from the grant
 /// `grant` names when given. Only the draft card calls this, with what the
 /// user left on it. A send that got no whole answer may have gone out, and
@@ -639,7 +559,7 @@ pub(crate) async fn deliver(
                 e.code,
                 format!(
                     "{} It may have gone out: look in Sent in {} before you send it again.",
-                    e.message, svc.mail
+                    e.message, svc.name
                 ),
             )
         } else {
@@ -647,7 +567,7 @@ pub(crate) async fn deliver(
                 e.code,
                 format!(
                     "{} It may be saved: look in Drafts in {} before you save it again.",
-                    e.message, svc.mail
+                    e.message, svc.name
                 ),
             )
         }
@@ -667,7 +587,7 @@ pub(crate) async fn deliver(
                 e.code,
                 format!(
                     "The email this answers is no longer in {}. Discard this and ask for a new draft.",
-                    svc.mail
+                    svc.name
                 ),
             )
         } else {
@@ -680,7 +600,7 @@ pub(crate) async fn deliver(
     if send && draft.to.is_empty() && draft.cc.is_empty() && draft.bcc.is_empty() {
         return Err(Error::new(4202, "Add someone to send it to."));
     }
-    if svc.id == GOOGLE {
+    if svc.google() {
         let mut thread_id = None;
         let mut thread = vec![];
         if let Some(id) = &draft.reply_to {

@@ -60,7 +60,7 @@ impl Runtime {
         }))
     }
 
-    fn file_path(&self, s: &Live, value: &str) -> Result<PathBuf> {
+    pub(super) fn file_path(&self, s: &Live, value: &str) -> Result<PathBuf> {
         let roots = [
             crate::native_tools::section_workdir(&self.home, &s.bot, &s.stored)?,
             crate::catalog::profile(&self.home, &s.bot)?.join("artifacts"),

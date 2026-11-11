@@ -178,7 +178,14 @@ Brand connectors (Notion, Linear, Airtable, X, Telegram, Discord,
 Slack, Home Assistant, Spotify, ElevenLabs, GitHub, and the other
 channels) use the Simple Icons glyphs (CC0), bundled as SVG under
 `apps/web/src/assets/connectors/` and drawn white on the brand colour
-in a 28 px rounded square. Capability rows that front several providers
+in a 28 px rounded square. Google's and Microsoft's connectors are the
+exception: their brand guidelines allow their logos only whole, unaltered
+and in the newest version, so those are the owners' own files, drawn as
+images on a white tile with clear space around them and never recoloured or
+cropped, and the sign-in buttons are the owners' own "Sign in with Google"
+and "Sign in with Microsoft" buttons. The files, where each came from and
+the terms that cover them are in `apps/web/src/assets/brands/README.md`;
+replace a file when its owner publishes a newer logo. Capability rows that front several providers
 (web search, image and video generation) use a neutral Lucide glyph on a
 Hexbot colour, since no single brand owns them. MCP servers take a brand
 glyph when their name, or else their URL or command, names one

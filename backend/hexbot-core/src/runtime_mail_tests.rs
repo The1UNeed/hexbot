@@ -102,7 +102,7 @@ async fn only_the_user_sends_a_draft_and_sends_what_they_left() {
     fs::write(h.join("config.yaml"), config).unwrap();
     fs::create_dir_all(h.join("accounts")).unwrap();
     fs::write(
-        h.join("accounts/google.json"),
+        h.join("accounts/gmail.json"),
         json!({"email":"alice@example.com","client_id":"c","access_token":"tok","refresh_token":"r","expires_at":common::now() + 3600.0}).to_string(),
     )
     .unwrap();
@@ -192,9 +192,9 @@ async fn only_the_user_sends_a_draft_and_sends_what_they_left() {
         error.message
     );
     // Signed in as someone else now: it isn't sent from their mailbox.
-    let account = fs::read_to_string(h.join("accounts/google.json")).unwrap();
+    let account = fs::read_to_string(h.join("accounts/gmail.json")).unwrap();
     fs::write(
-        h.join("accounts/google.json"),
+        h.join("accounts/gmail.json"),
         account.replace("alice@example.com", "mallory@example.com"),
     )
     .unwrap();
@@ -208,7 +208,7 @@ async fn only_the_user_sends_a_draft_and_sends_what_they_left() {
             .message
             .contains("mallory@example.com now, not alice@example.com")
     );
-    fs::write(h.join("accounts/google.json"), account).unwrap();
+    fs::write(h.join("accounts/gmail.json"), account).unwrap();
     assert!(got.lock().unwrap().is_empty());
     let mut events = hub.subscribe();
     let edited = json!({"mail_action":"send","draft":{"to":["ana@example.com"],"cc":["bo@example.org"],"subject":"Friday at 6","body":"Hi Ana,\nFriday at 6 works.\nAlice"}});
@@ -291,6 +291,13 @@ async fn only_the_user_sends_a_draft_and_sends_what_they_left() {
         }
     };
     assert_eq!(settled["mail_action"], "send");
+    // A stopped section shows no card until Pi settles the stopped run, and
+    // Pi says so in its own time: the next draft waits for it, as the next
+    // turn would.
+    let mut ended = s.run_ended.subscribe();
+    while s.state.lock().unwrap().interrupted {
+        ended.changed().await.unwrap();
+    }
 
     // Saved to Drafts, not sent.
     let waiting = card(&hub);
@@ -386,7 +393,7 @@ async fn mail_stays_in_the_bots_own_chat_and_jobs() {
     let h = home.path();
     fs::create_dir_all(h.join("accounts")).unwrap();
     fs::write(
-        h.join("accounts/google.json"),
+        h.join("accounts/gmail.json"),
         json!({"email":"alice@example.com","client_id":"c","access_token":"t","refresh_token":"r","expires_at":common::now() + 3600.0}).to_string(),
     )
     .unwrap();
@@ -425,7 +432,7 @@ async fn mail_stays_in_the_bots_own_chat_and_jobs() {
         assert!(!tools.iter().any(|n| n == "hexbot_mail"), "{overrides}");
     }
     // Signed out: the tool goes at the next rebuild.
-    fs::remove_file(h.join("accounts/google.json")).unwrap();
+    fs::remove_file(h.join("accounts/gmail.json")).unwrap();
     let own = names(
         runtime
             .fresh_tools("alice", "owl", "first", None, None)

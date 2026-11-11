@@ -84,7 +84,9 @@ export const usePlugins = create<PluginsState>((set, get) => {
       const key = `${plugin.kind}:${plugin.id}`
 
       // Show the switch where the user put it while the daemon catches up.
-      replace(key, { ...plugin, bots })
+      // A change that holds every grant leaves none waiting, so a second
+      // change before the list is read again can't bring one back.
+      replace(key, keepWaiting ? { ...plugin, bots } : { ...plugin, bots, waiting_bots: [] })
 
       try {
         await pluginsSetBots(

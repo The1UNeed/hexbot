@@ -23,6 +23,8 @@ use std::{
 };
 use tokio::sync::{Mutex as AsyncMutex, watch};
 
+#[path = "runtime_accounts.rs"]
+mod account_tool;
 #[path = "runtime_attachments.rs"]
 mod attachments;
 #[path = "runtime_connectors.rs"]
@@ -45,6 +47,8 @@ mod recall;
 mod review;
 #[path = "runtime_stop.rs"]
 mod stop;
+#[path = "runtime_workspace.rs"]
+mod workspace_tool;
 use crate::dreaming::heartbeat;
 use identity::with_fields;
 
@@ -1462,12 +1466,13 @@ impl Runtime {
             tools.push(connector_tool::read_descriptor());
             tools.push(connector_tool::write_descriptor());
         }
-        // Gmail and Outlook: in the bot's own chat and its jobs only
-        // (runtime_mail.rs).
-        if !heartbeat_run
-            && mail_tool::offered(&self.home, bot, own && restricted.is_none(), overrides)?
-        {
-            tools.push(mail_tool::descriptor());
+        // The user's Google and Microsoft connectors: in the bot's own chat
+        // and its jobs only (runtime_accounts.rs).
+        if account_tool::here(own && restricted.is_none(), overrides) {
+            if mail_tool::offered(&self.home, bot)? {
+                tools.push(mail_tool::descriptor());
+            }
+            tools.extend(workspace_tool::descriptors(&self.home, bot)?);
         }
         if heartbeat_run {
             tools.push(heartbeat::notify_descriptor());
@@ -4835,6 +4840,9 @@ impl Runtime {
             plugin_tool::NAME => self.plugins_tool(s, args).await,
             password_tool::NAME => self.passwords_tool(s, args).await,
             mail_tool::NAME => self.mail_tool(s, args).await,
+            name if workspace_tool::tool(name).is_some() => {
+                self.workspace_tool(s, name, args).await
+            }
             "self_soul" | "hexbot_soul" => {
                 let path = self.home.join("profiles").join(&s.bot).join("SOUL.md");
                 let cap = MemoryStore::new(self.home.clone()).soul_cap(&s.bot)?;
@@ -6033,6 +6041,8 @@ fn tool_context(name: &str, args: &Value) -> String {
         "hexbot_share_file" => "path",
         "hexbot_bots" | "hexbot_rooms" | "hexbot_jobs" | "hexbot_settings" | "hexbot_heartbeat"
         | "hexbot_plugins" | "hexbot_passwords" | "hexbot_mail" | "computer_use" => "action",
+        // The action, as the app words the step: "Reading a document".
+        name if workspace_tool::tool(name).is_some() => "action",
         "hexbot_notify" => "message",
         "hexbot_connector_read" | "hexbot_connector_write" => "path",
         name if name.starts_with("mcp__") => args

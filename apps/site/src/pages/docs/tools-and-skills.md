@@ -36,9 +36,9 @@ The **Working directory** is the bot's workspace. Choose a project folder outsid
 
 ## Connect outside services
 
-Connectors are the services Hexbot supports: web search, Gmail and Outlook through Google Workspace and Microsoft 365, Notion, and X search. Google Workspace and Microsoft 365 are set up by signing in rather than with a key; see [Email](/docs/email/). Anything else connects as an MCP server. The [tool catalog](/tools/) lists the capabilities.
+Connectors are the services Hexbot supports: web search, Google's and Microsoft's services, Notion, and X search. Google and Microsoft have a connector for each service, such as Gmail, Google Calendar, Word or OneDrive, and you connect the ones you want by signing in rather than with a key; see [Google and Microsoft](/docs/google-and-microsoft/). Anything else connects as an MCP server. The [tool catalog](/tools/) lists the capabilities.
 
-You set up a connector in Settings, Plugins, or in Bot settings, Connectors, by choosing its provider and entering the requested credentials. Each bot has its own on/off switch. A connector must be ready and enabled for that bot before its tools appear in the bot's chat.
+Settings, Plugins shows connectors as cards: the ones you have connected first, with their account and the bots that have them, then the ones still on offer, grouped under Google, Microsoft and what the others do. Open a card to see what bots can do with it, connect or set it up, and switch it on for each bot. Choose a bot at the top of the page to switch connectors on and off for that bot straight from the cards. You can also set one up in Bot settings, Connectors. A connector must be ready and on for a bot before its tools appear in that bot's chat.
 
 Your Notion key stays with the daemon. A bot reads and changes your workspace through Hexbot, which adds the key to each request; the bot never sees the key, and its commands never have it. It does not need your Notion password. Reading runs in every approval mode. A change runs in Bypass, is checked first in Auto, and asks you in Manual. Notion only shows a bot the pages you connect to your integration: on the page, open **...**, then **Connections**.
 

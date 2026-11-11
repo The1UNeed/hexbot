@@ -43,8 +43,19 @@ import {
 import { botPhoto, refusesFace } from './core/avatar'
 import { scheduleChange } from './core/jobs'
 import { requirementText } from './core/skills'
-import { canGive, pluginRows, withWaiting } from '../../web/src/lib/plugin-rows'
-import { GoogleSignInButton } from './ui/GoogleSignInButton'
+import {
+  ACCOUNT_NAMES,
+  accountProvider,
+  accountSiblings,
+  canGive,
+  CONNECTOR_SHELVES,
+  isConnected,
+  pluginRows,
+  shelfOf,
+  shownBots,
+  withWaiting
+} from '../../web/src/lib/plugin-rows'
+import { BrandSignInButton } from './ui/BrandSignInButton'
 import { PluginIcon } from './ui/PluginIcon'
 import { isOpenRoom } from './core/routes'
 import { allowPush, pushPermission, testNotification } from './core/push'
@@ -563,6 +574,12 @@ export function Management({
             str(panel?.data?.provider) ||
             str((panel?.data?.providers as RowData[] | undefined)?.[0]?.id)
         }
+        // A Google or Microsoft connector: the account's other connectors,
+        // to connect with the same sign-in, and the primary bot to give it to.
+        if (panel?.data?.account) {
+          detail = { plugins: pluginRows(await rpc<PluginsList>('hexbot.plugins.list')) }
+          if (!bot && pluginRoster[0]) fields[`give:${pluginRoster[0].name}`] = true
+        }
         break
       case 'plugins':
         data = pluginRows(await rpc<PluginsList>('hexbot.plugins.list')) as unknown as RowData[]
@@ -773,6 +790,43 @@ export function Management({
     setExtra({})
     if (fresh) onNavigate({ ...panel, data: fresh as unknown as RowData })
   }
+  // What the form holds now, for a sign-in that finishes later.
+  const latestValues = useRef(values)
+  latestValues.current = values
+  // A sign-in finished: each connector it connected goes to the bots chosen
+  // before it, and a bot that was waiting for one keeps it. A sign-in that
+  // renews one that stopped working changes no bots.
+  const signedIn = async (next: RowData) => {
+    setNotice(
+      Array.isArray(next.skipped) && next.skipped.length
+        ? str(next.message)
+        : next.email
+          ? `Signed in as ${str(next.email)}`
+          : str(next.message)
+    )
+    const account = (panel?.data as unknown as Connector | undefined)?.account
+    // From a bot's own plugins, that bot gets it, as on the web.
+    const give = bot
+      ? [bot.name]
+      : pluginRoster
+          .filter(b => latestValues.current[`give:${b.name}`] === true)
+          .map(b => b.name)
+    if (!account?.signed_in && give.length) {
+      // An older daemon connects the one connector and does not say so.
+      const ids = Array.isArray(next.connected) ? next.connected.map(str) : [str(panel?.data?.id)]
+      const plugins = pluginRows(await rpc<PluginsList>('hexbot.plugins.list'))
+      for (const id of ids) {
+        const item = plugins.find(p => p.kind === 'connector' && p.id === id)
+        await rpc('hexbot.plugins.set_bots', {
+          kind: 'connector',
+          id,
+          bots: item ? withWaiting(item, [...new Set([...item.bots, ...give])]) : give
+        })
+      }
+    }
+    void mobile.refresh()
+    await reloadConnector()
+  }
   // A Google or Microsoft sign-in from a connector panel finishes on its
   // own: the daemon is asked until it says done.
   const signingIn =
@@ -789,9 +843,7 @@ export function Management({
           if (current !== epoch.current || waitingLogin.current !== next.login_id) return
           setExtra(e => ({ ...e, ...next }))
           if (next.status === 'done') {
-            setNotice(next.email ? `Signed in as ${str(next.email)}` : str(next.message))
-            void mobile.refresh()
-            void reloadConnector().catch(() => {})
+            void signedIn(next).catch(e => setError(e instanceof Error ? e.message : String(e)))
           } else if (next.status === 'error' || next.status === 'cancelled')
             // Cancelled elsewhere: another sign-in replaced it, or Sign out ended it.
             setError(str(next.message))
@@ -1720,13 +1772,20 @@ export function Management({
     case 'connector': {
       const c = panel!.data as unknown as Connector
       const account = c.account
-      const accountName = account?.service === 'google' ? 'Google' : 'Microsoft'
+      const provider = account ? accountProvider(account) : 'google'
+      const accountName = ACCOUNT_NAMES[provider]
       const pending = extra.account_login === true && extra.status === 'pending'
+      // The account's other connectors that still wait for a sign-in.
+      const listed = (extra.plugins as unknown as Plugin[] | undefined) ?? []
+      const self = listed.find(p => p.kind === 'connector' && p.id === c.id)
+      const siblings = self && !account?.signed_in ? accountSiblings(self, listed) : []
       const startSignIn = async () => {
+        const also = siblings.filter(p => values[`also:${p.id}`] === true).map(p => p.id)
         const login = await rpc<RowData>('hexbot.accounts.sign_in_start', {
-          service: account!.service
+          service: account!.service,
+          ...(also.length ? { also } : {})
         })
-        setExtra({ ...login, account_login: true })
+        setExtra(e => ({ ...e, ...login, account_login: true }))
         // Microsoft's page waits until the code is copied, so the phone
         // doesn't switch away before the user has it.
         if (login.mode === 'device') {
@@ -1743,20 +1802,52 @@ export function Management({
       content = (
         <>
           <Text tone="muted">{c.description}</Text>
+          {account && !account.signed_in && !bot && !pending && pluginRoster.length > 1 ? (
+            <Group title="Bots that get it">
+              {pluginRoster.map(b => (
+                <SwitchRow
+                  key={b.name}
+                  title={b.display_name}
+                  testID={`account-give-${b.name}`}
+                  value={values[`give:${b.name}`] === true}
+                  disabled={busy}
+                  onValueChange={on => set(`give:${b.name}`, on)}
+                />
+              ))}
+            </Group>
+          ) : null}
+          {account && siblings.length && !pending ? (
+            <Group
+              title="Connect with the same sign-in"
+              footer={`${accountName} asks you to allow each one. Each goes to the same bots as ${c.name}.`}
+            >
+              {siblings.map(p => (
+                <SwitchRow
+                  key={p.id}
+                  leading={<PluginIcon icon={p.icon} />}
+                  title={p.name}
+                  testID={`account-also-${p.id}`}
+                  value={values[`also:${p.id}`] === true}
+                  disabled={busy}
+                  onValueChange={on => set(`also:${p.id}`, on)}
+                />
+              ))}
+            </Group>
+          ) : null}
           {account ? (
             <Group
               title="Account"
               footer={
                 pending && extra.mode === 'browser'
                   ? `Google ends on a page that doesn't load on this phone. Copy that page's address and paste it here.`
-                  : 'Bots you turn it on for can read your mail and draft email for you. Only you can send it.'
+                  : `You sign in once on this daemon. Bots you turn ${c.name} on for use it.`
               }
             >
               <Row
                 title={
                   account.signed_in
                     ? `Signed in as ${account.email || accountName}`
-                    : 'Not signed in'
+                    : 'Not connected'
                 }
                 subtitle={c.state === 'error' ? c.state_text : undefined}
                 testID="account-state"
@@ -1781,8 +1872,7 @@ export function Management({
                       })
                       setExtra(e => ({ ...e, ...next }))
                       if (next.status === 'error') throw new Error(str(next.message))
-                      setNotice(next.email ? `Signed in as ${str(next.email)}` : str(next.message))
-                      await reloadConnector()
+                      await signedIn(next)
                     },
                     false,
                     '',
@@ -1796,39 +1886,33 @@ export function Management({
                   })
                 : pending
                   ? action('Open the page again', () => Linking.openURL(str(extra.url)))
-                  : account.service === 'google'
-                    ? null
-                    : action(
-                        account.signed_in
-                          ? `Sign in to ${accountName} again`
-                          : `Sign in with ${accountName}`,
-                        startSignIn
-                      )}
+                  : null}
               {pending
                 ? action('Stop signing in', async () => {
                     await rpc('hexbot.accounts.sign_in_cancel', { login_id: extra.login_id })
-                    setExtra({})
+                    setExtra(e => ({ plugins: e.plugins }))
                   })
                 : null}
               {account.signed_in
                 ? action(
-                    'Sign out',
+                    'Disconnect',
                     async () => {
                       await rpc('hexbot.accounts.disconnect', { service: account.service })
                       await reloadConnector()
                     },
                     true,
-                    'Bots lose their access to this mail until you sign in again.'
+                    `Bots lose ${c.name} until you connect it again. Your other connectors stay connected.`
                   )
                 : null}
             </Group>
           ) : null}
-          {account?.service === 'google' && !pending ? (
-            <GoogleSignInButton
+          {account && !pending ? (
+            <BrandSignInButton
               busy={busy}
               disabled={mobile.connection !== 'connected'}
               onPress={() => void run(startSignIn)}
-              testID="account-google-sign-in"
+              provider={provider}
+              testID={`account-${provider}-sign-in`}
             />
           ) : null}
           {c.providers?.length ? (
@@ -2026,12 +2110,35 @@ export function Management({
       const skills = plugins.filter(
         p => p.kind === 'skill' || (p.kind === 'package' && p.category !== 'mcp')
       )
-      const item = (p: Plugin) => (
+      const item = (p: Plugin) => {
+        // One that stopped working says so and nothing else, in red, as on
+        // the web; a connected one no bot has yet says that, not "Off".
+        const failed = p.state === 'error'
+        const who = pluginBots(p, bots)
+        const waits = p.kind === 'connector' && p.category !== 'mcp' && who === 'Off'
+        return (
+          <Row
+            key={keyOf(p)}
+            leading={<PluginIcon icon={p.icon} />}
+            title={p.name}
+            subtitle={failed ? p.state_text : `${p.state_text} · ${waits ? 'No bot yet' : who}`}
+            subtitleTone={failed ? 'danger' : undefined}
+            testID={`plugin-${keyOf(p)}`}
+            chevron
+            onPress={() => navigate('plugin', p as unknown as RowData)}
+          />
+        )
+      }
+      // Connectors as on the web: what is connected first, then what each
+      // account, and each kind of service, still offers.
+      const connectors = plugins.filter(p => p.kind === 'connector' && p.category !== 'mcp')
+      const connected = connectors.filter(isConnected)
+      const offer = (p: Plugin) => (
         <Row
           key={keyOf(p)}
           leading={<PluginIcon icon={p.icon} />}
           title={p.name}
-          subtitle={`${p.state_text} · ${pluginBots(p, bots)}`}
+          subtitle={p.description}
           testID={`plugin-${keyOf(p)}`}
           chevron
           onPress={() => navigate('plugin', p as unknown as RowData)}
@@ -2039,12 +2146,22 @@ export function Management({
       )
       content = (
         <>
-          <Group
-            title="Connectors"
-            footer="Services Hexbot supports. Keys and sign-ins are stored once on this daemon."
-          >
-            {plugins.filter(p => p.kind === 'connector' && p.category !== 'mcp').map(item)}
-          </Group>
+          {connected.length ? (
+            <Group
+              title="Connected"
+              footer="Open one to choose its bots, test it or disconnect it."
+            >
+              {connected.map(item)}
+            </Group>
+          ) : null}
+          {CONNECTOR_SHELVES.map(shelf => {
+            const waiting = connectors.filter(p => !isConnected(p) && shelfOf(p) === shelf.id)
+            return waiting.length ? (
+              <Group key={shelf.id} title={shelf.title} footer={shelf.description}>
+                {waiting.map(offer)}
+              </Group>
+            ) : null
+          })}
           <Group
             title="MCP servers"
             footer="Servers you or your bots add. A bot that needs one asks you first."
@@ -2069,12 +2186,17 @@ export function Management({
       // `run` reloads this card after each change. Only bots that still exist
       // are sent: one deleted elsewhere while the card was open would make the
       // daemon refuse the whole change.
+      // As on the web: a connector whose sign-in stopped working shows the
+      // bots waiting for it as on, and a change sends just what is shown.
+      const shown = shownBots(p)
       const choose = (next: string[]) =>
         void run(() =>
           rpc('hexbot.plugins.set_bots', {
             kind: p.kind,
             id: p.id,
-            bots: withWaiting(p, next).filter(name => bots.some(b => b.name === name))
+            bots: (shown.exact ? next : withWaiting(p, next)).filter(name =>
+              bots.some(b => b.name === name)
+            )
           })
         )
       content = (
@@ -2083,6 +2205,13 @@ export function Management({
           <Text tone={p.state === 'error' ? 'danger' : 'muted'} variant="footnote">
             {p.state_text}
           </Text>
+          {p.connector?.abilities?.length ? (
+            <Group title="What bots can do">
+              {p.connector.abilities.map(ability => (
+                <Row key={ability} title={ability} testID={`plugin-ability-${ability}`} />
+              ))}
+            </Group>
+          ) : null}
           {/* Until it is set up, a plugin can be taken away from bots but not given,
               except to a bot whose own settings hold its key. */}
           <Group
@@ -2094,19 +2223,21 @@ export function Management({
                 key={b.name}
                 title={b.display_name}
                 testID={`plugin-bot-${b.name}`}
-                value={p.bots.includes(b.name)}
+                value={shown.bots.includes(b.name)}
                 disabled={
                   busy ||
                   mobile.connection !== 'connected' ||
-                  (!canGive(p, b.name) && !p.bots.includes(b.name))
+                  (!canGive(p, b.name) && !shown.bots.includes(b.name))
                 }
                 onValueChange={on =>
-                  choose(on ? [...p.bots, b.name] : p.bots.filter(name => name !== b.name))
+                  choose(
+                    on ? [...shown.bots, b.name] : shown.bots.filter(name => name !== b.name)
+                  )
                 }
               />
             ))}
             {/* As on the web: off for every bot takes grants waiting for setup too. */}
-            {bots.length > 1 && p.bots.length
+            {bots.length > 1 && shown.bots.length
               ? action('Turn off for every bot', () =>
                   rpc('hexbot.plugins.set_bots', { kind: p.kind, id: p.id, bots: [] })
                 )
@@ -2174,11 +2305,13 @@ export function Management({
           <Group>
             {p.kind === 'connector' && p.connector
               ? row(
-                  // Google and Microsoft sign in; other connectors take keys.
+                  // A Google or Microsoft connector signs in; others take keys.
                   p.connector.account
                     ? p.connector.account.signed_in
-                      ? 'Account'
-                      : 'Sign in'
+                      ? p.state === 'error'
+                        ? 'Sign in again'
+                        : 'Account'
+                      : 'Connect'
                     : p.state === 'not_set_up'
                       ? 'Set up'
                       : 'Keys and provider',

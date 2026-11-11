@@ -99,13 +99,18 @@ export interface EmailDraftAnswer {
   mail_action: 'save' | 'send'
 }
 
-/** The accounts behind the Google Workspace and Microsoft 365 connectors. */
-export type MailService = 'google' | 'microsoft'
+/** The account a connector signs in to: Google or Microsoft. */
+export type AccountProvider = 'google' | 'microsoft'
+
+/** The account a draft goes out from; the draft card names its mail by it. */
+export type MailService = AccountProvider
 
 /** A sign-in to Google or Microsoft from Settings, Plugins. */
 export interface AccountSignIn {
   /** Microsoft's device code. */
   code?: string
+  /** The connectors it connected, once done. Older daemons leave it out. */
+  connected?: string[]
   email?: null | string
   login_id: string
   message: string
@@ -113,7 +118,10 @@ export interface AccountSignIn {
   mode: 'browser' | 'device'
   /** Where Google returns: a browser elsewhere can't load it, so its address is pasted back. */
   redirect_uri?: string
-  service: MailService
+  /** The connector it was started for. */
+  service: string
+  /** Connectors asked for whose permissions the user left unticked. */
+  skipped?: string[]
   status: 'cancelled' | 'done' | 'error' | 'pending'
   url: string
 }
@@ -438,16 +446,30 @@ export interface ConnectorProviderOption {
 }
 
 /** One row of the connector catalog, with daemon and per-bot state. */
+/** A Google or Microsoft connector's sign-in. */
+export interface ConnectorAccount {
+  email: null | string
+  /** Google or Microsoft. Daemons from before the connectors split leave it out. */
+  provider?: AccountProvider
+  /** What a sign-in and a sign-out name: the connector. */
+  service: string
+  signed_in: boolean
+}
+
 export interface Connector {
+  /** What a bot can do with it, a few words each. */
+  abilities?: null | string[]
   /** Google and Microsoft: set up by signing in, not with a key. */
-  account?: null | { email: null | string; service: MailService; signed_in: boolean }
+  account?: ConnectorAccount | null
   description: string
   enabled_bots: string[]
   /** Null when the list was fetched without a bot. */
   enabled_for_bot: boolean | null
+  /** The account its connectors share, which groups them: Google's sit together. */
+  family?: AccountProvider | null
   fields: ConnectorField[]
   group: ConnectorGroup
-  /** A Simple Icons slug, or `glyph:<name>` for a neutral icon. */
+  /** A `BRAND_ICONS` key, or `glyph:<name>` for a neutral icon. */
   icon: string
   id: string
   last_error: null | { at: number; text: string }

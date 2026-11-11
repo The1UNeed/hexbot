@@ -412,24 +412,57 @@ its environment variables. See [Tauri's macOS signing documentation](https://v2.
 
 ### Google and Microsoft sign-in
 
-The Google Workspace and Microsoft 365 connectors sign in through Hexbot's
-own OAuth clients, compiled into the daemon by the `build` job. Without
-them a build still works; users add their own client under Advanced.
+The Google and Microsoft connectors sign in through Hexbot's own OAuth
+clients, compiled into the daemon by the `build` job. Without them a build
+still works; users add their own client when they connect one. One client
+per account serves every connector of that account, so it must be allowed
+every permission below; a connector asks for its own only (`SERVICES` in
+`accounts.rs` is the list the daemon sends).
 
 - **Microsoft**: register a multitenant app in Microsoft Entra that also
   takes personal accounts, turn on **Allow public client flows**, and add
-  the delegated Graph permissions `User.Read`, `Mail.ReadWrite` and
-  `Mail.Send`. Save its application (client) ID as the repository variable
-  `HEXBOT_MICROSOFT_CLIENT_ID`. Publisher verification removes the
-  "unverified" label on the consent screen.
-- **Google**: in a Google Cloud project, enable the Gmail API, set up the
-  OAuth consent screen with the scopes `gmail.readonly` and
-  `gmail.compose`, and create a **Desktop app** client. Save its client ID
-  as the variable `HEXBOT_GOOGLE_CLIENT_ID` and its client secret as the
-  secret `HEXBOT_GOOGLE_CLIENT_SECRET`; Google treats a desktop client's
-  secret as public, but it stays out of logs. Gmail's scopes are
-  restricted: until Google verifies the app and its yearly security
-  assessment passes, only the project's test users (up to 100) can sign in.
+  the delegated Graph permissions `User.Read`, `Mail.ReadWrite`, `Mail.Send`
+  (Outlook), `Calendars.ReadWrite`, `MailboxSettings.Read` (Outlook
+  Calendar), `Files.ReadWrite` (OneDrive, Word, Excel, PowerPoint) and
+  `Tasks.ReadWrite` (Microsoft To Do, with `MailboxSettings.Read`). Save its application (client) ID as
+  the repository variable `HEXBOT_MICROSOFT_CLIENT_ID`. Publisher
+  verification removes the "unverified" label on the consent screen.
+- **Google**: in a Google Cloud project, enable the Gmail, Google Calendar,
+  Google Drive, Google Docs, Google Sheets, Google Slides and Tasks APIs,
+  and set up the OAuth consent screen with the scopes `gmail.readonly`,
+  `gmail.compose` (Gmail), `calendar.readonly`, `calendar.events` (Google
+  Calendar), `drive.readonly`, `drive.file` (Google Drive), `documents`,
+  `drive.metadata.readonly`, `drive.file` (Google Docs), `spreadsheets`,
+  `drive.metadata.readonly` (Google Sheets), `presentations`,
+  `drive.metadata.readonly` (Google Slides) and `tasks` (Google Tasks).
+  Create a **Desktop app** client. Save its client ID as the variable
+  `HEXBOT_GOOGLE_CLIENT_ID` and its client secret as the secret
+  `HEXBOT_GOOGLE_CLIENT_SECRET`; Google treats a desktop client's secret as
+  public, but it stays out of logs. Gmail's scopes, `drive.readonly` and
+  `drive.metadata.readonly` are restricted: until Google verifies the app
+  for every scope it asks for and its yearly security assessment passes,
+  only the project's test users (up to 100) can sign in. A scope added to
+  the daemon and not yet on the consent screen makes Google refuse that
+  connector's sign-in, so add scopes there before a release that uses them.
+
+### Brand permissions
+
+The app shows Google's and Microsoft's own logos for their connectors
+(`apps/web/src/assets/brands/README.md` lists the files and their terms).
+
+- **Google**: the Google Drive logo needs no pre-approval. For the other
+  product icons (Gmail, Calendar, Docs, Sheets, Slides, Tasks) Google asks
+  for permission: create a Partner Marketing Hub account at
+  <https://partnermarketinghub.withgoogle.com/> and submit the Plugins page
+  for approval. Until Google approves, ship those six with a plain glyph:
+  drop `logo` from their `BRAND_ICONS` entries and give the connectors a
+  `glyph:` icon in `connectors.json`.
+- **Microsoft**: the app icons are licensed by the Microsoft Fabric Assets
+  License Agreement to an app that uses a Microsoft API, so no request is
+  needed. Read the agreement once (<https://aka.ms/fluentui-assets-license>);
+  it lets Microsoft review the use and end it.
+- When either company publishes new logos, replace the files. Both require
+  the newest version.
 
 ### Optional
 

@@ -60,9 +60,18 @@ Connector icons in apps/web/src/assets/connectors/ are from Simple Icons
 (https://simpleicons.org), released under CC0 1.0 Universal. Brand names and
 logos remain the property of their respective owners.
 
-The Google "G" and Gmail marks in apps/web/src/assets/brands/ are Google's,
-drawn in their own colours as Google's brand and sign-in branding guidelines
-require. Google and Gmail are trademarks of Google LLC.
+The logos and sign-in buttons in apps/web/src/assets/brands/ and
+apps/mobile/assets/brands/ are Google's and Microsoft's own files, shown
+whole and unaltered as their brand guidelines require, to name the services
+Hexbot connects to. The README in the first folder says where each came from
+and which terms cover it; Microsoft's app icons are used under the Microsoft
+Fabric Assets License Agreement. Hexbot is not affiliated with, sponsored by
+or endorsed by Google or Microsoft.
+
+Google, Gmail, Google Calendar, Google Drive, Google Docs, Google Sheets,
+Google Slides and Google Tasks are trademarks of Google LLC. Microsoft,
+Outlook, OneDrive, Word, Excel, PowerPoint and Microsoft To Do are trademarks
+of the Microsoft group of companies.
 
 The licenses and notices of the third-party software each Hexbot package
 includes are in THIRD_PARTY_NOTICES beside this file, in the hexbot-install

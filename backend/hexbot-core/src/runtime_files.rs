@@ -175,6 +175,33 @@ impl FileAccess {
     pub(super) fn write(&self, bytes: &[u8]) -> Result<()> {
         self.replace(bytes, None)
     }
+    /// Writes a file that is new, and says false when its name is taken:
+    /// by a file, a folder, or a link, which is never followed.
+    pub(super) fn create_new(&self, bytes: &[u8]) -> Result<bool> {
+        let fd = unsafe {
+            libc::openat(
+                self.directory.as_raw_fd(),
+                self.name.as_ptr(),
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                0o644,
+            )
+        };
+        if fd < 0 {
+            let error = std::io::Error::last_os_error();
+            return match error.kind() {
+                std::io::ErrorKind::AlreadyExists => Ok(false),
+                _ => Err(error.into()),
+            };
+        }
+        let mut file = opened(fd)?;
+        if let Err(error) = file.write_all(bytes) {
+            unsafe {
+                libc::unlinkat(self.directory.as_raw_fd(), self.name.as_ptr(), 0);
+            }
+            return Err(error.into());
+        }
+        Ok(true)
+    }
     /// Replaces the file and keeps the permission bits it had.
     pub(super) fn write_keeping_mode(&self, bytes: &[u8], mode: libc::mode_t) -> Result<()> {
         self.replace(bytes, Some(mode))
