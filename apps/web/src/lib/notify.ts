@@ -5,6 +5,10 @@
  * at the chat it is about: Hexbot in front, that chat on screen. A window
  * behind another app, or another chat, is not looking. Clicking one opens the
  * chat it is about.
+ *
+ * The app cannot tell whether its system shows them. macOS hides every one
+ * until you allow Hexbot, and reports each as shown; so the app sends a test
+ * and asks you (`useNotificationsPrompt`).
  */
 
 import { useCallback, useState } from 'react'
@@ -99,7 +103,36 @@ export function sendTestNotification(): void {
   })
 }
 
-/** The banner's answer, kept on this device: turned on here, or not to ask again. */
+/**
+ * The system's page that allows or blocks the app's notifications, and its
+ * name there; null in a browser, on a system without one, and in an app from
+ * before it could open it.
+ */
+export function systemNotificationSettings(): null | { name: string; open(): void } {
+  const bridge = getBridge()
+
+  const name =
+    bridge?.platform === 'darwin'
+      ? 'System Settings'
+      : bridge?.platform === 'win32'
+        ? 'Windows Settings'
+        : null
+
+  if (!bridge?.openNotificationSettings || !name) {
+    return null
+  }
+
+  return {
+    name,
+    open: () => void Promise.resolve(bridge.openNotificationSettings?.()).catch(() => undefined)
+  }
+}
+
+/**
+ * The banner's answer, kept on this device. A browser: `enabled` once it gave
+ * permission. The app: `confirmed` once you saw its test; an `enabled` from
+ * before it asked proves nothing, so it asks again. Both: `never`.
+ */
 const PROMPT_KEY = 'hexbot.notifications.prompt'
 /** Closed with its ✕: back the next time Hexbot opens. */
 const CLOSED_KEY = 'hexbot.notifications.prompt.closed'
@@ -121,40 +154,66 @@ function store(storage: () => Storage, key: string, value: string): void {
 }
 
 /**
+ * Where the app's banner is: `ask` offers to turn notifications on, `check`
+ * has sent a test and asks whether it appeared, `blocked` is your answer that
+ * it did not.
+ */
+export type NotificationsPromptStep = 'ask' | 'blocked' | 'check'
+
+/**
  * The "Turn on notifications" banner. A browser shows it while it can still
- * ask for permission. The app cannot read the system's permission, so it shows
- * it until Enable sends a first notification, which is when macOS asks.
+ * ask for permission. The app cannot read the system's permission, so Enable
+ * sends a test and the banner stays until you say you saw it: one you did not
+ * see leads to the system's settings, where Hexbot is allowed.
  */
 export function useNotificationsPrompt() {
   const browser = useBrowserNotifications()
   const [answer, setAnswer] = useState(() => stored(() => localStorage, PROMPT_KEY))
   const [closed, setClosed] = useState(() => stored(() => sessionStorage, CLOSED_KEY) === '1')
+  const [step, setStep] = useState<NotificationsPromptStep>('ask')
 
-  const remember = (value: 'enabled' | 'never') => {
+  const remember = (value: 'confirmed' | 'enabled' | 'never') => {
     store(() => localStorage, PROMPT_KEY, value)
     setAnswer(value)
   }
 
-  const visible = !closed && !answer && (browser.app || Boolean(browser.askable))
+  const visible =
+    !closed &&
+    (browser.app ? answer !== 'confirmed' && answer !== 'never' : !answer && Boolean(browser.askable))
 
   return {
     close() {
       store(() => sessionStorage, CLOSED_KEY, '1')
       setClosed(true)
     },
+    /** The test appeared: notifications work on this computer. */
+    confirm() {
+      remember('confirmed')
+    },
+    /** Turns them on, or sends the app's test again. */
     async enable() {
-      if (!browser.app) {
-        await browser.ask()
+      if (browser.app) {
+        sendTestNotification()
+        setStep('check')
+
+        return
       }
 
-      if (browser.app || browserPermission() === 'granted') {
+      await browser.ask()
+
+      if (browserPermission() === 'granted') {
         remember('enabled')
         sendTestNotification()
       }
     },
+    /** The test did not appear. */
+    missing() {
+      setStep('blocked')
+    },
     never() {
       remember('never')
     },
+    step,
     visible
   }
 }

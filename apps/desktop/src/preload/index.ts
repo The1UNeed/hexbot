@@ -80,6 +80,7 @@ const hexbot = Object.freeze({
     init?: { method?: string; headers?: Record<string, string>; body?: string }
   ) => ipcRenderer.invoke('hexbot:http-fetch', url, init ?? {}),
   notify: (options: unknown) => ipcRenderer.invoke('hexbot:notify', options),
+  openNotificationSettings: () => ipcRenderer.invoke('hexbot:notifications:settings'),
   openExternal: (url: string) => ipcRenderer.invoke('hexbot:open-external', url),
   pickFiles: () => ipcRenderer.invoke('hexbot:pick-files'),
   updater: Object.freeze({

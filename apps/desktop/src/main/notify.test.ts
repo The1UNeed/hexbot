@@ -1,10 +1,16 @@
 import type { BrowserWindow } from 'electron'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { notify, reportShown } from './notify'
+import { askToNotify, notificationSettingsUrl, notify, reportShown } from './notify'
 
-const native = vi.hoisted(() => ({ show: vi.fn(), on: vi.fn(), create: vi.fn() }))
+const native = vi.hoisted(() => ({
+  show: vi.fn(),
+  on: vi.fn(),
+  create: vi.fn(),
+  isSupported: vi.fn(() => true)
+}))
 vi.mock('electron', () => ({
   Notification: class {
+    static isSupported = native.isSupported
     constructor(options: unknown) {
       native.create(options)
     }
@@ -81,6 +87,34 @@ describe('native reply notifications', () => {
     expect(native.show).toHaveBeenCalledOnce()
     expect(win.show).toHaveBeenCalledOnce()
     expect(win.webContents.send).not.toHaveBeenCalledWith('hexbot:navigate', expect.anything())
+  })
+
+  it('reports a notification the system refused', () => {
+    const failed = vi.fn()
+    notify(options, () => null, failed)
+    native.on.mock.calls.find(([event]) => event === 'failed')![1]({}, 'Not signed')
+    expect(failed).toHaveBeenCalledWith('Not signed')
+  })
+
+  it('has macOS ask about notifications without sending one, and no other system', () => {
+    askToNotify('linux')
+    askToNotify('win32')
+    expect(native.isSupported).not.toHaveBeenCalled()
+    // Touching them is what makes macOS ask.
+    askToNotify('darwin')
+    expect(native.isSupported).toHaveBeenCalledOnce()
+    expect(native.create).not.toHaveBeenCalled()
+  })
+
+  it('names the system page that allows Hexbot to notify', () => {
+    expect(notificationSettingsUrl('darwin', 'app.hexbot.client.nightly')).toBe(
+      'x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=app.hexbot.client.nightly'
+    )
+    expect(notificationSettingsUrl('darwin')).toBe(
+      'x-apple.systempreferences:com.apple.Notifications-Settings.extension'
+    )
+    expect(notificationSettingsUrl('win32')).toBe('ms-settings:notifications')
+    expect(notificationSettingsUrl('linux')).toBeNull()
   })
 
   it('tells the page when its window is closed, minimized or back', async () => {
