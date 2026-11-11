@@ -96,6 +96,14 @@ CREATE TABLE IF NOT EXISTS heartbeat_messages(
  id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, bot TEXT NOT NULL, section_id TEXT NOT NULL,
  heartbeat_id TEXT, text TEXT NOT NULL, created_at REAL NOT NULL, offered_at REAL, context_at REAL,
  push_due_at REAL);
+-- Reactions: one emoji on a message in a bot's chat (reactions.rs). by_bot is
+-- the bot that left it, '' for the user. offered counts the times a user's
+-- reaction was handed to the chat's next turn; noted_at: Pi took it.
+CREATE TABLE IF NOT EXISTS message_reactions(
+ section_id TEXT NOT NULL, message_id TEXT NOT NULL, by_bot TEXT NOT NULL DEFAULT '',
+ emoji TEXT NOT NULL, owner_id TEXT NOT NULL, created_at REAL NOT NULL,
+ offered INTEGER NOT NULL DEFAULT 0, noted_at REAL,
+ PRIMARY KEY(section_id, message_id, by_bot));
 CREATE INDEX IF NOT EXISTS idx_heartbeats_bot_started ON heartbeats(bot,started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_heartbeat_messages_section ON heartbeat_messages(section_id,context_at);
 CREATE INDEX IF NOT EXISTS idx_sections_bot ON sections(bot);

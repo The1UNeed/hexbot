@@ -12,7 +12,8 @@ import { useSections } from '../../stores/sections'
 import { useTranscript, useTranscripts } from '../../stores/transcripts'
 import { uiActions } from '../../stores/ui'
 
-import { type Ask, askLabel, asks, liveMood } from './steps'
+import { type Ask, askLabel, asks, askWords, liveMood } from './steps'
+import { BotName } from './tags'
 
 /** The face of a teammate whose name the call did not carry. */
 const TEAMMATE_FACE: AvatarStyle = { color: 'gray', shape: 'round' }
@@ -82,15 +83,16 @@ function useLiveReply(
 }
 
 const doneClass =
-  'flex max-w-full items-center gap-1.5 rounded-full py-0.5 pr-2 pl-0.5 text-[length:var(--text-meta)] text-muted'
+  'group/tag flex max-w-full items-center rounded-full px-1.5 py-0.5 text-[length:var(--text-meta)] text-muted'
 
 /**
- * One ask: the two bots' faces turned toward each other. While it runs they
- * are full size with "Research is asking Writer", and Writer's reply shows
- * under that line as it streams. Done, the row settles to two small faces
- * still glancing at each other and "Writer helped". Opens the private
- * conversation between the two bots. A call that came without its
- * arguments reads "Research is asking a teammate", with nothing to open.
+ * One ask, marked with the other bot's tag: its face and its name in its
+ * colour. While it runs the two bots' faces are turned toward each other with
+ * "Research is asking Writer", and Writer's reply shows under that line as it
+ * streams. Done, the row settles to one quiet line: "Writer helped" once a
+ * reply came back, "Messaged Writer" when none was waited for. The row opens
+ * the private conversation between the two bots. A call that came without
+ * its arguments reads "Research is asking a teammate", with nothing to open.
  */
 function AskRow({ ask, sender }: { ask: Ask; sender: null | string }) {
   const target = useBot(ask.target)
@@ -99,6 +101,7 @@ function AskRow({ ask, sender }: { ask: Ask; sender: null | string }) {
   const targetName = ask.target ? (target?.display_name ?? ask.target) : null
   const senderName = sender ? (from?.display_name ?? sender) : null
   const label = askLabel(ask, targetName, senderName)
+  const { after, before } = askWords(ask, senderName)
   const canOpen = Boolean(ask.target && sender)
   const reply = useLiveReply(ask, sender)
 
@@ -118,39 +121,41 @@ function AskRow({ ask, sender }: { ask: Ask; sender: null | string }) {
 
   const openLabel = `Open the conversation between ${senderName ?? 'the bot'} and ${targetName}`
 
-  const faces = (size: 'md' | 'xs') => (
-    <span className="flex shrink-0 items-center">
-      <Avatar
-        {...botFace(from)}
-        look="right"
-        mood={running ? 'listening' : undefined}
-        name={senderName ?? 'Bot'}
-        size={size}
-      />
-      <Avatar
-        className={cn(size === 'xs' && '-ml-0.5')}
-        {...botFace(target)}
-        look="left"
-        mood={
-          running
-            ? reply.message
-              ? (liveMood(reply.message) ?? 'thinking')
-              : 'listening'
-            : undefined
-        }
-        name={targetName ?? 'Teammate'}
-        size={size}
-        {...(ask.target ? {} : { style: TEAMMATE_FACE })}
-      />
+  // The line's words around the other bot: its tag, or plain words for one the roster lacks.
+  const line = (face: boolean) => (
+    <span className="truncate">
+      {before ? `${before} ` : null}
+      {target ? (
+        <BotName bot={target} face={face} />
+      ) : (
+        (targetName ?? (before ? 'a teammate' : 'A teammate'))
+      )}
+      {after ? ` ${after}` : null}
     </span>
   )
 
   if (running) {
     const body = (
       <>
-        {faces('md')}
+        <span className="flex shrink-0 items-center">
+          <Avatar
+            {...botFace(from)}
+            look="right"
+            mood="listening"
+            name={senderName ?? 'Bot'}
+            size="md"
+          />
+          <Avatar
+            {...botFace(target)}
+            look="left"
+            mood={reply.message ? (liveMood(reply.message) ?? 'thinking') : 'listening'}
+            name={targetName ?? 'Teammate'}
+            size="md"
+            {...(ask.target ? {} : { style: TEAMMATE_FACE })}
+          />
+        </span>
         <span className="ml-1 flex min-w-0 flex-col justify-center text-left">
-          <span className="text-[length:var(--text-secondary)] text-foreground">{label}</span>
+          <span className="text-[length:var(--text-secondary)] text-muted">{line(false)}</span>
           {reply.text ? (
             <span className="truncate text-[length:var(--text-meta)] text-muted">{reply.text}</span>
           ) : null}
@@ -160,6 +165,7 @@ function AskRow({ ask, sender }: { ask: Ask; sender: null | string }) {
 
     return (
       <li
+        aria-label={label}
         aria-live="polite"
         className="hex-rise py-1"
         data-status="running"
@@ -169,13 +175,13 @@ function AskRow({ ask, sender }: { ask: Ask; sender: null | string }) {
         {canOpen ? (
           <button
             aria-label={openLabel}
-            className="group/ask flex max-w-full items-center gap-2 rounded-full pr-2 transition-colors outline-none hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-foreground/40"
+            className="group/tag flex max-w-full items-center gap-2 rounded-full pr-2 transition-colors outline-none hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-foreground/40"
             onClick={open}
             type="button"
           >
             {body}
             <ChevronRight
-              className="shrink-0 text-muted opacity-0 transition-opacity group-hover/ask:opacity-100 group-focus-visible/ask:opacity-100"
+              className="shrink-0 text-muted opacity-0 transition-opacity group-hover/tag:opacity-100 group-focus-visible/tag:opacity-100"
               size={12}
             />
           </button>
@@ -188,9 +194,13 @@ function AskRow({ ask, sender }: { ask: Ask; sender: null | string }) {
 
   if (!canOpen) {
     return (
-      <li className={cn(doneClass, 'hex-fade')} data-status="done" data-testid="asking-row">
-        {faces('xs')}
-        <span className="truncate">{label}</span>
+      <li
+        aria-label={label}
+        className={cn(doneClass, 'hex-fade')}
+        data-status="done"
+        data-testid="asking-row"
+      >
+        {line(true)}
       </li>
     )
   }
@@ -201,15 +211,15 @@ function AskRow({ ask, sender }: { ask: Ask; sender: null | string }) {
         aria-label={openLabel}
         className={cn(
           doneClass,
-          'group/ask transition-colors outline-none hover:bg-surface-2 hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground/40'
+          'transition-colors outline-none hover:bg-surface-2 hover:text-foreground focus-visible:ring-2 focus-visible:ring-foreground/40'
         )}
         onClick={open}
+        title={label}
         type="button"
       >
-        {faces('xs')}
-        <span className="truncate">{label}</span>
+        {line(true)}
         <ChevronRight
-          className="shrink-0 opacity-0 transition-opacity group-hover/ask:opacity-100 group-focus-visible/ask:opacity-100"
+          className="ml-1 shrink-0 opacity-0 transition-opacity group-hover/tag:opacity-100 group-focus-visible/tag:opacity-100"
           size={12}
         />
       </button>
@@ -219,7 +229,9 @@ function AskRow({ ask, sender }: { ask: Ask; sender: null | string }) {
 
 /**
  * Under a bot's message: one row per bot it asked for help this turn,
- * visible from the first moment and kept once done. `sender` is the bot
+ * visible from the first moment and kept once done. The rows sit in the
+ * middle of the column, like the time between messages: they mark what
+ * happened, and neither side said them. `sender` is the bot
  * speaking: the section's bot, or the author of a room turn.
  */
 export function AskingRow({ message, sender }: { message: Message; sender: null | string }) {
@@ -233,7 +245,7 @@ export function AskRows({ asks: list, sender }: { asks: Ask[]; sender: null | st
   }
 
   return (
-    <ul className="flex flex-col" data-testid="asking-rows">
+    <ul className="flex flex-col items-center pt-1.5" data-testid="asking-rows">
       {list.map(ask => (
         <AskRow ask={ask} key={ask.target ?? 'teammate'} sender={sender} />
       ))}

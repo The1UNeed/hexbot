@@ -34,6 +34,7 @@ pub mod pi;
 pub mod plugins;
 pub mod provider_acp;
 pub mod providers;
+pub mod reactions;
 pub mod rooms;
 pub mod rpc;
 pub mod runtime;

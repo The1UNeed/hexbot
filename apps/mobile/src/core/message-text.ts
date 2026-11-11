@@ -1,29 +1,62 @@
+import { splitMentions, type Tag, tagOf } from '../../../web/src/lib/tags'
 import { readableMath } from './math'
 
 // The few Markdown marks a bot's message uses, read once so the bubble and
-// the copied text agree on what the message says.
+// the copied text agree on what the message says. A link that names a bot, a
+// file or a place in Hexbot is a tag (apps/web/src/lib/tags.ts), as on the web.
 
 export type Span =
-  { kind: 'text' | 'bold' | 'code'; text: string } | { kind: 'link'; text: string; url: string }
+  | { kind: 'text' | 'bold' | 'code'; text: string }
+  | { kind: 'link'; text: string; url: string }
+  /** Something Hexbot opens itself: a bot, a file, a room, a Settings page. */
+  | { kind: 'tag'; text: string; tag: Exclude<Tag, { kind: 'link' }> }
 
 export type Block =
   { kind: 'code'; text: string } | { kind: 'paragraph'; heading: boolean; spans: Span[] }
 
-const INLINE = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\(https?:\/\/[^\s)]+\))/g
-const LINK = /^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/
+const INLINE =
+  /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\((?:<[^>]+>|[^\s)]+)\)|https?:\/\/[^\s<>()]+)/g
+const LINK = /^\[([^\]]+)\]\((?:<([^>]+)>|([^\s)]+))\)$/
+/** Marks that end a sentence after a bare address rather than the address. */
+const TRAILING = /[.,;:!?'"]+$/
+
+/** Plain text, with each `@handle` as a tag; whether it is a bot is the roster's to say. */
+function words(text: string): Span[] {
+  return splitMentions(text).map(
+    (part): Span =>
+      typeof part === 'string'
+        ? { kind: 'text', text: readableMath(part) }
+        : { kind: 'tag', text: `@${part.handle}`, tag: { kind: 'bot', handle: part.handle } }
+  )
+}
 
 function spans(text: string): Span[] {
   return text
     .split(INLINE)
     .filter(Boolean)
-    .map((part): Span => {
+    .flatMap((part): Span[] => {
       const link = LINK.exec(part)
-      if (link) return { kind: 'link', text: link[1], url: link[2] }
+      if (link) {
+        const target = link[2] ?? link[3]!
+        const tag = tagOf(target)
+        // The address as written, so a link named by its own address is not written twice.
+        if (tag?.kind === 'link') return [{ kind: 'link', text: link[1]!, url: target }]
+        if (tag) return [{ kind: 'tag', text: link[1]!, tag }]
+        // Any other target is not ours to open: the words stay, the address goes.
+        return /^(?:mailto|tel):/i.test(target)
+          ? [{ kind: 'link', text: link[1]!, url: target }]
+          : [{ kind: 'text', text: link[1]! }]
+      }
+      if (/^https?:\/\//.test(part)) {
+        const url = part.replace(TRAILING, '')
+        const rest = part.slice(url.length)
+        return [{ kind: 'link', text: url, url }, ...(rest ? words(rest) : [])]
+      }
       if (part.startsWith('**') && part.endsWith('**'))
-        return { kind: 'bold', text: readableMath(part.slice(2, -2)) }
+        return [{ kind: 'bold', text: readableMath(part.slice(2, -2)) }]
       if (part.startsWith('`') && part.endsWith('`'))
-        return { kind: 'code', text: part.slice(1, -1) }
-      return { kind: 'text', text: readableMath(part) }
+        return [{ kind: 'code', text: part.slice(1, -1) }]
+      return words(part)
     })
 }
 

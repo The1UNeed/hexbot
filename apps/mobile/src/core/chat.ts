@@ -122,7 +122,8 @@ export function historyMessages(raw: unknown[]): ChatMessage[] {
           // Rows carry `timestamp` in Unix seconds.
           ...(typeof row.timestamp === 'number' &&
             row.timestamp > 0 && { createdAt: row.timestamp * 1000 }),
-          ...(typeof row.input_id === 'string' && { inputId: row.input_id })
+          ...(typeof row.input_id === 'string' && { inputId: row.input_id }),
+          ...(typeof row.row_id === 'string' && { rowId: row.row_id })
         })
     }
   }
@@ -140,6 +141,8 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
   const p = (event.payload ?? {}) as Record<string, unknown>
   const text = typeof p.text === 'string' ? p.text : ''
   const sessionId = event.session_id ?? ''
+  // The assistant fragment the event belongs to: its durable history row.
+  const row = typeof p.message_id === 'string' ? p.message_id : undefined
   switch (event.type) {
     case 'message.start':
       return {
@@ -147,21 +150,29 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
         busy: true,
         streaming: '',
         interim: [],
+        interimIds: [],
+        streamId: undefined,
         tools: [],
         error: null,
         turnAt: state.messages.length
       }
     case 'message.delta':
-      return { ...state, busy: true, streaming: state.streaming + text }
+      return { ...state, busy: true, streaming: state.streaming + text, streamId: row ?? state.streamId }
     case 'message.interim':
       return {
         ...state,
         interim: [...state.interim, p.already_streamed ? state.streaming || text : text],
+        // Each bubble keeps the history row it is, which a reaction names.
+        interimIds: [...(state.interimIds ?? []), row ?? state.streamId],
+        streamId: undefined,
         streaming: p.already_streamed ? '' : state.streaming
       }
     case 'message.complete': {
-      const parts = [...state.interim, text || state.streaming].filter(Boolean)
-      if (!parts.length && state.tools.length) parts.push('')
+      const parts = [
+        ...state.interim.map((part, index) => ({ row: state.interimIds?.[index], text: part })),
+        { row: row ?? state.streamId, text: text || state.streaming }
+      ].filter(part => part.text)
+      if (!parts.length && state.tools.length) parts.push({ row: undefined, text: '' })
       const at = Math.min(state.turnAt ?? state.messages.length, state.messages.length)
       return {
         ...state,
@@ -171,15 +182,18 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
           ...parts.map((part, index): ChatMessage => ({
             id: `${sessionId}-${String((event as GatewayEvent & { seq?: number }).seq ?? state.messages.length)}-${index}`,
             role: 'assistant',
-            text: part,
+            text: part.text,
             createdAt: Date.now(),
-            tools: index === parts.length - 1 ? state.tools : undefined
+            tools: index === parts.length - 1 ? state.tools : undefined,
+            ...(part.row && { rowId: part.row })
           })),
           ...state.messages.slice(at)
         ],
         busy: false,
         streaming: '',
         interim: [],
+        interimIds: [],
+        streamId: undefined,
         activity: '',
         // The turn is over, so no review is left; the daemon's clear may be lost.
         checking: '',

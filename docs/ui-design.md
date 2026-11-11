@@ -197,16 +197,40 @@ with Viewport Segments place both poses on the exact halves.
   finished. Rooms and the mobile app separate the same way.
 - Live status: from the moment a turn starts until the whole turn is done,
   a line sits at its foot, under the messages the bot has finished: the
-  bot's face, in the mood of its work, and "General is working" in muted
-  words, with no bubble behind it. While a step on the bots' computer runs,
-  the face rides the moving pointer and the words say what it does there:
-  "General is clicking on the computer". Otherwise it never names the step,
-  the tool, the thinking, or the provider's wait notice, and it does not open. It stays
-  while a step the user approved still runs. The face thinks, searches,
-  works, writes or points with the turn; no spinner, no ring, no shimmer. What the
-  bot is still writing stays hidden; the message appears whole when it is
-  done and springs in. When the turn ends the line is gone at once and
-  nothing takes its place.
+  bot's face, in the mood of its work, and what it is doing in two tones,
+  with no bubble behind it. The verb is in muted words and the thing it acts
+  on is stronger: "Opening Taobao", "Searching the web for CER dates",
+  "Reading notes.md". Between steps it reads "Thinking…" before anything
+  happens, "Typing…" while the reply is written, "Working…" otherwise. The
+  words come from the running step and its arguments (`lib/work-label.ts`),
+  never from the model: a page is named by its site, a file by its own name,
+  and a command, a script, the thinking and the provider's wait notice are
+  never shown. While Auto mode checks a step the line only says "Working…";
+  the step has not run. The line does not open. It stays while a step the
+  user approved still runs. The face follows the step: it thinks, searches,
+  reads down the page, writes, listens for an answer, works, or rides the
+  moving pointer on the bots' computer; no spinner, no ring, no shimmer.
+  What the bot is still writing stays hidden; the message appears whole when
+  it is done and springs in. When the turn ends the line is gone at once and
+  nothing takes its place. The mobile app shows the same words; it draws the
+  reply as it is written, so it has no "Typing…".
+- Tags: a link in a message that names something Hexbot knows is drawn as an
+  icon and underlined words, in the text colour (`conversation/tags.tsx`,
+  `lib/tags.ts`). A web page leads with its site's own icon, a globe when it
+  has none; a bot with its face and its name in its colour, mixed toward the
+  text so it reads on every bubble; a file, a room, scheduled jobs, a
+  Settings page, a plugin and a skill with a line glyph. The underline is a
+  quiet tint that strengthens on hover. A tag for something that is not
+  there reads as its plain words. The row that marks one bot messaging
+  another ("Messaged Biology", "Biology helped") sits in the middle of the
+  column, like the time separators, in the same small muted type.
+- Reactions: a face button appears beside a bot's bubble on hover (always on
+  a touch screen) and opens a row of six emoji; the one already left is
+  marked. A reaction is a small chip tucked under the bubble's corner, left
+  for the bot's bubbles and right for yours. Your chip is a button that
+  takes the reaction back; the bot's only names who left it. A bot's chat
+  only. On mobile a long press on a bot's message opens the same row over
+  Copy and Select text.
 - "Waiting on you" is a purple glass pill pinned under the header pill
   while a bot has asked the human something (in a room it names the bot).
   Nothing is written into the transcript for it. A red banner names the bot

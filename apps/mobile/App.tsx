@@ -18,7 +18,8 @@ import * as ExpoLinking from 'expo-linking'
 import * as WebBrowser from 'expo-web-browser'
 import * as Crypto from 'expo-crypto'
 import { avatarSrc } from './src/core/avatar'
-import { computerWaiting } from './src/core/computer'
+import { waitingStatus } from './src/core/status'
+import { reactionsOn } from './src/core/reactions'
 import { encodeAnswer, imageMime } from './src/core/chat-send'
 import { daemonBehind } from './src/core/version-skew'
 import { version as appVersion } from '../desktop/package.json'
@@ -61,10 +62,11 @@ import {
   LayerRoot,
   Row,
   Text,
+  faceColor,
   ThemeProvider,
   useTheme
 } from './src/ui'
-import { MarkdownText } from './src/MarkdownText'
+import { MarkdownText, type ResolveTag } from './src/MarkdownText'
 import { VisualFrame } from './src/VisualFrame'
 import { visualDocument } from './src/core/visual'
 import { parseArgs, sharedFiles } from './src/core/chat'
@@ -79,6 +81,7 @@ import { useNotificationsPrompt } from './src/core/notificationsPrompt'
 import { chatPreview, pulseTarget, purposeOf, stoppedIn } from './src/core/routes'
 import { previewLine } from '../web/src/lib/preview'
 import { mediaKind, mediaOf, mimeOf } from '../web/src/lib/media'
+import { asksOf, askWords } from '../web/src/lib/asks'
 import { mediaUri, type ReadMedia } from './src/core/media'
 import type { OpenedFile } from './src/core/files'
 import { mixHex } from '../web/src/app/conversation/visual'
@@ -89,6 +92,23 @@ import type { Bot, ConnectDaemon, Room, Section } from './src/core/types'
 WebBrowser.maybeCompleteAuthSession()
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const ms = (seconds: number | null | undefined) => (seconds == null ? undefined : seconds * 1000)
+/**
+ * The page of this app a Settings tag opens, by the page's name on the
+ * desktop. Appearance, Privacy, About and Diagnostics have no page here.
+ */
+const SETTINGS_PANELS: Partial<Record<string, Panel['kind']>> = {
+  approvals: 'settings',
+  computer: 'computer',
+  connect: 'connect',
+  memory: 'about',
+  network: 'network',
+  notifications: 'notifications',
+  passwords: 'passwords',
+  plugins: 'plugins',
+  providers: 'providers',
+  updates: 'updates',
+  usage: 'usage'
+}
 /** Which status a conversation shows when several bots are busy in it. */
 const URGENCY: Partial<Record<BotStatus, number>> = { needs_you: 3, stopped: 2, working: 1 }
 const PINNED: Record<string, number> = { needs_you: 0, stopped: 1, working: 2 }
@@ -770,6 +790,8 @@ function MobileApp({ children }: { children?: ReactNode }) {
           ]
         }
       ]
+  // The bot whose chat this is; a room's messages name their own.
+  const chatBot = route?.kind === 'section' ? route.bot.name : undefined
   const { items: historyItems, visuals } = useMemo(() => {
     const botByName = (name: string) => mobile.bots.find(b => b.name === name)
     const visuals = new Map<string, { title: string; html: string }>()
@@ -839,12 +861,48 @@ function MobileApp({ children }: { children?: ReactNode }) {
                   ? { name: m.senderName || 'Former member' }
                   : m.sender && botByName(m.sender)
                     ? faceOf(botByName(m.sender)!)
-                    : undefined
-            }
+                    : undefined,
+              // The bot that spoke: a bot it names opens the conversation between the two.
+              speaker: m.role === 'assistant' ? (m.sender ?? chatBot) : undefined,
+              rowId: m.rowId,
+              // Yours on what the bot said; the bot's on what you said.
+              reactions: reactionsOn(mobile.reactions, m).map(reaction => ({
+                emoji: reaction.emoji,
+                mine: reaction.by === 'user'
+              }))
+            },
+            // The bots it messaged in this step, each marked with its tag.
+            ...(m.role === 'assistant' && chatBot
+              ? asksOf(
+                  (m.tools ?? []).map(t => ({
+                    args: t.args,
+                    name: t.name,
+                    result: t.detail,
+                    status: t.status,
+                    summary: t.action
+                  }))
+                )
+              : []
+            ).map((ask): ChatItem => {
+              const target = ask.target ? botByName(ask.target) : undefined
+              const words = askWords(ask, null)
+              return {
+                kind: 'ask',
+                id: `ask-${m.id}-${ask.target ?? 'teammate'}`,
+                ...words,
+                name:
+                  target?.display_name ??
+                  ask.target ??
+                  (words.before ? 'a teammate' : 'A teammate'),
+                face: target ? faceOf(target) : undefined,
+                bot: ask.target ?? undefined,
+                peer: chatBot
+              }
+            })
           ]
     )
     return { items, visuals }
-  }, [mobile.chat.messages, mobile.bots, mobile.user?.id, route?.kind])
+  }, [mobile.chat.messages, mobile.bots, mobile.user?.id, mobile.reactions, route?.kind, chatBot])
   const items = [...historyItems]
   const liveTurns =
     route?.kind === 'room'
@@ -993,16 +1051,96 @@ function MobileApp({ children }: { children?: ReactNode }) {
     if (!sessionId) return Promise.reject(new Error('Open this chat again.'))
     return current.rpc<OpenedFile>('hexbot.files.read', { session_id: sessionId, path })
   }, [])
+  // The private conversation between two bots: the thread in which `peer`
+  // asked `bot`, or the other way round when that is the one there is. With
+  // none yet, the bot's own chat.
+  const openThread = useCallback(
+    (bot: string, peer: string) => {
+      const current = mobileRef.current
+      const between = (asked: string, asker: string) =>
+        current.sections.find(s => s.bot === asked && s.peer_bot === asker && !s.archived_at)
+      const known = between(bot, peer) ?? between(peer, bot)
+      const owner = current.bots.find(b => b.name === (known?.bot ?? bot))
+      if (!owner) return
+      act(async () => {
+        // A thread this phone has not listed yet is the daemon's to name.
+        const section =
+          known ??
+          (await current
+            .rpc<{ section: Section | null }>('hexbot.sections.thread', { bot, peer })
+            .then(
+              found => found.section,
+              () => null
+            ))
+        await mobileRef.current.openSection(owner, section ?? undefined)
+      })
+    },
+    [act]
+  )
+  // What a tag in a message opens on this phone, for the bot that wrote it.
+  const tagsFor = useCallback(
+    (speaker: string | undefined): ResolveTag =>
+      tag => {
+        const open = (kind: Panel['kind']) => ({ onPress: () => setPanels([{ kind }]) })
+        switch (tag.kind) {
+          case 'bot': {
+            const named = mobile.bots.find(b => b.name === tag.handle)
+            if (!named) return null
+            const paint = faceColor(faceOf(named))
+            return {
+              label: named.display_name || named.name,
+              // The face colour, pulled toward the text so it reads on any bubble.
+              color: paint ? (mixHex(paint.color, theme.text, 0.38) ?? paint.color) : undefined,
+              onPress: () =>
+                speaker && speaker !== tag.handle
+                  ? openThread(tag.handle, speaker)
+                  : act(() => mobileRef.current.openSection(named))
+            }
+          }
+          case 'file':
+            // Only a bot's own chat reads its files.
+            return route?.kind === 'section' && !route.section.peer_bot
+              ? {
+                  onPress: () =>
+                    setFile({
+                      id: tag.path,
+                      kind: mediaKind(mimeOf(tag.name), tag.name),
+                      name: tag.name,
+                      path: tag.path
+                    })
+                }
+              : null
+          case 'room': {
+            const wanted = tag.room.trim().toLowerCase()
+            const room =
+              mobile.rooms.find(r => r.id === tag.room) ??
+              mobile.rooms.find(r => r.name.trim().toLowerCase() === wanted)
+            return room ? { onPress: () => act(() => mobileRef.current.openRoom(room)) } : null
+          }
+          case 'jobs':
+            return open('jobs')
+          case 'settings': {
+            const kind = SETTINGS_PANELS[tag.page]
+            return kind ? open(kind) : null
+          }
+          case 'plugin':
+          case 'skill':
+            return open('plugins')
+        }
+      },
+    [act, mobile.bots, mobile.rooms, openThread, route, theme.text]
+  )
   const renderMessageText = useCallback<NonNullable<ChatScreenProps['renderMessageText']>>(
     item =>
       item.text ? (
         <MarkdownText
+          resolveTag={demo ? undefined : tagsFor(item.speaker)}
           selectable={Platform.OS === 'web'}
           text={item.text}
           user={item.role === 'user'}
         />
       ) : null,
-    []
+    [demo, tagsFor]
   )
   // Your latest message in a bot's chat, while the bot is on it or after its turn
   // stopped, with or without its closed error.
@@ -1107,12 +1245,10 @@ function MobileApp({ children }: { children?: ReactNode }) {
     renderMessageText,
     loadMedia: route?.kind === 'section' ? loadMedia : undefined,
     busy: mobile.chat.busy,
+    // What the bot does right now, from the step it runs: "Opening Taobao".
     waiting:
       mobile.chat.busy && !mobile.chat.streaming
-        ? (computerWaiting(
-            mobile.chat.tools,
-            route?.kind === 'section' ? route.bot.display_name : 'The bot'
-          ) ?? { label: 'Working' })
+        ? waitingStatus(mobile.chat, handle => botByName(handle)?.display_name ?? handle)
         : undefined,
     onSend: send,
     draft,
@@ -1124,6 +1260,8 @@ function MobileApp({ children }: { children?: ReactNode }) {
     rpc: mobile.rpc,
     onOpenVisual: openVisual,
     onOpenFile: route?.kind === 'section' ? setFile : undefined,
+    onReact: mobile.react,
+    onOpenThread: openThread,
     sendDisabledReason: uploading
       ? 'Sending attachments'
       : mobile.loading

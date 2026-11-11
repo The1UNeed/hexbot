@@ -131,6 +131,27 @@ export type ChatItem =
       streaming?: boolean
       error?: string | null
       attachments?: AttachmentView[]
+      /** The bot that spoke, by handle; a bot named in its message opens their conversation. */
+      speaker?: string
+      /** The history row the message is, when a reaction can name it. */
+      rowId?: string
+      /** The emoji left on it: yours on a bot's message, the bot's on yours. */
+      reactions?: { emoji: string; mine: boolean }[]
+    }
+  /**
+   * One bot messaging another in a turn: "Messaged" Writer, Writer "helped".
+   * `bot` and `peer` name the conversation between the two, when it can open.
+   */
+  | {
+      kind: 'ask'
+      id: string
+      before: string
+      after: string
+      /** The other bot's name, or "a teammate". */
+      name: string
+      face?: FaceSource
+      bot?: string
+      peer?: string
     }
   /** A bot's interactive visual, shown as its own card. */
   | { kind: 'visual'; id: string; title: string; index: number }

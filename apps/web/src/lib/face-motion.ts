@@ -145,6 +145,18 @@ const BEHAVIOUR: Record<FaceMood, Behaviour> = {
     poses: [rest('listening'), pair({ dy: 1, size: 15 })]
   },
   loading: { blinks: false, glance: 0, poseEvery: [4, 4], poses: [rest('loading')] },
+  // The eyes cross the page a line at a time, then return to its start.
+  reading: {
+    blinks: true,
+    glance: 0,
+    poseEvery: [0.5, 0.8],
+    poses: [
+      pair({ ...EYE_MOODS.reading, dx: -5 }),
+      rest('reading'),
+      pair({ ...EYE_MOODS.reading, dx: 5 }),
+      pair({ ...EYE_MOODS.reading, dx: -5, dy: 5 })
+    ]
+  },
   searching: {
     blinks: true,
     glance: 0,
@@ -395,6 +407,7 @@ const REST_HEADS: Partial<Record<FaceMood, Head>> = {
   excited: { ...STILL_HEAD, sy: 1.03, y: -2 },
   frustrated: { ...STILL_HEAD, sx: 1.02, sy: 0.97, y: 1 },
   proud: { ...STILL_HEAD, r: -3, sy: 1.04, y: -2 },
+  reading: { ...STILL_HEAD, y: 1.5 },
   relieved: { ...STILL_HEAD, r: -2 },
   sad: { r: -3, sx: 1.01, sy: 0.95, x: -1, y: 4 },
   sheepish: { r: 5, sx: 0.98, sy: 0.96, x: 1.5, y: 3 },

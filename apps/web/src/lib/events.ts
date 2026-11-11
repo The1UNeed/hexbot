@@ -33,6 +33,7 @@ import { useHeartbeat } from '../stores/heartbeat'
 import { useMe } from '../stores/me'
 import { refreshPasswordsIfLoaded } from '../stores/passwords'
 import { refreshPluginsIfLoaded } from '../stores/plugins'
+import { useReactions } from '../stores/reactions'
 import { useRooms } from '../stores/rooms'
 import { isThread, keepHistory, useSections } from '../stores/sections'
 import { useSettings } from '../stores/settings'
@@ -52,6 +53,7 @@ import type {
   ComputerStatus,
   ContextUsage,
   EmailDraft,
+  ReactionsChanged,
   RoomEvent,
   RoomTurn,
   SessionInfo,
@@ -263,6 +265,17 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
 
     case 'hexbot.passwords.changed':
       refreshPasswordsIfLoaded()
+
+      return
+
+    case 'hexbot.reactions.changed':
+      if (
+        typeof payload.section_id === 'string' &&
+        typeof payload.message_id === 'string' &&
+        Array.isArray(payload.reactions)
+      ) {
+        useReactions.getState().apply(payload as unknown as ReactionsChanged)
+      }
 
       return
     case 'hexbot.bots.incident': {

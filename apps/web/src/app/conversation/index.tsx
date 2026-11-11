@@ -17,7 +17,11 @@ import {
   useState,
   useSyncExternalStore
 } from 'react'
-import ReactMarkdown, { type Components, type Options } from 'react-markdown'
+import ReactMarkdown, {
+  type Components,
+  defaultUrlTransform,
+  type Options
+} from 'react-markdown'
 import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
@@ -48,6 +52,7 @@ import { mediaKind, mediaOf } from '../../lib/media'
 import { plainError } from '../../lib/plain-error'
 import { NotConnectedError } from '../../lib/rpc'
 import { useTurnCues } from '../../lib/sounds'
+import { tagOf } from '../../lib/tags'
 import { toMillis } from '../../lib/time'
 import type {
   ApprovalChoice,
@@ -65,6 +70,7 @@ import { connectorsActions } from '../../stores/connectors'
 import { draftsActions } from '../../stores/drafts'
 import { useConversationFeelings, useEmotion } from '../../stores/emotions'
 import { holdCopy } from '../../stores/page-copies'
+import { useChatReactions } from '../../stores/reactions'
 import { useSearch } from '../../stores/search'
 import {
   knownChat,
@@ -95,10 +101,12 @@ import { MediaView } from './media'
 import { NotificationsBanner } from './notifications-banner'
 import { PluginCard } from './plugin-card'
 import { providerGone, ProviderGoneCard } from './provider-gone-card'
+import { BubbleReactions, ReactButton } from './reactions'
 import { RoomConversation } from './room'
 import { useSearchJump } from './search-jump'
 import { SignInCard } from './sign-in-card'
 import { asks, liveMood, liveMoodsOf } from './steps'
+import { MessageLink, remarkMentions, TagScope } from './tags'
 import { DeliveryMark, NotSent, useLate } from './unsent'
 import { visualsOf } from './visual'
 import { Visuals } from './visual-frame'
@@ -321,14 +329,8 @@ function CodeBlock({ children, className }: { children?: React.ReactNode; classN
 }
 
 const markdownComponents: Components = {
-  a: props => (
-    <a
-      className="underline decoration-foreground/30 underline-offset-2 hover:decoration-foreground"
-      rel="noreferrer"
-      target="_blank"
-      {...props}
-    />
-  ),
+  // A link that names a page, a bot, a file or a place in Hexbot is a tag (tags.tsx).
+  a: MessageLink,
   code: InlineCode,
   pre: Pre,
   table: props => (
@@ -345,8 +347,12 @@ const markdownComponents: Components = {
 // A lone $ is too often money, so math needs $$ (or the \( \) and \[ \] mathDelimiters converts).
 const remarkPlugins: Options['remarkPlugins'] = [
   remarkGfm,
-  [remarkMath, { singleDollarTextMath: false }]
+  [remarkMath, { singleDollarTextMath: false }],
+  remarkMentions
 ]
+
+/** Tag targets (`hexbot:room/…`, a file's path) pass; any other link keeps the usual rules. */
+const urlTransform: Options['urlTransform'] = url => (tagOf(url) ? url : defaultUrlTransform(url))
 
 const rehypePlugins: Options['rehypePlugins'] = [rehypeKatex]
 
@@ -375,7 +381,8 @@ export const Markdown = memo(function Markdown({
       children: mathDelimiters(text),
       components: markdownComponents,
       rehypePlugins,
-      remarkPlugins
+      remarkPlugins,
+      urlTransform
     })
 
     if (streaming) {
@@ -690,6 +697,7 @@ export const MessageRow = memo(function MessageRow({
   onRecall,
   onResend,
   onRetry,
+  reactIn,
   retryMessage,
   fresh = false,
   joined = false,
@@ -716,6 +724,8 @@ export const MessageRow = memo(function MessageRow({
   /** Sends your message again when it is late or its outcome is unknown. */
   onResend?: (message: TranscriptMessage) => void
   onRetry?: (input: TranscriptMessage) => void
+  /** The chat's section, where reactions are kept; a bot's own chat only. */
+  reactIn?: string
   retryMessage?: TranscriptMessage
   /** Arrived while this chat was open: each of its bubbles springs in as it appears. */
   fresh?: boolean
@@ -775,11 +785,16 @@ export const MessageRow = memo(function MessageRow({
 
   // A bot's words show one finished message at a time, never mid-sentence:
   // while the turn runs, what it is still writing stays behind the status.
-  const words = assistant
-    ? [...(message.parts ?? []), ...(message.streaming ? [] : [message.text])]
-    : [message.text]
+  // Each bubble keeps the history row it came from, which a reaction names.
+  const words: { row?: string; text: string }[] = assistant
+    ? [
+        ...(message.parts ?? []).map((text, index) => ({ row: message.partIds?.[index], text })),
+        ...(message.streaming ? [] : [{ row: message.textId, text: message.text }])
+      ]
+    : [{ row: message.id, text: message.text }]
 
-  const bubbles = words.filter(text => text.trim())
+  const said = words.filter(word => word.text.trim())
+  const bubbles = said.map(word => word.text)
 
   // Bubbles drawn when the row first rendered stay still; later ones spring in.
   const still = settled.current ?? (settled.current = fresh ? 0 : bubbles.length)
@@ -809,10 +824,10 @@ export const MessageRow = memo(function MessageRow({
 
   const replied = assistant && !message.streaming && Boolean(message.text.trim())
 
-  const column = bubbles.map((text, index) => (
+  const column = said.map(({ row, text }, index) => (
     <div
       className={cn(
-        'flex gap-1',
+        'group/bubble flex gap-1',
         visuals.length ? 'max-w-[min(85%,40rem)]' : 'max-w-full',
         !assistant && 'flex-row-reverse'
       )}
@@ -833,11 +848,20 @@ export const MessageRow = memo(function MessageRow({
             </div>
           ) : null}
         </div>
+        {/* Yours on what the bot said; the bot's on what you said. */}
+        <BubbleReactions
+          botName={name}
+          inputId={assistant ? undefined : message.inputId}
+          messageId={row}
+          mine={!assistant}
+          sectionId={reactIn}
+        />
       </div>
       {index === last && delivery ? <DeliveryMark delivery={delivery} onRetry={retryMark} /> : null}
       {index === last && delivery !== 'sending' && actions.length > 0 && !message.streaming ? (
         <BubbleActions actions={actions} />
       ) : null}
+      {assistant && reactIn && row ? <ReactButton messageId={row} sectionId={reactIn} /> : null}
     </div>
   ))
 
@@ -930,7 +954,7 @@ export const MessageRow = memo(function MessageRow({
   // it asked get their own row under the turn, two faces turned toward each
   // other.
   return (
-    <>
+    <TagScope onFile={onFile} speaker={assistant ? (bot?.name ?? null) : null}>
       <article
         className={cn(
           'group flex gap-2',
@@ -989,7 +1013,7 @@ export const MessageRow = memo(function MessageRow({
         </div>
       </article>
       {assistant ? <AskingRow message={message} sender={bot?.name ?? null} /> : null}
-    </>
+    </TagScope>
   )
 })
 
@@ -2072,6 +2096,8 @@ function BotConversation() {
   const [closedOn, setClosedOn] = useState<string>()
   // The bot's chat also shows failures with nowhere else to show, such as a dream's.
   const chat = Boolean(section && !section.peer_bot && !section.purpose)
+  // Reactions live in the bot's chat with you, on a daemon that keeps them.
+  const reactIn = useChatReactions(chat ? params.section : null)
   const stoppedCard = stoppedCardFor(bot, params.section ?? null, messages, chat)
   const stoppedHere = stoppedCard?.createdAt === dismissedSince ? null : stoppedCard
 
@@ -2975,6 +3001,7 @@ function BotConversation() {
                     onResend={shownMessage.role === 'user' && ownerInput ? resend : undefined}
                     onRetry={retryWith?.[0]}
                     quiet={shownMessage.error ? quietLine(shownMessage) : false}
+                    reactIn={reactIn}
                     retryMessage={retryWith?.[1]}
                     sessionId={liveId ?? undefined}
                   />

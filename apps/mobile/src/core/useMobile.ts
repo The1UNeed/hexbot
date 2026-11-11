@@ -27,6 +27,12 @@ import {
 } from './chat-cache'
 import { reduceRoom, restoreRoom, roomChat, roomMessage } from './room-chat'
 import { attachmentPrompt } from './chat-send'
+import {
+  applyReactions,
+  emptyReactions,
+  indexReactions,
+  toggleReaction
+} from './reactions'
 import { modelLists, providerModels } from './models'
 import {
   ROOMS_QUERY,
@@ -44,6 +50,8 @@ import type {
   ChatState,
   ComputerQuality,
   ComputerStatus,
+  Reaction,
+  ReactionsChanged,
   Section,
   Room,
   RoomEvent,
@@ -86,6 +94,8 @@ export function useMobile() {
   const [user, setUser] = useState<CurrentUser | null>(null)
   const [route, setRoute] = useState<ChatRoute | null>(null)
   const [chat, setChat] = useState(emptyChat)
+  // The open chat's reactions; a room or a thread between bots has none.
+  const [reactions, setReactions] = useState(emptyReactions)
   const [loading, setLoading] = useState(false)
   // The chat whose history the transcript shows; until then it is still opening.
   const [readId, setReadId] = useState<null | string>(null)
@@ -529,6 +539,17 @@ export function useMobile() {
         )
         return
       }
+      // One message's reactions changed; nothing in the lists moves.
+      if (event.type === 'hexbot.reactions.changed') {
+        if (
+          target?.kind === 'section' &&
+          p.section_id === target.section.id &&
+          typeof p.message_id === 'string' &&
+          Array.isArray(p.reactions)
+        )
+          setReactions(current => applyReactions(current, p as unknown as ReactionsChanged))
+        return
+      }
       if (event.type === 'hexbot.heartbeat.changed') setHeartbeats(n => n + 1)
       if (event.type.endsWith('.changed')) {
         if (!refreshTimer.current)
@@ -608,6 +629,51 @@ export function useMobile() {
       }
     },
     [rpc, readOpenChat]
+  )
+  // A bot's own chat keeps reactions, on a daemon that has them. Read once its
+  // history shows and after every reconnect; another chat starts with none.
+  const reactIn =
+    info?.reactions && route?.kind === 'section' && ownerChat(route.section) && readId === route.section.id
+      ? route.section.id
+      : null
+  useEffect(() => setReactions(emptyReactions()), [reactIn])
+  useEffect(() => {
+    if (!reactIn) return
+    let stale = false
+    rpc<{ reactions: Reaction[] }>('hexbot.reactions.list', { section_id: reactIn }).then(
+      result => {
+        if (!stale) setReactions(indexReactions(result.reactions ?? []))
+      },
+      // Reactions are an extra: a chat that cannot read them shows none.
+      () => {}
+    )
+    return () => {
+      stale = true
+    }
+  }, [reactIn, connects, rpc])
+  const reactionsRef = useRef(reactions)
+  reactionsRef.current = reactions
+  /** Leaves your emoji on a bot's message; the same emoji again takes it back. */
+  const react = useCallback(
+    async (messageId: string, emoji: string) => {
+      if (!reactIn) return
+      // Shown where you put it while the daemon catches up.
+      const before = reactionsRef.current
+      const toggled = toggleReaction(before, messageId, emoji)
+      setReactions(toggled.state)
+      try {
+        const changed = await rpc<ReactionsChanged>('hexbot.reactions.set', {
+          section_id: reactIn,
+          message_id: messageId,
+          emoji: toggled.emoji
+        })
+        setReactions(current => applyReactions(current, changed))
+      } catch {
+        // Refused, such as a message the chat no longer shows: back as it was.
+        setReactions(before)
+      }
+    },
+    [reactIn, rpc]
   )
   const acknowledgedApprovals = useRef(new Set<string>())
   useEffect(() => {
@@ -1094,6 +1160,9 @@ export function useMobile() {
     send,
     stop,
     recall,
+    /** The open chat's reactions, and `react` when the chat can take one. */
+    reactions,
+    react: reactIn ? react : undefined,
     dismissError,
     approval,
     answer,

@@ -121,6 +121,26 @@ export function PluginsSettings(): React.JSX.Element {
     return () => usePlugins.setState({ loaded: false })
   }, [refresh, target, epoch, connects])
 
+  // A tag in a message named a plugin or a skill: show its tab, searched for it.
+  const sought = usePlugins(state => state.sought)
+  useEffect(() => {
+    if (!sought || loading) {
+      return
+    }
+
+    const needle = sought.name.trim().toLowerCase()
+
+    const found = plugins.find(
+      item =>
+        (sought.kind === 'skill') === (categoryOf(item) === 'skills') &&
+        (item.name.toLowerCase() === needle || item.id.toLowerCase() === needle)
+    )
+
+    setCategory(found ? categoryOf(found) : sought.kind === 'skill' ? 'skills' : 'connectors')
+    setQuery(found?.name ?? sought.name)
+    usePlugins.setState({ sought: null })
+  }, [loading, plugins, sought])
+
   // A bot that was deleted while it was chosen falls back to every bot.
   const focused = bots.find(bot => bot.name === focus) ?? null
   const current = CATEGORIES.find(item => item.id === category)!

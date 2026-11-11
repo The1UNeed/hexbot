@@ -2,7 +2,6 @@ import { render, screen } from '@testing-library/react'
 
 import { isSubscription } from '../components/provider-panel'
 import { FaceChoices } from '../components/ui/avatar-builder'
-import { Thinking } from '../components/ui/thinking'
 import {
   AVATAR_COLORS,
   AVATAR_SHAPES,
@@ -178,13 +177,6 @@ describe('avatar builder', () => {
     expect(screen.queryByRole('button', { pressed: true })).toBeNull()
     screen.getByRole('button', { name: 'Star' }).click()
     expect(onChange).toHaveBeenCalledWith({ color: 'blue', shape: 'star' })
-  })
-})
-
-describe('thinking', () => {
-  it('announces what the bot is doing', () => {
-    render(<Thinking name="Scout" />)
-    expect(screen.getByRole('status', { name: 'Scout is working' })).toBeInTheDocument()
   })
 })
 

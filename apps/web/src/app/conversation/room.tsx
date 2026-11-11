@@ -7,7 +7,6 @@ import { RoomCluster } from '../../components/ui/room-cluster'
 import { ScrollArea } from '../../components/ui/scroll-area'
 import { SkeletonLines } from '../../components/ui/skeleton'
 import { StatusDot } from '../../components/ui/status-dot'
-import { Thinking } from '../../components/ui/thinking'
 import { roomsSend, roomsStop } from '../../lib/api'
 import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
@@ -17,6 +16,7 @@ import { useTurnCues } from '../../lib/sounds'
 import { toMillis } from '../../lib/time'
 import type { Bot, RoomEvent, RoomMember, RoomTurn } from '../../lib/types'
 import { useHeight } from '../../lib/use-height'
+import { phaseLabel } from '../../lib/work-label'
 import { useBots } from '../../stores/bots'
 import { connectorsActions } from '../../stores/connectors'
 import { useEmotion, useEmotions, useRoomFeelings } from '../../stores/emotions'
@@ -32,9 +32,10 @@ import { composerFieldClass, ComposerShell } from './composer'
 import { NotificationsBanner } from './notifications-banner'
 import { useSearchJump } from './search-jump'
 import { type Ask, liveMood } from './steps'
+import { TagScope } from './tags'
 import { DeliveryMark, NotSent, SEND_TIMEOUT_MS } from './unsent'
 import { WaitingBanner } from './waiting-banner'
-import { WorkStatus } from './work-status'
+import { StatusLine, WorkStatus } from './work-status'
 
 import {
   ApprovalCard,
@@ -175,7 +176,7 @@ export const RoomEventRow = memo(function RoomEventRow({
   const asked = event.kind === 'message.bot' ? storedAsks(event.payload.asks) : []
 
   return (
-    <>
+    <TagScope speaker={said ? (event.actor_id ?? null) : null}>
       <article
         className={`flex gap-2 py-1 ${mine ? 'flex-row-reverse' : ''}`}
         data-testid="room-event"
@@ -211,7 +212,7 @@ export const RoomEventRow = memo(function RoomEventRow({
         </div>
       </article>
       {asked.length ? <AskRows asks={asked} sender={event.actor_id ?? null} /> : null}
-    </>
+    </TagScope>
   )
 })
 
@@ -774,7 +775,7 @@ export function RoomConversation() {
                     {message ? (
                       <WorkStatus checking={transcript?.checking} message={message} name={name} />
                     ) : (
-                      <Thinking name={name} />
+                      <StatusLine label={phaseLabel('thinking')} name={name} />
                     )}
                   </div>
                 </article>

@@ -12,18 +12,22 @@ import { formatDayDivider } from '../ui/format'
 // FlatList's native windowing is irrelevant here; exercise every production row.
 vi.mock('react-native', async () => {
   const { createElement } = await import('react')
-  const view = ({ children }: { children?: ReactNode }) => createElement('div', null, children)
+  const view = ({ children, testID }: { children?: ReactNode; testID?: string }) =>
+    createElement('div', { 'data-testid': testID }, children)
   return {
     View: view, ScrollView: view, Text: view, Image: () => null,
     // A long press, as a context menu: the one gesture the DOM has for it.
-    Pressable: ({ children, onLongPress, testID }: { children?: ReactNode; onLongPress?: () => void; testID?: string }) =>
-      createElement('div', { 'data-testid': testID, onContextMenu: onLongPress }, children),
+    Pressable: ({ children, onLongPress, onPress, testID }: { children?: ReactNode; onLongPress?: () => void; onPress?: () => void; testID?: string }) =>
+      createElement('div', { 'data-testid': testID, onClick: onPress, onContextMenu: onLongPress }, children),
+    // The message menu is a modal; closed, it draws nothing.
+    Modal: ({ children, visible }: { children?: ReactNode; visible?: boolean }) =>
+      visible ? createElement('div', null, children) : null,
     // Only the sheet's read-only text shows what it holds.
     TextInput: ({ testID, value }: { testID?: string; value?: string }) =>
       testID === 'select-text-body' ? createElement('div', { 'data-testid': testID }, value) : null,
     ActionSheetIOS: { showActionSheetWithOptions: vi.fn() },
     Alert: { alert: vi.fn() },
-    StyleSheet: { create: (styles: unknown) => styles },
+    StyleSheet: { create: (styles: unknown) => styles, hairlineWidth: 1 },
     Platform: { OS: 'ios' },
     useWindowDimensions: () => ({ width: 390, height: 844 }),
     FlatList: ({ data, renderItem }: { data: { id: string }[]; renderItem: (input: unknown) => ReactNode }) =>
@@ -54,7 +58,7 @@ vi.mock('../ui', async () => {
     Button: () => null, IconButton: () => null, Banner: () => null,
     useKeyboardVisible: () => false, useTheme: () => ({}),
     bubbleFill: () => 'grey', faceColor: () => null, faceWash: () => 'grey', withAlpha: () => 'grey', radius: {}, mono: 'monospace',
-    Field: () => null, HIT: 44,
+    Field: () => null, HIT: 44, useCover: () => {},
     ModalSheet: ({ children, testID, visible }: { children?: ReactNode; testID?: string; visible: boolean }) =>
       visible ? createElement('div', { 'data-testid': testID }, children) : null
   }
@@ -212,4 +216,63 @@ it('a long press on a message copies it whole or opens it to select any part', (
   expect(recall).toHaveBeenCalledWith('mine')
   act(() => menu.mock.lastCall?.[1](3))
   expect(recall).toHaveBeenCalledTimes(1)
+})
+
+it('offers reactions on a bot\'s message that can take one, and takes yours back from its chip', () => {
+  const menu = vi.mocked(ActionSheetIOS.showActionSheetWithOptions)
+  menu.mockClear()
+  const react = vi.fn()
+  const items: ChatItem[] = [
+    { kind: 'message', id: 'mine', role: 'user', text: 'Thanks!', reactions: [{ emoji: '🎉', mine: false }] },
+    { kind: 'message', id: 'reply', role: 'bot', text: 'Booked the **9am**.', rowId: 'a2', reactions: [{ emoji: '👍', mine: true }] },
+    // Not read back from history yet: no row to name, so the system's menu.
+    { kind: 'message', id: 'unsaved', role: 'bot', text: 'One more thing.' }
+  ]
+  render(createElement(ChatScreen, {
+    title: 'Owl', face: { name: 'Owl' }, items, onSend: vi.fn(), onApprove: vi.fn(),
+    renderMessageText: item => createElement('span', null, item.text), onReact: react
+  }))
+
+  expect(screen.queryByTestId('message-menu')).toBeNull()
+  fireEvent.contextMenu(screen.getByTestId('chat-message-reply'))
+  expect(menu).not.toHaveBeenCalled()
+  expect(screen.getByTestId('message-menu')).toBeTruthy()
+  fireEvent.click(screen.getByTestId('message-react-❤️'))
+  expect(react).toHaveBeenLastCalledWith('a2', '❤️')
+  expect(screen.queryByTestId('message-menu')).toBeNull()
+
+  // The menu still copies the message as its bubble reads.
+  fireEvent.contextMenu(screen.getByTestId('chat-message-reply'))
+  fireEvent.click(screen.getByTestId('message-menu-copy'))
+  expect(Clipboard.setStringAsync).toHaveBeenLastCalledWith('Booked the 9am.')
+
+  // Your chip takes your reaction back; the bot's on your message does nothing.
+  const chips = (id: string) => screen.getByTestId(`chat-reactions-${id}`).firstElementChild!
+  fireEvent.click(chips('reply'))
+  expect(react).toHaveBeenLastCalledWith('a2', '👍')
+  react.mockClear()
+  fireEvent.click(chips('mine'))
+  expect(react).not.toHaveBeenCalled()
+
+  fireEvent.contextMenu(screen.getByTestId('chat-message-unsaved'))
+  expect(menu.mock.lastCall?.[0]).toMatchObject({ options: ['Copy', 'Select text', 'Cancel'] })
+})
+
+it('says what the bot is doing in two parts, and marks a bot it messaged', () => {
+  const thread = vi.fn()
+  const items: ChatItem[] = [
+    { kind: 'ask', id: 'ask-1', before: 'Messaged', after: '', name: 'Biology', face: { name: 'Biology' }, bot: 'biology', peer: 'hexbot' },
+    { kind: 'ask', id: 'ask-2', before: '', after: 'helped', name: 'A teammate' }
+  ]
+  render(createElement(ChatScreen, {
+    title: 'HexBot', face: { name: 'HexBot' }, items, onSend: vi.fn(), onApprove: vi.fn(),
+    waiting: { label: { object: 'Taobao', verb: 'Opening' }, mood: 'computer' }, onOpenThread: thread
+  }))
+  expect(screen.getByTestId('chat-waiting').textContent).toBe('Opening Taobao')
+  expect(screen.getByTestId('chat-ask-ask-1').textContent).toBe('MessagedBiology')
+  fireEvent.click(screen.getByTestId('chat-ask-ask-1'))
+  expect(thread).toHaveBeenCalledWith('biology', 'hexbot')
+  // Without the two bots' names there is no conversation to open.
+  fireEvent.click(screen.getByTestId('chat-ask-ask-2'))
+  expect(thread).toHaveBeenCalledTimes(1)
 })

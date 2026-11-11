@@ -3034,6 +3034,40 @@ pub fn row_input(home: &Path, stored: &str, row_id: &str) -> Result<Option<Strin
         )
         .optional()?)
 }
+/// A history row the conversation still shows, by its `row_id`.
+pub fn shown_row(home: &Path, stored: &str, row_id: &str) -> Result<Option<Value>> {
+    shown(
+        home,
+        "AND json_extract(m.message_json,'$.row_id')=?2 LIMIT 1",
+        params![stored, row_id],
+    )
+}
+/// The newest message the user sent that the conversation still shows.
+pub fn latest_user_row(home: &Path, stored: &str) -> Result<Option<Value>> {
+    shown(
+        home,
+        "AND json_extract(m.message_json,'$.role')='user'
+         AND json_extract(m.message_json,'$.custom_type') IS NULL
+         AND COALESCE(json_extract(m.message_json,'$.display_kind'),'normal')<>'hidden'
+         ORDER BY m.seq DESC LIMIT 1",
+        params![stored],
+    )
+}
+fn shown(home: &Path, filter: &str, params: &[&dyn rusqlite::ToSql]) -> Result<Option<Value>> {
+    let row: Option<String> = open(home)?
+        .query_row(
+            &format!(
+                "SELECT m.message_json FROM native_messages m
+                 LEFT JOIN native_pi_journal p ON p.session_id=m.session_id AND p.projection_seq=m.seq
+                 WHERE m.session_id=?1 AND (p.active IS NULL OR p.active=1) {filter}"
+            ),
+            params,
+            |r| r.get(0),
+        )
+        .optional()?;
+    row.map(|row| serde_json::from_str(&row).map_err(|e| crate::Error::new(5200, e.to_string())))
+        .transpose()
+}
 /// Follow a running section to the branch Pi continues after it moved back
 /// to an earlier entry: rows on the abandoned branch leave the history.
 /// Changes nothing while `recalled` is still on the branch.

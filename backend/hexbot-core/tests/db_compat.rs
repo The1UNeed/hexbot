@@ -182,6 +182,25 @@ fn team_shape(connection: &Connection) -> Vec<(String, Vec<Column>)> {
         "room_pins".into(),
         vec![key("room_id"), real("pinned_at", true)],
     ));
+    expected.push((
+        "message_reactions".into(),
+        vec![
+            ("section_id".into(), "TEXT".into(), true, None, 1),
+            ("message_id".into(), "TEXT".into(), true, None, 2),
+            ("by_bot".into(), "TEXT".into(), true, Some("''".into()), 3),
+            text("emoji", true),
+            text("owner_id", true),
+            real("created_at", true),
+            (
+                "offered".into(),
+                "INTEGER".into(),
+                true,
+                Some("0".into()),
+                0,
+            ),
+            real("noted_at", false),
+        ],
+    ));
     expected.sort_by(|a, b| a.0.cmp(&b.0));
     expected
 }
