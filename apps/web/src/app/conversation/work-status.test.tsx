@@ -34,7 +34,7 @@ const message = (partial: Partial<Message>): Message => ({
 })
 
 describe('WorkStatus', () => {
-  it('says the bot is working while an approved step runs, then shows nothing', () => {
+  it('says what an approved step does while it runs, never its command, then shows nothing', () => {
     useTranscripts.setState({ bySession: {} })
     setTranscriptEffects({ ackApproval: vi.fn(), notify: vi.fn() })
     const actions = useTranscripts.getState()
@@ -48,17 +48,17 @@ describe('WorkStatus', () => {
     const current = () => useTranscripts.getState().bySession.s!.messages[0]!
     expect(current().streaming).toBe(false)
     const { container, rerender } = render(<WorkStatus message={current()} name="Scout" />)
-    expect(screen.getByRole('status', { name: 'Scout is working' })).toBeVisible()
+    expect(screen.getByRole('status', { name: 'Scout is running a command' })).toBeVisible()
     expect(screen.queryByText(/rm -rf/)).not.toBeInTheDocument()
     actions.resolveApproval('s', 'a', 'once')
     rerender(<WorkStatus message={current()} name="Scout" />)
-    expect(screen.getByRole('status', { name: 'Scout is working' })).toBeVisible()
+    expect(screen.getByRole('status', { name: 'Scout is running a command' })).toBeVisible()
     actions.toolComplete('s', { result: 'ok', tool_id: 't' })
     rerender(<WorkStatus message={current()} name="Scout" />)
     expect(container).toBeEmptyDOMElement()
   })
 
-  it('says only that the bot is working, with nothing to open', () => {
+  it('names the running step in two tones, with nothing to open', () => {
     render(
       <WorkStatus
         message={message({
@@ -70,17 +70,63 @@ describe('WorkStatus', () => {
         name="Scout"
       />
     )
-    expect(screen.getByRole('status', { name: 'Scout is working' })).toBeVisible()
+    const status = screen.getByRole('status', { name: 'Scout is searching the web for apple' })
+    expect(status).toHaveTextContent('Searching the web for apple')
+    // What it searches for is the specific part, drawn stronger than the verb.
+    expect(screen.getByText('apple')).toHaveClass('text-foreground/80')
     expect(screen.queryByRole('button')).toBeNull()
-    expect(screen.queryByText(/apple/)).toBeNull()
     expect(screen.queryByText(/provider/)).toBeNull()
+    expect(screen.queryByText(/wants apples/)).toBeNull()
+  })
+
+  it('names a page by its site and a file by its own name', () => {
+    const running = (partial: Partial<ToolCall>) =>
+      message({ streaming: true, toolCalls: [call({ status: 'running', ...partial })] })
+
+    const { rerender } = render(
+      <WorkStatus
+        message={running({
+          args: { action: 'open', url: 'https://www.taobao.com/?spm=1' },
+          name: 'computer_use',
+          summary: 'open'
+        })}
+        name="Scout"
+      />
+    )
+
+    expect(screen.getByRole('status', { name: 'Scout is opening Taobao' })).toBeVisible()
+    rerender(
+      <WorkStatus
+        message={running({
+          args: { path: '/Users/me/work/notes.md' },
+          name: 'read_file',
+          summary: '/Users/me/work/notes.md'
+        })}
+        name="Scout"
+      />
+    )
+    expect(screen.getByRole('status', { name: 'Scout is reading notes.md' })).toBeVisible()
+  })
+
+  it('says Thinking before anything happens, Typing while the reply is written', () => {
+    const { rerender } = render(<WorkStatus message={message({ streaming: true })} name="Scout" />)
+    expect(screen.getByRole('status', { name: 'Scout is thinking' })).toHaveTextContent('Thinking…')
+    rerender(
+      <WorkStatus message={message({ streaming: true, text: 'Taobao is open' })} name="Scout" />
+    )
+    expect(screen.getByRole('status', { name: 'Scout is typing' })).toHaveTextContent('Typing…')
+    // Between steps, with nothing written yet, it is working.
+    rerender(
+      <WorkStatus message={message({ streaming: true, toolCalls: [call({})] })} name="Scout" />
+    )
+    expect(screen.getByRole('status', { name: 'Scout is working' })).toHaveTextContent('Working…')
   })
 
   it('says what the bot does on the computer while that step runs', () => {
     const working = (summary?: string) =>
       message({
         streaming: true,
-        toolCalls: [call({ name: 'computer_use', status: 'running', summary })]
+        toolCalls: [call({ args: null, name: 'computer_use', status: 'running', summary })]
       })
 
     const { rerender } = render(<WorkStatus message={working('click')} name="Scout" />)

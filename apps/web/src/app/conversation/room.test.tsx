@@ -387,7 +387,7 @@ describe('approvals and questions in a room', () => {
       await refresh
     })
     expect(await screen.findByText('Waiting for Alice')).toBeVisible()
-    expect(screen.getByRole('status', { name: 'Owl is working' })).toBeVisible()
+    expect(screen.getByRole('status', { name: /^Owl is / })).toBeVisible()
     expect(screen.queryByText('Approval needed')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
     act(() =>

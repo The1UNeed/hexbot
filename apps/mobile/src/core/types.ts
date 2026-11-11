@@ -1,6 +1,8 @@
 // Reuse the daemon's wire contract without bundling the web app.
 export type {
   Bot,
+  Reaction,
+  ReactionsChanged,
   Section,
   Room,
   RoomEvent,
@@ -76,6 +78,8 @@ export interface ChatMessage {
   }[]
   /** The key your message was sent with, which names it for Recall. */
   inputId?: string
+  /** The history row the message is, once known; a reaction names it. */
+  rowId?: string
 }
 export interface PendingApproval {
   requestId: string
@@ -106,6 +110,10 @@ export interface TurnState {
   approvals: PendingApproval[]
   questions: PendingQuestion[]
   error: string | null
+  /** The history row of the text being written, when the daemon names it. */
+  streamId?: string
+  /** The history row of each entry in `interim`, in step with it. */
+  interimIds?: (string | undefined)[]
 }
 /** A bot's turn in a room, kept apart so bots working at once do not mix. */
 export interface RoomTurnState extends TurnState {

@@ -633,6 +633,8 @@ export interface DaemonInfo {
   one_chat?: true
   /** True once `session.recall` takes back your latest message in a chat; absent on older daemons. */
   recall?: true
+  /** True once `hexbot.reactions.*` keeps an emoji on a message in a bot's chat; absent on older daemons. */
+  reactions?: true
   /** True once `hexbot.sections.history` reads a chat without starting its bot; absent on older daemons. */
   section_history?: true
   /** Input, run and assistant fragment correlation metadata; absent on older daemons. */
@@ -732,6 +734,31 @@ export interface Message {
 }
 
 export type MessageRole = 'assistant' | 'system' | 'tool' | 'user'
+
+/**
+ * One emoji left on a message in a bot's chat (`hexbot.reactions.*`): yours on
+ * what the bot said, the bot's on what you said. Each side leaves at most one
+ * on a message.
+ */
+export interface Reaction {
+  /** When it was left, in Unix seconds. */
+  at: number
+  /** The bot that left it, when `by` is `bot`. */
+  bot?: string
+  by: 'bot' | 'user'
+  emoji: string
+  /** The history row it is on (`row_id`). */
+  message_id: string
+}
+
+/** `hexbot.reactions.changed`, and the reply to `hexbot.reactions.set`: one message's reactions now. */
+export interface ReactionsChanged {
+  /** The input your message was sent as, so a copy not yet read from history is found. */
+  input_id?: string
+  message_id: string
+  reactions: Reaction[]
+  section_id: string
+}
 
 export interface ModelOption {
   context?: number

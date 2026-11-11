@@ -322,7 +322,7 @@ it.each(['start-delta', 'delta-only', 'already-streaming', 'completed-during-rea
     expect(screen.getAllByText('Dream report')).toHaveLength(1)
 
     if (mode !== 'completed-during-read') {
-      expect(screen.getByRole('status', { name: 'Owl is working' })).toBeVisible()
+      expect(screen.getByRole('status', { name: /^Owl is / })).toBeVisible()
       expect(useTranscripts.getState().bySession.chat!.messages.at(-1)?.text).toBe(
         mode === 'already-streaming' ? 'Prefix before reload Live tail' : 'Live tail'
       )
@@ -335,7 +335,7 @@ it.each(['start-delta', 'delta-only', 'already-streaming', 'completed-during-rea
     expect(screen.getAllByText('Final answer')).toHaveLength(1)
     expect(screen.getAllByText('Dream report')).toHaveLength(1)
     expect(reads).toBe(2)
-    expect(screen.queryByRole('status', { name: 'Owl is working' })).toBeNull()
+    expect(screen.queryByRole('status', { name: /^Owl is / })).toBeNull()
   }
 )
 
@@ -571,7 +571,7 @@ it.each(['loaded', 'unloaded'])(
     expect(
       screen
         .getByText('Remote question')
-        .compareDocumentPosition(screen.getByRole('status', { name: 'Owl is working' })) &
+        .compareDocumentPosition(screen.getByRole('status', { name: /^Owl is / })) &
         Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy()
     await act(async () => {
@@ -704,7 +704,7 @@ it('renders queued users, identified replies and an answered card in their actua
   expect(
     before(
       screen.getByText('Second queued question'),
-      screen.getByRole('status', { name: 'Owl is working' })
+      screen.getByRole('status', { name: /^Owl is / })
     )
   ).toBe(true)
   call.mockImplementation((method: string) =>

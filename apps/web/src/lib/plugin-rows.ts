@@ -128,6 +128,25 @@ export function shownBots(plugin: Plugin): { bots: string[]; exact: boolean } {
     : { bots: plugin.bots, exact: false }
 }
 
+/**
+ * The plugin a tag in a message names, by its name or its id. A skill tag
+ * finds a skill or a package of skills; a plugin tag a connector or a server.
+ */
+export function namedPlugin(
+  plugins: Plugin[],
+  kind: 'plugin' | 'skill',
+  name: string
+): Plugin | undefined {
+  const needle = name.trim().toLowerCase()
+  const skill = (plugin: Plugin) => plugin.category !== 'mcp' && plugin.kind !== 'connector'
+
+  return plugins.find(
+    plugin =>
+      (kind === 'skill') === skill(plugin) &&
+      (plugin.name.toLowerCase() === needle || plugin.id.toLowerCase() === needle)
+  )
+}
+
 /** One list of rows, whatever their kind. */
 export function pluginRows(list: PluginsList): Plugin[] {
   return [

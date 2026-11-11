@@ -43,6 +43,8 @@ import type {
   PluginsList,
   Provider,
   ProviderLogin,
+  Reaction,
+  ReactionsChanged,
   Room,
   RoomEvent,
   RoomLimits,
@@ -669,6 +671,24 @@ async function withPurpose(sections: Section[] = []): Promise<Section[]> {
 /** The thread on `bot` in which `peer` asks it for help; null until the first ask. Owner only. */
 export function sectionsThread(bot: string, peer: string): Promise<{ section: Section | null }> {
   return rpcCall<{ section: Section | null }>('hexbot.sections.thread', { bot, peer })
+}
+
+/** Every reaction in a bot's chat, oldest first. Owner only. */
+export function reactionsList(sectionId: string): Promise<{ reactions: Reaction[] }> {
+  return rpcCall<{ reactions: Reaction[] }>('hexbot.reactions.list', { section_id: sectionId })
+}
+
+/** Leaves your emoji on one of the bot's messages; `null` takes it back. */
+export function reactionsSet(
+  sectionId: string,
+  messageId: string,
+  emoji: null | string
+): Promise<ReactionsChanged> {
+  return rpcCall<ReactionsChanged>('hexbot.reactions.set', {
+    emoji,
+    message_id: messageId,
+    section_id: sectionId
+  })
 }
 
 /** A bot's one chat with you; the daemon makes it on first use. */

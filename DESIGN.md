@@ -430,7 +430,41 @@ more freedom and more capability than a hosted product can offer.
   implements it. One daemon connection at a time (several in the Connect
   milestone).
 - Bot avatars: uploaded image, generated initials by default.
-- Tool calls show only while they run, then collapse into one line above the reply.
+- While a bot works, one line at the foot of its turn says what it is doing:
+  its face, in the mood of the step, and a few words in two tones, the verb
+  quiet and the thing it acts on stronger: "Thinking…", "Opening Taobao",
+  "Searching the web for CER dates", "Reading notes.md", "Typing…". The
+  words are built in the app from the running step and its arguments
+  (`apps/web/src/lib/work-label.ts`), so they cost no tokens and leave
+  prompts and their cache alone. A page is named by its site and a file by
+  its own name; a command or a script is never quoted. The line is gone when
+  the turn is: a conversation shows what bots say, not how they got there.
+- Tags: what a message names can be clicked. A tag is an ordinary Markdown
+  link whose target says what it is, so the message reads the same anywhere
+  else: a web page (`https://…`, drawn with the site's own icon, asked of
+  that site and of no one else, and never of an address on your network), a
+  bot (`@handle`, drawn with its face and its name in its colour), a file (an
+  absolute path), a room (`hexbot:room/<name>`), a bot's scheduled jobs
+  (`hexbot:jobs/<handle>`), a Settings page (`hexbot:settings/<page>`), a
+  plugin or a skill (`hexbot:plugin/<name>`, `hexbot:skill/<name>`). A page
+  opens in the browser, a file beside the chat, and the rest where it lives.
+  Scheduled jobs have a page only in the mobile app; the web and desktop
+  apps mark the tag and open nothing.
+  A bot's name opens the private conversation between it and the bot that
+  named it; named by you, its chat. The daemon's prompt teaches bots the
+  list; a tag for something that is gone reads as its plain words.
+- A bot messaging another is marked under its turn, in the middle of the
+  column like the time between messages, with the other bot's tag:
+  "Research is asking Writer" while it runs, then "Writer helped", or
+  "Messaged Writer" when no reply was waited for. The mark opens the
+  conversation between the two.
+- Reactions: in a bot's chat, you leave one emoji on something the bot said,
+  and the bot can leave one on your latest message (`hexbot_react`). Each
+  side has one reaction a message; the same emoji again takes yours back.
+  Reactions are kept beside the history and never change the conversation
+  the model holds: yours reach the bot with your next message, the way its
+  heartbeat's messages do, so the cached prefix stays. Rooms and threads
+  between bots have none.
 - Visuals: a bot can show a chart, table, diagram or mockup as an HTML page
   in the conversation (`hexbot_show_html`). It is drawn, live, in a bot
   bubble above the bot's final reply, under its title and an Expand button

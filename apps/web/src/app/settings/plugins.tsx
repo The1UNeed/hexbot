@@ -11,7 +11,13 @@ import { Textarea } from '../../components/ui/textarea'
 import type { PluginInstallInput } from '../../lib/api'
 import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
-import { canGive, CONNECTOR_SHELVES, isConnected, shelfOf } from '../../lib/plugin-rows'
+import {
+  canGive,
+  CONNECTOR_SHELVES,
+  isConnected,
+  namedPlugin,
+  shelfOf
+} from '../../lib/plugin-rows'
 import type { Bot, Plugin } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
@@ -120,6 +126,22 @@ export function PluginsSettings(): React.JSX.Element {
     // Events refresh the list only while this page is open.
     return () => usePlugins.setState({ loaded: false })
   }, [refresh, target, epoch, connects])
+
+  // A tag in a message named a plugin or a skill: show its tab, searched for it.
+  const sought = usePlugins(state => state.sought)
+  const loaded = usePlugins(state => state.loaded)
+  useEffect(() => {
+    // Not before the list is in: the first visit starts with none.
+    if (!sought || loading || !loaded) {
+      return
+    }
+
+    const found = namedPlugin(plugins, sought.kind, sought.name)
+
+    setCategory(found ? categoryOf(found) : sought.kind === 'skill' ? 'skills' : 'connectors')
+    setQuery(found?.name ?? sought.name)
+    usePlugins.setState({ sought: null })
+  }, [loaded, loading, plugins, sought])
 
   // A bot that was deleted while it was chosen falls back to every bot.
   const focused = bots.find(bot => bot.name === focus) ?? null

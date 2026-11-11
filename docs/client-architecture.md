@@ -171,7 +171,7 @@ when multiple preserved owner conversations make its source uncertain.
 | `message.complete` | finalize, attach usage, call `hexbot.sections.touch` |
 | `reasoning.delta` | append to the message's reasoning trace; the conversation never shows it |
 | `thinking.delta` | replace the daemon's status line (a wait notice); spinner copy is dropped |
-| `tool.start` / `tool.complete` | add or resolve a tool call in the current assistant message |
+| `tool.start` / `tool.complete` | add or resolve a tool call in the current assistant message; the running one, with its arguments, gives the live status its words and the face its mood (`lib/work-label.ts`) |
 | `approval.request` | push an approval card (session scoped) and notify; one with a `form` is the sign-in card, answered with the username and password, or the plugin card (`kind: "plugin"`), answered with `values` and `provider` |
 | `approval.resolved` / `approval.expire` | show that card's answer / drop it while unanswered |
 | `clarify.request` / `clarify.resolved` / `clarify.expire` | push a question card / show its answers / freeze it |
@@ -180,6 +180,7 @@ when multiple preserved owner conversations make its source uncertain.
 | `session.usage` | usage badge |
 | `error` | inline error row |
 | `hexbot.passwords.changed` | refresh Settings, Passwords while it is open |
+| `hexbot.reactions.changed` | replace one message's reactions in `stores/reactions.ts`, by its history row; `input_id` finds your own message before it is read back from history |
 
 Sending: `prompt.submit {session_id, text}`; before it, attachments are
 staged with `image.attach_bytes` (images) or `file.attach {data_url,

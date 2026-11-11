@@ -173,6 +173,19 @@ describe('chat event projection', () => {
       ]).map(m => m.text)
     ).toEqual(['Hi', 'Hello'])
   })
+  it("shows the asking bot's questions in a thread between bots", () => {
+    const rows = [
+      { role: 'user', content: '@owl: When are the dates?', hidden: true, row_id: 'q1' },
+      { role: 'assistant', content: '12 and 14 March.' },
+      { role: 'user', content: 'A prompt the daemon added', hidden: true }
+    ]
+    expect(historyMessages(rows, 'owl').map(m => [m.sender, m.role, m.text])).toEqual([
+      ['owl', 'assistant', 'When are the dates?'],
+      [undefined, 'assistant', '12 and 14 March.']
+    ])
+    // In a bot's own chat the same rows stay hidden.
+    expect(historyMessages(rows).map(m => m.text)).toEqual(['12 and 14 March.'])
+  })
 })
 
 describe('restored tools and questions', () => {
@@ -330,6 +343,8 @@ describe('heartbeat messages', () => {
       {
         id: 'heartbeat-1',
         role: 'assistant',
+        // Its history row, so it takes a reaction like any message.
+        rowId: 'heartbeat-1',
         text: 'BA 286 is two hours late.',
         createdAt: expect.any(Number)
       }

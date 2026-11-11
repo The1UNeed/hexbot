@@ -17,6 +17,7 @@ import { ApprovalCard, bubbleClass, CardRow, Markdown } from '../conversation'
 import { AskingRow } from '../conversation/asking-row'
 import { ClarifyCard } from '../conversation/clarify-card'
 import { liveMood } from '../conversation/steps'
+import { TagScope } from '../conversation/tags'
 import { WorkStatus } from '../conversation/work-status'
 
 type Loaded =
@@ -63,8 +64,9 @@ function ThreadMessage({ bot, message, name }: { bot?: Bot; message: Message; na
     text.trim()
   )
 
+  // Both sides of a thread are bots: a name in a message opens that bot's thread with the speaker.
   return (
-    <>
+    <TagScope speaker={bot?.name ?? null}>
       <article
         className={cn('flex gap-2 py-1', reply && 'flex-row-reverse')}
         data-testid={reply ? 'thread-reply' : 'thread-question'}
@@ -115,7 +117,7 @@ function ThreadMessage({ bot, message, name }: { bot?: Bot; message: Message; na
       </article>
       {/* The asked bot may ask a third; its row opens that conversation in turn. */}
       {reply ? <AskingRow message={message} sender={bot?.name ?? null} /> : null}
-    </>
+    </TagScope>
   )
 }
 

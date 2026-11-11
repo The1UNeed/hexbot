@@ -27,7 +27,7 @@ The teammate description tells other bots when to ask this one for help. For exa
 
 A bot's settings have a **Face** page, which **Change face** on Profile also opens. It shows the bot as it will look, on a stage in its colour over a sample of its message bubble, then every shape and colour: nineteen shapes in twenty-one colours. Each pick is saved at once. **Shuffle** gives a face none of your other bots has, and **Use a photo** takes a picture in its place; picking a shape or a colour again, or **Back to a face**, brings the face back. A new bot gets a face at random, with Shuffle and Change face in the New bot window. A picked face is kept with the bot on the daemon, so the web app, the desktop app, and the mobile app all draw it. The bot's message bubbles take a light wash of its face colour in chats and rooms, so you can tell bots apart at a glance. A bot with a photo keeps grey bubbles. The mobile app has the same page behind **Change face** on a bot's profile. On an older daemon a picked face is saved only as a picture: the web and desktop apps still draw it live, and the mobile app shows the picture.
 
-Faces have two capsule eyes, as on the Hexbot icon. In the web and desktop apps, a face sways, glances, and blinks while idle. While the bot thinks, the face folds into three bobbing dots; while it writes, into a pencil; while it searches, it peers around; while it works, it bobs and narrows its eyes in concentration. Now and then a busy or happy face turns all the way round. Faces in the roster and in chat and room headers, including every face in a room, match their status dot: working, listening (a tilt from side to side) when it needs you, or happy (a hop) when an unseen reply is done. Two bots asking each other turn toward each other. The Hexbot mark dozes while the app has lost its connection. Reduced motion keeps each expression without animation. Mobile draws the same settled expressions.
+Faces have two capsule eyes, as on the Hexbot icon. In the web and desktop apps, a face sways, glances, and blinks while idle. While the bot thinks, the face folds into three bobbing dots; while it writes, into a pencil; while it searches, it peers around; while it reads, its eyes go down the page a line at a time; while it waits on your answer, it listens; while it works, it bobs and narrows its eyes in concentration. Now and then a busy or happy face turns all the way round. Faces in the roster and in chat and room headers, including every face in a room, match their status dot: working, listening (a tilt from side to side) when it needs you, or happy (a hop) when an unseen reply is done. Two bots asking each other turn toward each other. The Hexbot mark dozes while the app has lost its connection. Reduced motion keeps each expression without animation. Mobile draws the same settled expressions.
 
 Faces also react to what happens. A bot looks shy when you thank it, sheepish when you correct it, determined when you ask it to try again, surprised when something is urgent, amused when you laugh, excited at good news, cheerful when you greet it, and curious about other requests. It looks confused when a step fails and frustrated after several, sad when a reply fails or it has to apologise, relieved when it gets there after a failed step, proud after a long job, and it celebrates passing tests, merges, and deploys. Left alone in an open chat it gets bored, then drowsy, and wakes when something happens. Hexbot reads these from the conversation; it never asks the model, so they cost nothing. The mobile app shows them in a bot's chat.
 
@@ -83,6 +83,22 @@ Changes reach the chat at different times:
 When a chat grows past what the model can hold, Hexbot summarises the older messages so the chat can go on.
 
 A summary keeps the thread of the work but not every detail. What lasts goes into the bot's memory and notes, and the bot can search the chat's history from before its latest summary when it needs an exact detail.
+
+## What a bot is doing
+
+While a bot works, a line under its messages says what it is doing: "Thinking…" before anything happens, then the step it is on, such as "Opening Taobao", "Searching the web for CER dates", or "Reading notes.md", and "Typing…" while it writes its reply. Its face beside the line follows the step. Hexbot builds the words from the step itself and never asks the model, so they cost nothing. A page is named by its site and a file by its own name; a command is never shown. The line goes when the bot is done. The side panel's Computer tab still lists every step.
+
+## Tags
+
+What a message names can be clicked. A web page shows its site's icon and opens in your browser. A bot shows its face and its name in its colour, and opens the private conversation between it and the bot that named it. A file opens beside the chat. A room, a Settings page, a plugin, and a skill open where they live. A bot's scheduled jobs open in the phone app, which has the page for them. When a bot messages another bot, a centred line under its turn marks it with that bot's tag: "Messaged Biology", or "Biology helped" once a reply came back.
+
+Tags work in chats and rooms, in the web, desktop, and mobile apps. The mobile app shows a globe in place of a site's icon, and a bot's name in its colour without its face. A site's icon is asked of that site and no one else, and never of an address on your own network.
+
+## Reactions
+
+In a bot's chat you can react to anything the bot said: point at the message and choose the face beside it, or hold the message on a phone, then pick an emoji. Picking the same emoji again takes it back. The bot learns of your reactions with your next message, so a thumbs-up is a quick way to say a result was right. A bot can react to your latest message too.
+
+Each of you has one reaction a message. Reactions are in a bot's chat only, not in rooms.
 
 ## Formulas
 

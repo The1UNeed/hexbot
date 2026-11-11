@@ -229,8 +229,8 @@ export type FaceEmotion =
 
 /**
  * What the face is doing or feeling. The capsule eyes change with it: upright
- * while idle, wide while it waits on you, narrowed and lowered while it
- * writes, squinted when something went well, shut when it sleeps.
+ * while idle, wide while it waits on you, lowered to the page while it reads,
+ * narrowed and lowered while it writes, squinted when something went well, shut when it sleeps.
  */
 export type FaceMood =
   | 'computer'
@@ -238,6 +238,7 @@ export type FaceMood =
   | 'idle'
   | 'listening'
   | 'loading'
+  | 'reading'
   | 'searching'
   | 'sleeping'
   | 'thinking'
@@ -280,6 +281,8 @@ export const EYE_MOODS: Record<FaceMood, EyePose> = {
   idle: { dx: 0, dy: 0, size: 13.5, squash: 1, turn: 0 },
   listening: { dx: 0, dy: 1, size: 14.5, squash: 1, turn: 0 },
   loading: { dx: 0, dy: 0, size: 11, squash: 1, turn: 0 },
+  // Lowered to the page and narrowed a little.
+  reading: { dx: 0, dy: 4, size: 11.5, squash: 0.8, turn: 0 },
   searching: { dx: 0, dy: -2, size: 12.5, squash: 1, turn: 0 },
   sleeping: { dx: 0, dy: 3, size: 9, squash: 0.2, turn: 90 },
   thinking: { dx: 2, dy: -4, size: 11, squash: 1, turn: 0 },

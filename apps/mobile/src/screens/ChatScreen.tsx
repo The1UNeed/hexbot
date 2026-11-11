@@ -25,6 +25,7 @@ import {
 } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
+import type { WorkLabel } from '../../../web/src/lib/work-label'
 import { messageText } from '../core/message-text'
 
 import {
@@ -56,6 +57,7 @@ import type { Rpc } from '../core/types'
 import { AttachMenu } from './AttachMenu'
 import { FileCard } from './FileCard'
 import { MediaAttachment } from './MediaAttachment'
+import { MessageMenu } from './MessageMenu'
 import { EmailDraftCard } from './EmailDraftCard'
 import { PluginCard } from './PluginCard'
 import { SelectTextSheet } from './SelectTextSheet'
@@ -84,9 +86,12 @@ export interface ChatScreenProps {
 
   /** The transcript, oldest first. */
   items: ChatItem[]
-  /** A bot is working but has not written anything yet. */
-  /** `computer`: the bot acts on the bots' computer, so its face is a moving pointer. */
-  waiting?: { computer?: boolean; label?: string | null; who?: FaceSource | null } | null
+  /**
+   * A bot is working and writing nothing right now: what it does, in two parts
+   * ("Opening" "Taobao"), and the face that goes with it. `computer` is a
+   * moving pointer.
+   */
+  waiting?: { label: WorkLabel; mood?: FaceMood; who?: FaceSource | null } | null
   /** A turn is running; the composer offers Stop, which becomes Send once there is text. */
   busy?: boolean
 
@@ -114,6 +119,14 @@ export interface ChatScreenProps {
   /** Your message Recall can take back; a long press on it offers Recall. */
   recallId?: string | null
   onRecall?: (id: string) => void
+  /**
+   * Leaves your emoji on a bot's message, by its history row; the same emoji
+   * again takes it back. A long press on such a message offers it; a bot's
+   * own chat only.
+   */
+  onReact?: (rowId: string, emoji: string) => void
+  /** Opens the conversation in which `peer` asked `bot`; the ask row opens it. */
+  onOpenThread?: (bot: string, peer: string) => void
 
   archived?: boolean
   onUnarchive?: () => void
@@ -368,7 +381,9 @@ function ChatBody(props: ChatScreenProps) {
     emotion,
     onApprove,
     onOpenFile,
+    onOpenThread,
     onOpenVisual,
+    onReact,
     onRecall,
     recallId,
     renderMessageText,
@@ -377,6 +392,10 @@ function ChatBody(props: ChatScreenProps) {
   } = props
   // The text a long press chose to select from; the sheet shows while it is set.
   const [selecting, setSelecting] = useState<string | null>(null)
+  // The bot's message a long press chose to react to; its menu shows while it is set.
+  const [reacting, setReacting] = useState<null | { mine?: string; rowId: string; text: string }>(
+    null
+  )
   // Read at the press, so a message streaming in does not draw every row again.
   const latest = useRef(items)
   latest.current = items
@@ -386,21 +405,31 @@ function ChatBody(props: ChatScreenProps) {
       const item = latest.current.find(
         (entry): entry is MessageItem => entry.kind === 'message' && entry.id === id
       )
-      // The browser preview selects with the mouse; a press there only recalls.
-      if (Platform.OS === 'web' || !item?.text) return recall?.()
+      if (!item?.text) return recall?.()
       // What the bubble shows: a bot's Markdown marks are drawn, not written.
       const text =
         item.role === 'user' || !renderMessageText ? item.text : messageText(item.text)
+      // A bot's message that can take a reaction opens the menu with the emoji row.
+      if (item.role === 'bot' && item.rowId && onReact && !item.streaming) {
+        setReacting({
+          mine: item.reactions?.find(reaction => reaction.mine)?.emoji,
+          rowId: item.rowId,
+          text
+        })
+        return
+      }
+      // The browser preview selects with the mouse; a press there only recalls.
+      if (Platform.OS === 'web') return recall?.()
       messageMenu({
         copy: () => void Clipboard.setStringAsync(text),
         select: () => setSelecting(text),
         recall
       })
     },
-    [onRecall, recallId, renderMessageText]
+    [onReact, onRecall, recallId, renderMessageText]
   )
   const waitingLabel = waiting?.label
-  const waitingComputer = !!waiting?.computer
+  const waitingMood = waiting?.mood
   const waitingWho = waiting?.who ?? (room ? null : fallbackFace)
   const renderItem = useCallback(
     ({ item: { entry, continued } }: ListRenderItemInfo<ListEntry>) => {
@@ -417,13 +446,11 @@ function ChatBody(props: ChatScreenProps) {
           onApprove={entry.kind === 'approval' ? onApprove : undefined}
           rpc={entry.kind === 'approval' ? rpc : undefined}
           onOpenVisual={entry.kind === 'visual' ? onOpenVisual : undefined}
+          onOpenThread={entry.kind === 'ask' ? onOpenThread : undefined}
+          onReact={entry.kind === 'message' ? onReact : undefined}
           waitingLabel={entry.kind === 'waiting' ? waitingLabel : undefined}
           waitingWho={entry.kind === 'waiting' ? waitingWho : undefined}
-          mood={
-            entry.kind === 'waiting'
-              ? (emotion ?? (waitingComputer ? 'computer' : undefined))
-              : undefined
-          }
+          mood={entry.kind === 'waiting' ? (emotion ?? waitingMood) : undefined}
         />
       )
       return entry.id === flash?.id ? (
@@ -446,9 +473,13 @@ function ChatBody(props: ChatScreenProps) {
       onOpenFile,
       rpc,
       onOpenVisual,
-      waitingLabel,
+      onOpenThread,
+      onReact,
+      // The words, not the object the parent builds anew each time.
+      waitingLabel?.verb,
+      waitingLabel?.object,
       waitingWho,
-      waitingComputer,
+      waitingMood,
       emotion
     ]
   )
@@ -456,6 +487,13 @@ function ChatBody(props: ChatScreenProps) {
   return (
     <>
       <SelectTextSheet onClose={() => setSelecting(null)} text={selecting} />
+      <MessageMenu
+        message={reacting}
+        onClose={() => setReacting(null)}
+        onCopy={() => reacting && void Clipboard.setStringAsync(reacting.text)}
+        onReact={emoji => reacting && onReact?.(reacting.rowId, emoji)}
+        onSelect={() => reacting && setSelecting(reacting.text)}
+      />
       {items.length === 0 && !waiting && opening ? (
         <View style={styles.empty} testID="chat-opening">
           <LoadingFace {...(face ?? { name: title })} name={title} />
@@ -574,6 +612,8 @@ const TranscriptEntry = memo(function TranscriptEntry({
   onOpenFile,
   rpc,
   onOpenVisual,
+  onOpenThread,
+  onReact,
   waitingLabel,
   waitingWho,
   mood
@@ -589,13 +629,17 @@ const TranscriptEntry = memo(function TranscriptEntry({
   onOpenFile?: ChatScreenProps['onOpenFile']
   rpc?: Rpc
   onOpenVisual?: ChatScreenProps['onOpenVisual']
-  waitingLabel?: string | null
+  onOpenThread?: ChatScreenProps['onOpenThread']
+  onReact?: ChatScreenProps['onReact']
+  waitingLabel?: WorkLabel
   waitingWho?: FaceSource | null
   mood?: FaceMood
 }) {
   switch (entry.kind) {
     case 'waiting':
       return <WaitingRow label={waitingLabel} mood={mood} who={waitingWho} />
+    case 'ask':
+      return <AskRow ask={entry} onOpen={onOpenThread} />
     case 'day':
       return (
         <Text align="center" style={styles.day} tone="muted" variant="caption">
@@ -660,7 +704,13 @@ const TranscriptEntry = memo(function TranscriptEntry({
           renderText={renderText}
           loadMedia={loadMedia}
           onOpenFile={onOpenFile}
-          showAuthor={room && entry.role !== 'user' && !continued}
+          onReact={onReact}
+          // In a room every bot is named; in a thread between bots, the one that asks.
+          showAuthor={
+            (room || (!!entry.author && entry.author.name !== face?.name)) &&
+            entry.role !== 'user' &&
+            !continued
+          }
         />
       )
     }
@@ -675,6 +725,7 @@ function MessageBubble({
   renderText,
   loadMedia,
   onOpenFile,
+  onReact,
   showAuthor
 }: {
   /** The thread's bot, for replies that do not name one. */
@@ -686,6 +737,7 @@ function MessageBubble({
   renderText?: (item: MessageItem) => ReactNode
   loadMedia?: ChatScreenProps['loadMedia']
   onOpenFile?: ChatScreenProps['onOpenFile']
+  onReact?: ChatScreenProps['onReact']
 }) {
   const theme = useTheme()
   const mine = item.role === 'user'
@@ -726,6 +778,36 @@ function MessageBubble({
             </Text>
           )}
         </Pressable>
+      ) : null}
+      {/* Tucked under the bubble's corner: yours on a bot's message, the bot's on yours. */}
+      {item.reactions?.length ? (
+        <View style={styles.reactions} testID={`chat-reactions-${item.id}`}>
+          {item.reactions.map(reaction => {
+            const remove =
+              reaction.mine && item.rowId && onReact
+                ? () => onReact(item.rowId!, reaction.emoji)
+                : undefined
+            return (
+              <Pressable
+                accessibilityHint={remove ? 'Removes your reaction' : undefined}
+                accessibilityLabel={
+                  reaction.mine ? `You reacted ${reaction.emoji}` : `Reacted ${reaction.emoji}`
+                }
+                accessibilityRole={remove ? 'button' : 'text'}
+                disabled={!remove}
+                hitSlop={8}
+                key={`${reaction.mine ? 'mine' : 'bot'}-${reaction.emoji}`}
+                onPress={remove}
+                style={[
+                  styles.reactionChip,
+                  { backgroundColor: theme.background, borderColor: theme.hairline }
+                ]}
+              >
+                <Text style={styles.reactionEmoji}>{reaction.emoji}</Text>
+              </Pressable>
+            )
+          })}
+        </View>
       ) : null}
       {item.attachments?.length ? (
         <View style={[styles.attachments, { justifyContent: mine ? 'flex-end' : 'flex-start' }]}>
@@ -788,22 +870,88 @@ function messageMenu(actions: { copy: () => void; select: () => void; recall?: (
   )
 }
 
+/**
+ * The live line while a bot works: its face and what it is doing, in two
+ * tones. The specific part ("Taobao" in "Opening Taobao") is drawn stronger
+ * than the verb, as on the web.
+ */
 function WaitingRow({
   label,
   mood,
   who
 }: {
-  label?: string | null
+  label?: WorkLabel
   mood?: FaceMood
   who?: FaceSource | null
 }) {
+  const theme = useTheme()
+  const verb = label?.verb ?? 'Thinking…'
+
   return (
-    <View accessibilityLiveRegion="polite" style={styles.waiting} testID="chat-waiting">
+    <View
+      accessibilityLabel={label?.object ? `${verb} ${label.object}` : verb}
+      accessibilityLiveRegion="polite"
+      style={styles.waiting}
+      testID="chat-waiting"
+    >
       {who ? <BotFace {...who} mood={mood ?? 'working'} size={26} /> : null}
-      <Text tone="muted" variant="footnote">
-        {label || 'Thinking…'}
+      <Text numberOfLines={1} style={styles.waitingText} tone="muted" variant="footnote">
+        {verb}
+        {label?.object ? (
+          <Text style={{ color: withAlpha(theme.text, 0.8) }} variant="footnote">
+            {` ${label.object}`}
+          </Text>
+        ) : null}
       </Text>
     </View>
+  )
+}
+
+/**
+ * One bot messaging another in a turn, marked with the other bot's face and
+ * name: "Messaged" Writer, Writer "helped". Opens the conversation between the
+ * two when it can.
+ */
+function AskRow({
+  ask,
+  onOpen
+}: {
+  ask: Extract<ChatItem, { kind: 'ask' }>
+  onOpen?: ChatScreenProps['onOpenThread']
+}) {
+  const paint = ask.face ? faceColor(ask.face) : null
+  const open = onOpen && ask.bot && ask.peer ? () => onOpen(ask.bot!, ask.peer!) : undefined
+
+  return (
+    <Pressable
+      accessibilityHint={open ? 'Opens their conversation' : undefined}
+      accessibilityLabel={[ask.before, ask.name, ask.after].filter(Boolean).join(' ')}
+      accessibilityRole={open ? 'button' : 'text'}
+      disabled={!open}
+      hitSlop={6}
+      onPress={open}
+      style={({ pressed }) => [styles.ask, { opacity: pressed ? 0.6 : 1 }]}
+      testID={`chat-ask-${ask.id}`}
+    >
+      {ask.before ? (
+        <Text tone="muted" variant="caption">
+          {ask.before}
+        </Text>
+      ) : null}
+      {ask.face ? <BotFace {...ask.face} size={16} /> : null}
+      <Text
+        style={[styles.askName, paint ? { color: paint.color } : null]}
+        tone={paint ? undefined : 'muted'}
+        variant="caption"
+      >
+        {ask.name}
+      </Text>
+      {ask.after ? (
+        <Text tone="muted" variant="caption">
+          {ask.after}
+        </Text>
+      ) : null}
+    </Pressable>
   )
 }
 
@@ -1094,6 +1242,16 @@ const styles = StyleSheet.create({
   approvalButton: { minHeight: 44, paddingHorizontal: 18 },
   approvalHead: { alignItems: 'center', flexDirection: 'row', gap: 8 },
   archived: { alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingTop: 12 },
+  // In the middle of the column, like the time between messages.
+  ask: {
+    alignItems: 'center',
+    alignSelf: 'center',
+    flexDirection: 'row',
+    gap: 5,
+    marginTop: 10,
+    paddingHorizontal: 4
+  },
+  askName: { fontWeight: '600' },
   archivedText: { textAlign: 'center' },
   attachments: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 4, maxWidth: '82%' },
   author: { alignItems: 'center', flexDirection: 'row', gap: 6, marginBottom: 4, marginLeft: 4 },
@@ -1141,6 +1299,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4
   },
   joined: { marginTop: 4 },
+  reactionChip: {
+    alignItems: 'center',
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    height: 24,
+    justifyContent: 'center',
+    minWidth: 30,
+    paddingHorizontal: 5
+  },
+  reactionEmoji: { fontSize: 14, lineHeight: 18 },
+  reactions: { flexDirection: 'row', gap: 4, marginTop: -8, paddingHorizontal: 10, zIndex: 1 },
   notice: { marginTop: 14, paddingHorizontal: 24 },
   pending: { gap: 8 },
   pendingFile: {
@@ -1183,5 +1352,6 @@ const styles = StyleSheet.create({
   visualOpen: { borderRadius: 999, justifyContent: 'center', minHeight: 36, paddingHorizontal: 14 },
   visualText: { flex: 1, gap: 2 },
   waiting: { alignItems: 'center', flexDirection: 'row', gap: 8, marginTop: 14 },
+  waitingText: { flexShrink: 1 },
   wellButton: { marginBottom: 6, marginRight: 6 }
 })

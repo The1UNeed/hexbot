@@ -438,6 +438,8 @@ impl App {
                 "recall": true,
                 // `hexbot.sections.history` reads a chat without starting its bot.
                 "section_history": true,
+                // `hexbot.reactions.*`: an emoji on a message in a bot's chat.
+                "reactions": true,
                 "home": self.home
             })),
             "hexbot.sections.history" => {
@@ -508,6 +510,15 @@ impl App {
                     if result.is_ok() && crate::passwords::CHANGES.contains(&method) {
                         self.events
                             .emit(owner, None, "hexbot.passwords.changed", json!({}));
+                    }
+                    result
+                } else if let Some(result) = crate::reactions::call(&self.home, owner, method, p) {
+                    // Every app showing the chat draws the reaction.
+                    if method == "hexbot.reactions.set"
+                        && let Ok(changed) = &result
+                    {
+                        self.events
+                            .emit(owner, None, "hexbot.reactions.changed", changed.clone());
                     }
                     result
                 } else if let Some(result) = crate::computers::call(&self.home, method, p).await {

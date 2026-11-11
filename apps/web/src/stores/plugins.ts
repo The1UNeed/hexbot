@@ -22,6 +22,12 @@ import { connectionRead } from './connection'
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
+/** What a tag in a message named: a connector or MCP server, or a skill. */
+export interface Sought {
+  kind: 'plugin' | 'skill'
+  name: string
+}
+
 export interface PluginsState {
   configure: (plugin: Plugin, change: PluginConfigureInput) => Promise<void>
   error: null | string
@@ -34,6 +40,10 @@ export interface PluginsState {
   remove: (plugin: Plugin) => Promise<void>
   /** Forget everything: another daemon has other plugins and bots. */
   reset: () => void
+  /** Asks the page to show one plugin or skill, as a tag in a message does. */
+  seek: (sought: Sought) => void
+  /** The plugin or skill a tag asked for; the page takes it once its list is in. */
+  sought: null | Sought
   /** `keepWaiting`: also keep grants still waiting for setup, which the picker does not show. */
   setBots: (plugin: Plugin, bots: string[], keepWaiting?: boolean) => Promise<void>
 }
@@ -52,6 +62,11 @@ export const usePlugins = create<PluginsState>((set, get) => {
     loaded: false,
     loading: false,
     plugins: [],
+    sought: null,
+
+    seek(sought) {
+      set({ sought })
+    },
 
     async refresh() {
       const current = connectionRead()
@@ -77,7 +92,7 @@ export const usePlugins = create<PluginsState>((set, get) => {
 
     reset() {
       latest++
-      set({ error: null, loaded: false, loading: false, plugins: [] })
+      set({ error: null, loaded: false, loading: false, plugins: [], sought: null })
     },
 
     async setBots(plugin, bots, keepWaiting = true) {

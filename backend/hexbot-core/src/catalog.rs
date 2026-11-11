@@ -2413,6 +2413,7 @@ fn delete_section(home: &Path, caller: &str, id: &str, purge: bool) -> Result<Op
             if tx.execute("DELETE FROM sections WHERE id=?", [id])? == 0 {
                 return Err(Error::new(4204, "section not found"));
             }
+            tx.execute("DELETE FROM message_reactions WHERE section_id=?", [id])?;
             crate::settings::resolve_private_turn_failures(
                 &tx,
                 id,
@@ -2768,6 +2769,10 @@ fn delete_bot(home: &Path, caller: &str, name: &str) -> Result<Value> {
             ));
         }
         bot_owner(home, caller, name)?;
+        tx.execute(
+            "DELETE FROM message_reactions WHERE section_id IN (SELECT id FROM sections WHERE bot=?)",
+            [name],
+        )?;
         tx.execute("DELETE FROM sections WHERE bot=?", [name])?;
         // Threads where this bot asked others stay with their recipients.
         tx.execute("UPDATE sections SET archived_at=? WHERE peer_bot=? AND owner_id=? AND archived_at IS NULL", params![now(), name, caller])?;

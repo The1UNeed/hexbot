@@ -113,7 +113,7 @@ describe('askLabel', () => {
     )
     expect(askLabel({ sent: false, status: 'running' }, 'Writer', null)).toBe('Asking Writer')
     expect(askLabel({ sent: false, status: 'ok' }, 'Writer', 'Research')).toBe('Writer helped')
-    expect(askLabel({ sent: true, status: 'ok' }, 'Writer', 'Research')).toBe('Sent to Writer')
+    expect(askLabel({ sent: true, status: 'ok' }, 'Writer', 'Research')).toBe('Messaged Writer')
     expect(askLabel({ sent: false, status: 'error' }, 'Writer', 'Research')).toBe('Asked Writer')
   })
 
@@ -122,7 +122,7 @@ describe('askLabel', () => {
       'Research is asking a teammate'
     )
     expect(askLabel({ sent: false, status: 'ok' }, null, 'Research')).toBe('A teammate helped')
-    expect(askLabel({ sent: true, status: 'ok' }, null, 'Research')).toBe('Sent to a teammate')
+    expect(askLabel({ sent: true, status: 'ok' }, null, 'Research')).toBe('Messaged a teammate')
   })
 })
 
@@ -139,7 +139,7 @@ describe('AskingRow', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
-  it('shows both faces turned to each other while the ask runs, then that the target helped', () => {
+  it('shows both faces turned to each other while the ask runs, then the target as a tag', () => {
     const { rerender } = render(
       <AskingRow
         message={message([call({ result: null, status: 'running' })], true)}
@@ -147,7 +147,8 @@ describe('AskingRow', () => {
       />
     )
 
-    expect(screen.getByText('Scout is asking Writer')).toBeVisible()
+    expect(screen.getByTestId('asking-row')).toHaveTextContent('Scout is asking Writer')
+    expect(screen.getByRole('status', { name: 'Scout is asking Writer' })).toBeVisible()
     expect(screen.getByRole('img', { name: 'Scout' })).toHaveAttribute('data-look', 'right')
     expect(screen.getByRole('img', { name: 'Writer' })).toHaveAttribute('data-look', 'left')
     // Writer listens until its reply streams; nothing nods yet.
@@ -155,11 +156,12 @@ describe('AskingRow', () => {
     expect(screen.getByTestId('asking-row')).toHaveAttribute('data-status', 'running')
 
     rerender(<AskingRow message={message([call({})])} sender="scout" />)
-    expect(screen.getByText('Writer helped')).toBeVisible()
+    expect(screen.getByTestId('asking-row')).toHaveTextContent('Writer helped')
     expect(screen.getByTestId('asking-row')).toHaveAttribute('data-status', 'done')
-    expect(screen.getByRole('img', { name: 'Writer' })).toHaveAttribute('data-look', 'left')
+    // Done, the row is the other bot's tag: its face and its name, and no second face.
     expect(screen.getByRole('img', { name: 'Writer' })).toHaveAttribute('data-mood', 'idle')
-    expect(screen.queryByText(/is asking/)).toBeNull()
+    expect(screen.queryByRole('img', { name: 'Scout' })).toBeNull()
+    expect(screen.getByTestId('asking-row')).not.toHaveTextContent(/is asking/)
   })
 
   it('shows the reply as it streams, from the thread it looked up once', async () => {
@@ -190,14 +192,14 @@ describe('AskingRow', () => {
     expect(screen.getByRole('img', { name: 'Writer' })).toHaveAttribute('data-mood', 'listening')
   })
 
-  it('says a message was sent when no reply was waited for', () => {
+  it('marks a message sent without waiting for a reply', () => {
     render(
       <AskingRow
         message={message([call({ result: { section_id: 'th1', status: 'sent' } })])}
         sender="scout"
       />
     )
-    expect(screen.getByText('Sent to Writer')).toBeVisible()
+    expect(screen.getByTestId('asking-row')).toHaveTextContent('Messaged Writer')
   })
 
   it('opens the conversation between the two bots, with the thread id once known', () => {
@@ -223,7 +225,7 @@ describe('AskingRow', () => {
 
   it('names the target by its handle when its profile is unknown', () => {
     render(<AskingRow message={message([call({ args: { to: 'planner' } })])} sender="scout" />)
-    expect(screen.getByText('planner helped')).toBeVisible()
+    expect(screen.getByTestId('asking-row')).toHaveTextContent('planner helped')
   })
 
   it('tells a room member only that a teammate was asked, with nothing to open', () => {
@@ -239,7 +241,7 @@ describe('AskingRow', () => {
       />
     )
 
-    expect(screen.getByText('Scout is asking a teammate')).toBeVisible()
+    expect(screen.getByTestId('asking-row')).toHaveTextContent('Scout is asking a teammate')
     expect(screen.getByRole('img', { name: 'Teammate' })).toBeVisible()
     expect(screen.queryByRole('button')).toBeNull()
     // Without a name there is no thread to look up.
@@ -251,7 +253,7 @@ describe('AskingRow', () => {
         sender="scout"
       />
     )
-    expect(screen.getByText('A teammate helped')).toBeVisible()
+    expect(screen.getByTestId('asking-row')).toHaveTextContent('A teammate helped')
     expect(screen.queryByRole('button')).toBeNull()
   })
 })

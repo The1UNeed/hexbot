@@ -1127,6 +1127,48 @@ file a message shared once, as a card under the bot's reply that opens it
 beside the chat; files the bot only wrote or edited do not show. A picture, video or audio
 file shows or plays there instead of its card.
 
+Reactions. One emoji left on a message in a bot's chat: the owner's on what
+the bot said, the bot's on the owner's latest message. Each side has at most
+one on a message, and a new one replaces it. Daemons that have them say
+`reactions: true` in `hexbot.info`. They are kept in `message_reactions`,
+beside the history, by the message's `row_id`, and go with the chat when it
+is deleted. Rooms, threads between bots (`peer_bot`), an earlier Check-ins
+(`purpose`) and scheduled jobs have none: `4204` for such a section.
+
+- `hexbot.reactions.list {section_id}` → `{reactions: [Reaction]}`, oldest
+  first. `Reaction = {message_id, emoji, by: "user"|"bot", bot?, at}`; `bot`
+  names the bot when `by` is `bot`, and `at` is Unix seconds. Owner-only.
+- `hexbot.reactions.set {section_id, message_id, emoji}` → `{section_id,
+  message_id, reactions: [Reaction]}`, the message's reactions now. A null or
+  empty `emoji` takes the owner's reaction back. `emoji` is one emoji: up to
+  12 characters with no letters, digits, spaces or controls (`4202`
+  otherwise). `message_id` names an assistant row the chat still shows:
+  `4204` when it does not, `4202` for the owner's own message. Owner-only.
+- Event `hexbot.reactions.changed {section_id, message_id, reactions,
+  input_id?}` follows every change, the bot's included. `input_id` is the
+  input the owner's message was sent as, when the row carries one, so a
+  client still showing its own copy of that message finds it.
+
+The `hexbot_react {emoji?}` tool leaves the bot's emoji on the owner's latest
+visible message in its chat and answers `{reacted, note}`; without `emoji` it
+takes the reaction back. Like a visual it is a base tool, left out of rooms,
+threads between bots, subagents and scheduled jobs. The owner's reactions
+never change the conversation Pi holds. The daemon hands them to the chat
+with the owner's next message, as a hidden note after it, by the way
+heartbeat messages enter (`hexbot_heartbeat_context`, whose ids for
+reactions are `reaction:<row_id>:<emoji>`): at most the eight newest, offered at
+most twice, marked taken when Pi reports the note. A reaction on a message
+the chat no longer shows, such as a recalled one, is dropped.
+
+Tags. The prompt's `# Tags` section teaches bots to name things as Markdown
+links the apps make clickable: a web page (`https://…`), a bot (`@handle`), a
+file (an absolute path), and `hexbot:room/<name>`, `hexbot:jobs/<handle>`,
+`hexbot:settings/<page>`, `hexbot:plugin/<name>` and `hexbot:skill/<name>`.
+The daemon neither parses nor checks them; the apps read them with
+`apps/web/src/lib/tags.ts`, and a target that names nothing reads as plain
+words. The section is part of the prompt layout, so a chat takes it with its
+next message, as it takes a tool change.
+
 Media in a chat. A message's files are named in its stored text: a user row
 ends with `\n\nAttached files:\n` and one kept path per line, which clients
 show as attachments rather than words. A bot's media tools name each file they

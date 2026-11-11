@@ -172,6 +172,15 @@ describe('Settings, Plugins', () => {
     ).toEqual(['Every bot', 'HexBot', 'Owl'])
   })
 
+  it('shows the server a tag in a message named, on a first visit', async () => {
+    usePlugins.getState().seek({ kind: 'plugin', name: 'GitHub' })
+    render(<PluginsSettings />)
+    // Its tab, searched for it, once the list is in.
+    expect(await screen.findByLabelText('Search MCP servers')).toHaveValue('github')
+    expect(screen.getByText('Needs GITHUB_TOKEN')).toBeInTheDocument()
+    expect(usePlugins.getState().sought).toBeNull()
+  })
+
   it('searches only the kind you are looking at', async () => {
     render(<PluginsSettings />)
     await show('Skills')

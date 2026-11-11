@@ -22,6 +22,7 @@ vi.mock('react-native', async () => {
 vi.mock('@expo/vector-icons', () => ({ Ionicons: () => null }))
 vi.mock('expo-clipboard', () => ({ setStringAsync: vi.fn() }))
 vi.mock('../screens/SelectTextSheet', () => ({ SelectTextSheet: () => null }))
+vi.mock('../screens/MessageMenu', () => ({ MessageMenu: () => null }))
 vi.mock('../ui/PluginIcon', () => ({ PluginIcon: () => null }))
 vi.mock('../screens/MediaAttachment', () => ({ MediaAttachment: () => null }))
 vi.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ bottom: 0 }) }))

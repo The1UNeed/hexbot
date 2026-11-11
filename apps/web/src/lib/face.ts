@@ -8,6 +8,7 @@ export const FACE_MOODS = [
   'idle',
   'thinking',
   'searching',
+  'reading',
   'working',
   'writing',
   'computer',
