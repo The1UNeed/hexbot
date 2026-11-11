@@ -351,6 +351,9 @@ pub(crate) fn replace_in(
         let mut pieces: Vec<(usize, usize)> = vec![];
         let mut joined = String::new();
         let mut in_text = false;
+        // Where a tab or a line break sits in the text: the words either
+        // side of one are apart, and no match runs across it.
+        let mut gaps: Vec<usize> = vec![];
         for (j, tok) in toks.iter().enumerate().take(end).skip(i) {
             if tok.opens(text) {
                 in_text = !matches!(tok, Tok::Open { empty: true, .. });
@@ -359,12 +362,21 @@ pub(crate) fn replace_in(
             } else if in_text && matches!(tok, Tok::Text(_) | Tok::Literal { .. }) {
                 pieces.push((j, joined.len()));
                 joined.push_str(&text_of(tok));
+            } else if ["w:tab", "w:br", "w:cr", "a:br"]
+                .iter()
+                .any(|tag| tok.opens(tag))
+            {
+                gaps.push(joined.len());
             }
         }
         let hits: Vec<usize> = if nested || end == i {
             vec![]
         } else {
-            joined.match_indices(find).map(|(at, _)| at).collect()
+            joined
+                .match_indices(find)
+                .map(|(at, _)| at)
+                .filter(|at| !gaps.iter().any(|gap| gap > at && *gap < at + find.len()))
+                .collect()
         };
         if hits.is_empty() {
             out.push_str(toks[i].raw());

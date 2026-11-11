@@ -83,6 +83,44 @@ fn times_are_a_day_a_local_time_or_an_instant() {
     assert_eq!(without_offset("2026-11-12T09:00"), "2026-11-12T09:00:00");
 }
 
+/// Fourteen shown calendars, one of which won't answer.
+fn many(asked: &crate::accounts::testing::Asked) -> Reply {
+    match asked.path.as_str() {
+        "/calendar/v3/users/me/calendarList" => Reply::Json(
+            200,
+            json!({"items": (1..=14).map(|n| json!({
+                "id": format!("c{n}"), "summary": format!("Calendar {n}"),
+                "selected": true, "primary": n == 1, "timeZone": "UTC",
+            })).collect::<Vec<_>>()}),
+        ),
+        "/calendar/v3/calendars/c5/events" => {
+            Reply::Json(404, json!({"error": {"message": "gone"}}))
+        }
+        _ => Reply::Json(200, json!({"items": []})),
+    }
+}
+
+/// A calendar past the cap, or one that won't answer, is named: a bot
+/// must not take what it never read for free time.
+#[tokio::test]
+async fn calendars_left_out_of_a_list_are_named() {
+    let (origin, _log) = stand_in(many).await;
+    let home = connected(&["google_calendar"], &origin);
+    let svc = accounts::service("google_calendar").unwrap();
+    let found = list(home.path(), svc, None, None, "", None, 25)
+        .await
+        .unwrap();
+    assert_eq!(
+        found["calendars_not_read"],
+        json!(["Calendar 13", "Calendar 14", "Calendar 5"])
+    );
+    // One calendar, read, leaves nothing to name.
+    let found = list(home.path(), svc, None, None, "", Some("c2"), 25)
+        .await
+        .unwrap();
+    assert!(found.get("calendars_not_read").is_none());
+}
+
 #[tokio::test]
 async fn a_day_lists_every_shown_calendar_in_the_calendars_own_time() {
     let (origin, log) = stand_in(google).await;

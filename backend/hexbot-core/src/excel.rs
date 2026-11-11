@@ -343,7 +343,10 @@ fn serial_text(serial: f64, from_1904: bool) -> Option<String> {
     } else {
         (days as i64, seconds)
     };
-    let time = format!("{:02}:{:02}", seconds / 3_600, seconds % 3_600 / 60);
+    let mut time = format!("{:02}:{:02}", seconds / 3_600, seconds % 3_600 / 60);
+    if seconds % 60 != 0 {
+        time.push_str(&format!(":{:02}", seconds % 60));
+    }
     if days == 0 && !from_1904 {
         return Some(time);
     }

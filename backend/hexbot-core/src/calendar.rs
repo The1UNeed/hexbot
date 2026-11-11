@@ -401,7 +401,7 @@ pub(crate) async fn list(
     let span = Span::new(from, to)?;
     let max = max.clamp(1, MAX_EVENTS);
     let all = calendars(home, svc).await?;
-    let chosen: Vec<&Value> = match calendar.filter(|c| !c.is_empty()) {
+    let mut chosen: Vec<&Value> = match calendar.filter(|c| !c.is_empty()) {
         Some(id) => {
             let found = all
                 .iter()
@@ -417,10 +417,12 @@ pub(crate) async fn list(
             let mut shown: Vec<&Value> = all.iter().filter(|c| c["shown"] == true).collect();
             // The user's own calendar first, so a cap never drops it.
             shown.sort_by_key(|c| c["primary"] != true);
-            shown.truncate(MAX_CALENDARS);
             shown
         }
     };
+    // Calendars past the cap, and those that won't answer, are named in
+    // the answer: a bot must not take them for free time.
+    let mut unread = chosen.split_off(MAX_CALENDARS.min(chosen.len()));
     let (earliest, latest) = (instant_text(span.earliest()), instant_text(span.latest()));
     let zone = if svc.google() {
         chosen
@@ -477,7 +479,10 @@ pub(crate) async fn list(
         // One shared calendar that won't answer doesn't hide the rest.
         let answer = match answer {
             Ok(answer) => answer,
-            Err(_) if chosen.len() > 1 && calendar["primary"] != true => continue,
+            Err(_) if chosen.len() > 1 && calendar["primary"] != true => {
+                unread.push(calendar);
+                continue;
+            }
             Err(e) => return Err(e),
         };
         cut |= answer["nextPageToken"].is_string() || answer["@odata.nextLink"].is_string();
@@ -519,12 +524,16 @@ pub(crate) async fn list(
     });
     let more = cut || events.len() > max;
     events.truncate(max);
-    Ok(json!({
+    let mut out = json!({
         "account": svc.provider.id,
         "time_zone": zone,
         "events": events,
         "more": more,
-    }))
+    });
+    if !unread.is_empty() {
+        out["calendars_not_read"] = unread.iter().map(|c| c["name"].clone()).collect();
+    }
+    Ok(out)
 }
 
 // --- Changing -------------------------------------------------------------

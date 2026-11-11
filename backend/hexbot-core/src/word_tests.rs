@@ -152,6 +152,15 @@ fn replace_leaves_breaks_links_and_other_runs_in_place() {
         ooxml::replace_in(body, "w:p", "w:t", "", "x"),
         (body.to_owned(), 0)
     );
+    // Words either side of a tab or a line break are not one word.
+    let fields =
+        r#"<w:p><w:r><w:t>12</w:t><w:tab/><w:t>34</w:t><w:br/><w:t>1234</w:t></w:r></w:p>"#;
+    let (changed, count) = ooxml::replace_in(fields, "w:p", "w:t", "1234", "9");
+    assert_eq!(count, 1);
+    assert_eq!(
+        changed,
+        r#"<w:p><w:r><w:t>12</w:t><w:tab/><w:t>34</w:t><w:br/><w:t>9</w:t></w:r></w:p>"#
+    );
 }
 
 #[test]

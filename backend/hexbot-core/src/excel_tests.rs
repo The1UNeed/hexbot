@@ -177,6 +177,10 @@ fn dates_and_numbers_read_as_people_write_them() {
         Some("2023-03-15 18:00")
     );
     assert_eq!(serial_text(0.5, false).as_deref(), Some("12:00"));
+    assert_eq!(
+        serial_text(0.5003472222222223, false).as_deref(),
+        Some("12:00:30")
+    );
     assert_eq!(serial_text(0.0, true).as_deref(), Some("1904-01-01"));
     assert_eq!(serial_text(-1.0, false), None);
     assert!(date_format(14, None));

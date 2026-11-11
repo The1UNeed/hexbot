@@ -1306,7 +1306,8 @@ or a clear.
     the calendar's local time (`2026-11-12T09:00`) or a date for a whole
     day, whose last day is included; answers name `time_zone`. An `update`
     with a new `start` and no `end` keeps the event's length. `delete` needs
-    the event's title.
+    the event's title. A `list` over every shown calendar reads at most 12,
+    and `calendars_not_read` names any it left out or could not read.
   - `hexbot_tasks` (Google Tasks, Microsoft To Do): `lists`, `list {list?,
     done?, max?}`; `add {title, notes?, due?, list?}`, `update {id, list?,
     title?, notes?, due?, done?}`, `delete {id, title, list?}`. `due` is a
