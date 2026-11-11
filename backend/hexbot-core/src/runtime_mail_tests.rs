@@ -291,6 +291,13 @@ async fn only_the_user_sends_a_draft_and_sends_what_they_left() {
         }
     };
     assert_eq!(settled["mail_action"], "send");
+    // A stopped section shows no card until Pi settles the stopped run, and
+    // Pi says so in its own time: the next draft waits for it, as the next
+    // turn would.
+    let mut ended = s.run_ended.subscribe();
+    while s.state.lock().unwrap().interrupted {
+        ended.changed().await.unwrap();
+    }
 
     // Saved to Drafts, not sent.
     let waiting = card(&hub);
