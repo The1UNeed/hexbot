@@ -24,7 +24,13 @@ const root = await mkdtemp(join(tmpdir(), 'hexbot signed Windows restart '))
 const user = join(root, 'Jos\u00e9 user'); await mkdir(user)
 const home = join(user, 'state'); await mkdir(home)
 const env = { ...process.env, HEXBOT_HOME: home, HOME: user, USERPROFILE: user, HEXBOT_SERVICE_ROOT: user, HEXBOT_CLI_NO_PATH: '1' }
-const run = (exe, args) => exec(exe, args, { env, windowsHide: true, timeout: 300_000, maxBuffer: 16 * 1024 * 1024 })
+// A failed command's last lines say why. Node prints only the start of a long
+// output, which for an install is download progress.
+const lastLines = text => String(text ?? '').split('\n').filter(line => line && !line.includes('"stage":"download"')).slice(-12).join('\n')
+const run = (exe, args) => exec(exe, args, { env, windowsHide: true, timeout: 300_000, maxBuffer: 16 * 1024 * 1024 }).catch(error => {
+  console.error(`${exe} ${args.join(' ')} failed:\n${lastLines(error.stdout)}\n${lastLines(error.stderr)}`)
+  throw error
+})
 const packagePath = resolve('apps/desktop/package.json')
 const originalPackage = await readFile(packagePath)
 const bundle = resolve('apps/desktop/resources/hexbot-native')
