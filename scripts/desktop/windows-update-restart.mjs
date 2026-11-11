@@ -153,6 +153,10 @@ try {
   console.log(repairOutput.stdout)
   const repaired = await waitJson(installerRunning, value => value.pid !== installed.pid)
   assert.equal(alive(installed.pid), false, 'Headless repair must replace the running owned task instance')
+  // Repair installs the same version again, into a build folder of its own,
+  // and selects it: the task runs that copy, not the one it replaced.
+  selected = JSON.parse(await readFile(join(installHome, 'runtime/native-current.json'), 'utf8')).executable
+  assert.equal((await run(selected, ['version'])).stdout.trim(), nextVersion)
   assert.ok(sameFile(repaired.executable, selected), `${repaired.executable} is not ${selected}`)
   await run(selected, ['service', 'stop'])
   assert.equal(alive(repaired.pid), false)
