@@ -26,6 +26,18 @@ describe('stepLabel', () => {
     expect(line('hexbot_mail', undefined, 'draft')).toBe('Drafting an email')
   })
 
+  it('says what it does in your calendar, files and documents, by action', () => {
+    expect(stepLabel({ name: 'hexbot_calendar', summary: 'list' })).toEqual({
+      object: 'the calendar',
+      verb: 'Checking'
+    })
+    expect(line('hexbot_documents', { action: 'create' })).toBe('Writing a document')
+    expect(line('hexbot_drive')).toBe('Working with your files')
+    expect(stepMood({ name: 'hexbot_spreadsheets', summary: 'read' })).toBe('reading')
+    expect(stepMood({ name: 'hexbot_drive', summary: 'search' })).toBe('searching')
+    expect(stepMood({ name: 'hexbot_tasks', summary: 'add' })).toBe('writing')
+  })
+
   it('says what is searched for, with the query as the specific part', () => {
     expect(stepLabel({ args: { query: 'CER test dates' }, name: 'web_search' })).toEqual({
       object: 'CER test dates',

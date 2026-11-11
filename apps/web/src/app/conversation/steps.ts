@@ -1,6 +1,6 @@
 import { type Ask, ASKING_TOOL, asksOf } from '../../lib/asks'
 import type { Message, ToolCall } from '../../lib/types'
-import { phaseLabel, stepLabel, stepMood, type WorkLabel } from '../../lib/work-label'
+import { phaseLabel, stepLabel, stepMood, type WorkLabel, workspaceLabel } from '../../lib/work-label'
 import { useConnectors } from '../../stores/connectors'
 
 /** Present and past phrasing per built-in tool; unknown tools fall back to their name. */
@@ -69,76 +69,6 @@ const MAIL: Record<string, [live: string, done: string]> = {
   search: ['Searching email', 'Searched email']
 }
 
-/**
- * The user's calendar, tasks, files, documents, spreadsheets and
- * presentations, by tool and action. The daemon sends the action as the
- * call's summary. The first pair is for an action this app doesn't know.
- */
-const WORKSPACE: Record<string, Record<string, [live: string, done: string]>> = {
-  hexbot_calendar: {
-    '': ['Using the calendar', 'Used the calendar'],
-    calendars: ['Checking calendars', 'Checked calendars'],
-    create: ['Adding an event', 'Added an event'],
-    delete: ['Deleting an event', 'Deleted an event'],
-    list: ['Checking the calendar', 'Checked the calendar'],
-    update: ['Changing an event', 'Changed an event']
-  },
-  hexbot_documents: {
-    '': ['Working on a document', 'Worked on a document'],
-    append: ['Adding to a document', 'Added to a document'],
-    create: ['Writing a document', 'Wrote a document'],
-    read: ['Reading a document', 'Read a document'],
-    replace: ['Editing a document', 'Edited a document'],
-    search: ['Searching documents', 'Searched documents']
-  },
-  hexbot_drive: {
-    '': ['Working with your files', 'Worked with your files'],
-    download: ['Downloading a file', 'Downloaded a file'],
-    read: ['Reading a file', 'Read a file'],
-    search: ['Searching your files', 'Searched your files'],
-    upload: ['Uploading a file', 'Uploaded a file']
-  },
-  hexbot_presentations: {
-    '': ['Working on a presentation', 'Worked on a presentation'],
-    add: ['Adding slides', 'Added slides'],
-    create: ['Making a presentation', 'Made a presentation'],
-    read: ['Reading a presentation', 'Read a presentation'],
-    replace: ['Editing a presentation', 'Edited a presentation'],
-    search: ['Searching presentations', 'Searched presentations']
-  },
-  hexbot_spreadsheets: {
-    '': ['Working on a spreadsheet', 'Worked on a spreadsheet'],
-    append: ['Adding rows', 'Added rows'],
-    create: ['Making a spreadsheet', 'Made a spreadsheet'],
-    read: ['Reading a spreadsheet', 'Read a spreadsheet'],
-    search: ['Searching spreadsheets', 'Searched spreadsheets'],
-    write: ['Writing to a spreadsheet', 'Wrote to a spreadsheet']
-  },
-  hexbot_tasks: {
-    '': ['Using your tasks', 'Used your tasks'],
-    add: ['Adding a task', 'Added a task'],
-    delete: ['Deleting a task', 'Deleted a task'],
-    list: ['Checking tasks', 'Checked tasks'],
-    lists: ['Checking task lists', 'Checked task lists'],
-    update: ['Updating a task', 'Updated a task']
-  }
-}
-
-/** "Reading a document", or null for a tool that isn't one of these. */
-export function workspaceLabel(
-  tool: string,
-  action: null | string | undefined,
-  tense: 'done' | 'live'
-): null | string {
-  const actions = WORKSPACE[tool]
-
-  if (!actions) {
-    return null
-  }
-
-  return (actions[(action ?? '').trim()] ?? actions['']!)[tense === 'live' ? 0 : 1]
-}
-
 /** "Searching email", or the plain phrase when the action is unknown. */
 export function mailLabel(action: null | string | undefined, tense: 'done' | 'live'): string {
   const verbs = MAIL[(action ?? '').trim()]
@@ -187,6 +117,7 @@ const NO_PREVIEW: Record<string, [live: string, done: string]> = {
 }
 
 export { type Ask, ASKING_TOOL, askLabel, askTarget, askWords } from '../../lib/asks'
+export { workspaceLabel } from '../../lib/work-label'
 
 /** The bots this turn asked, one entry per bot in first-ask order. */
 export const asks = (message: Pick<Message, 'toolCalls'>): Ask[] => asksOf(message.toolCalls)

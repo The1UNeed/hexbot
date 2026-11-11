@@ -110,6 +110,76 @@ const FIXED: Record<string, WorkLabel> = {
 }
 
 /**
+ * The user's calendar, tasks, files, documents, spreadsheets and
+ * presentations, by tool and action. The daemon sends the action as the
+ * call's summary. The first pair is for an action this app doesn't know.
+ */
+const WORKSPACE: Record<string, Record<string, [live: string, done: string]>> = {
+  hexbot_calendar: {
+    '': ['Using the calendar', 'Used the calendar'],
+    calendars: ['Checking calendars', 'Checked calendars'],
+    create: ['Adding an event', 'Added an event'],
+    delete: ['Deleting an event', 'Deleted an event'],
+    list: ['Checking the calendar', 'Checked the calendar'],
+    update: ['Changing an event', 'Changed an event']
+  },
+  hexbot_documents: {
+    '': ['Working on a document', 'Worked on a document'],
+    append: ['Adding to a document', 'Added to a document'],
+    create: ['Writing a document', 'Wrote a document'],
+    read: ['Reading a document', 'Read a document'],
+    replace: ['Editing a document', 'Edited a document'],
+    search: ['Searching documents', 'Searched documents']
+  },
+  hexbot_drive: {
+    '': ['Working with your files', 'Worked with your files'],
+    download: ['Downloading a file', 'Downloaded a file'],
+    read: ['Reading a file', 'Read a file'],
+    search: ['Searching your files', 'Searched your files'],
+    upload: ['Uploading a file', 'Uploaded a file']
+  },
+  hexbot_presentations: {
+    '': ['Working on a presentation', 'Worked on a presentation'],
+    add: ['Adding slides', 'Added slides'],
+    create: ['Making a presentation', 'Made a presentation'],
+    read: ['Reading a presentation', 'Read a presentation'],
+    replace: ['Editing a presentation', 'Edited a presentation'],
+    search: ['Searching presentations', 'Searched presentations']
+  },
+  hexbot_spreadsheets: {
+    '': ['Working on a spreadsheet', 'Worked on a spreadsheet'],
+    append: ['Adding rows', 'Added rows'],
+    create: ['Making a spreadsheet', 'Made a spreadsheet'],
+    read: ['Reading a spreadsheet', 'Read a spreadsheet'],
+    search: ['Searching spreadsheets', 'Searched spreadsheets'],
+    write: ['Writing to a spreadsheet', 'Wrote to a spreadsheet']
+  },
+  hexbot_tasks: {
+    '': ['Using your tasks', 'Used your tasks'],
+    add: ['Adding a task', 'Added a task'],
+    delete: ['Deleting a task', 'Deleted a task'],
+    list: ['Checking tasks', 'Checked tasks'],
+    lists: ['Checking task lists', 'Checked task lists'],
+    update: ['Updating a task', 'Updated a task']
+  }
+}
+
+/** "Reading a document", or null for a tool that isn't one of these. */
+export function workspaceLabel(
+  tool: string,
+  action: null | string | undefined,
+  tense: 'done' | 'live'
+): null | string {
+  const actions = WORKSPACE[tool]
+
+  if (!actions) {
+    return null
+  }
+
+  return (actions[(action ?? '').trim()] ?? actions['']!)[tense === 'live' ? 0 : 1]
+}
+
+/**
  * The connector behind an `mcp__<server>__<tool>` or `mcp_<server>_<tool>`
  * call, by its first segment. The web app knows the loaded servers and passes
  * a better name as `service`.
@@ -132,6 +202,15 @@ export function stepLabel(step: WorkStep, service?: null | string): WorkLabel {
 
   if (connector) {
     return { object: connector, verb: 'Using' }
+  }
+
+  const workspace = workspaceLabel(step.name, text(args.action) || context, 'live')
+
+  if (workspace) {
+    // "Checking" "the calendar": the first word is what it does.
+    const cut = workspace.indexOf(' ')
+
+    return { object: workspace.slice(cut + 1), verb: workspace.slice(0, cut) }
   }
 
   switch (step.name) {
@@ -292,6 +371,10 @@ const READING = new Set(['read_file', 'skill_view', 'vision_analyze', 'web_extra
 
 const WRITING = new Set(['hexbot_show_html', 'patch', 'skill_manage', 'todo_list', 'write_file'])
 
+const WORKSPACE_READS = new Set(['calendars', 'download', 'list', 'lists', 'read'])
+
+const WORKSPACE_WRITES = new Set(['add', 'append', 'create', 'replace', 'update', 'upload', 'write'])
+
 const LISTENING = new Set(['clarify', 'delegate_task', 'message_bot'])
 
 /**
@@ -308,6 +391,16 @@ export function stepMood(step: WorkStep): StepMood {
 
   if (step.name === 'hexbot_mail') {
     return action === 'search' ? 'searching' : action === 'draft' ? 'writing' : 'reading'
+  }
+
+  if (workspaceLabel(step.name, action, 'live')) {
+    return action === 'search'
+      ? 'searching'
+      : WORKSPACE_READS.has(action)
+        ? 'reading'
+        : WORKSPACE_WRITES.has(action)
+          ? 'writing'
+          : 'working'
   }
 
   if (step.name === 'memory' || step.name === 'hexbot_soul' || step.name === 'hexbot_heartbeat') {
