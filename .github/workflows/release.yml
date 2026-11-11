@@ -141,7 +141,7 @@ jobs:
     needs: [preflight, check]
     if: needs.preflight.outputs.build == 'true' && needs.preflight.outputs.channel == 'nightly'
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4

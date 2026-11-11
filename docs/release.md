@@ -12,8 +12,11 @@ channel is nightly. Manual nightlies and scheduled nightlies with new commits
 include iOS; stable releases and ordinary pushes to `main` do nothing for iOS.
 `apps/mobile/.eas/workflows/testflight.yml` checks the
 mobile app, builds with the production profile, then uploads that exact build
-through the standard EAS Submit job, which works on the free Expo plan.
-Success means Apple accepted the upload; Apple processes the binary afterward.
+with EAS's `testflight` job. That job waits for Apple's processing, adds the
+build to the external group `Website0`, which holds the public link on
+hexbot.app, and submits it for Beta App Review. Success means Apple accepted
+the upload and the review submission; public testers get the build once Apple
+approves it.
 Build numbers increment remotely. The app version remains in
 `apps/mobile/app.config.ts`.
 
@@ -26,9 +29,9 @@ parallel with desktop packaging. A failed iOS job fails the Release run;
 desktop publishing is independent of that job.
 The existing EAS signing credentials and assigned App Store Connect API key
 are used; the production submit profile targets Apple app `6824190699`.
-Enable automatic distribution on the internal TestFlight group once so its
-testers receive subsequent builds. External Beta App Review is not submitted
-by these workflows.
+The internal group `Team (Expo)` receives every build through automatic
+distribution. `Website0` must keep its name (it is set in both workflow files)
+and TestFlight's Test Information must stay filled in for Beta App Review.
 
 `pnpm mobile:testflight` starts the full workflow from a checkout and waits
 for its result. If only uploading failed, use
@@ -37,7 +40,9 @@ that build without incrementing its number or starting another build.
 Both commands return nonzero on workflow failure and print the run link.
 Inspect its failed job logs before retrying. A successful build is not proof
 of a successful upload, and a workflow cannot guarantee Apple approval.
-Do not retry an already accepted build. Full setup is in
+Do not retry an already accepted build: if the upload worked and only the
+group or review step failed, add that build to `Website0` in App Store Connect
+instead. Full setup is in
 `apps/mobile/README.md`.
 
 ## What `release.yml` does

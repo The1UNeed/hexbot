@@ -59,3 +59,11 @@ test('Expo does not also build on every push to main', async () => {
   assert.doesNotMatch(workflow, /^\s+push:/m)
   assert.match(workflow, /workflow_dispatch: \{\}/)
 })
+
+test('every TestFlight upload also reaches the public link group', async () => {
+  for (const name of ['testflight.yml', 'testflight-upload.yml']) {
+    const workflow = await readFile(new URL(`../../apps/mobile/.eas/workflows/${name}`, import.meta.url), 'utf8')
+    assert.match(workflow, /^    type: testflight$/m, name)
+    assert.match(workflow, /^      external_groups: \[Website0\]$/m, name)
+  }
+})

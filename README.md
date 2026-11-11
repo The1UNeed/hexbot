@@ -28,6 +28,9 @@ also over SSH:
 curl -fsSL https://hexbot.app/install.sh | sh
 ```
 
+On Windows, download `hexbot-install-<version>-windows-x86_64.exe` from the
+download page and run it in PowerShell. Windows has no Hexbot Installer yet.
+
 Both offer three options and download only the one you choose:
 
 - **Full** (`Hexbot`): the app plus the daemon. Install where your bots
@@ -39,10 +42,11 @@ Both offer three options and download only the one you choose:
 
 Run the installer again to update or repair, change options, or uninstall;
 `~/.hexbot` is kept unless you ask to delete it. Full and Client are also
-direct downloads for macOS (Apple Silicon and Intel) and Linux (AppImage and
-deb). [Install](https://hexbot.app/docs/install/) has the details.
+direct downloads for macOS (Apple Silicon and Intel), Linux (AppImage and
+deb), and Windows 10 or later, 64-bit (installer .exe).
+[Install](https://hexbot.app/docs/install/) has the details.
 
-**Hexbot for iPhone** is in beta on
+**Hexbot for iPhone** is open to everyone on
 [TestFlight](https://testflight.apple.com/join/byKAKWMW). Like Client, it
 runs no bots itself: pair it with a daemon (Full or Headless) over LAN,
 Tailscale, or Hex Connect.
@@ -194,7 +198,7 @@ One workflow, `.github/workflows/release.yml`, modelled on
 ## Status
 
 Milestones 1 through 6 of `DESIGN.md` are implemented: daemon, pairing, the
-desktop app on macOS and Linux, sections and memory, Connect end to end,
+desktop app on macOS, Linux and Windows, sections and memory, Connect end to end,
 rooms and the turn engine, dreaming, and packaging. Milestone 5 now makes
 a daemon one person's; rooms with other people will go through Hex Connect. The first
 public alpha waits on Apple signing credentials and the Connect production
