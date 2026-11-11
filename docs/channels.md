@@ -124,7 +124,8 @@ to the checkout and edition. The installed Electron dependency stays unchanged.
 From Electron 42, macOS shows notifications only from a signed app, so Dev
 notifications need this copy: the downloaded `Electron.app` in
 `node_modules` does not pass `codesign --verify`, and the OS rejects its
-notifications. The first one may ask for permission for `Hexbot (dev)`.
+notifications. macOS asks for permission for `Hexbot (dev)` as its window
+first opens, and hides its notifications until you choose Allow.
 See `README.md`, "Develop", and
 `scripts/dev/run.mjs`. Or open the repository in the dev container.
 

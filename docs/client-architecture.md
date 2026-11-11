@@ -210,11 +210,24 @@ that chat (`setShownSection` in `lib/page-visible.ts`), the app passes
 `backgroundOnly` for it and the main process checks the window's focus at
 delivery time; a browser tab checks `document.hasFocus()`. A window left open
 behind another app, or another chat, still notifies. Clicking a notification
-opens the chat. Settings, Notifications holds this device's permission and a
-test, the phones that take pushes, and each bot's Notify me; a banner under
-the chat's header asks once per device to turn notifications on. A chat is
-marked read only while the page is focused, so a window behind another app
-leaves a reply unread for the phone push.
+opens the chat; the main process keeps the newest notifications referenced,
+because Electron drops the click of one nothing refers to. Settings,
+Notifications holds this device's permission and a test, the phones that take
+pushes, and each bot's Notify me; a banner under the chat's header asks once
+per device to turn notifications on. A chat is marked read only while the page
+is focused, so a window behind another app leaves a reply unread for the
+phone push.
+
+The app cannot read its system's permission. macOS asks once whether Hexbot
+may notify, the first time the app touches notifications; until Allow is
+chosen it shows nothing the app sends and still reports each one as shown,
+and a question left unanswered, or gone because the app quit, is never asked
+again. So the main process touches notifications as the window opens
+(`askToNotify` in `notify.ts`), which puts the question in front of the user,
+and the page takes the user's word instead of the system's: the banner's
+Enable sends a test and asks whether it appeared. Yes ends the banner
+(`confirmed`); No offers the system's notification settings and another test.
+Settings, Notifications has the same test and button.
 macOS hides the window as before. Windows hides it to the tray, or minimizes
 if tray setup fails. Linux always minimizes, because a tray object does not
 prove that the desktop displays an icon, including on GNOME without a tray
@@ -239,6 +252,10 @@ Exposed by the preload with contextIsolation on:
 - `notify({title, body, sectionId?, backgroundOnly?})` shows a native notification;
   background-only requests stay silent only while the window is shown, not
   minimized and focused. Clicking focuses the window and navigates.
+- `openNotificationSettings()` opens the system's page for Hexbot's
+  notifications: System Settings on macOS, at Hexbot when the bundle id is
+  known, and Windows Settings. It rejects on Linux, where the page hides the
+  button.
 - `openExternal(url)`, `pickFiles()`.
 - `updater.state()`, `updater.check()`, `updater.download()`, `updater.install()`,
   `updater.setChannel(track)`, `updater.onStatus(cb)`. `stores/updates.ts`

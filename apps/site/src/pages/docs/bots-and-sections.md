@@ -64,6 +64,8 @@ The heartbeat replaced your primary bot's check-ins. If it sent you any, its Che
 
 Hexbot notifies you when a bot finishes a reply, asks for approval, has a question, stops, or writes from its heartbeat: in the app, in a browser tab you allowed (browsers notify only over HTTPS, such as through Hex Connect), and on your phone. It stays quiet only about the chat you have in front of you; a Hexbot window behind another app, or another chat, still notifies. Settings, Notifications shows whether this computer or browser can notify and sends a test, lists the phones that take notifications, and has a Notify me switch for each bot. Until you turn them on, a banner under the chat's header offers to.
 
+On a Mac, macOS decides whether the app's notifications show, and the app cannot see its answer. macOS asks when you first open Hexbot; if you did not choose Allow, it hides every notification without saying so. That is why the banner sends a test and asks whether it appeared. If it did not, choose Open System Settings, allow Hexbot under Notifications, and try again. Settings, Notifications has the same test and button.
+
 ## Keep the chat going
 
 Select a bot in the sidebar to open its chat and carry on where you left off. Closing the app or restarting the daemon does not end it. Behind the chat is one persistent Pi conversation.

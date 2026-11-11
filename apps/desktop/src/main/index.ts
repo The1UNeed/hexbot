@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -28,7 +28,7 @@ import { hexbotHome } from './backend/paths'
 import { resolveWebDevUrl } from './dev-url'
 import { edition, hasRuntime, requireRuntime } from './edition'
 import { parseDeepLink } from './deep-link'
-import { notify, reportShown, sendShown } from './notify'
+import { askToNotify, notificationSettingsUrl, notify, reportShown, sendShown } from './notify'
 import { pair, pairingReply, pairWithGrant, type GrantPairOptions, type PairOptions } from './pair'
 import { installService, serviceStatus, uninstallService } from './service'
 import { createTray } from './tray'
@@ -151,6 +151,8 @@ async function buildWindow(): Promise<BrowserWindow> {
   window.once('ready-to-show', () => {
     if (lifecycle.exiting) return
     window.show()
+    // macOS asks about notifications now, in front of you (notify.ts).
+    askToNotify()
     if (pendingLink) {
       window.webContents.send('hexbot:navigate', pendingLink)
       pendingLink = undefined
@@ -233,6 +235,16 @@ function navigate(url: string): void {
     void showWindow()
   }
 }
+/** The app's macOS bundle id, which names it in System Settings; packaged and Dev copies differ. */
+function bundleId(): string | undefined {
+  if (process.platform !== 'darwin') return undefined
+  try {
+    const plist = readFileSync(join(app.getPath('exe'), '../../Info.plist'), 'utf8')
+    return /<key>CFBundleIdentifier<\/key>\s*<string>([\w.-]+)<\/string>/.exec(plist)?.[1]
+  } catch {
+    return undefined
+  }
+}
 function sendProgress(progress: BootstrapProgress): void {
   for (const window of BrowserWindow.getAllWindows())
     window.webContents.send('hexbot:daemon:progress', progress)
@@ -313,8 +325,14 @@ function registerIpc(): void {
         sectionId:
           item.sectionId === undefined ? undefined : validString(item.sectionId, 'section id', 256)
       },
-      () => mainWindow
+      () => mainWindow,
+      error => log.warn(`notification refused: ${error}`)
     )
+  })
+  handle('hexbot:notifications:settings', async () => {
+    const url = notificationSettingsUrl(process.platform, bundleId())
+    if (!url) throw new Error('This system has no notification settings to open')
+    await shell.openExternal(url)
   })
   handle('hexbot:open-external', (_event, value: unknown) => {
     const url = new URL(validString(value, 'URL', 2_048))

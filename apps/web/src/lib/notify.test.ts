@@ -1,7 +1,13 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { NOTIFY_BODY, notifyUser, OPEN_SECTION_EVENT, useNotificationsPrompt } from './notify'
+import {
+  NOTIFY_BODY,
+  notifyUser,
+  OPEN_SECTION_EVENT,
+  systemNotificationSettings,
+  useNotificationsPrompt
+} from './notify'
 import { setShownSection } from './page-visible'
 
 const shown: { body?: string; onclick: null | (() => void); title: string }[] = []
@@ -120,15 +126,40 @@ describe('useNotificationsPrompt', () => {
     expect(shown.map(item => item.title)).toEqual(['Notifications are on'])
   })
 
-  it('shows in the app until Enable sends its first notification', async () => {
+  it('stays in the app until you say its test appeared', async () => {
     const notify = vi.fn()
     vi.stubGlobal('hexbot', { notify })
     const { result, unmount } = renderHook(() => useNotificationsPrompt())
-    expect(result.current.visible).toBe(true)
+    expect(result.current).toMatchObject({ step: 'ask', visible: true })
     await act(() => result.current.enable())
     expect(notify).toHaveBeenCalledOnce()
+    // The app cannot see whether its system showed it, so sending is not enough.
+    expect(result.current).toMatchObject({ step: 'check', visible: true })
     unmount()
+    const reopened = renderHook(() => useNotificationsPrompt())
+    expect(reopened.result.current).toMatchObject({ step: 'ask', visible: true })
+    await act(() => reopened.result.current.enable())
+    act(() => reopened.result.current.confirm())
+    expect(reopened.result.current.visible).toBe(false)
     expect(renderHook(() => useNotificationsPrompt()).result.current.visible).toBe(false)
+  })
+
+  it('leads a test that did not appear to another one', async () => {
+    const notify = vi.fn()
+    vi.stubGlobal('hexbot', { notify })
+    const { result } = renderHook(() => useNotificationsPrompt())
+    await act(() => result.current.enable())
+    act(() => result.current.missing())
+    expect(result.current).toMatchObject({ step: 'blocked', visible: true })
+    await act(() => result.current.enable())
+    expect(notify).toHaveBeenCalledTimes(2)
+    expect(result.current.step).toBe('check')
+  })
+
+  it('asks the app again after an Enable from before it checked', () => {
+    localStorage.setItem('hexbot.notifications.prompt', 'enabled')
+    vi.stubGlobal('hexbot', { notify: vi.fn() })
+    expect(renderHook(() => useNotificationsPrompt()).result.current.visible).toBe(true)
   })
 
   it('closes until Hexbot opens again, or for good from the menu', () => {
@@ -148,5 +179,27 @@ describe('useNotificationsPrompt', () => {
     FakeNotification.permission = 'denied'
     vi.stubGlobal('Notification', FakeNotification)
     expect(renderHook(() => useNotificationsPrompt()).result.current.visible).toBe(false)
+  })
+})
+
+describe('systemNotificationSettings', () => {
+  it.each([
+    ['darwin', 'System Settings'],
+    ['win32', 'Windows Settings']
+  ])('opens them from the app on %s', (platform, name) => {
+    const openNotificationSettings = vi.fn(async () => undefined)
+    vi.stubGlobal('hexbot', { openNotificationSettings, platform })
+    const settings = systemNotificationSettings()
+    expect(settings?.name).toBe(name)
+    settings?.open()
+    expect(openNotificationSettings).toHaveBeenCalledOnce()
+  })
+
+  it('has none in a browser, on Linux, or in an app from before it could open them', () => {
+    expect(systemNotificationSettings()).toBeNull()
+    vi.stubGlobal('hexbot', { openNotificationSettings: vi.fn(), platform: 'linux' })
+    expect(systemNotificationSettings()).toBeNull()
+    vi.stubGlobal('hexbot', { platform: 'darwin' })
+    expect(systemNotificationSettings()).toBeNull()
   })
 })

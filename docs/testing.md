@@ -213,6 +213,8 @@ route and composer checked before continuing.
   replies stay silent. It calls the actual native API and records its delivery
   events in `notifications.json`. Set `HEXBOT_SMOKE_NATIVE_NOTIFICATIONS=1` on
   a host with notification permissions to require the OS `show` events too.
+  A `show` event means the OS took the notification, not that it displayed
+  it: macOS reports `show` for an app it does not allow to notify.
   On macOS it launches the ad-hoc signed `Hexbot (dev)` copy that
   `pnpm dev --desktop` uses (`scripts/dev/electron-launcher.mjs`); macOS
   rejects notifications from the Electron in `node_modules`, whose signature

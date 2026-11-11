@@ -7,7 +7,11 @@ import { Switch } from '../../components/ui/switch'
 import { type ConnectStatus, connectStatus } from '../../lib/api'
 import { botFace } from '../../lib/avatar-builder'
 import { getBridge } from '../../lib/bridge'
-import { sendTestNotification, useBrowserNotifications } from '../../lib/notify'
+import {
+  sendTestNotification,
+  systemNotificationSettings,
+  useBrowserNotifications
+} from '../../lib/notify'
 import { useBots } from '../../stores/bots'
 import { useSettings } from '../../stores/settings'
 import { errorText, Group, Heading, Row } from '../bot-settings/shared'
@@ -39,11 +43,23 @@ function ThisDevice() {
 
   if (browser.app) {
     const system = systemName(getBridge()?.platform)
+    const settings = systemNotificationSettings()
 
+    // The app cannot see whether its system shows them: macOS hides every
+    // one until Hexbot is allowed, and reports each as shown.
     return (
       <Row
-        control={test}
-        description={`Shown by ${system}, even with the window closed. If the test does not appear, allow Hexbot in ${system === 'macOS' ? 'System Settings, Notifications' : `${system}’s notification settings`}.`}
+        control={
+          <>
+            {settings ? (
+              <Button onClick={settings.open} size="sm">
+                Open {settings.name}
+              </Button>
+            ) : null}
+            {test}
+          </>
+        }
+        description={`Shown by ${system}, even with the window closed. If the test does not appear, ${system} is hiding them: allow Hexbot in ${system === 'macOS' ? 'System Settings, Notifications' : `${system}’s notification settings`}.`}
         title="This computer"
       />
     )

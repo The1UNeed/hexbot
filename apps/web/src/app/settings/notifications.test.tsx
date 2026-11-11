@@ -62,5 +62,21 @@ describe('Settings, Notifications', () => {
     expect(screen.getByText(/allow Hexbot in System Settings, Notifications/)).toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: 'Send a test' }))
     expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Notifications are on' }))
+    // An app from before it could open the system's settings only says where they are.
+    expect(screen.queryByRole('button', { name: /^Open / })).toBeNull()
+  })
+
+  it('opens the system’s notification settings, where a hidden test is allowed', () => {
+    const openNotificationSettings = vi.fn(async () => undefined)
+    window.hexbot = {
+      notify: vi.fn(),
+      openNotificationSettings,
+      platform: 'darwin'
+    } as unknown as HexbotBridge
+    useBots.setState({ byName: {}, order: [] })
+    render(<NotificationsSettings />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open System Settings' }))
+    expect(openNotificationSettings).toHaveBeenCalledOnce()
   })
 })
