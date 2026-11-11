@@ -14,10 +14,14 @@ pub fn get(home: &Path, caller: &str, room: &str) -> Result<Value> {
 }
 
 fn get_with_conn(conn: &rusqlite::Connection, caller: &str, room: &str) -> Result<Value> {
-    let mut row = rows(conn, "SELECT * FROM rooms WHERE id=?", &[&room])?
-        .into_iter()
-        .next()
-        .ok_or_else(|| Error::new(4230, format!("room not found: {room}")))?;
+    let mut row = rows(
+        conn,
+        "SELECT r.*,p.pinned_at FROM rooms r LEFT JOIN room_pins p ON p.room_id=r.id WHERE r.id=?",
+        &[&room],
+    )?
+    .into_iter()
+    .next()
+    .ok_or_else(|| Error::new(4230, format!("room not found: {room}")))?;
     row["limits"] = json_field(&row["limits_json"]);
     row.as_object_mut().unwrap().remove("limits_json");
     row["members"] = json!(rows(
@@ -345,6 +349,19 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
                     "UPDATE room_members SET last_read_seq=MAX(last_read_seq,?) WHERE room_id=? AND member_kind='human' AND member_id=?",
                     params![seq, room, caller],
                 )?;
+                Ok(json!({"room":get(home,caller,room)?}))
+            }
+            "hexbot.rooms.pin" => {
+                let room = required(p, "id")?;
+                get(home, caller, room)?;
+                if p["pinned"] == false {
+                    conn.execute("DELETE FROM room_pins WHERE room_id=?", [room])?;
+                } else {
+                    conn.execute(
+                        "INSERT INTO room_pins VALUES (?,?) ON CONFLICT(room_id) DO NOTHING",
+                        params![room, now()],
+                    )?;
+                }
                 Ok(json!({"room":get(home,caller,room)?}))
             }
             "hexbot.rooms.archive" | "hexbot.rooms.unarchive" => {

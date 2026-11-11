@@ -6,7 +6,7 @@
 import { create } from 'zustand'
 import { useShallow } from 'zustand/react/shallow'
 
-import { botsCreate, botsDelete, botsGet, botsList, botsUpdate } from '../lib/api'
+import { botsCreate, botsDelete, botsGet, botsList, botsPin, botsUpdate } from '../lib/api'
 import { CatalogAuthority, type ReadOutcome } from '../lib/catalog-authority'
 import type { Bot, BotCreateInput, BotUpdatePatch, Section } from '../lib/types'
 
@@ -26,6 +26,7 @@ export interface BotsState {
   refreshOne: (name: string) => Promise<void>
   remove: (name: string) => Promise<void>
   update: (name: string, patch: BotUpdatePatch) => Promise<Bot>
+  pin: (name: string, pinned: boolean) => Promise<void>
 }
 
 function indexBots(bots: Bot[]): Pick<BotsState, 'byName' | 'order'> {
@@ -144,6 +145,18 @@ export const useBots = create<BotsState>((set, get) => ({
     set(state => ({ answers: authority.outcomes(), byName: { ...state.byName, [bot.name]: bot } }))
 
     return bot
+  },
+
+  async pin(name, pinned) {
+    const connected = connectionRead()
+    const ticket = authority.request()
+    const { bot } = await botsPin(name, pinned)
+
+    if (!connected() || !authority.commit(name, ticket, 'present')) {
+      return
+    }
+
+    set(state => ({ answers: authority.outcomes(), byName: { ...state.byName, [bot.name]: bot } }))
   },
 
   async remove(name) {

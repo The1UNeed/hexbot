@@ -37,7 +37,7 @@ To hear when a bot starts, finishes, or needs you, turn on **Sounds** in Setting
 
 HexBot is your primary bot. Setup creates it, and it looks after the rest: in its chat it can list, create, change, and delete your bots, create rooms and change who is in them, schedule jobs for any bot, and change settings, skills, and connectors. It always asks before it deletes a bot, room, or job, removes a room's last bot (which deletes the room), changes a bot's or room's approval mode or a bot's or job's working folder, changes a setting, or turns a skill or connector on or off, even in Bypass. It never sees API keys or connector credentials, and it can't change network or service settings.
 
-There is one primary bot, pinned at the top of the roster, and it can't be deleted. You can rename it and change its soul, model, and tools like any other bot. If you used Hexbot before the primary bot existed, the bot list asks you to add HexBot or to make one of your bots primary; on the phone app, choose Make primary in a bot's profile. A bot made primary gets the extra tools in its chat from your next message. Its tools don't work in rooms or scheduled jobs.
+There is one primary bot, and it can't be deleted. It starts pinned at the top of the sidebar; you can unpin it like any other bot. You can rename it and change its soul, model, and tools like any other bot. If you used Hexbot before the primary bot existed, the bot list asks you to add HexBot or to make one of your bots primary; on the phone app, choose Make primary in a bot's profile. A bot made primary gets the extra tools in its chat from your next message. Its tools don't work in rooms or scheduled jobs.
 
 ## Heartbeat
 
@@ -67,6 +67,8 @@ Hexbot notifies you when a bot finishes a reply, asks for approval, has a questi
 On a Mac, macOS decides whether the app's notifications show, and the app cannot see its answer. macOS asks when you first open Hexbot; if you did not choose Allow, it hides every notification without saying so. That is why the banner sends a test and asks whether it appeared. If it did not, choose Open System Settings, allow Hexbot under Notifications, and try again. Settings, Notifications has the same test and button.
 
 ## Keep the chat going
+
+Right-click a bot or a room in the sidebar to pin it, mark it as read, rename it, or open its settings. Pinned bots and rooms sit above the list as large faces, in the order you pinned them; a search lists them as rows again. Renaming a bot changes the name you see; its handle stays the same. On the phone app, long-press a chat for the same menu.
 
 Select a bot in the sidebar to open its chat and carry on where you left off. Closing the app or restarting the daemon does not end it. Behind the chat is one persistent Pi conversation.
 

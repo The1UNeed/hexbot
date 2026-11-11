@@ -21,6 +21,7 @@ export {
   type IconName
 } from './Button'
 export { confirm } from './confirm'
+export { ContextMenu, type MenuFrame, type MenuItem } from './ContextMenu'
 export { EmptyState, type EmptyStateProps } from './EmptyState'
 export { FacePicker } from './FacePicker'
 export {

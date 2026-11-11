@@ -849,6 +849,7 @@ impl App {
                 | "create_primary"
                 | "set_primary"
                 | "update"
+                | "pin"
                 | "delete"
                 | "clear_status"
                 | "setup"

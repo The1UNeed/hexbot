@@ -1663,6 +1663,7 @@ fn shape_bot(
         "title": row["title"].as_str().unwrap_or(""),
         "description": row["description"].as_str().unwrap_or(""),
         "primary": row["is_primary"].as_i64() == Some(1),
+        "pinned_at": row["pinned_at"],
         "persona": read_text(home, &profile(home, name)?.join("SOUL.md"))?,
         "persona_updated_at": crate::common::modified_at(&profile(home, name)?.join("SOUL.md"))?,
         "skills": skills.into_iter().filter(|s| s.enabled).map(|s| s.name).collect::<Vec<_>>(),
@@ -2167,7 +2168,7 @@ fn create_primary(home: &Path, caller: &str, p: &Value) -> Result<Value> {
 fn set_primary(home: &Path, caller: &str, name: &str) -> Result<Value> {
     bot_row(home, caller, name)?;
     let changed = db::open(home)?.execute(
-        "UPDATE bots SET is_primary=1,updated_at=?1 WHERE name=?2 AND owner_id=?3 AND NOT EXISTS(SELECT 1 FROM bots WHERE owner_id=?3 AND is_primary=1)",
+        "UPDATE bots SET is_primary=1,pinned_at=COALESCE(pinned_at,?1),updated_at=?1 WHERE name=?2 AND owner_id=?3 AND NOT EXISTS(SELECT 1 FROM bots WHERE owner_id=?3 AND is_primary=1)",
         params![now(), name, caller],
     )?;
     if changed == 0 {
@@ -2264,7 +2265,7 @@ fn create(home: &Path, caller: &str, p: &Value, primary: bool) -> Result<Value> 
         let tx = conn.transaction()?;
         // The unique index refuses a second primary bot created at the same time.
         tx.execute(
-            "INSERT INTO bots(name,display_name,title,description,owner_id,created_at,updated_at,last_activity_at,is_primary) VALUES (?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO bots(name,display_name,title,description,owner_id,created_at,updated_at,last_activity_at,is_primary,pinned_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
             params![
                 name,
                 display,
@@ -2274,7 +2275,9 @@ fn create(home: &Path, caller: &str, p: &Value, primary: bool) -> Result<Value> 
                 now,
                 now,
                 now,
-                primary
+                primary,
+                // The primary bot starts pinned; the user may unpin it.
+                primary.then_some(now)
             ],
         )
         .map_err(|e| {
@@ -2819,6 +2822,17 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
         "hexbot.bots.create_primary" => create_primary(home, caller, p),
         "hexbot.bots.set_primary" => set_primary(home, caller, required(p, "name")?),
         "hexbot.bots.update" => update_bot(home, caller, p),
+        "hexbot.bots.pin" => {
+            let name = required(p, "name")?;
+            bot_owner(home, caller, name)?;
+            // Pinning again keeps the bot's place among the pinned.
+            let pinned = p["pinned"] != false;
+            db::open(home)?.execute(
+                "UPDATE bots SET pinned_at=CASE WHEN ? THEN COALESCE(pinned_at,?) END WHERE name=?",
+                params![pinned, now(), name],
+            )?;
+            Ok(json!({"bot":bot(home,caller,name)?}))
+        }
         "hexbot.bots.get" => Ok(json!({"bot":bot(home,caller,required(p,"name")?)?})),
         "hexbot.bots.list" => {
             user(home, caller)?;

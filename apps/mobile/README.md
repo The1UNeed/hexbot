@@ -8,13 +8,15 @@ Transparency use solid controls. Lists and messages use solid backgrounds.
 ## Layout
 
 A messaging app. One list holds every bot's chat and every room, newest first,
-with the primary bot pinned on top. A Check-ins conversation from before the
-heartbeat stays in it until you delete it. Each row shows the face, the name,
-the time and the last thing said, or what the bot is doing while it works.
-Your initials at the top left open Settings, + makes a bot or a room, and the
-grid button beside Search at the bottom opens every bot's profile, scheduled
-jobs and all rooms. A row opens its conversation; a long press opens the
-bot's profile or the room's settings. Archiving the open room returns to the
+with pinned chats above it as large faces; the primary bot starts pinned. A
+Check-ins conversation from before the heartbeat stays in it until you delete
+it. Each row shows the face, the name, the time and the last thing said, or
+what the bot is doing while it works. Your initials at the top left open
+Settings, + makes a bot or a room, and the grid button beside Search at the
+bottom opens every bot's profile, scheduled jobs and all rooms. A row opens
+its conversation. A long press lifts the row or pinned face over a blurred
+list and opens a small menu beside it: Pin or Unpin, Mark as read, Rename and
+Settings (`src/ui/ContextMenu.tsx`). Archiving the open room returns to the
 list. A bot waiting on you in a conversation with another bot gets a line at
 the top of the list that opens it.
 
