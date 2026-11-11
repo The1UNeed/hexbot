@@ -644,8 +644,29 @@ fn desktop_parent_shutdown() -> impl std::future::Future<Output = ()> {
     }
 }
 
-#[tokio::main]
-async fn main() {
+/// Windows gives a program's first thread 1 MB of stack, where Linux and
+/// macOS give 8 MB. `hexbot lan on` and `hexbot devices list` need more than
+/// 1 MB in a debug build, so every command runs on a thread with the same
+/// room on every platform.
+const STACK: usize = 8 << 20;
+
+fn main() {
+    let commands = std::thread::Builder::new()
+        .stack_size(STACK)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("Tokio runtime")
+                .block_on(commands())
+        })
+        .expect("command thread");
+    if commands.join().is_err() {
+        std::process::exit(101)
+    }
+}
+
+async fn commands() {
     if let Err(error) = run().await {
         if std::env::args().nth(1).as_deref() == Some("setup")
             && std::env::args().any(|arg| arg == "--json")
