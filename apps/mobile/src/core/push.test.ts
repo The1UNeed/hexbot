@@ -3,11 +3,15 @@ const mock = vi.hoisted(() => ({
   os: 'ios',
   projectId: 'project-1' as string | undefined,
   status: 'granted',
+  canAskAgain: true,
   request: vi.fn(),
+  schedule: vi.fn(),
+  openSettings: vi.fn(),
   token: vi.fn(),
   channel: vi.fn()
 }))
 vi.mock('react-native', () => ({
+  Linking: { openSettings: mock.openSettings },
   Platform: {
     get OS() {
       return mock.os
@@ -22,18 +26,23 @@ vi.mock('expo-constants', () => ({
   }
 }))
 vi.mock('expo-notifications', () => ({
-  getPermissionsAsync: () => Promise.resolve({ status: mock.status }),
+  getPermissionsAsync: () =>
+    Promise.resolve({ status: mock.status, canAskAgain: mock.canAskAgain }),
+  scheduleNotificationAsync: mock.schedule,
   requestPermissionsAsync: mock.request,
   getExpoPushTokenAsync: mock.token,
   setNotificationChannelAsync: mock.channel,
   AndroidImportance: { HIGH: 4 }
 }))
-import { notificationTarget, registerPush } from './push'
+import { allowPush, notificationTarget, pushPermission, registerPush, testNotification } from './push'
 
 beforeEach(() => {
   mock.os = 'ios'
   mock.projectId = 'project-1'
   mock.status = 'granted'
+  mock.canAskAgain = true
+  mock.schedule.mockReset().mockResolvedValue('id')
+  mock.openSettings.mockReset().mockResolvedValue(undefined)
   mock.request.mockReset().mockResolvedValue({ status: 'granted' })
   mock.token.mockReset().mockResolvedValue({ data: 'ExponentPushToken[abc]' })
   mock.channel.mockReset().mockResolvedValue(null)
@@ -87,5 +96,37 @@ describe('check-in push', () => {
     expect(notificationTarget({ section: 's1' })).toEqual({ section: 's1', device: null })
     expect(notificationTarget({})).toBeNull()
     expect(notificationTarget(null)).toBeNull()
+  })
+})
+describe('turning notifications on', () => {
+  it('asks while the system still shows its prompt, then registers this phone', async () => {
+    mock.status = 'undetermined'
+    const rpc = vi.fn().mockResolvedValue({ ok: true })
+    await expect(allowPush(rpc, 'device-allow')).resolves.toBe('granted')
+    expect(mock.request).toHaveBeenCalled()
+    expect(rpc).toHaveBeenCalledWith('hexbot.devices.set_push', expect.anything())
+    expect(mock.openSettings).not.toHaveBeenCalled()
+  })
+  it('opens Settings once the system no longer asks', async () => {
+    mock.status = 'denied'
+    mock.canAskAgain = false
+    const rpc = vi.fn()
+    await expect(allowPush(rpc)).resolves.toBe('denied')
+    expect(mock.openSettings).toHaveBeenCalledOnce()
+    expect(mock.request).not.toHaveBeenCalled()
+    expect(rpc).not.toHaveBeenCalled()
+  })
+  it('reports a build or platform that cannot take pushes', async () => {
+    mock.os = 'web'
+    await expect(pushPermission()).resolves.toEqual({ status: 'unavailable', canAsk: false })
+    await expect(allowPush(vi.fn())).resolves.toBe('unavailable')
+    expect(mock.request).not.toHaveBeenCalled()
+  })
+  it('shows a test on this phone at once', async () => {
+    await testNotification()
+    expect(mock.schedule).toHaveBeenCalledWith({
+      content: expect.objectContaining({ title: 'Notifications are on' }),
+      trigger: null
+    })
   })
 })

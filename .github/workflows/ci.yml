@@ -1,19 +1,22 @@
-# Tests and builds on every push and pull request. Publishes nothing.
+# Tests and builds on every pull request and every push to main. Publishes
+# nothing.
 # release.yml calls this workflow before it builds packages, so a release
 # runs the same checks as a pull request (docs/channels.md, docs/testing.md).
 name: CI
 
+# A branch is checked through its pull request. Pushing a branch with an open
+# pull request used to start this workflow twice, once per event.
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
   workflow_call:
 
 permissions:
   contents: read
 
-# One run per pull request or pushed commit. A newer push to the same pull
-# request cancels the older run; pushes to a branch and release checks never
+# One run per pull request or commit on main. A newer push to the same pull
+# request cancels the older run; pushes to main and release checks never
 # cancel each other.
 concurrency:
   group: ci-${{ github.workflow_ref }}-${{ github.event.pull_request.number || github.sha }}
@@ -21,12 +24,8 @@ concurrency:
 
 jobs:
   rust-components:
-    name: Rust daemon and Pi integration (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, macos-latest]
-    runs-on: ${{ matrix.os }}
+    name: Rust daemon and Pi integration (ubuntu-24.04)
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     defaults:
       run:
@@ -48,7 +47,6 @@ jobs:
       # daemon's own, so a sandbox that cannot start fails here, not as a
       # skipped test.
       - name: Install bubblewrap, the Linux sandbox
-        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends bubblewrap
@@ -72,12 +70,8 @@ jobs:
           HEXBOT_TEST_PI="$GITHUB_WORKSPACE/backend/pi-runtime/node_modules/.bin/pi" cargo test --locked --test room_incidents -- --ignored
 
   rust-installer:
-    name: Rust installer (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, macos-latest]
-    runs-on: ${{ matrix.os }}
+    name: Rust installer (ubuntu-24.04)
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -91,7 +85,6 @@ jobs:
       - run: cargo clippy --locked --manifest-path backend/hexbot-installer/Cargo.toml --all-targets -- -D warnings
       # The windowed installer (apps/installer) drives the same engine through Tauri.
       - name: Install the windowed installer's Linux libraries
-        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
@@ -142,7 +135,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-latest, macos-latest]
+        os: [ubuntu-24.04, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -162,8 +155,8 @@ jobs:
         run: dbus-run-session -- xvfb-run -a -s '-screen 0 1600x1200x24' sh -c 'openbox >/dev/null 2>&1 & pnpm --filter ./apps/desktop run e2e:lifecycle'
         env:
           HEXBOT_LIFECYCLE_ARTIFACTS: ${{ runner.temp }}/desktop-lifecycle
-      - name: Full and Client lifecycle on Windows and macOS
-        if: runner.os != 'Linux'
+      - name: Full and Client lifecycle on Windows
+        if: runner.os == 'Windows'
         run: pnpm --filter ./apps/desktop run e2e:lifecycle
         env:
           HEXBOT_LIFECYCLE_ARTIFACTS: ${{ runner.temp }}/desktop-lifecycle
@@ -172,6 +165,69 @@ jobs:
         with:
           name: desktop-lifecycle-${{ matrix.os }}
           path: ${{ runner.temp }}/desktop-lifecycle
+
+  # Every macOS check runs in this one job. The account runs at most five
+  # macOS jobs at a time across all pull requests, and a job per suite left
+  # pull requests queueing 20 to 30 minutes for a slot. Each suite runs even
+  # when an earlier one fails, as separate jobs did.
+  macos:
+    name: macOS (Rust daemon, Pi, installers, Electron lifecycle)
+    runs-on: macos-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: pnpm
+      - run: rustup show active-toolchain
+      - id: ready
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: |
+            backend/hexbot-core
+            backend/hexbot-installer
+            apps/installer/src-tauri
+      - name: Rust installer and the windowed installer
+        if: ${{ !cancelled() && steps.ready.outcome == 'success' }}
+        run: |
+          cargo test --locked --manifest-path backend/hexbot-installer/Cargo.toml
+          cargo clippy --locked --manifest-path backend/hexbot-installer/Cargo.toml --all-targets -- -D warnings
+          cargo test --locked --manifest-path apps/installer/src-tauri/Cargo.toml
+          cargo clippy --locked --manifest-path apps/installer/src-tauri/Cargo.toml --all-targets -- -D warnings
+      - name: Electron Full and Client lifecycle
+        if: ${{ !cancelled() && steps.ready.outcome == 'success' }}
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter ./apps/web run build
+          pnpm --filter ./apps/desktop run e2e:lifecycle
+        env:
+          HEXBOT_LIFECYCLE_ARTIFACTS: ${{ runner.temp }}/desktop-lifecycle
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: desktop-lifecycle-macos-latest
+          path: ${{ runner.temp }}/desktop-lifecycle
+      - name: Rust daemon tests
+        if: ${{ !cancelled() && steps.ready.outcome == 'success' }}
+        working-directory: backend/hexbot-core
+        run: cargo test --locked --no-fail-fast
+      - name: Rust daemon clippy
+        if: ${{ !cancelled() && steps.ready.outcome == 'success' }}
+        working-directory: backend/hexbot-core
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Verify real Pi sessions and native tools
+        if: ${{ !cancelled() && steps.ready.outcome == 'success' }}
+        working-directory: backend/hexbot-core
+        run: |
+          npm ci --prefix ../pi-runtime --ignore-scripts --no-audit --no-fund
+          node --test ../pi-runtime/*.test.mjs
+          HEXBOT_TEST_PI="$GITHUB_WORKSPACE/backend/pi-runtime/node_modules/.bin/pi" cargo test --locked --test pi_live -- --ignored
+          HEXBOT_TEST_PI="$GITHUB_WORKSPACE/backend/pi-runtime/node_modules/.bin/pi" cargo test --locked --test runtime -- --ignored
+          HEXBOT_TEST_PI="$GITHUB_WORKSPACE/backend/pi-runtime/node_modules/.bin/pi" cargo test --locked --test runtime_recovery -- --ignored
+          HEXBOT_TEST_PI="$GITHUB_WORKSPACE/backend/pi-runtime/node_modules/.bin/pi" cargo test --locked --lib actual_pi_ -- --ignored
+          HEXBOT_TEST_PI="$GITHUB_WORKSPACE/backend/pi-runtime/node_modules/.bin/pi" cargo test --locked --test room_incidents -- --ignored
 
   python-handoff:
     name: Python service handoff
@@ -224,6 +280,10 @@ jobs:
         run: HEXBOT_NATIVE_TEST_BUNDLE="$GITHUB_WORKSPACE/apps/desktop/resources/hexbot-native" pnpm --filter ./apps/desktop run test --run src/main/backend/native-bootstrap.test.ts
       # The search-tool tests launch the repository's pinned Pi.
       - run: npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund
+      - name: Install libarchive for Windows ZIP release fixtures
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libarchive-tools
       - name: Release script tests
         run: node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs
       # Runs the exact commands release.yml runs after a build (version

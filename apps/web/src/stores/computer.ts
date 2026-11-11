@@ -1,7 +1,7 @@
 /**
  * The bots' computer, one Cua sandbox per daemon: what the daemon reports.
  * Loaded when something shows it; `hexbot.computer.changed` keeps it current
- * as it starts, a bot acts, or someone takes over.
+ * as it starts, a bot acts, or the user pauses the bots.
  */
 
 import { create } from 'zustand'
@@ -22,7 +22,7 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 export interface ComputerStoreState {
   apply: (status: Partial<ComputerStatus>) => void
   configure: (size: ComputerSize) => Promise<void>
-  /** Hand the computer to the user, or back to the bots. */
+  /** Pause the bots (`user`), so the user has the computer alone, or resume them (`bot`). */
   control: (holder: 'bot' | 'user') => Promise<void>
   /** The last failed request; the daemon's own errors live in the status. */
   error: null | string
@@ -31,8 +31,6 @@ export interface ComputerStoreState {
   refresh: () => Promise<void>
   status: ComputerStatus | null
   step: (step: 'reset' | 'restart' | 'start' | 'stop') => Promise<void>
-  /** The last request to take control, answered or not. */
-  taking: Promise<void>
   view: (control: boolean, quality?: ComputerQuality) => Promise<null | string>
 }
 
@@ -67,13 +65,7 @@ export const useComputer = create<ComputerStoreState>(set => {
       await run(() => computerConfigure(size))
     },
     async control(holder) {
-      const request = run(() => computerControl(holder)).then(() => undefined)
-
-      if (holder === 'user') {
-        set({ taking: request })
-      }
-
-      await request
+      await run(() => computerControl(holder))
     },
     error: null,
     read: null,
@@ -85,7 +77,6 @@ export const useComputer = create<ComputerStoreState>(set => {
       }
     },
     status: null,
-    taking: Promise.resolve(),
     async step(step) {
       await run(() => computerStep(step))
     },

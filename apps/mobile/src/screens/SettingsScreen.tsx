@@ -1,6 +1,5 @@
 import { Ionicons } from '@expo/vector-icons'
 import { Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native'
-import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import {
   Banner,
@@ -15,7 +14,6 @@ import {
   STATUS_LABELS,
   SwitchRow,
   Text,
-  TopBar,
   useTheme,
   withAlpha
 } from '../ui'
@@ -26,11 +24,13 @@ export interface DaemonArea {
   key:
     | 'about'
     | 'activity'
+    | 'computer'
     | 'connect'
     | 'connectors'
     | 'devices'
     | 'licenses'
     | 'network'
+    | 'notifications'
     | 'passwords'
     | 'plugins'
     | 'providers'
@@ -49,7 +49,6 @@ export interface SettingsScreenProps {
   onDismissError?: () => void
   /** Signed-in person on this daemon. */
   user?: { name: string } | null
-  onBack: () => void
   /** Opens the list of saved daemons to switch between. */
   onSwitchDaemon: () => void
   /** Bots that are working, stopped or waiting; each opens where it is. */
@@ -80,7 +79,6 @@ export function SettingsScreen({
   daemon,
   error,
   groups,
-  onBack,
   onDisconnect,
   onDismissError,
   onOpenArea,
@@ -94,7 +92,6 @@ export function SettingsScreen({
   user
 }: SettingsScreenProps) {
   const theme = useTheme()
-  const insets = useSafeAreaInsets()
   const via =
     daemon?.via === 'connect'
       ? 'through Hex Connect'
@@ -103,10 +100,10 @@ export function SettingsScreen({
         : 'on the local network'
 
   return (
-    <Screen background="grouped" testID="settings-screen">
-      <TopBar onBack={onBack} testID="settings-bar" title="Settings" />
+    <Screen background="grouped" edges={['left', 'right']} testID="settings-screen">
       <ScrollView
-        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
+        contentContainerStyle={[styles.content, { paddingBottom: 24 }]}
+        contentInsetAdjustmentBehavior="automatic"
         refreshControl={
           onRefresh ? <RefreshControl onRefresh={onRefresh} refreshing={!!refreshing} /> : undefined
         }

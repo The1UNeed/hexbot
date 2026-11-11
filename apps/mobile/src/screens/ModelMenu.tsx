@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { type ComponentRef, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Modal,
@@ -29,7 +29,7 @@ export interface ModelValue {
 export type Models = (provider: string) => Promise<ModelList>
 
 /** The bot's own model, from its provider's list. */
-function useCurrentModel(models: Models, value: ModelValue) {
+export function useCurrentModel(models: Models, value: ModelValue) {
   const [loaded, setLoaded] = useState<{ provider: string; models: ModelOption[] } | null>(null)
   useEffect(() => {
     if (!value.provider) return
@@ -84,7 +84,7 @@ export function ModelPill({
   disabled?: boolean
 }) {
   const theme = useTheme()
-  const anchor = useRef<View>(null)
+  const anchor = useRef<ComponentRef<typeof View>>(null)
   const [frame, setFrame] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
   // The level the model runs at, which may differ from the one saved.
   const level = shownLevel(value.reasoning, useCurrentModel(models, value))

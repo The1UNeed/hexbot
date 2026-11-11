@@ -4,13 +4,55 @@ export interface NotificationOptions {
   backgroundOnly?: boolean
   title: string
   body: string
-  sectionId: string
+  /** The chat a click opens; a room's card has none. */
+  sectionId?: string
 }
+/**
+ * Tells the page whether its window is open and not minimized: Chromium's own
+ * visibility can stay "visible" after a native close or minimize, and the
+ * page marks a chat read only while it is on screen.
+ */
+export function sendShown(window: BrowserWindow): void {
+  if (!window.isDestroyed())
+    window.webContents.send('hexbot:window-shown', window.isVisible() && !window.isMinimized())
+}
+
+/**
+ * Reports each change of the window's state. macOS sends no hide or show
+ * event when the app itself hides the window on close or shows it again, so
+ * close is reported once its handler has run (window-lifecycle.ts) and the
+ * app reports its own shows (`showWindow`, a notification's click).
+ */
+export function reportShown(window: BrowserWindow): void {
+  const send = () => sendShown(window)
+  window.on('show', send)
+  window.on('hide', send)
+  window.on('minimize', send)
+  window.on('restore', send)
+  window.on('close', () => setImmediate(send))
+  window.webContents.on('did-finish-load', send)
+}
+
+/** Whether you are using the window: shown, not minimized, and in front of other apps. */
+export function windowInFront(window: BrowserWindow | null): boolean {
+  return Boolean(
+    window &&
+    !window.isDestroyed() &&
+    window.isVisible() &&
+    !window.isMinimized() &&
+    window.isFocused()
+  )
+}
+
+/**
+ * Shows a native notification. `backgroundOnly` is for the chat on screen: it
+ * stays silent only while the window is in front. A window left open behind
+ * another app still notifies. Checked at delivery time, so a switch racing a
+ * reply goes the right way.
+ */
 export function notify(options: NotificationOptions, getWindow: () => BrowserWindow | null): void {
   const window = getWindow()
-  // Chromium visibility can stay "visible" after native hide/minimize. Check
-  // at delivery time, so a reopen racing a reply also stays silent.
-  if (options.backgroundOnly && window?.isVisible() && !window.isMinimized()) return
+  if (options.backgroundOnly && windowInFront(window)) return
   const notification = new Notification({ title: options.title, body: options.body })
   notification.on('click', () => {
     const window = getWindow()
@@ -18,7 +60,8 @@ export function notify(options: NotificationOptions, getWindow: () => BrowserWin
     if (window.isMinimized()) window.restore()
     window.show()
     window.focus()
-    window.webContents.send('hexbot:navigate', options.sectionId)
+    sendShown(window)
+    if (options.sectionId) window.webContents.send('hexbot:navigate', options.sectionId)
   })
   notification.show()
 }

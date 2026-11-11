@@ -141,6 +141,44 @@ fn honors_profile_config_caps_with_default_fallback() {
 }
 
 #[test]
+fn a_bot_without_its_own_limits_follows_settings() {
+    let (home, store) = setup();
+    assert_eq!(store.soul_cap("owl").unwrap(), 4000);
+    crate::settings::update(
+        home.path(),
+        "alice",
+        &json!({"soul_char_limit":1000,"memory_char_limit":600}),
+    )
+    .unwrap();
+    assert_eq!(store.soul_cap("owl").unwrap(), 1000);
+    assert_eq!(store.get_bot("alice", "owl").unwrap()["cap"], 600);
+    assert_eq!(
+        store
+            .set_bot("alice", "owl", &"a".repeat(601))
+            .unwrap_err()
+            .code,
+        4221
+    );
+    // The bot's own limits win, each on its own.
+    write_config(home.path(), "memory:\n  soul_char_limit: 9000\n");
+    assert_eq!(store.soul_cap("owl").unwrap(), 9000);
+    assert_eq!(store.get_bot("alice", "owl").unwrap()["cap"], 600);
+    for patch in [
+        json!({"soul_char_limit":499}),
+        json!({"memory_char_limit":20001}),
+        json!({"memory_char_limit":null}),
+        json!({"soul_char_limit":"4000"}),
+    ] {
+        assert_eq!(
+            crate::settings::update(home.path(), "alice", &patch)
+                .unwrap_err()
+                .code,
+            4202
+        );
+    }
+}
+
+#[test]
 fn preserves_last_known_cap_on_broken_yaml_but_resets_on_removal() {
     let (home, store) = setup();
     write_config(home.path(), "[broken");

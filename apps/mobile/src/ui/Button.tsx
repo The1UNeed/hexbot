@@ -22,6 +22,8 @@ export interface ButtonProps {
   disabled?: boolean
   /** Fill the row instead of hugging the label. */
   wide?: boolean
+  /** `small` sits inside a row, as the desktop app's row buttons do. */
+  size?: 'regular' | 'small'
   accessibilityLabel?: string
   accessibilityHint?: string
   style?: StyleProp<ViewStyle>
@@ -43,6 +45,7 @@ export function Button({
   style,
   testID,
   variant = 'primary',
+  size = 'regular',
   wide
 }: ButtonProps) {
   const theme = useTheme()
@@ -67,13 +70,14 @@ export function Button({
         styles.button,
         { backgroundColor: colors.bg, opacity: off ? 0.45 : pressed ? 0.7 : 1 },
         variant === 'plain' && styles.plain,
+        size === 'small' && styles.small,
         wide && styles.wide,
         style
       ]}
       testID={testID}
     >
-      {icon ? <Ionicons color={colors.fg} name={icon} size={19} /> : null}
-      <Text style={{ color: colors.fg }} variant="headline">
+      {icon ? <Ionicons color={colors.fg} name={icon} size={size === 'small' ? 16 : 19} /> : null}
+      <Text style={{ color: colors.fg }} variant={size === 'small' ? 'subhead' : 'headline'}>
         {busy && busyLabel ? busyLabel : label}
       </Text>
     </Pressable>
@@ -162,5 +166,6 @@ const styles = StyleSheet.create({
   },
   center: { alignItems: 'center', justifyContent: 'center' },
   plain: { minHeight: HIT, paddingHorizontal: 12 },
+  small: { gap: 6, minHeight: 32, paddingHorizontal: 14 },
   wide: { alignSelf: 'stretch' }
 })

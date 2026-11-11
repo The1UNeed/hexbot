@@ -639,6 +639,8 @@ async fn concurrent_connector_and_skill_updates_preserve_both_config_changes() {
     use std::sync::{Arc, Barrier};
     let home = setup();
     let h = home.path();
+    // Web search is turned on below, so it needs a key first.
+    std::fs::write(h.join(".env"), "EXA_API_KEY=test\n").unwrap();
     skills::call(
         h,
         "local",

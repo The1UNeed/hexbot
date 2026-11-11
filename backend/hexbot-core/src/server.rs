@@ -94,6 +94,9 @@ impl App {
                 error.message
             );
         }
+        if let Err(error) = catalog::keep_name_faces(&home) {
+            eprintln!("Could not keep the bots' faces: {}", error.message);
+        }
         let events = EventHub::new();
         crate::computers::attach(&home, events.clone());
         let runtime = Runtime::new(home.clone(), events.clone(), pi)?;
@@ -433,8 +436,16 @@ impl App {
                 "one_chat": true,
                 // `session.recall` takes back the owner's latest message in a chat.
                 "recall": true,
+                // `hexbot.sections.history` reads a chat without starting its bot.
+                "section_history": true,
                 "home": self.home
             })),
+            "hexbot.sections.history" => {
+                let (home, owner, p) = (self.home.clone(), owner.to_owned(), p.clone());
+                tokio::task::spawn_blocking(move || catalog::section_history(&home, &owner, &p))
+                    .await
+                    .map_err(|error| Error::new(5200, error.to_string()))?
+            }
             "hexbot.diagnostics.get" => {
                 let (home, owner, p) = (self.home.clone(), owner.to_owned(), p.clone());
                 let load = self.runtime.diagnostic_load();
@@ -443,6 +454,12 @@ impl App {
                 })
                 .await
                 .map_err(|error| Error::new(5200, error.to_string()))
+            }
+            "hexbot.diagnostics.logs" => {
+                let (home, p) = (self.home.clone(), p.clone());
+                tokio::task::spawn_blocking(move || crate::log_files::read(&home, &p))
+                    .await
+                    .map_err(|error| Error::new(5200, error.to_string()))?
             }
             "hexbot.diagnostics.trace" => Ok(crate::diagnostics::get().trace(
                 p["trace"]
@@ -512,6 +529,19 @@ impl App {
                     result
                 } else if let Some(result) = providers::call(&self.home, owner, method, p).await {
                     result
+                } else if let Some(result) =
+                    crate::accounts::call(&self.home, owner, method, p, self.address.port()).await
+                {
+                    // A sign-in that finished on its own (a Microsoft code, the
+                    // browser back on this computer) is seen by the poll.
+                    if result.as_ref().is_ok_and(|v| {
+                        crate::accounts::CHANGES.contains(&method)
+                            || (method == "hexbot.accounts.sign_in_poll" && v["status"] == "done")
+                    }) {
+                        self.events
+                            .emit(owner, None, "hexbot.connectors.changed", json!({}));
+                    }
+                    result
                 } else if let Some(result) = services::call(&self.home, owner, method, p).await {
                     result
                 } else {
@@ -544,6 +574,16 @@ impl App {
         {
             self.events
                 .emit(owner, None, "hexbot.heartbeat.changed", json!({}));
+        }
+        // Bots carry the limits in effect, so a new default reaches every open
+        // app, whichever app or bot changed it.
+        if method == "hexbot.settings.set"
+            && p["patch"].as_object().is_some_and(|patch| {
+                patch.contains_key("soul_char_limit") || patch.contains_key("memory_char_limit")
+            })
+        {
+            self.events
+                .emit(owner, None, "hexbot.bots.changed", json!({}));
         }
         // Each running turn lists the cards it still waits on, so a client
         // drops the ones it missed being settled. Opening a room restores them.
@@ -671,6 +711,7 @@ impl App {
         self.rooms.shutdown().await;
         self.dreaming.shutdown().await;
         self.runtime.shutdown().await;
+        crate::searxng::stop(&self.home).await;
     }
     fn addresses(&self) -> Vec<String> {
         settings::network(&self.home)
@@ -718,13 +759,16 @@ impl App {
         Ok(id)
     }
     fn changed(&self, owner: &str, method: &str, p: &Value, result: &Value) {
+        // A finished sign-in connects a provider as a key does, so every bot
+        // on it says so again.
         if matches!(
             method,
             "hexbot.providers.set_key"
                 | "hexbot.providers.clear_key"
                 | "model.save_key"
                 | "model.disconnect"
-        ) {
+        ) || (method == "hexbot.providers.login_poll" && result["status"] == "done")
+        {
             self.events
                 .emit(owner, None, "hexbot.bots.changed", json!({}));
             return;
@@ -1031,6 +1075,28 @@ fn take_browser_login(app: &App, headers: &HeaderMap, state: &str) -> Result<Bro
         return Err(invalid());
     }
     Ok(logins.remove(state).expect("checked login"))
+}
+/// Where Google sends the browser after a sign-in for the Google Workspace
+/// connector (`accounts.rs`). Only a browser on this computer gets here, as
+/// Google returns to the loopback address; the state names the sign-in.
+async fn google_return(
+    State(app): State<Arc<App>>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+) -> Response {
+    if peer.is_some_and(|Extension(ConnectInfo(p))| !p.ip().is_loopback()) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let (ok, page) = crate::accounts::callback(&app.home, &query.unwrap_or_default()).await;
+    let mut response = axum::response::Html(page).into_response();
+    if !ok {
+        *response.status_mut() = StatusCode::BAD_REQUEST;
+    }
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store"),
+    );
+    response
 }
 async fn browser_callback(
     State(app): State<Arc<App>>,
@@ -1944,7 +2010,7 @@ async fn handle_request(
         Err(error) => json!({"jsonrpc":"2.0","id":id,"error":error.rpc_value()}),
     })
 }
-/// A phone's push token, for heartbeat messages. Only the calling device's own
+/// A phone's push token, for heartbeat messages and unread replies. Only the calling device's own
 /// row changes; a null token stops pushes to it.
 fn set_push(home: &std::path::Path, owner: &str, device: &str, p: &Value) -> Result<Value> {
     // Only a string sets it and only null clears it; anything else is a mistake.
@@ -1998,14 +2064,15 @@ async fn computer_view(
 ) -> Response {
     crate::computers::proxy(token, request).await
 }
-/// Frames on a daemon page may only load from the daemon. A bot's visual runs
-/// in a sandboxed frame (`/visual-frame.html`); this keeps its script from
+/// Frames on a daemon page may only load from the daemon, or a `blob:` the
+/// page made itself (a PDF opened beside the chat). A bot's visual runs in a
+/// sandboxed frame (`/visual-frame.html`); this keeps its script from
 /// navigating that frame to another site with data in the URL.
 async fn frame_policy(mut response: Response) -> Response {
     response
         .headers_mut()
         .entry(axum::http::header::CONTENT_SECURITY_POLICY)
-        .or_insert(HeaderValue::from_static("frame-src 'self'"));
+        .or_insert(HeaderValue::from_static("frame-src 'self' blob:"));
     response
 }
 /// Vite names every file under `/assets/` by its content hash, so a browser
@@ -2046,6 +2113,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/daemon/identity", get(daemon_identity))
         .route("/auth/login", get(browser_login))
         .route("/auth/callback", get(browser_callback))
+        .route("/oauth/google", get(google_return))
         .route("/api/ws", get(upgrade))
         .route("/auth/password-login", post(login))
         .route("/api/auth/ws-ticket", post(ticket))

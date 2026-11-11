@@ -6,7 +6,7 @@ import { expect, it } from 'vitest'
 import { performBootstrap, type BootstrapDeps } from './bootstrap'
 import ties from '../../../../../backend/hexbot-core/assets/native-setup-ties.json'
 
-const files = ['hexbot.exe', 'hexbot-cli.exe', 'node.exe', 'pi/launch.mjs', 'pi/search-tools.mjs', 'bin/rg.exe', 'bin/fd.exe', 'web/index.html', 'pi/package-lock.json', 'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js']
+const files = ['hexbot.exe', 'hexbot-cli.exe', 'node.exe', 'pi/launch.mjs', 'pi/search-tools.mjs', 'bin/rg.exe', 'bin/fd.exe', 'bin/busybox.exe', 'web/index.html', 'pi/package-lock.json', 'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js']
 it('Windows packaged setup shares the canonical Nightly tie decisions with Rust', async () => {
   const root = await mkdtemp(join(tmpdir(), 'hexbot-setup-order-'))
   const previous = process.env.HEXBOT_HOME

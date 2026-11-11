@@ -374,6 +374,17 @@ fn resolve_discovered(
             .filter(|need| !met(need, &env))
             .cloned()
             .collect();
+        // A package's skills explain its server, so they wait for the values
+        // the server was added without.
+        if let Some(plugin) = &skill.plugin
+            && global["mcp_servers"][plugin]["plugin"] == plugin.as_str()
+        {
+            skill.missing.extend(
+                crate::connectors::missing_values(&global["mcp_servers"][plugin])
+                    .into_iter()
+                    .map(Requirement::Env),
+            );
+        }
         skill.ready = skill.missing.is_empty();
         skill.enabled = skill.enabled_for_bot && !skill.disabled_globally && skill.ready;
     }
@@ -723,7 +734,11 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Result<Value>
             let enabled = p["enabled"]
                 .as_bool()
                 .ok_or_else(|| Error::new(4202, "enabled must be a boolean"))?;
-            find_unlocked(home, target, name)?;
+            let skill = find_unlocked(home, target, name)?;
+            // Giving a skill to a bot waits for what it needs; taking it away does not.
+            if target.is_some() && enabled && !skill.ready {
+                return Err(crate::connectors::not_set_up(&skill.name));
+            }
             set_enabled(home, target, name, enabled)?;
             Ok(json!({"skill":find_unlocked(home, target, name)?}))
         }

@@ -509,6 +509,8 @@ export class DaemonManager extends EventEmitter {
     const logPath = join(hexbotHome(), 'logs', 'daemon.log')
     rotateLog(logPath)
     const log = createWriteStream(logPath, { flags: 'a' })
+    // Logging must not stop the app, and a stream error nobody handles would.
+    log.on('error', () => undefined)
     this.setStatus({ state: 'starting', port })
     const executable = activation?.executable ?? hexbotExecutable()
     const canonical = existsSync(executable) ? canonicalRuntimePath(executable) : executable

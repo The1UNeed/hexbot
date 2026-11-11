@@ -5,11 +5,12 @@ import { once } from 'node:events'
 import { existsSync } from 'node:fs'
 import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { test } from 'node:test'
+import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { archiveProgram, extractWindowsArchive, installTool, toolAsset } from '../../apps/desktop/src/main/backend/tools.ts'
-import { inventoryNativeRuntime, copyNativeRuntime, publishWindowsRuntime, publishNativeRuntime, createNativeArchive, extractStandaloneNode, launchers, nativeTarget, stageNativeRuntime, rustTarget, pruneRuntimeDependencies, directoryBytes, standaloneNode, retryDownload, NODE_VERSION, NODE_SHA256 } from './native-runtime.mjs'
+import { inventoryNativeRuntime, copyNativeRuntime, publishWindowsRuntime, publishNativeRuntime, createNativeArchive, extractStandaloneNode, launchers, nativeTarget, stageNativeRuntime, stageBusybox, cacheBusybox, rustTarget, pruneRuntimeDependencies, directoryBytes, standaloneNode, retryDownload, BUSYBOX, BUSYBOX_CACHE, NODE_VERSION, NODE_SHA256 } from './native-runtime.mjs'
 const exec = promisify(execFile)
 async function captureArchiveCommand(program, argv, cwd) {
   const child = spawn(program, argv, { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -107,6 +108,73 @@ test('Windows tool archives use ASCII operands and forward their Unicode cwd for
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
+test('BusyBox is pinned to one official 64-bit Unicode busybox-w32 build and its source', () => {
+  assert.match(BUSYBOX.version, /^FRP-\d+-g[0-9a-f]{9}$/)
+  assert.equal(BUSYBOX.url, `https://frippery.org/files/busybox/busybox-w64u-${BUSYBOX.version}.exe`)
+  assert.equal(BUSYBOX.source, `https://frippery.org/files/busybox/busybox-w32-${BUSYBOX.version}.tgz`)
+  assert.match(BUSYBOX.sha256, /^[a-f0-9]{64}$/)
+  assert.ok(Object.isFrozen(BUSYBOX))
+})
+
+// Synthetic bytes stand in for the pinned build under a pin naming their own
+// digest: the real download and checksum run natively in CI
+// (scripts/desktop/stage-busybox.mjs).
+const busyboxPin = bytes => ({ ...BUSYBOX, sha256: createHash('sha256').update(bytes).digest('hex') })
+const busyboxDownload = (bytes, urls) => async (url, destination) => {
+  urls.push(url); await writeFile(destination, bytes); return createHash('sha256').update(bytes).digest('hex')
+}
+const noDownload = async () => { throw new Error('BusyBox was downloaded') }
+
+test('the Windows runtime stages the pinned BusyBox through the build cache and keeps nothing a wrong checksum downloaded', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hexbot busybox π 中文 & '))
+  try {
+    const bin = join(root, 'bin'), cache = join(root, 'cache'), urls = []
+    const pin = busyboxPin('pinned busybox'), cached = join(cache, basename(BUSYBOX.url))
+    await assert.rejects(stageBusybox(bin, { cache, download: busyboxDownload('tampered', urls), pin }), /busybox-w64u-.*\.exe checksum mismatch/)
+    assert.deepEqual(await readdir(cache), [])
+    assert.equal(existsSync(bin), false)
+    assert.equal(await stageBusybox(bin, { cache, download: busyboxDownload('pinned busybox', urls), pin }), join(bin, 'busybox.exe'))
+    assert.equal(await readFile(join(bin, 'busybox.exe'), 'utf8'), 'pinned busybox')
+    assert.deepEqual(await readdir(bin), ['busybox.exe'])
+    assert.deepEqual(await readdir(cache), [basename(BUSYBOX.url)])
+    // A later build stages the cached copy without the network.
+    const again = join(root, 'again')
+    await stageBusybox(again, { cache, download: noDownload, pin })
+    assert.equal(await readFile(join(again, 'busybox.exe'), 'utf8'), 'pinned busybox')
+    // A damaged cached copy is downloaded again, never staged.
+    await writeFile(cached, 'damaged busybox')
+    await stageBusybox(again, { cache, download: busyboxDownload('pinned busybox', urls), pin })
+    assert.equal(await readFile(join(again, 'busybox.exe'), 'utf8'), 'pinned busybox')
+    assert.equal(await readFile(cached, 'utf8'), 'pinned busybox')
+    assert.deepEqual(await readdir(cache), [basename(BUSYBOX.url)])
+    assert.deepEqual(urls, [BUSYBOX.url, BUSYBOX.url, BUSYBOX.url])
+    assert.equal(await cacheBusybox(cache, { download: noDownload, pin }), cached)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('a BusyBox the build was handed is checked and staged without the cache or a download', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hexbot handed busybox π 中文 & '))
+  try {
+    const cache = join(root, 'cache'), file = join(root, 'handed busybox.exe'), pin = busyboxPin('pinned busybox')
+    await writeFile(file, 'pinned busybox')
+    const bin = join(root, 'bin')
+    assert.equal(await stageBusybox(bin, { file, cache, download: noDownload, pin }), join(bin, 'busybox.exe'))
+    assert.equal(await readFile(join(bin, 'busybox.exe'), 'utf8'), 'pinned busybox')
+    assert.equal(existsSync(cache), false)
+    // A wrong or missing copy fails the build instead of downloading another.
+    const refused = join(root, 'refused')
+    await writeFile(file, 'another busybox')
+    await assert.rejects(stageBusybox(refused, { file, cache, download: noDownload, pin }), /busybox-w64u-.*\.exe checksum mismatch: .*handed busybox\.exe/)
+    assert.deepEqual(await readdir(refused), [])
+    await assert.rejects(stageBusybox(refused, { file: join(root, 'missing.exe'), cache, download: noDownload, pin }), { code: 'ENOENT' })
+    assert.deepEqual(await readdir(refused), [])
+    assert.equal(existsSync(cache), false)
+    // The real pin refuses the synthetic bytes, wherever they come from.
+    await assert.rejects(stageBusybox(refused, { file, cache, download: noDownload }), /checksum mismatch/)
+    assert.equal(BUSYBOX_CACHE, join(fileURLToPath(new URL('../..', import.meta.url)), 'node_modules/.cache/hexbot'))
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
 test('Windows archive members and tools reject unsupported or escaping operands before extraction', async () => {
   let ran = false
   for (const [filename, member] of [['../archive.zip', 'rg.exe'], ['archive.zip', '../rg.exe'], ['archive.zip', 'C:/rg.exe'], ['archive.zip', '-option'], ['archive.zip', 'nested\\rg.exe'], ['archive.zip', 'π.exe']])
@@ -194,6 +262,9 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
     assert.equal(manifest.piVersion, '1.0.1'); assert.equal(manifest.version, '1.2.3')
     assert.match(manifest.files['hexbot-core'], /^[a-f0-9]{64}$/)
     for (const file of ['bin/rg', 'bin/fd', 'pi/search-tools.mjs']) assert.match(manifest.files[file], /^[a-f0-9]{64}$/)
+    // BusyBox is the Windows sandbox's shell; this runtime neither ships nor credits it.
+    assert.equal(manifest.files['bin/busybox.exe'], undefined)
+    assert.equal(existsSync(join(result.destination, 'bin/busybox.exe')), false)
     assert(Number.isSafeInteger(manifest.builtAt) && manifest.builtAt > 0)
     const cargo = calls.find(c => c.command === 'cargo').args
     assert(cargo.includes('--locked'))
@@ -212,6 +283,7 @@ test('stage builds locked dependencies, validates Pi and emits artifact checksum
     assert.match(noticed.nodeModules, /\/pi\/node_modules$/)
     assert.deepEqual(noticed.targets, [rustTarget(process.platform, process.arch)])
     assert.equal(noticed.node.version, '22.20.0')
+    assert.equal(noticed.busybox, undefined)
     assert.equal(await readFile(join(result.destination, 'THIRD_PARTY_NOTICES'), 'utf8'), 'third-party notices\n')
     // Headless installs and daemon updates unpack this archive.
     const archive = join(root, 'native.tar.gz')

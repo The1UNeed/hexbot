@@ -59,9 +59,9 @@ jobs:
           name: windows-client-contract
           path: apps/desktop/release/HexbotClient-*-win-x64.exe
           retention-days: 3
-  native-runtime:
+  sandbox:
+    name: Windows sandbox under a standard user
     env:
-      HEXBOT_CLI_NO_PATH: '1'
       HEXBOT_WINDOWS_NSIS_PROBE: '1'
     runs-on: windows-latest
     timeout-minutes: 60
@@ -72,38 +72,83 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 26.5.0
+      - run: rustup show active-toolchain
+      - name: Build the sandbox tests and the daemon
+        shell: pwsh
+        run: |
+          $messages = Join-Path $env:RUNNER_TEMP 'sandbox-compiler.jsonl'
+          cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test windows_sandbox --no-run --message-format=json | Out-File -FilePath $messages -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { throw 'The sandbox tests did not compile' }
+          $artifacts = @(Get-Content $messages | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.reason -eq 'compiler-artifact' -and $_.executable })
+          $probe = @($artifacts | Where-Object { $_.target.name -eq 'windows_sandbox' })
+          $daemon = @($artifacts | Where-Object { $_.target.name -eq 'hexbot' -and $_.target.kind -contains 'bin' })
+          if ($probe.Count -ne 1 -or $daemon.Count -ne 1) { throw 'Expected one sandbox test and one daemon executable' }
+          "HEXBOT_SANDBOX_PROBE=$($probe[0].executable)" >> $env:GITHUB_ENV
+          "HEXBOT_SANDBOX_DAEMON=$($daemon[0].executable)" >> $env:GITHUB_ENV
+      # The pinned BusyBox's build cache, keyed by its SHA-256 (BUSYBOX in
+      # scripts/desktop/native-runtime.mjs): frippery.org only fills it.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: busybox
+        with:
+          path: node_modules/.cache/hexbot
+          key: busybox-6e263d154d8548d1eb936f65d1d8312c80df31c45974e48d6335e4dcc0f4f34c
+      - name: Stage the pinned BusyBox the Windows runtime ships
+        shell: pwsh
+        run: |
+          $directory = Join-Path $env:RUNNER_TEMP 'busybox'
+          node scripts/desktop/stage-busybox.mjs $directory
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot stage the pinned BusyBox' }
+          "HEXBOT_SANDBOX_BUSYBOX=$(Join-Path $directory 'busybox.exe')" >> $env:GITHUB_ENV
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.busybox.outputs.cache-hit != 'true'
+        with:
+          path: node_modules/.cache/hexbot
+          key: ${{ steps.busybox.outputs.cache-primary-key }}
+      - name: Run the sandbox as a standard user
+        shell: pwsh
+        run: ./scripts/dev/windows-sandbox-standard-user.ps1 -Probe $env:HEXBOT_SANDBOX_PROBE -Hexbot $env:HEXBOT_SANDBOX_DAEMON -Busybox $env:HEXBOT_SANDBOX_BUSYBOX
+  native-runtime:
+    env:
+      HEXBOT_CLI_NO_PATH: '1'
+      HEXBOT_WINDOWS_NSIS_PROBE: '1'
+    runs-on: windows-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 26.5.0
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
       - run: rustup show active-toolchain
       - run: pnpm install --frozen-lockfile
-      - name: Native daemon compile gate expects only the production support guard
-        run: node scripts/dev/check-windows-unsupported.mjs "${{ github.workspace }}"
-      - name: Prepare the explicitly combined disposable native probe
+      # The pinned BusyBox's build cache, keyed by its SHA-256 (BUSYBOX in
+      # scripts/desktop/native-runtime.mjs): frippery.org only fills it.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: busybox
+        with:
+          path: node_modules/.cache/hexbot
+          key: busybox-6e263d154d8548d1eb936f65d1d8312c80df31c45974e48d6335e4dcc0f4f34c
+      - name: Stage the pinned BusyBox the Full runtime ships
         shell: pwsh
-        env:
-          HEXBOT_CI_GIT: C:\Program Files\Git\cmd\git.exe
         run: |
-          $source = Join-Path $env:RUNNER_TEMP 'hexbot-windows-contract-probe'
-          $metadata = node scripts/dev/prepare-windows-security.mjs $source '${{ github.sha }}' '${{ github.sha }}' --current-tree
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Write-Output $metadata
-          $probe = $metadata | ConvertFrom-Json
-          $tree = git rev-parse '${{ github.sha }}^{tree}'
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve immutable source tree' }
-          if ($probe.sourceDir -ne $source -or $probe.buildSHA -ne '${{ github.sha }}' -or $probe.securitySHA -ne '${{ github.sha }}' -or $probe.appliedSecurityPatch -or $probe.guardedTree -ne $tree) { throw 'Disposable source does not preserve exact current tree' }
-          "HEXBOT_WINDOWS_PROBE_SOURCE=$($probe.sourceDir)" >> $env:GITHUB_ENV
-      - run: pnpm install --frozen-lockfile
-        working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
-      - name: Check the disposable native daemon and real launcher regressions
-        working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
+          $directory = Join-Path $env:RUNNER_TEMP 'busybox'
+          node scripts/desktop/stage-busybox.mjs $directory
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot stage the pinned BusyBox' }
+          "HEXBOT_BUSYBOX_FILE=$(Join-Path $directory 'busybox.exe')" >> $env:GITHUB_ENV
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.busybox.outputs.cache-hit != 'true'
+        with:
+          path: node_modules/.cache/hexbot
+          key: ${{ steps.busybox.outputs.cache-primary-key }}
+      - name: Check the native daemon and real launcher regressions
         run: cargo clippy --locked --manifest-path backend/hexbot-core/Cargo.toml --lib --bins -- -D warnings
       - name: Run native Unicode, junction, service logs and security regressions
-        working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
-        run: cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test task_readiness --test service_parent_policy --test windows_service_parent --test windows_launchers --test windows_contract --test windows_shutdown -- --nocapture
+        run: cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test task_readiness --test service_parent_policy --test windows_service_parent --test windows_launchers --test windows_contract --test windows_shutdown --test windows_filesystem --test windows_file_tools -- --nocapture --test-threads=1
       - name: Verify the actual PowerShell stop controller before real task recovery
-        working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
         run: node --test scripts/desktop/windows-task-stop.test.mjs scripts/desktop/windows-service-logs.test.mjs
       - name: Recover an interrupted owned task install without claiming foreign files
-        working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
         env:
           HEXBOT_WINDOWS_SERVICE_PROBE: '1'
         shell: pwsh
@@ -115,30 +160,24 @@ jobs:
           $env:HEXBOT_WINDOWS_INSTALLER = (Resolve-Path backend/hexbot-installer/target/debug/hexbot-install.exe).Path
           node scripts/dev/run-one-rust-test.mjs backend/hexbot-core/Cargo.toml windows_launchers interrupted_task_install_uninstalls_owned_files_when_the_task_is_absent
       - name: Run the real dev provisioner through PiProcess without command shims
-        working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
         env:
           HEXBOT_WINDOWS_SERVICE_PROBE: '1'
         run: node scripts/dev/run-one-rust-test.mjs backend/hexbot-core/Cargo.toml windows_dev prepared_dev_node_runs_real_pi_for_daemon_and_desktop
       - name: Validate per-user CLI PATH registration on the disposable CI user
-        working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
         env:
           HEXBOT_CLI_NO_PATH: '0'
           HEXBOT_WINDOWS_PATH_PROBE: '1'
         run: node scripts/dev/run-one-rust-test.mjs backend/hexbot-core/Cargo.toml windows_launchers user_path_registration_preserves_existing_entries_and_removes_only_its_own
       - name: Recover interrupted CLI metadata and PATH through the installer engine
-        working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
         env:
           HEXBOT_CLI_NO_PATH: '0'
           HEXBOT_WINDOWS_PATH_PROBE: '1'
         run: node scripts/dev/run-one-rust-test.mjs backend/hexbot-installer/Cargo.toml windows_contract interrupted_cli_install_and_uninstall_clean_only_owned_metadata_and_path
       - name: Prove staging publication refusal and release before the Full build
-        working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
         run: node --test scripts/desktop/native-runtime.test.mjs scripts/desktop/windows-nsis.test.mjs scripts/desktop/windows-protocol.test.mjs scripts/desktop/windows-native-publication.test.mjs
       - name: Build Full and its real Node/Pi runtime without publishing
-        working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
         run: node scripts/desktop/dist.mjs --win --x64 --channel stable
       - name: Probe Full bootstrap and standalone setup with real Node and Pi
-        working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
         shell: pwsh
         run: |
           $env:HEXBOT_NATIVE_TEST_BUNDLE = (Resolve-Path apps/desktop/resources/hexbot-native).Path
@@ -156,7 +195,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/desktop/windows-update-restart.mjs
       - name: Probe Full NSIS installation, repair and uninstall
-        working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
         shell: pwsh
         run: |
           $version = (Get-Content apps/desktop/package.json -Encoding UTF8 -Raw | ConvertFrom-Json).version
@@ -172,15 +210,13 @@ jobs:
           $env:HEXBOT_WINDOWS_GUI_PROBE = (Resolve-Path scripts/desktop/windows-installed-app-smoke.mjs).Path
           node scripts/dev/run-one-rust-test.mjs backend/hexbot-installer/Cargo.toml windows_contract real_nsis_install_repair_and_uninstall
       - name: Probe signed Headless ZIP update and pinned Connect executable
-        working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
         shell: pwsh
         run: |
           node scripts/desktop/make-native-update.mjs apps/desktop/resources/hexbot-native windows-updates
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:HEXBOT_WINDOWS_UPDATE_ROOT = (Resolve-Path windows-updates).Path
           node scripts/dev/run-one-rust-test.mjs backend/hexbot-core/Cargo.toml windows_contract signed_zip_update_and_connect_executable
-      - name: Run the combined native Runtime refusal regression under a standard user
-        working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
+      - name: Run the native Runtime boundary regression under a standard user
         shell: pwsh
         run: |
           npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund
@@ -188,10 +224,12 @@ jobs:
           $messages = Join-Path $env:RUNNER_TEMP 'hexbot-contract-refusal-compiler.jsonl'
           cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test windows_security --no-run --message-format=json | Out-File -FilePath $messages -Encoding utf8
           if ($LASTEXITCODE -ne 0) { throw 'Native refusal probe did not compile' }
-          $artifact = @(Get-Content $messages -Encoding UTF8 | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'windows_security' -and $_.executable })
-          if ($artifact.Count -ne 1) { throw 'Expected exactly one native refusal executable' }
-          ./scripts/dev/windows-security-standard-user.ps1 -Runtime (Resolve-Path backend/pi-runtime).Path -Probe $artifact[0].executable
-      # Disposable guard-removed binaries are never uploaded or published.
+          $artifacts = @(Get-Content $messages -Encoding UTF8 | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.reason -eq 'compiler-artifact' -and $_.executable })
+          $artifact = @($artifacts | Where-Object { $_.target.name -eq 'windows_security' })
+          $daemon = @($artifacts | Where-Object { $_.target.name -eq 'hexbot' -and $_.target.kind -contains 'bin' })
+          if ($artifact.Count -ne 1 -or $daemon.Count -ne 1) { throw 'Expected exactly one native refusal executable and one daemon executable' }
+          ./scripts/dev/windows-security-standard-user.ps1 -Runtime (Resolve-Path backend/pi-runtime).Path -Probe $artifact[0].executable -Hexbot $daemon[0].executable
+      # Binaries built here are never uploaded or published.
   client-nightly:
     env:
       HEXBOT_WINDOWS_NSIS_PROBE: '1'
@@ -214,7 +252,7 @@ jobs:
       HEXBOT_CLI_NO_PATH: '1'
       HEXBOT_WINDOWS_NSIS_PROBE: '1'
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -225,24 +263,24 @@ jobs:
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
       - run: rustup show active-toolchain
       - run: pnpm install --frozen-lockfile
-      - name: Native daemon compile gate expects only the production support guard
-        run: node scripts/dev/check-windows-unsupported.mjs "${{ github.workspace }}"
-      - name: Prepare the explicitly combined disposable native probe
+      # The pinned BusyBox's build cache, keyed by its SHA-256 (BUSYBOX in
+      # scripts/desktop/native-runtime.mjs): frippery.org only fills it.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: busybox
+        with:
+          path: node_modules/.cache/hexbot
+          key: busybox-6e263d154d8548d1eb936f65d1d8312c80df31c45974e48d6335e4dcc0f4f34c
+      - name: Stage the pinned BusyBox the Full runtime ships
         shell: pwsh
-        env:
-          HEXBOT_CI_GIT: C:\Program Files\Git\cmd\git.exe
         run: |
-          $source = Join-Path $env:RUNNER_TEMP 'hexbot-windows-contract-probe'
-          $metadata = node scripts/dev/prepare-windows-security.mjs $source '${{ github.sha }}' '${{ github.sha }}' --current-tree
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Write-Output $metadata
-          $probe = $metadata | ConvertFrom-Json
-          $tree = git rev-parse '${{ github.sha }}^{tree}'
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve immutable source tree' }
-          if ($probe.sourceDir -ne $source -or $probe.buildSHA -ne '${{ github.sha }}' -or $probe.securitySHA -ne '${{ github.sha }}' -or $probe.appliedSecurityPatch -or $probe.guardedTree -ne $tree) { throw 'Disposable source does not preserve exact current tree' }
-          "HEXBOT_WINDOWS_PROBE_SOURCE=$($probe.sourceDir)" >> $env:GITHUB_ENV
-      - run: pnpm install --frozen-lockfile
-        working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
+          $directory = Join-Path $env:RUNNER_TEMP 'busybox'
+          node scripts/desktop/stage-busybox.mjs $directory
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot stage the pinned BusyBox' }
+          "HEXBOT_BUSYBOX_FILE=$(Join-Path $directory 'busybox.exe')" >> $env:GITHUB_ENV
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.busybox.outputs.cache-hit != 'true'
+        with:
+          path: node_modules/.cache/hexbot
+          key: ${{ steps.busybox.outputs.cache-primary-key }}
       - name: Verify the real Nightly Full NSIS identity without publishing
-        working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}
         run: node scripts/desktop/windows-nightly-nsis-probe.mjs full

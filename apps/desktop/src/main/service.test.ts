@@ -6,6 +6,7 @@ import { expect, it, vi } from 'vitest'
 import { hexbotHome } from './backend/paths'
 import { migrateLegacyService, reconcileWindowsService } from './service'
 import { launchdPlist, systemdUnit } from './service-files'
+import { restoreEnvironment } from './test-environment'
 
 for (const platform of ['darwin', 'linux'] as const) {
   it(`migrates ${platform} services once, removing the legacy PATH`, async () => {
@@ -184,7 +185,7 @@ it('Windows setup services pass the exact app home to every native child', async
       expect(call.options?.env?.HEXBOT_HOME).toBe(process.env.HEXBOT_HOME)
       expect(call.options?.windowsHide).toBe(true)
     }
-  } finally { process.env = previous; executable.mockRestore() }
+  } finally { restoreEnvironment(previous); executable.mockRestore() }
 })
 
 it('repairs only a verified running Windows task whose home daemon uses an older executable, including a missing script', async () => {

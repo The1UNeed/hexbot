@@ -11,9 +11,8 @@ const state = vi.hoisted(() => ({
   event: (_event: unknown) => {},
   ready: async () => {}
 }))
-vi.mock('react-native', () => ({
-  AppState: { addEventListener: () => ({ remove() {} }) }
-}))
+const appState = vi.hoisted(() => ({ currentState: 'active', addEventListener: () => ({ remove() {} }) }))
+vi.mock('react-native', () => ({ AppState: appState }))
 vi.mock('expo-crypto', () => ({ randomUUID: () => 'message' }))
 vi.mock('./storage', () => ({
   activeDaemonId: async () => null,
@@ -529,7 +528,7 @@ it('holds owner input through reconnect lookup failure and retries the canonical
   await act(async () => { await state.ready() })
   expect(hook.result.current.liveSessionId()).toBe('live-owl-chat')
   await act(async () => { await hook.result.current.send('after retry') })
-  expect(state.request).toHaveBeenCalledWith('prompt.submit', expect.objectContaining({ session_id: 'live-owl-chat', text: 'after retry' }))
+  expect(state.request).toHaveBeenCalledWith('prompt.submit', expect.objectContaining({ session_id: 'live-owl-chat', text: 'after retry', interrupt: true }))
   expect(state.request.mock.calls.some(([method, params]) => method === 'prompt.submit' && params.text.includes('early'))).toBe(false)
 })
 it.each(['room', 'bot', 'back', 'daemon', 'unmount'] as const)(
@@ -720,6 +719,52 @@ describe('recall and closing an error in a bot chat', () => {
     expect(hook.result.current.chat.busy).toBe(false)
   })
 
+  it('keeps a running reply working when a follow-up is refused', async () => {
+    const hook = await chat()
+    act(() => state.event({ type: 'message.start', session_id: 'live-owl-chat', payload: {} }))
+    state.request.mockImplementation(async (method: string, params: Record<string, unknown> = {}) => {
+      if (method === 'prompt.submit') throw Object.assign(new Error('attachment not found: gone; attach it again'), { code: 4204 })
+      return reply(method, params)
+    })
+    await act(async () => { await hook.result.current.send('Use this file').catch(() => {}) })
+    expect(hook.result.current.chat.busy).toBe(true)
+    expect(hook.result.current.chat.messages).toEqual([])
+    act(() => state.event({ type: 'message.complete', session_id: 'live-owl-chat', payload: { text: 'Done' } }))
+    expect(hook.result.current.chat.busy).toBe(false)
+  })
+
+  it('keeps a reply that was running when the chat opened working when a follow-up is refused', async () => {
+    daemonWith([bot])
+    const base = state.request.getMockImplementation()!
+    state.request.mockImplementation(async (method: string, params: Record<string, unknown> = {}) => {
+      if (method === 'hexbot.sections.open')
+        return { ...(await reply(method, params)), busy: true, messages: [{ role: 'user', content: 'Write an essay' }] }
+      if (method === 'prompt.submit') throw Object.assign(new Error('session is compacting'), { code: 4002 })
+      return base(method, params)
+    })
+    const hook = await connected()
+    await act(async () => { await hook.result.current.openSection(bot) })
+    expect(hook.result.current.chat.busy).toBe(true)
+    await act(async () => { await hook.result.current.send('/compact').catch(() => {}) })
+    expect(hook.result.current.chat.busy).toBe(true)
+    act(() => state.event({ type: 'message.complete', session_id: 'live-owl-chat', payload: { text: 'Bridges are' } }))
+    act(() => state.event({ type: 'status.update', session_id: 'live-owl-chat', payload: { kind: 'idle', text: '' } }))
+    expect(hook.result.current.chat.busy).toBe(false)
+  })
+
+  it('does not keep a finished turn working when a later message is refused', async () => {
+    const hook = await chat()
+    act(() => state.event({ type: 'message.start', session_id: 'live-owl-chat', payload: {} }))
+    act(() => state.event({ type: 'status.update', session_id: 'live-owl-chat', payload: { kind: 'interrupted', text: '' } }))
+    const base = state.request.getMockImplementation()!
+    state.request.mockImplementation(async (method: string, params: Record<string, unknown> = {}) => {
+      if (method === 'prompt.submit') throw Object.assign(new Error('attachment not found: gone; attach it again'), { code: 4204 })
+      return base(method, params)
+    })
+    await act(async () => { await hook.result.current.send('Use this file').catch(() => {}) })
+    expect(hook.result.current.chat.busy).toBe(false)
+  })
+
   it('names a message from the history by its row when it has no input id', async () => {
     const hook = await chat()
     state.request.mockImplementation(async (method: string, params: Record<string, unknown> = {}) => {
@@ -740,6 +785,32 @@ describe('recall and closing an error in a bot chat', () => {
     await act(async () => { await hook.result.current.dismissError() })
     expect(hook.result.current.chat.error).toBeNull()
     expect(state.request).toHaveBeenCalledWith('hexbot.bots.clear_status', { name: 'owl' })
+  })
+
+  it('marks a reply read as it lands on screen, so this phone is not woken about it', async () => {
+    await chat()
+    const reads = () => state.request.mock.calls.filter(([m]) => m === 'hexbot.sections.mark_read').length
+    const before = reads()
+    act(() => state.event({ type: 'message.complete', session_id: 'live-owl-chat', payload: { text: 'Done.' } }))
+    expect(reads()).toBe(before + 1)
+    expect(state.request).toHaveBeenLastCalledWith('hexbot.sections.mark_read', { id: 'owl-chat' })
+    // In the background the reply stays unread for the push.
+    appState.currentState = 'background'
+    act(() => state.event({ type: 'message.complete', session_id: 'live-owl-chat', payload: { text: 'Again.' } }))
+    appState.currentState = 'active'
+    expect(reads()).toBe(before + 1)
+  })
+
+  it('leaves a reply unread while a page covers the chat, and reads it when the page closes', async () => {
+    const hook = await chat()
+    const reads = () => state.request.mock.calls.filter(([m]) => m === 'hexbot.sections.mark_read').length
+    const before = reads()
+    act(() => hook.result.current.setChatCovered(true))
+    act(() => state.event({ type: 'message.complete', session_id: 'live-owl-chat', payload: { text: 'Done.' } }))
+    expect(reads()).toBe(before)
+    act(() => hook.result.current.setChatCovered(false))
+    expect(reads()).toBe(before + 1)
+    expect(state.request).toHaveBeenLastCalledWith('hexbot.sections.mark_read', { id: 'owl-chat' })
   })
 
   it('leaves the bot’s state alone when the error is not a Stopped state here', async () => {
@@ -783,6 +854,17 @@ describe('mobile history critical path', () => {
     expect(state.request).not.toHaveBeenCalledWith('hexbot.sections.mark_read', { id: 'owl-chat' })
   })
 
+  it('leaves a room message unread while the room is covered, and reads it when it is back', async () => {
+    const hook = await connected()
+    await act(async () => { await hook.result.current.openRoom(room) })
+    const reads = () => state.request.mock.calls.filter(([m, p]) => m === 'hexbot.rooms.mark_read' && p.seq === 4).length
+    act(() => hook.result.current.setChatCovered(true))
+    act(() => state.event({ type: 'hexbot.rooms.event', payload: { room_id: 'room', event: { room_id: 'room', seq: 4, kind: 'message.user', actor_kind: 'human', actor_id: 'local', payload: { text: 'Behind the page' } } } }))
+    expect(reads()).toBe(0)
+    act(() => hook.result.current.setChatCovered(false))
+    expect(reads()).toBe(1)
+  })
+
   it('starts room metadata alongside its log and finishes opening before the read receipt', async () => {
     const hook = await connected()
     const log = pause('hexbot.rooms.log')
@@ -802,5 +884,112 @@ describe('mobile history critical path', () => {
     expect(hook.result.current.loading).toBe(false)
     await act(async () => { read.reject(new Error('receipt failed')); await Promise.resolve() })
     expect(hook.result.current.error).toBeNull()
+  })
+})
+describe('switching to a bot read ahead', () => {
+  let install = 'first-daemon'
+  const said = (text: string) => ({ role: 'assistant', row_id: text, text })
+  const ahead = async (method: string, params: Record<string, unknown> = {}) => {
+    if (method === 'hexbot.info') return { one_chat: true, section_history: true, install_id: install }
+    if (method === 'hexbot.sections.history' || method === 'hexbot.sections.open')
+      return {
+        ...(method === 'hexbot.sections.open' && { section: section(String(params.id)) }),
+        messages: [said(`${install} ${params.id}`)],
+        history_cursor: `${install}:1`,
+        history_delta: false
+      }
+    return reply(method, params)
+  }
+  const historyReads = () => state.request.mock.calls.filter(([name]) => name === 'hexbot.sections.history')
+  beforeEach(() => {
+    install = 'first-daemon'
+    state.request.mockImplementation(ahead)
+  })
+
+  it('reads only the first few chats ahead after a cold start, since each read is a whole history', async () => {
+    const many = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map(name => ({ name, display_name: name }) as Bot)
+    state.request.mockImplementation(async (method: string, params: Record<string, unknown> = {}) =>
+      method === 'hexbot.bots.list' ? { bots: many } : ahead(method, params))
+    await connected()
+    await vi.waitFor(() => expect(historyReads().length).toBe(5))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(historyReads().map(([, params]) => params.id)).toEqual(['a-chat', 'b-chat', 'c-chat', 'd-chat', 'e-chat'])
+  })
+
+  it('shows the chat at once and opens it with the cursor of what it holds', async () => {
+    const hook = await connected()
+    await vi.waitFor(() => expect(historyReads().length).toBe(2))
+    const held = pause('hexbot.sections.open')
+    let opening!: Promise<void>
+    await act(async () => {
+      opening = hook.result.current.openSection(bot)
+      await held.called
+    })
+    // Shown while the bot starts; sending still waits for the open.
+    expect(hook.result.current.chat.messages.map(m => m.text)).toEqual(['first-daemon owl-chat'])
+    expect(hook.result.current.opening).toBe(true)
+    expect(state.request).toHaveBeenCalledWith('hexbot.sections.open', {
+      id: 'owl-chat',
+      history_cursor: 'first-daemon:1'
+    })
+    await act(async () => {
+      held.resolve({ section: section('owl-chat'), messages: [said('new')], history_cursor: 'c2', history_delta: true })
+      await opening
+    })
+    expect(hook.result.current.chat.messages.map(m => m.text)).toEqual(['first-daemon owl-chat', 'new'])
+  })
+
+  it('reads what a chat missed when you leave it after it changed, and never draws the older rows', async () => {
+    const hook = await connected()
+    await vi.waitFor(() => expect(historyReads().length).toBe(2))
+    await act(async () => { await hook.result.current.openSection(bot) })
+    // The bot answers while the chat is open.
+    await act(async () => {
+      state.event({ type: 'message.complete', session_id: 'live-owl-chat', payload: { text: 'Answer' } })
+    })
+    const missed = pause('hexbot.sections.history', params => params.id === 'owl-chat')
+    await act(async () => { await hook.result.current.openRoom(room) })
+    await missed.called
+    expect(state.request).toHaveBeenCalledWith('hexbot.sections.history', {
+      id: 'owl-chat',
+      history_cursor: 'first-daemon:1'
+    })
+    // Back before that read lands: the held rows lack the answer, so none are drawn.
+    const opened = pause('hexbot.sections.open')
+    let opening!: Promise<void>
+    await act(async () => {
+      opening = hook.result.current.openSection(bot)
+      await opened.called
+    })
+    expect(hook.result.current.chat.messages).toEqual([])
+    await act(async () => {
+      opened.resolve({ section: section('owl-chat'), messages: [said('Answer')], history_cursor: 'c2', history_delta: true })
+      await opening
+    })
+    expect(hook.result.current.chat.messages.map(m => m.text)).toEqual(['first-daemon owl-chat', 'Answer'])
+  })
+
+  it('never shows or sends what it held for another daemon at the same address', async () => {
+    const hook = await connected()
+    await vi.waitFor(() => expect(historyReads().length).toBe(2))
+    install = 'second-daemon'
+    const reconnected = deferred<void>()
+    // The other daemon's own read ahead waits, so only the held rows could show.
+    state.request.mockImplementation((method: string, params: Record<string, unknown> = {}) =>
+      method === 'hexbot.sections.history' ? reconnected.promise : ahead(method, params))
+    await act(async () => { await state.ready() })
+    const held = pause('hexbot.sections.open')
+    let opening!: Promise<void>
+    await act(async () => {
+      opening = hook.result.current.openSection(bot)
+      await held.called
+    })
+    expect(hook.result.current.chat.messages).toEqual([])
+    expect(state.request).toHaveBeenLastCalledWith('hexbot.sections.open', { id: 'owl-chat' })
+    await act(async () => {
+      held.resolve({ section: section('owl-chat'), messages: [said('second')], history_cursor: 's1', history_delta: false })
+      await opening
+    })
+    expect(hook.result.current.chat.messages.map(m => m.text)).toEqual(['second'])
   })
 })

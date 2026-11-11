@@ -14,6 +14,7 @@ const VERBS: Record<string, [live: string, done: string]> = {
   hexbot_rename_section: ['Naming the chat', 'Named the chat'],
   hexbot_passwords: ['Using a saved password', 'Used a saved password'],
   hexbot_plugins: ['Checking plugins', 'Checked plugins'],
+  hexbot_share_file: ['Sharing a file', 'Shared a file'],
   hexbot_show_html: ['Drawing', 'Drew'],
   hexbot_soul: ['Updating soul', 'Updated soul'],
   image_generate: ['Generating an image', 'Generated an image'],
@@ -57,6 +58,24 @@ const COMPUTER: Record<string, [live: string, done: string]> = {
   type: ['Typing', 'Typed'],
   wait: ['Waiting', 'Waited'],
   windows: ['Checking windows', 'Checked windows']
+}
+
+/** Email, by `hexbot_mail` action, which the daemon sends as the call's summary. */
+const MAIL: Record<string, [live: string, done: string]> = {
+  draft: ['Drafting an email', 'Drafted an email'],
+  read: ['Reading an email', 'Read an email'],
+  search: ['Searching email', 'Searched email']
+}
+
+/** "Searching email", or the plain phrase when the action is unknown. */
+export function mailLabel(action: null | string | undefined, tense: 'done' | 'live'): string {
+  const verbs = MAIL[(action ?? '').trim()]
+
+  return verbs
+    ? verbs[tense === 'live' ? 0 : 1]
+    : tense === 'live'
+      ? 'Checking email'
+      : 'Checked email'
 }
 
 /** "Clicking on the computer", or the plain phrase when the action is unknown. */
@@ -217,6 +236,10 @@ export function toolLabel(
     return computerLabel(call.summary, tense)
   }
 
+  if (call.name === 'hexbot_mail') {
+    return mailLabel(call.summary, tense)
+  }
+
   const connector = PREVIEW[call.name]
   const detail = connector === undefined ? '' : preview(call)
   const verbs = (detail ? undefined : NO_PREVIEW[call.name]) ?? VERBS[call.name]
@@ -253,6 +276,7 @@ const ACTIVITY: Record<string, string> = {
   hexbot_rename_section: 'is naming the chat',
   hexbot_passwords: 'is signing in',
   hexbot_plugins: 'is looking at plugins',
+  hexbot_share_file: 'is sharing a file',
   hexbot_show_html: 'is drawing',
   hexbot_soul: 'is updating its soul',
   image_generate: 'is making an image',
@@ -333,18 +357,23 @@ export function activityLabel(call: ToolCall, name: string): string {
     return `${name} is ${computerLabel(call.summary, 'live').replace(/^\w/, c => c.toLowerCase())}`
   }
 
+  if (call.name === 'hexbot_mail') {
+    return `${name} is ${mailLabel(call.summary, 'live').replace(/^\w/, c => c.toLowerCase())}`
+  }
+
   return `${name} ${ACTIVITY[call.name] ?? `is using ${humanize(call.name)}`}`
 }
 
 /** Tools that look for something; the face searches with them. */
 const SEARCHING = new Set(['search_files', 'session_search', 'web_search', 'x_search'])
 
-/** The face a bot wears while it works: thinking, searching, writing, or working. */
-export type LiveMood = 'searching' | 'thinking' | 'working' | 'writing'
+/** The face a bot wears while it works: thinking, searching, writing, working, or on the computer. */
+export type LiveMood = 'computer' | 'searching' | 'thinking' | 'working' | 'writing'
 
 /**
  * The face a bot wears over a message while it streams: thinking before
- * anything happens, searching or working while a step runs, writing while
+ * anything happens, searching, working or a pointer on the computer while a
+ * step runs, writing while
  * its words stream. None once the message is done.
  */
 export function liveMood(message: Message): LiveMood | undefined {
@@ -358,7 +387,11 @@ export function liveMood(message: Message): LiveMood | undefined {
   )
 
   if (running && !message.checking) {
-    return SEARCHING.has(running.name) ? 'searching' : 'working'
+    return running.name === 'computer_use'
+      ? 'computer'
+      : SEARCHING.has(running.name)
+        ? 'searching'
+        : 'working'
   }
 
   if (message.checking || message.activity) {

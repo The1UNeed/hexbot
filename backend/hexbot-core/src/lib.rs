@@ -1,8 +1,6 @@
 //! Native Hexbot daemon with Pi agent sessions and the existing frontend contract.
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-compile_error!("The Hexbot daemon supports macOS and Linux only");
-
+pub mod accounts;
 mod admission;
 pub mod auth;
 pub mod catalog;
@@ -16,9 +14,13 @@ pub mod db;
 pub mod diagnostics;
 pub mod dpop;
 pub mod dreaming;
+pub mod engines;
 pub mod events;
+pub mod faces;
 pub mod http;
 mod install_ownership;
+pub mod log_files;
+pub mod mail;
 pub mod memory;
 pub mod native_external_tools;
 pub mod native_product_tools;
@@ -35,6 +37,7 @@ pub mod rooms;
 pub mod rpc;
 pub mod runtime;
 pub mod runtime_store;
+pub mod searxng;
 pub mod server;
 pub mod services;
 pub mod settings;
@@ -47,8 +50,12 @@ pub mod system_service;
 pub mod system_service;
 pub mod windows_cli;
 #[cfg(windows)]
+pub mod windows_container;
+#[cfg(windows)]
 mod windows_node_path;
 mod windows_paths;
+#[cfg(windows)]
+pub mod windows_sandbox;
 #[cfg(not(windows))]
 pub mod windows_service;
 mod windows_task;

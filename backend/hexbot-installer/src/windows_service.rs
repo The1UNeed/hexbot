@@ -72,17 +72,15 @@ pub fn foreign_wrapper_owner(path: &Path, home: &Path) -> io::Result<Option<Path
 #[cfg(windows)]
 fn task_control(path: &Path, home: &Path, operation: &str) -> io::Result<String> {
     use std::os::windows::process::CommandExt;
-    let output = std::process::Command::new(crate::windows_paths::system_program(
-        "WindowsPowerShell/v1.0/powershell.exe",
-    )?)
-    .args([
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        &crate::windows_task::control(path, home, operation)?,
-    ])
-    .creation_flags(0x08000000)
-    .output()?;
+    let output = crate::windows_paths::system_powershell()?
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &crate::windows_task::control(path, home, operation)?,
+        ])
+        .creation_flags(0x08000000)
+        .output()?;
     if !output.status.success() {
         return Err(io::Error::other(
             String::from_utf8_lossy(&output.stderr).trim(),

@@ -60,6 +60,10 @@ The same page shows when the next heartbeat runs, runs one now, and lists recent
 
 The heartbeat replaced your primary bot's check-ins. If it sent you any, its Check-ins conversation stays until you delete it under Heartbeat in its settings or in its profile on the phone app.
 
+## Notifications
+
+Hexbot notifies you when a bot finishes a reply, asks for approval, has a question, stops, or writes from its heartbeat: in the app, in a browser tab you allowed (browsers notify only over HTTPS, such as through Hex Connect), and on your phone. It stays quiet only about the chat you have in front of you; a Hexbot window behind another app, or another chat, still notifies. Settings, Notifications shows whether this computer or browser can notify and sends a test, lists the phones that take notifications, and has a Notify me switch for each bot. Until you turn them on, a banner under the chat's header offers to.
+
 ## Keep the chat going
 
 Select a bot in the sidebar to open its chat and carry on where you left off. Closing the app or restarting the daemon does not end it. Behind the chat is one persistent Pi conversation.
@@ -68,7 +72,7 @@ Changes reach the chat at different times:
 
 | Change                                         | When the chat has it                                                                                                              |
 | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| Model or reasoning level                       | From your next message.                                                                                                           |
+| Model, reasoning level, or fast mode           | From your next message.                                                                                                           |
 | Tools, connectors, or MCP servers              | From your next message. That one reply rereads the conversation without the provider's prompt cache, so it costs more than usual. |
 | Soul, memory, About you, skills, and teammates | After the chat next summarises older messages, as described below.                                                                |
 
@@ -88,9 +92,9 @@ A [dream](/docs/dreaming/) posts nothing in the chat; its summary is in the bot'
 
 Use **Stop** to interrupt a running answer. The chat stays available, and you can send another message once the bot is idle. Queued background results run before your next message. A result accepted just after Stop finishes can start the next answer itself. A background result arriving while the answer stops waits until it has stopped, then continues the chat. The new answer can ask questions and request approvals. A question or approval the bot was waiting on goes away in every app.
 
-In the web and desktop apps, the message box clears as soon as you send, and your message shows greyed with a spinner until the daemon takes it. If it has not gone through after 15 seconds, was refused, or the bot's answer to it failed, it shows a red **!** and **Not sent · Retry**; hover for the reason. Choose **Retry** or the **!** to send it again. When the bot's answer to your latest message failed, Retry takes that message back and sends it again, so the chat keeps one copy. Until the daemon takes a message, its text stays saved as the chat's draft, so reloading never loses it. Rooms show unsent messages the same way. The phone app shows an error under the chat instead.
+In the web and desktop apps, the message box clears as soon as you send, and your message shows greyed with a spinner until the daemon takes it. If it has not gone through after 15 seconds, was refused, or could not reach the daemon, it shows a red **!** and **Not sent · Retry**; hover for the reason. Choose **Retry** or the **!** to send it again. If the bot got your message but could not answer, for example because its provider failed or is rate-limited, your message stays as sent and a **stopped** card under it says why. Its **Retry** takes that message back and sends it again, so the chat keeps one copy. Until the daemon takes a message, its text stays saved as the chat's draft, so reloading never loses it. Rooms show unsent messages the same way. The phone app shows an error under the chat instead.
 
-When an answer fails, the bot shows Stopped. In the web and desktop apps, Retry is available when the daemon can identify the input that failed. Older daemons offer no Retry for failed sends or answers. A failed send keeps its draft for you to check and send manually. Retry, or any new message you send in that chat, shows it as Working as soon as the answer starts, in every app. Work the bot starts on its own, such as a background result, leaves Stopped while it runs; any answer that finishes cleanly clears it. A room's failure stays until a room turn finishes. A bot shows Working only while it answers in its chat or a room; heartbeats, scheduled jobs, dreams and subagents run without it.
+When an answer fails, the bot shows Stopped. In the web and desktop apps, Retry is available when the daemon can identify the input that failed. Older daemons offer no Retry for failed sends or answers. A failed send keeps its draft for you to check and send manually. Retry, or any new message you send in that chat, shows it as Working as soon as the answer starts, in every app. Work the bot starts on its own, such as a background result, leaves Stopped while it runs; any answer that finishes cleanly clears it. A room's failure stays until a room turn finishes. A bot shows Working only while it answers in its chat or a room, or uses the bots' computer; heartbeats, scheduled jobs, dreams and subagents otherwise run without it.
 
 A failed send or upload keeps the bot's current answer and Stop available, including with an older daemon. If the app cannot confirm whether your message was sent, Retry sends it again under the same key, and the daemon refuses a copy that already arrived.
 
@@ -98,7 +102,7 @@ Close a Stopped card with its **×** once you have read it. If the bot shows Sto
 
 ## Search a chat
 
-In the web and desktop apps, choose the search button at the top of a bot's side panel to search your whole chat with it: what you and the bot said, files you shared or it wrote, the visuals it drew, and its soul and memory. Choose a message or file to scroll the chat to it; a visual opens beside the chat, and soul or memory opens in its editor. In a room, the search button next to Room settings searches the room's messages and files. On the phone, the search button is at the top of the chat. Search looks at what the app has loaded: all of a bot's chat, and a room's recent messages (show earlier ones to search further back on the phone).
+In the web and desktop apps, choose the search button at the top of a bot's side panel to search your whole chat with it: what you and the bot said, files you or the bot shared, the visuals it drew, and its soul and memory. Choose a message or file to scroll the chat to it; a visual opens beside the chat, and soul or memory opens in its editor. In a room, the search button next to Room settings searches the room's messages and files. On the phone, the search button is at the top of the chat. Search looks at what the app has loaded: all of a bot's chat, and a room's recent messages (show earlier ones to search further back on the phone).
 
 ## Recall a message
 

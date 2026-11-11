@@ -1,12 +1,24 @@
 import { describe, expect, it } from 'vitest'
 
-import { computerActivity, screenPlays } from './computer'
+import { computerActivity, computerWaiting, screenPlays } from './computer'
 
 describe('computerActivity', () => {
   it('says what a bot does on the computer', () => {
     expect(computerActivity('Scout', 'click')).toBe('Scout is clicking on the computer')
     expect(computerActivity('Scout', 'type')).toBe('Scout is typing on the computer')
     expect(computerActivity('Scout', 'teleport')).toBe('Scout is using the computer')
+  })
+})
+
+describe('computerWaiting', () => {
+  it('shows the pointer only while a computer step runs', () => {
+    const step = { action: 'scroll', name: 'computer_use', status: 'running' }
+    expect(computerWaiting([step], 'Scout')).toEqual({
+      computer: true,
+      label: 'Scout is scrolling on the computer'
+    })
+    expect(computerWaiting([{ ...step, status: 'ok' }], 'Scout')).toBeNull()
+    expect(computerWaiting([{ ...step, name: 'terminal' }], 'Scout')).toBeNull()
   })
 })
 

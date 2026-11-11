@@ -18,7 +18,14 @@ const messages: ChatMessage[] = [
     sender: 'muse',
     text: 'Here is a Lisbon itinerary.',
     tools: [
-      { args: { path: 'notes/lisbon.md' }, detail: '', id: 't1', name: 'write', status: 'ok' },
+      { args: { path: 'notes/draft.md' }, detail: '', id: 't0', name: 'write', status: 'ok' },
+      {
+        args: { path: 'notes/lisbon.md' },
+        detail: '',
+        id: 't1',
+        name: 'hexbot_share_file',
+        status: 'ok'
+      },
       {
         args: '{"html":"<h1>Lisbon days</h1>","title":"Trip map"}',
         detail: '',
@@ -32,7 +39,7 @@ const messages: ChatMessage[] = [
 ]
 
 describe('searchEntries', () => {
-  it('reads messages, files and visuals with the transcript ids', () => {
+  it('reads messages, shared files and visuals with the transcript ids', () => {
     const entries = searchEntries(messages, m => (m.role === 'user' ? 'You' : 'Muse'))
 
     expect(entries.map(entry => entry.id)).toEqual(['m1', 'm2'])

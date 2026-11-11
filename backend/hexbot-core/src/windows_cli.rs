@@ -199,27 +199,25 @@ fn path_operation(
     intent: &serde_json::Value,
 ) -> io::Result<serde_json::Value> {
     use std::os::windows::process::CommandExt;
-    let output = std::process::Command::new(crate::windows_paths::system_program(
-        "WindowsPowerShell/v1.0/powershell.exe",
-    )?)
-    .args([
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        include_str!("../assets/windows-cli-path.ps1"),
-    ])
-    .env("HEXBOT_CLI_BIN", bin)
-    .env("HEXBOT_CLI_PATH_ACTION", operation)
-    .env(
-        "HEXBOT_CLI_PATH_INTENT",
-        if intent.is_null() {
-            String::new()
-        } else {
-            intent.to_string()
-        },
-    )
-    .creation_flags(0x08000000)
-    .output()?;
+    let output = crate::windows_paths::system_powershell()?
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            include_str!("../assets/windows-cli-path.ps1"),
+        ])
+        .env("HEXBOT_CLI_BIN", bin)
+        .env("HEXBOT_CLI_PATH_ACTION", operation)
+        .env(
+            "HEXBOT_CLI_PATH_INTENT",
+            if intent.is_null() {
+                String::new()
+            } else {
+                intent.to_string()
+            },
+        )
+        .creation_flags(0x08000000)
+        .output()?;
     if !output.status.success() {
         return Err(io::Error::other(String::from_utf8_lossy(&output.stderr)));
     }

@@ -1,8 +1,9 @@
 import { Ionicons } from '@expo/vector-icons'
-import type { ComponentRef, Ref } from 'react'
+import { type ComponentRef, type Ref, useContext } from 'react'
 import { StyleSheet, TextInput, type TextInputProps, View } from 'react-native'
 
 import { IconButton } from './Button'
+import { InGroup, PageLook } from './Row'
 import { Text } from './Text'
 import { mono, radius, useTheme } from './theme'
 
@@ -34,6 +35,60 @@ export function Field({
   ...input
 }: FieldProps) {
   const theme = useTheme()
+  const page = useContext(PageLook)
+  const inGroup = useContext(InGroup)
+
+  if (page) {
+    // As on the desktop: the field is a row of its card, its label above the text.
+    return (
+      <View
+        style={[
+          styles.row,
+          !inGroup && [
+            styles.card,
+            { backgroundColor: theme.surface, borderColor: theme.chromeBorder }
+          ]
+        ]}
+      >
+        {hideLabel ? null : (
+          <Text nativeID={`${testID}-label`} tone="muted" variant="footnote">
+            {label}
+          </Text>
+        )}
+        <TextInput
+          accessibilityLabel={label}
+          accessibilityLabelledBy={hideLabel ? undefined : `${testID}-label`}
+          allowFontScaling
+          maxFontSizeMultiplier={1.6}
+          multiline={multiline}
+          placeholderTextColor={theme.faint}
+          ref={ref}
+          selectionColor={theme.accent}
+          style={[
+            styles.bare,
+            {
+              color: theme.text,
+              fontFamily: monospace ? mono : undefined,
+              fontSize: monospace ? 15 : 17,
+              minHeight: minHeight ?? (multiline ? 96 : 26)
+            }
+          ]}
+          testID={testID}
+          textAlignVertical={multiline ? 'top' : 'center'}
+          {...input}
+        />
+        {error ? (
+          <Text accessibilityLiveRegion="polite" tone="danger" variant="footnote">
+            {error}
+          </Text>
+        ) : hint ? (
+          <Text tone="muted" variant="footnote">
+            {hint}
+          </Text>
+        ) : null}
+      </View>
+    )
+  }
 
   return (
     <View style={styles.field}>
@@ -130,6 +185,8 @@ export function SearchField({
 }
 
 const styles = StyleSheet.create({
+  bare: { lineHeight: 22, paddingHorizontal: 0, paddingVertical: 2 },
+  card: { borderRadius: 16, borderWidth: StyleSheet.hairlineWidth },
   field: { gap: 6 },
   input: {
     borderRadius: radius.field,
@@ -138,6 +195,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12
   },
   multiline: { lineHeight: 22, paddingTop: 12 },
+  row: { gap: 2, paddingHorizontal: 16, paddingVertical: 10 },
   search: {
     alignItems: 'center',
     borderRadius: 999,

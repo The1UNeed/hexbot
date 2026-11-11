@@ -259,7 +259,8 @@ it('resends a refused message with only its own restored upload, on the same row
     session_id: 'chat',
     text: 'Read my plan',
     input_id: expect.any(String),
-    attachments: [uploaded]
+    attachments: [uploaded],
+    interrupt: true
   })
   expect(second.input_id).not.toBe(first.input_id)
   // The retried row carries the new key before the daemon answers; no second row.
@@ -455,7 +456,8 @@ it('identity-equipped: retries an accepted turn without its consumed uploads or 
     session_id: 'chat',
     text: 'Read my plan',
     input_id: expect.any(String),
-    attachments: []
+    attachments: [],
+    interrupt: true
   })
   expect(submits()[1]!.input_id).not.toBe(row.inputId)
   expect(delivered[1]!.files).toEqual([])
@@ -496,7 +498,7 @@ it('offers no Retry when only some files reached the reopened chat', async () =>
   expect(retries()).toHaveLength(0)
   expect(submits()).toHaveLength(1)
   expect(delivered).toHaveLength(0)
-  expect(screen.getByRole('button', { name: 'Remove notes.txt' })).toBeVisible()
+  expect(await screen.findByRole('button', { name: 'Remove notes.txt' })).toBeVisible()
 })
 
 it('applies a refusal that lands after leaving the chat without drawing a card there', async () => {
@@ -1041,8 +1043,8 @@ describe('Retry on a turn that failed on your latest message', () => {
     await screen.findByTestId('stopped-card')
   }
 
-  const mark = () =>
-    within(screen.getByTestId('user-message')).getByRole('button', { name: 'Retry sending' })
+  // The bot got the message: the Stopped card under it retries, not a mark on it.
+  const mark = () => screen.getByRole('button', { name: 'Retry' })
 
   it('takes the message back and sends the same bubble again, so one message stays', async () => {
     recalling()
@@ -1148,7 +1150,8 @@ describe('Retry on a turn that failed on your latest message', () => {
     await fail(view)
     fireEvent.click(mark())
     await waitFor(() => expect(call).toHaveBeenCalledWith('session.recall', expect.anything()))
-    await waitFor(() => expect(screen.getByText('Not sent')).toBeVisible())
+    await waitFor(() => expect(screen.getByText('Provider stopped')).toBeVisible())
+    expect(screen.queryByText('Not sent')).toBeNull()
     expect(submits()).toHaveLength(1)
     expect(screen.getAllByTestId('user-message')).toHaveLength(1)
     expect(mark()).toBeEnabled()

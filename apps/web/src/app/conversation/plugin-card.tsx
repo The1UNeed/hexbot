@@ -1,5 +1,6 @@
 import { type FormEvent, useId, useState } from 'react'
 
+import { connectorFieldMissing } from '../../components/connector-fields'
 import { Button } from '../../components/ui/button'
 import { ConnectorIcon } from '../../components/ui/connector-icon'
 import { approvalRespond } from '../../lib/api'
@@ -37,7 +38,8 @@ export function PluginCard({ approval, form }: { approval: ApprovalRequest; form
   const id = useId()
   const setup = form.action === 'setup'
   const fields = form.fields.filter(field => !field.provider || field.provider === provider)
-  const missing = setup && fields.some(field => !field.set && !values[field.key]?.trim())
+  const missing = setup && fields.some(field => connectorFieldMissing(field, values))
+  const about = form.providers?.find(option => option.id === provider)?.description
 
   const answer = async (choice: 'deny' | 'once') => {
     setBusy(choice === 'once' ? 'submit' : 'cancel')
@@ -130,6 +132,7 @@ export function PluginCard({ approval, form }: { approval: ApprovalRequest; form
               ))}
             </div>
           ) : null}
+          {about ? <p className="text-[length:var(--text-secondary)] text-muted">{about}</p> : null}
           {fields.map((field, index) => (
             <CardField
               autoFocus={setup && index === 0}

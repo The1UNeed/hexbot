@@ -175,6 +175,10 @@ impl FileAccess {
     pub(super) fn write(&self, bytes: &[u8]) -> Result<()> {
         self.replace(bytes, None)
     }
+    /// Replaces the file and keeps the permission bits it had.
+    pub(super) fn write_keeping_mode(&self, bytes: &[u8], mode: libc::mode_t) -> Result<()> {
+        self.replace(bytes, Some(mode))
+    }
     fn replace(&self, bytes: &[u8], mode: Option<libc::mode_t>) -> Result<()> {
         let temporary = CString::new(format!(".hexbot-{}.tmp", crate::common::id()))
             .expect("generated file name");

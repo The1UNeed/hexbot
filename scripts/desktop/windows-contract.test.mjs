@@ -3,15 +3,16 @@ import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative, sep } from 'node:path'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { toolAsset } from '../../apps/desktop/src/main/backend/tools.ts'
 import { feedMetadataName } from './update-feed-utils.mjs'
 import { makeInstallManifest } from './make-install-manifest.mjs'
 const exec = promisify(execFile)
 
-test('Windows uses updater wire filenames and distinct NSIS editions without public manifest targets', async t => {
+test('Windows uses updater wire filenames and distinct NSIS editions in public manifests', async t => {
   assert.equal(feedMetadataName('stable', 'win'), 'latest.yml')
   assert.equal(feedMetadataName('nightly', 'win'), 'nightly.yml')
   const root = await mkdtemp(join(tmpdir(), 'hexbot windows feed '))
@@ -28,10 +29,9 @@ test('Windows uses updater wire filenames and distinct NSIS editions without pub
   }
   const options = { channel: 'nightly', version, allowMissing: true }
   const publicManifest = await makeInstallManifest(join(root, 'updates'), options)
-  assert(!publicManifest.targets['windows-x86_64'])
-  const probe = await makeInstallManifest(join(root, 'updates'), { ...options, windowsProbe: true })
-  assert.equal(probe.targets['windows-x86_64'].client.format, 'exe')
-  assert.match(probe.experimental, /probe only/)
+  assert.equal(publicManifest.targets['windows-x86_64'].full.format, 'exe')
+  assert.equal(publicManifest.targets['windows-x86_64'].client.format, 'exe')
+  assert.equal(publicManifest.experimental, undefined)
 })
 
 test('Windows tool archives have pinned digests and the actual executable members', () => {
@@ -44,19 +44,22 @@ test('Windows tool archives have pinned digests and the actual executable member
   assert.equal(toolAsset('uv', 'win32', 'x64').member, 'uv.exe')
 })
 
-test('Windows CI keeps the production guard and never publishes disposable probes', async () => {
+test('Windows CI builds the production source and never publishes its probes', async () => {
   const ci = await readFile('.github/workflows/windows-contract.yml', 'utf8')
   for (const line of ci.split('\n').filter(line => line.includes('uses:')))
     assert.match(line, /@[a-f0-9]{40}(?:\s|$)/)
   assert(!/secrets\.|contents:\s*write|release.yml|--publish\s+always/.test(ci.replace(/^#.*$/gm, '')))
-  assert(ci.includes('check-windows-unsupported.mjs'))
-  assert(ci.includes('prepare-windows-security.mjs'))
+  // The daemon builds for Windows, so every job builds and tests the checkout
+  // itself, with no copy that edits the source first.
+  assert(!(await readFile('backend/hexbot-core/src/lib.rs', 'utf8')).includes('compile_error!'))
+  assert(!/check-windows-unsupported|prepare-windows-security|HEXBOT_WINDOWS_PROBE_SOURCE|working-directory:|worktree/.test(ci))
   assert.equal(ci.split('windows_contract real_nsis_install_repair_and_uninstall').length - 1, 2)
   assert(ci.includes('backend/hexbot-core/Cargo.toml windows_contract signed_zip_update_and_connect_executable'))
   assert(ci.includes('windows_contract interrupted_cli_install_and_uninstall_clean_only_owned_metadata_and_path'))
   assert(ci.includes('--test windows_launchers --test windows_contract --test windows_shutdown'))
   assert(ci.includes('--test windows_security --no-run --message-format=json'))
   assert(ci.includes('windows-security-standard-user.ps1'))
+  assert(ci.includes('-Probe $artifact[0].executable -Hexbot $daemon[0].executable'))
   assert(!ci.includes('--example windows_contract'))
   assert(ci.includes('windows-update-restart.mjs'))
   assert(ci.includes('node --test scripts/desktop/runtime-file.test.mjs'))
@@ -69,46 +72,69 @@ test('Windows CI keeps the production guard and never publishes disposable probe
   const boundaries = [...ci.matchAll(/^  ([a-z][a-z0-9-]*):\r?$/gm)]
   const jobs = Object.fromEntries(boundaries.map((match, index) =>
     [match[1], ci.slice(match.index, boundaries[index + 1]?.index ?? ci.length)]))
-  assert.deepEqual(Object.keys(jobs), ['client-and-installer', 'native-runtime', 'client-nightly', 'full-nightly'])
+  assert.deepEqual(Object.keys(jobs), ['client-and-installer', 'sandbox', 'native-runtime', 'client-nightly', 'full-nightly'])
   assert.equal(ci.match(/uses: actions\/upload-artifact@/g)?.length, 1)
-  assert.deepEqual(Object.keys(jobs).filter(name => jobs[name].includes('prepare-windows-security.mjs')),
-    ['native-runtime', 'full-nightly'])
+  for (const name of ['sandbox', 'native-runtime'])
+    assert(jobs[name].includes('cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test '), `${name}: native daemon tests`)
   for (const [name, job] of Object.entries(jobs)) {
     assert.equal(job.includes('upload-artifact'), name === 'client-and-installer', `${name}: artifact boundary`)
     assert.match(job, /runs-on: windows-latest/)
-    assert.match(job, new RegExp(`timeout-minutes: ${name.startsWith('client-') ? 45 : 60}\\b`))
+    assert.match(job, new RegExp(`timeout-minutes: ${{ 'client-and-installer': 45, sandbox: 60, 'native-runtime': 150, 'client-nightly': 45, 'full-nightly': 90 }[name]}\\b`))
     assert(!/^    needs:/m.test(job), `${name}: independent VM`)
     assert.match(job, /HEXBOT_WINDOWS_NSIS_PROBE: '1'/)
-    if (job.includes('prepare-windows-security.mjs')) {
-      assert(job.includes('check-windows-unsupported.mjs'))
-      assert(job.indexOf('check-windows-unsupported.mjs') < job.indexOf('prepare-windows-security.mjs'))
-      assert(job.includes("$source '${{ github.sha }}' '${{ github.sha }}' --current-tree"))
-      assert(job.includes("$probe.buildSHA -ne '${{ github.sha }}' -or $probe.securitySHA -ne '${{ github.sha }}' -or $probe.appliedSecurityPatch -or $probe.guardedTree -ne $tree"))
-      assert(!job.includes('upload-artifact'))
-    }
   }
   const opening = job => job.slice(job.indexOf('      - uses:'), job.indexOf('      - run: pnpm install --frozen-lockfile') + '      - run: pnpm install --frozen-lockfile\n'.length)
   assert.equal(opening(jobs['client-nightly']), opening(jobs['client-and-installer']))
   assert.equal(opening(jobs['full-nightly']), opening(jobs['native-runtime']))
-  const nativePreparation = job => job.slice(job.indexOf('      - name: Native daemon compile gate'),
-    job.indexOf('      - name:', job.indexOf('working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}')))
-  assert.equal(nativePreparation(jobs['full-nightly']), nativePreparation(jobs['native-runtime']))
   assert.equal(ci.match(/run: node scripts\/desktop\/windows-nightly-nsis-probe.mjs /g)?.length, 2)
   for (const edition of ['client', 'full']) {
     const job = jobs[`${edition}-nightly`]
     assert.equal(job.match(new RegExp(`run: node scripts/desktop/windows-nightly-nsis-probe.mjs ${edition}\\b`, 'g'))?.length, 1)
     assert(!job.includes('corepack'))
-    if (edition === 'client') {
-      assert(!/HEXBOT_CLI_NO_PATH|check-windows-unsupported|prepare-windows-security|working-directory:/.test(job))
-    } else {
-      assert.match(job, /HEXBOT_CLI_NO_PATH: '1'/)
-      assert(job.includes('working-directory: ${{ env.HEXBOT_WINDOWS_PROBE_SOURCE }}\n        run: node scripts/desktop/windows-nightly-nsis-probe.mjs full'))
-    }
+    if (edition === 'client') assert(!job.includes('HEXBOT_CLI_NO_PATH'))
+    else assert.match(job, /HEXBOT_CLI_NO_PATH: '1'/)
   }
   for (const name of ['client-and-installer', 'native-runtime'])
     assert(!jobs[name].includes('windows-nightly-nsis-probe.mjs'))
   const release = await readFile('.github/workflows/release.yml', 'utf8')
-  assert(!release.includes('windows-latest'))
+  assert(release.includes('runner: windows-latest'))
+  assert(release.includes('target: --win --x64'))
+  assert(release.includes('build: [mac-arm64, mac-x64, linux-x64, win-x64]'))
+})
+
+test('Windows CI stages BusyBox from a cache under its pin, and Full builds package that copy', async () => {
+  const { BUSYBOX, BUSYBOX_CACHE } = await import('./native-runtime.mjs')
+  const cache = relative(fileURLToPath(new URL('../..', import.meta.url)), BUSYBOX_CACHE).split(sep).join('/')
+  assert.equal(cache, 'node_modules/.cache/hexbot')
+  // Only Full builds and the shell probes stage BusyBox; client builds skip
+  // stage-runtime.mjs (apps/desktop `build:client`).
+  for (const [file, staging] of [
+    ['.github/workflows/windows-contract.yml', ['sandbox', 'native-runtime', 'full-nightly']],
+    ['.github/workflows/windows-security.yml', ['refusal', 'combined-refusal']],
+  ]) {
+    const ci = await readFile(file, 'utf8')
+    const section = ci.slice(ci.search(/^jobs:\r?$/m))
+    const boundaries = [...section.matchAll(/^  ([a-z][a-z0-9-]*):\r?$/gm)]
+    const jobs = Object.fromEntries(boundaries.map((match, index) =>
+      [match[1], section.slice(match.index, boundaries[index + 1]?.index ?? section.length)]))
+    assert.deepEqual(Object.keys(jobs).filter(name => jobs[name].includes('stage-busybox.mjs')), staging, file)
+    for (const name of staging) {
+      const job = jobs[name]
+      const restore = job.indexOf('- uses: actions/cache/restore@'), stage = job.indexOf('node scripts/desktop/stage-busybox.mjs $directory'), save = job.indexOf('- uses: actions/cache/save@')
+      assert(restore >= 0 && restore < stage && stage < save, `${file} ${name}: restore, stage, then save the cache`)
+      assert.deepEqual(job.match(/key: busybox-.*$/gm), [`key: busybox-${BUSYBOX.sha256}`], `${file} ${name}: keyed by the pin`)
+      assert.equal(job.split('\n').filter(line => line.trim() === `path: ${cache}`).length, 2, `${file} ${name}: one cache folder`)
+      assert(job.includes("if: steps.busybox.outputs.cache-hit != 'true'"), `${file} ${name}: saves only a cold cache`)
+      assert(job.includes('key: ${{ steps.busybox.outputs.cache-primary-key }}'), `${file} ${name}: saves the key it restored`)
+    }
+    if (!file.endsWith('windows-contract.yml')) continue
+    // Full packaging takes the staged copy and never downloads its own.
+    for (const [name, build] of [['native-runtime', 'node scripts/desktop/dist.mjs --win --x64 --channel stable'], ['full-nightly', 'node scripts/desktop/windows-nightly-nsis-probe.mjs full']]) {
+      const exported = jobs[name].indexOf(`"HEXBOT_BUSYBOX_FILE=$(Join-Path $directory 'busybox.exe')" >> $env:GITHUB_ENV`)
+      assert(exported >= 0 && exported < jobs[name].indexOf(build), `${name}: BusyBox is staged before the Full build`)
+    }
+    assert(!jobs.sandbox.includes('HEXBOT_BUSYBOX_FILE'))
+  }
 })
 
 test('Tauri Windows resource icon reproduces the existing installer art', async () => {

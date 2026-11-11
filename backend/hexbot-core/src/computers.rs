@@ -1,14 +1,15 @@
 //! The bots' computer: one Cua sandbox per daemon, a Linux desktop that every
-//! bot with Computer use drives with `computer_use`, and that the user watches,
-//! or takes over, from the Computer tab. Bots take turns one action at a time;
-//! the daemon remembers where each one last acted, so clients draw a cursor
-//! with that bot's face there.
+//! bot with Computer use drives with `computer_use`, and that the user watches
+//! and uses alongside them from the Computer tab. Bots take turns one action
+//! at a time, the user's clicks and keys go straight to the screen, and the
+//! user can pause the bots to have it alone. The daemon remembers where each
+//! bot last acted, so clients draw a cursor with that bot's face there.
 //!
 //! The `cua` CLI creates, wakes and removes the sandbox; `cua mcp` carries the
 //! bots' actions. The daemon serves the sandbox's viewer at
 //! `/hexbot/computer/<token>/`, so every client reaches it through the daemon:
 //! on this computer, over LAN or Tailscale, and through Hex Connect.
-use crate::{Error, Result, common, connectors, db, events::EventHub};
+use crate::{Error, Result, common, connectors, db, engines, events::EventHub};
 use axum::{
     body::Body,
     extract::{FromRequestParts, Request, WebSocketUpgrade, ws},
@@ -20,7 +21,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
     process::Stdio,
     sync::{Arc, Mutex, OnceLock},
@@ -37,6 +38,8 @@ const DEFAULT_IMAGE: &str = "linux";
 const SERVER: &str = "hexbot-computer";
 const VIEW_TTL: f64 = 3600.;
 const WS_LIMIT: usize = 64 * 1024 * 1024;
+/// How long the watchdog waits after a failed repair before it tries again.
+const RETRY_AFTER: Duration = Duration::from_secs(600);
 /// How long a bot waits for its turn before giving up.
 const TURN_WAIT: Duration = Duration::from_secs(120);
 /// Screenshots are scaled so the long edge is at most 1200 px: a 1280×800
@@ -101,12 +104,13 @@ struct Cursor {
 /// What the daemon knows about the computer between `cua` calls.
 #[derive(Default)]
 struct Computer {
-    /// The user took over: the bots' actions wait until they give it back.
-    user_control: bool,
+    /// The user paused the bots: their actions are refused until the user
+    /// resumes them. The user's own screen takes clicks and keys either way.
+    paused: bool,
     /// The bot whose action is in progress, and the action, such as `click`.
     actor: Option<String>,
     activity: Option<String>,
-    /// A lifecycle step in progress: starting, stopping, restarting, resetting.
+    /// A lifecycle step in progress: starting, repairing, stopping, restarting, resetting.
     busy: Option<&'static str>,
     /// The last state `cua` reported, or `absent` before the first look.
     state: Option<&'static str>,
@@ -114,6 +118,8 @@ struct Computer {
     cursors: BTreeMap<String, Cursor>,
     /// The size of the bots' screenshots, the space their coordinates are in.
     screen: Option<(f64, f64)>,
+    /// When the watchdog last failed to bring the computer back.
+    failed_at: Option<Instant>,
 }
 fn computers() -> &'static Mutex<HashMap<PathBuf, Computer>> {
     static MAP: OnceLock<Mutex<HashMap<PathBuf, Computer>>> = OnceLock::new();
@@ -213,11 +219,41 @@ fn image(cfg: &Value) -> String {
         .unwrap_or(DEFAULT_IMAGE)
         .to_owned()
 }
-fn size(home: &Path) -> &'static str {
-    let chosen = std::fs::read_to_string(home.join("computer.json"))
+/// computer.json: the size the user chose; `on`, whether the computer should
+/// be running, so the watchdog brings it back; `engine`, the container engine
+/// it last ran in; `told`, whether the user heard it is down this time.
+fn saved(home: &Path) -> Value {
+    std::fs::read_to_string(home.join("computer.json"))
         .ok()
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .and_then(|v| v["size"].as_str().map(str::to_owned));
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}))
+}
+fn save(home: &Path, changes: Value) -> Result<()> {
+    // One save at a time, or a Turn off and a size change overwrite each other.
+    static SAVING: Mutex<()> = Mutex::new(());
+    let _saving = SAVING.lock().unwrap_or_else(|e| e.into_inner());
+    let mut current = saved(home);
+    let before = current.clone();
+    for (key, value) in changes.as_object().into_iter().flatten() {
+        current[key] = value.clone();
+    }
+    if current == before {
+        return Ok(());
+    }
+    common::atomic_write(&home.join("computer.json"), current.to_string().as_bytes())
+}
+/// The computer runs: the watchdog keeps it so, and remembers its engine.
+fn came_up(home: &Path) {
+    let mut changes = json!({"on":true,"told":false});
+    if let Some(id) = engines::current().and_then(|engine| engine.id()) {
+        changes["engine"] = json!(id);
+    }
+    with(home, |c| c.failed_at = None);
+    let _ = save(home, changes);
+}
+fn size(home: &Path) -> &'static str {
+    let chosen = saved(home)["size"].as_str().map(str::to_owned);
     SIZES
         .iter()
         .map(|(name, ..)| *name)
@@ -286,6 +322,26 @@ fn parse(stdout: &str) -> Result<Value> {
         .or_else(|_| serde_json::from_str(stdout.lines().last().unwrap_or("")))
         .map_err(|_| Error::new(4211, "Cua returned an unreadable answer."))
 }
+/// Docker answers, but Cua has only the computer's record. Its files are
+/// gone, so only Reset, which the user chooses, makes a new one.
+fn removed() -> Error {
+    Error::new(
+        4211,
+        "The computer's container was removed. Reset makes a new computer.",
+    )
+}
+fn would_not_start(engine: Option<&engines::Engine>, why: &str) -> Error {
+    Error::new(
+        4211,
+        match engine {
+            Some(engine) => format!(
+                "Docker is not running on the daemon's computer, and {} would not start: {why}. Start it there, then turn the computer on.",
+                engine.name()
+            ),
+            None => "Docker is not running on the daemon's computer. Start Docker there, then turn the computer on.".into(),
+        },
+    )
+}
 /// What `cua sb info` says, or None when the computer was never created.
 async fn info(home: &Path, cfg: &Value, env: &BTreeMap<String, String>) -> Result<Option<Value>> {
     let out = cua(cfg, env, &["sb", "info", &sandbox(home), "--json"], 30).await?;
@@ -302,6 +358,8 @@ fn state(info: Option<&Value>) -> &'static str {
     match (info["state"].as_str(), info["status"].as_str()) {
         (Some("running"), Some("ready")) => "running",
         (Some("suspended" | "stopped" | "exited" | "paused"), _) => "stopped",
+        // The record without its container: Docker is down, or it was removed.
+        (Some("missing"), _) => "missing",
         (Some("failed" | "error"), _) | (_, Some("failed")) => "error",
         _ => "starting",
     }
@@ -311,7 +369,7 @@ fn snapshot(home: &Path) -> Value {
     with(home, |c| {
         json!({
             "state": c.busy.or(c.state).unwrap_or("absent"),
-            "control": if c.user_control { "user" } else { "bot" },
+            "control": if c.paused { "user" } else { "bot" },
             "actor": c.actor,
             "activity": c.activity,
             "error": c.error,
@@ -379,7 +437,30 @@ pub async fn status(home: &Path) -> Result<Value> {
     });
     if status["available"] == true && with(home, |c| c.busy.is_none()) {
         match info(home, &cfg, &env).await {
-            Ok(info) => with(home, |c| c.state = Some(state(info.as_ref()))),
+            Ok(info) if state(info.as_ref()) == "missing" => {
+                let reason = match engine_ready(&cfg, &env).await {
+                    Some(false) => match engines::find(&cfg, saved(home)["engine"].as_str()) {
+                        Some(engine) => format!(
+                            "Docker is not running on the daemon's computer. Turn the computer on to start {} and the computer.",
+                            engine.name()
+                        ),
+                        None => would_not_start(None, "").message,
+                    },
+                    _ => removed().message,
+                };
+                with(home, |c| {
+                    c.state = Some("error");
+                    // Why the last repair failed says more.
+                    c.error.get_or_insert(reason);
+                });
+            }
+            Ok(info) => with(home, |c| {
+                c.state = Some(state(info.as_ref()));
+                // A computer found running again outlives why it last failed.
+                if c.state == Some("running") {
+                    c.error = None;
+                }
+            }),
             Err(error) => with(home, |c| {
                 c.state = Some("error");
                 c.error = Some(error.message);
@@ -390,6 +471,48 @@ pub async fn status(home: &Path) -> Result<Value> {
         status[key] = value.clone();
     }
     Ok(status)
+}
+
+/// Whether Docker answers, as Cua sees it; None when Cua cannot say.
+async fn engine_ready(cfg: &Value, env: &BTreeMap<String, String>) -> Option<bool> {
+    let out = cua(cfg, env, &["runtime", "doctor", "--json"], 60)
+        .await
+        .ok()?;
+    parse(&out.stdout).ok()?["backends"]
+        .as_array()?
+        .iter()
+        .find(|backend| backend["backend"] == "container")?["ready"]
+        .as_bool()
+}
+/// Starts the container engine when Docker does not answer, and waits for it.
+/// `required`: the computer is in that engine, so one that cannot start is the
+/// error. Otherwise Cua may make a new computer wherever it can.
+async fn wake(
+    home: &Path,
+    cfg: &Value,
+    env: &BTreeMap<String, String>,
+    required: bool,
+) -> Result<()> {
+    if engine_ready(cfg, env).await != Some(false) {
+        return Ok(());
+    }
+    let Some(engine) = engines::find(cfg, saved(home)["engine"].as_str()) else {
+        return if required {
+            Err(would_not_start(None, ""))
+        } else {
+            Ok(())
+        };
+    };
+    if let Err(error) = engines::start(&engine).await {
+        return Err(would_not_start(Some(&engine), &error.message));
+    }
+    for _ in 0..90 {
+        if engine_ready(cfg, env).await != Some(false) {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    Err(would_not_start(Some(&engine), "Docker did not answer"))
 }
 
 async fn create(home: &Path, cfg: &Value, env: &BTreeMap<String, String>) -> Result<()> {
@@ -461,24 +584,90 @@ async fn forget(home: &Path) {
 async fn ensure(home: &Path, cfg: &Value, env: &BTreeMap<String, String>) -> Result<()> {
     let lock = lifecycle(home);
     let _guard = lock.lock().await;
+    ensure_locked(home, cfg, env, false).await
+}
+/// `ensure` for a caller that holds the lifecycle lock.
+/// `unattended`: no one asked, so it only brings back the computer that is
+/// there; making a new one, which loses the old one's files, waits for someone.
+async fn ensure_locked(
+    home: &Path,
+    cfg: &Value,
+    env: &BTreeMap<String, String>,
+    unattended: bool,
+) -> Result<()> {
     let current = match info(home, cfg, env).await {
         Ok(current) => current,
         Err(error) => {
+            with(home, |c| c.state = Some("error"));
             settle(home, &Err(Error::new(error.code, error.message.clone())));
             return Err(error);
         }
     };
     let found = state(current.as_ref());
     if found == "running" {
-        if with(home, |c| c.busy.is_some() || c.state != Some("running")) {
+        if with(home, |c| {
+            c.busy.is_some() || c.state != Some("running") || c.error.is_some()
+        }) {
             settle(home, &Ok("running"));
         }
+        came_up(home);
         return Ok(());
     }
-    set_busy(home, Some("starting"));
+    set_busy(
+        home,
+        Some(if found == "missing" {
+            "repairing"
+        } else {
+            "starting"
+        }),
+    );
     let mut unfinished = Unfinished { home, armed: true };
-    let result = match found {
-        "absent" => create(home, cfg, env).await,
+    let result = bring_up(home, cfg, env, found, unattended).await;
+    forget(home).await;
+    match result {
+        Ok(()) => came_up(home),
+        // Open screens show the computer down, not as it was before.
+        Err(_) => with(home, |c| c.state = Some("error")),
+    }
+    let result = result.map(|_| "running");
+    settle(home, &result);
+    unfinished.armed = false;
+    result.map(|_| ())
+}
+/// From what Cua said to a running computer.
+async fn bring_up(
+    home: &Path,
+    cfg: &Value,
+    env: &BTreeMap<String, String>,
+    found: &'static str,
+    unattended: bool,
+) -> Result<()> {
+    let found = match found {
+        // After a restart the engine may not be up yet: the computer is in it.
+        "missing" => {
+            wake(home, cfg, env, true).await?;
+            match state(info(home, cfg, env).await?.as_ref()) {
+                "missing" => return Err(removed()),
+                // Made again only when someone asks: it may hold files.
+                "error" if unattended => {
+                    return Err(Error::new(
+                        4211,
+                        "Docker is back, but the computer failed to start. Turn it on to make a new one.",
+                    ));
+                }
+                found => found,
+            }
+        }
+        // Made in the engine the user has, not wherever Cua finds room.
+        "absent" => {
+            wake(home, cfg, env, false).await?;
+            found
+        }
+        found => found,
+    };
+    match found {
+        "running" => Ok(()),
+        "absent" if !unattended => create(home, cfg, env).await,
         "stopped" => {
             async {
                 let out = cua(cfg, env, &["sb", "resume", &sandbox(home)], 120).await?;
@@ -490,20 +679,16 @@ async fn ensure(home: &Path, cfg: &Value, env: &BTreeMap<String, String>) -> Res
             .await
         }
         "starting" => ready(home, cfg, env).await,
+        "absent" | "error" if unattended => Err(Error::new(
+            4211,
+            "The computer failed to start. Turn it on to make a new one.",
+        )),
         // A computer that failed to start is made again.
         _ => {
-            async {
-                remove(home, cfg, env).await?;
-                create(home, cfg, env).await
-            }
-            .await
+            remove(home, cfg, env).await?;
+            create(home, cfg, env).await
         }
-    };
-    forget(home).await;
-    let result = result.map(|_| "running");
-    settle(home, &result);
-    unfinished.armed = false;
-    result.map(|_| ())
+    }
 }
 
 /// A bot stopped while its first action starts the computer: the start is
@@ -578,10 +763,140 @@ async fn lifecycle_step(home: &Path, step: &str) -> Result<()> {
         }
     }
     .await;
+    // The views close with the old machine; a pause outlasts the step.
     forget(home).await;
-    release(home);
+    match result {
+        Ok("running") => came_up(home),
+        // Turned off on purpose: the watchdog leaves it off.
+        Ok(_) => {
+            let _ = save(home, json!({"on":false}));
+        }
+        Err(_) => {}
+    }
     settle(home, &result);
     result.map(|_| ())
+}
+
+/// Called every minute from the daemon's tick, and so at its start: a
+/// computer that should be on and is not is brought back in the background.
+pub fn watch(home: &Path) {
+    static WATCHING: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    let watching = WATCHING.get_or_init(Default::default);
+    if !watching
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(home.to_owned())
+    {
+        return;
+    }
+    struct Done(&'static Mutex<HashSet<PathBuf>>, PathBuf);
+    impl Drop for Done {
+        fn drop(&mut self) {
+            self.0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&self.1);
+        }
+    }
+    let done = Done(watching, home.to_owned());
+    tokio::spawn(async move {
+        check(&done.1).await;
+    });
+}
+/// One look by the watchdog. A computer that should be on, and is stopped or
+/// lost with its engine, is repaired as Turn on would; when that fails, the
+/// primary bot tells the user once, and the watchdog tries again later.
+pub async fn check(home: &Path) {
+    // A computer from before `on` was kept is looked at, so a running one
+    // counts as on from then, but never repaired on a guess.
+    if saved(home)["on"] == false || with(home, |c| c.busy.is_some()) {
+        return;
+    }
+    let Ok((cfg, env)) = setup(home) else {
+        return;
+    };
+    if command(&cfg, &env).is_none() {
+        return;
+    }
+    // Under the lock no step is half done: Reset, between removing the old
+    // computer and making the new one, does not read as removed.
+    let lock = lifecycle(home);
+    let _guard = lock.lock().await;
+    if saved(home)["on"] == false || with(home, |c| c.busy.is_some()) {
+        return;
+    }
+    let known = saved(home)["on"] == true;
+    match info(home, &cfg, &env).await.map(|i| state(i.as_ref())) {
+        // Back without the watchdog, as when the user starts Docker: open
+        // screens drop the outage too.
+        Ok("running") => {
+            if with(home, |c| c.state != Some("running") || c.error.is_some()) {
+                settle(home, &Ok("running"));
+            }
+            came_up(home);
+            return;
+        }
+        Ok("starting") => return,
+        Ok("stopped") if !known => {
+            let _ = save(home, json!({"on":false}));
+            return;
+        }
+        // Removed outside Hexbot: a new one waits until a bot or the user asks.
+        Ok("absent") => {
+            let _ = save(home, json!({"on":false}));
+            return;
+        }
+        // The rest is repaired unattended: resumed, or reported, never made anew.
+        _ => {}
+    }
+    // The user may have turned it off, or begun a step, while Cua answered.
+    // After a failed repair the watchdog only looks, until it may try again.
+    if saved(home)["on"] != true
+        || with(home, |c| {
+            c.busy.is_some() || c.failed_at.is_some_and(|at| at.elapsed() < RETRY_AFTER)
+        })
+    {
+        return;
+    }
+    if let Err(error) = ensure_locked(home, &cfg, &env, true).await {
+        with(home, |c| c.failed_at = Some(Instant::now()));
+        if saved(home)["told"] != true && tell(home, &error.message) {
+            let _ = save(home, json!({"told":true}));
+        }
+    }
+}
+/// The primary bot says the computer is down, in its chat and on the user's
+/// devices. False when no one heard, so the next failure tries again.
+fn tell(home: &Path, why: &str) -> bool {
+    let Some(events) = hubs()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(home)
+        .cloned()
+    else {
+        return false;
+    };
+    let primaries = db::open(home)
+        .and_then(|conn| {
+            common::rows(
+                &conn,
+                "SELECT b.name,b.owner_id FROM bots b JOIN users u ON u.id=b.owner_id WHERE b.is_primary=1 AND u.disabled_at IS NULL",
+                &[],
+            )
+        })
+        .unwrap_or_default();
+    let message = format!("Your bots' computer is down, and I could not bring it back. {why}");
+    let mut told = false;
+    for row in primaries {
+        let (Some(bot), Some(owner)) = (row["name"].as_str(), row["owner_id"].as_str()) else {
+            continue;
+        };
+        match crate::dreaming::heartbeat::notice(home, &events, owner, bot, &message) {
+            Ok(()) => told = true,
+            Err(error) => eprintln!("Computer notice: {}", error.message),
+        }
+    }
+    told
 }
 
 /// A deleted bot leaves the computer; only its cursor goes.
@@ -626,13 +941,12 @@ pub async fn call(home: &Path, method: &str, p: &Value) -> Option<Result<Value>>
                         "bot" => false,
                         _ => return Err(Error::new(4202, "holder must be user or bot")),
                     };
+                    // `user` pauses the bots, after the action one has under way;
+                    // `bot` resumes them.
+                    with(home, |c| c.paused = user);
+                    changed(home);
                     if user {
-                        with(home, |c| c.user_control = true);
-                        changed(home);
                         settled(home).await;
-                    } else {
-                        release(home);
-                        changed(home);
                     }
                     Ok(snapshot(home))
                 }
@@ -659,10 +973,7 @@ pub async fn call(home: &Path, method: &str, p: &Value) -> Option<Result<Value>>
                     if !SIZES.iter().any(|(name, ..)| *name == chosen) {
                         return Err(Error::new(4202, "size must be small, medium or large"));
                     }
-                    common::atomic_write(
-                        &home.join("computer.json"),
-                        json!({"size":chosen}).to_string().as_bytes(),
-                    )?;
+                    save(home, json!({"size":chosen}))?;
                     status(home).await
                 }
                 _ => Err(Error::new(-32601, format!("unknown method: {method}"))),
@@ -673,7 +984,8 @@ pub async fn call(home: &Path, method: &str, p: &Value) -> Option<Result<Value>>
 }
 
 /// A link to the computer's screen through this daemon. With `control` the
-/// user takes over and the link can type and click; without it, it only watches.
+/// link takes clicks and keys while the bots keep working; without it, it
+/// only watches. Pausing the bots is `hexbot.computer.control`, apart from it.
 /// `quality` fixes how the screen streams; without one it follows the connection.
 async fn view(home: &Path, control: bool, quality: Option<Stream>) -> Result<Value> {
     let (cfg, env) = setup(home)?;
@@ -689,60 +1001,41 @@ async fn view(home: &Path, control: bool, quality: Option<Stream>) -> Result<Val
         "--ttl".into(),
         format!("{}s", VIEW_TTL as u64),
     ];
-    let held = with(home, |c| c.user_control);
-    if control {
-        with(home, |c| c.user_control = true);
-        changed(home);
-        settled(home).await;
-    } else {
+    if !control {
         args.push("--view-only".into());
     }
-    // Taking control is what the user asked for; a link that fails hands it back.
-    let made = async {
-        let out = cua(
-            &cfg,
-            &env,
-            &args.iter().map(String::as_str).collect::<Vec<_>>(),
-            30,
-        )
-        .await?;
-        if out.code == 3 {
-            return Err(Error::new(4209, "The computer is off."));
-        }
-        if out.code != 0 {
-            return Err(failure(
-                &out.stderr,
-                "Could not open the computer's screen.",
-            ));
-        }
-        let link = parse(&out.stdout)?;
-        let url = url::Url::parse(link["url"].as_str().unwrap_or(""))
-            .map_err(|_| Error::new(4211, "Cua returned no screen link."))?;
-        if !matches!(
-            url.host_str(),
-            Some("127.0.0.1" | "localhost" | "::1" | "[::1]")
-        ) {
-            return Err(Error::new(
-                4211,
-                "The computer's screen is not on this machine.",
-            ));
-        }
-        Ok(url)
+    let out = cua(
+        &cfg,
+        &env,
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+        30,
+    )
+    .await?;
+    if out.code == 3 {
+        return Err(Error::new(4209, "The computer is off."));
     }
-    .await;
-    if control && !held && made.is_err() {
-        release(home);
-        changed(home);
+    if out.code != 0 {
+        return Err(failure(
+            &out.stderr,
+            "Could not open the computer's screen.",
+        ));
     }
-    let url = made?;
+    let link = parse(&out.stdout)?;
+    let url = url::Url::parse(link["url"].as_str().unwrap_or(""))
+        .map_err(|_| Error::new(4211, "Cua returned no screen link."))?;
+    if !matches!(
+        url.host_str(),
+        Some("127.0.0.1" | "localhost" | "::1" | "[::1]")
+    ) {
+        return Err(Error::new(
+            4211,
+            "The computer's screen is not on this machine.",
+        ));
+    }
     let upstream = url.origin().ascii_serialization();
     let token = format!("{}{}", common::id(), common::id());
     let expires = common::now() + VIEW_TTL;
-    // Checked under the lock `release` holds, so a give-back can't slip between.
     let mut map = views().lock().unwrap_or_else(|e| e.into_inner());
-    if control && !with(home, |c| c.user_control) {
-        return Err(Error::new(4209, "The computer went back to your bots."));
-    }
     map.retain(|_, v| v.expires > common::now());
     map.insert(
         token.clone(),
@@ -762,16 +1055,9 @@ async fn view(home: &Path, control: bool, quality: Option<Stream>) -> Result<Val
 }
 
 /// Waits for the action a bot has under way, so none of its input lands
-/// after the user takes over. Bots waiting for a turn see the user has it.
+/// after the user pauses the bots. Bots waiting for a turn see the pause.
 async fn settled(home: &Path) {
     let _ = tokio::time::timeout(TURN_WAIT, turns(home).lock()).await;
-}
-
-/// The bots have the computer again: screens that could type stop working.
-fn release(home: &Path) {
-    let mut map = views().lock().unwrap_or_else(|e| e.into_inner());
-    with(home, |c| c.user_control = false);
-    map.retain(|_, v| !(v.home == home && v.control));
 }
 
 struct View {
@@ -831,6 +1117,13 @@ pub async fn proxy(token: String, request: Request) -> Response {
     if rest == "cua.env.v1.StreamService/SetPreferences" {
         return StatusCode::FORBIDDEN.into_response();
     }
+    // Hexbot draws each bot's cursor, with its face, over the screen. The
+    // viewer would draw one more for everyone on the computer, each bot by
+    // its name, so a bot would show two pointers. Kept out of presence, it
+    // draws none; a user in control keeps their own pointer.
+    if rest.starts_with(PRESENCE) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     if rest == "viewer/hexbot-screen.js" {
         return (
             [
@@ -850,6 +1143,9 @@ pub async fn proxy(token: String, request: Request) -> Response {
     });
     forward(parts, body, target, upstream, page).await
 }
+/// The viewer's calls that share who is on the computer and where each
+/// pointer is: `Join`, `UpdateCursor` and `Leave`.
+const PRESENCE: &str = "cua.env.v1.PresenceService/";
 /// A watching screen is small and takes no input: the viewer's toolbar would
 /// only cover it. Its status overlay stays, so a lost stream still says so.
 const WATCH_STYLE: &str =
@@ -1101,7 +1397,7 @@ async fn pump(
         }
         let _ = client_tx.close().await;
     };
-    // Giving the computer back, or the link expiring, ends an open screen too.
+    // The link expiring ends an open screen too.
     let revoked = async {
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -1324,7 +1620,7 @@ pub fn descriptor() -> Value {
     let point = json!({"type":"array","items":{"type":"integer"},"minItems":2,"maxItems":2});
     json!({
         "name": "computer_use",
-        "description": "Use the computer your bots share: a Linux desktop with a browser and a terminal, separate from the user's computer and your workspace. Run code, install programs and browse the web there, not on the user's computer. It starts on first use. Other bots may work on it too, one action at a time, and the user can watch and take over, so look before you act. Start with screenshot; coordinates are pixels in the latest screenshot. After an action that changes the screen, look again, or pass capture_after. Use shell for installs and files on that computer and open for a URL. If the user has taken over, wait for them to hand it back.",
+        "description": "Use the computer your bots share: a Linux desktop with a browser and a terminal, separate from the user's computer and your workspace. Run code, install programs and browse the web there, not on the user's computer. It starts on first use. Other bots may work on it too, one action at a time, and the user can watch it and use it at the same time, so look before you act. Start with screenshot; coordinates are pixels in the latest screenshot. After an action that changes the screen, look again, or pass capture_after. Use shell for installs and files on that computer and open for a URL. If the user has paused the bots, wait for them to resume.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -1515,8 +1811,8 @@ pub async fn act(
             ));
         }
     };
-    if with(home, |c| c.user_control) {
-        return Err(taken_over());
+    if with(home, |c| c.paused) {
+        return Err(paused_error());
     }
     if command(cfg, env).is_none() {
         return Err(unavailable());
@@ -1526,8 +1822,8 @@ pub async fn act(
     let turn = tokio::time::timeout(TURN_WAIT, turns(home).lock_owned())
         .await
         .map_err(|_| Error::new(4209, "Another bot kept the computer busy. Try again."))?;
-    if with(home, |c| c.user_control) {
-        return Err(taken_over());
+    if with(home, |c| c.paused) {
+        return Err(paused_error());
     }
     let at = point(args, "coordinate").ok();
     aim(home, bot, action, at);
@@ -1576,10 +1872,10 @@ pub async fn act(
     }
     Ok(result)
 }
-fn taken_over() -> Error {
+fn paused_error() -> Error {
     Error::new(
         4302,
-        "The user has taken over the computer. Wait until they hand it back before using it again, and ask what changed if it matters.",
+        "The user has paused the bots on the computer. Wait until they resume them before using it again, and ask what changed if it matters.",
     )
 }
 
@@ -1608,8 +1904,8 @@ pub async fn fill(
     env: &BTreeMap<String, String>,
     fills: &[(Option<(i64, i64)>, String)],
 ) -> Result<()> {
-    if with(home, |c| c.user_control) {
-        return Err(taken_over());
+    if with(home, |c| c.paused) {
+        return Err(paused_error());
     }
     if command(cfg, env).is_none() {
         return Err(unavailable());
@@ -1618,8 +1914,8 @@ pub async fn fill(
     let turn = tokio::time::timeout(TURN_WAIT, turns(home).lock_owned())
         .await
         .map_err(|_| Error::new(4209, "Another bot kept the computer busy. Try again."))?;
-    if with(home, |c| c.user_control) {
-        return Err(taken_over());
+    if with(home, |c| c.paused) {
+        return Err(paused_error());
     }
     with(home, |c| {
         c.actor = Some(bot.to_owned());

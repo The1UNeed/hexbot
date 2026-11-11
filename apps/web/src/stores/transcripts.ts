@@ -19,7 +19,7 @@ import {
   nextMessageId,
   sectionsTouch
 } from '../lib/api'
-import { getBridge } from '../lib/bridge'
+import { type NotifyInput, notifyUser } from '../lib/notify'
 import { toMillis } from '../lib/time'
 import type {
   ApprovalChoice,
@@ -28,6 +28,7 @@ import type {
   ClarifyRequest,
   ClarifyRequestPayload,
   ContextUsage,
+  EmailDraftForm,
   Message,
   PluginForm,
   SessionInfo,
@@ -124,7 +125,7 @@ export interface Transcript {
 
 export interface TranscriptEffects {
   ackApproval(sessionId: string, requestId: string): void
-  notify(input: { body: string; sectionId?: string; title: string }): void
+  notify(input: NotifyInput): void
   touchSection(sectionId: string): void
 }
 
@@ -161,7 +162,7 @@ export interface ApprovalRequestPayload {
   turn_id?: string
   choices?: ApprovalChoice[]
   command?: string
-  form?: PluginForm | SignInForm
+  form?: EmailDraftForm | PluginForm | SignInForm
   reason?: string
   request_id?: string
   tool?: string
@@ -251,11 +252,21 @@ export interface TranscriptsState {
     snapshot?: OpenSnapshot
   ) => void
   reasoningDelta: (sessionId: string, text: string) => void
-  resolveApproval: (sessionId: string, requestId: string, choice: ApprovalChoice) => void
+  resolveApproval: (
+    sessionId: string,
+    requestId: string,
+    choice: ApprovalChoice,
+    outcome?: ApprovalRequest['outcome']
+  ) => void
   sessionContext: (sessionId: string, context: ContextUsage) => void
   sessionInfo: (sessionId: string, info: SessionInfo) => void
   sessionUsage: (sessionId: string, usage: Usage) => void
   setSectionId: (sessionId: string, sectionId: string) => void
+  /**
+   * A read found no rows newer than the ones shown: what it says about the
+   * turn and the cards still applies, as `open` would apply it, and the messages stay.
+   */
+  settle: (sessionId: string, sectionId: string, snapshot: OpenSnapshot) => void
   statusUpdate: (sessionId: string, status: StatusLine) => void
   thinkingDelta: (sessionId: string, text: string) => void
   toolComplete: (sessionId: string, payload: ToolCompletePayload) => void
@@ -267,7 +278,7 @@ const defaultEffects: TranscriptEffects = {
     void approvalReceived(sessionId, requestId).catch(() => undefined)
   },
   notify(input) {
-    getBridge()?.notify(input)
+    notifyUser(input)
   },
   touchSection(sectionId) {
     void sectionsTouch(sectionId).catch(() => undefined)
@@ -299,7 +310,7 @@ export function releaseHeartbeatMessages(sectionId: string): HeartbeatRow[] {
 }
 
 /** Send a native notification through the same effect the store uses. */
-export function transcriptNotify(input: { body: string; sectionId?: string; title: string }): void {
+export function transcriptNotify(input: NotifyInput): void {
   effects.notify(input)
 }
 
@@ -785,6 +796,18 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       update(sessionId, transcript => ({ ...transcript, sectionId }))
     },
 
+    settle(sessionId, sectionId, snapshot) {
+      if (!get().bySession[sessionId]) {
+        return
+      }
+
+      update(sessionId, transcript => {
+        const next = reconcile(transcript, snapshot)
+
+        return { ...next, sectionId, clarifies: next.clarifies.filter(clarifyWaiting) }
+      })
+    },
+
     drop(sessionId) {
       set(state => {
         const next = { ...state.bySession }
@@ -1205,7 +1228,9 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         turnId: payload.turn_id,
         choices: payload.choices ?? ['once', 'deny'],
         command: payload.command,
-        ...((payload.form?.kind === 'sign_in' || payload.form?.kind === 'plugin') && {
+        ...((payload.form?.kind === 'sign_in' ||
+          payload.form?.kind === 'plugin' ||
+          payload.form?.kind === 'email_draft') && {
           form: payload.form
         }),
         reason: payload.reason,
@@ -1241,7 +1266,12 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       effects.notify({
         body: payload.command ?? payload.reason ?? 'A bot is asking for permission.',
         sectionId: transcript?.sectionId,
-        title: payload.form?.kind === 'sign_in' ? 'Sign-in needed' : 'Approval needed'
+        title:
+          payload.form?.kind === 'sign_in'
+            ? 'Sign-in needed'
+            : payload.form?.kind === 'email_draft'
+              ? 'Email draft ready'
+              : 'Approval needed'
       })
     },
 
@@ -1326,11 +1356,13 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       }))
     },
 
-    resolveApproval(sessionId, requestId, choice) {
+    resolveApproval(sessionId, requestId, choice, outcome) {
       update(sessionId, transcript => ({
         ...settledCard(transcript, requestId),
         approvals: transcript.approvals.map(approval =>
-          approval.requestId === requestId ? { ...approval, decision: choice } : approval
+          approval.requestId === requestId
+            ? { ...approval, decision: choice, ...(outcome && { outcome }) }
+            : approval
         )
       }))
     },

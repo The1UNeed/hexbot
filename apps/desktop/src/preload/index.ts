@@ -103,6 +103,10 @@ const hexbot = Object.freeze({
     uninstall: () => ipcRenderer.invoke('hexbot:service:uninstall'),
     status: () => ipcRenderer.invoke('hexbot:service:status')
   }),
-  onNavigate: (callback: (value: string) => void) => listen('hexbot:navigate', callback)
+  onNavigate: (callback: (value: string) => void) => listen('hexbot:navigate', callback),
+  onWindowShown: (callback: (shown: boolean) => void) =>
+    listen<unknown>('hexbot:window-shown', value => {
+      if (typeof value === 'boolean') callback(value)
+    })
 })
 contextBridge.exposeInMainWorld('hexbot', hexbot)

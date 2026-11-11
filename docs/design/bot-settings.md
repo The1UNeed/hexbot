@@ -94,7 +94,8 @@ Tabs, in order:
 
 1. **Profile.** Face, name, label, description.
 2. **Persona.** Full-height editor. Role templates as a menu that
-   replaces the text after confirming. Word count.
+   replaces the text after confirming. A character count against the
+   soul limit, and the bot's own limit below; empty follows Settings.
 3. **Model.** Provider and model, curated list pinned on top as today,
    with room for the model's description and price per million tokens.
 4. **Memory.** This bot's notes and user notes, dreaming (enabled, may
@@ -150,16 +151,19 @@ The first catalog, by group:
 
 | Group | Connectors |
 | --- | --- |
-| Search and browsing | Web search (provider choice: Exa, Tavily, Brave, Firecrawl, Parallel, Keenable, SearXNG) |
+| Search and browsing | Web search (provider choice: SearXNG, which Hexbot runs, Tavily, Wikipedia and Marginalia with no key; Exa, Brave, Firecrawl, Parallel and Keenable with one) |
 | Images and voice | Image generation (FAL, Krea, OpenAI, xAI), Video generation, Premium voice (ElevenLabs, OpenAI, Mistral) |
 | Notes and work | Notion, Linear, Airtable |
 | Social and home | X search, Home Assistant, Spotify |
 | Channels (bot scope) | Telegram, Discord, Slack, WhatsApp, Signal, iMessage, Matrix, Mattermost, and the rest the core ships, each with its allowed-users list |
 | MCP servers | Any number, added by command or URL, with a tool count and a running state |
 
-Web search is a connector, not a tool, because it needs a provider
-account. Image generation is the same. The rule is the one in
-Principles: does it work offline with no account.
+Web search is a connector, not a tool, because it reaches an outside
+service and the user picks which. It is the one connector that is set up
+out of the box: SearXNG runs in Docker on the daemon's computer, and
+until it does, searches go to the free services that need no account.
+Image generation needs an account. The rule is the one in Principles:
+does it work offline with no account.
 
 ### Icons
 

@@ -15,6 +15,16 @@ import { pair } from './transport'
 import { registerPush } from './push'
 import { parsePairing, normalizeOrigin } from './links'
 import { emptyChat, heartbeatMessage, historyMessages, reduceChat, replayChat } from './chat'
+import {
+  afterRead,
+  cursorFor,
+  fingerprint,
+  keep,
+  prefetchOrder,
+  readAhead,
+  type HeldRows,
+  type HistoryRead
+} from './chat-cache'
 import { reduceRoom, restoreRoom, roomChat, roomMessage } from './room-chat'
 import { attachmentPrompt } from './chat-send'
 import { modelLists, providerModels } from './models'
@@ -30,6 +40,7 @@ import {
 } from './routes'
 import type {
   Bot,
+  ChatMessage,
   ChatState,
   ComputerQuality,
   ComputerStatus,
@@ -42,7 +53,8 @@ import type {
   SavedDaemon,
   Rpc
 } from './types'
-import type { PluginAnswer } from '../../../web/src/lib/types'
+import { draftAnswerError, forgetUnsentDraft } from '../../../web/src/lib/draft-card'
+import type { EmailDraftAnswer, PluginAnswer } from '../../../web/src/lib/types'
 export type { ChatRoute }
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e))
 /** A room opens at its latest events and pages back this many at a time. */
@@ -81,6 +93,8 @@ export function useMobile() {
   const [loadingEarlier, setLoadingEarlier] = useState(false)
   const session = useRef<MobileSession | null>(null)
   const routeRef = useRef<ChatRoute | null>(null)
+  /** A profile or settings page is over the open chat, so what lands there is unseen. */
+  const chatCovered = useRef(false)
   const liveId = useRef<string | null>(null)
   // A reconnect cannot restore an old owner row until canonical lookup succeeds.
   const ownerPending = useRef(false)
@@ -108,7 +122,29 @@ export function useMobile() {
    * opens it at once and asks the daemon again, which may name another.
    */
   const named = useRef(new Map<string, Section>())
+  /** Each chat's rows as last read on this daemon, so it shows at once (chat-cache.ts). */
+  const held = useRef(new Map<string, HeldRows>())
+  /** The daemon `held` came from; another one at the same address never sees it. */
+  const heldFor = useRef<string | null>(null)
+  /** Held rows of the daemon now connected, once `hexbot.info` named it. */
+  const heldRows = (id: string) => {
+    const daemon = infoRef.current?.install_id
+    return daemon && daemon === heldFor.current ? held.current.get(id) : undefined
+  }
+  const keepRows = (id: string, rows: HeldRows) => {
+    const daemon = infoRef.current?.install_id
+    if (!daemon || daemon !== heldFor.current) return
+    keep(held.current, id, rows)
+  }
+  /** What each bot looked like when its chat was last read ahead. */
+  const prefetched = useRef(new Map<string, string>())
+  const prefetchRef = useRef<(bots: Bot[]) => void>(() => {})
+  /** Chats that changed on screen since their rows were held: never drawn from them. */
+  const changed = useRef(new Set<string>())
+  const leftRef = useRef<(id: string) => void>(() => {})
   const cancelNavigation = useCallback(() => {
+    const left = routeRef.current
+    if (left?.kind === 'section') leftRef.current(left.section.id)
     navigation.current++
     openSequence.current++
     loadingEvents.current = null
@@ -187,9 +223,19 @@ export function useMobile() {
         cancelNavigation()
         picked.current.clear()
         named.current.clear()
+        held.current.clear()
+        prefetched.current.clear()
       }
       infoRef.current = i
+      // A reconnect may reach another daemon at the same address, which reuses no rows.
+      if (heldFor.current !== (i.install_id ?? null)) {
+        held.current.clear()
+        prefetched.current.clear()
+        changed.current.clear()
+        heldFor.current = i.install_id ?? null
+      }
       setBots(b.bots)
+      prefetchRef.current(b.bots)
       setRooms(r.rooms)
       setSections(s.sections)
       setInfo(i)
@@ -273,12 +319,18 @@ export function useMobile() {
       const sequence = ++openSequence.current
       loadingEvents.current = []
       try {
-        const result = await rpc<{
-          section: Section
-          messages: unknown[]
-          busy?: boolean
-          pending_clarify?: Record<string, unknown>
-        }>('hexbot.sections.open', { id: target.section.id })
+        const kept = heldRows(target.section.id)
+        const cursor = cursorFor(kept)
+        const result = await rpc<
+          HistoryRead & {
+            section: Section
+            busy?: boolean
+            pending_clarify?: Record<string, unknown>
+          }
+        >('hexbot.sections.open', {
+          id: target.section.id,
+          ...(cursor && { history_cursor: cursor })
+        })
         if (
           sequence !== openSequence.current ||
           routeRef.current?.kind !== 'section' ||
@@ -287,6 +339,7 @@ export function useMobile() {
           return
         const restoredLiveId = result.section.live_session_id
         if (!restoredLiveId) throw new Error('Open this conversation again before sending.')
+        const rows = afterRead(kept, result, cursor, Date.now())
         setHasEarlier(false)
         const busy =
           typeof result.busy === 'boolean'
@@ -294,10 +347,13 @@ export function useMobile() {
             : (await rpc<{ status: string }>('session.status', { session_id: restoredLiveId }))
                 .status === 'working'
         if (sequence !== openSequence.current) return
+        const messages = historyMessages(rows.rows)
         let snapshot: ChatState = {
           ...emptyChat(),
           busy,
-          messages: historyMessages(result.messages)
+          messages,
+          // A reply already running when the chat opened lands after these rows.
+          ...(busy && { turnAt: messages.length })
         }
         // The snapshot goes first: an answer or Stop that arrived while it loaded is newer.
         if (result.pending_clarify)
@@ -326,7 +382,17 @@ export function useMobile() {
           )
             restored = heartbeatMessage(restored, p.row_id, p.text)
         }
+        // What arrived during the read is on screen but not in its rows.
+        const missed = (loadingEvents.current ?? []).some(
+          event =>
+            event.session_id === restoredLiveId ||
+            (postedOnItsOwn(event.type) &&
+              (event.payload as Record<string, unknown> | undefined)?.section_id === target.section.id)
+        )
         loadingEvents.current = null
+        keepRows(target.section.id, rows)
+        if (missed) changed.current.add(target.section.id)
+        else changed.current.delete(target.section.id)
         liveId.current = restoredLiveId
         setChat(restored)
         setReadId(target.section.id)
@@ -347,12 +413,115 @@ export function useMobile() {
   }, [rpc, syncRoom])
   const syncChatRef = useRef(syncChat)
   syncChatRef.current = syncChat
+  /**
+   * Every bot's chat read ahead without starting the bot, two at a time, the
+   * primary bot first; after that only a bot that changed. The open chat is
+   * left to its own reads and events.
+   */
+  const prefetch = useCallback(
+    (list: Bot[]) => {
+      const current = session.current
+      const info = infoRef.current
+      if (!info?.section_history || !info.one_chat || current?.client.connectionState !== 'open')
+        return
+      const holds = (bot: Bot) => {
+        const chat = named.current.get(bot.name)
+        return Boolean(chat && heldRows(chat.id))
+      }
+      const queue = readAhead(list, holds).filter(
+        bot => prefetched.current.get(bot.name) !== fingerprint(bot)
+      )
+      const rank = new Map(prefetchOrder(list).map((bot, index) => [bot.name, index]))
+      // Marked now, so a refresh while this runs does not read them twice.
+      for (const bot of queue) prefetched.current.set(bot.name, fingerprint(bot))
+      const stale = () => !mounted.current || session.current !== current
+      const open = (id: string) =>
+        routeRef.current?.kind === 'section' && routeRef.current.section.id === id
+      const worker = async () => {
+        for (let bot = queue.shift(); bot && !stale(); bot = queue.shift()) {
+          try {
+            const chat =
+              named.current.get(bot.name) ??
+              ((await botChat(rpc, bot.name, true, picked.current)) as { section: Section }).section
+            if (stale()) return
+            named.current.set(bot.name, chat)
+            if (open(chat.id)) continue
+            const kept = heldRows(chat.id)
+            const cursor = cursorFor(kept, true)
+            const read = await rpc<HistoryRead>('hexbot.sections.history', {
+              id: chat.id,
+              ...(cursor && { history_cursor: cursor })
+            })
+            // An open read, or the chat opening, holds newer rows than these.
+            if (stale() || open(chat.id) || heldRows(chat.id) !== kept) continue
+            const touched = kept?.touched ?? -(rank.get(bot.name) ?? 0)
+            keepRows(chat.id, afterRead(kept, read, cursor, touched))
+          } catch {
+            // Read again on the next refresh; until then the chat loads when opened.
+            prefetched.current.delete(bot.name)
+          }
+        }
+      }
+      void Promise.all([worker(), worker()])
+    },
+    [rpc]
+  )
+  prefetchRef.current = prefetch
+  /** A chat left after it changed on screen reads what it missed, so it shows right next time. */
+  leftRef.current = (id: string) => {
+    if (!changed.current.has(id)) return
+    const current = session.current
+    const kept = heldRows(id)
+    if (!infoRef.current?.section_history || !kept) {
+      held.current.delete(id)
+      return
+    }
+    const cursor = cursorFor(kept, true)
+    void rpc<HistoryRead>('hexbot.sections.history', { id, ...(cursor && { history_cursor: cursor }) })
+      .then(read => {
+        const open = routeRef.current?.kind === 'section' && routeRef.current.section.id === id
+        // An open of it since holds newer rows than these.
+        if (session.current !== current || open || heldRows(id) !== kept) return
+        keepRows(id, afterRead(kept, read, cursor, kept.touched))
+        changed.current.delete(id)
+      })
+      .catch(() => undefined)
+  }
   const refreshRef = useRef(refresh)
   refreshRef.current = refresh
+  /** Marks the open chat read while it is on screen: the app in front, no page over it. */
+  const readOpenChat = useCallback(() => {
+    const target = routeRef.current
+    if (target?.kind !== 'section' || chatCovered.current || AppState.currentState !== 'active')
+      return
+    void rpc('hexbot.sections.mark_read', { id: target.section.id }).catch(() => {})
+  }, [rpc])
+  /** A page went over the open chat, or came off it; what landed meanwhile is seen now. */
+  const setChatCovered = useCallback(
+    (covered: boolean) => {
+      if (chatCovered.current === covered) return
+      chatCovered.current = covered
+      if (covered) return
+      readOpenChat()
+      const target = routeRef.current
+      const seq = roomEvents.current.at(-1)?.seq
+      if (target?.kind === 'room' && seq)
+        void rpc('hexbot.rooms.mark_read', { id: target.room.id, seq }).catch(() => {})
+    },
+    [readOpenChat, rpc]
+  )
+  const readRef = useRef(readOpenChat)
+  readRef.current = readOpenChat
   const onEvent = useCallback(
     (event: GatewayEvent) => {
       const target = routeRef.current
       const p = (event.payload ?? {}) as Record<string, unknown>
+      // A card settled anywhere drops its kept edits, whatever is on screen.
+      if (
+        (event.type === 'approval.resolved' || event.type === 'approval.expire') &&
+        typeof p.request_id === 'string'
+      )
+        forgetUnsentDraft(p.request_id)
       // Sent on every bot action there; it changes nothing else.
       if (event.type === 'hexbot.computer.changed') {
         setComputer(current =>
@@ -388,9 +557,11 @@ export function useMobile() {
           const incoming = p.event as RoomEvent
           if (!incoming || roomEvents.current.some(e => e.seq === incoming.seq)) return
           roomEvents.current.push(incoming)
-          void rpc('hexbot.rooms.mark_read', { id: target.room.id, seq: incoming.seq }).catch(
-            () => {}
-          )
+          // Read as it lands, unless a page or another chat covers the room.
+          if (!chatCovered.current)
+            void rpc('hexbot.rooms.mark_read', { id: target.room.id, seq: incoming.seq }).catch(
+              () => {}
+            )
         }
         setChat(c =>
           reduceRoom(
@@ -408,6 +579,7 @@ export function useMobile() {
             typeof p.text === 'string'
           ) {
             const [id, text] = [p.row_id, p.text]
+            changed.current.add(target.section.id)
             setChat(c => heartbeatMessage(c, id, text))
             // Seen as it arrived, so it is read.
             void rpc('hexbot.sections.mark_read', { id: target.section.id }).catch(() => {})
@@ -415,6 +587,9 @@ export function useMobile() {
           return
         }
         if (!event.session_id || event.session_id !== liveId.current) return
+        changed.current.add(target.section.id)
+        // Read as it lands on screen, so the daemon does not wake this phone about it.
+        if (event.type === 'message.complete') readOpenChat()
         if (event.type === 'message.complete' && straddling.current === event.session_id) {
           // Part of this turn was already in the history; the history now has all of it.
           straddling.current = null
@@ -432,7 +607,7 @@ export function useMobile() {
         setChat(c => reduceChat(c, event))
       }
     },
-    [rpc]
+    [rpc, readOpenChat]
   )
   const acknowledgedApprovals = useRef(new Set<string>())
   useEffect(() => {
@@ -472,6 +647,8 @@ export function useMobile() {
       setChoosing(null)
       picked.current.clear()
       named.current.clear()
+      held.current.clear()
+      prefetched.current.clear()
       openSequence.current++
       loadingEvents.current = null
       routeRef.current = null
@@ -501,6 +678,7 @@ export function useMobile() {
           // A reconnect can reach an upgraded daemon at the same address.
           cancelNavigation()
           named.current.clear()
+          prefetched.current.clear()
           const generation = navigation.current
           const before = routeRef.current
           ownerPending.current = before?.kind === 'section' && ownerChat(before.section)
@@ -558,7 +736,10 @@ export function useMobile() {
       if (daemon) await activate(daemon)
     })().catch(e => setError(errorText(e)))
     const subscription = AppState.addEventListener('change', state => {
-      if (state === 'active') void session.current?.connect().catch(e => setError(errorText(e)))
+      if (state === 'active') {
+        void session.current?.connect().catch(e => setError(errorText(e)))
+        readRef.current()
+      }
       else if (state === 'background') session.current?.suspend()
     })
     return () => {
@@ -637,7 +818,9 @@ export function useMobile() {
       setRoute(target)
       ownerPending.current = false
       liveId.current = null
-      setChat(emptyChat())
+      // What is held shows now; sending waits for the read that makes the chat live.
+      const kept = changed.current.has(selected.id) ? undefined : heldRows(selected.id)
+      setChat(kept ? { ...emptyChat(), messages: historyMessages(kept.rows) } : emptyChat())
       setReadId(null)
       await syncChat()
     } catch (e) {
@@ -681,7 +864,12 @@ export function useMobile() {
    * daemon sends only those. Undefined leaves every staged file attached, for
    * daemons that do not give uploads an id.
    */
-  const send = async (input: string, hasAttachments = false, attachments?: string[]) => {
+  const send = async (
+    input: string,
+    hasAttachments = false,
+    attachments?: string[],
+    files?: ChatMessage['attachments']
+  ) => {
     const text = attachmentPrompt(input, hasAttachments)
     const target = routeRef.current
     if (!target || !text) throw new Error('Enter a message or attach a file.')
@@ -696,7 +884,17 @@ export function useMobile() {
       error: null,
       messages:
         target.kind === 'section'
-          ? [...c.messages, { id: messageId, role: 'user', text, inputId, createdAt: Date.now() }]
+          ? [
+              ...c.messages,
+              {
+                id: messageId,
+                role: 'user',
+                text,
+                inputId,
+                createdAt: Date.now(),
+                ...(files?.length && { attachments: files })
+              }
+            ]
           : c.messages
     }))
     try {
@@ -708,6 +906,8 @@ export function useMobile() {
           session_id: sessionId,
           text,
           attachments,
+          // A reply in progress stops first, so this message goes next.
+          interrupt: true,
           ...(inputId && { input_id: inputId })
         })
         unsent.current.delete(sessionId)
@@ -720,7 +920,9 @@ export function useMobile() {
       setChat(c => ({
         ...c,
         messages: c.messages.filter(m => m.id !== messageId),
-        busy: target.kind === 'room' && Object.keys(c.turns).length > 0,
+        // A refused follow-up leaves a reply that is still running as it was.
+        busy:
+          target.kind === 'room' ? Object.keys(c.turns).length > 0 : c.turnAt !== undefined,
         error: errorText(error)
       }))
       throw error
@@ -798,11 +1000,11 @@ export function useMobile() {
     if (owner && stoppedIn(owner, target.section))
       await rpc('hexbot.bots.clear_status', { name: owner.name })
   }
-  /** `answer` answers a sign-in or plugin card: what was typed goes to the daemon, never the chat. */
+  /** `answer` answers a sign-in, plugin or draft card: what was typed goes to the daemon, never the chat. */
   const approval = async (
     requestId: string,
     choice: string,
-    answer?: PluginAnswer | { username: string; password: string }
+    answer?: EmailDraftAnswer | PluginAnswer | { username: string; password: string }
   ) => {
     const pending = chat.approvals.find(a => a.requestId === requestId)
     if (!pending) return
@@ -811,6 +1013,10 @@ export function useMobile() {
       request_id: requestId,
       choice,
       ...answer
+    }).catch((e: unknown) => {
+      // A draft card's send or save the app gave up on may still have gone.
+      if (!answer || !('mail_action' in answer) || pending.form?.kind !== 'email_draft') throw e
+      throw new Error(draftAnswerError(errorText(e), answer.mail_action, pending.form.service_name))
     })
     setChat(c => {
       if (!c.turns[pending.sessionId])
@@ -867,6 +1073,7 @@ export function useMobile() {
     route,
     chat,
     loading,
+    setChatCovered,
     /** The open chat's history is still on its way. */
     opening: route?.kind === 'section' && readId !== route.section.id,
     hasEarlier,
@@ -903,7 +1110,7 @@ export function useMobile() {
       setComputer(current => ({ ...current, ...result }) as ComputerStatus)
       return result
     },
-    /** A link, relative to the daemon, to the computer's screen; `control` takes over. */
+    /** A link, relative to the daemon, to the computer's screen; with `control` it takes touches. */
     computerView: (control: boolean, quality: ComputerQuality = 'auto') =>
       rpc<{ path: string; control: boolean; expires_at: number }>('hexbot.computer.view', {
         control,

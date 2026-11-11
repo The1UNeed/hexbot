@@ -119,6 +119,7 @@ export type FaceEmotion =
  * writes, squinted when something went well, shut when it sleeps.
  */
 export type FaceMood =
+  | 'computer'
   | 'happy'
   | 'idle'
   | 'listening'
@@ -160,6 +161,7 @@ export interface EyePose {
 }
 
 export const EYE_MOODS: Record<FaceMood, EyePose> = {
+  computer: { dx: 0, dy: 1, size: 12.5, squash: 1, turn: 0 },
   happy: { dx: 0, dy: -2, size: 9.5, squash: 0.7, turn: 90 },
   idle: { dx: 0, dy: 0, size: 13.5, squash: 1, turn: 0 },
   listening: { dx: 0, dy: 1, size: 14.5, squash: 1, turn: 0 },

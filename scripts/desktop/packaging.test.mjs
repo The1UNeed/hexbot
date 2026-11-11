@@ -25,10 +25,10 @@ test('default dev packaging preserves the platform and builder flags', () => {
 test('nightly and dev packages select their own icon, with and without Icon Composer', () => {
   for (const channel of ['dev', 'nightly']) {
     assert.deepEqual(iconOptions(channel, true), [
-      `-c.mac.icon=build/icon-${channel}.icon`, `-c.linux.icon=resources/icon-${channel}.png`
+      `-c.mac.icon=build/icon-${channel}.icon`, `-c.linux.icon=resources/icon-${channel}.png`, `-c.win.icon=resources/icon-${channel}.png`
     ])
     assert.deepEqual(iconOptions(channel, false), [
-      `-c.mac.icon=build/icon-${channel}.icns`, `-c.linux.icon=resources/icon-${channel}.png`
+      `-c.mac.icon=build/icon-${channel}.icns`, `-c.linux.icon=resources/icon-${channel}.png`, `-c.win.icon=resources/icon-${channel}.png`
     ])
   }
   assert.deepEqual(iconOptions('stable', true), ['-c.mac.icon=build/Hexbot.icon'])
@@ -205,6 +205,8 @@ test('finalize-release names the artifacts on the website and in the casks', asy
   )
   assert.equal(manifest.published, true)
   assert.equal(manifest.mac.arm64, 'Hexbot-0.1.6-mac-arm64.dmg')
+  assert.equal(manifest.win.x64, 'Hexbot-0.1.6-win-x64.exe')
+  assert.equal(manifest.client.win.x64, 'HexbotClient-0.1.6-win-x64.exe')
   assert.match(
     await readFile(join(root, 'packaging/homebrew/hexbot-client.rb'), 'utf8'),
     /version "0\.1\.6"/
@@ -215,6 +217,8 @@ test('update-nightly-index puts the new nightly first, replaces reruns, and keep
   const first = updateNightlyIndex({}, { version: '0.1.5-nightly.20260912.1', commit: 'abcdef0123456', date: '2026-09-12T07:00:00Z' })
   assert.deepEqual(first.nightlies.map(n => n.version), ['0.1.5-nightly.20260912.1'])
   assert.equal(first.nightlies[0].commit, 'abcdef0')
+  assert.equal(first.nightlies[0].files.full['win-x64'], 'Hexbot-0.1.5-nightly.20260912.1-win-x64.exe')
+  assert.equal(first.nightlies[0].files.client['win-x64'], 'HexbotClient-0.1.5-nightly.20260912.1-win-x64.exe')
   assert.equal(first.nightlies[0].files.full['mac-arm64'], 'Hexbot-0.1.5-nightly.20260912.1-mac-arm64.dmg')
   assert.equal(first.nightlies[0].files.client['linux-deb'], 'HexbotClient-0.1.5-nightly.20260912.1-linux-amd64.deb')
   const second = updateNightlyIndex(first, { version: '0.1.5-nightly.20260913.2', commit: '4be62ee11bc' })

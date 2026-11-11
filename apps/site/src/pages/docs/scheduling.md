@@ -10,7 +10,7 @@ The daemon can run work while the app window is closed. It must be running and t
 
 Describe the task, timing, and result you need. For example:
 
-> Every weekday at 9am, read the notes in my workspace and write a short list of unfinished tasks. Save the result locally. Tell me the job ID and next run time.
+> Every weekday at 9am, read the notes in my workspace and write a short list of unfinished tasks.
 
 The scheduler accepts intervals such as `every 2h`, a one-time delay such as `in 30m`, daily or weekday times, five-field cron expressions, and explicit timestamps. Wall-clock schedules use the daemon's local timezone. If your client is elsewhere, confirm the next run time with the bot.
 
@@ -18,9 +18,11 @@ Jobs belong to the bot that creates them. By default, an agent job starts a fres
 
 ## Where results go
 
-Scheduled output is saved locally, not delivered into the conversation that created the job. Output files live under `profiles/<bot>/cron/output/` in the daemon's data directory. Ask the bot to read the latest result or error for a named job.
+When a bot schedules a job, it tells you what it scheduled and when it first runs. Each time the job finishes, its result, or why it failed, is posted in that bot's chat and notifies your app, browser, and phone. The bot's Notify me switch silences the notifications; the message still lands in the chat. A monitor job that found nothing new posts nothing.
 
-Scheduled jobs support local delivery only. Do not rely on a job's result appearing as a chat message, email, or push notification. Ask the bot to confirm where it saved the result. For something that should reach you when it changes, ask a bot to add it to its [heartbeat](/docs/bots-and-sections#heartbeat) checklist: it writes in its chat when something needs you.
+If you don't want to hear from a job, say so when you ask for it, or later: "run this quietly", "stop notifying me about the inbox check". The bot turns notifications off for that job, and its results are only saved. Jobs you create in the mobile app are quiet the same way.
+
+Every result is also saved under `profiles/<bot>/cron/output/` in the daemon's data directory. A message in the chat holds up to 4,000 characters; ask the bot for the whole result or the latest error of a named job. Jobs cannot send email. For something to watch until it changes, ask a bot to add it to its [heartbeat](/docs/bots-and-sections#heartbeat) checklist instead.
 
 ## Manage jobs
 
@@ -46,4 +48,4 @@ A job can read the bot's memory and notes but not write them. When a job asks to
 
 For memory reviews, use [Dreaming](/docs/dreaming/). Dreaming has its own controls and saves summaries in the bot's dream log.
 
-Jobs and their delegates run in Auto when the bot uses Bypass; Manual stays Manual. They cannot message other bots, because a recipient's chat could change memory without a dream reviewing it. Job results stay local.
+Jobs and their delegates run in Auto when the bot uses Bypass; Manual stays Manual. They cannot message other bots, because a recipient's chat could change memory without a dream reviewing it. Their results reach you only in the bot's own chat.

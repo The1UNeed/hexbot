@@ -8,7 +8,7 @@ import { cancelConfirm, ConfirmHost } from '../components/ui/confirm'
 import { userMemoryGet } from '../lib/api'
 import { getBridge, hasLocalRuntime } from '../lib/bridge'
 import { getSupervisor, setLocalDaemonPort } from '../lib/connection'
-import { OPEN_SECTION_EVENT } from '../lib/events'
+import { OPEN_SECTION_EVENT } from '../lib/notify'
 import { useConnection } from '../stores/connection'
 import { useSections } from '../stores/sections'
 import { applyTheme, useUi } from '../stores/ui'
@@ -89,7 +89,7 @@ function RootLayout() {
       window.setTimeout(stop, 60_000)
     }
 
-    // A browser tab's own notifications (lib/events.ts) land here.
+    // A browser tab's own notifications (lib/notify.ts) land here.
     const fromPage = (event: Event) => {
       const section = (event as CustomEvent<string>).detail
 

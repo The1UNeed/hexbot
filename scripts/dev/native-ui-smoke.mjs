@@ -326,10 +326,14 @@ try {
   const log = (await rpc('hexbot.rooms.log', { id: room })).events
   assert.deepEqual(log.filter(event => event.kind === 'message.bot').map(event => event.actor_id), ['owl', 'fox', 'owl'])
 
+  // The Memory tab holds the bot's own limit; memory itself is edited from the Fingerprint tab.
   await visit('/b/owl/settings/memory')
-  await page.getByRole('textbox', { name: 'Bot memory', exact: true }).fill('The user likes jasmine tea.')
-  await page.getByRole('button', { name: 'Save', exact: true }).click()
-  await expect.poll(async () => (await rpc('hexbot.memory.bot.get', { bot: 'owl' })).memory_md).toBe('The user likes jasmine tea.')
+  const memoryLimit = page.getByRole('textbox', { name: 'Memory limit', exact: true })
+  await memoryLimit.fill('3000')
+  await memoryLimit.blur()
+  await expect.poll(async () => (await rpc('hexbot.bots.get', { name: 'owl' })).bot.memory_cap).toBe(3000)
+  assert.equal((await rpc('hexbot.bots.get', { name: 'fox' })).bot.memory_cap, 2200, 'Bot memory limits must be isolated')
+  await rpc('hexbot.memory.bot.set', { bot: 'owl', memory_md: 'The user likes jasmine tea.' })
   assert.equal((await rpc('hexbot.memory.bot.get', { bot: 'fox' })).memory_md, '', 'Bot memories must be isolated')
   await visit('/b/owl/settings/persona')
   await page.getByRole('textbox', { name: 'Soul', exact: true }).fill('You are Owl. Give clear, short answers.')

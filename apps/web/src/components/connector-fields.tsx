@@ -15,6 +15,14 @@ export function connectorFieldsFor(connector: Connector, provider?: string) {
   )
 }
 
+/** A field the user still has to fill in: not optional and not saved yet. */
+export function connectorFieldMissing(
+  field: { key: string; optional?: boolean; set?: boolean },
+  values: Record<string, string>
+) {
+  return !field.optional && !field.set && !values[field.key]?.trim()
+}
+
 /** The values worth sending: trimmed, non-empty, and for the chosen provider. */
 export function connectorValues(
   connector: Connector,
@@ -53,6 +61,7 @@ export function ConnectorFields({
   const [showAdvanced, setShowAdvanced] = useState(false)
   const forProvider = connectorFieldsFor(connector, provider)
   const fields = forProvider.filter(field => showAdvanced || !field.advanced)
+  const about = connector.providers?.find(item => item.id === provider)?.description
 
   return (
     <>
@@ -69,6 +78,9 @@ export function ConnectorFields({
             placeholder="Choose a provider"
             value={provider}
           />
+          {about ? (
+            <span className="mt-1 block text-[length:var(--text-meta)] text-muted">{about}</span>
+          ) : null}
         </label>
       ) : null}
       {fields.map(field => (

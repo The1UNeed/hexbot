@@ -76,6 +76,8 @@ export const useSettings = create<SettingsState>((set, get) => ({
   async clearProviderKey(provider) {
     await providersClearKey(provider)
     await get().refreshProviders()
+    // The daemon drops a default or fallback model that ran on it.
+    await get().refresh()
   },
 
   async refreshModels(provider) {

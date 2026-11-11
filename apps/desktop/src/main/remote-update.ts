@@ -41,13 +41,18 @@ export function remoteStatus(state: UpdateState): RemoteStatus | null {
 
 async function writeStatus(
   status: RemoteStatus,
-  extra: { percent?: number | null; message?: string | null; version?: string | null } = {}
+  extra: {
+    percent?: number | null
+    message?: string | null
+    rawError?: string | null
+    version?: string | null
+  } = {}
 ): Promise<void> {
   try {
     await mkdir(runtimeDir(), { recursive: true })
     await writeFile(
       updateStatusFile(),
-      `${JSON.stringify({ status, percent: null, message: null, version: null, ...extra, at: new Date().toISOString() })}\n`
+      `${JSON.stringify({ status, percent: null, message: null, rawError: null, version: null, ...extra, at: new Date().toISOString() })}\n`
     )
   } catch (error) {
     log.warn(`could not write ${updateStatusFile()}: ${errorMessage(error)}`)
@@ -102,6 +107,7 @@ export async function handleDaemonUpdateRequest(
           writeStatus(status, {
             percent: state.percent,
             message: state.message,
+            rawError: state.rawError,
             version: state.downloadedVersion ?? state.availableVersion
           })
         )

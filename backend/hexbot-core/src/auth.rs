@@ -242,11 +242,7 @@ pub fn local_token(home: &Path) -> Result<String> {
             .optional()?
             .is_some();
         if valid {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
-            }
+            crate::osutil::private_file(&path)?;
             tx.commit()?;
             return Ok(token.to_owned());
         }
@@ -258,11 +254,7 @@ pub fn local_token(home: &Path) -> Result<String> {
     let device = mint(&tx, "This computer", "local", "local", None)?;
     let token = device["device_token"].as_str().expect("mint token");
     common::atomic_write(&path, format!("{token}\n").as_bytes())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
-    }
+    crate::osutil::private_file(&path)?;
     tx.commit()?;
     Ok(token.to_owned())
 }
@@ -317,11 +309,13 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
             "hexbot.devices.list" => {
                 let mut devices = rows(
                     &db::open(home)?,
-                    "SELECT id,name,platform,created_at,last_seen_at FROM devices WHERE revoked_at IS NULL AND owner_id=? ORDER BY created_at DESC",
+                    "SELECT id,name,platform,created_at,last_seen_at,push_token IS NOT NULL AS push FROM devices WHERE revoked_at IS NULL AND owner_id=? ORDER BY created_at DESC",
                     &[&caller],
                 )?;
                 for device in &mut devices {
                     device["current"] = json!(false);
+                    // A phone that takes pushes; the token itself stays on the daemon.
+                    device["push"] = json!(device["push"] == 1);
                 }
                 Ok(json!({"devices":devices}))
             }

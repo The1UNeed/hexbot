@@ -17,6 +17,9 @@ use tokio::{
     process::{Child, Command},
 };
 
+// The Dev host refuses its root when this is set (src/windows_dev_child.rs).
+const REFUSE_ASSIGNMENT: &str = "HEXBOT_DEV_HOST_REFUSE_ASSIGNMENT";
+
 fn fixture(root: &Path) -> PathBuf {
     let executable = root.join("工具 José & child.exe");
     let source = root.join("fixture.cs");
@@ -48,12 +51,16 @@ async fn record_with_budget(listener: &TcpListener, seconds: u64) -> (Value, Buf
     .expect("fixture readiness event")
 }
 async fn wait(child: &mut Child) -> i32 {
-    tokio::time::timeout(Duration::from_secs(20), child.wait())
+    // tokio's wait closes the child's input first, and the Dev host stops on
+    // end of input, which would race the root's own exit. A test that means
+    // to close it has taken it already.
+    let input = child.stdin.take();
+    let status = tokio::time::timeout(Duration::from_secs(20), child.wait())
         .await
         .expect("host deadline")
-        .unwrap()
-        .code()
-        .unwrap()
+        .unwrap();
+    drop(input);
+    status.code().unwrap()
 }
 fn assert_ended(processes: &[ProcessHandle]) {
     let snapshots: Vec<_> = processes.iter().map(ProcessHandle::snapshot).collect();
@@ -93,6 +100,7 @@ async fn dev_host_eof_root_exit_and_unrelated_survival() {
         let outside = ProcessHandle::open(outside["pid"].as_u64().unwrap() as u32);
         outside_stream.write_all(&[1]).await.unwrap();
         let mut child = host(&binary, mode, port);
+        eprintln!("Dev host {mode} probe: host {:?}", child.id());
         let mut handles = vec![];
         let mut streams = vec![];
         for _ in 0..2 {
@@ -114,6 +122,7 @@ async fn dev_host_eof_root_exit_and_unrelated_survival() {
         assert!(outside.alive(), "unrelated process was terminated");
         outside_stream.write_all(&[1]).await.unwrap();
         assert_eq!(wait(&mut unrelated).await, 0);
+        eprintln!("Dev host {mode} probe passed");
     }
 }
 
@@ -124,7 +133,8 @@ async fn dev_host_parent_death_console_events_and_assignment_refusal() {
     for mode in ["parent", "break", "ctrlc", "assignment"] {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let mut launcher = Command::new(&binary)
+        let mut launcher = Command::new(&binary);
+        launcher
             .args([mode, &port.to_string()])
             .arg(&binary)
             .arg(env!("CARGO_BIN_EXE_hexbot"))
@@ -136,21 +146,37 @@ async fn dev_host_parent_death_console_events_and_assignment_refusal() {
             } else {
                 0x08000000
             })
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
+            .kill_on_drop(true);
+        // Windows nests the host's job inside any job the launcher is in, so
+        // only the host itself can refuse the root; this mode asks it to.
+        if mode == "assignment" {
+            launcher.env(REFUSE_ASSIGNMENT, "1");
+        } else {
+            launcher.env_remove(REFUSE_ASSIGNMENT);
+        }
+        let mut launcher = launcher.spawn().unwrap();
+        eprintln!("Dev host {mode} probe: launcher {:?}", launcher.id());
         // Keep the real input writer alive even after the parent is killed, so
         // parent-death tests cannot pass merely because stdin reached EOF.
         let input = launcher.stdin.take().unwrap();
         let (parent, mut parent_stream) = record(&listener).await;
         assert_eq!(parent["role"], "parent");
+        eprintln!("Dev host {mode} probe: host {}", parent["host"]);
         let host = ProcessHandle::open(parent["host"].as_u64().unwrap() as u32);
         parent_stream.write_all(&[1]).await.unwrap();
         if mode == "assignment" {
-            assert_eq!(wait(&mut launcher).await, 126);
+            // A refused root is killed while still suspended, so it never
+            // connects; a root that does means the host ran it uncontained.
+            let code = tokio::select! {
+                code = wait(&mut launcher) => code,
+                accepted = listener.accept() => {
+                    panic!("the refused host resumed its root: {accepted:?}")
+                }
+            };
+            assert_eq!(code, 126);
             assert!(!host.alive());
-            // A refused suspended root cannot connect to the listener.
             assert!(listener.accept().now_or_never().is_none());
+            eprintln!("Dev host {mode} probe passed");
             continue;
         }
         let mut handles = vec![];
@@ -193,6 +219,7 @@ async fn dev_host_parent_death_console_events_and_assignment_refusal() {
             assert_parent_completion(&host.snapshot());
         }
         drop(leaf_stream);
+        eprintln!("Dev host {mode} probe passed");
     }
 }
 

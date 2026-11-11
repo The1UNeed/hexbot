@@ -11,7 +11,8 @@ const config: ExpoConfig = {
   },
   version: '0.1.0',
   scheme: 'hexbot',
-  orientation: 'portrait',
+  // Every orientation: phones turn sideways, and a foldable opens to a wide screen.
+  orientation: 'default',
   userInterfaceStyle: 'automatic',
   ios: {
     bundleIdentifier: 'app.hexbot.mobile',
@@ -28,10 +29,19 @@ const config: ExpoConfig = {
     permissions: ['INTERNET', 'ACCESS_NETWORK_STATE']
   },
   plugins: [
+    'expo-router',
     'expo-secure-store',
     'expo-font',
     'expo-web-browser',
     'expo-notifications',
+    [
+      'expo-image-picker',
+      {
+        photosPermission: 'Hexbot sends the photos and videos you choose to your bots.',
+        cameraPermission: 'Hexbot takes photos and videos to send to your bots.',
+        microphonePermission: 'Hexbot records sound with the videos you take for your bots.'
+      }
+    ],
     ['./plugins/local-network.cjs']
   ],
   web: { bundler: 'metro' }

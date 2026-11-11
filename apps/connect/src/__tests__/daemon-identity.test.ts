@@ -93,7 +93,7 @@ describe("signed reachability", () => {
     expect(identityHost("http://localhost:9119")).toBe("localhost:9119");
     expect(identityHost("http://[::1]:9119")).toBe("[::1]:9119");
   });
-  const daemon = { id: "daemon-1", identityKey: key, tunnelHostname: "owl.example", ingressPort: 9119, lastSeenAt: new Date() };
+  const daemon = { id: "daemon-1", identityKey: key, tunnelHostname: "owl.example", ingressPort: 9119 };
   function answer(mode: string) {
     return vi.fn(async (input: string) => {
       const url = new URL(input); const nonce = url.searchParams.get("nonce");
@@ -105,7 +105,7 @@ describe("signed reachability", () => {
   it.each(["valid", "invalid", "wrong daemon", "wrong host"])("checks %s signatures", async mode => {
     const fetcher = answer(mode); vi.stubGlobal("fetch", fetcher);
     const reachability = new Reachability(probeOrigin);
-    expect((await reachability.statuses([daemon], false)).get(daemon.id)).toBe(mode === "valid" ? "online" : "unreachable");
+    expect((await reachability.statuses([daemon], false)).get(daemon.id)).toBe(mode === "valid" ? "online" : "offline");
     expect(fetcher).toHaveBeenCalledWith(expect.stringContaining("/api/connect/identity?nonce="), expect.objectContaining({ redirect: "manual", credentials: "omit" }));
   });
   it("keeps the cache TTL but probes again when a key is enrolled, with a fresh nonce", async () => {

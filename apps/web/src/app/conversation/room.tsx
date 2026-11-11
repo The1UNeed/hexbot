@@ -4,6 +4,7 @@ import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState }
 
 import { Avatar, useFaceColor } from '../../components/ui/avatar'
 import { RoomCluster } from '../../components/ui/room-cluster'
+import { ScrollArea } from '../../components/ui/scroll-area'
 import { SkeletonLines } from '../../components/ui/skeleton'
 import { StatusDot } from '../../components/ui/status-dot'
 import { Thinking } from '../../components/ui/thinking'
@@ -15,6 +16,7 @@ import { useRoomOrLeave } from '../../lib/room-or-leave'
 import { useTurnCues } from '../../lib/sounds'
 import { toMillis } from '../../lib/time'
 import type { Bot, RoomEvent, RoomMember, RoomTurn } from '../../lib/types'
+import { useHeight } from '../../lib/use-height'
 import { useBots } from '../../stores/bots'
 import { connectorsActions } from '../../stores/connectors'
 import { useEmotion, useEmotions, useRoomFeelings } from '../../stores/emotions'
@@ -22,10 +24,12 @@ import { useMe } from '../../stores/me'
 import { roomFailure, roomStatus, useRooms } from '../../stores/rooms'
 import { useSearch } from '../../stores/search'
 import { useTranscripts } from '../../stores/transcripts'
+import { useUi } from '../../stores/ui'
 
 import { AskingRow, AskRows } from './asking-row'
 import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
+import { NotificationsBanner } from './notifications-banner'
 import { useSearchJump } from './search-jump'
 import { type Ask, liveMood } from './steps'
 import { DeliveryMark, NotSent, SEND_TIMEOUT_MS } from './unsent'
@@ -266,12 +270,12 @@ export function RoomMentionPopover({
 
   return (
     <div
-      className="hex-bubble absolute bottom-full left-14 mb-1 min-w-52 rounded-panel border border-border bg-surface p-1 shadow-popup"
+      className="hex-glass-strong hex-menu-in absolute bottom-full left-14 mb-1 min-w-52 rounded-[14px] p-1"
       role="listbox"
     >
       {suggestions.map(member => (
         <button
-          className="block w-full rounded-control px-3 py-2 text-left text-[length:var(--text-secondary)] hover:bg-surface-2"
+          className="block w-full rounded-[10px] px-3 py-2 text-left text-[length:var(--text-secondary)] hover:bg-foreground/[0.06]"
           key={member.member_id}
           onClick={() => onSelect(member.member_id)}
           type="button"
@@ -309,6 +313,7 @@ export function RoomConversation() {
   const bottom = useRef<HTMLDivElement>(null)
   const viewport = useRef<HTMLDivElement>(null)
   const atBottom = useRef(true)
+  const [composerBox, composerHeight] = useHeight<HTMLDivElement>()
   const earlierAnchor = useRef<{ height: number; top: number } | null>(null)
   // Keep the first shown event while live events append, so reading older messages stays put.
   const [historyWindow, setWindow] = useState({ room: roomId, first: events.at(-60)?.seq })
@@ -380,18 +385,20 @@ export function RoomConversation() {
 
   // Presence, not the room object: every read mark stores a fresh room.
   const present = Boolean(room)
+  // Hidden behind a clicked bot's loading face, the room is not being read.
+  const hidden = useUi(state => state.openingBot !== null)
   useEffect(() => {
     const seq = events.at(-1)?.seq
 
-    if (seq && present) {
+    if (seq && present && !hidden) {
       void useRooms.getState().markRead(roomId, seq)
     }
-  }, [events, present, roomId])
+  }, [events, hidden, present, roomId])
   useEffect(() => {
     if (atBottom.current) {
       void bottom.current?.scrollIntoView({ block: 'end' })
     }
-  }, [events, transcripts, unsent])
+  }, [composerHeight, events, transcripts, unsent])
 
   const members = useMemo(
     () => room?.members.filter(member => member.member_kind === 'bot' && !member.left_at) ?? [],
@@ -577,52 +584,93 @@ export function RoomConversation() {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-background">
-      <header className="hex-drag relative flex h-14 shrink-0 items-center justify-center px-14">
-        <div className="hex-glass hex-no-drag flex h-9 min-w-0 items-center gap-2 rounded-full pr-4 pl-1.5">
-          <RoomCluster bots={bots} room={room} size="sm" status={status} />
-          <h2 className="truncate text-[length:var(--text-secondary)] font-semibold">
-            {room.name}
-          </h2>
-          <span className="shrink-0 text-[length:var(--text-secondary)] text-muted">
-            {members.length} bot{members.length === 1 ? '' : 's'}
-          </span>
-        </div>
-        <div className="hex-no-drag absolute top-2.5 right-3 flex items-center gap-1.5">
-          {searching ? null : (
-            <button
-              aria-label="Search this room"
-              className="hex-glass hex-glass-press hex-focus hex-fade grid size-9 place-items-center rounded-full text-foreground/70 hover:text-foreground"
-              onClick={() => setSearching(true)}
-              title="Search"
-              type="button"
+    <div className="h-full min-h-0 bg-background">
+      {/* The room runs under its floating header and composer, as a bot's chat does. */}
+      <ScrollArea
+        bottom={
+          <div className="mx-auto max-w-[52rem] px-1" data-testid="room-composer" ref={composerBox}>
+            <ComposerShell
+              above={
+                mention === undefined ? null : (
+                  <RoomMentionPopover
+                    bots={bots}
+                    members={members}
+                    onSelect={name => setText(value => value.replace(/@([\w-]*)$/, `@${name} `))}
+                    query={mention}
+                  />
+                )
+              }
+              canSend={Boolean(text.trim())}
+              notice={status === 'stopped' && failure ? plainError(failure) : null}
+              onSend={send}
+              onStop={() => void roomsStop(roomId)}
+              status={status}
+              streaming={streaming}
             >
-              <Search size={16} />
-            </button>
-          )}
-          <button
-            aria-label="Room settings"
-            className="hex-glass hex-glass-press hex-focus grid size-9 place-items-center rounded-full text-foreground/70 hover:text-foreground"
-            onClick={() => void navigate({ params: { room: roomId }, to: '/r/$room/settings' })}
-            type="button"
-          >
-            <Info size={16} />
-          </button>
-        </div>
-      </header>
-      <ConnectedToolsNotice sectionId={`room:${roomId}`} />
-      {status === 'needs_you' ? (
-        <div className="shrink-0 pb-1">
-          <WaitingBanner name={waitingBot(events, bots, room.members)} />
-        </div>
-      ) : null}
-      <div
-        className="min-h-0 flex-1 overflow-y-auto"
+              <textarea
+                aria-label="Message room"
+                className={composerFieldClass}
+                onChange={event => setText(event.target.value)}
+                onKeyDown={event => {
+                  if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault()
+                    send()
+                  }
+                }}
+                placeholder={`Message ${room.name}`}
+                rows={1}
+                value={text}
+              />
+            </ComposerShell>
+          </div>
+        }
+        className="h-full"
         onScroll={event => {
           const node = event.currentTarget
           atBottom.current = node.scrollHeight - node.scrollTop - node.clientHeight < 80
         }}
-        ref={viewport}
+        top={
+          <>
+            <header className="flex flex-col items-center gap-2 pt-2.5 pr-[max(6rem,calc(var(--hex-overlay,0px)+1rem))] pl-[max(1rem,calc(6rem-var(--hex-overlay,0px)))] max-[700px]:pl-[max(3.5rem,calc(6rem-var(--hex-overlay,0px)))] transition-[padding] duration-[var(--hex-motion-panel)] ease-[var(--hex-ease-out)]">
+              <div className="hex-glass flex h-9 max-w-[min(100%,30rem)] min-w-0 items-center gap-2 rounded-full pr-4 pl-1.5">
+                <RoomCluster bots={bots} room={room} size="sm" status={status} />
+                <h2 className="truncate text-[length:var(--text-secondary)] font-semibold">
+                  {room.name}
+                </h2>
+                <span className="shrink-0 text-[length:var(--text-secondary)] text-muted">
+                  {members.length} bot{members.length === 1 ? '' : 's'}
+                </span>
+              </div>
+              {status === 'needs_you' ? (
+                <WaitingBanner name={waitingBot(events, bots, room.members)} />
+              ) : null}
+              <ConnectedToolsNotice sectionId={`room:${roomId}`} />
+              <NotificationsBanner />
+            </header>
+            <div className="absolute top-2.5 right-3 flex items-center gap-1.5">
+              {searching ? null : (
+                <button
+                  aria-label="Search this room"
+                  className="hex-glass hex-glass-press hex-focus hex-fade grid size-9 place-items-center rounded-full text-foreground/70 hover:text-foreground"
+                  onClick={() => setSearching(true)}
+                  title="Search"
+                  type="button"
+                >
+                  <Search size={16} />
+                </button>
+              )}
+              <button
+                aria-label="Room settings"
+                className="hex-glass hex-glass-press hex-focus grid size-9 place-items-center rounded-full text-foreground/70 hover:text-foreground"
+                onClick={() => void navigate({ params: { room: roomId }, to: '/r/$room/settings' })}
+                type="button"
+              >
+                <Info size={16} />
+              </button>
+            </div>
+          </>
+        }
+        viewportRef={viewport}
       >
         <div className={transcriptClass}>
           {start > 0 ? <LoadEarlierMessages onClick={loadEarlier} /> : null}
@@ -746,42 +794,7 @@ export function RoomConversation() {
           })}
           <div ref={bottom} />
         </div>
-      </div>
-      <div data-testid="room-composer">
-        <ComposerShell
-          above={
-            mention === undefined ? null : (
-              <RoomMentionPopover
-                bots={bots}
-                members={members}
-                onSelect={name => setText(value => value.replace(/@([\w-]*)$/, `@${name} `))}
-                query={mention}
-              />
-            )
-          }
-          canSend={Boolean(text.trim())}
-          notice={status === 'stopped' && failure ? plainError(failure) : null}
-          onSend={send}
-          onStop={() => void roomsStop(roomId)}
-          status={status}
-          streaming={streaming}
-        >
-          <textarea
-            aria-label="Message room"
-            className={composerFieldClass}
-            onChange={event => setText(event.target.value)}
-            onKeyDown={event => {
-              if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault()
-                send()
-              }
-            }}
-            placeholder={`Message ${room.name}`}
-            rows={1}
-            value={text}
-          />
-        </ComposerShell>
-      </div>
+      </ScrollArea>
     </div>
   )
 }

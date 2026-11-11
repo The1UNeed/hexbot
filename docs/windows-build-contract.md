@@ -1,10 +1,10 @@
 # Windows build and install validation
 
-Windows is not a supported Hexbot release target. The website, release matrix,
-update publishing and installer bootstrap remain unchanged. This work prepares
-local packages and native CI probes. It does not provide Windows confinement.
-The fail-closed execution boundary and independent GPT 6.1 and Opus 5.5 approval
-are required before merge or shipping, together with native validation.
+Windows x64 is a supported release target. Packaging and publication are
+wired into the release workflow and the download page, and CI builds and
+tests the production source natively. This document describes that build and
+install contract. Windows confinement, the AppContainer sandbox that Auto and
+Manual run commands in, is described in [Windows security](windows-security.md).
 
 The installed Full app probe explicitly requests its first start through the
 normal renderer bridge. A fresh profile opens onboarding and does not start a
@@ -17,31 +17,38 @@ stop/restart and retained-handle service handoff checks are unchanged.
 
 ## CI budgets
 
-`Windows build and install contract` runs four independent jobs on separate
-Windows VMs, with no dependencies or shared binaries:
+`Windows build and install contract` runs five independent jobs on separate
+Windows VMs, with no dependencies or shared binaries. Each builds the
+checked-out source itself:
 
 - `client-and-installer`, 45 minutes, retains all Stable installer, repair,
   Tauri, contract and real Client NSIS controls. Only this job uploads the
   Client artifact.
-- `native-runtime`, 60 minutes, retains all native, Pi, bootstrap, Stable Full
+- `sandbox`, 60 minutes, runs the AppContainer tests as a new standard user
+  ([Windows security](windows-security.md#verification)).
+- `native-runtime`, 150 minutes, retains all native, Pi, bootstrap, Stable Full
   NSIS, signed ZIP/Connect and refusal controls.
 - `client-nightly`, 45 minutes, runs the unchanged Client Nightly NSIS probe.
-- `full-nightly`, 60 minutes, prepares its own exact-current-tree disposable
-  source after the production unsupported guard check, then runs the unchanged
-  Full Nightly NSIS probe. It builds its own Full and Client Nightly packages.
+- `full-nightly`, 90 minutes, runs the unchanged Full Nightly NSIS probe. It
+  builds its own Full and Client Nightly packages.
 
 The old combined 45-minute Client job would have needed an estimated 59 minutes.
 Its complete Stable NSIS test passed in 1298.53 seconds before Nightly was
-cancelled at the job deadline. The split's runtime estimates remain unverified. Stable Full
-NSIS duration and the complete native-runtime total remain unknown; no other
-controls move. Separate VMs isolate registry, protocol and sibling-prefix
+cancelled at the job deadline. `native-runtime` reaches the Stable Full NSIS
+probe after 53 minutes, once the bootstrap and update probes pass, and its
+60-minute deadline cancelled that probe 7 minutes in. `full-nightly` passes in
+about 47 minutes and was cancelled at 60 on a slower VM. Stable Full NSIS
+duration and the complete native-runtime total remain unknown, so its budget
+is a ceiling and not an estimate; no other controls move. Separate VMs isolate registry, protocol and sibling-prefix
 fixtures. Nightly probes run on VMs without a Stable install, so they do not prove
-coinstalled-track behavior. No disposable binary is uploaded or published.
+coinstalled-track behavior. Nothing is published, and only the Client artifact
+is uploaded.
 
 ## Runtime layout
 
 Windows x64 uses `hexbot.exe`, `hexbot-cli.exe`, `node.exe`, `pi/launch.mjs`, the locked Pi
-installation, `pi/search-tools.mjs`, `bin/rg.exe`, `bin/fd.exe`, `web/` and
+installation, `pi/search-tools.mjs`, `bin/rg.exe`, `bin/fd.exe`,
+`bin/busybox.exe` (the shell the sandbox runs commands in), `web/` and
 `skills/`. `manifest.json` records the `win32-x64` target and SHA-256 hashes.
 There is no command-shell daemon launcher. Rust invokes the bundled Node with
 the absolute Pi JavaScript path. macOS and Linux keep their current launchers.
@@ -190,9 +197,9 @@ ignores the record, so it may mutate the environment. Returning to schema-2-awar
 code can then refuse changed bytes or identity. This is not a general backward
 compatibility or downgrade-refusal guarantee.
 
-Windows remains unsupported. Refused Python identity or code verification can
-prevent the Full daemon from starting. This scope provides no automatic recovery
-or Full option to skip code tools. Native runtime activation may already have
+Refused Python identity or code verification can prevent the Full daemon from
+starting. This scope provides no automatic recovery or Full option to skip code
+tools. Native runtime activation may already have
 completed. CLI/log errors name the layer and available original cause; logging
 requires an available safe log path. No renderer repair UI is promised.
 
@@ -271,10 +278,8 @@ Native updates use a ZIP whose entrypoint is `hexbot.exe`. The daemon verifies
 the release signature and archive digest, rejects unsafe ZIP paths, links,
 collisions and expansion limits, checks the embedded runtime hashes and probes
 the real EXE's version before selecting it. Windows electron-updater metadata
-is `latest.yml` or `nightly.yml`, with no `-win` suffix.
-`make-install-manifest --windows-probe --allow-missing` includes Windows only
-for local test trees and labels the result experimental. Normal release
-manifests continue to exclude Windows.
+is `latest.yml` or `nightly.yml`, with no `-win` suffix. Release manifests
+include `windows-x86_64` as a normal target.
 
 The per-user scheduled task uses the current user's SID in its name and
 principal. The registered task also records its canonical Hexbot home in the
@@ -381,29 +386,10 @@ and raw workspace-command output, resolves hooks within the desktop project
 and executes the Windows ownership hook. Source hooks live inside that project;
 they do not depend on the builder discovering the monorepo root. The startup
 probe deliberately stops before packaging. The job then builds real NSIS and tests installation, repair and uninstall with
-a signed local manifest. The native job checks unchanged production source
-and requires Cargo's only error to be the exact unsupported-platform guard.
-Any other compiler error fails the job. The security stage's shared helper
-then prepares a disposable worktree from explicit immutable build and security
-SHAs, records both source trees and guard hashes, and removes only the exact
-guard there. No disposable binary is uploaded. The production guard remains.
-Complete build/security trees select the exact event commit twice with
-`--current-tree`, and the helper must preserve its exact guarded tree. A
-standalone security commit or intermediate security squash instead records
-exactly one trailer in its immutable commit message:
-
-```text
-Hexbot-Windows-Build: <full lowercase 40-character build commit SHA>
-```
-
-The recorded build must contain the build and refusal interfaces. Historical
-combination also requires the reviewed dependency ancestry and a unique merge
-base; any patch conflict fails. The workflow contains no particular build pin.
-After that build exists, a metadata-only security commit can carry the trailer
-without changing the security source tree. The same validated trailer must be
-preserved in the security squash message. This avoids replaying full build
-diffs onto stale source and avoids a self-referential workflow pin.
-The disposable steps stage real Node/Pi, run Full bootstrap and Headless setup in temporary state, exercise
+a signed local manifest. The native jobs build and test the checked-out commit
+itself: the daemon has no platform guard, so no step edits the source first,
+and these jobs upload nothing.
+The native steps stage real Node/Pi, run Full bootstrap and Headless setup in temporary state, exercise
 Pi RPC, Python, web serving and task lifecycle, install Full NSIS, and validate
 a signed native ZIP update plus the pinned cloudflared executable. Exact ignored
 NSIS and ZIP/Connect selections require one executed, passed test; zero matches
@@ -433,24 +419,25 @@ concurrently copies real stdout/stderr bytes. B also inherits non-redirected
 stdin through .NET Framework's `GetStdHandle` setup; the daemon's service path
 does not read it. There is no explicit stdin copy, but input is still inherited.
 An A startup failure remains an overall control failure even if B passes.
-The normal workflow selects only A. Before claiming B acceptance, explicitly
-invoke the control and the full six-mode fixture with
-`HEXBOT_SHUTDOWN_FORWARD_STDIO=1`, using the verified bundle in
-`HEXBOT_NATIVE_TEST_BUNDLE`:
+The six-mode fixture's two service modes use B. The native run on commit
+4703c124 completed the four direct modes and then read no byte of standard
+output in 45 seconds from a live service child started as A: a daemon started
+with no window and no redirect gets a hidden console of its own, so its READY
+line never reaches the fixture. The real service redirects the daemon's output
+as B does (`windows_service.rs`). The control stays ignored, and
+`HEXBOT_SHUTDOWN_FORWARD_STDIO=0` runs the fixture's service modes as A:
 
 ```powershell
 node scripts/dev/run-one-rust-test.mjs backend/hexbot-core/Cargo.toml windows_shutdown real_service_parent_stdio_control
-$env:HEXBOT_SHUTDOWN_FORWARD_STDIO = '1'
+$env:HEXBOT_SHUTDOWN_FORWARD_STDIO = '0'
 node scripts/dev/run-one-rust-test.mjs backend/hexbot-core/Cargo.toml windows_shutdown owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock
 Remove-Item Env:\HEXBOT_SHUTDOWN_FORWARD_STDIO
 ```
 
 Portable stdin controls check input ownership; GNU compilation checks source only.
-PowerShell/C# and exact Windows stdio transport are unrun for the service
-controls this document describes; historical stdout loss is an inference, not
-an established cause. The native run on commit a17cbe6d completed four modes,
-timed out in service-exit readiness and never reached service-kill. The ignored
-control and B forwarding remain opt-in.
+The service modes with B forwarding have not completed natively yet: an
+earlier run on commit a17cbe6d, as A, also completed four modes and timed out
+in service-exit readiness.
 A separate native supervisor probe
 starts/stops a local tunnel metrics fixture twice through real services cleanup.
 It does not prove live Cloudflare enrollment. A volume without distinct 8.3 names
@@ -458,7 +445,7 @@ reports that case as unproved.
 
 A cross-compile on macOS is only a compile check. It cannot establish native
 NSIS, task, Electron GUI, job lifetime, console or standard-user behavior.
-Windows CI must pass on the combined implementation and security changes.
+Windows CI must pass natively.
 The native matrix includes actual installed Client/Full GUI activation. Its
 Rust probe requires the GUI harness, validates absolute regular files, and logs
 bounded program/argv diagnostics. The harness passes its own running Node
@@ -477,8 +464,9 @@ handoff; another unchanged launch must retain that PID. Separate native
 installer probes cover config-only CLI cleanup and PATH retention for foreign
 or malformed sidecars. The existing public test key
 stays confined to debug builds; fixture versions use the version tool only in
-the disposable source and restore the original bytes. These checks and the
-security stage's standard-user probes must pass before any availability claim.
+a CI checkout that opts in with `HEXBOT_WINDOWS_NSIS_PROBE`, and restore the
+original bytes. The security workflow's standard-user probes run beside these
+checks.
 
 ## Upstream tool pins
 
@@ -490,6 +478,29 @@ GitHub release metadata for [uv 0.12.18](https://github.com/astral-sh/uv/release
 Node uses the Windows x64 ZIP digest from
 [Node 22.23.3 SHASUMS256](https://nodejs.org/dist/v22.23.3/SHASUMS256.txt).
 The uv ZIP is flat; rg and fd have a top-level release directory.
+BusyBox is the bare 64-bit Unicode executable of
+[busybox-w32 FRP-6075-g169694ebd](https://frippery.org/busybox/release-notes/FRP-6075.html)
+(2026-05-07), `busybox-w64u-FRP-6075-g169694ebd.exe`, SHA-256
+`6e263d154d8548d1eb936f65d1d8312c80df31c45974e48d6335e4dcc0f4f34c`. That is
+the digest in the release's
+[SHA256SUM](https://frippery.org/files/busybox/SHA256SUM), whose Ed25519
+signature checks against Ron Yorston's key
+`B43E 244B 92A8 1389 CAAA A171 690E 10A0 513D A84B`, the one
+[github.com/rmyorston.gpg](https://github.com/rmyorston.gpg) also serves. The
+newer FRP-6354 was eight days old when this was pinned; pins keep the two
+weeks npm packages wait (`minimumReleaseAge`). frippery.org deletes builds
+about three years after release, so the pin must move before then. Staging
+writes it as `bin/busybox.exe`, which `setup` and the app's bootstrap require
+on Windows, and CI stages the same file beside the test daemon with
+`scripts/desktop/stage-busybox.mjs`. Staging takes the file from
+`HEXBOT_BUSYBOX_FILE` when that names a copy, without downloading anything,
+and otherwise from the build cache in `node_modules/.cache/hexbot`, which
+downloads it from frippery.org only when it holds no good copy. Every copy is
+checked against the digest above, so a wrong one fails the build instead of
+shipping. CI restores that cache with `actions/cache` under the key
+`busybox-<SHA-256>`, saves it when it was empty, and hands the copy to the
+Full builds in `HEXBOT_BUSYBOX_FILE`, so CI needs frippery.org only when the
+cache is cold.
 
 The 49f native run checked merge `0b6cb125` with the exact 49f source tree. It
 passed the initial MSVC and task/PATH/CLI checks, then failed the final staging
@@ -537,7 +548,20 @@ owner, HTTP install ID/PID and unchanged running/port metadata. The executable
 must resolve inside this home's canonical managed runtime and match the live
 process image. A held home with unreadable, stale or inconsistent evidence is
 an error, never permission to spawn or stop a process. The daemon republishes
-its running record after HTTP startup so event-based observers can check again.
+its running record after HTTP startup so event-based observers can check
+again. It publishes its running record and serve-state.json with std's
+rename, which replaces a file every reader opened with delete sharing; a
+failed republication is logged, never fatal.
+A probe that finds the lock range free holds it for a moment, as
+`hexbot service`, setup and the installer's checks do. A starting daemon
+therefore retries its home lock for three seconds before it refuses the home;
+only a process that keeps the lock owns it. A real I/O error is reported as
+itself, never as another daemon. The full-nightly run of merge `e0e30404`
+(`21e72e73`) timed out at its first real service install for this reason. The
+CLI had proved the home idle and started the task. The task daemon made one
+lock attempt while the app's readiness probe held the free range, and exited
+with "a daemon already owns this home" before readiness. The scheduler retries
+a failed task only after a minute, past the app's 30-second wait.
 The task fixture also binds that process to the verified scheduler instance and
 excludes prior desktop/task PIDs. The a305 native run failed before either
 repair because its old fixture accepted an exited PID from a retained record;
@@ -595,10 +619,10 @@ The earlier stable-marker/nightly-ASAR fixtures modeled a mixed install, not a
 normal updater transition. Pinned electron-updater 6.8.9 only passes /D when
 installDirectory is configured; Hexbot does not set it.
 
-Windows packages are local and CI probe builds only. `release.yml` has no
-Windows job, and `updates.hexbot.app` has no Windows app feed or installer, so
-a probe build's update check finds nothing to install. Against a local probe
-feed, a Settings track switch runs the other track's NSIS, which has a distinct
+Windows packages publish to `full|client/win/x64` and
+`daemon/native/<V>/windows-x86_64` on `updates.hexbot.app`, so an installed
+build's update check finds its feed. Track switching is the remaining gate: a
+Settings track switch runs the other track's NSIS, which has a distinct
 GUID. It installs that app under LocalAppData/Programs, outside this
 installer's managed root and discovery, and leaves the original identity and
 its receipt in place. Repair does not migrate or remove it. Published macOS and
@@ -652,8 +676,8 @@ CI failure's cause remains unproved; its migration assertions/source are unchang
 
 The dev runner also uses real Node plus an owned JavaScript launcher on Windows,
 with the locked Pi CLI and verified search tools. It does not execute npm or pnpm
-command shims. The production daemon support guard still applies to source builds;
-the nonpublishing native probe uses the existing disposable source preparation.
+command shims. The daemon builds from source on Windows, so the dev runner and
+the native probes use the checkout directly.
 Native installer tests retain both file locks while checking Windows delete sharing,
 then exercise terminal Uninstall with and without data removal and a live foreign
 lock. These tests do not relax daemon exclusion to remove data.
@@ -668,8 +692,9 @@ Unsupported path spellings are left alone. Cleanup does not run during Repair or
 before a failed/canceled uninstall. If it fails after NSIS, owned residual-file
 removal still runs and the installer reports the partial result.
 
-Empty registration keys and protocol marker values remain. Windows Settings or a
-direct NSIS uninstall does not invoke this outer-installer cleanup. Comparing and
+Empty registration keys and protocol marker values remain. A direct NSIS
+uninstall performs the same exact-ownership cleanup itself, skipped when the
+uninstaller runs for an upgrade-in-place. Comparing and
 deleting a command value is not atomic against an unrelated same-user registry
 writer. A handler replaced before cleanup is preserved; no race-free registry
 transaction is claimed. The command format follows [pinned Electron 42.11.3](https://github.com/electron/electron/blob/v42.11.3/shell/browser/browser_win.cc#L429-L535).
@@ -742,7 +767,7 @@ with `%USERNAME%` and `${APP_EXECUTABLE_FILENAME}`. Full's `Hexbot.exe` also
 matches the native daemon's `hexbot.exe` on Windows.
 
 Before every outer NSIS invocation, a read-only preflight repeats the two probes
-without changing policy or their inherited environment. A bounded DOS/PE
+without changing the policy they inherit. A bounded DOS/PE
 machine read from the verified incoming installer, or authenticated known
 uninstaller, selects trusted WOW64 PowerShell for I386 or System32 for AMD64.
 This matters because the pinned NSIS stub/plugins use x86-unicode; changing
@@ -756,14 +781,17 @@ fallback because `Get-ExecutionPolicy` failed with CouldNotAutoloadMatchingModul
 in the 32-bit host, not because of the policy. Microsoft documents that a
 PowerShell 7 parent's `PSModulePath` reaches Windows PowerShell 5.1 through an
 intermediate process and makes it resolve incompatible same-name modules
-(about_PSModulePath). That matches the CI runner shape, though the run did not
-record the resolved module path. The controlled RemoteSigned and Restricted
-terminal fixtures therefore remove the inherited `PSModulePath` from their own
-child only. A native control on the actual I386 and AMD64 hosts requires the
-pinned probes to pass under RemoteSigned with default modules and the policy
-probe to fail under Restricted. It records the unmodified environment as
-evidence. Production keeps the inherited environment, and the probes and
-branch decision still mirror NSIS.
+(about_PSModulePath). That matches the CI runner shape, and a stripped
+standard-user context can pass no module path at all. The installer
+therefore starts every Windows PowerShell with that host's own
+`$PSHOME\Modules` as its module path (`windows_paths::powershell_modules`),
+and runs NSIS with the module path of the host its preflight probed, so the
+macro's own probes load the same modules as the preflight's and both take
+the same branch. The terminal fixtures pass the runner's environment
+through unchanged. A native control on the actual I386 and AMD64 hosts
+requires the pinned probes to pass under RemoteSigned with default modules
+and the policy probe to fail under Restricted. It records the unmodified
+environment as evidence.
 
 In the available branch, the preflight refuses matching raw directory prefixes,
 including sibling names, while preserving an independent daemon outside them.
@@ -781,8 +809,7 @@ removal checks also protect Change before replacing another app. Concurrent
 same-user process or policy changes between that check and NSIS remain outside
 a compare-and-swap guarantee. There is no registry cleanup or identity migration
 in this recovery path. Settings can still install another track under Programs,
-outside this installer's discovery, as described above. Windows remains
-unsupported and publishing stays disabled.
+outside this installer's discovery, as described above.
 
 Windows task Stop now shares one completion boundary between the daemon CLI
 and installer removal. Before asking the verified scheduler to stop, it captures

@@ -657,6 +657,79 @@ pub fn list_providers(home: &Path) -> Result<Value> {
     });
     Ok(json!({"providers":rows}))
 }
+/// Whether a provider has a key or sign-in right now, by any of its names.
+/// With a bot's profile, the bot's own key, sign-in, or endpoint in it
+/// count too, as `prepare_pi_config_locked` gives them to Pi.
+pub fn connected(home: &Path, profile_home: Option<&Path>, name: &str) -> Result<bool> {
+    let slug = canonical_provider(name);
+    let root = common::read_config(home)?;
+    let profile_cfg = profile_home
+        .map(common::read_config)
+        .transpose()?
+        .unwrap_or_else(|| json!({}));
+    let Some(p) = profiles().iter().find(|p| p["name"] == slug) else {
+        // A custom endpoint answers to its name and to custom:<name>. The
+        // bot's own endpoints replace the daemon's.
+        let mut cfg = root;
+        for key in ["providers", "custom_providers"] {
+            if profile_cfg.get(key).is_some() {
+                cfg[key] = profile_cfg[key].clone();
+            }
+        }
+        return Ok(custom_profiles(&cfg).iter().any(|p| {
+            p["name"] == slug
+                || p["aliases"]
+                    .as_array()
+                    .is_some_and(|aliases| aliases.iter().any(|alias| alias == &slug))
+        }));
+    };
+    if read_json(&home.join("providers-disabled.json"))?[slug.as_str()] == true {
+        return Ok(false);
+    }
+    // Signed in outside Hexbot, through the provider's own tool or SDK: the
+    // daemon only knows when the user turned it off.
+    if matches!(
+        string(p, "auth_type"),
+        "external_process" | "aws_sdk" | "vertex"
+    ) {
+        return Ok(true);
+    }
+    if configured(home, p)? {
+        return Ok(true);
+    }
+    // The Qwen CLI's own sign-in, which the daemon imports to run the bot.
+    // That file belongs to the CLI: one it cannot read is no sign-in, and
+    // never fails the bot list.
+    if slug == "qwen-oauth" {
+        let state = import_qwen(home).unwrap_or_default();
+        let tokens = if state["tokens"].is_object() {
+            &state["tokens"]
+        } else {
+            &state
+        };
+        if !string(tokens, "access_token").is_empty() {
+            return Ok(true);
+        }
+    }
+    // A key inline in the model config, the bot's own or the daemon's that
+    // it inherits. A root model in the older one-line form has no key.
+    let mut model = root["model"].clone();
+    if !model.is_object() {
+        model = json!({});
+    }
+    if let Some(overrides) = profile_cfg["model"].as_object() {
+        for (key, value) in overrides {
+            model[key] = value.clone();
+        }
+    }
+    let inline = canonical_provider(string(&model, "provider")) == slug
+        && model["api_key"].as_str().is_some_and(|s| !s.is_empty());
+    Ok(inline
+        || profile_home
+            .map(|dir| configured(dir, p))
+            .transpose()?
+            .unwrap_or(false))
+}
 fn catalog_models(slug: &str) -> Vec<String> {
     let mut models = profiles()
         .iter()
@@ -772,6 +845,8 @@ async fn limited_json(response: reqwest::Response) -> Result<Value> {
 
 /// Reasoning levels providers report in their live lists, by provider and model.
 const LIVE_LEVELS: &str = "live_model_levels.json";
+/// Models a provider's live list offers a Fast tier for, by provider.
+const LIVE_FAST: &str = "live_model_fast.json";
 /// Codex hides models from clients older than this. Hexbot drives every listed
 /// model through Pi, so it asks for the full list.
 const CODEX_CLIENT_VERSION: &str = "99.0.0";
@@ -885,6 +960,7 @@ async fn codex_models(home: &Path, base: &str) -> Result<(Vec<String>, Value)> {
     let data = provider_json(req).await?;
     let mut ids = vec![];
     let mut levels = json!({});
+    let mut fast = vec![];
     for model in data["models"].as_array().into_iter().flatten() {
         let Some(id) = model["slug"].as_str() else {
             continue;
@@ -893,6 +969,13 @@ async fn codex_models(home: &Path, base: &str) -> Result<(Vec<String>, Value)> {
             continue;
         }
         ids.push(id.to_owned());
+        // ChatGPT names its priority tier Fast and lists it per model.
+        if model["service_tiers"]
+            .as_array()
+            .is_some_and(|tiers| tiers.iter().any(|tier| tier["id"] == "priority"))
+        {
+            fast.push(id.to_owned());
+        }
         if let Some(supported) = model["supported_reasoning_levels"].as_array() {
             let efforts = supported
                 .iter()
@@ -911,7 +994,27 @@ async fn codex_models(home: &Path, base: &str) -> Result<(Vec<String>, Value)> {
     let mut saved = read_json(&path).unwrap_or_else(|_| json!({}));
     saved["openai-codex"] = levels.clone();
     write_json(&path, &saved)?;
+    let path = home.join(LIVE_FAST);
+    let mut saved = read_json(&path).unwrap_or_else(|_| json!({}));
+    saved["openai-codex"] = json!(fast);
+    write_json(&path, &saved)?;
     Ok((ids, levels))
+}
+/// Whether a model runs in fast mode: the same model, faster, at a higher price.
+/// Anthropic offers it on Claude Opus 5.5 (`speed: "fast"`); ChatGPT marks each
+/// model with a Fast tier in its live list (`service_tier: "priority"`).
+fn fast_in(saved: &Value, provider: &str, model: &str) -> bool {
+    match canonical_provider(provider).as_str() {
+        "anthropic" => model == "claude-opus-5-5",
+        "openai-codex" => saved["openai-codex"]
+            .as_array()
+            .is_some_and(|ids| ids.iter().any(|id| id == model)),
+        _ => false,
+    }
+}
+pub fn supports_fast(home: &Path, provider: &str, model: &str) -> bool {
+    let saved = read_json(&home.join(LIVE_FAST)).unwrap_or_else(|_| json!({}));
+    fast_in(&saved, provider, model)
 }
 fn strings(value: &Value) -> Option<Vec<String>> {
     value.as_array().map(|items| {
@@ -1115,7 +1218,7 @@ pub async fn list_models(home: &Path, p: &Value) -> Result<Value> {
         }
     }
     // A recommendation the provider no longer lists cannot be chosen.
-    let curated = catalog()["curated"]
+    let mut curated = catalog()["curated"]
         .as_array()
         .unwrap()
         .iter()
@@ -1137,6 +1240,12 @@ pub async fn list_models(home: &Path, p: &Value) -> Result<Value> {
             Some(row)
         })
         .collect::<Vec<_>>();
+    let fast = read_json(&home.join(LIVE_FAST)).unwrap_or_else(|_| json!({}));
+    for row in all.iter_mut().chain(curated.iter_mut()) {
+        if fast_in(&fast, string(row, "provider"), string(row, "id")) {
+            row["fast"] = json!(true)
+        }
+    }
     all.sort_by_key(|v| string(v, "label").to_lowercase());
     let mut output = json!({"curated":curated,"all_source":if all.is_empty(){"none"}else if live{"mixed"}else{"catalog"},"all":all});
     if !errors.is_empty() {
@@ -1903,7 +2012,12 @@ pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<
                     common::required(p, "provider")?,
                     common::required(p, "key")?,
                 ),
-                "hexbot.providers.clear_key" => clear_key(home, common::required(p, "provider")?),
+                "hexbot.providers.clear_key" => {
+                    let provider = common::required(p, "provider")?;
+                    let result = clear_key(home, provider)?;
+                    crate::settings::forget_provider(home, caller, provider)?;
+                    Ok(result)
+                }
                 "hexbot.providers.login_start" => {
                     login_start(home, caller, common::required(p, "provider")?).await
                 }
@@ -1933,6 +2047,7 @@ pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<
                 "model.disconnect" => {
                     let slug = canonical_provider(common::required(p, "slug")?);
                     clear_key(home, &slug)?;
+                    crate::settings::forget_provider(home, caller, &slug)?;
                     Ok(json!({"slug":slug,"name":profile(&slug)?["display_name"],"disconnected":true}))
                 }
                 _ => unreachable!(),
@@ -2584,6 +2699,21 @@ mod migration_tests {
             ["low", "high"]
         );
         assert_eq!(levels("opencode-go", "unknown-model", &none), None);
+    }
+    #[test]
+    fn fast_mode_is_offered_on_opus_5_5_and_on_chatgpt_models_with_a_fast_tier() {
+        let saved = json!({"openai-codex":["gpt-6-astra"]});
+        assert!(fast_in(&saved, "anthropic", "claude-opus-5-5"));
+        assert!(fast_in(&saved, "claude", "claude-opus-5-5"));
+        // Opus 5 needs a waitlist and Opus 4.8 loses it; neither is offered.
+        assert!(!fast_in(&saved, "anthropic", "claude-opus-5"));
+        assert!(!fast_in(&saved, "anthropic", "claude-opus-4-8"));
+        assert!(fast_in(&saved, "openai-codex", "gpt-6-astra"));
+        assert!(!fast_in(&saved, "openai-codex", "gpt-6-luna"));
+        // The API key route has no Fast tier, and nor does a model through another provider.
+        assert!(!fast_in(&saved, "openai-api", "gpt-6-astra"));
+        assert!(!fast_in(&saved, "openrouter", "anthropic/claude-opus-5-5"));
+        assert!(!fast_in(&json!({}), "openai-codex", "gpt-6-astra"));
     }
     #[test]
     fn reads_credential_pool_and_hexbot_anthropic_login_without_changing_imports() {

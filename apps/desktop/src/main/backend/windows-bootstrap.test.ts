@@ -5,6 +5,8 @@ import { dirname, isAbsolute, join, relative } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { performBootstrap, runChild } from './bootstrap'
 import { binDir, canonicalRuntimePath, hexbotHome, nativeServiceExecutable } from './paths'
+import { restoreEnvironment } from '../test-environment'
+
 vi.mock('../service', () => ({ migrateLegacyService: async () => undefined }))
 
 describe.skipIf(process.platform !== 'win32' || !process.env.HEXBOT_NATIVE_TEST_BUNDLE)('real Windows Full bootstrap', () => {
@@ -136,7 +138,7 @@ describe.skipIf(process.platform !== 'win32' || !process.env.HEXBOT_NATIVE_TEST_
       }))
       throw error
     } finally {
-      process.env = previous
+      restoreEnvironment(previous)
       await rm(root, { recursive: true, force: true })
     }
   }, 300_000)

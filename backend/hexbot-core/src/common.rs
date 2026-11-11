@@ -429,26 +429,120 @@ pub fn credentials_lock() -> &'static std::sync::Mutex<()> {
     &LOCK
 }
 
-/// Open without blocking on a FIFO, then check the opened object and bound the read.
+/// Open only a regular file, never waiting on what else a path can name, and
+/// bound the read. Unix opens without blocking on a FIFO, then checks the
+/// opened object. Windows opens only a disk file (`open_disk_entry`): a path
+/// that is not plainly a local disk path is refused before it is opened, and
+/// a final link, junction or other reparse point, a pipe or a device, after.
 pub fn read_regular(path: &Path, limit: usize) -> Result<Vec<u8>> {
     use std::io::Read;
-    let mut options = fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NONBLOCK);
-    }
-    let file = options.open(path)?;
-    if !file.metadata()?.is_file() {
-        return Err(Error::new(4202, "path must be a regular file"));
-    }
+    let file = open_regular(path)?;
     let mut bytes = Vec::new();
     file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
     if bytes.len() > limit {
         return Err(Error::new(4202, "file exceeds the read limit"));
     }
     Ok(bytes)
+}
+fn not_regular() -> Error {
+    Error::new(4202, "path must be a regular file")
+}
+#[cfg(unix)]
+fn open_regular(path: &Path) -> Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(not_regular());
+    }
+    Ok(file)
+}
+#[cfg(windows)]
+fn open_regular(path: &Path) -> Result<fs::File> {
+    match open_disk_entry(path)? {
+        DiskEntry::File(file, _) => Ok(file),
+        DiskEntry::Refused(reason) => {
+            Err(Error::new(4202, format!("{reason}: {}", path.display())))
+        }
+        DiskEntry::Directory | DiskEntry::Device | DiskEntry::Link => Err(not_regular()),
+    }
+}
+/// What [`open_disk_entry`] found.
+#[cfg(windows)]
+pub(crate) enum DiskEntry {
+    /// A file on a local disk, open for reading, and its size.
+    File(fs::File, u64),
+    Directory,
+    /// A pipe, console or other device. It is not read.
+    Device,
+    /// A link, junction or other reparse point, opened as itself and never
+    /// followed.
+    Link,
+    /// The path's text is no plain local disk path (a network, device or
+    /// stream path, a reserved name, a relative or non-Unicode path), so
+    /// nothing opened it.
+    Refused(&'static str),
+}
+#[cfg(windows)]
+pub(crate) const NOT_UNICODE: &str = "Windows paths must be Unicode";
+/// Open a path the way an untrusted one must be on Windows. Its text is
+/// judged first (`windows_paths::sandbox::local`), and every link on the way
+/// by its target (`credentials::local_link`), so a network, device or stream
+/// path is never opened; then one handle opens it without following a
+/// final link, and it is a file only when that handle is a disk file that is
+/// no reparse point. Nothing at the path is `NotFound`.
+#[cfg(windows)]
+pub(crate) fn open_disk_entry(path: &Path) -> std::io::Result<DiskEntry> {
+    use std::os::windows::{
+        fs::{MetadataExt, OpenOptionsExt},
+        io::AsRawHandle,
+    };
+    const SHARE_ALL: u32 = 0x7;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_TYPE_DISK: u32 = 1;
+    const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    #[link(name = "kernel32", kind = "raw-dylib")]
+    unsafe extern "system" {
+        fn GetFileType(handle: *mut std::ffi::c_void) -> u32;
+    }
+    let Some(text) = path.to_str() else {
+        return Ok(DiskEntry::Refused(NOT_UNICODE));
+    };
+    let plain = match crate::windows_paths::sandbox::local(text) {
+        Ok(plain) => plain,
+        Err(reason) => return Ok(DiskEntry::Refused(reason)),
+    };
+    // A mapped network drive is not local, whatever its letter says.
+    if crate::windows_sandbox::fixed_drive(&plain).is_err() {
+        return Ok(DiskEntry::Refused(crate::windows_paths::sandbox::DRIVE));
+    }
+    // The open below follows links on the way to the file.
+    if !crate::credentials::local_link(path) {
+        return Ok(DiskEntry::Refused(crate::windows_paths::sandbox::LINKED));
+    }
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(SHARE_ALL)
+        // Folders open too, so they read as folders rather than failing.
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?;
+    // SAFETY: a valid handle owned by `file`.
+    if unsafe { GetFileType(file.as_raw_handle()) } != FILE_TYPE_DISK {
+        return Ok(DiskEntry::Device);
+    }
+    let metadata = file.metadata()?;
+    let attributes = metadata.file_attributes();
+    Ok(if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        DiskEntry::Link
+    } else if attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+        DiskEntry::Directory
+    } else {
+        DiskEntry::File(file, metadata.len())
+    })
 }
 pub fn read_regular_text(path: &Path, limit: usize) -> Result<String> {
     String::from_utf8(read_regular(path, limit)?)
@@ -488,21 +582,43 @@ pub fn expand_home(path: &str) -> Result<std::path::PathBuf> {
     )
 }
 fn expand_home_in(path: &str, home: Option<std::ffi::OsString>) -> Result<std::path::PathBuf> {
-    if path == "~" || path.starts_with("~/") {
-        // Without HOME the path would silently become relative to the daemon's cwd.
-        let home = home
-            .filter(|home| !home.is_empty())
-            .ok_or_else(|| Error::new(4202, "HOME is not set, so ~ cannot be expanded"))?;
-        Ok(std::path::PathBuf::from(home).join(path.strip_prefix("~/").unwrap_or("")))
-    } else {
-        Ok(std::path::PathBuf::from(path))
-    }
+    // Windows takes either separator after `~`.
+    let separator = |c: char| c == '/' || (cfg!(windows) && c == '\\');
+    let rest = path
+        .strip_prefix('~')
+        .filter(|rest| rest.is_empty() || rest.starts_with(separator));
+    let Some(rest) = rest else {
+        return Ok(std::path::PathBuf::from(path));
+    };
+    // Without HOME the path would silently become relative to the daemon's cwd.
+    let home = home
+        .filter(|home| !home.is_empty())
+        .ok_or_else(|| Error::new(4202, "HOME is not set, so ~ cannot be expanded"))?;
+    Ok(std::path::PathBuf::from(home).join(rest.strip_prefix(separator).unwrap_or("")))
 }
 
 /// Refuse a working directory inside the daemon home, symlinks included, without creating it.
 /// The tool guards treat the working directory as writable, so it would open the home.
+/// On Windows it must be a plain path on a local fixed drive, judged before any
+/// file system call reaches it, so a network share or device is never opened.
 pub fn check_workdir(home: &Path, configured: &str) -> Result<std::path::PathBuf> {
     let path = std::path::absolute(expand_home(configured)?)?;
+    #[cfg(windows)]
+    {
+        let plain = path
+            .to_str()
+            .ok_or(crate::windows_paths::sandbox::RELATIVE)
+            .and_then(crate::windows_paths::sandbox::local)
+            .map_err(|reason| Error::new(4202, format!("{reason}: {configured}")))?;
+        crate::windows_sandbox::fixed_drive(&plain)?;
+        // The checks below resolve the folder, links included.
+        if !crate::credentials::local_link(&path) {
+            return Err(Error::new(
+                4202,
+                format!("{}: {configured}", crate::windows_paths::sandbox::LINKED),
+            ));
+        }
+    }
     if path
         .components()
         .any(|part| part == std::path::Component::ParentDir)
@@ -520,7 +636,7 @@ pub fn check_workdir(home: &Path, configured: &str) -> Result<std::path::PathBuf
         existing = parent;
     }
     let rest = path.strip_prefix(existing).unwrap_or(Path::new(""));
-    outside_home(home, &fs::canonicalize(existing)?.join(rest))?;
+    outside_home(home, &crate::credentials::canonical(existing)?.join(rest))?;
     Ok(path)
 }
 
@@ -539,7 +655,8 @@ pub fn configured_workdir<'a>(candidates: &[Option<&'a str>], settings: &'a Valu
 pub fn resolve_workdir(home: &Path, configured: &str) -> Result<std::path::PathBuf> {
     let path = check_workdir(home, configured)?;
     fs::create_dir_all(&path)?;
-    let path = fs::canonicalize(path)?;
+    // Plain on Windows too: cmd.exe cannot start in a `\\?\` folder.
+    let path = crate::credentials::canonical(&path)?;
     outside_home(home, &path)?;
     Ok(path)
 }
@@ -564,7 +681,7 @@ pub fn saved_workdir(home: &Path, saved: &str) -> Option<std::path::PathBuf> {
 }
 
 fn outside_home(home: &Path, canonical: &Path) -> Result<()> {
-    if canonical.starts_with(fs::canonicalize(home)?) {
+    if canonical.starts_with(crate::credentials::canonical(home)?) {
         return Err(Error::new(
             4202,
             "the working directory cannot be inside the Hexbot home",
@@ -755,6 +872,11 @@ pub async fn safe_get(value: &str, allow_private: bool) -> Result<reqwest::Respo
         let addresses = url_addresses(&url, allow_private).await?;
         let client = reqwest::Client::builder()
             .no_proxy()
+            // Many sites refuse a request that does not say what sent it.
+            .user_agent(format!(
+                "Mozilla/5.0 (compatible; Hexbot/{}; +https://hexbot.app)",
+                crate::version()
+            ))
             .timeout(std::time::Duration::from_secs(90))
             .redirect(reqwest::redirect::Policy::none())
             .resolve_to_addrs(url.host_str().unwrap(), &addresses)
@@ -912,13 +1034,101 @@ async fn proxy_request(client: &mut tokio::net::TcpStream, allow_private: bool) 
 
 /// Locate a child command in its workspace or PATH, without extra search roots.
 pub fn command_path(program: &str, cwd: &Path) -> Option<std::path::PathBuf> {
-    if program.contains(std::path::MAIN_SEPARATOR) {
-        let path = cwd.join(program);
-        return executable_file(&path).then_some(path);
+    find_command(program, cwd, &[])
+}
+/// The one command lookup. A program with a separator (either one on Windows)
+/// or a drive is a path from `cwd`; any other name is looked for in the PATH,
+/// relative entries from `cwd`. `roots` follow either way. On Windows a name
+/// without one of the PATHEXT extensions takes each in turn, as the Windows
+/// shells do, so `cua` finds `cua.exe`.
+pub(crate) fn find_command(
+    program: &str,
+    cwd: &Path,
+    roots: &[std::path::PathBuf],
+) -> Option<std::path::PathBuf> {
+    let searched = if names_path(program) {
+        vec![cwd.to_path_buf()]
+    } else {
+        std::env::var_os("PATH")
+            .map(|path| {
+                std::env::split_paths(&path)
+                    .map(|dir| cwd.join(dir))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    searched
+        .iter()
+        .chain(roots)
+        .find_map(|dir| executable(&dir.join(program)))
+}
+/// Folders for the user's own commands, which a service's PATH often lacks:
+/// `~/.local/bin` (uv and pipx) and `~/.cargo/bin`, under the profile on
+/// Windows, then Homebrew's and the system's on Unix.
+pub(crate) fn command_roots() -> Vec<std::path::PathBuf> {
+    let mut roots = vec![];
+    if let Some(home) = crate::osutil::user_home() {
+        roots.push(home.join(".local").join("bin"));
+        roots.push(home.join(".cargo").join("bin"));
     }
-    std::env::split_paths(&std::env::var_os("PATH")?)
-        .map(|dir| cwd.join(dir).join(program))
-        .find(|path| executable_file(path))
+    #[cfg(unix)]
+    roots.extend(["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"].map(std::path::PathBuf::from));
+    roots
+}
+/// Whether `program` names a path rather than a command to look for.
+fn names_path(program: &str) -> bool {
+    program.contains(std::path::is_separator)
+        || matches!(
+            Path::new(program).components().next(),
+            Some(std::path::Component::Prefix(_))
+        )
+}
+/// `path` when it is an executable file. On Windows, `path` itself only when
+/// it ends in a PATHEXT extension, else with each of them in turn — the
+/// Windows shells run a file by name only with a runnable extension.
+fn executable(path: &Path) -> Option<std::path::PathBuf> {
+    #[cfg(windows)]
+    return windows_names(path, std::env::var_os("PATHEXT").as_deref())
+        .into_iter()
+        .find(|path| executable_file(path));
+    #[cfg(not(windows))]
+    executable_file(path).then(|| path.to_path_buf())
+}
+/// The names Windows runs for `path`, in order: itself when its extension is
+/// in PATHEXT, else itself with each PATHEXT extension, in lower case.
+/// Without a usable PATHEXT, Windows' own default applies.
+#[cfg(any(windows, test))]
+fn windows_names(path: &Path, pathext: Option<&std::ffi::OsStr>) -> Vec<std::path::PathBuf> {
+    let parse = |value: &str| -> Vec<String> {
+        value
+            .split(';')
+            .map(str::trim)
+            .filter(|extension| extension.len() > 1 && extension.starts_with('.'))
+            .map(str::to_ascii_lowercase)
+            .collect()
+    };
+    let mut extensions = pathext
+        .and_then(|value| value.to_str())
+        .map(parse)
+        .unwrap_or_default();
+    if extensions.is_empty() {
+        extensions = parse(".COM;.EXE;.BAT;.CMD");
+    }
+    let current = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| format!(".{}", extension.to_ascii_lowercase()));
+    if current.is_some_and(|current| extensions.contains(&current)) {
+        return vec![path.to_path_buf()];
+    }
+    extensions
+        .iter()
+        .map(|extension| {
+            let mut name = path.as_os_str().to_owned();
+            name.push(extension);
+            std::path::PathBuf::from(name)
+        })
+        .collect()
 }
 pub(crate) fn executable_file(path: &Path) -> bool {
     let Ok(meta) = std::fs::metadata(path) else {
@@ -1246,5 +1456,85 @@ mod io_context_tests {
         );
         atomic_write(&home.path().join("record.json"), b"{}").unwrap();
         assert_eq!(fs::read(home.path().join("record.json")).unwrap(), b"{}");
+    }
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn windows_runs_a_name_with_each_pathext_extension_in_turn() {
+        let names = |path: &str, pathext: Option<&str>| {
+            windows_names(Path::new(path), pathext.map(std::ffi::OsStr::new))
+                .into_iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        // Windows' own default, in its order: `cua` finds `cua.exe`.
+        assert_eq!(
+            names(r"C:\Users\alex\.local\bin\cua", None),
+            [".com", ".exe", ".bat", ".cmd"]
+                .map(|ext| format!(r"C:\Users\alex\.local\bin\cua{ext}"))
+        );
+        assert_eq!(names("cua", Some(".EXE;.CMD")), ["cua.exe", "cua.cmd"]);
+        // A name that already ends in one of them is tried as it is.
+        assert_eq!(names("cua.exe", None), ["cua.exe"]);
+        assert_eq!(names("tool.CMD", Some(".EXE;.CMD")), ["tool.CMD"]);
+        // Any other extension is part of the name.
+        assert_eq!(names("python3.11", Some(".EXE")), ["python3.11.exe"]);
+        // Without a usable PATHEXT the default applies.
+        for unusable in ["", " ; ;", "exe;cmd"] {
+            assert_eq!(names("cua", Some(unusable)).len(), 4, "{unusable:?}");
+        }
+    }
+
+    #[test]
+    fn a_separator_or_drive_makes_a_path_and_anything_else_a_name() {
+        assert!(names_path("bin/cua"));
+        assert!(names_path("/usr/local/bin/cua"));
+        assert!(!names_path("cua"));
+        // A backslash separates only on Windows; a drive exists only there.
+        assert_eq!(names_path(r"bin\cua"), cfg!(windows));
+        assert_eq!(names_path("C:cua.exe"), cfg!(windows));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commands_are_found_from_the_workspace_and_then_the_user_folders() {
+        use std::os::unix::fs::PermissionsExt;
+        let cwd = tempfile::tempdir().unwrap();
+        let roots = [cwd.path().join("first"), cwd.path().join("second")];
+        let name = format!("hexbot-tool-{}", id());
+        let tool = |dir: &Path, mode| {
+            fs::create_dir_all(dir).unwrap();
+            fs::write(dir.join(&name), "#!/bin/sh\n").unwrap();
+            fs::set_permissions(dir.join(&name), fs::Permissions::from_mode(mode)).unwrap();
+            dir.join(&name)
+        };
+        assert_eq!(find_command(&name, cwd.path(), &roots), None);
+        // Not executable, so not a command.
+        tool(&roots[0], 0o644);
+        assert_eq!(find_command(&name, cwd.path(), &roots), None);
+        let second = tool(&roots[1], 0o755);
+        assert_eq!(find_command(&name, cwd.path(), &roots), Some(second));
+        let first = tool(&roots[0], 0o755);
+        assert_eq!(find_command(&name, cwd.path(), &roots), Some(first));
+        // Without roots only the PATH is searched, which has no such name.
+        assert_eq!(command_path(&name, cwd.path()), None);
+        // A path is taken from the workspace, as it is.
+        let local = tool(&cwd.path().join("bin"), 0o755);
+        assert_eq!(
+            command_path(&format!("bin/{name}"), cwd.path()),
+            Some(local)
+        );
+        assert_eq!(command_path(&format!("missing/{name}"), cwd.path()), None);
+        // The same folders as before, in the same order.
+        let mut roots = crate::osutil::user_home().map_or(vec![], |home| {
+            vec![home.join(".local/bin"), home.join(".cargo/bin")]
+        });
+        roots.extend(["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"].map(PathBuf::from));
+        assert_eq!(command_roots(), roots);
     }
 }

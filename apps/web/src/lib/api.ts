@@ -5,11 +5,15 @@
  * a call before the connection is up rejects with `NotConnectedError`.
  */
 
+import { JsonRpcGatewayError } from '@hermes/shared'
+
 import { useConnection } from '../stores/connection'
 
+import { splitAttached } from './media'
 import { rpcCall } from './rpc'
 import { toMillis } from './time'
 import type {
+  AccountSignIn,
   ApprovalChoice,
   Bot,
   BotCreateInput,
@@ -26,7 +30,9 @@ import type {
   DaemonInfo,
   DaemonUpdateStatus,
   Device,
+  EmailDraftAnswer,
   HeartbeatStatus,
+  MailService,
   Message,
   ModelOption,
   NetworkInfo,
@@ -46,7 +52,13 @@ import type {
   SkillInfo,
   Usage
 } from './types'
-import type { CurrentUser, DiagnosticsSnapshot, DiagnosticsSpan, UsageSummary } from './types'
+import type {
+  CurrentUser,
+  DiagnosticsLogs,
+  DiagnosticsSnapshot,
+  DiagnosticsSpan,
+  UsageSummary
+} from './types'
 
 /** Raw history row as projected by Hexbot `session.history`. */
 export interface HistoryRow {
@@ -251,6 +263,31 @@ export function connectorsClear(
   options: { bot?: string; bot_only?: boolean } = {}
 ): Promise<{ connector: Connector }> {
   return rpcCall<{ connector: Connector }>('hexbot.connectors.clear', { id, ...options })
+}
+
+// ---------------------------------------------------------------------------
+// Google and Microsoft accounts
+// ---------------------------------------------------------------------------
+
+export function accountsSignInStart(service: MailService): Promise<AccountSignIn> {
+  return rpcCall<AccountSignIn>('hexbot.accounts.sign_in_start', { service })
+}
+
+export function accountsSignInPoll(loginId: string): Promise<AccountSignIn> {
+  return rpcCall<AccountSignIn>('hexbot.accounts.sign_in_poll', { login_id: loginId })
+}
+
+/** Finishes a Google sign-in with the address the browser ended on. */
+export function accountsSignInFinish(loginId: string, url: string): Promise<AccountSignIn> {
+  return rpcCall<AccountSignIn>('hexbot.accounts.sign_in_finish', { login_id: loginId, url })
+}
+
+export function accountsSignInCancel(loginId: string): Promise<AccountSignIn> {
+  return rpcCall<AccountSignIn>('hexbot.accounts.sign_in_cancel', { login_id: loginId })
+}
+
+export function accountsDisconnect(service: MailService): Promise<{ disconnected: MailService }> {
+  return rpcCall<{ disconnected: MailService }>('hexbot.accounts.disconnect', { service })
 }
 
 export function connectorsSetForBot(
@@ -500,9 +537,10 @@ export const computerStatus = () => rpcCall<ComputerStatus>('hexbot.computer.sta
 /** Start, stop, restart or reset; the step runs on and reports `hexbot.computer.changed`. */
 export const computerStep = (step: 'reset' | 'restart' | 'start' | 'stop') =>
   rpcCall<ComputerStatus>(`hexbot.computer.${step}`)
+/** Pause the bots (`user`) or resume them (`bot`); the screen takes the user's input either way. */
 export const computerControl = (holder: 'bot' | 'user') =>
   rpcCall<ComputerStatus>('hexbot.computer.control', { holder })
-/** A link, relative to the daemon, to the computer's screen; `control` takes over. */
+/** A link, relative to the daemon, to the computer's screen; with `control` it takes clicks and keys. */
 export const computerView = (control: boolean, quality: ComputerQuality = 'auto') =>
   rpcCall<{ control: boolean; expires_at: number; path: string }>('hexbot.computer.view', {
     control,
@@ -562,6 +600,17 @@ export const diagnosticsGet = (spanName?: string) =>
 /** Every span of one trace, the run first. */
 export const diagnosticsTrace = (trace: number) =>
   rpcCall<{ spans: DiagnosticsSpan[]; trace: number }>('hexbot.diagnostics.trace', { trace })
+
+/**
+ * One page of a file in `<home>/logs`, newest lines last. Without `file`, the
+ * daemon's own output; `before` continues with older lines.
+ */
+export const diagnosticsLogs = (params: {
+  before?: number
+  errors?: boolean
+  file?: string
+  query?: string
+}) => rpcCall<DiagnosticsLogs>('hexbot.diagnostics.logs', params)
 
 export const gatewayPing = () => rpcCall<{ pong: boolean }>('gateway.ping')
 
@@ -627,15 +676,43 @@ export interface SectionOpened {
   /** Every approval and question still waiting at this read; older daemons leave it out. */
   pending_requests?: string[]
   section: Section
+  /** Send it with the next read of this chat to get only what came after; older daemons leave it out. */
+  history_cursor?: string
+  /** True when `messages` follow the rows the cursor was sent with; false means the whole history. */
+  history_delta?: boolean
 }
 
-export function sectionsOpen(id: string): Promise<SectionOpened> {
-  return rpcCall<SectionOpened>('hexbot.sections.open', { id })
+/** With the cursor of the rows this app holds, the daemon sends only the rows after them. */
+export function sectionsOpen(id: string, historyCursor?: string): Promise<SectionOpened> {
+  return rpcCall<SectionOpened>('hexbot.sections.open', {
+    id,
+    ...(historyCursor && { history_cursor: historyCursor })
+  })
+}
+
+export interface SectionHistory {
+  history_cursor: string
+  history_delta: boolean
+  messages: HistoryRow[]
+}
+
+/** A chat's stored history without starting its bot (`section_history` daemons). */
+export function sectionsHistory(id: string, historyCursor?: string): Promise<SectionHistory> {
+  return rpcCall<SectionHistory>('hexbot.sections.history', {
+    id,
+    ...(historyCursor && { history_cursor: historyCursor })
+  })
 }
 
 /** A full durable read; cache synchronization remains compatible with older daemons. */
-export function sessionHistory(sessionId: string): Promise<{ messages: HistoryRow[] }> {
-  return rpcCall('session.history', { session_id: sessionId })
+export function sessionHistory(
+  sessionId: string,
+  historyCursor?: string
+): Promise<{ history_cursor?: string; history_delta?: boolean; messages: HistoryRow[] }> {
+  return rpcCall('session.history', {
+    session_id: sessionId,
+    ...(historyCursor && { history_cursor: historyCursor })
+  })
 }
 
 export function sectionsMarkRead(id: string): Promise<{ section: Section }> {
@@ -665,6 +742,9 @@ export function botMemoryGet(bot: string): Promise<BotMemory> {
 export function botMemorySet(bot: string, memoryMd: string): Promise<BotMemory> {
   return rpcCall<BotMemory>('hexbot.memory.bot.set', { bot, memory_md: memoryMd })
 }
+
+/** A window event naming a bot whose memory a restored dream replaced, so open copies read it again. */
+export const MEMORY_RESTORED = 'hexbot:memory-restored'
 
 export function botNotesList(bot: string): Promise<BotNotes> {
   return rpcCall<BotNotes>('hexbot.memory.notes.list', { bot })
@@ -782,6 +862,8 @@ export interface PromptSubmitOptions {
   input_id?: string
   attachments?: string[]
   display_kind?: 'hidden'
+  /** Stop a reply in progress first, so this message goes next. */
+  interrupt?: boolean
   queued?: boolean
   surface?: string
 }
@@ -844,7 +926,7 @@ export function approvalRespond(
   sessionId: string,
   requestId: string,
   choice: ApprovalChoice,
-  answer?: PluginAnswer | { password: string; username: string }
+  answer?: EmailDraftAnswer | PluginAnswer | { password: string; username: string }
 ): Promise<{ resolved: boolean }> {
   return rpcCall<{ resolved: boolean }>('approval.respond', {
     choice,
@@ -920,6 +1002,40 @@ export function fileAttach(
   return rpcCall<AttachResult>('file.attach', { data_url: dataUrl, name, session_id: sessionId })
 }
 
+/** A file opened beside the chat: text to edit, or its bytes to show. */
+export interface OpenedFile {
+  data_url?: string
+  mime: string
+  /** Milliseconds since the epoch, for display. */
+  modified: number
+  name: string
+  path: string
+  size: number
+  text?: string
+  /** The hash of its contents; a save passes it back to catch the bot's changes. */
+  version: string
+}
+
+/** Reads a file the bot can reach: its working folder, artifacts, or this chat's attachments. */
+export function filesRead(sessionId: string, path: string): Promise<OpenedFile> {
+  return rpcCall<OpenedFile>('hexbot.files.read', { path, session_id: sessionId })
+}
+
+/** Saves the user's edit; refused with 4209 when the file is no longer at `version`. */
+export function filesWrite(
+  sessionId: string,
+  path: string,
+  text: string,
+  version?: string
+): Promise<{ modified: number; path: string; size: number; version: string }> {
+  return rpcCall('hexbot.files.write', {
+    path,
+    session_id: sessionId,
+    text,
+    ...(version ? { version } : {})
+  })
+}
+
 /** `data:<mime>;base64,<payload>` for the whole file. */
 export function readFileAsDataUrl(file: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -972,7 +1088,15 @@ export async function attachFile(sessionId: string, file: File): Promise<AttachR
   }
 
   if (kind === 'pdf') {
-    return pdfAttach(sessionId, base64FromDataUrl(dataUrl))
+    try {
+      return await pdfAttach(sessionId, base64FromDataUrl(dataUrl))
+    } catch (error) {
+      // A daemon without a PDF renderer (5028) still takes the PDF as a file:
+      // the bot reads it with its tools, and it opens beside the chat.
+      if (!(error instanceof JsonRpcGatewayError && error.code === 5028)) {
+        throw error
+      }
+    }
   }
 
   return fileAttach(sessionId, dataUrl, file.name)
@@ -1299,8 +1423,11 @@ export function messagesFromHistory(
       continue
     }
 
+    // The files you sent are named under your words; each shows as it did live.
+    const attached = role === 'user' ? splitAttached(text) : { files: [], text }
+
     const message: Message = {
-      attachments: [],
+      attachments: attached.files.map(file => ({ id: file.path, ...file })),
       createdAt: 0,
       id: String(row.row_id ?? nextMessageId()),
       ...sent(row),
@@ -1313,7 +1440,7 @@ export function messagesFromHistory(
         }),
       role,
       streaming: false,
-      text,
+      text: attached.text,
       toolCalls: []
     }
 

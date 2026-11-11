@@ -10,6 +10,8 @@ import { expect, it, vi } from 'vitest'
 import { windowsDaemon, windowsReadinessScript } from './windows-readiness'
 import { runningDaemonPort, selectedDaemon, lockedDaemonPid, DaemonManager } from './manager'
 import { reconcileWindowsService } from '../service'
+import { restoreEnvironment } from '../test-environment'
+
 vi.mock('electron', () => ({ app: { on: () => undefined, isPackaged: true } }))
 const exec = promisify(execFile)
 
@@ -168,7 +170,7 @@ it.skipIf(process.platform !== 'win32' || !process.env.HEXBOT_NATIVE_TEST_BUNDLE
       if (!failed) throw cleanup
       console.error('Isolated readiness cleanup also failed:', String(cleanup).slice(0, 1024))
     } finally {
-      process.env = previous
+      restoreEnvironment(previous)
       await rm(root, { recursive: true, force: true })
     }
   }

@@ -14,6 +14,7 @@ export type {
   Plugin,
   PluginsList,
   SignInForm,
+  EmailDraftForm,
   SkillInfo,
   SkillRequirement,
   NetworkInfo,
@@ -48,6 +49,8 @@ export interface ConnectDaemon {
 export interface ChatTool {
   id: string
   name: string
+  /** What the step does, as the daemon names it: a `computer_use` action such as `click`. */
+  action?: string
   args: unknown
   detail: string
   status: 'running' | 'ok' | 'error'
@@ -65,7 +68,12 @@ export interface ChatMessage {
   streaming?: boolean
   createdAt?: number
   tools?: ChatTool[]
-  attachments?: { name: string; uri?: string }[]
+  attachments?: {
+    name: string
+    kind?: import('../../../web/src/lib/media').MediaKind
+    uri?: string | null
+    path?: string
+  }[]
   /** The key your message was sent with, which names it for Recall. */
   inputId?: string
 }
@@ -75,8 +83,9 @@ export interface PendingApproval {
   command: string
   reason?: string
   choices: string[]
-  /** The sign-in card a bot shows to save a password, or a plugin card. */
+  /** The sign-in card a bot shows to save a password, a plugin card, or a draft card. */
   form?:
+    | import('../../../web/src/lib/types').EmailDraftForm
     | import('../../../web/src/lib/types').PluginForm
     | import('../../../web/src/lib/types').SignInForm
 }
@@ -107,6 +116,11 @@ export interface ChatState extends TurnState {
   messages: ChatMessage[]
   /** Room turns in flight by live session id. A section keeps its own turn in the top-level fields. */
   turns: Record<string, RoomTurnState>
+  /**
+   * How many messages the chat had when the running turn started. Its reply
+   * goes there, ahead of a message you sent since, which cut it off.
+   */
+  turnAt?: number
 }
 export type Rpc = <T = Record<string, unknown>>(
   method: string,

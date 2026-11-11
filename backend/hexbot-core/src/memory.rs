@@ -17,6 +17,19 @@ use crate::{Error, Result, db};
 
 pub const USER_CAP: i64 = 2000;
 pub const DEFAULT_BOT_CAP: i64 = 2200;
+pub const DEFAULT_SOUL_CAP: i64 = 4000;
+/// The settings, and the keys under `memory:` in a bot's config.yaml, that
+/// cap its memory and its soul. A bot's own value wins over the setting.
+pub const MEMORY_LIMIT: &str = "memory_char_limit";
+pub const SOUL_LIMIT: &str = "soul_char_limit";
+/// What a person may set either limit to, in characters. Both texts sit in
+/// every prompt of the bot, so the top keeps a prompt affordable.
+pub const LIMIT_RANGE: std::ops::RangeInclusive<i64> = 500..=20_000;
+
+/// A limit a client or a bot may set: a whole number in LIMIT_RANGE.
+pub fn valid_limit(value: &Value) -> bool {
+    value.as_i64().is_some_and(|n| LIMIT_RANGE.contains(&n))
+}
 /// A bot's daily notes are one file per local day beside its memory,
 /// `memories/notes/YYYY-MM-DD.md`. The bot appends to today's file during
 /// conversations; nothing injects them into a prompt. The dream reads them
@@ -94,6 +107,19 @@ impl MemoryStore {
     pub fn check_bot_fits(&self, caller: &str, bot: &str, text: &str) -> Result<()> {
         self.require_bot(caller, bot)?;
         check_cap(text, self.bot_cap(bot)?, "proposed memory")
+    }
+
+    /// The bot's soul limit: its own, else the setting.
+    pub fn soul_cap(&self, bot: &str) -> Result<i64> {
+        check_identifier(bot)?;
+        self.cap(bot, SOUL_LIMIT)
+    }
+
+    /// The limit `config`, a bot's config.yaml about to be written, would
+    /// give. Lets a change check a soul against the limit it sets with it.
+    pub fn cap_in(&self, config: &Value, key: &str) -> Result<i64> {
+        let local = serde_yaml::to_value(&config["memory"][key]).ok();
+        self.resolve_cap(local.as_ref().filter(|v| !v.is_null()), key)
     }
 
     /// Apply an edit to the latest memory while excluding other bot writers.
@@ -317,7 +343,12 @@ impl MemoryStore {
     }
 
     fn bot_cap(&self, bot: &str) -> Result<i64> {
+        self.cap(bot, MEMORY_LIMIT)
+    }
+
+    fn cap(&self, bot: &str, key: &str) -> Result<i64> {
         let path = self.path(&bot_path(bot).join("config.yaml"))?;
+        let cached = format!("{bot}\0{key}");
         // Preserve the last valid cap while an existing config is malformed,
         // matching the Hermes loader. A missing file restores defaults.
         let mut caps = self
@@ -328,7 +359,7 @@ impl MemoryStore {
             Ok(text) => match serde_yaml::from_str::<serde_yaml::Value>(&text) {
                 Ok(value) if value.is_mapping() || value.is_null() => Some(value),
                 _ => {
-                    if let Some(cap) = caps.get(bot) {
+                    if let Some(cap) = caps.get(&cached) {
                         return Ok(*cap);
                     }
                     None
@@ -336,16 +367,24 @@ impl MemoryStore {
             },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(_) => {
-                if let Some(cap) = caps.get(bot) {
+                if let Some(cap) = caps.get(&cached) {
                     return Ok(*cap);
                 }
                 None
             }
         };
-        let mut value = config
+        let local = config
             .as_ref()
             .and_then(|c| c.get("memory"))
-            .and_then(|m| m.get("memory_char_limit"));
+            .and_then(|m| m.get(key));
+        let cap = self.resolve_cap(local, key)?;
+        caps.insert(cached, cap);
+        Ok(cap)
+    }
+
+    /// Managed config, then the bot's own value, then the setting.
+    fn resolve_cap(&self, local: Option<&serde_yaml::Value>, key: &str) -> Result<i64> {
+        let mut value = local;
         let managed = self
             .managed_dir
             .as_ref()
@@ -354,13 +393,21 @@ impl MemoryStore {
         // Managed values win at the leaf; a scalar memory section replaces it.
         if let Some(memory) = managed.as_ref().and_then(|config| config.get("memory"))
             && !memory.is_null()
-            && (!memory.is_mapping() || memory.get("memory_char_limit").is_some())
+            && (!memory.is_mapping() || memory.get(key).is_some())
         {
-            value = memory.get("memory_char_limit");
+            value = memory.get(key);
         }
-        let cap = value.and_then(config_integer).unwrap_or(DEFAULT_BOT_CAP);
-        caps.insert(bot.to_owned(), cap);
-        Ok(cap)
+        if let Some(cap) = value.and_then(config_integer) {
+            return Ok(cap);
+        }
+        let fallback = if key == SOUL_LIMIT {
+            DEFAULT_SOUL_CAP
+        } else {
+            DEFAULT_BOT_CAP
+        };
+        Ok(crate::settings::get(&self.home)?[key]
+            .as_i64()
+            .unwrap_or(fallback))
     }
 
     /// Reject existing symlinks beneath the configured home, including dangling links.

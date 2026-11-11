@@ -17,8 +17,14 @@ for (const event of ['push', 'pull_request']) test(`${event} runs Windows refusa
     'backend/hexbot-core/tests/windows_security.rs',
     'rust-toolchain.toml', 'rust-toolchain', '.cargo/config.toml', '.cargo/config',
     'backend/pi-runtime/credential-policy.json', 'backend/pi-runtime/package-lock.json',
-    'scripts/dev/prepare-windows-security.mjs', 'scripts/dev/windows-security-inputs.mjs',
     'scripts/dev/windows-security-standard-user.ps1', '.github/workflows/windows-security.yml',
   ]) assert(triggers(path), `${event} skips ${path}`);
   assert(!triggers('apps/site/src/pages/index.astro'), 'Unrelated site edits need no native refusal job');
+});
+
+test('the native refusal job builds and probes the checked-out production source', () => {
+  assert(workflow.includes('cargo test --locked --manifest-path backend/hexbot-core/Cargo.toml --test windows_security --no-run --message-format=json'));
+  assert(workflow.includes('npm ci --prefix backend/pi-runtime --ignore-scripts --no-audit --no-fund'));
+  assert(workflow.includes('-Runtime (Resolve-Path backend/pi-runtime).Path -Probe "$env:HEXBOT_WINDOWS_PROBE" -Hexbot "$env:HEXBOT_WINDOWS_DAEMON"'));
+  assert(!/worktree|prepare-windows-security|windows-security-inputs|HEXBOT_COMBINED_ROOT|platform guard/i.test(workflow), 'No disposable source copy');
 });

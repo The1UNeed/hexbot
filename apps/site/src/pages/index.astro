@@ -12,16 +12,12 @@ const github = 'https://github.com/The1UNeed/hexbot'
 const label = downloads?.channel === 'stable' ? '' : 'nightly'
 
 // The hero crowd: shapes and colours straight from the app's face builder.
-// Each face flies in, then moves and changes mood with the app's face engine;
+// Each face flies in, then drifts, blinks and looks at the pointer;
 // positions and timings are the hf-* classes in global.css, because the
 // site's CSP (style-src 'self') blocks style attributes.
 const crowd = [
-  ['squircle', '#f5a524', 'hf-1', ['idle', 'thinking', 'writing', 'happy']],
-  ['round', '#3b82f6', 'hf-2', ['searching', 'curious', 'idle']],
-  ['cloud', '#8b5cf6', 'hf-3', ['drowsy', 'sleeping', 'surprised', 'idle']],
-  ['hexagon', '#22a55b', 'hf-4', ['working', 'proud', 'celebrating', 'idle']],
-  ['drop', '#ec2f8a', 'hf-5', ['listening', 'shy', 'happy']],
-  ['triangle', '#14b8a6', 'hf-6', ['idle', 'loading', 'idle', 'happy']],
+  ['squircle', '#f5a524', 'hf-1'], ['round', '#3b82f6', 'hf-2'], ['cloud', '#8b5cf6', 'hf-3'],
+  ['hexagon', '#22a55b', 'hf-4'], ['drop', '#ec2f8a', 'hf-5'], ['triangle', '#f97316', 'hf-6'],
 ] as const
 
 // The faces section: every face goes through the moods it shows in the app.
@@ -52,7 +48,7 @@ const steps = [
 const features = [
   { name: 'heartbeat', title: 'A heartbeat every 30 minutes', text: 'Give a bot a checklist: a reply you are waiting on, a delivery, a price. Day and night it looks each one up in its memory, its connectors, and the web, and stays quiet unless something needs you. Then it writes one short message and your phone lights up.', href: '/docs/bots-and-sections/#heartbeat', wide: false },
   { name: 'visual', title: 'Charts in the chat', text: 'When a table or a chart says more than a paragraph, the bot draws one above its reply. Hover it, click it, and expand it into a tab beside the chat. It runs sandboxed and follows your light or dark theme.', href: '/docs/visuals/', wide: false },
-  { name: 'computer', title: 'A computer your bots share, and you can take over', text: 'Bots get their own Linux desktop with a browser and a terminal, apart from yours. Watch it live from any app or phone. Each bot moves a cursor with its own face, and they take turns. Choose Take control to drive, then Give back.', href: '/docs/tools-and-skills/#your-bots-computer', wide: true },
+  { name: 'computer', title: 'A computer your bots share, and so do you', text: 'Bots get their own Linux desktop with a browser and a terminal, apart from yours. Watch it live from any app or phone. Each bot moves a cursor with its own face, and they take turns. Click and type there alongside them, or pause them to drive alone.', href: '/docs/tools-and-skills/#your-bots-computer', wide: true },
   { name: 'plugins', title: 'Plugins, on for the bots you choose', text: 'Connectors, MCP servers, and skills all live on one Plugins page, a tab each. Set one up once and pick which bots get it. A bot that needs something new finds it and asks first, every time, even in Bypass.', href: '/docs/tools-and-skills/#plugins', wide: false },
   { name: 'recall', title: 'Take your last message back', text: 'Sent the wrong thing? Recall it while the bot is still working on it. The bot stops, forgets it, and hands the text back to edit. The rest of the chat stays as it was, so the next reply still uses the prompt cache.', href: '/docs/bots-and-sections/#recall-a-message', wide: false },
 ] as const
@@ -76,7 +72,7 @@ const software = {
   '@type': 'SoftwareApplication',
   name: 'Hexbot',
   applicationCategory: 'BusinessApplication',
-  operatingSystem: 'macOS, Linux, iOS',
+  operatingSystem: 'macOS, Linux, Windows, iOS',
   description: 'A self-hosted team of AI agents with names, faces, and memory of their own. Rooms for people and bots, your choice of model, running on your own machine.',
   url: 'https://hexbot.app/',
   downloadUrl: 'https://hexbot.app/download/',
@@ -89,15 +85,15 @@ const software = {
 <Base title="Hexbot: your team of AI agents works, remembers, and communicates" jsonLd={[software]}>
   <section class="hero relative mx-auto max-w-[1120px] px-5 pb-16 text-center sm:px-8">
     <div class="hero-crowd" aria-hidden="true">
-      {crowd.map(([shape, color, position, moods]) => (
-        <span class:list={['hero-face', position]}><span class="hero-face-in"><Face shape={shape} color={color} moods={[...moods]} /></span></span>
+      {crowd.map(([shape, color, position]) => (
+        <span class:list={['hero-face', position]}><span class="hero-face-in"><Face shape={shape} color={color} /></span></span>
       ))}
     </div>
     <a class="eyebrow rise relative" href="/faq/#alpha"><span class="nightly-dot" aria-hidden="true"></span>Alpha: very early development</a>
     <h1 class="display relative mx-auto mt-6 max-w-[15em] text-[clamp(2.4rem,6vw,3.9rem)]">
       <span class="rise">Your team of agents</span><br /><span class="rise rise-2">works, remembers,</span><br /><span class="rise rise-3">and communicates.</span>
     </h1>
-    <p class="lede rise rise-4 relative mx-auto mt-6">Hexbot bots have faces, names, and their own models. They use real tools, keep a memory of your work, and talk with you and each other in rooms. Hexbot is open source and runs on your own Mac or Linux machine.</p>
+    <p class="lede rise rise-4 relative mx-auto mt-6">Hexbot bots have faces, names, and their own models. They use real tools, keep a memory of your work, and talk with you and each other in rooms. Hexbot is open source and runs on your own Mac, Linux, or Windows machine.</p>
     <div class="rise rise-5 relative mt-8 flex flex-col items-center gap-4">
       <div class="flex flex-wrap justify-center gap-3">
         <a class="button button-lg" href="/download/"><span data-download-label={label}>Download{label && ' nightly'} for Mac</span></a>

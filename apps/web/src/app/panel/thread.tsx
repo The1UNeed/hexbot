@@ -2,6 +2,7 @@ import { ChevronsRight } from 'lucide-react'
 import { Fragment, useEffect, useRef, useState } from 'react'
 
 import { Avatar } from '../../components/ui/avatar'
+import { ScrollArea } from '../../components/ui/scroll-area'
 import { SkeletonLines } from '../../components/ui/skeleton'
 import { sectionsThread } from '../../lib/api'
 import { botFace } from '../../lib/avatar-builder'
@@ -101,7 +102,10 @@ function ThreadMessage({ bot, message, name }: { bot?: Bot; message: Message; na
                   key={index}
                 >
                   <div className="hex-prose">
-                    <Markdown text={text} />
+                    <Markdown
+                      streaming={message.streaming && index === bubbles.length - 1}
+                      text={text}
+                    />
                   </div>
                 </div>
               ))}
@@ -262,28 +266,37 @@ export function ThreadPanel({ thread }: { thread: ThreadRef }): React.JSX.Elemen
   )
 
   return (
-    <div className="flex h-full min-h-0 flex-col" data-testid="thread-panel">
-      <header className="hex-drag flex h-11 shrink-0 items-center gap-2 px-3">
-        <span className="flex shrink-0 items-center gap-1">
-          <Avatar {...botFace(sender)} look="right" name={senderName} size="sm" />
-          <Avatar {...botFace(receiver)} look="left" name={receiverName} size="sm" />
-        </span>
-        <h2 className="hex-no-drag min-w-0 flex-1 truncate text-[length:var(--text-secondary)] font-semibold">
-          {senderName} and {receiverName}
-        </h2>
-        <button
-          aria-label="Close the conversation"
-          className="hex-no-drag grid size-7 place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-foreground"
-          onClick={close}
-          type="button"
-        >
-          <ChevronsRight size={16} />
-        </button>
-      </header>
-      <p className="shrink-0 px-4 pb-2 text-[length:var(--text-meta)] text-muted">
-        Private to {senderName} and {receiverName}.
-      </p>
-      <div className="hex-fade min-h-0 flex-1 overflow-y-auto px-3 pb-4">
+    <div className="h-full" data-testid="thread-panel">
+      {/* The conversation scrolls under its floating header, as the chat does. */}
+      <ScrollArea
+        className="h-full"
+        gap={0}
+        top={
+          <header className="flex h-14 items-center gap-2 px-3">
+            <div className="hex-glass flex h-9 min-w-0 items-center gap-2 rounded-full pr-4 pl-1.5">
+              <span className="flex shrink-0 items-center gap-1">
+                <Avatar {...botFace(sender)} look="right" name={senderName} size="sm" />
+                <Avatar {...botFace(receiver)} look="left" name={receiverName} size="sm" />
+              </span>
+              <h2 className="min-w-0 truncate text-[length:var(--text-secondary)] font-semibold">
+                {senderName} and {receiverName}
+              </h2>
+            </div>
+            <button
+              aria-label="Close the conversation"
+              className="hex-glass hex-glass-press hex-focus ml-auto grid size-9 shrink-0 place-items-center rounded-full text-foreground/70 hover:text-foreground"
+              onClick={close}
+              type="button"
+            >
+              <ChevronsRight size={16} />
+            </button>
+          </header>
+        }
+        viewportClassName="hex-fade px-3 pb-4"
+      >
+        <p className="px-1 pt-1 pb-2 text-[length:var(--text-meta)] text-muted">
+          Private to {senderName} and {receiverName}.
+        </p>
         {loaded.kind === 'loading' ? (
           <SkeletonLines className="pt-2" label="Loading conversation" />
         ) : loaded.kind === 'error' ? (
@@ -312,7 +325,7 @@ export function ThreadPanel({ thread }: { thread: ThreadRef }): React.JSX.Elemen
             <div ref={bottom} />
           </>
         )}
-      </div>
+      </ScrollArea>
     </div>
   )
 }

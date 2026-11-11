@@ -1619,6 +1619,7 @@ impl Dreaming {
                 }
             }
         }
+        crate::computers::watch(&self.home);
         // A heartbeat problem must not hold up scheduled jobs.
         if let Err(error) = self.tick_heartbeats(now) {
             self.events
@@ -1859,14 +1860,33 @@ impl Dreaming {
                 .join("scripts")
                 .join(supplied)
         };
-        let path = fs::canonicalize(path)?;
+        // On Windows the script path is judged by its text and drive first,
+        // after joining a relative name, so a network share, device, stream
+        // or reserved name is never opened.
+        #[cfg(windows)]
+        {
+            let plain = path
+                .to_str()
+                .ok_or(crate::windows_paths::sandbox::RELATIVE)
+                .and_then(crate::windows_paths::sandbox::local)
+                .map_err(|reason| Error::new(4302, format!("{reason}: {script}")))?;
+            crate::windows_sandbox::fixed_drive(&plain)?;
+            // Resolving the script below follows links on the way to it.
+            if !crate::credentials::local_link(&path) {
+                return Err(Error::new(
+                    4302,
+                    format!("{}: {script}", crate::windows_paths::sandbox::LINKED),
+                ));
+            }
+        }
+        let path = crate::credentials::canonical(&path)?;
         let workspace = match workdir {
             Some(dir) => common::resolve_workdir(&self.home, dir)?,
             None => crate::native_tools::workdir(&self.home, bot)?,
         };
         let scripts = self.home.join("profiles").join(bot).join("scripts");
         if !path.starts_with(&workspace)
-            && !fs::canonicalize(&scripts).is_ok_and(|root| path.starts_with(root))
+            && !crate::credentials::canonical(&scripts).is_ok_and(|root| path.starts_with(root))
         {
             return Err(Error::new(
                 4302,
@@ -1876,11 +1896,35 @@ impl Dreaming {
         let cwd = workdir
             .map(PathBuf::from)
             .unwrap_or_else(|| workspace.clone());
-        let program = match path.extension().and_then(|s| s.to_str()) {
+        // Windows runs shell scripts, .bash ones too, in the runtime's BusyBox
+        // `sh` (the sandbox finds it), Python with the managed Python, and
+        // programs as themselves. Any other file has no interpreter there.
+        let extension = path.extension().and_then(|s| s.to_str()).map(|s| {
+            if cfg!(windows) {
+                s.to_ascii_lowercase()
+            } else {
+                s.to_owned()
+            }
+        });
+        let program = match extension.as_deref() {
             Some("sh" | "bash") => "bash".to_owned(),
-            Some("py") => common::managed_python(&self.home)
-                .to_string_lossy()
-                .into_owned(),
+            Some("py") => {
+                let python = common::managed_python(&self.home);
+                if cfg!(windows) && !python.is_absolute() {
+                    return Err(Error::new(
+                        4302,
+                        "Scheduled Python scripts on Windows need Hexbot's managed Python, which is not installed.",
+                    ));
+                }
+                python.to_string_lossy().into_owned()
+            }
+            Some("exe") if cfg!(windows) => path.to_string_lossy().into_owned(),
+            _ if cfg!(windows) => {
+                return Err(Error::new(
+                    4302,
+                    "Scheduled scripts on Windows must be .sh, .bash, .py or .exe files.",
+                ));
+            }
             _ => path.to_string_lossy().into_owned(),
         };
         let artifacts = self.home.join("profiles").join(bot).join("artifacts");
@@ -1909,16 +1953,20 @@ impl Dreaming {
         } else {
             crate::credentials::Confine::Workspace
         };
-        let mut command = crate::credentials::isolated_command(
+        // A script in the scripts folder is read from there.
+        let readable: Vec<PathBuf> = crate::credentials::canonical(&scripts)
+            .ok()
+            .filter(|root| path.starts_with(root))
+            .into_iter()
+            .collect();
+        let mut command = crate::credentials::script_command(
             &self.home,
             &program,
             &[workspace, artifacts],
             confine,
+            &readable,
         )?;
-        if matches!(
-            path.extension().and_then(|s| s.to_str()),
-            Some("sh" | "bash" | "py")
-        ) {
+        if matches!(extension.as_deref(), Some("sh" | "bash" | "py")) {
             command.arg(&path);
         }
         command.kill_on_drop(true).current_dir(cwd);
@@ -1926,6 +1974,9 @@ impl Dreaming {
         command
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
+        // Unix ends the script's process group on a timeout. Windows needs
+        // none: killing the sandbox helper closes its job, which ends the
+        // script's whole tree.
         #[cfg(unix)]
         command.process_group(0);
         let mut process = ScriptProcess(command.spawn()?);
@@ -2067,9 +2118,11 @@ impl Dreaming {
         if let Some(extra) = extra {
             prompt.push_str(&format!("\n\nFor this run only:\n{extra}"));
         }
-        prompt.push_str(
-            "\n\nThis is an autonomous scheduled job. Finish with the result; do not ask the user questions. Output is saved locally. You and your delegates cannot message other bots.",
-        );
+        prompt.push_str(if job["notify"] == true {
+            "\n\nThis is an autonomous scheduled job. Finish with the result; do not ask the user questions. Your final answer is posted in your chat with the user and notifies them, so write it for them: short, standing on its own. You and your delegates cannot message other bots."
+        } else {
+            "\n\nThis is an autonomous scheduled job. Finish with the result; do not ask the user questions. Output is saved locally. You and your delegates cannot message other bots."
+        });
         // The memory tool reads here, every write becomes a proposal, and the
         // soul tool refuses writes (runtime.rs).
         let mut options = json!({"job": job["id"]});
@@ -2196,6 +2249,14 @@ impl Dreaming {
                 self.events
                     .emit(owner, None, "error", json!({"message":error.message}));
             }
+            // The newest setting: a user who asked for quiet mid-run gets it.
+            if latest["notify"] == true
+                && let Some(message) = job_report(&latest)
+                && let Err(error) =
+                    heartbeat::notice(&self.home, &self.events, owner, bot, &message)
+            {
+                eprintln!("Scheduled job {id} report: {}", error.message);
+            }
             self.running.lock().unwrap().remove(&format!("job:{id}"));
             self.events.emit(
                 owner,
@@ -2241,8 +2302,13 @@ impl Dreaming {
                 copy_job_options(&mut job, p)?;
                 validate_job(&self.home, &job)?;
                 self.save_job(owner, bot, &job)?;
+                let delivery = if job["notify"] == true {
+                    "Tell the user what you scheduled and when it first runs. Each run's result is posted in your chat with them and notifies their devices."
+                } else {
+                    "Output is saved locally; it is not delivered into this conversation. Unless they asked for no notifications, tell the user what you scheduled and when it first runs."
+                };
                 Ok(
-                    json!({"success":true,"job":job,"note":"Output is saved locally; it is not delivered into this conversation. The job can read memory, notes and the soul but not write them: memory changes and notes it asks for wait as proposals for your next dream, and soul changes need the user."}),
+                    json!({"success":true,"job":job,"note":format!("{delivery} The job can read memory, notes and the soul but not write them: memory changes and notes it asks for wait as proposals for your next dream, and soul changes need the user.")}),
                 )
             }
             action @ ("update" | "pause" | "resume" | "remove" | "run") => {
@@ -2302,12 +2368,46 @@ impl Dreaming {
         }
     }
 }
+/// Longest job result posted in the bot's chat; the whole output stays in the
+/// job's output file.
+const REPORT_CAP: usize = 4_000;
+
+/// What a finished run with notify on posts in the bot's chat: its result, or
+/// why it failed. A monitor run that found nothing new posts nothing.
+fn job_report(job: &Value) -> Option<String> {
+    let name = job["name"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("Scheduled job");
+    let text = match job["last_status"].as_str()? {
+        "success" => {
+            let output = job["last_output"].as_str().unwrap_or("").trim();
+            if output.is_empty() {
+                format!("**{name}** finished.")
+            } else {
+                format!("**{name}** finished.\n\n{output}")
+            }
+        }
+        "error" => format!(
+            "**{name}** did not finish: {}",
+            job["last_error"].as_str().unwrap_or("unknown error")
+        ),
+        _ => return None,
+    };
+    if text.chars().count() <= REPORT_CAP {
+        return Some(text);
+    }
+    let mut cut = text.chars().take(REPORT_CAP - 1).collect::<String>();
+    cut.push('…');
+    Some(cut)
+}
 fn copy_job_options(job: &mut Value, p: &Value) -> Result<()> {
     if let Some(skill) = p["skill"].as_str() {
         job["skills"] = json!([skill]);
     }
     for key in [
         "deliver",
+        "notify",
         "skills",
         "script",
         "no_agent",
@@ -2372,7 +2472,7 @@ fn validate_job(home: &Path, job: &Value) -> Result<()> {
             return Err(Error::new(4202, format!("{key} must be a list of strings")));
         }
     }
-    for key in ["no_agent", "continuity", "attach_to_session"] {
+    for key in ["no_agent", "continuity", "attach_to_session", "notify"] {
         if let Some(v) = job.get(key).filter(|v| !v.is_null())
             && !v.is_boolean()
         {
@@ -2398,13 +2498,14 @@ fn validate_job(home: &Path, job: &Value) -> Result<()> {
         ));
     }
     if let Some(cwd) = job["workdir"].as_str().filter(|s| !s.is_empty()) {
+        // First, so Windows judges the path by its text before is_dir opens it.
+        common::check_workdir(home, cwd)?;
         if !Path::new(cwd).is_absolute() || !Path::new(cwd).is_dir() {
             return Err(Error::new(
                 4202,
                 "scheduled workdir must be an existing absolute directory",
             ));
         }
-        common::check_workdir(home, cwd)?;
     }
     if let Some(level) = job["reasoning_effort"].as_str().filter(|s| !s.is_empty())
         && !crate::pi::THINKING_LEVELS.contains(&level)
@@ -2424,7 +2525,7 @@ pub fn tool_descriptor() -> Value {
     json!({
         "name": "cronjob_manage",
         "label": "Scheduled jobs",
-        "description": "Create and manage local scheduled jobs. Actions: create, list, update, pause, resume, remove, run. Jobs run in a fresh session. Output is saved locally. A job can read memory, notes and the soul but not write them: memory changes and notes it asks for are saved as proposals that your next dream reviews, and soul changes need the user.",
+        "description": "Create and manage local scheduled jobs. Actions: create, list, update, pause, resume, remove, run. Jobs run in a fresh session. When you create one, tell the user what you scheduled and when it first runs. With notify on, the default, each run's result is posted in your chat and notifies the user; set notify to false when the user asks for no notifications, and say nothing about the job unless they ask. A job can read memory, notes and the soul but not write them: memory changes and notes it asks for are saved as proposals that your next dream reviews, and soul changes need the user.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -2435,6 +2536,7 @@ pub fn tool_descriptor() -> Value {
                 "name": { "type": "string" },
                 "repeat": { "type": "integer" },
                 "deliver": { "type": "string" },
+                "notify": { "type": "boolean", "description": "Post each run's result in this chat and notify the user. Defaults to true when you create a job." },
                 "include_disabled": { "type": "boolean" },
                 "skills": { "type": "array", "items": { "type": "string" } },
                 "script": { "type": "string" },
@@ -2485,6 +2587,24 @@ impl Drop for ScriptProcess {
 #[cfg(all(test, unix))]
 mod interpreter_tests {
     use super::*;
+    #[test]
+    fn job_reports_say_what_finished_or_failed_and_skip_quiet_monitors() {
+        let report = |job: Value| job_report(&job);
+        assert_eq!(
+            report(json!({"name":"Prices","last_status":"success","last_output":" Down 5% \n"})),
+            Some("**Prices** finished.\n\nDown 5%".into())
+        );
+        assert_eq!(
+            report(json!({"name":"","last_status":"error","last_error":"timed out"})),
+            Some("**Scheduled job** did not finish: timed out".into())
+        );
+        assert_eq!(report(json!({"name":"Feed","last_status":"skipped"})), None);
+        let long =
+            report(json!({"name":"Log","last_status":"success","last_output":"é".repeat(9_000)}))
+                .unwrap();
+        assert_eq!(long.chars().count(), REPORT_CAP);
+        assert!(long.ends_with('…'));
+    }
     #[test]
     fn completed_dream_prunes_reviewed_proposals_without_new_proposals() {
         let home = common::TestHome::new();

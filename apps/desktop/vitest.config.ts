@@ -2,6 +2,7 @@ import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
   define: {
+    __HEXBOT_APP_ID__: '"app.hexbot.desktop"',
     __HEXBOT_CRASH_URL__: '""',
     __HEXBOT_EDITION__: '"full"',
     __HEXBOT_CHANNEL__: '"stable"',
