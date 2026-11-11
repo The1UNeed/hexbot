@@ -1083,7 +1083,7 @@ fn save_new(session: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf> {
             format!("{stem} ({n}){extension}")
         };
         let path = folder.join(candidate);
-        if files::FileAccess::open(&path, true)?.create_new(bytes)? {
+        if create_new(&path, bytes)? {
             return Ok(path);
         }
     }
@@ -1091,4 +1091,14 @@ fn save_new(session: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf> {
         4202,
         "This chat already holds too many files with that name.",
     ))
+}
+
+#[cfg(unix)]
+fn create_new(path: &Path, bytes: &[u8]) -> Result<bool> {
+    files::FileAccess::open(path, true)?.create_new(bytes)
+}
+
+#[cfg(not(unix))]
+fn create_new(_: &Path, _: &[u8]) -> Result<bool> {
+    Err(Error::new(4302, "Unix file handles are unavailable"))
 }
