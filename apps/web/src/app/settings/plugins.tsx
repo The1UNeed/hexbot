@@ -11,7 +11,13 @@ import { Textarea } from '../../components/ui/textarea'
 import type { PluginInstallInput } from '../../lib/api'
 import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
-import { canGive, CONNECTOR_SHELVES, isConnected, shelfOf } from '../../lib/plugin-rows'
+import {
+  canGive,
+  CONNECTOR_SHELVES,
+  isConnected,
+  namedPlugin,
+  shelfOf
+} from '../../lib/plugin-rows'
 import type { Bot, Plugin } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
@@ -130,13 +136,7 @@ export function PluginsSettings(): React.JSX.Element {
       return
     }
 
-    const needle = sought.name.trim().toLowerCase()
-
-    const found = plugins.find(
-      item =>
-        (sought.kind === 'skill') === (categoryOf(item) === 'skills') &&
-        (item.name.toLowerCase() === needle || item.id.toLowerCase() === needle)
-    )
+    const found = namedPlugin(plugins, sought.kind, sought.name)
 
     setCategory(found ? categoryOf(found) : sought.kind === 'skill' ? 'skills' : 'connectors')
     setQuery(found?.name ?? sought.name)

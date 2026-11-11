@@ -82,13 +82,14 @@ import { chatPreview, pulseTarget, purposeOf, stoppedIn } from './src/core/route
 import { previewLine } from '../web/src/lib/preview'
 import { mediaKind, mediaOf, mimeOf } from '../web/src/lib/media'
 import { asksOf, askWords } from '../web/src/lib/asks'
+import { namedPlugin, pluginRows } from '../web/src/lib/plugin-rows'
 import { mediaUri, type ReadMedia } from './src/core/media'
 import type { OpenedFile } from './src/core/files'
 import { mixHex } from '../web/src/app/conversation/visual'
 import { CONNECT_ORIGIN, parseConnectCallback } from './src/core/links'
 import { clearConnectSession, loadConnectSession, saveConnectSession } from './src/core/storage'
 import { connectGrant, request, RevokedError } from './src/core/transport'
-import type { Bot, ConnectDaemon, Room, Section } from './src/core/types'
+import type { Bot, ConnectDaemon, PluginsList, Room, Section } from './src/core/types'
 WebBrowser.maybeCompleteAuthSession()
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const ms = (seconds: number | null | undefined) => (seconds == null ? undefined : seconds * 1000)
@@ -1128,7 +1129,23 @@ function MobileApp({ children }: { children?: ReactNode }) {
           }
           case 'plugin':
           case 'skill':
-            return open('plugins')
+            return {
+              onPress: () =>
+                act(async () => {
+                  // Its own card over the list; the list alone when it is not there.
+                  const found = namedPlugin(
+                    pluginRows(await mobileRef.current.rpc<PluginsList>('hexbot.plugins.list')),
+                    tag.kind,
+                    tag.name
+                  )
+                  setPanels([
+                    { kind: 'plugins' },
+                    ...(found
+                      ? [{ kind: 'plugin' as const, data: found as unknown as Record<string, unknown> }]
+                      : [])
+                  ])
+                })
+            }
         }
       },
     [act, mobile.bots, mobile.rooms, openThread, route, theme.text]
