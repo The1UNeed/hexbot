@@ -161,6 +161,19 @@ fn replace_leaves_breaks_links_and_other_runs_in_place() {
         changed,
         r#"<w:p><w:r><w:t>12</w:t><w:tab/><w:t>34</w:t><w:br/><w:t>9</w:t></w:r></w:p>"#
     );
+    // A match may start inside words a tab kept from matching.
+    let (changed, count) = ooxml::replace_in(
+        r#"<w:p><w:r><w:t>a</w:t><w:tab/><w:t>aa</w:t></w:r></w:p>"#,
+        "w:p",
+        "w:t",
+        "aa",
+        "X",
+    );
+    assert_eq!(count, 1);
+    assert_eq!(
+        changed,
+        r#"<w:p><w:r><w:t>a</w:t><w:tab/><w:t>X</w:t></w:r></w:p>"#
+    );
 }
 
 #[test]

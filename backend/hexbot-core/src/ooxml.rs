@@ -369,15 +369,18 @@ pub(crate) fn replace_in(
                 gaps.push(joined.len());
             }
         }
-        let hits: Vec<usize> = if nested || end == i {
-            vec![]
-        } else {
-            joined
-                .match_indices(find)
-                .map(|(at, _)| at)
-                .filter(|at| !gaps.iter().any(|gap| gap > at && *gap < at + find.len()))
-                .collect()
-        };
+        let mut hits: Vec<usize> = vec![];
+        // Nothing is looked for in a paragraph that holds another.
+        let mut from = if nested || end == i { joined.len() } else { 0 };
+        while let Some(at) = joined[from..].find(find).map(|at| from + at) {
+            if gaps.iter().any(|gap| *gap > at && *gap < at + find.len()) {
+                // Not a match, and one may still start inside it.
+                from = at + joined[at..].chars().next().map_or(1, char::len_utf8);
+            } else {
+                hits.push(at);
+                from = at + find.len();
+            }
+        }
         if hits.is_empty() {
             out.push_str(toks[i].raw());
             i += 1;
