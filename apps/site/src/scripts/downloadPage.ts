@@ -11,10 +11,10 @@ const primary = document.querySelector<HTMLAnchorElement>('#dl-primary')
 const label = document.querySelector<HTMLElement>('#dl-primary-label')
 const iphone = document.querySelector<HTMLElement>('#dl-iphone')
 
-async function architecture(): Promise<string | undefined> {
+async function architecture(): Promise<{ architecture?: string; bitness?: string } | undefined> {
   try {
-    const data = (navigator as Navigator & { userAgentData?: { getHighEntropyValues(hints: string[]): Promise<{ architecture?: string }> } }).userAgentData
-    return (await data?.getHighEntropyValues(['architecture']))?.architecture
+    const data = (navigator as Navigator & { userAgentData?: { getHighEntropyValues(hints: string[]): Promise<{ architecture?: string; bitness?: string }> } }).userAgentData
+    return await data?.getHighEntropyValues(['architecture', 'bitness'])
   } catch {
     return undefined
   }
@@ -33,27 +33,27 @@ function renderer(): string | undefined {
 function show(target: Target) {
   if (!title || !sub || !primary || !label) return
   if (target === 'ios') {
-    title.textContent = 'Hexbot for iPhone is in beta.'
-    sub.textContent = 'Join the beta on TestFlight, then pair the app with Hexbot on your Mac, Linux computer, or server.'
+    title.textContent = 'Hexbot for iPhone is on TestFlight.'
+    sub.textContent = 'Anyone can install it through TestFlight. Then pair it with Hexbot on your Mac, Linux or Windows computer, or server.'
     primary.href = testflightUrl
     primary.removeAttribute('download')
-    label.textContent = 'Join the TestFlight beta'
+    label.textContent = 'Get it on TestFlight'
     if (iphone) iphone.hidden = true
     return
   }
   const builds: DownloadChoice[] = JSON.parse(primary.dataset.builds ?? '[]')
   const build = builds.find(build => build.key === target)
   if (target === 'other' || !build) {
-    title.textContent = 'Hexbot runs on Mac and Linux.'
+    title.textContent = 'Choose a download for your computer.'
     sub.textContent = document.querySelector('#dl-terminal')
-      ? 'Install it on a Mac or a Linux computer, or on a server with the terminal command below. Then reach your bots from this device with a pairing link.'
-      : 'Download it on a Mac or a Linux computer. Then reach your bots from this device with a pairing link.'
+      ? 'Choose a package below. Windows downloads are for x64 computers. The shell command is for macOS and Linux.'
+      : 'Choose a package below. Windows downloads are for x64 computers.'
     primary.hidden = true
     return
   }
   const name = build.name
   const kind = build.kind
-  const os = target === 'linux' ? 'linux' : 'mac'
+  const os = target === 'linux' ? 'linux' : target === 'win-x64' ? 'win' : 'mac'
   primary.href = build.url
   for (const element of document.querySelectorAll<HTMLElement>('[data-os], [data-for]'))
     element.hidden = (!!element.dataset.os && element.dataset.os !== os) || (!!element.dataset.for && element.dataset.for !== kind)
@@ -89,4 +89,4 @@ for (const button of document.querySelectorAll<HTMLButtonElement>('button[data-c
   })
 }
 
-if (primary) architecture().then(arch => show(detectTarget({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints, architecture: arch, renderer: renderer() })))
+if (primary) architecture().then(arch => show(detectTarget({ userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints, ...arch, renderer: renderer() })))

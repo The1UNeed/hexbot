@@ -1,7 +1,7 @@
 ---
 layout: ../../layouts/Docs.astro
 title: Mobile app
-description: Build the Hexbot Expo app for iPhone and Android and connect to your daemons.
+description: Get Hexbot for iPhone on TestFlight, build it for Android, and connect to your daemons.
 ---
 
 The Expo app in `apps/mobile` runs on iOS and Android. Its controls cover bots,
@@ -9,12 +9,14 @@ their chats, rooms, approvals, models, memory, scheduled jobs and paired
 devices.
 Bots run on your daemon's computer while your phone is asleep.
 
-## Get the iPhone beta
+## Get Hexbot for iPhone
 
-Hexbot for iPhone is in beta on TestFlight. On your iPhone or iPad, open
-[the TestFlight invite](https://testflight.apple.com/join/byKAKWMW), install
-TestFlight if asked, then install Hexbot and pair it with your daemon as
-described in [Connect locally](#connect-locally).
+Hexbot for iPhone is open to everyone on TestFlight, Apple's app for beta
+apps; you need no invite. On your iPhone or iPad, open
+[the public TestFlight link](https://testflight.apple.com/join/byKAKWMW),
+install TestFlight if asked, then install Hexbot and pair it with your daemon
+as described in [Connect locally](#connect-locally). Every nightly reaches
+TestFlight once Apple has reviewed it, and TestFlight installs it for you.
 
 iOS 26 uses native Liquid Glass for floating controls. Older iOS uses system
 blur. Android and Reduce Transparency use solid controls. The app follows
@@ -29,7 +31,8 @@ works in portrait and landscape.
 
 ## Build from source
 
-There is no App Store or Play Store release yet. From the repository root:
+There is no App Store or Play Store release yet, so Android is built from
+source. From the repository root:
 
 ```sh
 pnpm install --frozen-lockfile
@@ -43,22 +46,22 @@ provides development, internal preview and production build profiles.
 
 ## TestFlight builds
 
-The iOS beta is distributed through TestFlight. Maintainers use Expo EAS
-Workflows to check the app, create a production build and upload it. Apple
-processes the binary afterward. The GitHub Release action starts Expo for
-nightly releases after checks pass, using the exact release commit. Stable
-releases currently skip iOS. Ordinary pushes to `main` do not release iOS.
-The Expo project must be linked to the repository with `apps/mobile` as its
-base directory, and GitHub needs the `EXPO_TOKEN` repository secret.
-Enable automatic
-distribution on an internal TestFlight group to deliver new builds to its
-testers.
+The iOS app is distributed through TestFlight. Maintainers use Expo EAS
+Workflows to check the app, create a production build and upload it. The
+upload then goes to the internal group, through automatic distribution, and to
+the external group `Website0`, which holds the public link, after Apple's Beta
+App Review. The GitHub Release action starts Expo for nightly releases after
+checks pass, using the exact release commit. Stable releases currently skip
+iOS. Ordinary pushes to `main` do not release iOS. The Expo project must be
+linked to the repository with `apps/mobile` as its base directory, and GitHub
+needs the `EXPO_TOKEN` repository secret.
 
 From the repository root, `pnpm mobile:testflight` starts the same workflow
 and waits for its result. If uploading fails after a successful build,
 `pnpm mobile:testflight:upload --input build_id=YOUR_EAS_BUILD_ID` retries
 the upload without rebuilding. Both workflows show their stages and logs in
-Expo. Apple review remains separate. Maintainer setup is in
+Expo. Apple decides when a reviewed build reaches public testers. Maintainer
+setup is in
 `apps/mobile/README.md` and `docs/release.md`.
 
 ## Connect locally

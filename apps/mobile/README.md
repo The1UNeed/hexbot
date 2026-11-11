@@ -170,12 +170,16 @@ when its resolved channel is nightly and release checks pass. This includes
 manual nightlies and scheduled nightlies with new commits. Stable releases
 skip iOS. Ordinary pushes to `main` do not start a mobile release.
 The workflow builds the exact release commit. It checks the mobile
-app, builds iOS, then uploads that exact build through the standard EAS
-Submit job. This works on the free Expo plan; the advanced `testflight` job
-for uploading EAS builds requires a paid plan. A failed upload fails the
-workflow; a successful build alone does not count as a successful upload.
-Each stage and its logs appear in the project's Workflows page. Workflow
-success means Apple accepted the upload. Apple processes the binary afterward.
+app, builds iOS, then uploads that exact build with EAS's `testflight` job.
+That job waits for Apple to process the build, adds it to the external group
+`Website0`, the group behind the public link
+(https://testflight.apple.com/join/byKAKWMW) on hexbot.app, and submits it
+for Beta App Review. The internal group `Team (Expo)` gets every build through
+automatic distribution. A failed upload, group or review step fails the
+workflow; a successful build alone does not count. Each stage and its logs
+appear in the project's Workflows page. Public testers get a build once Apple
+approves it, usually within a day; later builds of an approved version often
+skip review.
 
 One-time setup in the [Expo GitHub settings](https://expo.dev/accounts/the1uneed/projects/hexbot-mobile/github):
 
@@ -187,10 +191,13 @@ One-time setup in the [Expo GitHub settings](https://expo.dev/accounts/the1uneed
    the Release action can start and monitor the workflow. Nightly preflight
    fails clearly when this secret is missing; stable does not require it.
 3. In App Store Connect, enable automatic distribution on the internal
-   TestFlight group that should receive new builds and add the testers once.
-   The workflow does not automatically submit external Beta App Reviews.
+   TestFlight group `Team (Expo)` and add the testers once. Keep the external
+   group `Website0` with its public link, and fill in TestFlight's Test
+   Information (beta description, feedback email, review contact), which
+   Beta App Review needs. Renaming `Website0` means changing
+   `external_groups` in both workflow files.
 
-Subscribe to EAS Build and EAS Submit result emails in the Expo project's
+Subscribe to EAS Build, EAS Submit and workflow result emails in the Expo project's
 Notifications settings to receive success and failure notices.
 
 The stored Apple credentials must be valid and the assigned API key must
