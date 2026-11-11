@@ -347,13 +347,40 @@ pub(super) fn workbook_text(file: &Archive) -> Result<String> {
 
 /// Puts the rows of one read into `out`, cut to what a model is handed,
 /// with the range they are and, when rows were left, the range to read
-/// next. `rest` is what the read itself left of the range asked for.
+/// next. `rest` is what the read itself left of the range asked for. A
+/// first row that is itself too long is refused, with the part of it to
+/// read first: rows can't cut it, and nothing is dropped unsaid.
 pub(super) fn put_rows(
     out: &mut Value,
     mut rows: Vec<Value>,
     shown: excel::Range,
     rest: Option<excel::Range>,
-) {
+) -> Result<()> {
+    let cells = rows.first().and_then(Value::as_array);
+    if let Some(cells) = cells.filter(|cells| cells.len() > 1) {
+        let mut size = 0;
+        let fit = cells
+            .iter()
+            .take_while(|cell| {
+                size += cell.to_string().len();
+                size <= TEXT_CAP
+            })
+            .count();
+        if fit < cells.len() {
+            let part = excel::Range {
+                from: shown.from,
+                to: (shown.from.0, shown.from.1 + fit.max(1) as u32 - 1),
+            };
+            return Err(Error::new(
+                4202,
+                format!(
+                    "Row {} holds too much text to read whole. Read it in parts, starting with {}.",
+                    shown.from.0,
+                    part.name()
+                ),
+            ));
+        }
+    }
     let mut size = 0;
     let keep = rows
         .iter()
@@ -361,7 +388,7 @@ pub(super) fn put_rows(
             size += row.to_string().len();
             size > TEXT_CAP
         })
-        // The row that goes over still shows when it is the only one.
+        // A cell on its own always shows: no cell holds much more.
         .map_or(rows.len(), |at| at.max(1));
     let (shown, rest) = if keep < rows.len() {
         let last = shown.from.0 + keep as u32 - 1;
@@ -384,6 +411,7 @@ pub(super) fn put_rows(
     if let Some(rest) = rest {
         out["next_range"] = json!(rest.name());
     }
+    Ok(())
 }
 
 fn deck_text(slides: &[powerpoint::Slide]) -> String {
@@ -819,7 +847,7 @@ impl Runtime {
                     )
                     .await?;
                     let rows = out["rows"].take().as_array().cloned().unwrap_or_default();
-                    put_rows(&mut out, rows, shown, rest);
+                    put_rows(&mut out, rows, shown, rest)?;
                     out["id"] = json!(id);
                     return Ok(out);
                 }
@@ -843,9 +871,9 @@ impl Runtime {
                 out["sheet"] = json!(sheet.name);
                 match asked.window(grid.rows, grid.columns, READ_CELLS) {
                     Some((shown, rest)) => {
-                        put_rows(&mut out, grid.rows(shown, formulas), shown, rest)
+                        put_rows(&mut out, grid.rows(shown, formulas), shown, rest)?
                     }
-                    None => put_rows(&mut out, vec![], asked, None),
+                    None => put_rows(&mut out, vec![], asked, None)?,
                 }
                 Ok(out)
             }

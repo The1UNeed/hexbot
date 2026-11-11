@@ -1326,7 +1326,8 @@ or a clear.
     number, text, a boolean, text starting with `=` for a formula, empty
     text to clear it, or null to leave it. Text stays text; in Google
     Sheets a date like `2026-11-12` becomes a date. One read holds at most
-    20,000 cells and 60,000 characters, and `next_range` names the rest.
+    20,000 cells and 60,000 characters, and `next_range` names the rest. A
+    row longer than that is refused, with the part of it to read first.
   - `hexbot_presentations` (Google Slides, PowerPoint): `search`, `read
     {id}`; `create {title, slides}`, `add {id, slides}`, `replace {id, find,
     replace_with}`. A slide is `{title, body}`, the body one line per line.

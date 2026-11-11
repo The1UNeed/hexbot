@@ -343,14 +343,23 @@ fn a_far_cell_or_a_large_range_reads_in_parts() {
         rows,
         asked,
         Some(excel::range("A4:A9").unwrap().1),
-    );
+    )
+    .unwrap();
     assert_eq!(out["rows"].as_array().unwrap().len(), 1);
     assert_eq!(out["range"], "A1:A1");
     assert_eq!(out["next_range"], "A2:A9");
     // What fits says nothing of a next range.
     let mut out = json!({});
-    workspace_tool::put_rows(&mut out, vec![json!([1, 2])], asked, None);
+    workspace_tool::put_rows(&mut out, vec![json!([1, 2])], asked, None).unwrap();
     assert_eq!(out, json!({"range": "A1:A3", "rows": [[1, 2]]}));
+    // A first row too long to show is refused, with the part that fits.
+    let long = vec![json!(vec!["x".repeat(25_000); 5]), json!([1])];
+    let asked = excel::range("B7:F8").unwrap().1;
+    let error = workspace_tool::put_rows(&mut json!({}), long, asked, None).unwrap_err();
+    assert_eq!(
+        error.message,
+        "Row 7 holds too much text to read whole. Read it in parts, starting with B7:C7."
+    );
 }
 
 /// These tools reach the user's own things, so a room, a thread between
