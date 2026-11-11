@@ -184,7 +184,7 @@ try {
     env.HEXBOT_INSTALL_APPS_DIR = join(changedUser, 'apps')
     const fullInstall = Buffer.from(JSON.stringify({ schema: 1, channel: 'stable', version: originalManifest.version, minInstaller: '0.1.5-0',
       targets: { 'windows-x86_64': { full: { url: `${base}/cross-track-full.exe`, path: 'cross-track-full.exe', size: fullNsis.length,
-        sha256: createHash('sha256').update(fullNsis).digest('hex'), format: 'exe', appId: appId('stable'), productName: productName('stable', originalManifest.version) } } } }))
+        sha512: createHash('sha512').update(fullNsis).digest('base64'), format: 'exe', appId: appId('stable'), productName: productName('stable', originalManifest.version) } } } }))
     publishInstall('stable', fullInstall)
     assert.match((await run(installer, ['--full', '--stable', '--yes', '--json'])).stdout, /"stage":"done"/)
     const fullReceipt = JSON.parse(await readFile(join(changedHome, 'install.json'), 'utf8'))
