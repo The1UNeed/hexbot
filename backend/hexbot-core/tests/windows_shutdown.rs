@@ -110,13 +110,16 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
         let provider = tokio::spawn(async move {
             axum::serve(http, model).await.unwrap();
         });
+        // No dream in this home: after 03:00 local the scheduler's first tick
+        // starts one for a bot that has not dreamed today, and its Pi would
+        // take this fixture's one start before the section's Pi does.
         if mode == "section" || service_mode {
             let work = root.path().join("workspace");
             fs::create_dir_all(&work).unwrap();
             db::open(&home)
                 .unwrap()
                 .execute(
-                    "UPDATE bots SET approval_mode='off',workdir=?",
+                    "UPDATE bots SET approval_mode='off',dream_enabled=0,workdir=?",
                     [work.to_string_lossy().as_ref()],
                 )
                 .unwrap();
@@ -124,7 +127,10 @@ async fn owned_desktop_pipe_quit_and_restart_clean_up_real_pi_and_home_lock() {
         } else {
             db::open(&home)
                 .unwrap()
-                .execute("UPDATE bots SET approval_mode='smart'", [])
+                .execute(
+                    "UPDATE bots SET approval_mode='smart',dream_enabled=0",
+                    [],
+                )
                 .unwrap();
             fs::write(home.join("profiles/owl/config.yaml"),"model:\n  provider: openai\n  default: gpt-4o-mini\ntools:\n  enabled_toolsets: []\n").unwrap();
         }
