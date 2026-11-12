@@ -68,8 +68,16 @@ fn validate(patch: &Value) -> Result<()> {
         }
         let valid = match key.as_str() {
             "approval_mode" => matches!(value.as_str(), Some("manual" | "smart" | "off")),
-            "default_model" | "fallback_model" | "review_model" => {
+            "default_model" | "fallback_model" => {
                 value.is_null() || value.as_str().is_some_and(|s| s.contains('/'))
+            }
+            // Half a choice would send reviews to whatever model Pi picks.
+            "review_model" => {
+                value.is_null()
+                    || value
+                        .as_str()
+                        .and_then(|s| s.split_once('/'))
+                        .is_some_and(|(provider, model)| !provider.is_empty() && !model.is_empty())
             }
             "dream_enabled" | "heartbeat_enabled" | "lan_enabled" | "service_installed"
             | "billing_notice_ack" | "usage_data" => value.is_boolean(),

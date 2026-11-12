@@ -296,6 +296,8 @@ fn invalid_patches_never_partially_change_settings_or_profiles() {
         json!({"default_model":"bad"}),
         json!({"review_model":"bad"}),
         json!({"review_model":true}),
+        json!({"review_model":"openai/"}),
+        json!({"review_model":"/small"}),
         json!({"workspace_dir":[]}),
     ] {
         assert!(
