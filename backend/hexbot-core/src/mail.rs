@@ -255,7 +255,7 @@ pub(crate) async fn read(home: &Path, svc: &Service, id: &str) -> Result<Value> 
     Ok(row)
 }
 
-fn capped(text: &str) -> String {
+pub(crate) fn capped(text: &str) -> String {
     let text = text.trim();
     if text.chars().count() <= BODY_CAP {
         return text.to_owned();
@@ -491,7 +491,7 @@ fn word(text: &str) -> String {
         )
     }
 }
-fn address_header(list: &[String]) -> String {
+pub(crate) fn address_header(list: &[String]) -> String {
     list.iter()
         .map(|a| match name_of(a) {
             Some(name) if name.is_ascii() => format!("\"{}\" <{}>", name.replace('"', ""), bare(a)),
@@ -537,6 +537,27 @@ fn recipients(list: &[String]) -> Value {
     )
 }
 
+/// A send or save that got no whole answer (`UNCERTAIN`) may have gone
+/// through: it says where in `service` to look before trying again. Any
+/// other error is left as it is.
+pub(crate) fn maybe_done(e: Error, send: bool, service: &str) -> Error {
+    if e.code != UNCERTAIN {
+        return e;
+    }
+    let (done, place, again) = if send {
+        ("have gone out", "Sent", "send")
+    } else {
+        ("be saved", "Drafts", "save")
+    };
+    Error::new(
+        e.code,
+        format!(
+            "{} It may {done}: look in {place} in {service} before you {again} it again.",
+            e.message
+        ),
+    )
+}
+
 /// Sends `draft`, or with `send` false saves it to Drafts, from the grant
 /// `grant` names when given. Only the draft card calls this, with what the
 /// user left on it. A send that got no whole answer may have gone out, and
@@ -551,27 +572,7 @@ pub(crate) async fn deliver(
     let request = |method, path: String, body: Option<Value>| async move {
         request_as(home, svc, grant, method, &path, body.as_ref(), &[]).await
     };
-    let uncertain = |e: Error| {
-        if e.code != UNCERTAIN {
-            e
-        } else if send {
-            Error::new(
-                e.code,
-                format!(
-                    "{} It may have gone out: look in Sent in {} before you send it again.",
-                    e.message, svc.name
-                ),
-            )
-        } else {
-            Error::new(
-                e.code,
-                format!(
-                    "{} It may be saved: look in Drafts in {} before you save it again.",
-                    e.message, svc.name
-                ),
-            )
-        }
-    };
+    let uncertain = |e: Error| maybe_done(e, send, svc.name);
     // A step that can't have sent or saved the email: no answer is a failure.
     let certain = |e: Error| {
         if e.code == UNCERTAIN {

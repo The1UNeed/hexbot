@@ -41,6 +41,12 @@ jsonschema = { version = "=0.57.0", default-features = false }
 keepass = { version = "=0.17.0", default-features = false, features = ["save_kdbx4", "totp"] }
 htmd = "=0.5.6"
 pulldown-cmark = { version = "=0.13.6", default-features = false, features = ["html"] }
+# The IMAP mail connector: IMAP to read and save drafts, SMTP to send.
+async-imap = { version = "=0.12.0", default-features = false, features = ["runtime-tokio"] }
+lettre = { version = "=0.11.23", default-features = false, features = ["smtp-transport", "tokio1-rustls-tls"] }
+mail-parser = { version = "=0.11.2", features = ["full_encoding"] }
+tokio-rustls = { version = "=0.26.5", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "=1.0.9"
 
 [[bin]]
 name = "hexbot"
