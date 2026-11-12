@@ -64,6 +64,13 @@ const PREVIEW_BYTES: usize = 16 * 1024;
 const MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 const CONNECT: Duration = Duration::from_secs(20);
 const OPERATION: Duration = Duration::from_secs(90);
+/// How long signing out may take once the work is done; past it, the
+/// connection is dropped and the work's result stands.
+const LOGOUT: Duration = if cfg!(test) {
+    Duration::from_millis(200)
+} else {
+    Duration::from_secs(5)
+};
 
 /// A service whose servers Hexbot knows, by the domains of its addresses.
 struct Known {
@@ -326,15 +333,15 @@ pub(crate) fn config(home: &Path, bot: Option<&str>) -> Result<Config> {
             None => server(&format!("imap.{domain}"), 993, "The IMAP server")?,
         },
     };
+    // A known service by its own IMAP server keeps its name and SMTP server.
+    let known = known.filter(|k| imap.host == k.imap.0);
     let smtp = match &smtp_host {
         Some(h) => server(h, 465, "The SMTP server")?,
-        None => match known.filter(|_| imap_host.is_none()) {
+        None => match known {
             Some(k) => server(k.smtp.0, k.smtp.1, "The SMTP server")?,
             None => server(&format!("smtp.{domain}"), 465, "The SMTP server")?,
         },
     };
-    // A known service by its own servers keeps its name.
-    let known = known.filter(|k| imap.host == k.imap.0);
     Ok(Config {
         username: get(USERNAME)?.unwrap_or_else(|| address.clone()),
         address,
@@ -592,14 +599,16 @@ async fn with_session<T>(
     cfg: &Config,
     work: impl AsyncFnOnce(&mut Session<Stream>) -> Result<T>,
 ) -> Result<T> {
-    tokio::time::timeout(OPERATION, async {
+    let (mut session, out) = tokio::time::timeout(OPERATION, async {
         let mut session = session(cfg).await?;
         let out = work(&mut session).await;
-        let _ = session.logout().await;
-        out
+        Ok::<_, Error>((session, out))
     })
     .await
-    .map_err(|_| Error::new(UNCERTAIN, format!("{} timed out.", cfg.name)))?
+    .map_err(|_| Error::new(UNCERTAIN, format!("{} timed out.", cfg.name)))??;
+    // A slow sign-out can't undo what the server already confirmed.
+    let _ = tokio::time::timeout(LOGOUT, session.logout()).await;
+    out
 }
 
 // --- Folders --------------------------------------------------------------

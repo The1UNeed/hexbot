@@ -66,6 +66,21 @@ fn servers_come_from_the_fields_or_the_address() {
     );
     assert_eq!((cfg.smtp.host.as_str(), cfg.smtp.port), ("::1", 1025));
     assert!(cfg.smtp.local());
+    // The known IMAP server, typed out, keeps the service's SMTP server.
+    let typed = home_with(&[
+        (ADDRESS, "ana@icloud.com"),
+        (PASSWORD, "pw"),
+        (IMAP_HOST, "imap.mail.me.com"),
+    ]);
+    let icloud = config(typed.path(), None).unwrap();
+    assert_eq!(
+        (
+            icloud.name.as_str(),
+            icloud.smtp.host.as_str(),
+            icloud.smtp.port
+        ),
+        ("iCloud Mail", "smtp.mail.me.com", 587)
+    );
     // STARTTLS on its own ports and on this computer; TLS from the start on
     // any other, as a server behind a mapped port has it.
     for (text, implicit) in [
@@ -215,6 +230,7 @@ pub(crate) async fn imap_server(seen: Arc<Mutex<Seen>>) -> String {
                     .write_all(b"* OK [CAPABILITY IMAP4rev1] fake\r\n")
                     .await
                     .unwrap();
+                let mut stall = false;
                 let mut line = String::new();
                 while read.read_line(&mut line).await.unwrap_or(0) > 0 {
                     // A LITERAL+ string goes on the next line, without a wait.
@@ -232,7 +248,9 @@ pub(crate) async fn imap_server(seen: Arc<Mutex<Seen>>) -> String {
                     } else if upper.starts_with("CAPABILITY") {
                         out = format!("* CAPABILITY IMAP4rev1 LITERAL+\r\n{tag} OK done\r\n");
                     } else if upper.starts_with("LOGIN") {
-                        out = if command.ends_with("\"secret\"") {
+                        // "stall" signs in, then never answers LOGOUT.
+                        stall = command.ends_with("\"stall\"");
+                        out = if command.ends_with("\"secret\"") || stall {
                             format!("{tag} OK signed in\r\n")
                         } else {
                             format!("{tag} NO [AUTHENTICATIONFAILED] wrong password\r\n")
@@ -300,6 +318,8 @@ pub(crate) async fn imap_server(seen: Arc<Mutex<Seen>>) -> String {
                             String::from_utf8(body).unwrap(),
                         ));
                         out = format!("{tag} OK appended\r\n");
+                    } else if upper.starts_with("LOGOUT") && stall {
+                        continue;
                     } else if upper.starts_with("LOGOUT") {
                         write
                             .write_all(format!("* BYE\r\n{tag} OK bye\r\n").as_bytes())
@@ -571,6 +591,16 @@ async fn a_reply_keeps_its_thread_after_the_original_moves() {
             .all(|c| !c.contains("BODY.PEEK[HEADER]")),
         "not read again"
     );
+}
+
+/// A server that saved the draft and then stalls signing out: it's saved.
+#[tokio::test]
+async fn a_slow_sign_out_keeps_what_the_server_confirmed() {
+    let (_home, cfg, seen) = mailbox("stall").await;
+    let draft = mail::draft(&json!({"subject": "Later", "body": "Not yet"})).unwrap();
+    deliver(&cfg, &draft, false, None).await.unwrap();
+    assert_eq!(seen.lock().unwrap().appended.len(), 1);
+    assert_eq!(search(&cfg, "", 5).await.unwrap().len(), 2);
 }
 
 #[tokio::test]
