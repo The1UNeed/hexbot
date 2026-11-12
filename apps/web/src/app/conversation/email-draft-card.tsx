@@ -5,7 +5,12 @@ import { ConnectorIcon } from '../../components/ui/connector-icon'
 import { splitAddresses } from '../../lib/addresses'
 import { approvalRespond } from '../../lib/api'
 import { cn } from '../../lib/cn'
-import { draftAnswerError, forgetUnsentDraft, unsentDrafts as unsent } from '../../lib/draft-card'
+import {
+  draftAnswerError,
+  draftIcon,
+  forgetUnsentDraft,
+  unsentDrafts as unsent
+} from '../../lib/draft-card'
 import type { ApprovalRequest, EmailDraft, EmailDraftForm } from '../../lib/types'
 import { transcriptActions } from '../../stores/transcripts'
 
@@ -95,10 +100,7 @@ export function EmailDraftCard({
   const went = approval.outcome?.draft ?? draft
 
   const icon = (
-    <ConnectorIcon
-      className="size-5"
-      icon={form.service === 'google' ? 'gmail' : 'microsoftoutlook'}
-    />
+    <ConnectorIcon className="size-5" icon={draftIcon(form.service)} />
   )
 
   // Answered: one line for what happened, then the email as it went.

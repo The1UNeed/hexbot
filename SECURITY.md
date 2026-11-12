@@ -278,6 +278,16 @@ Google's token for each covers all of them; the daemon still uses each
 connector's grant for its own tool alone, and a Microsoft token is renewed
 for its connector's permissions only.
 
+IMAP mail's address, app password and servers are connector fields in
+`.env`, like other connector keys: plain text in an owner-only file. An app
+password can read, change and send all of that mailbox's mail. The daemon
+opens every IMAP and SMTP connection itself; the password never reaches a
+model or a bot's environment. Every connection uses TLS verified against
+the web's roots. Only a server on the daemon's own computer (`localhost`,
+`127.0.0.1`, `::1`), such as a mail bridge with its own certificate, may
+skip verification or go without TLS. Bots' shells can't read `.env` in
+Manual or Auto; a bot in Bypass can.
+
 `hexbot_mail` sends only what the user sends from a draft card, in every
 approval mode, and only from the account the card showed. The other tools
 read in every mode; their changes follow the bot's approval mode like a

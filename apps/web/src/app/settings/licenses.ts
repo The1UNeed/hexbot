@@ -310,6 +310,36 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
         repository: 'https://github.com/raphlinus/pulldown-cmark'
       },
       {
+        license: 'MIT OR Apache-2.0',
+        name: 'async-imap',
+        packages: ['async-imap'],
+        repository: 'https://github.com/async-email/async-imap'
+      },
+      {
+        license: 'MIT',
+        name: 'Lettre',
+        packages: ['lettre'],
+        repository: 'https://github.com/lettre/lettre'
+      },
+      {
+        license: 'Apache-2.0 OR MIT',
+        name: 'mail-parser',
+        packages: ['mail-parser'],
+        repository: 'https://github.com/stalwartlabs/mail-parser'
+      },
+      {
+        license: 'MIT OR Apache-2.0',
+        name: 'tokio-rustls',
+        packages: ['tokio-rustls'],
+        repository: 'https://github.com/rustls/tokio-rustls'
+      },
+      {
+        license: 'CDLA-Permissive-2.0',
+        name: 'webpki-roots',
+        packages: ['webpki-roots'],
+        repository: 'https://github.com/rustls/webpki-roots'
+      },
+      {
         license: 'MIT',
         name: 'jsonwebtoken',
         packages: ['jsonwebtoken'],

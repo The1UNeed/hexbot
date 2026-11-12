@@ -56,6 +56,7 @@ async fn catalog_shapes_and_errors_match_clients() {
             "excel",
             "powerpoint",
             "microsoft_todo",
+            "imap",
             "notion",
             "x_search"
         ]

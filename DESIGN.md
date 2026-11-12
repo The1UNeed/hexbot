@@ -199,8 +199,10 @@ more freedom and more capability than a hosted product can offer.
   converts one: Google and Outlook resolve a local time in the zone they
   are given, and a day asked for in local time is fetched as every instant
   it could be and cut to the day here (`calendar.rs`).
-- A bot's `hexbot_mail` searches and reads Gmail and Outlook, as plain
-  text, and drafts. A draft is a
+- A bot's `hexbot_mail` searches and reads Gmail, Outlook and IMAP mail,
+  as plain text, and drafts. IMAP mail is any other mailbox, set up with an
+  address and an app password as connector fields, so the daemon, not a
+  shell, opens every IMAP and SMTP connection. A draft is a
   card in the bot's chat that the user edits, then sends or saves to Drafts
   with their own click, in every approval mode: sending email is never the
   bot's decision, and a reviewer can't tell a good email from a bad one.

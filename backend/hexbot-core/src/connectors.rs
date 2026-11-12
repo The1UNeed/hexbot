@@ -83,7 +83,8 @@ pub fn profile_credentials(home: &Path, dir: &Path) -> Result<BTreeMap<String, S
     }
     Ok(values)
 }
-fn value(home: &Path, bot: Option<&str>, key: &str) -> Result<Option<String>> {
+/// A connector field's value for `bot` (its own first) or the daemon.
+pub(crate) fn value(home: &Path, bot: Option<&str>, key: &str) -> Result<Option<String>> {
     // The xAI key is the xAI model provider's: turned off there, X search
     // has no key either, as its search does not (`xai_credentials_from`).
     if key == "XAI_API_KEY" && crate::providers::xai_disabled(home)? {
@@ -247,6 +248,10 @@ fn set_up_for(home: &Path, bot: Option<&str>, spec: &Value) -> Result<bool> {
         return Ok(true);
     }
     has_keys(home, bot, &keys)
+}
+/// Whether connector `id` works for `bot` (or the daemon).
+pub(crate) fn set_up(home: &Path, bot: Option<&str>, id: &str) -> Result<bool> {
+    set_up_for(home, bot, &spec(id)?)
 }
 /// The X search provider `bot` uses: `supergrok`, `xai` or `x_api`.
 pub(crate) fn x_search_provider(home: &Path, bot: &str) -> Result<Option<String>> {
@@ -715,6 +720,13 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
         {
             state_text = email.to_owned();
         }
+        // IMAP mail, like a signed-in account, shows its address.
+        if state == "ready"
+            && id == crate::imap::ID
+            && let Some(address) = value(home, bot, "IMAP_ADDRESS")?
+        {
+            state_text = crate::mail::bare(&address).to_owned();
+        }
         if state == "ready"
             && let Some(p) = &provider
         {
@@ -1015,6 +1027,12 @@ async fn probe(home: &Path, id: &str, bot: Option<&str>) -> Result<Value> {
     }
     if !missing.is_empty() {
         return Ok(json!({"ok":false,"message":format!("Missing {}.",missing.join(", "))}));
+    }
+    // IMAP mail signs in to its two servers (imap.rs).
+    if id == crate::imap::ID {
+        let result = crate::imap::probe(home, bot).await;
+        save_test(home, id, &result, true)?;
+        return Ok(result);
     }
     let key = |k: &str| value(home, bot, k).map(|v| v.unwrap_or_default());
     let mut headers = reqwest::header::HeaderMap::new();

@@ -18,7 +18,7 @@ export const docGroups = [
       { title: 'Approvals', summary: 'Use Auto, Manual, or Bypass to control what a bot can do.', href: '/docs/approvals/' },
       { title: 'Passwords', summary: 'Save sign-ins your bots type into websites without seeing them.', href: '/docs/passwords/' },
       { title: 'Google and Microsoft', summary: 'Connect Gmail, Calendar, Drive, Docs, Sheets, Slides and Tasks, or Outlook, OneDrive, Word, Excel, PowerPoint and To Do.', href: '/docs/google-and-microsoft/' },
-      { title: 'Email', summary: 'Let bots read Gmail or Outlook and draft email you edit and send.', href: '/docs/email/' },
+      { title: 'Email', summary: 'Let bots read Gmail, Outlook or any other mailbox and draft email you edit and send.', href: '/docs/email/' },
       { title: 'Memory', summary: "Edit a bot's soul and memory, and your About you text.", href: '/docs/memory/' },
       { title: 'Rooms', summary: 'Work with several bots and people, or ask another bot for private help.', href: '/docs/rooms/' },
       { title: 'Scheduled work', summary: 'Ask a bot to run reminders, recurring jobs, or scripts.', href: '/docs/scheduling/' },

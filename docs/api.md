@@ -117,14 +117,19 @@ data model. The native transport and event projection live in
   `hexbot.connectors.setup` or `hexbot.plugins.configure` saves them, and,
   like a sign-in, reach no event, log or history row. A `form` with
   `kind: "email_draft"` is the draft card `hexbot_mail` shows: `{service:
-  "google" | "microsoft"` (the account), `service_name` (Gmail or Outlook), `from, grant, to, cc, bcc, subject,
+  "google" | "microsoft" | "imap"` (the account), `service_name` (Gmail,
+  Outlook, or IMAP mail's service, such as iCloud Mail), `from, grant, to, cc, bcc, subject,
   body, reply_to}`, the address lists as arrays. A `reply_to` that names no
   message returns its error to the bot (4215, or 4202 for a malformed id)
   and shows no card. `grant` names the sign-in
-  the card was written under; a sign-in since then won't send it. It is shown in every approval
+  the card was written under, or for IMAP mail a hash of its address, user
+  name and servers; a sign-in or new settings since then won't send it.
+  IMAP mail's card also has `thread: {message_id, references}`, the
+  headers of the message a reply answers, read when the card showed, so a
+  reply still goes in its thread once that message was archived. It is shown in every approval
   mode, Bypass included. Answer `once` with `mail_action: "send" | "save"`
   and `draft: {to, cc, bcc, subject, body, reply_to}` as the user left it,
-  or `deny` to discard it. The reply comes once Gmail or Outlook took the
+  or `deny` to discard it. The reply comes once the mailbox took the
   email, so the card settles only then. An address that isn't one address,
   a line break in an address or the subject, or `send` with nobody to send
   to returns 4202; a mailbox that refuses it, an account signed in as
@@ -1336,11 +1341,19 @@ or a clear.
   hosts or that endpoint.
 - `hexbot_mail {action: search | read | draft, account?, query?, max?, id?,
   to?, cc?, bcc?, subject?, body?, reply_to?}` is a bot's tool once it has
-  Gmail or Outlook, in its own chat and its scheduled jobs; rooms, threads
+  Gmail, Outlook or IMAP mail, in its own chat and its scheduled jobs; rooms, threads
   between bots and heartbeats never get it. `search` and `read` need no
   approval and return plain text. `draft` shows the draft card and returns
   `{sent | saved_to_drafts: true, to, cc, subject, body}` as the user left
-  it; there is no other way to send. A job can't draft (4302).
+  it; there is no other way to send. A job can't draft (4302). `account`
+  (`google`, `microsoft` or `imap`) is needed only when the bot has more
+  than one. IMAP mail (`imap.rs`) searches with `from:`, `to:`, `cc:`,
+  `subject:`, `is:unread|read|starred`, `after:`, `before:`, `in:<folder>`
+  and plain words (non-ASCII words as LITERAL+ literals where the server
+  offers them), reads with `BODY.PEEK`, sends with
+  SMTP, then files a copy in Sent (`filed_in_sent: false` when it couldn't),
+  and saves to Drafts with IMAP `APPEND`. Its message ids are
+  `<uidvalidity>.<uid>.<folder in base64url>`.
 - The other Google and Microsoft tools are offered in the same places, each
   once either of its connectors is on and connected for the bot. `account`
   (`google` or `microsoft`) is needed only when the bot has both. The

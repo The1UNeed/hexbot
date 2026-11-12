@@ -77,7 +77,7 @@ export interface EmailDraftForm {
   /** The message it answers, by its id. */
   reply_to?: null | string
   service: MailService
-  /** Gmail or Outlook. */
+  /** Gmail, Outlook, or the IMAP mailbox's service, such as iCloud Mail. */
   service_name: string
   subject: string
   to: string[]
@@ -102,8 +102,11 @@ export interface EmailDraftAnswer {
 /** The account a connector signs in to: Google or Microsoft. */
 export type AccountProvider = 'google' | 'microsoft'
 
-/** The account a draft goes out from; the draft card names its mail by it. */
-export type MailService = AccountProvider
+/**
+ * The account a draft goes out from; the draft card names its mail by it.
+ * `imap` is IMAP mail: any other mailbox, set up with an app password.
+ */
+export type MailService = 'imap' | AccountProvider
 
 /** A sign-in to Google or Microsoft from Settings, Plugins. */
 export interface AccountSignIn {

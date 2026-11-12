@@ -386,6 +386,142 @@ async fn only_the_user_sends_a_draft_and_sends_what_they_left() {
     assert_eq!(got.lock().unwrap().len(), 4);
 }
 
+/// IMAP mail works as Gmail does: the bot searches and drafts, the user
+/// sends from the card, and only from the mailbox the card showed.
+#[tokio::test]
+async fn imap_mail_sends_only_what_the_user_sends() {
+    use crate::imap::tests::{Seen, imap_server, smtp_server};
+    let (home, runtime, hub) = setup();
+    let h = home.path();
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let imap = imap_server(seen.clone()).await;
+    let smtp = smtp_server(seen.clone()).await;
+    let env = |address: &str| {
+        format!(
+            "IMAP_ADDRESS=\"{address}\"\nIMAP_PASSWORD=\"secret\"\nIMAP_HOST=\"{imap}\"\nSMTP_HOST=\"{smtp}\"\n"
+        )
+    };
+    fs::write(h.join(".env"), env("me@example.org")).unwrap();
+    fs::write(
+        h.join("profiles/owl/config.yaml"),
+        "model:\n  provider: openai\n  default: fixture\ntools:\n  enabled_toolsets: [imap]\n",
+    )
+    .unwrap();
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    assert!(s.tools.iter().any(|t| t["name"] == "hexbot_mail"));
+
+    let found = runtime
+        .tool(
+            &s,
+            "hexbot_mail",
+            &json!({"action":"search","query":"is:unread"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(found["account"], "imap");
+    assert_eq!(found["messages"][0]["subject"], "Café");
+    // Gmail isn't connected, so asking for it says so.
+    let error = runtime
+        .tool(
+            &s,
+            "hexbot_mail",
+            &json!({"action":"search","account":"google"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, 4210);
+
+    let mut events = hub.subscribe();
+    let asked = tokio::spawn({
+        let (runtime, s) = (runtime.clone(), s.clone());
+        async move {
+            runtime
+                .tool(&s, "hexbot_mail", &json!({"action":"draft","to":["bo@example.net"],"subject":"Menu","body":"Looks good."}))
+                .await
+        }
+    });
+    let shown = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.frame["params"]["type"] == "approval.request" {
+                break event.frame["params"]["payload"].clone();
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(shown["form"]["service"], "imap");
+    assert_eq!(shown["form"]["service_name"], "IMAP mail");
+    assert_eq!(shown["form"]["from"], "me@example.org");
+    assert!(
+        seen.lock().unwrap().sent.is_empty(),
+        "a card sends nothing yet"
+    );
+    let respond = |draft: Value| {
+        let runtime = runtime.clone();
+        let p = json!({"session_id":id,"request_id":shown["request_id"],"choice":"once","mail_action":"send","draft":draft});
+        async move { runtime.call("alice", "approval.respond", &p).await.unwrap() }
+    };
+    // Set up for another mailbox since: not sent from it.
+    fs::write(h.join(".env"), env("mallory@example.org")).unwrap();
+    let error = respond(json!({"to":["bo@example.net"],"subject":"Menu","body":"x"}))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, 4210);
+    assert!(
+        error.message.contains("mallory@example.org"),
+        "{}",
+        error.message
+    );
+    fs::write(h.join(".env"), env("me@example.org")).unwrap();
+    respond(json!({"to":["bo@example.net"],"subject":"Menu","body":"Looks good. See you Friday."}))
+        .await
+        .unwrap();
+    let result = asked.await.unwrap().unwrap();
+    assert_eq!(result["sent"], true);
+    assert_eq!(result["account"], "imap");
+    {
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.sent.len(), 1);
+        assert_eq!(seen.sent[0].0, ["bo@example.net"]);
+        assert_eq!(seen.appended[0].0, "Sent Items");
+    }
+
+    // A reply's card keeps its thread, and the reply goes in it.
+    let original = crate::imap::tests::reply_target();
+    let mut events = hub.subscribe();
+    let asked = tokio::spawn({
+        let (runtime, s, original) = (runtime.clone(), s.clone(), original.clone());
+        async move {
+            runtime
+                .tool(&s, "hexbot_mail", &json!({"action":"draft","to":["bo@example.net"],"body":"Yes.","reply_to":original}))
+                .await
+        }
+    });
+    let shown = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.frame["params"]["type"] == "approval.request" {
+                break event.frame["params"]["payload"].clone();
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(shown["form"]["subject"], "Re: Café");
+    assert_eq!(shown["form"]["thread"]["message_id"], "<m2@example.net>");
+    let p = json!({"session_id":id,"request_id":shown["request_id"],"choice":"once","mail_action":"send","draft":{"to":["bo@example.net"],"subject":"Re: Café","body":"Yes.","reply_to":original}});
+    runtime
+        .call("alice", "approval.respond", &p)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(asked.await.unwrap().unwrap()["sent"], true);
+    let seen = seen.lock().unwrap();
+    assert!(seen.sent[1].1.contains("In-Reply-To: <m2@example.net>\r\n"));
+}
+
 /// Rooms, threads between bots and heartbeats never get the mailbox.
 #[tokio::test]
 async fn mail_stays_in_the_bots_own_chat_and_jobs() {

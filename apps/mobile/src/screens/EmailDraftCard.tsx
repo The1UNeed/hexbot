@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Pressable, StyleSheet, TextInput, View } from 'react-native'
 
 import { splitAddresses } from '../../../web/src/lib/addresses'
-import { forgetUnsentDraft, unsentDrafts as unsent } from '../../../web/src/lib/draft-card'
+import { draftIcon, forgetUnsentDraft, unsentDrafts as unsent } from '../../../web/src/lib/draft-card'
 import type { EmailDraft, EmailDraftForm } from '../../../web/src/lib/types'
 import { Button, radius, Text, useTheme } from '../ui'
 import { PluginIcon } from '../ui/PluginIcon'
@@ -76,9 +76,7 @@ export function EmailDraftCard({
     }
   }
 
-  const icon = (
-    <PluginIcon icon={form.service === 'google' ? 'gmail' : 'microsoftoutlook'} size={22} />
-  )
+  const icon = <PluginIcon icon={draftIcon(form.service)} size={22} />
 
   // Answered: what happened, then the email as it went.
   if (decided) {
