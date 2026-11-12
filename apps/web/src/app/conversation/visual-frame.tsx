@@ -90,6 +90,26 @@ function linkUrl(href: unknown): null | URL {
   }
 }
 
+/** When a link last opened straight from a click in a visual. */
+let lastClickOpen = 0
+
+/**
+ * Whether the user just clicked inside a visual. A click in a frame activates
+ * the app's window too, which the page itself cannot fake. A second link
+ * within a second does not count, so one click opens one link.
+ */
+function justClicked(): boolean {
+  const now = Date.now()
+
+  if (!navigator.userActivation?.isActive || now - lastClickOpen < 1000) {
+    return false
+  }
+
+  lastClickOpen = now
+
+  return true
+}
+
 function openLink(url: URL) {
   const bridge = getBridge()
 
@@ -171,11 +191,13 @@ export function VisualPage({
           setHeight(Math.min(Math.ceil(next), VISUAL_MAX_HEIGHT))
         }
       } else if (data.method === 'ui/open-link') {
-        // The page cannot prove the user clicked it, so it only offers the
-        // link; opening takes a click on the app's own button.
+        // A link the user clicked opens at once. One a script asked for
+        // without a click waits for a click on the app's own button.
         const url = linkUrl(data.params?.url)
 
-        if (url) {
+        if (url && justClicked()) {
+          openLink(url)
+        } else if (url) {
           link.current(url)
         }
 

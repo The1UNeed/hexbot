@@ -184,6 +184,56 @@ describe('VisualBubble', () => {
     expect(frame.style.height).toBe('2000px')
   })
 
+  it('opens a link the user clicked at once, one link per click', () => {
+    render(<VisualBubble visual={costs} />)
+    const target = (screen.getByTitle('Costs') as HTMLIFrameElement).contentWindow!
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null)
+    open.mockClear()
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000)
+    // A click inside the frame activates the app's window too.
+    Object.defineProperty(navigator, 'userActivation', {
+      configurable: true,
+      value: { hasBeenActive: true, isActive: true }
+    })
+
+    const ask = (url: string) =>
+      act(() => {
+        window.dispatchEvent(
+          new MessageEvent('message', {
+            data: { id: url, jsonrpc: '2.0', method: 'ui/open-link', params: { url } },
+            source: target
+          })
+        )
+      })
+
+    try {
+      ask('https://example.com/video')
+      expect(open).toHaveBeenCalledWith(
+        'https://example.com/video',
+        '_blank',
+        'noopener,noreferrer'
+      )
+      expect(screen.queryByRole('button', { name: /^Open example/ })).toBeNull()
+
+      // A second link straight after the first waits for the app's button.
+      ask('https://example.com/other')
+      expect(open).toHaveBeenCalledTimes(1)
+      expect(screen.getByRole('button', { name: 'Open example.com/other' })).toBeTruthy()
+
+      now.mockReturnValue(1_002_000)
+      ask('https://example.com/next')
+      expect(open).toHaveBeenLastCalledWith(
+        'https://example.com/next',
+        '_blank',
+        'noopener,noreferrer'
+      )
+    } finally {
+      Reflect.deleteProperty(navigator, 'userActivation')
+      now.mockRestore()
+      open.mockRestore()
+    }
+  })
+
   it("is washed with the bot's face colour, and so is the page inside it", () => {
     const root = document.documentElement.style
     root.setProperty('--hex-bubble', '#232326')
