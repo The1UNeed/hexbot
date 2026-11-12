@@ -8,6 +8,7 @@ import { useRooms } from '../../stores/rooms'
 import { RosterColumn } from './index'
 
 const navigate = vi.hoisted(() => vi.fn())
+const params = vi.hoisted(() => ({ current: {} as Record<string, string> }))
 
 const router = vi.hoisted(() => ({
   history: { location: {}, subscribe: () => () => undefined },
@@ -17,7 +18,7 @@ const router = vi.hoisted(() => ({
 vi.mock('@tanstack/react-router', () => ({
   useRouter: () => router,
   useNavigate: () => navigate,
-  useParams: () => ({})
+  useParams: () => params.current
 }))
 
 const markSection = vi.hoisted(() => vi.fn(() => Promise.resolve({})))
@@ -72,6 +73,7 @@ const menuFor = async (name: RegExp) => {
 describe('roster row menu', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    params.current = {}
     useRooms.setState({
       byId: { [room.id]: room },
       eventsByRoom: { [room.id]: [event] },
@@ -132,9 +134,7 @@ describe('roster row menu', () => {
 
   it('closes Rename at once, and brings it back with the name when the daemon refuses it', async () => {
     let refuse!: (error: Error) => void
-    updateRoom.mockImplementationOnce(
-      () => new Promise<void>((_, no) => (refuse = no)) as never
-    )
+    updateRoom.mockImplementationOnce(() => new Promise<void>((_, no) => (refuse = no)) as never)
     render(<RosterColumn />)
 
     await menuFor(/Garden/)
@@ -177,6 +177,34 @@ describe('roster row menu', () => {
     await waitFor(() =>
       expect(updateBot).toHaveBeenCalledWith('writer', { display_name: 'Scribe' })
     )
+  })
+
+  it('asks once to mark the open chat read when the daemon refuses', async () => {
+    const chat = {
+      archived_at: null,
+      bot: 'writer',
+      done_at: 3,
+      id: 'chat-1',
+      preview: '',
+      purpose: null
+    }
+
+    params.current = { bot: 'writer', section: 'chat-1' }
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    markSection.mockImplementation(() => Promise.reject(new Error('Refused')))
+    useRooms.setState({ byId: {}, order: [] })
+    useBots.setState({
+      byName: { writer: bot({ sections_recent: [chat] as Bot['sections_recent'] }) },
+      order: ['writer']
+    })
+    render(<RosterColumn />)
+
+    // The refusal puts the dot back; that must not ask again.
+    await waitFor(() =>
+      expect(useBots.getState().byName.writer!.sections_recent[0]!.done_at).toBe(3)
+    )
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(markSection).toHaveBeenCalledTimes(1)
   })
 
   it('pins the primary bot by default and lets you unpin it', async () => {

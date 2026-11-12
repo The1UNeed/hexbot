@@ -379,12 +379,7 @@ function BotRow({
           type="button"
         >
           <span className="relative">
-            <Avatar
-              {...botFace(bot)}
-              mood={mood}
-              name={bot.display_name}
-              size="xl"
-            />
+            <Avatar {...botFace(bot)} mood={mood} name={bot.display_name} size="xl" />
             <StatusDot className="right-0.5 bottom-0.5" status={dot} />
           </span>
           <span className="flex max-w-full items-center gap-1 px-1">
@@ -409,12 +404,7 @@ function BotRow({
         type="button"
       >
         <span className="relative shrink-0">
-          <Avatar
-            {...botFace(bot)}
-            mood={mood}
-            name={bot.display_name}
-            size="lg"
-          />
+          <Avatar {...botFace(bot)} mood={mood} name={bot.display_name} size="lg" />
           <StatusDot status={dot} />
         </span>
         <span className="min-w-0 flex-1">
@@ -584,8 +574,19 @@ export function RosterColumn() {
   // A chat hidden behind another bot's loading face has not been seen either.
   const hidden = Boolean(asking && asking !== params.bot)
 
+  // Once per finish: a refused read puts the dot back, and asking again would loop.
+  const acknowledged = useRef<null | string>(null)
   useEffect(() => {
-    if (params.section && activeSectionDoneAt && pageFocused && !hidden) {
+    const finish = `${params.section}:${activeSectionDoneAt}`
+
+    if (
+      params.section &&
+      activeSectionDoneAt &&
+      pageFocused &&
+      !hidden &&
+      acknowledged.current !== finish
+    ) {
+      acknowledged.current = finish
       void markSectionsRead([params.section]).catch(() => undefined)
     }
   }, [activeSectionDoneAt, hidden, pageFocused, params.section])
@@ -1298,11 +1299,7 @@ function RenameDialog({
           <Button onClick={onClose} variant="ghost">
             Cancel
           </Button>
-          <Button
-            disabled={!trimmed || trimmed === renaming?.name}
-            type="submit"
-            variant="primary"
-          >
+          <Button disabled={!trimmed || trimmed === renaming?.name} type="submit" variant="primary">
             Rename
           </Button>
         </div>
