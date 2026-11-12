@@ -264,18 +264,18 @@ export default function hexbot(pi: any) {
           const label = `${server}/${event.toolName.slice(namespace.length + 2) || event.toolName}`;
           const args = JSON.stringify(event.input ?? {});
           ask = {key: `mcp:${server}`, command: args === '{}' ? label : `${label} ${args.length > 300 ? args.slice(0, 300) + '…' : args}`,
-            reason: live.approvalMode === 'manual' ? 'Manual mode asks before a connected tool runs.' : 'Auto mode asks before a connected tool changes anything.'};
+            reason: live.approvalMode === 'manual' ? 'Manual mode asks before a connected tool runs.' : 'This connected tool can change something.'};
         }
       }
       if (connector) {
         const {connector: id, method, path, body} = event.input ?? {};
         const data = body === undefined ? '' : JSON.stringify(body);
         ask = {key: `connector:${id}`, command: `${id} ${method} ${path}${data ? ' ' + (data.length > 300 ? data.slice(0, 300) + '…' : data) : ''}`,
-          reason: live.approvalMode === 'manual' ? 'Manual mode asks before a connector changes anything.' : 'Auto mode asks before a connector changes anything.'};
+          reason: live.approvalMode === 'manual' ? 'Manual mode asks before a connector changes anything.' : 'This changes something in a connected service.'};
       }
       if (account) {
         ask = {key: `connector:${event.toolName}`, command: accountChange(event.toolName, event.input),
-          reason: live.approvalMode === 'manual' ? 'Manual mode asks before a connector changes anything.' : 'Auto mode asks before a connector changes anything.'};
+          reason: live.approvalMode === 'manual' ? 'Manual mode asks before a connector changes anything.' : 'This changes something in a connected service.'};
       }
       if (['read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName)) {
         const input = event.input.path ?? '.';

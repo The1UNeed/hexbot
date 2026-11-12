@@ -25,6 +25,7 @@ pub fn defaults() -> Value {
         "heartbeat_enabled": true,
         "default_model": null,
         "fallback_model": null,
+        "review_model": null,
         "usage_data": false,
         "soul_char_limit": crate::memory::DEFAULT_SOUL_CAP,
         "memory_char_limit": crate::memory::DEFAULT_BOT_CAP
@@ -67,7 +68,7 @@ fn validate(patch: &Value) -> Result<()> {
         }
         let valid = match key.as_str() {
             "approval_mode" => matches!(value.as_str(), Some("manual" | "smart" | "off")),
-            "default_model" | "fallback_model" => {
+            "default_model" | "fallback_model" | "review_model" => {
                 value.is_null() || value.as_str().is_some_and(|s| s.contains('/'))
             }
             "dream_enabled" | "heartbeat_enabled" | "lan_enabled" | "service_installed"
@@ -193,13 +194,14 @@ pub fn update(home: &Path, caller: &str, patch: &Value) -> Result<Value> {
     Ok(settings)
 }
 
-/// Drops the default and fallback model when they ran on a provider the user
-/// just removed, so nothing still points at it; apps then ask for a new one.
+/// Drops the default, fallback and review model when they ran on a provider
+/// the user just removed, so nothing still points at it; apps then ask for a
+/// new one, and Auto reviews go back to each bot's own model.
 pub fn forget_provider(home: &Path, caller: &str, provider: &str) -> Result<bool> {
     let slug = crate::providers::canonical_provider(provider);
     let settings = get(home)?;
     let mut patch = serde_json::Map::new();
-    for key in ["default_model", "fallback_model"] {
+    for key in ["default_model", "fallback_model", "review_model"] {
         if settings[key]
             .as_str()
             .and_then(|choice| choice.split_once('/'))

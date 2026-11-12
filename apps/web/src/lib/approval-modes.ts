@@ -10,7 +10,7 @@ export const APPROVAL_MODES: { description: string; label: string; value: Approv
   },
   {
     description:
-      "Work freely in the workspace. Steps outside it are checked by the bot's model, and only risky ones ask first.",
+      'Work freely in the workspace. Steps outside it are checked by a model, and only risky ones ask first.',
     label: 'Auto',
     value: 'smart'
   },

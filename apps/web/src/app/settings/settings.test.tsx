@@ -8,6 +8,8 @@ import {
   daemonInfo,
   modelsList,
   pairingCode,
+  providerModels,
+  providersList,
   updateRequest
 } from '../../lib/api'
 import type { UpdateState } from '../../lib/bridge'
@@ -34,6 +36,8 @@ vi.mock('../../lib/api', async importOriginal => ({
   ...(await importOriginal()),
   daemonInfo: vi.fn().mockResolvedValue({ version: '0.1.5-alpha.1' }),
   modelsList: vi.fn(),
+  providerModels: vi.fn().mockResolvedValue([]),
+  providersList: vi.fn().mockRejectedValue(new Error('offline')),
   connectStatus: vi.fn(),
   connectRegisterStart: vi.fn(),
   connectRegisterPoll: vi.fn(),
@@ -334,6 +338,66 @@ describe('settings', () => {
     fireEvent.click(screen.getByRole('radio', { name: /^Bypass/ }))
     expect(patch).toHaveBeenCalledWith({ approval_mode: 'off' })
     expect(screen.queryByText(/approver model/i)).toBeNull()
+    // A daemon from before the review model offers no picker for it.
+    expect(screen.queryByRole('combobox', { name: 'Review model' })).toBeNull()
+  })
+
+  it("picks the model that reviews Auto steps, or each bot's own", async () => {
+    const patch = vi.fn().mockResolvedValue(undefined)
+    vi.mocked(providerModels).mockResolvedValueOnce([
+      { id: 'small', label: 'Small', provider: 'openai' }
+    ])
+    // The page loads the connected providers itself; nothing else has yet.
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [
+        {
+          auth_type: 'api_key',
+          configured: true,
+          id: 'openai',
+          label: 'OpenAI',
+          models_source: 'static'
+        }
+      ]
+    })
+    useSettings.setState({
+      patch,
+      providers: [],
+      refreshProviders: useSettings.getInitialState().refreshProviders,
+      refresh: vi.fn().mockResolvedValue(undefined),
+      settings: {
+        approval_mode: 'smart',
+        billing_notice_ack: false,
+        dream_enabled: true,
+        dream_time: '03:00',
+        lan_enabled: false,
+        review_model: null,
+        service_installed: false,
+        workspace_dir: ''
+      }
+    })
+    const { unmount } = render(<ApprovalsSettings />)
+    const picker = screen.getByRole('combobox', { name: 'Review model' })
+    expect(picker).toHaveTextContent("Each bot's own model")
+    fireEvent.click(picker)
+    const small = await screen.findByRole('option', { name: 'OpenAI · Small' })
+    // Base UI commits only a highlighted item, as a pointer over it would be.
+    fireEvent.mouseMove(small)
+    fireEvent.click(small)
+    expect(patch).toHaveBeenCalledWith({ review_model: 'openai/small' })
+    unmount()
+    // A saved model shows before its provider's models load, and can be cleared.
+    useSettings.setState(state => ({
+      providers: [],
+      settings: { ...state.settings!, review_model: 'openai/small' }
+    }))
+    render(<ApprovalsSettings />)
+    const saved = screen.getByRole('combobox', { name: 'Review model' })
+    expect(saved).toHaveTextContent('openai/small')
+    fireEvent.click(saved)
+    const own = await screen.findByRole('option', { name: "Each bot's own model" })
+    fireEvent.mouseMove(own)
+    fireEvent.click(own)
+    expect(patch).toHaveBeenLastCalledWith({ review_model: null })
   })
 
   it.each([

@@ -689,7 +689,7 @@ test('connector reads run in every mode; changes run in Bypass, are reviewed in 
   assert.equal((await auto.gate('hexbot_connector_write', change))?.block, true);
   assert.equal(auto.choices[0].tool, 'hexbot_connector_write');
   assert.equal(auto.choices[0].command, 'notion PATCH /v1/pages/abc {"archived":true}');
-  assert.match(auto.choices[0].reason, /Auto mode asks before a connector changes anything/);
+  assert.match(auto.choices[0].reason, /^This changes something in a connected service\.$/);
   assert.equal(auto.choices[0].review, true);
   assert.deepEqual(auto.choices[0].input, change);
   const manual = fixture(t, 'manual');
@@ -737,7 +737,7 @@ test('calendar, task, file and document tools read in every mode, and their chan
   assert.equal(auto.choices[0].tool, 'hexbot_calendar');
   assert.equal(auto.choices[0].command, 'Calendar: create · title: Lunch, start: 2026-11-12T12:00, attendees: ["ana@example.com"]');
   assert.equal(auto.choices[1].command, 'Calendar: delete · id: e1, title: Lunch');
-  assert.match(auto.choices[0].reason, /Auto mode asks before a connector changes anything/);
+  assert.match(auto.choices[0].reason, /^This changes something in a connected service\.$/);
   assert.equal(auto.choices[0].review, true);
   assert.deepEqual(auto.choices[0].input, changes[0][1]);
   const manual = fixture(t, 'manual');

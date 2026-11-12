@@ -119,7 +119,7 @@ const modes = [
 const modeHelp: Record<string, string> = {
   inherit: 'Uses the approval setting of this daemon.',
   smart:
-    "Works freely in the workspace. Steps outside it are checked by the bot's model; only risky ones ask first.",
+    "Works freely in the workspace. Steps outside it are checked by a model; only risky ones ask first.",
   manual: 'Reads freely. Every file change and command asks first.',
   off: 'No prompts and no sandbox.'
 }
@@ -972,6 +972,10 @@ export function Management({
               : {}),
             default_model: values.default_model || null,
             fallback_model: values.fallback_model || null,
+            // A daemon from before the review model has no such setting.
+            ...(mobile.settings && 'review_model' in mobile.settings
+              ? { review_model: values.review_model || null }
+              : {}),
             bot_daily_token_budget: num(values.bot_daily_token_budget),
             room_bot_turns_per_human_turn: num(values.room_bot_turns_per_human_turn),
             room_budget_tokens_per_human_turn: num(values.room_budget_tokens_per_human_turn),
@@ -990,6 +994,14 @@ export function Management({
           <Group title="Models" footer="Provider/model, such as anthropic/claude-sonnet-5.">
             {field('default_model', 'Default for new bots')}
             {field('fallback_model', 'Fallback when a provider fails')}
+            {mobile.settings && 'review_model' in mobile.settings
+              ? field(
+                  'review_model',
+                  'Review model for Auto',
+                  false,
+                  "Reviews each step outside the sandbox. Empty uses each bot's own model."
+                )
+              : null}
           </Group>
           {field('workspace_dir', 'Workspace on the daemon')}
           <Group title="Budgets" footer="Leave a budget empty for no limit.">

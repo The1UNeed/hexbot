@@ -852,6 +852,8 @@ export interface Settings {
   default_model?: null | string
   /** `provider/model` bots fall back to when their own provider fails. */
   fallback_model?: null | string
+  /** `provider/model` that reviews Auto mode's steps; null is each bot's own model. */
+  review_model?: null | string
   billing_notice_ack: boolean
   lan_enabled: boolean
   bot_daily_token_budget?: null | number

@@ -65,6 +65,7 @@ const SETTINGS: &[&str] = &[
     "approval_mode",
     "default_model",
     "fallback_model",
+    "review_model",
     "workspace_dir",
     "dream_enabled",
     "dream_time",
@@ -160,7 +161,7 @@ pub(super) fn descriptors() -> Vec<Value> {
                     "action": { "type": "string", "enum": ["get", "set", "skill", "connector"] },
                     "patch": {
                         "type": "object",
-                        "description": "With set: approval_mode (manual, smart or off), default_model and fallback_model (provider/model, on a connected provider), workspace_dir, dream_enabled, dream_time (HH:MM), room_bot_turns_per_human_turn, room_budget_tokens_per_human_turn, bot_daily_token_budget, soul_char_limit and memory_char_limit (500 to 20000 characters, the default for every bot without its own)"
+                        "description": "With set: approval_mode (manual, smart or off), default_model, fallback_model and review_model (provider/model, on a connected provider; review_model is the model that reviews Auto mode's steps, null for each bot's own), workspace_dir, dream_enabled, dream_time (HH:MM), room_bot_turns_per_human_turn, room_budget_tokens_per_human_turn, bot_daily_token_budget, soul_char_limit and memory_char_limit (500 to 20000 characters, the default for every bot without its own)"
                     },
                     "name": { "type": "string", "description": "With skill: the skill's name" },
                     "id": { "type": "string", "description": "With connector: the connector's id" },
@@ -669,7 +670,7 @@ impl Runtime {
                 }
                 // A model choice lands with its provider's id, whatever name the bot used.
                 let mut patch = patch.clone();
-                for key in ["default_model", "fallback_model"] {
+                for key in ["default_model", "fallback_model", "review_model"] {
                     if let Some(choice) = patch.get(key).and_then(Value::as_str).map(str::to_owned)
                     {
                         let (provider, model) = choice.split_once('/').unwrap_or((&choice, ""));
@@ -793,6 +794,7 @@ fn settings_summary(patch: &serde_json::Map<String, Value>) -> String {
                 Value::String(mode) if k == "approval_mode" => approval_label(mode).to_owned(),
                 Value::String(v) => v.clone(),
                 Value::Bool(on) => if *on { "on" } else { "off" }.to_owned(),
+                Value::Null if k == "review_model" => "each bot's own model".to_owned(),
                 Value::Null => "none".to_owned(),
                 v => v.to_string(),
             };
@@ -808,6 +810,7 @@ fn setting_label(key: &str) -> &str {
         "approval_mode" => "approval mode",
         "default_model" => "default model",
         "fallback_model" => "fallback model",
+        "review_model" => "review model",
         "workspace_dir" => "workspace folder",
         "dream_enabled" => "dreaming",
         "dream_time" => "dream time",
@@ -883,6 +886,11 @@ mod tests {
         assert_eq!(
             settings_summary(patch.as_object().unwrap()),
             "dreaming to off, fallback model to none"
+        );
+        let patch = json!({"review_model":null});
+        assert_eq!(
+            settings_summary(patch.as_object().unwrap()),
+            "review model to each bot's own model"
         );
         for key in SETTINGS {
             assert_ne!(setting_label(key), *key);
