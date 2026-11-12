@@ -92,7 +92,7 @@ export interface ChatScreenProps {
    * moving pointer.
    */
   waiting?: { label: WorkLabel; mood?: FaceMood; who?: FaceSource | null } | null
-  /** A turn is running; the composer offers Stop, which becomes Send once there is text. */
+  /** A turn is running. With `onStop`, a room's, the composer offers Stop until there is text. */
   busy?: boolean
 
   onSend: (text: string) => void

@@ -167,3 +167,29 @@ fn chat_fork_refuses_a_target_with_a_history_rewrite_counter() {
         .unwrap();
     assert_eq!(count, 0);
 }
+
+#[test]
+fn a_store_set_up_once_is_set_up_again_when_its_schema_changes_or_the_file_is_replaced() {
+    let home = common::TestHome::new();
+    let h = home.path();
+    let table = |conn: &Connection| -> bool {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='native_fresh')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert!(table(&open(h).unwrap()));
+    // Another connection drops a table: the next open sees the schema move.
+    open(h)
+        .unwrap()
+        .execute_batch("DROP TABLE native_fresh")
+        .unwrap();
+    assert!(table(&open(h).unwrap()));
+    // A file replaced while the daemon runs starts empty and is set up again.
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = fs::remove_file(h.join(format!("hexbot-runtime.db{suffix}")));
+    }
+    assert!(table(&open(h).unwrap()));
+}

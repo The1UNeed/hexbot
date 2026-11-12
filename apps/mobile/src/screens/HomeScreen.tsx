@@ -160,6 +160,8 @@ export function HomeScreen(props: HomeScreenProps) {
   const system = !!props.systemHeader
   const [menu, setMenu] = useState<Pressed | null>(null)
   const [renaming, setRenaming] = useState<ConversationSummary | null>(null)
+  // A name the daemon refused comes back to the sheet, with why.
+  const [refused, setRefused] = useState<{ error: string; name: string } | null>(null)
   const shown = useMemo(() => listConversations(conversations, query), [conversations, query])
   // Pinned chats sit above the list as faces; a search lists everything as rows.
   const pinned = query ? [] : shown.filter(c => c.pinned)
@@ -345,7 +347,15 @@ export function HomeScreen(props: HomeScreenProps) {
       />
       <RenameSheet
         conversation={renaming}
-        onClose={() => setRenaming(null)}
+        onClose={() => {
+          setRenaming(null)
+          setRefused(null)
+        }}
+        onRefused={(c, name, error) => {
+          setRefused({ error, name })
+          setRenaming(c)
+        }}
+        refused={refused}
         onRename={props.onRename}
       />
     </Screen>
@@ -530,43 +540,47 @@ function RowMenu({
   )
 }
 
-/** Renames a bot (its name in the app; the handle stays) or a room. */
+/**
+ * Renames a bot (its name in the app; the handle stays) or a room. The new
+ * name shows as the sheet closes; a name the daemon refuses comes back here.
+ */
 function RenameSheet({
   conversation: c,
   onClose,
-  onRename
+  onRefused,
+  onRename,
+  refused
 }: {
   conversation: ConversationSummary | null
   onClose: () => void
+  onRefused: (c: ConversationSummary, name: string, error: string) => void
   onRename?: (c: ConversationSummary, name: string) => Promise<unknown>
+  refused: { error: string; name: string } | null
 }) {
   const [name, setName] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const [saving, setSaving] = useState(false)
   const [shownFor, setShownFor] = useState<ConversationSummary | null>(null)
+  const [shownRefusal, setShownRefusal] = useState(refused)
 
-  // Each open starts from the current name.
-  if (c !== shownFor) {
+  // Each open starts from the current name, or from the one refused.
+  if (c !== shownFor || refused !== shownRefusal) {
     setShownFor(c)
-    setName(c?.name ?? '')
-    setError(null)
+    setShownRefusal(refused)
+    setName(refused?.name ?? c?.name ?? '')
+    setError(refused?.error ?? null)
   }
 
   const trimmed = name.trim()
   const save = () => {
     if (!c || !onRename || !trimmed) return
-    setSaving(true)
-    setError(null)
-    onRename(c, trimmed)
-      .then(onClose)
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
-      .finally(() => setSaving(false))
+    const saved = onRename(c, trimmed)
+    onClose()
+    saved.catch((e: unknown) => onRefused(c, trimmed, e instanceof Error ? e.message : String(e)))
   }
 
   return (
     <ModalSheet
       action={{
-        busy: saving,
         disabled: !trimmed || trimmed === c?.name,
         label: 'Rename',
         onPress: save

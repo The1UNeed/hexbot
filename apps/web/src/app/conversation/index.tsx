@@ -41,7 +41,6 @@ import {
   newInputId,
   promptSubmit,
   sectionsList,
-  sessionInterrupt,
   sessionRecall
 } from '../../lib/api'
 import { botFace } from '../../lib/avatar-builder'
@@ -1540,6 +1539,8 @@ function Composer({
 
   const [files, setFiles] = useState<DraftAttachment[]>([])
   const [sending, setSending] = useState(false)
+  // Sent while the chat was still opening: it goes the moment the chat opens.
+  const [queued, setQueued] = useState(false)
   // The newest send owns `sending`: an earlier one ending never unlocks it.
   const sends = useRef(0)
   const picker = useRef<HTMLInputElement>(null)
@@ -1555,7 +1556,13 @@ function Composer({
     ])
 
   const send = async () => {
-    if (!sessionId || sending || (!text.trim() && !files.length)) {
+    if (sending || (!text.trim() && !files.length)) {
+      return
+    }
+
+    if (!sessionId) {
+      setQueued(true)
+
       return
     }
 
@@ -1678,6 +1685,23 @@ function Composer({
   }
 
   useEffect(() => {
+    if (queued && sessionId) {
+      setQueued(false)
+      void send()
+    }
+    // `send` reads the latest text and files when the chat opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queued, sessionId])
+
+  // A chat you switch to takes your typing at once. A touch screen keeps its
+  // keyboard down until you tap the field.
+  useEffect(() => {
+    if (window.matchMedia?.('(pointer: fine)').matches) {
+      document.getElementById('conversation-composer')?.focus({ preventScroll: true })
+    }
+  }, [])
+
+  useEffect(() => {
     const node = document.getElementById('conversation-composer') as HTMLTextAreaElement | null
 
     if (node) {
@@ -1777,11 +1801,10 @@ function Composer({
         ) : null
       }
       accessory={accessory}
-      canSend={Boolean(sessionId) && (Boolean(text.trim()) || files.length > 0)}
+      canSend={Boolean(text.trim()) || files.length > 0}
       onAttach={() => picker.current?.click()}
       onSend={() => void send()}
-      onStop={() => sessionId && void sessionInterrupt(sessionId)}
-      sending={sending}
+      sending={sending || queued}
       status={status}
       streaming={streaming}
     >
@@ -1795,7 +1818,6 @@ function Composer({
       <textarea
         aria-label="Message"
         className={composerFieldClass}
-        disabled={!sessionId}
         id="conversation-composer"
         onChange={event => {
           setText(event.target.value)
@@ -1949,8 +1971,9 @@ function BotConversation() {
   )
 
   // While the owner chat validated here is checked again (a reconnect, a
-  // daemon restart, the same URL), its composer stays, disabled, so staged
-  // files survive. Another daemon, bot, chat or a peer thread starts without one.
+  // daemon restart, the same URL), its composer stays, so staged files and
+  // typing survive; a send waits for the chat. Another daemon, bot, chat or
+  // a peer thread starts without one.
   const composer = ready
     ? !resolved.peer
     : Boolean(
@@ -3119,7 +3142,7 @@ function BotConversation() {
               sessionId={liveId}
               // A stopped turn is the Retry pill under it; the field stays calm.
               status={status === 'stopped' ? 'idle' : status}
-              // Stop shows for the whole turn, tools and cards included.
+              // The bot works for the whole turn, tools and cards included.
               streaming={Boolean(transcript?.turnActive) || streaming}
             />
           </div>

@@ -81,6 +81,8 @@ export function useMobile() {
   const botsRef = useRef(bots)
   botsRef.current = bots
   const [rooms, setRooms] = useState<Room[]>([])
+  const roomsRef = useRef(rooms)
+  roomsRef.current = rooms
   const [sections, setSections] = useState<Section[]>([])
   const [info, setInfo] = useState<DaemonInfo | null>(null)
   const infoRef = useRef<DaemonInfo | null>(null)
@@ -115,6 +117,12 @@ export function useMobile() {
   // Navigation starts before canonical lookup; history sync has its own sequence.
   const navigation = useRef(0)
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /**
+   * Changes shown before the daemon answered, by `bot:<name>` or `room:<id>`.
+   * Lists read before the change settled keep showing them; `settled` is the
+   * refresh count when the daemon took it, so only a later list replaces them.
+   */
+  const shown = useRef(new Map<string, { patch: object; settled?: number; token: object }>())
   const mounted = useRef(true)
   /** Sessions holding files uploaded here for a message that was not sent. */
   const unsent = useRef(new Set<string>())
@@ -245,6 +253,14 @@ export function useMobile() {
         changed.current.clear()
         heldFor.current = i.install_id ?? null
       }
+      for (const [key, change] of shown.current)
+        if (change.settled !== undefined && sequence > change.settled) shown.current.delete(key)
+      const overlay = <T extends object>(key: string, row: T): T => {
+        const change = shown.current.get(key)
+        return change ? { ...row, ...change.patch } : row
+      }
+      b.bots = b.bots.map(bot => overlay(`bot:${bot.name}`, bot))
+      r.rooms = r.rooms.map(room => overlay(`room:${room.id}`, room))
       setBots(b.bots)
       prefetchRef.current(b.bots)
       setRooms(r.rooms)
@@ -268,6 +284,57 @@ export function useMobile() {
       return i
     },
     [rpc, clearModels, leave, cancelNavigation]
+  )
+  /**
+   * Shows a change to a bot or a room at once, such as a pin or a new name,
+   * then asks the daemon. A refusal puts the old values back; the daemon's
+   * change event brings the lists in line either way.
+   */
+  const change = useCallback(
+    async <T>(
+      target: { kind: 'bot'; name: string } | { kind: 'room'; id: string },
+      patch: Partial<Bot> & Partial<Room>,
+      work: () => Promise<T>
+    ): Promise<T> => {
+      const key = target.kind === 'bot' ? `bot:${target.name}` : `room:${target.id}`
+      const token = {}
+      const keys = Object.keys(patch) as (keyof typeof patch)[]
+      let before: Record<string, unknown> | null = null
+      const apply = <R extends object>(row: R, values: object) => ({ ...row, ...values })
+      if (target.kind === 'bot') {
+        const bot = botsRef.current.find(item => item.name === target.name)
+        if (bot) before = Object.fromEntries(keys.map(k => [k, bot[k as keyof Bot]]))
+        setBots(list => list.map(item => (item.name === target.name ? apply(item, patch) : item)))
+      } else {
+        const room = roomsRef.current.find(item => item.id === target.id)
+        if (room) before = Object.fromEntries(keys.map(k => [k, room[k as keyof Room]]))
+        setRooms(list => list.map(item => (item.id === target.id ? apply(item, patch) : item)))
+      }
+      shown.current.set(key, { patch: { ...shown.current.get(key)?.patch, ...patch }, token })
+      try {
+        const result = await work()
+        const current = shown.current.get(key)
+        if (current?.token === token) current.settled = refreshSequence.current
+        return result
+      } catch (error) {
+        if (shown.current.get(key)?.token === token) {
+          shown.current.delete(key)
+          if (before) {
+            const values = before
+            if (target.kind === 'bot')
+              setBots(list =>
+                list.map(item => (item.name === target.name ? apply(item, values) : item))
+              )
+            else
+              setRooms(list =>
+                list.map(item => (item.id === target.id ? apply(item, values) : item))
+              )
+          }
+        }
+        throw error
+      }
+    },
+    []
   )
   const syncRoom = useCallback(
     async (id: string) => {
@@ -1154,6 +1221,7 @@ export function useMobile() {
     /** A provider's models, fetched once for every screen showing them. */
     models: listModels,
     refresh,
+    change,
     syncChat,
     accept,
     activate,

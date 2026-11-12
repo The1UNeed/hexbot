@@ -258,6 +258,10 @@ function MobileApp({ children }: { children?: ReactNode }) {
   const [focus, setFocus] = useState<{ id: string; nonce: number } | null>(null)
   const [searchMemory, setSearchMemory] = useState('')
   const [draft, setDraft] = useState('')
+  // What was typed while a tapped chat opened, by its row: that chat's first draft.
+  const [early, setEarly] = useState<{ row: string; text: string } | null>(null)
+  const earlyRef = useRef(early)
+  earlyRef.current = early
   const [attachments, setAttachments] = useState<AttachmentView[]>([])
   const [question, setQuestion] = useState<{
     requestId: string
@@ -361,9 +365,18 @@ function MobileApp({ children }: { children?: ReactNode }) {
     })().catch(e => mobileRef.current.setError(messageOf(e)))
   }, [nativeUrl, callback])
   useEffect(() => {
+    const opened = mobile.route
+    const row =
+      opened?.kind === 'room'
+        ? `room-${opened.room.id}`
+        : opened?.kind === 'section' && !opened.section.peer_bot
+          ? `bot-${opened.bot.name}`
+          : null
+    const typed = earlyRef.current
     setVisual(null)
     setFile(null)
-    setDraft('')
+    setDraft(typed && typed.row === row ? typed.text : '')
+    setEarly(null)
     setAttachments([])
     attachmentData.current.clear()
     setQuestion(null)
@@ -1274,7 +1287,8 @@ function MobileApp({ children }: { children?: ReactNode }) {
     onSend: send,
     draft,
     onDraftChange: setDraft,
-    onStop: () => act(mobile.stop),
+    // A bot's chat has no Stop: Recall takes a message back. A room keeps it.
+    onStop: route?.kind === 'room' ? () => act(mobile.stop) : undefined,
     attachments,
     onRemoveAttachment: removeAttachment,
     onApprove: approve,
@@ -1341,26 +1355,44 @@ function MobileApp({ children }: { children?: ReactNode }) {
     const b = c.kind === 'checkins' ? primaryBot : botByName(c.id)
     if (b) setPanels([{ kind: 'bot', bot: b }])
   }
+  // Pins, names and read marks show at once; the daemon's change event
+  // refreshes the lists, and a refusal puts the old values back.
   const pinConversation = (c: ConversationSummary, pinned: boolean) =>
     act(async () => {
+      const before =
+        c.kind === 'room'
+          ? mobile.rooms.find(r => r.id === c.id)?.pinned_at
+          : botByName(c.id)?.pinned_at
+      // Pinning again keeps its place among the pinned, as the daemon does.
+      const pinned_at = pinned ? (before ?? Date.now() / 1000) : null
       await (c.kind === 'room'
-        ? mobile.rpc('hexbot.rooms.pin', { id: c.id, pinned })
-        : mobile.rpc('hexbot.bots.pin', { name: c.id, pinned }))
-      await mobile.refresh()
+        ? mobile.change({ kind: 'room', id: c.id }, { pinned_at }, () =>
+            mobile.rpc('hexbot.rooms.pin', { id: c.id, pinned })
+          )
+        : mobile.change({ kind: 'bot', name: c.id }, { pinned_at }, () =>
+            mobile.rpc('hexbot.bots.pin', { name: c.id, pinned })
+          ))
     })
   const markConversationRead = (c: ConversationSummary) =>
     act(async () => {
       const b = botByName(c.id)
       if (c.kind !== 'bot' || !b) return
-      await Promise.all(unreadOf(b).map(s => mobile.rpc('hexbot.sections.mark_read', { id: s.id })))
-      await mobile.refresh()
+      const unread = new Set(unreadOf(b).map(s => s.id))
+      const sections_recent = b.sections_recent.map(s =>
+        unread.has(s.id) ? { ...s, done_at: null } : s
+      )
+      await mobile.change({ kind: 'bot', name: b.name }, { sections_recent }, () =>
+        Promise.all([...unread].map(id => mobile.rpc('hexbot.sections.mark_read', { id })))
+      )
     })
-  const renameConversation = async (c: ConversationSummary, name: string) => {
-    await (c.kind === 'room'
-      ? mobile.rpc('hexbot.rooms.update', { id: c.id, name })
-      : mobile.rpc('hexbot.bots.update', { name: c.id, display_name: name }))
-    await mobile.refresh()
-  }
+  const renameConversation = (c: ConversationSummary, name: string) =>
+    c.kind === 'room'
+      ? mobile.change({ kind: 'room', id: c.id }, { name }, () =>
+          mobile.rpc('hexbot.rooms.update', { id: c.id, name })
+        )
+      : mobile.change({ kind: 'bot', name: c.id }, { display_name: name }, () =>
+          mobile.rpc('hexbot.bots.update', { name: c.id, display_name: name })
+        )
   const openConversation = (c: ConversationSummary) => {
     if (demo) {
       setBotPage(c.id)
@@ -1587,9 +1619,9 @@ function MobileApp({ children }: { children?: ReactNode }) {
         onSend={() => {}}
         onApprove={() => {}}
         sendDisabledReason="Opening conversation"
-        // Nothing typed here could be kept: the chat that opens starts its own draft.
-        draft=""
-        onDraftChange={() => {}}
+        // What you type here becomes the chat's draft once it opens.
+        draft={early?.row === askedRow ? early.text : ''}
+        onDraftChange={text => askedRow && setEarly({ row: askedRow, text })}
         error={mobile.error}
         onDismissError={() => mobile.setError(null)}
         onRetry={() => openConversation(asked)}

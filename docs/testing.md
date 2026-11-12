@@ -227,6 +227,13 @@ route and composer checked before continuing.
   dbus-run-session -- xvfb-run -a -s '-screen 0 1600x1200x24' sh -c 'openbox >/dev/null 2>&1 & node scripts/dev/native-ui-smoke.mjs --desktop --edition=client'
   ```
 - Web bundle: `pnpm --filter ./apps/web run typecheck && pnpm --filter ./apps/web run test --run && pnpm --filter ./apps/web run lint && pnpm --filter ./apps/web run build`.
+- Speed of the app, in a real browser against a real daemon with a local
+  model (no live state): `node scripts/dev/switch-bench.mjs` times switching
+  between bots with long chats; `node scripts/dev/actions-bench.mjs` times Pin,
+  Unpin, Rename, Mark as read and a switch to a bot whose chat is not open yet,
+  until its message box takes typing. Build the daemon and web bundle first.
+  `LATENCY_MS` adds network delay (Tailscale 30, Hex Connect 60), and
+  `WEB_DIST` and `HEXBOT_BIN` measure another build, such as main's, to compare.
 - POSIX runtime selection and readiness: `node scripts/dev/runtime-selection-smoke.mjs`.
   Builds real `.58` and `.59` daemons with equal `builtAt` from a disposable source
   copy. Damaged identity metadata leaves `.58` running. Permission damage to a

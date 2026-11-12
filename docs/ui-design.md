@@ -248,7 +248,10 @@ with Viewport Segments place both poses on the exact halves.
   raised by the daemon (code runs, browser scripts, cron) show Approve and
   Deny only. The card stays in the transcript after the decision, marked
   with the outcome.
-- While a turn runs the composer's send button becomes Stop. Text does not
+- A bot's chat has no Stop: once a message is sent, Recall takes it back.
+  In a room, while bots work, the composer's send button becomes Stop until
+  you type. The field takes typing as soon as a chat shows, while it still
+  opens; a message sent then goes once it has opened. Text does not
   type itself out; each message appears whole and springs in. In a room the
   bot's words arrive as its room message when its turn ends.
 - Attachments sit above the message's bubble. A picture shows whole and

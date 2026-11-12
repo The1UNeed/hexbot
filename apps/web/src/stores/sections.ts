@@ -14,6 +14,7 @@ import {
   sectionsCreate,
   sectionsHistory,
   sectionsList,
+  sectionsMarkRead,
   sectionsOpen,
   sectionsUnarchive,
   sessionHistory
@@ -34,6 +35,7 @@ import {
 } from '../lib/device-cache'
 import type { Bot, BotStatus, DaemonInfo, Message, Section } from '../lib/types'
 
+import { useBots } from './bots'
 import { connectionRead, useConnection } from './connection'
 import { releaseHeartbeatMessages, useTranscripts } from './transcripts'
 
@@ -655,8 +657,7 @@ export const useSections = create<SectionsState>((set, get) => ({
       // What this window holds shows at once; the disk only when it holds nothing.
       let memory = heldHistory(id)
 
-      const disk =
-        memory || !access ? undefined : await cachedHistory<HistoryRow>(scope, id)
+      const disk = memory || !access ? undefined : await cachedHistory<HistoryRow>(scope, id)
 
       if (!current()) {
         throw new Error('The selected daemon changed. Open this chat again.')
@@ -822,9 +823,7 @@ export const useSections = create<SectionsState>((set, get) => ({
             identified
               ? {
                   inputsAtRead,
-                  reports: messages
-                    .filter(row => row.dream === true)
-                    .map(row => String(row.row_id))
+                  reports: messages.filter(row => row.dream === true).map(row => String(row.row_id))
                 }
               : undefined,
             { busy, pending: pending_requests, readAt }
@@ -923,7 +922,8 @@ export const useSections = create<SectionsState>((set, get) => ({
       const memory = heldHistory(id)
       const disk = memory || !access ? undefined : await cachedHistory<HistoryRow>(access.scope, id)
 
-      const known = memory ?? (disk && { ...disk, complete: disk.complete === true, touched: -rank })
+      const known =
+        memory ?? (disk && { ...disk, complete: disk.complete === true, touched: -rank })
 
       if (!current()) {
         return
@@ -1189,6 +1189,69 @@ useConnection.subscribe((next, previous) => {
     }
   }
 })
+
+/** Sets `done_at` where `done` names a section and `applies`, here and in each bot's recent chats. */
+function setDone(done: Map<string, Section['done_at']>, applies: (section: Section) => boolean) {
+  const changes = (section: Section) => done.has(section.id) && applies(section)
+
+  const changed = (section: Section) =>
+    changes(section) ? { ...section, done_at: done.get(section.id) } : section
+
+  useSections.setState(state =>
+    Object.values(state.byId).some(changes)
+      ? {
+          byId: Object.fromEntries(
+            Object.entries(state.byId).map(([id, section]) => [id, changed(section)])
+          )
+        }
+      : state
+  )
+  useBots.setState(state =>
+    Object.values(state.byName).some(bot => bot.sections_recent?.some(changes))
+      ? {
+          byName: Object.fromEntries(
+            Object.entries(state.byName).map(([name, bot]) => [
+              name,
+              bot.sections_recent?.some(changes)
+                ? { ...bot, sections_recent: bot.sections_recent.map(changed) }
+                : bot
+            ])
+          )
+        }
+      : state
+  )
+}
+
+/**
+ * Marks chats read at once, in the list and in each bot's recent chats, then
+ * tells the daemon. A refused chat shows unread again unless it finished since.
+ */
+export function markSectionsRead(ids: string[]): Promise<void> {
+  const before = new Map<string, Section['done_at']>()
+
+  for (const section of [
+    ...Object.values(useSections.getState().byId),
+    ...Object.values(useBots.getState().byName).flatMap(bot => bot.sections_recent ?? [])
+  ]) {
+    if (ids.includes(section.id) && section.done_at != null) {
+      before.set(section.id, section.done_at)
+    }
+  }
+
+  setDone(new Map([...before.keys()].map(id => [id, null])), section => section.done_at != null)
+
+  return Promise.all(
+    ids.map(id =>
+      sectionsMarkRead(id).catch((error: unknown) => {
+        if (before.has(id)) {
+          setDone(new Map([[id, before.get(id)]]), section => section.done_at == null)
+        }
+
+        throw error
+      })
+    )
+  ).then(() => undefined)
+}
 
 export function sectionsActions(): SectionsState {
   return useSections.getState()
