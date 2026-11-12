@@ -271,11 +271,20 @@ more freedom and more capability than a hosted product can offer.
   including without a card when the owner requested that exact change.
 - Auto's reviewer (`runtime_review.rs`): a full-access command, a file change
   outside the workspace, a connected tool that changes something, and a
-  browser page script go to a tool-free one-shot call on the section's model.
+  browser page script go to a tool-free one-shot call on the section's model,
+  or on the review model the user chose in Settings, Approvals
+  (`review_model`, one for every bot; removing its provider clears it, and a
+  review that fails on it shows the card, without trying the bot's model).
   It reads the owner's visible messages in the section and their room
   messages, newest first, plus the step's whole input, working directory,
   checked file destination and overwrite status. It loads no project instruction files,
   skills or tools. Assistant text, tool output and bot-added messages stay out.
+  A step the owner approves on a reviewed card is shown to later reviews in
+  the same turn (the newest twelve, as the card showed them), so ten edits to
+  one page ask once; it is evidence for the reviewer, not a grant, and the
+  next turn starts without it. A connected service names things by ids the
+  reviewer cannot check, so it judges the action and the content: an edit that
+  fits the request runs, and deleting, sharing or notifying people asks.
   Pi starts in an empty directory and explicitly excludes `APPEND_SYSTEM.md`.
   ACP reviewers also use an isolated temporary home and Copilot/XDG folders,
   keeping only explicit GitHub-token authentication. Stored CLI login is not

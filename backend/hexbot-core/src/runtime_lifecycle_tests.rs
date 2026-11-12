@@ -2179,6 +2179,48 @@ const fs=require('node:fs')"#,
         serde_json::from_slice(&fs::read(home.path().join("review-request.json")).unwrap())
             .unwrap();
     assert_eq!(sent["earlier_user_messages_omitted"], true);
+    assert!(sent.get("user_approved_steps").is_none());
+    // The owner approves that card. Later reviews in the turn read the
+    // approval, so the same kind of step need not ask again...
+    runtime
+        .call(
+            "alice",
+            "approval.respond",
+            &json!({"session_id":s.id,"request_id":"pi-long","choice":"once"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let mut reviewed = async |id: &str| {
+        runtime.event(&s, ask(id, "broken")).unwrap();
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.frame["params"]["type"] == "approval.request" {
+                assert_eq!(event.frame["params"]["payload"]["request_id"], id);
+                break;
+            }
+        }
+        serde_json::from_slice::<Value>(&fs::read(home.path().join("review-request.json")).unwrap())
+            .unwrap()
+    };
+    let sent = reviewed("pi-after-approval").await;
+    assert_eq!(
+        sent["user_approved_steps"],
+        json!([{"tool":"bash","command":"medium"}])
+    );
+    // ...and the next turn starts without it.
+    s.state.lock().unwrap().end_turn();
+    let sent = reviewed("pi-next-turn").await;
+    assert!(sent.get("user_approved_steps").is_none());
+    // A review model chosen in Settings judges in place of the bot's own.
+    assert_ne!(reviewer_model(), "checker");
+    conn.execute(
+        "INSERT OR REPLACE INTO settings VALUES('review_model','\"openai/checker\"')",
+        [],
+    )
+    .unwrap();
+    reviewed("pi-review-model").await;
+    assert_eq!(reviewer_model(), "checker");
     runtime.shutdown().await;
 }
 
@@ -3055,6 +3097,26 @@ async fn actual_pi_reviewer_excludes_instructions_and_tools_and_accounts_usage()
         assert_ne!(Path::new(cwd), home.path());
         assert_ne!(Path::new(cwd), home.workspace());
     }
+    // A review model chosen in Settings need not be one a bot runs on: Pi
+    // takes a model id it has no entry for.
+    let chosen = json!({"provider":"lmstudio","model":"chosen-reviewer"});
+    let (text, failed) = runtime
+        .one_shot(
+            "owl",
+            &chosen,
+            Some(&s),
+            review::PROMPT,
+            &payload,
+            Duration::from_secs(20),
+        )
+        .await
+        .unwrap();
+    assert!(!failed);
+    assert_eq!(review::verdict(&text, false), None);
+    assert_eq!(
+        requests.lock().unwrap().last().unwrap()["model"],
+        "chosen-reviewer"
+    );
     runtime.shutdown().await;
     server.abort();
 }

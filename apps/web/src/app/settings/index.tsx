@@ -764,15 +764,10 @@ function SubscriptionRow({
   )
 }
 
-function DefaultModels() {
-  const settings = useSettings(state => state.settings)
+/** Every model on a connected provider, as `provider/model` choices. */
+function useModelChoices() {
   const providers = useSettings(state => state.providers)
-  const refresh = useSettings(state => state.refresh)
-  const patch = useSettings(state => state.patch)
   const [choices, setChoices] = useState<{ label: string; value: string }[]>([])
-  useEffect(() => {
-    void refresh()
-  }, [refresh])
   useEffect(() => {
     const configured = providers.filter(item => item.configured === true)
     void Promise.all(
@@ -788,6 +783,18 @@ function DefaultModels() {
       )
     ).then(lists => setChoices(lists.flat()))
   }, [providers])
+
+  return choices
+}
+
+function DefaultModels() {
+  const settings = useSettings(state => state.settings)
+  const refresh = useSettings(state => state.refresh)
+  const patch = useSettings(state => state.patch)
+  const choices = useModelChoices()
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
 
   return (
     <Group
@@ -1245,19 +1252,28 @@ function formatDate(value: null | number): string {
   return value ? new Date(value * (value < 10_000_000_000 ? 1000 : 1)).toLocaleString() : 'never'
 }
 
+/** The review model choice that means no model of its own. */
+const OWN_MODEL = '__own__'
+
 export function ApprovalsSettings(): React.JSX.Element {
   const role = useMe(state => state.me?.role)
   const settings = useSettings(state => state.settings)
   const refresh = useSettings(state => state.refresh)
   const patch = useSettings(state => state.patch)
   const [info, setInfo] = useState<DaemonInfo | undefined>(undefined)
+  const refreshProviders = useSettings(state => state.refreshProviders)
+  const choices = useModelChoices()
+  const reviewModel = settings?.review_model ?? OWN_MODEL
   useEffect(() => {
     void refresh()
+    // The review model picker lists the connected providers' models. Without
+    // them it still shows the saved choice.
+    void refreshProviders().catch(() => {})
     // Without daemon info, as from an older daemon, there is nothing to warn about.
     void daemonInfo()
       .then(setInfo)
       .catch(() => {})
-  }, [refresh])
+  }, [refresh, refreshProviders])
 
   return (
     <>
@@ -1277,19 +1293,52 @@ export function ApprovalsSettings(): React.JSX.Element {
             : 'No OS sandbox is available, so Manual and Auto ask before every shell command and code run. Install bubblewrap on the computer running the daemon, then restart the daemon to restore isolation.'}
         </Notice>
       ) : null}
-      <Group title="Mode">
-        <div aria-label="Approval mode" className={dividerClass} role="radiogroup">
-          {approvalModes(role, settings?.approval_mode).map(mode => (
-            <ChoiceRow
-              checked={settings?.approval_mode === mode.value}
-              description={mode.description}
-              key={mode.value}
-              onSelect={() => void patch({ approval_mode: mode.value })}
-              title={mode.label}
+      <div className="space-y-8">
+        <Group title="Mode">
+          <div aria-label="Approval mode" className={dividerClass} role="radiogroup">
+            {approvalModes(role, settings?.approval_mode).map(mode => (
+              <ChoiceRow
+                checked={settings?.approval_mode === mode.value}
+                description={mode.description}
+                key={mode.value}
+                onSelect={() => void patch({ approval_mode: mode.value })}
+                title={mode.label}
+              />
+            ))}
+          </div>
+        </Group>
+        {/* A daemon from before the review model has no such setting. */}
+        {settings && 'review_model' in settings ? (
+          <Group
+            footer="In Auto, this model reviews each step outside the sandbox, for every bot. A small or local model judges less well."
+            title="Review"
+          >
+            <Row
+              control={
+                <div className="w-[min(260px,42vw)]">
+                  <Select
+                    label="Review model"
+                    onValueChange={value =>
+                      void patch({ review_model: value === OWN_MODEL ? null : value })
+                    }
+                    options={[
+                      { label: "Each bot's own model", value: OWN_MODEL },
+                      ...choices,
+                      // The saved model stays listed while its provider's models load.
+                      ...(choices.some(item => item.value === reviewModel) ||
+                      reviewModel === OWN_MODEL
+                        ? []
+                        : [{ label: reviewModel, value: reviewModel }])
+                    ]}
+                    value={reviewModel}
+                  />
+                </div>
+              }
+              title="Review model"
             />
-          ))}
-        </div>
-      </Group>
+          </Group>
+        ) : null}
+      </div>
     </>
   )
 }
