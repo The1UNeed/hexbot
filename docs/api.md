@@ -1108,13 +1108,19 @@ writes the page into it after a bootstrap that applies the theme as CSS
 variables (`--background`, `--foreground`, `--chart-1` to `--chart-6`, ...),
 reports the page's height, and passes http(s) link clicks to the app. Host
 and frame talk in MCP Apps messages (`ui/notifications/host-context-changed`,
-`ui/notifications/size-changed`, `ui/open-link`). The page cannot prove a
-click was the user's, so a link only appears as an Open button under the
-visual, and the browser opens it from there. Daemon pages (and `pnpm dev`)
-send `Content-Security-Policy: frame-src 'self'`, so a visual cannot navigate
-its frame to another site; the Electron app's own policy does the same, it
-serves the frame page without that policy, and it blocks any frame
-navigation other than to it.
+`ui/notifications/size-changed`, `ui/open-link`). With the page, the app
+hands the frame a `MessageChannel` port that the bootstrap takes before the
+page's own scripts run, and it sends a link on that port only from a trusted
+click on it. The app answers only the frame page's first ready, so a visual
+cannot ask for another port. The app opens such a link at once while the click's activation
+of its window lasts (`navigator.userActivation`). A `ui/open-link` the page
+posts any other way appears as an Open button under the visual, and the
+browser opens it from there.
+Daemon pages (and `pnpm dev`) send
+`Content-Security-Policy: frame-src 'self'`, so a visual cannot navigate its
+frame to another site; the Electron app's own policy does the same, it serves
+the frame page without that policy, and it blocks any frame navigation other
+than to it.
 
 The `hexbot_share_file {path}` tool hands the user one file the bot chose: a
 document, an export, a finished result. Like a visual it is a base tool, left

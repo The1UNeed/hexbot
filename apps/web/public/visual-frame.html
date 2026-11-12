@@ -19,9 +19,16 @@
         var data = event.data
         if (event.source !== parent || !data || data.method !== 'hexbot/visual/show') return
         removeEventListener('message', show)
-        document.open()
-        document.write(String(data.params.document))
-        document.close()
+        var port = event.ports[0]
+        // Written from a task of its own: inside this handler the page's
+        // scripts could read the port from window.event. The bootstrap takes
+        // it before they run, and sends only links the user clicked on it.
+        setTimeout(function () {
+          document.open()
+          window.hexbotLinks = port
+          document.write(String(data.params.document))
+          document.close()
+        })
       })
       parent.postMessage({ jsonrpc: '2.0', method: 'hexbot/visual/ready' }, '*')
     </script>
