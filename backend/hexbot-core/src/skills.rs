@@ -880,13 +880,19 @@ fn migrate_with(home: &Path, bundled: &Path) -> Result<()> {
         .write()
         .map_err(|_| Error::new(5200, "skills lock unavailable"))?;
     let conn = db::open(home)?;
-    let key = "migration:shared-skills-v1";
-    let done: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM settings WHERE key=?)",
-        [key],
-        |r| r.get(0),
-    )?;
-    if done || !bundled.is_dir() {
+    // Profile copies went first. Installs from before the native daemon also
+    // seeded every bundled skill into the library, where an unchanged copy
+    // hides each newer bundled version, so the library has its own pass.
+    let (profiles_key, library_key) = ("migration:shared-skills-v1", "migration:library-skills-v1");
+    let done = |key: &str| -> Result<bool> {
+        Ok(conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM settings WHERE key=?)",
+            [key],
+            |r| r.get(0),
+        )?)
+    };
+    let (profiles_done, library_done) = (done(profiles_key)?, done(library_key)?);
+    if (profiles_done && library_done) || !bundled.is_dir() {
         return Ok(());
     }
     let mut bundles = BTreeMap::new();
@@ -901,19 +907,33 @@ fn migrate_with(home: &Path, bundled: &Path) -> Result<()> {
             history.entry(name).or_default().push(hash);
         }
     }
-    let profiles = home.join("profiles");
-    safe_path(home, &profiles)?;
-    if profiles.exists() {
-        for profile in fs::read_dir(&profiles)? {
-            let profile = profile?;
-            if !profile.file_type()?.is_dir() {
-                continue;
+    if !profiles_done {
+        let profiles = home.join("profiles");
+        safe_path(home, &profiles)?;
+        if profiles.exists() {
+            for profile in fs::read_dir(&profiles)? {
+                let profile = profile?;
+                if !profile.file_type()?.is_dir() {
+                    continue;
+                }
+                let root = profile.path().join("skills");
+                deduplicate(&root, bundled, &history)?;
             }
-            let root = profile.path().join("skills");
-            deduplicate(&root, bundled, &history)?;
         }
+        conn.execute(
+            "INSERT INTO settings(key,value) VALUES (?, 'true')",
+            [profiles_key],
+        )?;
     }
-    conn.execute("INSERT INTO settings(key,value) VALUES (?, 'true')", [key])?;
+    if !library_done {
+        let library = home.join("skills");
+        safe_path(home, &library)?;
+        deduplicate(&library, bundled, &history)?;
+        conn.execute(
+            "INSERT INTO settings(key,value) VALUES (?, 'true')",
+            [library_key],
+        )?;
+    }
     Ok(())
 }
 
@@ -1138,6 +1158,56 @@ mod tests {
         }
     }
 
+    #[test]
+    fn library_copies_seeded_before_the_native_daemon_stop_hiding_bundled_skills() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        // The profile pass ran on an earlier version; the library pass is new.
+        db::open(home.path())
+            .unwrap()
+            .execute(
+                "DELETE FROM settings WHERE key='migration:library-skills-v1'",
+                [],
+            )
+            .unwrap();
+        let bundled = tempfile::tempdir().unwrap();
+        let library = home.path().join("skills");
+        let old = put(bundled.path(), "desk/computer-use", "old version");
+        let old_hash = fingerprint(&old).unwrap().unwrap();
+        copy_tree(&old, &library.join("desk/computer-use")).unwrap();
+        put(bundled.path(), "desk/computer-use", "new version");
+        put(bundled.path(), "desk/notion", "new version");
+        put(&library, "desk/notion", "user edited");
+        put(&library, "mine/own", "written by the user");
+        fs::write(library.join(".bundled_manifest"), "computer-use:0").unwrap();
+        fs::write(
+            bundled.path().join(".history.json"),
+            json!({"computer-use":[old_hash]}).to_string(),
+        )
+        .unwrap();
+        migrate_with(home.path(), bundled.path()).unwrap();
+        assert!(!library.join("desk/computer-use").exists());
+        assert!(library.join("desk/notion/SKILL.md").is_file());
+        assert!(library.join("mine/own/SKILL.md").is_file());
+        let skills = resolve_with(home.path(), None, bundled.path()).unwrap();
+        let source = |name: &str| {
+            skills
+                .iter()
+                .find(|s| s.name == name)
+                .unwrap()
+                .source
+                .clone()
+        };
+        assert_eq!(source("computer-use"), "bundled");
+        assert_eq!(source("notion"), "library");
+        assert_eq!(source("own"), "library");
+        copy_tree(&old, &library.join("desk/computer-use")).unwrap();
+        migrate_with(home.path(), bundled.path()).unwrap();
+        assert!(
+            library.join("desk/computer-use").exists(),
+            "completed migration is not rerun"
+        );
+    }
     #[test]
     fn migration_removes_old_versions_and_category_remnants_but_keeps_edits() {
         let home = tempfile::tempdir().unwrap();
