@@ -108,15 +108,17 @@ Bots write math in LaTeX. The desktop app and the browser typeset it, in chats a
 
 A [dream](/docs/dreaming/) posts nothing in the chat; its summary is in the bot's settings, Memory. Reports an earlier version posted stay in the chat. The bot does not see them as something it said, and later dreams skip them.
 
-## Stop and delete
+## Recall and delete
 
-Use **Stop** to interrupt a running answer. The chat stays available, and you can send another message once the bot is idle. Queued background results run before your next message. A result accepted just after Stop finishes can start the next answer itself. A background result arriving while the answer stops waits until it has stopped, then continues the chat. The new answer can ask questions and request approvals. A question or approval the bot was waiting on goes away in every app.
+A bot's chat has no Stop button. To take back a message you sent, **Recall** it: hover over your latest message (or long-press it on the phone), and the bot stops, forgets it, and hands the text back to edit. A message you send while the bot works cuts its answer off and goes next. In a room, **Stop** interrupts the bots that are answering. Queued background results run before your next message. A background result arriving while an answer stops waits until it has stopped, then continues the chat. The new answer can ask questions and request approvals. A question or approval the bot was waiting on goes away in every app.
+
+You can type as soon as you switch to a bot, while its chat still opens. In the web and desktop apps, a message sent then goes once the chat has opened.
 
 In the web and desktop apps, the message box clears as soon as you send, and your message shows greyed with a spinner until the daemon takes it. If it has not gone through after 15 seconds, was refused, or could not reach the daemon, it shows a red **!** and **Not sent · Retry**; hover for the reason. Choose **Retry** or the **!** to send it again. If the bot got your message but could not answer, for example because its provider failed or is rate-limited, your message stays as sent and a **stopped** card under it says why. Its **Retry** takes that message back and sends it again, so the chat keeps one copy. Until the daemon takes a message, its text stays saved as the chat's draft, so reloading never loses it. Rooms show unsent messages the same way. The phone app shows an error under the chat instead.
 
 When an answer fails, the bot shows Stopped. In the web and desktop apps, Retry is available when the daemon can identify the input that failed. Older daemons offer no Retry for failed sends or answers. A failed send keeps its draft for you to check and send manually. Retry, or any new message you send in that chat, shows it as Working as soon as the answer starts, in every app. Work the bot starts on its own, such as a background result, leaves Stopped while it runs; any answer that finishes cleanly clears it. A room's failure stays until a room turn finishes. A bot shows Working only while it answers in its chat or a room, or uses the bots' computer; heartbeats, scheduled jobs, dreams and subagents otherwise run without it.
 
-A failed send or upload keeps the bot's current answer and Stop available, including with an older daemon. If the app cannot confirm whether your message was sent, Retry sends it again under the same key, and the daemon refuses a copy that already arrived.
+A failed send or upload keeps the bot's current answer running, including with an older daemon. If the app cannot confirm whether your message was sent, Retry sends it again under the same key, and the daemon refuses a copy that already arrived.
 
 Close a Stopped card with its **×** once you have read it. If the bot shows Stopped for this chat, that clears too. On the phone, the error under the chat has the same button.
 

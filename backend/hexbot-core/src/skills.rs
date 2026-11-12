@@ -4,10 +4,10 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     fs,
     path::{Component, Path, PathBuf},
-    sync::RwLock,
+    sync::{Mutex, OnceLock, RwLock},
 };
 
 pub(crate) static LOCK: RwLock<()> = RwLock::new(());
@@ -213,6 +213,62 @@ fn bundled_root() -> PathBuf {
     path.canonicalize().unwrap_or(path)
 }
 
+/// A skill file's description and needs, as of its size and modified time.
+type Described = (u64, Option<std::time::SystemTime>, String, Vec<Requirement>);
+
+/// What a SKILL.md says it does and needs. Each file is read and parsed again
+/// only once its size or modified time changes; every bot list and prompt
+/// otherwise reparsed all of them. Discovery still walks the folders, so a
+/// skill added or removed shows at once.
+fn described(main: &Path) -> Result<(String, Vec<Requirement>)> {
+    static DESCRIBED: OnceLock<Mutex<HashMap<PathBuf, Described>>> = OnceLock::new();
+    let cache = DESCRIBED.get_or_init(Default::default);
+    let stamp = fs::symlink_metadata(main)
+        .ok()
+        .filter(|meta| meta.is_file())
+        .map(|meta| (meta.len(), meta.modified().ok()));
+    if let Some((len, modified)) = stamp
+        && let Some((_, _, description, needs)) = cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(main)
+            .filter(|held| (held.0, held.1) == (len, modified))
+    {
+        return Ok((description.clone(), needs.clone()));
+    }
+    // Refuses anything but a regular file, as before.
+    let content = common::read_regular_text(main, 2 * 1024 * 1024)?;
+    let (meta, body) = frontmatter(&content);
+    let description = meta["description"]
+        .as_str()
+        .or_else(|| {
+            body.lines()
+                .find(|s| !s.trim().is_empty() && !s.trim_start().starts_with('#'))
+        })
+        .unwrap_or("")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(1000)
+        .collect::<String>();
+    let needs = requirements(&meta);
+    // As Git does with racy files: a file changed in the last moments could
+    // change again within its timestamp's resolution, so it is not kept.
+    let settled = |modified: Option<std::time::SystemTime>| {
+        modified
+            .and_then(|at| at.elapsed().ok())
+            .is_some_and(|age| age >= std::time::Duration::from_secs(2))
+    };
+    if let Some((len, modified)) = stamp.filter(|(_, modified)| settled(*modified)) {
+        cache.lock().unwrap_or_else(|e| e.into_inner()).insert(
+            main.to_path_buf(),
+            (len, modified, description.clone(), needs.clone()),
+        );
+    }
+    Ok((description, needs))
+}
+
 fn discover(
     root: &Path,
     path: &Path,
@@ -227,18 +283,7 @@ fn discover(
     safe_path(root, &main)?;
     if main.is_file() && path != root {
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        let content = common::read_regular_text(&main, 2 * 1024 * 1024)?;
-        let (meta, body) = frontmatter(&content);
-        let description = meta["description"]
-            .as_str()
-            .or_else(|| {
-                body.lines()
-                    .find(|s| !s.trim().is_empty() && !s.trim_start().starts_with('#'))
-            })
-            .unwrap_or("")
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
+        let (description, needs) = described(&main)?;
         let category = path
             .parent()
             .unwrap()
@@ -249,7 +294,7 @@ fn discover(
             name.clone(),
             Skill {
                 name,
-                description: description.chars().take(1000).collect(),
+                description,
                 category: (!category.is_empty()).then(|| category.into_owned()),
                 source: source.into(),
                 plugin: None,
@@ -259,7 +304,7 @@ fn discover(
                 ready: true,
                 missing: vec![],
                 enabled: true,
-                needs: requirements(&meta),
+                needs,
             },
         );
         return Ok(());
@@ -949,6 +994,44 @@ mod tests {
         )
         .unwrap();
         dir
+    }
+    #[test]
+    fn an_edited_skill_reads_again_even_at_the_same_size() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        let dir = put(&h.join("skills"), "work/edited", "first");
+        let file = dir.join("SKILL.md");
+        let age = |seconds| {
+            fs::File::options()
+                .write(true)
+                .open(&file)
+                .unwrap()
+                .set_modified(
+                    std::time::SystemTime::now() - std::time::Duration::from_secs(seconds),
+                )
+                .unwrap()
+        };
+        let description = || {
+            resolve(h, None)
+                .unwrap()
+                .into_iter()
+                .find(|skill| skill.name == "edited")
+                .unwrap()
+                .description
+        };
+        // Old enough to be kept, then read from what was kept.
+        age(60);
+        assert_eq!(description(), "first");
+        assert_eq!(description(), "first");
+        // The same length, a later time: read again.
+        put(&h.join("skills"), "work/edited", "fixed");
+        age(30);
+        assert_eq!(description(), "fixed");
+        // Changed just now, within a timestamp's resolution: never kept.
+        put(&h.join("skills"), "work/edited", "newer");
+        assert_eq!(description(), "newer");
+        put(&h.join("skills"), "work/edited", "later");
+        assert_eq!(description(), "later");
     }
     #[test]
     fn roster_discovery_matches_individual_reads_and_refreshes_between_calls() {

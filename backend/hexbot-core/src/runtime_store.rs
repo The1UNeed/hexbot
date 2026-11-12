@@ -57,13 +57,34 @@ pub(crate) fn with_tombstone<T>(home: &Path, work: impl FnOnce() -> Result<T>) -
     work()
 }
 
+/// The schema cookie each runtime database had once this process set it up.
+/// A connection to a file whose cookie still matches skips the schema batch,
+/// which otherwise reparsed every table and trigger on each open.
+fn prepared() -> &'static Mutex<HashMap<PathBuf, i64>> {
+    static PREPARED: OnceLock<Mutex<HashMap<PathBuf, i64>>> = OnceLock::new();
+    PREPARED.get_or_init(Default::default)
+}
 pub fn open(home: &Path) -> Result<Connection> {
     fs::create_dir_all(home)?;
-    let conn = Connection::open(home.join("hexbot-runtime.db"))?;
+    let path = home.join("hexbot-runtime.db");
+    let conn = Connection::open(&path)?;
     conn.busy_timeout(Duration::from_secs(5))?;
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+    // Any schema change moves the cookie, so a replaced, emptied or partly
+    // built file is set up again.
+    let cookie = |conn: &Connection| -> Result<i64> {
+        Ok(conn.query_row("PRAGMA schema_version", [], |r| r.get(0))?)
+    };
+    let known = prepared()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&path)
+        .copied();
+    if known.is_some() && known == Some(cookie(&conn)?) {
+        return Ok(conn);
+    }
     conn.execute_batch(
-        "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
-      CREATE TABLE IF NOT EXISTS native_sessions(stored_id TEXT PRIMARY KEY,owner TEXT NOT NULL,bot TEXT NOT NULL,prompt TEXT NOT NULL,options TEXT NOT NULL DEFAULT '{}');
+        "CREATE TABLE IF NOT EXISTS native_sessions(stored_id TEXT PRIMARY KEY,owner TEXT NOT NULL,bot TEXT NOT NULL,prompt TEXT NOT NULL,options TEXT NOT NULL DEFAULT '{}');
       CREATE TABLE IF NOT EXISTS native_live_sessions(stored_id TEXT PRIMARY KEY REFERENCES native_sessions(stored_id) ON DELETE CASCADE,live_id TEXT NOT NULL UNIQUE);
       CREATE TABLE IF NOT EXISTS native_messages(session_id TEXT NOT NULL,seq INTEGER NOT NULL,message_json TEXT NOT NULL,PRIMARY KEY(session_id,seq));
       CREATE TABLE IF NOT EXISTS native_usage(id INTEGER PRIMARY KEY,session_id TEXT NOT NULL,owner_id TEXT NOT NULL,bot TEXT NOT NULL,model TEXT NOT NULL,provider TEXT NOT NULL,input_tokens INTEGER NOT NULL,output_tokens INTEGER NOT NULL,cache_read_tokens INTEGER NOT NULL,cache_write_tokens INTEGER NOT NULL,cost REAL NOT NULL,timestamp REAL NOT NULL);
@@ -105,6 +126,11 @@ pub fn open(home: &Path) -> Result<Connection> {
       CREATE TRIGGER IF NOT EXISTS rewrite_journal_delete AFTER DELETE ON native_pi_journal WHEN OLD.projection_seq IS NOT NULL BEGIN INSERT INTO native_history_rewrites VALUES(OLD.session_id,1) ON CONFLICT(session_id) DO UPDATE SET count=count+1; END;",
     )?;
     crate::db::migrate_runtime(&conn)?;
+    let prepared_cookie = cookie(&conn)?;
+    prepared()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(path, prepared_cookie);
     Ok(conn)
 }
 /// Separate from session directories so cleanup cannot replace a locked inode.
@@ -272,7 +298,10 @@ pub fn preview(text: &str) -> String {
     result
 }
 pub fn summary(home: &Path, stored: &str) -> Result<Value> {
-    let mut conn = open(home)?;
+    summary_on(&mut open(home)?, stored)
+}
+/// `summary` on a connection the caller already holds.
+pub(crate) fn summary_on(conn: &mut Connection, stored: &str) -> Result<Value> {
     let cached = |conn: &Connection| -> Result<Option<(i64, String)>> {
         Ok(conn
             .query_row(
@@ -284,7 +313,7 @@ pub fn summary(home: &Path, stored: &str) -> Result<Value> {
     };
     // The section list reads every summary; only a miss needs the write lock.
     // The preview is the latest message either side said, as a chat list shows.
-    if let Some((count, preview)) = cached(&conn)? {
+    if let Some((count, preview)) = cached(conn)? {
         return Ok(json!({"preview":preview,"message_count":count}));
     }
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;

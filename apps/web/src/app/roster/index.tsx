@@ -12,7 +12,7 @@ import { RoomCluster } from '../../components/ui/room-cluster'
 import { ScrollArea } from '../../components/ui/scroll-area'
 import { Select } from '../../components/ui/select'
 import { StatusDot, StatusTag } from '../../components/ui/status-dot'
-import { providerModels, sectionsMarkRead } from '../../lib/api'
+import { providerModels } from '../../lib/api'
 import { approvalModes } from '../../lib/approval-modes'
 import {
   avatarPng,
@@ -44,6 +44,7 @@ import {
   legacyChat,
   type LiveSections,
   liveSectionsOf,
+  markSectionsRead,
   sectionsActions,
   useSections
 } from '../../stores/sections'
@@ -168,7 +169,8 @@ const tileClass =
 const tileName = 'truncate text-[length:var(--text-secondary)] font-medium'
 
 /** Rename comes back to the roster, which owns the one rename dialog. */
-type Renaming = { id: string; kind: 'bot' | 'room'; name: string }
+/** `draft` and `error` reopen the dialog on a name the daemon refused. */
+type Renaming = { draft?: string; error?: string; id: string; kind: 'bot' | 'room'; name: string }
 
 function RoomRow({
   active,
@@ -344,7 +346,7 @@ function BotRow({
 
   const menu = rowMenu({
     onMarkRead: () =>
-      void Promise.all(unread.map(section => sectionsMarkRead(section.id))).catch(() => undefined),
+      void markSectionsRead(unread.map(section => section.id)).catch(() => undefined),
     onPin:
       bot.pinned_at === undefined
         ? undefined
@@ -584,7 +586,7 @@ export function RosterColumn() {
 
   useEffect(() => {
     if (params.section && activeSectionDoneAt && pageFocused && !hidden) {
-      void sectionsMarkRead(params.section).catch(() => undefined)
+      void markSectionsRead([params.section]).catch(() => undefined)
     }
   }, [activeSectionDoneAt, hidden, pageFocused, params.section])
 
@@ -1008,7 +1010,7 @@ export function RosterColumn() {
         </form>
       </Dialog>
       <NewRoomDialog onClose={() => setRoomDialog(false)} onCreated={openRoom} open={roomDialog} />
-      <RenameDialog onClose={() => setRenaming(null)} renaming={renaming} />
+      <RenameDialog onClose={() => setRenaming(null)} onRefused={setRenaming} renaming={renaming} />
     </div>
   )
 }
@@ -1222,16 +1224,26 @@ function NewRoomDialog({
   )
 }
 
-/** Renames a bot (its display name; the handle stays) or a room. */
-function RenameDialog({ onClose, renaming }: { onClose: () => void; renaming: null | Renaming }) {
+/**
+ * Renames a bot (its display name; the handle stays) or a room. The new name
+ * shows as the dialog closes; a name the daemon refuses comes back here.
+ */
+function RenameDialog({
+  onClose,
+  onRefused,
+  renaming
+}: {
+  onClose: () => void
+  onRefused: (renaming: Renaming) => void
+  renaming: null | Renaming
+}) {
   const [name, setName] = useState('')
   const [error, setError] = useState<null | string>(null)
-  const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     if (renaming) {
-      setName(renaming.name)
-      setError(null)
+      setName(renaming.draft ?? renaming.name)
+      setError(renaming.error ?? null)
     }
   }, [renaming])
 
@@ -1252,18 +1264,19 @@ function RenameDialog({ onClose, renaming }: { onClose: () => void; renaming: nu
             return
           }
 
-          setSaving(true)
-          setError(null)
-
           const saved =
             renaming.kind === 'room'
               ? useRooms.getState().update(renaming.id, { name: trimmed })
               : useBots.getState().update(renaming.id, { display_name: trimmed })
 
-          void saved
-            .then(onClose)
-            .catch(reason => setError(reason instanceof Error ? reason.message : String(reason)))
-            .finally(() => setSaving(false))
+          onClose()
+          void saved.catch(reason =>
+            onRefused({
+              ...renaming,
+              draft: trimmed,
+              error: reason instanceof Error ? reason.message : String(reason)
+            })
+          )
         }}
       >
         <Field label="Name">
@@ -1286,7 +1299,6 @@ function RenameDialog({ onClose, renaming }: { onClose: () => void; renaming: nu
             Cancel
           </Button>
           <Button
-            busy={saving}
             disabled={!trimmed || trimmed === renaming?.name}
             type="submit"
             variant="primary"

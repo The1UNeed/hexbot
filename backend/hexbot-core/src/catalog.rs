@@ -332,8 +332,10 @@ pub(crate) fn purge_legacy_delete(
 }
 fn history_summary(home: &Path, row: &Value) -> Result<(String, i64)> {
     let id = row["id"].as_str().unwrap_or("");
-    let summary = runtime_store::summary(home, id)?;
-    let native: bool = runtime_store::open(home)?.query_row(
+    // One connection for the summary and the check, not one each.
+    let mut store = runtime_store::open(home)?;
+    let summary = runtime_store::summary_on(&mut store, id)?;
+    let native: bool = store.query_row(
         "SELECT EXISTS(SELECT 1 FROM native_sessions WHERE stored_id=?1) OR EXISTS(SELECT 1 FROM native_pi_journal WHERE session_id=?1)",
         [id],
         |r| r.get(0),
@@ -348,7 +350,7 @@ fn history_summary(home: &Path, row: &Value) -> Result<(String, i64)> {
     let Some((preview, count, _)) = legacy_history(home, row, &BTreeSet::new())? else {
         return Ok((String::new(), 0));
     };
-    runtime_store::open(home)?.execute(
+    store.execute(
         "INSERT OR REPLACE INTO native_summaries VALUES(?,?,?)",
         params![id, count, preview],
     )?;
@@ -464,6 +466,13 @@ pub(crate) fn check_section_delete(home: &Path, caller: &str, id: &str) -> Resul
     Ok(())
 }
 fn list_sections(home: &Path, caller: &str, p: &Value) -> Result<Vec<Value>> {
+    list_section_rows(home, caller, p)?
+        .into_iter()
+        .map(|row| shape_section(home, row))
+        .collect()
+}
+/// The rows `list_sections` shows, before each is read for its preview and count.
+fn list_section_rows(home: &Path, caller: &str, p: &Value) -> Result<Vec<Value>> {
     user(home, caller)?;
     let bot = p["bot"].as_str();
     let archived = p["include_archived"].as_bool().unwrap_or(false);
@@ -478,7 +487,7 @@ fn list_sections(home: &Path, caller: &str, p: &Value) -> Result<Vec<Value>> {
     )? {
         // A Dreams log its chat replaced opens only as that chat (4002).
         if superseded_by(&conn, &adoptions, row["id"].as_str().unwrap_or(""))?.is_none() {
-            sections.push(shape_section(home, row)?);
+            sections.push(row);
         }
     }
     Ok(sections)
@@ -1572,13 +1581,14 @@ fn shape_bot(
         )?),
         None => Value::Null,
     };
-    let sections = list_sections(home, caller, &json!({"bot":name,"include_archived":true}))?;
+    // Only the two it shows are read for their preview and count.
+    let sections = list_section_rows(home, caller, &json!({"bot":name,"include_archived":true}))?;
     let recent = sections
         .iter()
         .filter(|s| s["archived_at"].is_null())
         .take(2)
-        .cloned()
-        .collect::<Vec<_>>();
+        .map(|row| shape_section(home, row.clone()))
+        .collect::<Result<Vec<_>>>()?;
     let conn = &status.conn;
     let incident = rows(conn, status.query, &[&name])?.into_iter().next();
     let (mut status, mut detail) = ("idle", Value::Null);
@@ -1607,7 +1617,7 @@ fn shape_bot(
         detail = json!({"text":i["text"],"section_id":i["section_id"],"room_id":i["room_id"],"session_id":i["session_id"],"since":i["created_at"],"action":action,"in_chat":in_chat});
     } else {
         let wait = rows(
-            &db::open(home)?,
+            conn,
             "SELECT e.room_id,e.created_at,r.name FROM room_events e JOIN rooms r ON r.id=e.room_id WHERE e.kind='waiting.human' AND e.actor_id=? AND e.seq=(SELECT MAX(seq) FROM room_events WHERE room_id=e.room_id) AND r.archived_at IS NULL ORDER BY e.created_at DESC LIMIT 1",
             &[&name],
         )?
@@ -1624,7 +1634,7 @@ fn shape_bot(
                 "action": null
             });
         } else if let Some(r) = rows(
-            &db::open(home)?,
+            conn,
             "SELECT t.room_id,t.started_at,r.name FROM room_turns t JOIN rooms r ON r.id=t.room_id WHERE t.bot=? AND t.status='running' ORDER BY t.started_at DESC LIMIT 1",
             &[&name],
         )?

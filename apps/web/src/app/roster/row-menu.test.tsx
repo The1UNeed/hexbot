@@ -130,6 +130,24 @@ describe('roster row menu', () => {
     await waitFor(() => expect(screen.queryByLabelText('Name')).toBeNull())
   })
 
+  it('closes Rename at once, and brings it back with the name when the daemon refuses it', async () => {
+    let refuse!: (error: Error) => void
+    updateRoom.mockImplementationOnce(
+      () => new Promise<void>((_, no) => (refuse = no)) as never
+    )
+    render(<RosterColumn />)
+
+    await menuFor(/Garden/)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Rename…' }))
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Greenhouse' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Rename' }))
+    await waitFor(() => expect(screen.queryByLabelText('Name')).toBeNull())
+
+    refuse(new Error('That name is taken'))
+    expect(await screen.findByLabelText('Name')).toHaveValue('Greenhouse')
+    expect(screen.getByRole('alert')).toHaveTextContent('That name is taken')
+  })
+
   it('renames a bot by its display name and marks its finished chat read', async () => {
     const chat = {
       archived_at: null,
@@ -148,6 +166,8 @@ describe('roster row menu', () => {
     expect(await menuFor(/Writer/)).toEqual(['Pin', 'Mark as read', 'Rename…', 'Settings'])
     fireEvent.click(screen.getByRole('menuitem', { name: 'Mark as read' }))
     expect(markSection).toHaveBeenCalledWith('chat-1')
+    // The dot clears without waiting for the daemon's next list.
+    expect(useBots.getState().byName.writer!.sections_recent[0]!.done_at).toBeNull()
 
     await menuFor(/Writer/)
     fireEvent.click(screen.getByRole('menuitem', { name: 'Rename…' }))

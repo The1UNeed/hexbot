@@ -639,12 +639,14 @@ it.each(['connection drop', 'daemon restart'] as const)(
     }
 
     await waitFor(() => expect(state.lookups.length).toBeGreaterThan(0))
+    // You can type while the chat is checked again; Enter waits for it.
     const waiting = screen.getByRole('textbox', { name: 'Message' })
-    expect(waiting).toBeDisabled()
+    expect(waiting).toBeEnabled()
     expect(waiting).toHaveValue('Please read the attached plan')
     expect(stagedChip()).toBeVisible()
-    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
     fireEvent.keyDown(waiting, { key: 'Enter' })
+    await act(async () => {})
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
     fireEvent.drop(view.container.firstElementChild!, {
       dataTransfer: { files: [new File(['late'], 'late.txt')] }
     })
@@ -653,10 +655,8 @@ it.each(['connection drop', 'daemon restart'] as const)(
     expect(calls('file.attach')).toHaveLength(0)
     expect(calls('prompt.submit')).toHaveLength(0)
 
+    // The message goes, with its file, once the chat opens.
     await act(async () => state.release())
-    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled())
-    expect(stagedChip()).toBeVisible()
-    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Message' }), { key: 'Enter' })
     await waitFor(() => expect(stagedChip()).toBeNull())
     expect(calls('file.attach')).toHaveLength(1)
     expect(calls('file.attach')[0]![1]).toMatchObject({ name: 'plan.txt', session_id: state.live })
@@ -803,7 +803,7 @@ it('a cancelled bot click does not hold a check that finds another chat', async 
   await waitFor(() => expect(view.router.state.location.pathname).toBe('/b/owl/s/moved'))
 })
 
-it('a lookup from before a daemon restart cannot enable the kept composer', async () => {
+it('a lookup from before a daemon restart cannot send from the kept composer', async () => {
   const state = holdLookups()
   const view = await mount('/b/owl/s/canonical')
   await stageOwnerFile(view)
@@ -826,16 +826,15 @@ it('a lookup from before a daemon restart cannot enable the kept composer', asyn
     state.lookups.slice(0, -1).forEach(lookup => lookup.resolve({ section: canonical }))
   )
   const composer = screen.getByRole('textbox', { name: 'Message' })
-  expect(composer).toBeDisabled()
+  expect(composer).toBeEnabled()
   fireEvent.keyDown(composer, { key: 'Enter' })
   await act(async () => {})
   expect(calls('hexbot.sections.open')).toHaveLength(opened)
   expect(calls('file.attach')).toHaveLength(0)
   expect(calls('prompt.submit')).toHaveLength(0)
 
+  // The message waited for the current lookup and goes to the restarted chat.
   await act(async () => state.lookups.at(-1)!.resolve({ section: canonical }))
-  await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled())
-  fireEvent.keyDown(screen.getByRole('textbox', { name: 'Message' }), { key: 'Enter' })
   await waitFor(() => expect(calls('prompt.submit')).toHaveLength(1))
   expect(calls('file.attach').map(([, params]) => params.session_id)).toEqual([
     'canonical-restarted'
@@ -865,7 +864,7 @@ it.each(['another daemon', 'another installation', 'a peer thread'] as const)(
     if (action === 'another installation') {
       // A reconnect may still be the same daemon until its info answers.
       await act(async () => useConnection.getState().setDaemon(null))
-      expect(screen.getByRole('textbox', { name: 'Message' })).toBeDisabled()
+      expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled()
       expect(stagedChip()).toBeVisible()
       await act(async () =>
         useConnection.getState().setDaemon({ one_chat: true, install_id: 'second' } as DaemonInfo)
@@ -947,7 +946,7 @@ it.each([
   const pendingInput = screen.queryByRole('textbox', { name: 'Message' })
 
   if (pendingInput) {
-    expect(pendingInput).toBeDisabled()
+    expect(pendingInput).toBeEnabled()
     fireEvent.keyDown(pendingInput, { key: 'Enter' })
   }
 
@@ -1038,4 +1037,35 @@ it('shows a bot clicked in the roster opening, not the chat it leaves, until its
   expect(leaving === null || leaving.closest('[inert]') !== null).toBe(true)
   await waitFor(() => expect(screen.queryByText('canonical history')).toBeNull())
   expect(useUi.getState().openingShown).toBeNull()
+})
+
+it('takes typing and Enter while the chat opens, and sends once it opens', async () => {
+  const opening = deferred()
+  call.mockImplementation((method: string, input: Record<string, unknown>) =>
+    method === 'hexbot.sections.open' && input.id === 'canonical'
+      ? opening.promise
+      : reply(method, input)
+  )
+  await mount('/b/owl/s/canonical')
+  await waitFor(() => expect(calls('hexbot.sections.open').length).toBeGreaterThan(0))
+  const field = await screen.findByRole('textbox', { name: 'Message' })
+  expect(field).toBeEnabled()
+  fireEvent.change(field, { target: { value: 'Typed before it opened' } })
+  expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled()
+  fireEvent.keyDown(field, { key: 'Enter' })
+  await act(async () => {})
+  expect(calls('prompt.submit')).toHaveLength(0)
+  expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
+
+  await act(async () =>
+    opening.resolve({
+      section: section('canonical', { live_session_id: 'canonical' }),
+      messages: [{ role: 'assistant', text: 'canonical history' }]
+    })
+  )
+  await waitFor(() => expect(calls('prompt.submit')).toHaveLength(1))
+  expect(calls('prompt.submit')[0]![1]).toEqual({
+    session_id: 'canonical',
+    text: 'Typed before it opened'
+  })
 })

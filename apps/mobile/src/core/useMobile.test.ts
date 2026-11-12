@@ -993,3 +993,49 @@ describe('switching to a bot read ahead', () => {
     expect(hook.result.current.chat.messages.map(m => m.text)).toEqual(['second'])
   })
 })
+
+describe('changes shown before the daemon answers', () => {
+  it('pins and renames at once, and a list read before they settle keeps them', async () => {
+    const hook = await connected()
+    const pinned = pause('hexbot.bots.pin')
+    let pinning!: Promise<unknown>
+    await act(async () => {
+      pinning = hook.result.current.change({ kind: 'bot', name: 'owl' }, { pinned_at: 5 }, () =>
+        hook.result.current.rpc('hexbot.bots.pin', { name: 'owl', pinned: true })
+      )
+      await pinned.called
+    })
+    expect(hook.result.current.bots.find(b => b.name === 'owl')?.pinned_at).toBe(5)
+    // An unrelated change refreshes the lists while the pin is on its way.
+    await act(async () => {
+      await hook.result.current.refresh()
+    })
+    expect(hook.result.current.bots.find(b => b.name === 'owl')?.pinned_at).toBe(5)
+    state.request.mockImplementation(reply)
+    await act(async () => {
+      pinned.resolve({ bot: { ...bot, pinned_at: 5 } })
+      await pinning
+    })
+    // The daemon's own list, read after it took the pin, has the last word.
+    await act(async () => {
+      await hook.result.current.refresh()
+    })
+    expect(hook.result.current.bots.find(b => b.name === 'owl')?.pinned_at).toBeUndefined()
+  })
+  it('puts the old name back when the daemon refuses it', async () => {
+    const hook = await connected()
+    state.request.mockImplementation((name: string, params: Record<string, unknown> = {}) =>
+      name === 'hexbot.rooms.update' ? Promise.reject(new Error('Refused')) : reply(name, params)
+    )
+    let failure: unknown
+    await act(async () => {
+      failure = await hook.result.current
+        .change({ kind: 'room', id: 'room' }, { name: 'Greenhouse' }, () =>
+          hook.result.current.rpc('hexbot.rooms.update', { id: 'room', name: 'Greenhouse' })
+        )
+        .catch((e: unknown) => e)
+    })
+    expect(failure).toBeInstanceOf(Error)
+    expect(hook.result.current.rooms.find(r => r.id === 'room')?.name).toBe('Room')
+  })
+})

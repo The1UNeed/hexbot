@@ -436,7 +436,7 @@ async function proveAccepted(inputId: string, turnId: string) {
 }
 
 it.each([4002, 5200])(
-  'keeps all newer-run state and Stop after late manual Retry error %s',
+  'keeps all newer-run state after late manual Retry error %s',
   async code => {
     answers = [refused(), new JsonRpcGatewayError('Late request failed', { code })]
     const view = await mount()
@@ -511,7 +511,7 @@ it.each([4002, 5200])(
     })
     const before = useTranscripts.getState().bySession.chat!
     const current = before.messages.find(row => row.id === before.streamingMessageId)!
-    expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible()
+    expectWorkingButton()
     expect(before.approvals).toHaveLength(1)
     expect(before.clarifies).toHaveLength(1)
     expect(
@@ -537,7 +537,7 @@ it.each([4002, 5200])(
       expect(after[field]).toEqual(before[field])
     }
 
-    expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible()
+    expectWorkingButton()
     expect(userRows()[0]!.submission?.status).toBe(code === 4002 ? 'rejected' : 'unknown')
 
     if (code === 4002) {
@@ -905,7 +905,7 @@ it('keeps a newer stream after an actual accepted retry loses its title-save res
   expect(delivered[0]!.files).toEqual(['plan.txt'])
   expect(after.streamingMessageId).toBe(before.streamingMessageId)
   expect(after.turnActive).toBe(true)
-  expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible()
+  expectWorkingButton()
   expect(screen.getByText('Not sent')).toBeVisible()
   // Retry under the same key is refused as reserved: nothing is taken twice,
   // the send stays unconfirmed until history shows it, and the newer stream
@@ -917,7 +917,7 @@ it('keeps a newer stream after an actual accepted retry loses its title-save res
   expect(useTranscripts.getState().bySession.chat!.streamingMessageId).toBe(
     before.streamingMessageId
   )
-  expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible()
+  expectWorkingButton()
 })
 
 const opens = () =>
@@ -977,7 +977,7 @@ const historyRead = () =>
     await read.catch(() => undefined)
   })
 
-// Enter sends while a turn runs, when the button shows Stop.
+// Enter sends while a turn runs.
 async function sendNow(view: Awaited<ReturnType<typeof mount>>, text: string, names: string[]) {
   const field = screen.getByRole('textbox', { name: 'Message' })
   await waitFor(() => expect(field).toBeEnabled())
@@ -1059,16 +1059,24 @@ function runTurn(identified: boolean) {
   }
 }
 
-/** A running turn shows Stop, or Send while the field holds a message (that cuts the reply off). */
+/**
+ * A running turn in a bot's chat offers no Stop: Recall takes a message back.
+ * Send waits for a message, which cuts the reply off.
+ */
 function expectWorkingButton() {
   const draft = (screen.getByRole('textbox', { name: 'Message' }) as HTMLTextAreaElement).value
   const files = screen.queryAllByRole('button', { name: /^Remove / }).length
-  expect(screen.getByRole('button', { name: draft.trim() || files ? 'Send' : 'Stop' })).toBeVisible()
-  expect(screen.queryByRole('button', { name: draft.trim() || files ? 'Stop' : 'Send' })).toBeNull()
+  const send = screen.getByRole('button', { name: 'Send' })
+  expect(send).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull()
+
+  if (!draft.trim() && !files) {
+    expect(send).toBeDisabled()
+  }
 }
 
 it.each([true, false])(
-  'keeps the running turn, its cards and Stop when an upload fails, transcript identity %s',
+  'keeps the running turn and its cards when an upload fails, transcript identity %s',
   async identified => {
     if (!identified) {
       useConnection.setState({ daemon: { one_chat: true, install_id: 'home' } as DaemonInfo })
@@ -1133,7 +1141,7 @@ it('sends only the uploads of the files still selected after an upload fails', a
 it.each([
   new JsonRpcGatewayError('session is already working', { code: 4002 }),
   new Error('Transport failed')
-])('keeps a newer stream and Stop after a manual legacy resend fails: %s', async failure => {
+])('keeps a newer stream after a manual legacy resend fails: %s', async failure => {
   useConnection.setState({ daemon: { one_chat: true, install_id: 'home' } as DaemonInfo })
   const view = await mount()
   await send(view)
@@ -1409,7 +1417,7 @@ it.each([
         expect(current.activeTurnId).toBe('remote-run')
         expect(current.turnActive).toBe(true)
         expect(current.messages.find(row => row.id === stream!.id)).toEqual(stream)
-        expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible()
+        expectWorkingButton()
       }
     }
 
@@ -1521,7 +1529,7 @@ it('keeps a newer run that starts before the read, and binds the failed card', a
     streaming: true,
     text: 'Answer for the phone'
   })
-  expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible()
+  expectWorkingButton()
   const bound = after.messages.filter(row => row.retryRow)
   expect(bound).toEqual([
     expect.objectContaining({ error: 'Provider overloaded', turnId: 'own-run' })
@@ -1926,7 +1934,7 @@ it.each([
   }
 )
 
-it('turns Stop into Send once you type while the bot works, and that message cuts the reply off', async () => {
+it('offers no Stop while the bot works, and a message sent then cuts the reply off', async () => {
   await mount()
   expect(await screen.findByText('Earlier reply')).toBeVisible()
   const field = screen.getByRole('textbox', { name: 'Message' })
@@ -1940,10 +1948,9 @@ it('turns Stop into Send once you type while the bot works, and that message cut
       payload: { ...ids, tool_id: 'running-tool', name: 'read_file', args: { path: 'a.txt' } }
     } as GatewayEvent)
   })
-  expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible()
-  expect(screen.queryByRole('button', { name: 'Send' })).toBeNull()
+  expectWorkingButton()
   fireEvent.change(field, { target: { value: 'Use b.txt instead' } })
-  expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull()
+  expectWorkingButton()
   fireEvent.click(screen.getByRole('button', { name: 'Send' }))
   await waitFor(() => expect(submits()).toHaveLength(1))
   expect(submits()[0]).toEqual({

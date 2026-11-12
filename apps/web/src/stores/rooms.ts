@@ -14,10 +14,11 @@ import {
   roomsUpdate
 } from '../lib/api'
 import type { RoomCreateInput } from '../lib/api'
-import { CatalogAuthority, type ReadOutcome } from '../lib/catalog-authority'
+import { CatalogAuthority, type CatalogRead, type ReadOutcome } from '../lib/catalog-authority'
 import type { BotStatus, Room, RoomEvent, RoomTurn } from '../lib/types'
 
 import { connectionRead } from './connection'
+import { useMe } from './me'
 import { useTranscripts } from './transcripts'
 
 export interface RoomsState {
@@ -82,6 +83,49 @@ export function roomCacheRead(): (id: string) => boolean {
   const current = authority.cacheRead()
 
   return id => connected() && current(id)
+}
+
+/** What each change shown early replaced, so a refused one can put it back. */
+const shownBefore = new WeakMap<CatalogRead, Partial<Room>>()
+
+/**
+ * Shows a change to a listed room before the daemon answers, so a pin or a
+ * rename lands at once. Older lists and replies can no longer overwrite it.
+ */
+function optimistic(id: string, patch: Partial<Room>): CatalogRead {
+  const room = useRooms.getState().byId[id]
+
+  if (!room) {
+    return authority.request()
+  }
+
+  const ticket = authority.claim(id)
+  shownBefore.set(
+    ticket,
+    Object.fromEntries(Object.keys(patch).map(key => [key, room[key as keyof Room]]))
+  )
+  useRooms.setState(state => {
+    const current = state.byId[id]
+
+    return current ? { byId: { ...state.byId, [id]: { ...current, ...patch } } } : state
+  })
+
+  return ticket
+}
+
+/** The daemon refused the change: unless something newer came, the room looks as before. */
+function undo(id: string, ticket: CatalogRead) {
+  const before = shownBefore.get(ticket)
+
+  if (!before || !authority.current(id, ticket)) {
+    return
+  }
+
+  useRooms.setState(state => {
+    const current = state.byId[id]
+
+    return current ? { byId: { ...state.byId, [id]: { ...current, ...before } } } : state
+  })
 }
 
 function roomRead(id: string): () => boolean {
@@ -543,6 +587,35 @@ export const useRooms = create<RoomsState>((set, get) => ({
     // Acknowledging displayed events must not supersede an existence/log read.
     const currentRead = roomRead(id)
     const ticket = authority.request()
+    const me = useMe.getState().me?.id
+    const roomBefore = get().byId[id]
+
+    // The dot clears at once; the daemon's answer only ever moves the mark forward.
+    set(state => {
+      const current = state.byId[id]
+
+      const yours = (member: Room['members'][number]) =>
+        member.member_kind === 'human' &&
+        (!me || member.member_id === me) &&
+        (member.last_read_seq ?? 0) < seq
+
+      if (!current?.members.some(yours)) {
+        return state
+      }
+
+      return {
+        byId: {
+          ...state.byId,
+          [id]: {
+            ...current,
+            members: current.members.map(member =>
+              yours(member) ? { ...member, last_read_seq: seq } : member
+            )
+          }
+        }
+      }
+    })
+
     const roomAtRead = get().byId[id]
 
     try {
@@ -588,6 +661,9 @@ export const useRooms = create<RoomsState>((set, get) => ({
       // A newer room result supersedes even an earlier read mark's permission error.
       if (roomGone(error) && authority.commit(id, ticket, 'gone')) {
         set(state => dropRoom(state, id))
+      } else if (roomBefore && roomAtRead !== roomBefore) {
+        // Refused, and nothing newer came: the room shows unread again.
+        set(state => ({ byId: { ...state.byId, [id]: roomBefore } }))
       }
     }
   },
@@ -663,26 +739,40 @@ export const useRooms = create<RoomsState>((set, get) => ({
 
   async update(id, patch) {
     const connected = connectionRead()
-    const ticket = authority.request()
-    const { room } = await roomsUpdate(id, patch)
+    const ticket = optimistic(id, patch)
 
-    if (!connected() || !authority.commit(room.id, ticket, 'present')) {
-      return
+    try {
+      const { room } = await roomsUpdate(id, patch)
+
+      if (!connected() || !authority.commit(room.id, ticket, 'present')) {
+        return
+      }
+
+      set(state => mergeRoom(state, room))
+    } catch (error) {
+      undo(id, ticket)
+      throw error
     }
-
-    set(state => mergeRoom(state, room))
   },
 
   async pin(id, pinned) {
     const connected = connectionRead()
-    const ticket = authority.request()
-    const { room } = await roomsPin(id, pinned)
+    const before = get().byId[id]?.pinned_at
+    // Pinning again keeps the room's place among the pinned, as the daemon does.
+    const ticket = optimistic(id, { pinned_at: pinned ? (before ?? Date.now() / 1000) : null })
 
-    if (!connected() || !authority.commit(room.id, ticket, 'present')) {
-      return
+    try {
+      const { room } = await roomsPin(id, pinned)
+
+      if (!connected() || !authority.commit(room.id, ticket, 'present')) {
+        return
+      }
+
+      set(state => mergeRoom(state, room))
+    } catch (error) {
+      undo(id, ticket)
+      throw error
     }
-
-    set(state => mergeRoom(state, room))
   },
 
   async remove(id) {

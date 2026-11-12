@@ -48,6 +48,22 @@ export class CatalogAuthority {
     return read
   }
 
+  /**
+   * Reserve order for a change already shown on screen: lists and replies
+   * requested before it can no longer overwrite the row, while its outcome stays.
+   */
+  claim(id: string): CatalogRead {
+    const read = this.request()
+    const entry = this.entries.get(id)
+    this.entries.set(id, {
+      order: read.order,
+      outcome: entry?.outcome ?? 'present',
+      known: entry?.known ?? false
+    })
+
+    return read
+  }
+
   current(id: string, read: CatalogRead): boolean {
     return this.same(read) && this.entries.get(id)?.order === read.order
   }
