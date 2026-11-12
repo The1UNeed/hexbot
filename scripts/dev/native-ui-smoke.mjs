@@ -243,7 +243,9 @@ try {
       await composer.fill(prompt)
       await composer.press('Enter')
       await expect.poll(() => requests.some(request => textOf(request.messages?.findLast(message => message.role === 'user')?.content) === prompt), { timeout: 30_000 }).toBe(true)
-      await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeVisible()
+      // The bot works; its chat offers Recall, never Stop.
+      await expect(page.getByTestId('thinking')).toBeVisible()
+      await expect(page.getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0)
       if (state !== 'foreground') {
         await electronApp.evaluate(({ BrowserWindow }, state) => {
           const win = BrowserWindow.getAllWindows()[0]
@@ -258,7 +260,7 @@ try {
       assert.equal(await electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), 1)
       heldReplies.get(prompt).release()
       await expect(replies).toHaveCount(++completed)
-      await expect(page.getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0)
+      await expect(page.getByTestId('thinking')).toHaveCount(0)
       if (state !== 'foreground') {
         await expect.poll(async () => (await notifications()).length).toBe(completed)
         if (process.env.HEXBOT_SMOKE_NATIVE_NOTIFICATIONS === '1')
