@@ -274,7 +274,12 @@ fn the_review_model_is_chosen_cleared_and_forgotten_with_its_provider() {
     assert!(settings::get(home.path()).unwrap()["review_model"].is_null());
     assert!(!settings::forget_provider(home.path(), "alice", "openai").unwrap());
     // The user can clear it too.
-    settings::update(home.path(), "alice", &json!({"review_model":"openai/small"})).unwrap();
+    settings::update(
+        home.path(),
+        "alice",
+        &json!({"review_model":"openai/small"}),
+    )
+    .unwrap();
     let cleared = settings::update(home.path(), "alice", &json!({"review_model":null})).unwrap();
     assert!(cleared["review_model"].is_null());
 }
