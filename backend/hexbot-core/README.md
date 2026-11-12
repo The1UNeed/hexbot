@@ -385,6 +385,10 @@ dot directories, empty directories and other permission bits are ignored,
 matching the old seeding rules. Modified bodies, scripts, extra non-dot files
 and non-dot symlinks keep a copy private. Empty category directories and those
 containing only an unchanged bundled `DESCRIPTION.md` are also removed.
+Installs from before the native daemon also seeded every bundled skill into
+the library, `<home>/skills`, where an unchanged copy hides each newer bundled
+version. A second one-time pass applies the same rule there, with its own
+completion marker so installs that already ran the first pass get it too.
 
 Run `node scripts/desktop/skill-history.mjs` after changing bundled skills.
 It reads every commit from `git log -- skills` plus the current tree and needs
