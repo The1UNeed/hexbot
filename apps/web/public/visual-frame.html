@@ -20,6 +20,9 @@
         if (event.source !== parent || !data || data.method !== 'hexbot/visual/show') return
         removeEventListener('message', show)
         document.open()
+        // The bootstrap takes this port before the page's scripts run, and
+        // sends only links the user clicked on it.
+        window.hexbotLinks = event.ports[0]
         document.write(String(data.params.document))
         document.close()
       })

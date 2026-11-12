@@ -90,26 +90,6 @@ function linkUrl(href: unknown): null | URL {
   }
 }
 
-/** When a link last opened straight from a click in a visual. */
-let lastClickOpen = 0
-
-/**
- * Whether the user just clicked inside a visual. A click in a frame activates
- * the app's window too, which the page itself cannot fake. A second link
- * within a second does not count, so one click opens one link.
- */
-function justClicked(): boolean {
-  const now = Date.now()
-
-  if (!navigator.userActivation?.isActive || now - lastClickOpen < 1000) {
-    return false
-  }
-
-  lastClickOpen = now
-
-  return true
-}
-
 function openLink(url: URL) {
   const bridge = getBridge()
 
@@ -141,10 +121,13 @@ export function VisualPage({
   const theme = useVisualTheme(surface, tint)
   const current = useRef(theme)
   const link = useRef(onLink)
+  const clicks = useRef<MessagePort | null>(null)
 
   useEffect(() => {
     link.current = onLink
   }, [onLink])
+
+  useEffect(() => () => clicks.current?.close(), [])
 
   useEffect(() => {
     current.current = theme
@@ -175,13 +158,37 @@ export function VisualPage({
       }
 
       if (data.method === 'hexbot/visual/ready') {
+        // The frame page says ready once, before the visual's own scripts
+        // run; a later ready can only be the visual asking for a port.
+        if (clicks.current) {
+          return
+        }
+
+        // Only the frame's bootstrap can send on this port, and only a link
+        // the user clicked, so it opens at once while that click's
+        // activation of the app's window lasts.
+        const channel = new MessageChannel()
+
+        clicks.current = channel.port1
+
+        clicks.current.onmessage = (message: MessageEvent<{ params?: { url?: unknown } }>) => {
+          const url = linkUrl(message.data?.params?.url)
+
+          if (url && navigator.userActivation?.isActive) {
+            window.open(url.href, '_blank', 'noopener,noreferrer')
+          } else if (url) {
+            link.current(url)
+          }
+        }
+
         target.postMessage(
           {
             jsonrpc: '2.0',
             method: 'hexbot/visual/show',
             params: { document: visualDocument(visual.html, current.current) }
           },
-          '*'
+          '*',
+          [channel.port2]
         )
       } else if (data.method === 'ui/notifications/size-changed') {
         const next = Number(data.params?.height)
@@ -191,13 +198,11 @@ export function VisualPage({
           setHeight(Math.min(Math.ceil(next), VISUAL_MAX_HEIGHT))
         }
       } else if (data.method === 'ui/open-link') {
-        // A link the user clicked opens at once. One a script asked for
-        // without a click waits for a click on the app's own button.
+        // A link the page's own script asks for only gets offered; opening
+        // takes a click on the app's own button.
         const url = linkUrl(data.params?.url)
 
-        if (url && justClicked()) {
-          openLink(url)
-        } else if (url) {
+        if (url) {
           link.current(url)
         }
 

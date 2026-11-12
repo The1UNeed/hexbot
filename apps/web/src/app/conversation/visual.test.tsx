@@ -146,7 +146,8 @@ describe('VisualBubble', () => {
         method: 'hexbot/visual/show',
         params: { document: expect.stringContaining('<p>chart</p>') }
       }),
-      '*'
+      '*',
+      [expect.any(MessagePort)]
     )
 
     send({ jsonrpc: '2.0', method: 'ui/notifications/size-changed', params: { height: 432.2 } })
@@ -184,52 +185,58 @@ describe('VisualBubble', () => {
     expect(frame.style.height).toBe('2000px')
   })
 
-  it('opens a link the user clicked at once, one link per click', () => {
+  it('opens a link the user clicked at once, from the port only its bootstrap holds', async () => {
     render(<VisualBubble visual={costs} />)
     const target = (screen.getByTitle('Costs') as HTMLIFrameElement).contentWindow!
+    const post = vi.spyOn(target, 'postMessage').mockImplementation(() => {})
     const open = vi.spyOn(window, 'open').mockImplementation(() => null)
-    open.mockClear()
-    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000)
-    // A click inside the frame activates the app's window too.
-    Object.defineProperty(navigator, 'userActivation', {
-      configurable: true,
-      value: { hasBeenActive: true, isActive: true }
-    })
+    const activation = { hasBeenActive: true, isActive: true }
 
-    const ask = (url: string) =>
+    open.mockClear()
+    Object.defineProperty(navigator, 'userActivation', { configurable: true, value: activation })
+
+    try {
       act(() => {
         window.dispatchEvent(
           new MessageEvent('message', {
-            data: { id: url, jsonrpc: '2.0', method: 'ui/open-link', params: { url } },
+            data: { jsonrpc: '2.0', method: 'hexbot/visual/ready' },
             source: target
           })
         )
       })
+      const port = ((post.mock.calls[0] as unknown[])[2] as MessagePort[])[0]!
 
-    try {
-      ask('https://example.com/video')
-      expect(open).toHaveBeenCalledWith(
-        'https://example.com/video',
-        '_blank',
-        'noopener,noreferrer'
+      // A visual repeating the frame page's ready gets no page and no port.
+      act(() => {
+        window.dispatchEvent(
+          new MessageEvent('message', {
+            data: { jsonrpc: '2.0', method: 'hexbot/visual/ready' },
+            source: target
+          })
+        )
+      })
+      expect(post).toHaveBeenCalledTimes(1)
+
+      const click = (url: string) =>
+        port.postMessage({ id: url, jsonrpc: '2.0', method: 'ui/open-link', params: { url } })
+
+      click('https://example.com/video')
+      await vi.waitFor(() =>
+        expect(open).toHaveBeenCalledWith(
+          'https://example.com/video',
+          '_blank',
+          'noopener,noreferrer'
+        )
       )
-      expect(screen.queryByRole('button', { name: /^Open example/ })).toBeNull()
 
-      // A second link straight after the first waits for the app's button.
-      ask('https://example.com/other')
+      // Without the click's activation it waits for the app's button.
+      activation.isActive = false
+      click('https://example.com/later')
+      expect(await screen.findByRole('button', { name: 'Open example.com/later' })).toBeTruthy()
       expect(open).toHaveBeenCalledTimes(1)
-      expect(screen.getByRole('button', { name: 'Open example.com/other' })).toBeTruthy()
-
-      now.mockReturnValue(1_002_000)
-      ask('https://example.com/next')
-      expect(open).toHaveBeenLastCalledWith(
-        'https://example.com/next',
-        '_blank',
-        'noopener,noreferrer'
-      )
+      port.close()
     } finally {
       Reflect.deleteProperty(navigator, 'userActivation')
-      now.mockRestore()
       open.mockRestore()
     }
   })

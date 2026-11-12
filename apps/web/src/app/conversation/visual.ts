@@ -167,7 +167,9 @@ const BASE_CSS =
  * again on every `ui/notifications/host-context-changed`, reports the page's
  * height with `ui/notifications/size-changed`, and hands http(s) links to the
  * app with `ui/open-link`, since the sandbox allows no popups. The messages
- * follow the MCP Apps shapes.
+ * follow the MCP Apps shapes. A link the user clicked goes on the port the
+ * frame page left in `hexbotLinks`, which this takes before the page's own
+ * scripts run, so the app knows the click was real and opens it at once.
  */
 const BOOTSTRAP = `(function (theme) {
   var style = document.getElementById('hexbot-theme')
@@ -195,6 +197,9 @@ const BOOTSTRAP = `(function (theme) {
     if (event.source !== parent || !data || data.method !== 'ui/notifications/host-context-changed') return
     apply(data.params)
   })
+  var port = window.hexbotLinks
+  delete window.hexbotLinks
+  var clicked = port && port.postMessage.bind(port)
   var links = 0
   document.addEventListener('click', function (event) {
     var link = event.target instanceof Element ? event.target.closest('a[href]') : null
@@ -203,7 +208,9 @@ const BOOTSTRAP = `(function (theme) {
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return
     if (url.href.split('#')[0] === location.href.split('#')[0]) return
     event.preventDefault()
-    post({ id: 'link-' + ++links, method: 'ui/open-link', params: { url: url.href } })
+    var message = { id: 'link-' + ++links, method: 'ui/open-link', params: { url: url.href } }
+    if (clicked) clicked(message)
+    else post(message)
   })
 })`
 

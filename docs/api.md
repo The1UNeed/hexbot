@@ -1108,11 +1108,14 @@ writes the page into it after a bootstrap that applies the theme as CSS
 variables (`--background`, `--foreground`, `--chart-1` to `--chart-6`, ...),
 reports the page's height, and passes http(s) link clicks to the app. Host
 and frame talk in MCP Apps messages (`ui/notifications/host-context-changed`,
-`ui/notifications/size-changed`, `ui/open-link`). A link opens at once when
-the user just clicked inside the frame, which activates the app's window
-too (`navigator.userActivation`), and only one link opens per second. A link
-the page asks for without a click, or where the browser cannot tell, appears
-as an Open button under the visual, and the browser opens it from there.
+`ui/notifications/size-changed`, `ui/open-link`). With the page, the app
+hands the frame a `MessageChannel` port that the bootstrap takes before the
+page's own scripts run, and it sends a link on that port only from a trusted
+click on it. The app answers only the frame page's first ready, so a visual
+cannot ask for another port. The app opens such a link at once while the click's activation
+of its window lasts (`navigator.userActivation`). A `ui/open-link` the page
+posts any other way appears as an Open button under the visual, and the
+browser opens it from there.
 Daemon pages (and `pnpm dev`) send
 `Content-Security-Policy: frame-src 'self'`, so a visual cannot navigate its
 frame to another site; the Electron app's own policy does the same, it serves
