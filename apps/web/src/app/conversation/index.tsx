@@ -682,6 +682,36 @@ export function StoppedCard({
   )
 }
 
+/**
+ * A read of the chat that failed while messages are on screen: what was
+ * shown stays, and this small card under it says the chat may be incomplete.
+ */
+export function MissingMessagesCard({
+  reason,
+  onRetry
+}: {
+  reason: string
+  onRetry: () => void
+}) {
+  return (
+    <div
+      className="hex-bubble hex-fade mt-4 flex max-w-[min(85%,40rem)] items-center gap-3 rounded-[20px] border border-border bg-background py-2 pr-2 pl-3.5"
+      data-testid="missing-messages"
+      role="alert"
+    >
+      <div className="min-w-0 flex-1">
+        <p className="font-medium">This chat didn't finish loading</p>
+        <p className="text-[length:var(--text-meta)] break-words text-muted">
+          {plainError(reason)}
+        </p>
+      </div>
+      <Button onClick={onRetry} size="sm">
+        Retry
+      </Button>
+    </div>
+  )
+}
+
 export const MessageRow = memo(function MessageRow({
   bot,
   failed = false,
@@ -2128,7 +2158,23 @@ function BotConversation() {
   const approvals = useMemo(() => transcript?.approvals ?? [], [transcript?.approvals])
   const clarifies = useMemo(() => transcript?.clarifies ?? [], [transcript?.clarifies])
   const streaming = Boolean(transcript?.streamingMessageId)
-  const [openFailure, setOpenFailure] = useState<{ section: string; message: string } | null>(null)
+
+  // A failed read counts the chat's reads that succeeded before it; any read
+  // that succeeds after it, such as a send's reopen, loaded the chat after all.
+  const [failed, setFailed] = useState<{ section: string; message: string; reads: number } | null>(
+    null
+  )
+
+  const historyReads = useSections(state =>
+    params.section ? (state.historyReads[params.section] ?? 0) : 0
+  )
+
+  const setOpenFailure = (failure: { section: string; message: string } | null) =>
+    setFailed(
+      failure && { ...failure, reads: useSections.getState().historyReads[failure.section] ?? 0 }
+    )
+
+  const openFailure = failed?.reads === historyReads ? failed : null
   // A Stopped card the owner closed stays closed while the bot's state catches up.
   const [dismissedSince, setDismissedSince] = useState<number>()
   // The message whose stopped turn's card was closed: still yours to recall.
@@ -2325,11 +2371,12 @@ function BotConversation() {
       cancelled = true
     }
   }, [ready, entry, params.section, liveId, router, location, target, epoch])
+  // The card a failed read leaves under the messages comes into view too.
   useEffect(() => {
     if (atBottom) {
       toEnd()
     }
-  }, [approvals.length, atBottom, clarifies, composerHeight, messages])
+  }, [approvals.length, atBottom, clarifies, composerHeight, messages, openFailure])
   // The turn, not its bubble: a card closes the bubble while the turn runs on.
   const busy = Boolean(transcript?.turnActive) || streaming
   // A finished reply notifies from lib/events.ts, for every bot's chat.
@@ -2874,6 +2921,10 @@ function BotConversation() {
     ? !messages.length && !clarifies.length && readEntry !== entry
     : !(kept && transcript)
 
+  // A failed read covers the chat only when nothing of it is on screen.
+  const failure = openFailure?.section === params.section ? openFailure : null
+  const retryOpen = () => setOpenAttempt(attempt => attempt + 1)
+
   return (
     <div
       className="@container relative h-full min-h-0 overflow-hidden bg-background"
@@ -2917,17 +2968,17 @@ function BotConversation() {
           scrollPaddingTop: clearTop
         }}
       >
-        {openFailure && openFailure.section === params.section ? (
+        {failure && !messages.length ? (
           <div
             className="grid h-full place-content-center justify-items-center gap-4 p-8 text-center"
             role="alert"
           >
-            <p>{openFailure.message}</p>
-            <Button onClick={() => setOpenAttempt(attempt => attempt + 1)} size="sm">
+            <p>{failure.message}</p>
+            <Button onClick={retryOpen} size="sm">
               Retry
             </Button>
           </div>
-        ) : opening ? (
+        ) : opening && !failure ? (
           <div
             aria-label={`Opening ${name}'s chat`}
             className="hex-fade grid h-full place-content-center [animation-delay:150ms]"
@@ -3070,6 +3121,7 @@ function BotConversation() {
                 onRetry={stoppedRetry ? () => stoppedRetry[0](stoppedRetry[1]) : undefined}
               />
             ) : null}
+            {failure ? <MissingMessagesCard onRetry={retryOpen} reason={failure.message} /> : null}
             <div className="h-2" />
           </div>
         )}

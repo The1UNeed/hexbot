@@ -116,6 +116,94 @@ it.each([
   expect(useUi.getState().lastSection).toEqual(remembered)
   expect(attempts).toBe(2)
 })
+it('keeps what a chat shows when its read fails, with a small card to retry', async () => {
+  let attempts = 0
+  const first = deferred()
+  call.mockImplementation((method: string, input: { id?: string }) => {
+    if (method === 'hexbot.sections.open' && attempts++ === 0) {
+      return first.promise
+    }
+
+    return method === 'hexbot.sections.open'
+      ? Promise.resolve({
+          section: section('old', 'live-old'),
+          messages: [
+            { role: 'user', text: 'Older question' },
+            { role: 'assistant', text: 'Newest answer' }
+          ]
+        })
+      : reply(method, input)
+  })
+  useSections.setState({
+    cachedMessages: {
+      old: [
+        {
+          attachments: [],
+          createdAt: 0,
+          id: 'cached',
+          role: 'assistant',
+          streaming: false,
+          text: 'Newest answer',
+          toolCalls: []
+        }
+      ]
+    }
+  })
+  render(<ConversationColumn />)
+  expect(await screen.findByText('Newest answer')).toBeInTheDocument()
+  // The first page fills in after the first frame, keeping the reading position.
+  await act(() => new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve))))
+  const viewport = document.querySelector<HTMLElement>('.hex-fade-mask')!
+  Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 2000 })
+  viewport.scrollTop = 0
+  await act(async () => first.reject(new Error('Request timed out after 120s')))
+  const card = await screen.findByTestId('missing-messages')
+  // Read at the bottom, the card under the messages comes into view.
+  await waitFor(() => expect(viewport.scrollTop).toBe(2000))
+  expect(card).toHaveTextContent("This chat didn't finish loading")
+  expect(card).toHaveTextContent('Request timed out after 120s')
+  expect(screen.getByText('Newest answer')).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+  expect(await screen.findByText('Older question')).toBeInTheDocument()
+  expect(screen.queryByTestId('missing-messages')).toBeNull()
+  expect(attempts).toBe(2)
+})
+it('drops the card once another read loads the chat, even with the same live session', async () => {
+  let attempts = 0
+  call.mockImplementation((method: string, input: { id?: string }) =>
+    method === 'hexbot.sections.open' && attempts++ === 0
+      ? Promise.reject(new Error('Request timed out after 120s'))
+      : method === 'hexbot.sections.open'
+        ? Promise.resolve({
+            section: section('old', 'live-old'),
+            messages: [{ role: 'assistant', text: 'Newest answer' }]
+          })
+        : reply(method, input)
+  )
+  // Loaded before the read failed: the read that succeeds names the same session.
+  useSections.setState({
+    liveSessionId: { old: 'live-old' },
+    cachedMessages: {
+      old: [
+        {
+          attachments: [],
+          createdAt: 0,
+          id: 'cached',
+          role: 'assistant',
+          streaming: false,
+          text: 'Newest answer',
+          toolCalls: []
+        }
+      ]
+    }
+  })
+  render(<ConversationColumn />)
+  expect(await screen.findByTestId('missing-messages')).toBeInTheDocument()
+  // Such as the reopen a send makes when the chat is not live.
+  await act(async () => void (await useSections.getState().open('old')))
+  expect(screen.queryByTestId('missing-messages')).toBeNull()
+  expect(screen.getByText('Newest answer')).toBeInTheDocument()
+})
 it('redirects a genuinely deleted old ID to the canonical chat', async () => {
   call.mockImplementation((method: string, input: { id?: string }) => {
     if (method === 'hexbot.sections.open') {

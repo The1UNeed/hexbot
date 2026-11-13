@@ -116,6 +116,8 @@ export interface SectionsState {
   finished: (sessionId: string) => void
   error: null | string
   idsByBot: Record<string, string[]>
+  /** Each chat's history reads that succeeded in this window; it only grows. */
+  historyReads: Record<string, number>
   liveSessionId: Record<string, string>
   loading: boolean
   loaded: boolean
@@ -533,6 +535,7 @@ export const useSections = create<SectionsState>((set, get) => ({
   },
   choosing: null,
   error: null,
+  historyReads: {},
   idsByBot: {},
   liveSessionId: {},
   loading: false,
@@ -867,6 +870,7 @@ export const useSections = create<SectionsState>((set, get) => ({
       set(state => ({
         ...(catalogCurrent ? mergeSection(state, section) : {}),
         cachedMessages: withoutKey(state.cachedMessages, id),
+        historyReads: { ...state.historyReads, [id]: (state.historyReads[id] ?? 0) + 1 },
         liveSessionId: live ? { ...state.liveSessionId, [id]: live } : state.liveSessionId
       }))
 

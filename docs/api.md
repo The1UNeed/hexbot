@@ -669,8 +669,9 @@ returned by `open`.
   or enabling input, including saved routes and already-loaded live IDs.
   Explicit peer threads keep their own route. Metadata or open failures keep
   the selected route and offer Retry, including when canonical resolution
-  returns the same ID. Late replies from an obsolete route or daemon do not
-  redirect the current view.
+  returns the same ID. A failed read over messages already on screen keeps
+  them, with a small card under them that offers Retry. Late replies from an
+  obsolete route or daemon do not redirect the current view.
 
 - `hexbot.sections.history {id, history_cursor?}` → `{messages: [Message],
   history_cursor: string, history_delta: boolean}`: the section's stored
@@ -694,6 +695,9 @@ private; clients must not construct or interpret it. After a canonical chat
 replacement, resolve and open the new ID as above; an old conversation's cursor
 cannot make that replacement return a delta, even when message IDs were copied.
 Older daemons omit both cursor fields and always return full history.
+A row's `content` keeps its text parts, but its image parts carry no `data`:
+apps show a row's words, and screenshots from the bots' computer alone can
+make one chat's history tens of megabytes. The stored row keeps the image.
 
 `Context = {tokens, window, compact_at, compacting, recounting, seq}` is how
 full the section's context is: Pi's own estimate of the tokens the next

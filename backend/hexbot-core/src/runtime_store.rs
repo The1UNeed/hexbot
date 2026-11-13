@@ -212,7 +212,9 @@ pub fn history_since(
         })?;
         rows.map(|r| {
             let s = r?;
-            serde_json::from_str(&s).map_err(|e| crate::Error::new(5200, e.to_string()))
+            serde_json::from_str(&s)
+                .map(for_apps)
+                .map_err(|e| crate::Error::new(5200, e.to_string()))
         })
         .collect::<Result<Vec<Value>>>()?
     };
@@ -221,6 +223,20 @@ pub fn history_since(
         format!("v1:{stored}:{rewrites}:{last}"),
         after.is_some(),
     ))
+}
+/// A row as the apps read it. They show a row's words, never the bytes of an
+/// image in it, such as a screenshot from the bots' computer or a picture you
+/// pasted; one chat's screenshots can reach tens of megabytes, which every
+/// read would send again. The store and the bot's context keep the image.
+fn for_apps(mut row: Value) -> Value {
+    if let Some(parts) = row.get_mut("content").and_then(Value::as_array_mut) {
+        for part in parts.iter_mut().filter(|part| part["type"] == "image") {
+            if let Some(part) = part.as_object_mut() {
+                part.remove("data");
+            }
+        }
+    }
+    row
 }
 /// Stream visible owner evidence, newest first. Stops before allocating an
 /// oversized row, or when the caller's serialized request is full; either way
