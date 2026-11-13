@@ -151,7 +151,7 @@ The native daemon provides `message_bot {to, text, wait: bool}` for bots:
 - Threads are private one-to-one conversations. Section lists leave them
   out unless asked (`include_threads`); the app opens one on demand from the
   row under the sender's reply (the two bots' faces turned toward each other,
-  "<sender> is asking <bot>" with the reply streaming in, then the other
+  "<sender> is asking <bot>", then the other
   bot's tag: "<bot> helped", or "Messaged <bot>" when no reply was waited
   for), or from that bot's name in a message, in a side panel. Dreaming reads them like
   any other section, so both bots learn from the exchange. In a room, a

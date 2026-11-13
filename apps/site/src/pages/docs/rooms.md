@@ -48,7 +48,7 @@ A bot can ask another of your bots for help, outside any room. Each bot has a de
 
 A bot asked for help does the work itself. It and any work it delegates can't send the request back to a bot that is waiting on its answer.
 
-Each exchange is private between the two bots. While a bot is asking, the two bots' faces turn toward each other under its reply, and the other bot's answer shows as it comes in. Afterwards the row reads, for example, "Writer helped", or "Messaged Writer" when no reply was waited for. Select it, or Writer's name in a message, to read their conversation in a side panel. These conversations stay out of the sidebar, but both bots learn from them: dreaming folds them into memory like any other conversation.
+Each exchange is private between the two bots. While a bot is asking, the two bots' faces turn toward each other under its reply. Afterwards the row reads, for example, "Writer helped", or "Messaged Writer" when no reply was waited for. Select it, or Writer's name in a message, to read their conversation in a side panel. These conversations stay out of the sidebar, but both bots learn from them: dreaming folds them into memory like any other conversation.
 
 Bots ask each other only when Message other bots is on, under Tools in the bot's settings. Hexbot caps a chain at eight messages per originating turn, and daily bot budgets still apply. In a room, only the person who created the room can open these conversations.
 
