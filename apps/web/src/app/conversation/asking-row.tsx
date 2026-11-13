@@ -21,20 +21,16 @@ const TEAMMATE_FACE: AvatarStyle = { color: 'gray', shape: 'round' }
 /** How many times to look a running ask's thread up before giving up on its live reply. */
 const LOOKUPS = 4
 
-/** Markdown marks that would clutter a one-line preview. */
-const MARKS = /[*_`>#]+/g
-
 /**
- * The target's reply as it streams in, read from the thread's live session.
- * The thread is looked up once the ask runs, and again while it is still
- * unknown when a section changes (the thread was just created) or a session
- * appears (the target's session just started, so the thread now names it).
- * Nothing is shown when the lookup is refused or fails.
+ * The target's reply while it streams, read from the thread's live session,
+ * so its face writes as it answers. The reply's text stays in the thread:
+ * the row keeps to its one line until the answer is in. The thread is looked
+ * up once the ask runs, and again while it is still unknown when a section
+ * changes (the thread was just created) or a session appears (the target's
+ * session just started, so the thread now names it). Nothing changes when
+ * the lookup is refused or fails.
  */
-function useLiveReply(
-  ask: Ask,
-  sender: null | string
-): { message?: Message; streaming: boolean; text: string } {
+function useLiveReply(ask: Ask, sender: null | string): Message | undefined {
   const wanted = ask.status === 'running' && Boolean(ask.target && sender)
   const [liveId, setLiveId] = useState<null | string>(null)
   const lookups = useRef(0)
@@ -58,7 +54,7 @@ function useLiveReply(
         }
       },
       () => {
-        // Not the owner, or no such thread: the row keeps to its one line.
+        // Not the owner, or no such thread: the face just listens.
         lookups.current = LOOKUPS
       }
     )
@@ -71,15 +67,7 @@ function useLiveReply(
   const transcript = useTranscript(wanted ? liveId : null)
   const streamingId = transcript?.streamingMessageId ?? null
 
-  const message = streamingId
-    ? transcript?.messages.find(item => item.id === streamingId)
-    : undefined
-
-  return {
-    message,
-    streaming: Boolean(streamingId),
-    text: (message?.text ?? '').replace(MARKS, '').replace(/\s+/g, ' ').trim()
-  }
+  return streamingId ? transcript?.messages.find(item => item.id === streamingId) : undefined
 }
 
 const doneClass =
@@ -88,11 +76,11 @@ const doneClass =
 /**
  * One ask, marked with the other bot's tag: its face and its name in its
  * colour. While it runs the two bots' faces are turned toward each other with
- * "Research is asking Writer", and Writer's reply shows under that line as it
- * streams. Done, the row settles to one quiet line: "Writer helped" once a
- * reply came back, "Messaged Writer" when none was waited for. The row opens
- * the private conversation between the two bots. A call that came without
- * its arguments reads "Research is asking a teammate", with nothing to open.
+ * "Research is asking Writer", and nothing more. Done, the row settles to one
+ * quiet line: "Writer helped" once a reply came back, "Messaged Writer" when
+ * none was waited for. The row opens the private conversation between the two
+ * bots, which holds the reply. A call that came without its arguments reads
+ * "Research is asking a teammate", with nothing to open.
  */
 function AskRow({ ask, sender }: { ask: Ask; sender: null | string }) {
   const target = useBot(ask.target)
@@ -148,17 +136,14 @@ function AskRow({ ask, sender }: { ask: Ask; sender: null | string }) {
           <Avatar
             {...botFace(target)}
             look="left"
-            mood={reply.message ? (liveMood(reply.message) ?? 'thinking') : 'listening'}
+            mood={reply ? (liveMood(reply) ?? 'thinking') : 'listening'}
             name={targetName ?? 'Teammate'}
             size="md"
             {...(ask.target ? {} : { style: TEAMMATE_FACE })}
           />
         </span>
-        <span className="ml-1 flex min-w-0 flex-col justify-center text-left">
-          <span className="text-[length:var(--text-secondary)] text-muted">{line(false)}</span>
-          {reply.text ? (
-            <span className="truncate text-[length:var(--text-meta)] text-muted">{reply.text}</span>
-          ) : null}
+        <span className="ml-1 flex min-w-0 text-[length:var(--text-secondary)] text-muted">
+          {line(false)}
         </span>
       </>
     )
@@ -167,7 +152,7 @@ function AskRow({ ask, sender }: { ask: Ask; sender: null | string }) {
       <li
         aria-label={label}
         aria-live="polite"
-        className="hex-rise py-1"
+        className="hex-rise max-w-full py-1"
         data-status="running"
         data-testid="asking-row"
         role="status"
@@ -206,7 +191,7 @@ function AskRow({ ask, sender }: { ask: Ask; sender: null | string }) {
   }
 
   return (
-    <li className="hex-fade" data-status="done" data-testid="asking-row">
+    <li className="hex-fade max-w-full" data-status="done" data-testid="asking-row">
       <button
         aria-label={openLabel}
         className={cn(

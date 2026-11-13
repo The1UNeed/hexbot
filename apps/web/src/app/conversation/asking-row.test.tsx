@@ -164,7 +164,7 @@ describe('AskingRow', () => {
     expect(screen.getByTestId('asking-row')).not.toHaveTextContent(/is asking/)
   })
 
-  it('shows the reply as it streams, from the thread it looked up once', async () => {
+  it('keeps the streaming reply out of the row, and its face writes while it answers', async () => {
     const rpc = threadRpc('live-t')
     render(
       <AskingRow
@@ -183,13 +183,19 @@ describe('AskingRow', () => {
       transcripts.messageDelta('live-t', '**Your bots** now work as a team.')
     })
 
-    expect(await screen.findByText('Your bots now work as a team.')).toBeVisible()
-    expect(screen.getByRole('img', { name: 'Writer' })).toHaveAttribute('data-mood', 'writing')
+    await waitFor(() =>
+      expect(screen.getByRole('img', { name: 'Writer' })).toHaveAttribute('data-mood', 'writing')
+    )
+    expect(screen.getByTestId('asking-row')).toHaveTextContent(/^Scout is asking Writer$/)
     expect(rpc).toHaveBeenCalledTimes(1)
 
     act(() => transcripts.messageComplete('live-t', { text: 'Your bots now work as a team.' }))
-    expect(screen.queryByText('Your bots now work as a team.')).toBeNull()
     expect(screen.getByRole('img', { name: 'Writer' })).toHaveAttribute('data-mood', 'listening')
+  })
+
+  it('settles to "helped" alone, with none of the reply under it', () => {
+    render(<AskingRow message={message([call({})])} sender="scout" />)
+    expect(screen.getByTestId('asking-row')).toHaveTextContent(/^Writer helped$/)
   })
 
   it('marks a message sent without waiting for a reply', () => {
