@@ -93,6 +93,9 @@ struct State {
     pending: HashMap<String, Value>,
     tool_dialogs: std::collections::HashSet<String>,
     native_approvals: HashMap<String, tokio::sync::oneshot::Sender<String>>,
+    /// Steps the owner approved on a reviewed Auto card this turn, which
+    /// later reviews read; see `review::remember`.
+    approved: Vec<Value>,
     display: VecDeque<String>,
     /// Uploads waiting for the next prompt, in the order they arrived.
     staged: Vec<Staged>,
@@ -126,6 +129,8 @@ impl State {
         self.owner_run = false;
         self.announced = false;
         self.on_computer = None;
+        // An approval covers the task the owner was watching, not the next one.
+        self.approved.clear();
         std::mem::take(&mut self.reread)
     }
     fn dialogs_cancelled(&self) -> bool {
@@ -1307,6 +1312,7 @@ impl Runtime {
                 pending: HashMap::new(),
                 tool_dialogs: std::collections::HashSet::new(),
                 native_approvals: HashMap::new(),
+                approved: Vec::new(),
                 display: VecDeque::new(),
                 staged: std::mem::take(&mut uploads.uploads),
                 landing: 0,
@@ -2501,6 +2507,9 @@ impl Runtime {
             )
         };
         state.pending.remove(id);
+        if request["reviewed"] == true && settled["choice"] == "once" {
+            review::remember(&mut state.approved, &request["approval_payload"]);
+        }
         drop(state);
         // Publish before Pi can settle, never after awaiting its write receipt.
         self.resolved(s, id, &request, settled);

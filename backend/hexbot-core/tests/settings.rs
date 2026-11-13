@@ -258,6 +258,33 @@ fn defaults_and_settings_are_persisted_and_access_controlled() {
 }
 
 #[test]
+fn the_review_model_is_chosen_cleared_and_forgotten_with_its_provider() {
+    let home = setup();
+    // Unset, Auto reviews run on each bot's own model.
+    assert!(settings::get(home.path()).unwrap()["review_model"].is_null());
+    let patch = json!({"review_model":"openai/small","fallback_model":"anthropic/backup"});
+    let saved = settings::update(home.path(), "alice", &patch).unwrap();
+    assert_eq!(saved["review_model"], "openai/small");
+    // Removing another provider leaves it; removing its own clears it.
+    assert!(settings::forget_provider(home.path(), "alice", "anthropic").unwrap());
+    let kept = settings::get(home.path()).unwrap();
+    assert_eq!(kept["review_model"], "openai/small");
+    assert!(kept["fallback_model"].is_null());
+    assert!(settings::forget_provider(home.path(), "alice", "openai").unwrap());
+    assert!(settings::get(home.path()).unwrap()["review_model"].is_null());
+    assert!(!settings::forget_provider(home.path(), "alice", "openai").unwrap());
+    // The user can clear it too.
+    settings::update(
+        home.path(),
+        "alice",
+        &json!({"review_model":"openai/small"}),
+    )
+    .unwrap();
+    let cleared = settings::update(home.path(), "alice", &json!({"review_model":null})).unwrap();
+    assert!(cleared["review_model"].is_null());
+}
+
+#[test]
 fn invalid_patches_never_partially_change_settings_or_profiles() {
     let home = setup();
     let initial = settings::get(home.path()).unwrap();
@@ -272,6 +299,10 @@ fn invalid_patches_never_partially_change_settings_or_profiles() {
         json!({"bot_daily_token_budget":-1}),
         json!({"room_budget_tokens_per_human_turn":1.2}),
         json!({"default_model":"bad"}),
+        json!({"review_model":"bad"}),
+        json!({"review_model":true}),
+        json!({"review_model":"openai/"}),
+        json!({"review_model":"/small"}),
         json!({"workspace_dir":[]}),
     ] {
         assert!(

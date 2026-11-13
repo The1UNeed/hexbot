@@ -74,7 +74,8 @@ Windows releases. See [the remaining Windows requirements](docs/windows-security
   home. Manual scheduled scripts cannot write artifacts or workspace files.
 - In Auto, a `full_access` command, a file change outside the workspace, a
   connected tool that changes something, and a browser page script go to a
-  review on the section's model before they run. It reads the owner's most
+  review before they run, on the review model chosen in Settings, Approvals,
+  or the section's model when none is chosen. It reads the owner's most
   recent messages, whole, and the whole step, including the checked file
   destination and overwrite status. It loads no project instruction files,
   skills or tools, and sees no tool output or bot replies. A step over 20,000
@@ -83,13 +84,17 @@ Windows releases. See [the remaining Windows requirements](docs/windows-security
   invalidate automatic approval when the evidence is rechecked. A step it rates
   low or medium risk runs without asking; anything else, and any review that
   fails or times out, asks the user for that step only. Allow for now grants do
-  not cover reviewed steps. A mode or working-directory change during review
+  not cover reviewed steps. A step the user approves on such a card is shown
+  to later reviews in the same turn, which can then let the same kind of step
+  run without a card; the reviewer still judges each one. In a connected
+  service the reviewer cannot check which page or file an id names, so an edit
+  whose content fits the request can run against the wrong one. A mode or working-directory change during review
   blocks execution; file execution rechecks the destination and reviewed
   overwrite status. The review is a model judgment, not
   containment: a step it allows has the same access as one the user approves.
 - So in Auto, internet access and writes outside the workspace are decided by
-  a model, not the sandbox, and a small or local section model judges less
-  well. The step the reviewer reads (command, reason, file content, tool
+  a model, not the sandbox, and a small or local model judges less well,
+  whether it is the section's own or the review model chosen for every bot. The step the reviewer reads (command, reason, file content, tool
   arguments) is written by the bot and can carry instructions injected by a
   web page or file the bot read; such text can talk a reviewer into allowing
   a harmful step. Choose Manual where that risk is not acceptable.
