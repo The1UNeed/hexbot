@@ -193,3 +193,35 @@ fn a_store_set_up_once_is_set_up_again_when_its_schema_changes_or_the_file_is_re
     }
     assert!(table(&open(h).unwrap()));
 }
+
+#[test]
+fn history_reads_leave_out_image_bytes_and_keep_the_words() {
+    let home = common::TestHome::new();
+    let h = home.path();
+    let shot = json!({"type":"image","mimeType":"image/png","data":"iVBORw0KGgo"});
+    append(
+        h,
+        "chat",
+        json!({"role":"tool","text":"typed","content":[{"type":"text","text":"typed"},shot]}),
+    )
+    .unwrap();
+    let (rows, cursor, _) = history_since(h, "chat", None).unwrap();
+    let words = json!([{"type":"text","text":"typed"},{"type":"image","mimeType":"image/png"}]);
+    assert_eq!(rows[0]["content"], words);
+    assert_eq!(rows[0]["text"], "typed");
+    // A delta read leaves them out the same way.
+    append(
+        h,
+        "chat",
+        json!({"role":"user","text":"look","content":[{"type":"text","text":"look"},shot]}),
+    )
+    .unwrap();
+    let (rows, _, delta) = history_since(h, "chat", Some(&cursor)).unwrap();
+    assert!(delta);
+    assert_eq!(
+        rows[0]["content"][1],
+        json!({"type":"image","mimeType":"image/png"})
+    );
+    // The stored rows, which the bot's context is built from, keep the image.
+    assert_eq!(history(h, "chat").unwrap()[0]["content"][1], shot);
+}

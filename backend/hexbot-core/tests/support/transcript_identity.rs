@@ -502,7 +502,15 @@ async fn actual_pi_transcript_identity_fragments_tools_hidden_and_reconcile() {
     .unwrap();
     let reopened = open(&restarted, "alice").await;
     for row in &rows {
-        assert!(reopened["messages"].as_array().unwrap().contains(row));
+        // Apps read a row without its image bytes; the stored row keeps them.
+        let mut shown = row.clone();
+        let parts = shown.get_mut("content").and_then(Value::as_array_mut);
+        for part in parts.into_iter().flatten() {
+            if part["type"] == "image" {
+                part.as_object_mut().unwrap().remove("data");
+            }
+        }
+        assert!(reopened["messages"].as_array().unwrap().contains(&shown));
     }
     restarted.shutdown().await;
     f.server.abort();

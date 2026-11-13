@@ -84,6 +84,8 @@ Save the cursor with that conversation's displayed messages on that daemon and
 send it as `history_cursor` on the next read. When `history_delta` is true,
 append the returned messages; an unchanged conversation returns none. When it
 is false, replace the whole snapshot. Reads without a cursor return full history.
+An image part in a message's `content` comes back without its `data`; the
+words and the image's `mimeType` stay.
 
 Edits, deletions and branch changes require a full snapshot. A cursor from a
 conversation replaced during chat adoption also returns full history when sent
