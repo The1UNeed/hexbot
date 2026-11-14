@@ -52,6 +52,7 @@ import { useSettings } from '../../stores/settings'
 import { useTranscripts } from '../../stores/transcripts'
 import { useUi } from '../../stores/ui'
 import { rememberedTab } from '../bot-settings'
+import { ComputerPicker } from '../computer-picker'
 import { type LiveMood, liveMoodsOf } from '../conversation/steps'
 import { UpdatePill } from '../update-pill'
 
@@ -764,6 +765,9 @@ export function RosterColumn() {
       <ScrollArea
         bottom={
           <div className="px-2 pb-2">
+            {params.bot ? (
+              <ComputerPicker bot={params.bot} variant="sidebar" />
+            ) : null}
             <UpdatePill className="hex-glass hex-glass-press mb-1 w-full rounded-full border-transparent hover:bg-[var(--hex-glass-bg)]" />
             <div
               // Not a row: no hover fill, so the glass keeps its density.

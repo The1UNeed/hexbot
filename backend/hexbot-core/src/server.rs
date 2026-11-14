@@ -523,6 +523,21 @@ impl App {
                     result
                 } else if let Some(result) = crate::computers::call(&self.home, method, p).await {
                     result
+                } else if method == "hexbot.computers.configure"
+                    && p["screen"] == true
+                    && let Err(error) = crate::computers::host::consent(&self.home).await
+                {
+                    // Picking a bot for the daemon's screen first lets Cua use it.
+                    Err(error)
+                } else if let Some(result) =
+                    crate::computer_access::call(&self.home, owner, method, p)
+                {
+                    // Every app showing a computer picker or Settings redraws it.
+                    if result.is_ok() && crate::computer_access::CHANGES.contains(&method) {
+                        self.events
+                            .emit(owner, None, "hexbot.computers.changed", json!({}));
+                    }
+                    result
                 } else if let Some(result) = connectors::call(&self.home, owner, method, p).await {
                     result
                 } else if let Some(result) = crate::plugins::call(&self.home, owner, method, p) {
@@ -629,6 +644,7 @@ impl App {
             let name = common::required(p, "name")?;
             crate::connectors::close_bot(&self.home, name).await;
             crate::computers::forget_bot(&self.home, name).await;
+            crate::computer_access::forget_bot(&self.home, name);
         }
         if method == "hexbot.pairing.code" {
             let code = result["code"].as_str().unwrap_or("");
@@ -1855,8 +1871,19 @@ async fn connection(
     let mut verify = tokio::time::interval(Duration::from_secs(1));
     let mut tasks = tokio::task::JoinSet::new();
     let bytes = Arc::new(tokio::sync::Semaphore::new(WS_MESSAGE_LIMIT));
+    // Requests for a computer this app lends go to this connection alone.
+    let (lend_send, mut lend_frames) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let lend = Lend {
+        connection: crate::computer_lend::connection_id(),
+        send: lend_send,
+    };
     'connection: loop {
         tokio::select! {
+            Some(frame) = lend_frames.recv() => {
+                if socket.send(Message::Text(frame.into())).await.is_err() {
+                    break;
+                }
+            }
             _ = stop.changed() => {
                 let _ = socket
                     .send(Message::Close(Some(CloseFrame {
@@ -1952,9 +1979,10 @@ async fn connection(
                         let owner = owner.clone();
                         let device_id = device_id.clone();
                         let token = token.clone();
+                        let lend = lend.clone();
                         tasks.spawn(async move {
                             let _permit = permit;
-                            handle_request(app, owner, device_id, token, request).await
+                            handle_request(app, owner, device_id, token, lend, request).await
                         });
                     }
                 }
@@ -1971,12 +1999,24 @@ async fn connection(
     // Runtime RPCs own their command tasks. One-shot requests still cancel
     // with this connection and run their scoped cleanup.
     tasks.abort_all();
+    // A computer this app lent goes offline with it.
+    if crate::computer_lend::withdraw(&app.home, &device_id, lend.connection) {
+        app.events
+            .emit(&owner, None, "hexbot.computers.changed", json!({}));
+    }
+}
+/// The connection's way to send requests for the computer its app lends.
+#[derive(Clone)]
+struct Lend {
+    connection: u64,
+    send: tokio::sync::mpsc::UnboundedSender<String>,
 }
 async fn handle_request(
     app: Arc<App>,
     owner: String,
     device_id: String,
     token: String,
+    lend: Lend,
     request: std::result::Result<Value, serde_json::Error>,
 ) -> Option<Value> {
     let request = match request {
@@ -2004,6 +2044,30 @@ async fn handle_request(
         Err(Error::new(-32602, "params must be an object"))
     } else if method == "hexbot.devices.set_push" {
         set_push(&app.home, &owner, &device_id, &params)
+    } else if method == "hexbot.computers.offer" {
+        // The app on this connection lends its computer to the daemon's bots.
+        let offered = crate::computer_lend::offer(
+            &app.home,
+            &owner,
+            &device_id,
+            lend.connection,
+            lend.send.clone(),
+            &params,
+        );
+        if offered.is_ok() {
+            app.events
+                .emit(&owner, None, "hexbot.computers.changed", json!({}));
+        }
+        offered
+    } else if method == "hexbot.computers.withdraw" {
+        let withdrawn = crate::computer_lend::withdraw(&app.home, &device_id, lend.connection);
+        if withdrawn {
+            app.events
+                .emit(&owner, None, "hexbot.computers.changed", json!({}));
+        }
+        Ok(json!({"withdrawn": withdrawn}))
+    } else if method == "hexbot.computers.reply" {
+        crate::computer_lend::reply(&app.home, &device_id, &params)
     } else {
         app.call(&owner, method, &params).await
     };
@@ -2070,6 +2134,20 @@ fn set_push(home: &std::path::Path, owner: &str, device: &str, p: &Value) -> Res
     Ok(json!({"ok":true}))
 }
 /// A bot's computer screen, from the link `hexbot.computer.view` gave out.
+/// A page a bot serves on one of the user's computers (preview.rs). The token
+/// in the path is the credential; the page runs sandboxed.
+async fn preview_view(
+    axum::extract::Path((token, rest)): axum::extract::Path<(String, String)>,
+    request: axum::extract::Request,
+) -> Response {
+    crate::preview::proxy(token, rest, request).await
+}
+async fn preview_root(
+    axum::extract::Path(token): axum::extract::Path<String>,
+    request: axum::extract::Request,
+) -> Response {
+    crate::preview::proxy(token, String::new(), request).await
+}
 async fn computer_view(
     axum::extract::Path((token, _rest)): axum::extract::Path<(String, String)>,
     request: axum::extract::Request,
@@ -2131,7 +2209,9 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/auth/ws-ticket", post(ticket))
         .route("/hexbot/pair", post(pair))
         .route("/hexbot/session", post(session))
-        .route("/hexbot/computer/{token}/{*rest}", any(computer_view));
+        .route("/hexbot/computer/{token}/{*rest}", any(computer_view))
+        .route("/hexbot/preview/{token}/", any(preview_root))
+        .route("/hexbot/preview/{token}/{*rest}", any(preview_view));
     if let Some(dist) = app.web_dist.clone() {
         router = router.fallback_service(
             tower_http::services::ServeDir::new(dist)

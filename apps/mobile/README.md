@@ -36,7 +36,7 @@ up.
 
 Settings is the daemon and what bots are doing right now, then the desktop
 app's groups: Models (providers, usage), Bots (plugins, passwords, bot
-activity), Manuals (Computer use), Devices (network, paired devices, Hex
+activity), Manuals (Computers), Devices (network, paired devices, Hex
 Connect), You (About you, daemon settings) and App (updates, licenses); it
 also switches daemons. + in the Chats bar makes a new bot or room. Bots & jobs
 is every bot's profile, scheduled jobs, and all rooms, archived ones included.

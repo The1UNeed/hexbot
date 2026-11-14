@@ -34,6 +34,45 @@ The operating-system sandbox is the containment boundary for untrusted shell
 commands and code execution. Prompt instructions, approval text, output
 redaction, and pattern checks do not provide equivalent containment.
 
+The bots' computer is a separate boundary: a Cua container on the daemon
+computer, driven by the daemon's `cua`. Commands and screen actions a bot
+sends there run without approval in every mode, because nothing on the
+daemon computer is reachable from it except what Cua and Docker expose. It
+has internet access, and anything a bot types or downloads there can reach
+the web. The approval modes apply to the daemon computer only. With the
+Computers choice set to neither, the daemon computer's commands stay in the
+workspace sandbox even in Bypass; with the bots' computer only, it runs no
+commands. In both, the file tools refuse paths outside the workspace.
+
+The daemon computer's own screen is not a boundary. A bot the user picked
+for it sees whatever is on screen and acts with the user's desktop session,
+through the daemon's `cua`, after `cua do-host-consent` and the system's
+Screen Recording and Accessibility permissions. Auto asks once per
+conversation and Manual before every action; that is consent, not
+containment. The daemon refuses clicks, drags, scrolls and keystrokes that
+land on a Hexbot window, in the app or a browser, so a bot cannot answer its
+own approval card; it matches windows by app and title, and a window that
+hides its title is not recognised. Saved passwords are never typed there.
+
+A desktop app that lends its computer runs what the daemon sends over that
+app's own authenticated connection, only while it is open, only after the
+user turned it on there. Shell commands run in the same OS sandbox as the
+daemon's, built from the same `isolation.ts` and credential policy, rooted
+at that computer's `~/Hexbot`; the daemon's gate sets the level, and Bypass
+runs them unsandboxed on that computer. Screen tools run through that
+computer's own Cua after its own consent, and the daemon applies the same
+Hexbot-window guard. Anyone in control of the daemon controls what a lent
+computer runs.
+
+A preview serves a bot's page from the daemon's address, under
+`/hexbot/preview/<token>/`, so every response carries a CSP `sandbox`
+without `allow-same-origin`: the page runs with an opaque origin and cannot
+read the daemon's cookies or storage or call its API as the user. The
+daemon drops cookies, `Authorization`, `DPoP` and `Origin` from requests and
+`Set-Cookie`, `X-Frame-Options` and the page's own CSP from responses. The
+token is the credential; it lasts four hours and reaches only the loopback
+port the bot named.
+
 Windows remains unsupported. Its build work does not implement a sandbox.
 Auto and Manual refuse local shell commands, Python code, and Pi's file tools
 before approval or execution, including `full_access` and remembered grants.

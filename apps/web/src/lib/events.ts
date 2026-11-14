@@ -28,6 +28,7 @@ import type { GatewayEvent } from '@hermes/shared'
 
 import { useBots } from '../stores/bots'
 import { useComputer } from '../stores/computer'
+import { useComputers } from '../stores/computers'
 import { useConnectors } from '../stores/connectors'
 import { useHeartbeat } from '../stores/heartbeat'
 import { useMe } from '../stores/me'
@@ -44,8 +45,10 @@ import type {
 } from '../stores/transcripts'
 import { holdHeartbeatMessage, transcriptNotify, useTranscripts } from '../stores/transcripts'
 import { useUi } from '../stores/ui'
+import { visualsActions } from '../stores/visuals'
 
 import { forgetUnsentDraft } from './draft-card'
+import { answerRequest } from './lend'
 import type { HexbotRpcClient } from './rpc'
 import type {
   ApprovalChoice,
@@ -210,6 +213,34 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
 
     case 'hexbot.computer.changed':
       useComputer.getState().apply(payload as Partial<ComputerStatus>)
+
+      return
+
+    case 'hexbot.preview.opened':
+      // A bot showed a page it serves; it opens beside that bot's chat.
+      if (
+        typeof payload.path === 'string' &&
+        payload.path.startsWith('/hexbot/preview/') &&
+        payload.bot === useUi.getState().lastSection?.bot
+      ) {
+        visualsActions().open({
+          preview: { computer: String(payload.computer ?? ''), path: payload.path },
+          title: String(payload.title ?? 'Preview'),
+          toolId: `preview:${payload.path}`
+        })
+      }
+
+      return
+
+    case 'hexbot.computer.request':
+      // A request for the computer this app lends (lib/lend.ts).
+      void answerRequest(payload)
+
+      return
+
+    case 'hexbot.computers.changed':
+      // The choice, a bot's access or its active computer changed somewhere.
+      void useComputers.getState().reload()
 
       return
 

@@ -25,6 +25,7 @@ import {
 import { bootstrap, type BootstrapProgress } from './backend/bootstrap'
 import { DaemonManager } from './backend/manager'
 import { hexbotHome } from './backend/paths'
+import { lendState, runRequest, Screen, writeChoice } from './computer'
 import { resolveWebDevUrl } from './dev-url'
 import { edition, hasRuntime, requireRuntime } from './edition'
 import { parseDeepLink } from './deep-link'
@@ -294,6 +295,23 @@ function registerIpc(): void {
       edition
     }
   })
+  // This computer, lent to the daemon's bots (computer.ts). The page offers
+  // it over its connection and relays the daemon's requests here.
+  const lendDir = app.getPath('userData')
+  const screen = new Screen()
+  handle('hexbot:computer:state', () => lendState(lendDir))
+  handle('hexbot:computer:set', async (_event, raw: unknown) => {
+    const next = (raw ?? {}) as { on?: unknown; screen?: unknown }
+    const choice = { on: next.on === true, screen: next.on === true && next.screen === true }
+    // Lending the screen first lets this computer's Cua use it.
+    if (choice.screen && !lendState(lendDir).screen) await screen.consent()
+    if (!choice.screen) screen.stop()
+    writeChoice(lendDir, choice)
+    return lendState(lendDir)
+  })
+  handle('hexbot:computer:run', (_event, request: unknown) =>
+    runRequest(request, { dataDir: lendDir, home: hexbotHome(), screen })
+  )
   handle('hexbot:daemon:status', () => daemon.status())
   handle('hexbot:daemon:start', async () => {
     requireRuntime('Running a daemon on this machine')

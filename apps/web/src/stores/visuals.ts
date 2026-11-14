@@ -28,9 +28,28 @@ export interface FileTab {
   toolId: string
 }
 
-export type SideTab = FileTab | Visual
+/**
+ * A page a bot serves on one of the user's computers, through the daemon
+ * (`/hexbot/preview/<token>/…`). It runs sandboxed, never as the daemon's page.
+ */
+export interface PreviewTab {
+  preview: {
+    computer: string
+    /** Relative to the daemon. */
+    path: string
+  }
+  title: string
+  /** `preview:` and the path. */
+  toolId: string
+}
+
+export type SideTab = FileTab | PreviewTab | Visual
 
 export const isFileTab = (tab: SideTab): tab is FileTab => 'file' in tab
+export const isPreviewTab = (tab: SideTab): tab is PreviewTab => 'preview' in tab
+/** Files and previews fill the panel; visuals scroll in it. */
+export const fillsPanel = (tab: SideTab): tab is FileTab | PreviewTab =>
+  isFileTab(tab) || isPreviewTab(tab)
 
 export function fileTab(title: string, file: FileTab['file']): FileTab {
   return { file, title, toolId: `file:${file.path ?? file.url ?? title}` }

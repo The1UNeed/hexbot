@@ -3,6 +3,8 @@ import { PanelLeft } from 'lucide-react'
 import { type CSSProperties, type ReactNode, useEffect, useState } from 'react'
 
 import { cn } from '../lib/cn'
+import { offerComputer } from '../lib/lend'
+import { useConnection } from '../stores/connection'
 import { searchActions, useSearch } from '../stores/search'
 import { useUi } from '../stores/ui'
 import { useVisuals, visualsActions } from '../stores/visuals'
@@ -34,6 +36,13 @@ export function AppShell({ children }: { children?: ReactNode }) {
   const thread = useUi(state => state.thread)
   const closeThread = useUi(state => state.closeThread)
   const [compact, setCompact] = useState(() => window.matchMedia(COMPACT).matches)
+  // The desktop app offers its computer again on every connect (lib/lend.ts).
+  const connects = useConnection(state => state.connects)
+  useEffect(() => {
+    if (connects > 0) {
+      void offerComputer().catch(() => {})
+    }
+  }, [connects])
   const params = useParams({ strict: false }) as { bot?: string; room?: string; section?: string }
   const roomMode = Boolean(params.room)
   // The thread panel takes the same slot as the profile, in rooms too, and goes first.

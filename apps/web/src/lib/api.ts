@@ -21,8 +21,11 @@ import type {
   ClarifyQuestion,
   ClarifyRequest,
   ClarifyRequestPayload,
+  ComputerChoice,
+  ComputerInfo,
   ComputerQuality,
   ComputerSize,
+  ComputersList,
   ComputerStatus,
   Connector,
   ConnectorTest,
@@ -566,6 +569,22 @@ export const computerView = (control: boolean, quality: ComputerQuality = 'auto'
   })
 export const computerConfigure = (size: ComputerSize) =>
   rpcCall<ComputerStatus>('hexbot.computer.configure', { size })
+
+/** Where bots work: the choice and every computer, with the bots allowed on each. */
+export const computersList = () => rpcCall<ComputersList>('hexbot.computers.list')
+/** Change the choice, or whether one bot may use one computer. */
+export const computersConfigure = (
+  patch:
+    | { allowed: boolean; bot: string; computer: string }
+    | { bot: string; computer: string; screen: boolean }
+    | { choice: ComputerChoice }
+) => rpcCall<ComputersList>('hexbot.computers.configure', patch)
+/** The computers one bot may use now, its active one marked. */
+export const computersForBot = (bot: string) =>
+  rpcCall<{ bot: string; computers: ComputerInfo[] }>('hexbot.computers.for_bot', { bot })
+/** Switch the computer a bot uses when it names none. */
+export const computersUse = (bot: string, computer: string) =>
+  rpcCall<{ bot: string; computers: ComputerInfo[] }>('hexbot.computers.use', { bot, computer })
 
 export const heartbeatStatus = (bot: string) =>
   rpcCall<HeartbeatStatus>('hexbot.heartbeat.status', { bot })

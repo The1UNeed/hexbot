@@ -369,6 +369,45 @@ export interface ComputerStatus {
   state: ComputerState
 }
 
+/**
+ * Where bots work (`hexbot.computers.*`): the bots' computer and the user's,
+ * the bots' computer only, the user's only, or neither, which keeps commands
+ * in the workspace sandbox.
+ */
+export type ComputerChoice = 'both' | 'bots' | 'none' | 'yours'
+
+/** One computer bots can work on. */
+export interface ComputerInfo {
+  /** Bots name no computer: this one is used. Only in a bot's own list. */
+  active?: boolean
+  /** Work there follows the approval mode; the bots' computer never asks. */
+  asks: boolean
+  /** In Settings: the bots the user lets use it, whatever the choice. */
+  bots?: string[]
+  id: string
+  kind: 'bots' | 'daemon' | 'device'
+  /** Commands stay in the workspace sandbox in every approval mode. */
+  limited: boolean
+  name: string
+  /** In Settings: whether the choice turns it on. */
+  on?: boolean
+  online: boolean
+  os: string
+  /** What it needs is installed. */
+  ready: boolean
+  /** Bots can see and use its screen; for the daemon's, in a bot's own list, this bot can. */
+  screen: boolean
+  /** A lent computer: its app lends the screen too. */
+  lends_screen?: boolean
+  /** In Settings, the daemon's or a lent computer: the bots picked for its screen. */
+  screen_bots?: string[]
+}
+
+export interface ComputersList {
+  choice: ComputerChoice
+  computers: ComputerInfo[]
+}
+
 /** Pi's thinking levels; Pi clamps each to what the model supports. */
 export type ReasoningEffort = 'high' | 'low' | 'max' | 'medium' | 'minimal' | 'off' | 'xhigh'
 

@@ -21,8 +21,11 @@ export type {
   SkillRequirement,
   NetworkInfo,
   UsageSummary,
+  ComputerChoice,
   ComputerCursor,
+  ComputerInfo,
   ComputerQuality,
+  ComputersList,
   ComputerSize,
   ComputerStatus
 } from '../../../web/src/lib/types'

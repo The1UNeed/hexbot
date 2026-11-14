@@ -29,6 +29,7 @@ pub const USAGE: &str = concat!(
     "hexbot bots primary [NAME]\n",
     "hexbot heartbeat on | off | status BOT | now BOT | set BOT TEXT\n",
     "hexbot computer [on | off | restart | reset | pause | resume | size small|medium|large]\n",
+    "hexbot computers [use both|bots|yours|none | allow|deny bots|daemon BOT | active BOT bots|daemon | screen BOT on|off]\n",
     "hexbot rooms list\n",
     "hexbot plugins [list [--bot NAME]] | assign connector|skill|package ID [BOT ...]\n",
     "hexbot devices list | revoke ID\n",
@@ -80,6 +81,22 @@ fn command(args: &[String]) -> Result<(&'static str, Value)> {
             Ok(("hexbot.computer.control", json!({"holder":"bot"})))
         }
         ["computer", "size", size] => Ok(("hexbot.computer.configure", json!({"size":size}))),
+        ["computers"] => Ok(("hexbot.computers.list", json!({}))),
+        ["computers", "use", choice] => {
+            Ok(("hexbot.computers.configure", json!({"choice":choice})))
+        }
+        ["computers", toggle @ ("allow" | "deny"), computer, bot] => Ok((
+            "hexbot.computers.configure",
+            json!({"computer":computer,"bot":bot,"allowed":*toggle == "allow"}),
+        )),
+        ["computers", "screen", bot, toggle @ ("on" | "off")] => Ok((
+            "hexbot.computers.configure",
+            json!({"computer":"daemon","bot":bot,"screen":*toggle == "on"}),
+        )),
+        ["computers", "active", bot, computer] => Ok((
+            "hexbot.computers.use",
+            json!({"bot":bot,"computer":computer}),
+        )),
         ["plugins"] | ["plugins", "list"] => Ok(("hexbot.plugins.list", json!({}))),
         ["plugins", "list", "--bot", bot] => Ok(("hexbot.plugins.list", json!({"bot":bot}))),
         [
@@ -589,6 +606,7 @@ pub async fn dispatch(home: &Path, args: &[String]) -> Option<Result<()>> {
                 | "send"
                 | "heartbeat"
                 | "computer"
+                | "computers"
                 | "plugins"
                 | "diagnostics"
                 | "hermes"
@@ -651,6 +669,39 @@ mod usage_data_tests {
         );
         assert!(command(&args(&["usage-data", "maybe"])).is_err());
         assert!(USAGE.contains("hexbot usage-data on | off"));
+    }
+
+    #[test]
+    fn computers_choose_where_bots_work() {
+        assert_eq!(
+            command(&args(&["computers"])).unwrap(),
+            ("hexbot.computers.list", json!({}))
+        );
+        assert_eq!(
+            command(&args(&["computers", "use", "none"])).unwrap(),
+            ("hexbot.computers.configure", json!({"choice":"none"}))
+        );
+        assert_eq!(
+            command(&args(&["computers", "deny", "daemon", "owl"])).unwrap(),
+            (
+                "hexbot.computers.configure",
+                json!({"computer":"daemon","bot":"owl","allowed":false})
+            )
+        );
+        assert_eq!(
+            command(&args(&["computers", "screen", "owl", "on"])).unwrap(),
+            (
+                "hexbot.computers.configure",
+                json!({"computer":"daemon","bot":"owl","screen":true})
+            )
+        );
+        assert_eq!(
+            command(&args(&["computers", "active", "owl", "bots"])).unwrap(),
+            (
+                "hexbot.computers.use",
+                json!({"bot":"owl","computer":"bots"})
+            )
+        );
     }
 
     #[test]

@@ -861,6 +861,96 @@ on or off for every bot through `hexbot.settings.set`.
   Daemons from before the heartbeat sent `hexbot.checkins.message` in the
   same shape.
 
+### Computers
+
+Where bots work. The user chooses the bots' computer and the daemon's
+(`both`, the default), the bots' computer only (`bots`), the daemon's only
+(`yours`) or neither (`none`), and which bots use each computer. Each bot has
+an active computer, used when a command names none. `computers.json` in the
+daemon home keeps the choice, the bots kept off each computer (every other
+bot may use it, new ones too), each bot's active computer, and the note each
+conversation last took. With `none` the daemon's commands stay in the
+workspace sandbox in every approval mode and `full_access` is refused; with
+`bots` or `none` the file tools stay in the workspace.
+
+A computer is `{id, kind, name, os, screen, limited, asks, ready, online}`:
+`id` is `bots` or `daemon`; `kind` the same; `name` "Bots' computer" or the
+daemon's host name; `screen` whether bots can use its screen; `limited`
+whether commands stay in the workspace sandbox whatever the mode; `asks`
+whether work there follows the approval mode (the bots' computer never
+asks); `ready` whether what it needs is installed (Cua for the bots'
+computer).
+
+- `hexbot.computers.list {}` → `{choice, computers}`, every computer with
+  `on` (the choice turns it on) and `bots` (the owner's bots allowed on it,
+  whatever the choice).
+- `hexbot.computers.for_bot {bot}` → `{bot, computers}`: the computers the
+  bot may use now, in a fixed order, its active one with `active: true`. A
+  pick the choice took away falls back to the first ready computer.
+- `hexbot.computers.configure {choice}`, `{computer, bot, allowed}` or
+  `{computer: "daemon", bot, screen}` → the list. `screen` picks the bot for
+  the daemon's screen (`screen_bots` in the list); turning it on first runs
+  `cua do-host-consent` and fails with Cua's reason. Error 4202 for an
+  unknown choice or computer.
+- `hexbot.computers.use {bot, computer}` → `{bot, computers}`. Error 4202
+  for a computer the bot may not use.
+- Both changes broadcast `hexbot.computers.changed {}`; clients read again
+  what they show.
+
+The terminal tool and `computer_use` take an optional `computer`, an id or
+a name; without it the active computer is used (for `computer_use`, the
+bots' computer). A command for the bots' computer runs there through `cua`
+with a 30-second limit and no approval; the daemon checks the bot may use it
+(`hexbot_computer_shell`). Tool declarations never change with computers. A
+note, `[Computers] …`, joins the next user message after the conversation
+starts or what the bot can use changes, by the heartbeat's way in, and is
+offered until Pi reports that message. `hexbot computers` lists them, and
+`use`, `allow`, `deny`, `active` and `screen` change them.
+
+A desktop app lends its computer over its own connection:
+
+- `hexbot.computers.offer {name, os, screen}` → `{computer}`, the lent
+  computer's id, `app-` and the start of the device id. The daemon
+  remembers the device in `computers.json` and lists it, online while that
+  connection stays open. Only a paired device can offer.
+- `hexbot.computers.withdraw {}` → `{withdrawn}`.
+- The daemon sends `hexbot.computer.request {id, kind, …}` to that
+  connection alone: `kind: "shell"` with `command`, `level` (`confined`,
+  `base` or `none`), `read_only` and `timeout`, answered with `{exit_code,
+  output}`; or `kind: "mcp"` with `tool` (a `computer_*` screen tool) and
+  `arguments`, answered with Cua's result.
+- `hexbot.computers.reply {id, result}` or `{id, error}` answers it; only
+  the asked device can. The daemon waits 150 seconds, and fails what waits
+  when the connection closes.
+- Lent computers appear in `hexbot.computers.list` with `kind: "device"`,
+  `online`, `lends_screen`, `bots` and `screen_bots`, whatever the choice;
+  bots use them only with `both` or `yours`. `configure` takes their id.
+  Revoking the device removes it.
+
+`computer_use` with `action: "preview"`, `port` and an optional `path`
+shows a page a bot serves. On the bots' computer it opens
+`http://localhost:<port><path>` in that computer's browser. On the
+daemon's computer or a lent one it returns `{preview, computer, note}` and
+broadcasts `hexbot.preview.opened {bot, path, computer, title}`; `path` is
+relative to the daemon, `/hexbot/preview/<token>/…`, valid four hours,
+forwarded to `127.0.0.1:<port>` there (a lent computer answers a
+`hexbot.computer.request` of `kind: "http"` with `{status, headers, body}`,
+the body base64). Every response carries `Content-Security-Policy: sandbox
+allow-scripts allow-forms allow-popups allow-modals allow-downloads` and no
+cookies; request cookies, `Authorization`, `DPoP` and `Origin` are dropped.
+An ended link answers 404 and a closed port 502.
+
+`computer_use` with `computer: "daemon"` acts on the daemon's own desktop
+for a bot picked for its screen (`screen: true` in its list), through `cua
+mcp --sandbox host` under the MCP name `hexbot-host-screen`. The extension
+asks first: once a conversation in Auto (options `session` and `deny`),
+before every action in Manual, never in Bypass. Before a pointer action or
+keystroke the daemon reads `computer_window_list` and
+`computer_get_screen_size`, maps the screenshot point to screen points, and
+refuses with 4302 one landing on a window whose app or title says Hexbot,
+or any keystroke while one is focused. A pointer action needs a screenshot
+first. `shell` is refused there.
+
 ### Computer
 
 The daemon has one computer that its bots share: a Cua sandbox, a Linux

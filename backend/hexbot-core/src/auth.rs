@@ -350,6 +350,8 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
                     params![now(), id],
                 )?;
                 tx.commit()?;
+                // A computer the device lent goes with it.
+                crate::computer_access::forget_device(home, id);
                 Ok(json!({"revoked":true}))
             }
             "hexbot.pairing.code" => new_code(home, caller),

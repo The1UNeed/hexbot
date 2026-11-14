@@ -4,6 +4,9 @@ import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Switch } from '../../components/ui/switch'
 import type { Bot, BotTool } from '../../lib/types'
+import { computerTitle, useComputers } from '../../stores/computers'
+import { useConnection } from '../../stores/connection'
+import { computerLine } from '../computer-picker'
 
 import { Group, Heading, Row, type SaveBot } from './shared'
 
@@ -18,7 +21,8 @@ export const TOOL_GROUPS: { rows: ToolRow[]; title: string }[] = [
   {
     rows: [
       {
-        description: 'Run commands in a sandbox. Leaving it is checked first, except in Bypass.',
+        description:
+          "Run commands on its computers. On yours they stay in a sandbox, and leaving it is checked first, except in Bypass.",
         key: 'terminal',
         label: 'Terminal',
         note: 'Sandboxed'
@@ -75,10 +79,11 @@ export function ToolsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
 
   return (
     <div>
-      <Heading description="What this bot can do here and with your other bots. Every bot also has Computer use, in Settings, Manuals.">
+      <Heading description="What this bot can do here and with your other bots.">
         Tools
       </Heading>
       <div className="space-y-8">
+        <BotComputers bot={bot} />
         {groups.map(group => (
           <Group key={group.title} title={group.title}>
             {group.rows.map(row => (
@@ -107,6 +112,63 @@ export function ToolsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
         ))}
       </div>
     </div>
+  )
+}
+
+/** The computers this bot may use, the same switches as Settings, Computers. */
+function BotComputers({ bot }: { bot: Bot }) {
+  const list = useComputers(state => state.list)
+  const refresh = useComputers(state => state.refresh)
+  const allow = useComputers(state => state.allow)
+  const allowScreen = useComputers(state => state.allowScreen)
+  const connects = useConnection(state => state.connects)
+  useEffect(() => void refresh(), [connects, refresh])
+
+  // An older daemon has no computers to choose.
+  if (!list) {
+    return null
+  }
+
+  const shown = list.computers.filter(computer => computer.on !== false)
+
+  // Neither keeps bots off every screen.
+  const daemon =
+    list.choice === 'none' ? undefined : shown.find(computer => computer.kind === 'daemon')
+
+  return (
+    <Group footer="Settings, Computers chooses where all your bots work." title="Computers">
+      {shown.length ? (
+        shown.map(computer => (
+          <Row
+            control={
+              <Switch
+                aria-label={`Uses ${computerTitle(computer)}`}
+                checked={computer.bots?.includes(bot.name) ?? false}
+                onCheckedChange={allowed => void allow(computer.id, bot.name, allowed)}
+              />
+            }
+            description={computerLine(computer)}
+            key={computer.id}
+            title={computerTitle(computer)}
+          />
+        ))
+      ) : (
+        <Row description="Commands are refused until you choose a computer." title="None" />
+      )}
+      {daemon ? (
+        <Row
+          control={
+            <Switch
+              aria-label={`Uses the screen of ${daemon.name}`}
+              checked={daemon.screen_bots?.includes(bot.name) ?? false}
+              onCheckedChange={screen => void allowScreen(daemon.id, bot.name, screen)}
+            />
+          }
+          description="Sees your apps and clicks and types there. Asks first, except in Bypass."
+          title={`Screen of ${daemon.name}`}
+        />
+      ) : null}
+    </Group>
   )
 }
 
