@@ -890,7 +890,10 @@ computer).
 - `hexbot.computers.configure {choice}`, `{computer, bot, allowed}` or
   `{computer: "daemon", bot, screen}` → the list. `screen` picks the bot for
   the daemon's screen (`screen_bots` in the list); turning it on first runs
-  `cua do-host-consent` and fails with Cua's reason. Error 4202 for an
+  `cua do-host-consent` on the daemon's computer and fails with Cua's
+  reason; a lent screen's app asks its own Cua when the user lends it.
+  Pausing the bots (`hexbot.computer.control`) stops them on every screen,
+  the daemon's and lent ones too. Error 4202 for an
   unknown choice or computer.
 - `hexbot.computers.use {bot, computer}` → `{bot, computers}`. Error 4202
   for a computer the bot may not use.
@@ -930,15 +933,22 @@ A desktop app lends its computer over its own connection:
 `computer_use` with `action: "preview"`, `port` and an optional `path`
 shows a page a bot serves. On the bots' computer it opens
 `http://localhost:<port><path>` in that computer's browser. On the
-daemon's computer or a lent one it returns `{preview, computer, note}` and
-broadcasts `hexbot.preview.opened {bot, path, computer, title}`; `path` is
+daemon's computer or a lent one it returns `{shown, computer, note}`, never
+the link, and broadcasts `hexbot.preview.opened {bot, path, computer,
+title}` to the user's apps; the daemon's own port is refused; `path` is
 relative to the daemon, `/hexbot/preview/<token>/…`, valid four hours,
 forwarded to `127.0.0.1:<port>` there (a lent computer answers a
 `hexbot.computer.request` of `kind: "http"` with `{status, headers, body}`,
 the body base64). Every response carries `Content-Security-Policy: sandbox
-allow-scripts allow-forms allow-popups allow-modals allow-downloads` and no
-cookies; request cookies, `Authorization`, `DPoP` and `Origin` are dropped.
-An ended link answers 404 and a closed port 502.
+allow-scripts allow-forms allow-popups allow-modals allow-downloads`,
+`Access-Control-Allow-Origin: *` (the sandboxed page has an opaque origin)
+and no cookies; request cookies, `Authorization`, `DPoP` and `Origin` are
+dropped, and `OPTIONS` is answered by the daemon. Root-relative `Location`
+headers and `src`, `href` and `action` attributes in HTML are kept under the
+link's path. Each request checks the bot may still use that computer: one
+taken away answers 403, an ended link 404 and a closed port 502.
+`computer_use` is declared whether or not the daemon has Cua; the bots'
+computer and the daemon's screen need it, previews and lent screens don't.
 
 `computer_use` with `computer: "daemon"` acts on the daemon's own desktop
 for a bot picked for its screen (`screen: true` in its list), through `cua

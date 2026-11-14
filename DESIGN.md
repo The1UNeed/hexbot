@@ -268,12 +268,15 @@ more freedom and more capability than a hosted product can offer.
   keystroke the daemon lists the windows and refuses one that lands on
   Hexbot, the app or a browser showing it, or any keystroke while Hexbot is
   focused, so a bot cannot press its own approval card. There is no shell on
-  the screen: commands use the terminal and its sandbox.
+  the screen: commands use the terminal and its sandbox. Pause bots stops
+  them on every screen. A lent computer's screen asks the same way, with a
+  grant of its own.
 - A desktop app lends its computer (`computer_lend.rs`,
   `apps/desktop/src/main/computer.ts`) when the user turns it on in that
   app. The page offers it over its own connection on every connect; it goes
   offline when the connection closes. The daemon decides everything and
-  sends only two requests to that connection: a shell command at the level
+  sends only three kinds of request to that connection (the third, a
+  loopback page for Preview, is below): a shell command at the level
   the extension's gate settled (`confined`, `base` or `none`, read-only in
   Manual), which the app runs with the extension's own `isolation.ts` in its
   `~/Hexbot`, keeping its `~/.hexbot` and credential stores unreadable; and a

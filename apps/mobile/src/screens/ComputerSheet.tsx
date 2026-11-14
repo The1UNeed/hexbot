@@ -450,7 +450,9 @@ export function ComputerSheet({
             subtitle={
               computer.kind === 'bots'
                 ? 'Nothing asks here'
-                : computer.limited
+                : !computer.online
+                  ? 'Offline: the Hexbot app there is closed'
+                  : computer.limited
                   ? 'Workspace sandbox only'
                   : 'Follows the approval mode'
             }

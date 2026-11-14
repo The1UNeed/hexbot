@@ -99,6 +99,7 @@ impl App {
         }
         let events = EventHub::new();
         crate::computers::attach(&home, events.clone());
+        crate::preview::daemon_port(&home, address.port());
         let runtime = Runtime::new(home.clone(), events.clone(), pi)?;
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let runtime = runtime.clone();
@@ -153,6 +154,7 @@ impl App {
     /// Serve another address with the same bots: running turns and the event
     /// log carry over; connections to the old address are closed by `disconnect`.
     pub fn rebind(&self, address: SocketAddr) -> Result<Arc<Self>> {
+        crate::preview::daemon_port(&self.home, address.port());
         let (stop, _) = tokio::sync::watch::channel(false);
         let app = Arc::new(Self {
             memory: MemoryStore::new(self.home.clone()),
@@ -525,6 +527,8 @@ impl App {
                     result
                 } else if method == "hexbot.computers.configure"
                     && p["screen"] == true
+                    // A lent screen's app asks its own Cua; only the daemon's asks here.
+                    && p["computer"] == crate::computer_access::DAEMON
                     && let Err(error) = crate::computers::host::consent(&self.home).await
                 {
                     // Picking a bot for the daemon's screen first lets Cua use it.

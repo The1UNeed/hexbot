@@ -210,7 +210,9 @@ function BotAccess({ computer, screen }: { computer: ComputerInfo; screen?: bool
       }
       footer={
         screen
-          ? 'The first bot you pick lets Cua use this screen. On a Mac, allow Screen Recording and Accessibility when macOS asks.'
+          ? computer.kind === 'daemon'
+            ? 'The first bot you pick lets Cua use this screen. On a Mac, allow Screen Recording and Accessibility when macOS asks.'
+            : 'The Hexbot app on that computer lent its screen.'
           : computer.on === false
             ? 'Your choice above keeps this computer off for every bot.'
             : null

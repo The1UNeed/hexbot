@@ -1948,13 +1948,18 @@ async fn preview(
         open["capture_after"] = args["capture_after"].clone();
         return Box::pin(act(home, bot, cfg, env, &open)).await;
     }
-    let shown = crate::preview::for_bot(home, &computer, port, &path)?;
+    let mut shown = crate::preview::for_bot(home, bot, &computer, port, &path)?;
+    // Only the user's apps get the link.
+    let link = shown
+        .as_object_mut()
+        .and_then(|shown| shown.remove("link"))
+        .unwrap_or_default();
     announce(
         home,
         "hexbot.preview.opened",
         json!({
             "bot": bot,
-            "path": shown["preview"],
+            "path": link,
             "computer": computer["name"],
             "title": format!("{} · {port}", computer["name"].as_str().unwrap_or("Preview")),
         }),

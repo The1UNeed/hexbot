@@ -22,6 +22,10 @@ export function computerLine(computer: ComputerInfo): string {
     return 'Nothing asks here'
   }
 
+  if (!computer.online) {
+    return 'Offline: the Hexbot app there is closed'
+  }
+
   return computer.limited ? 'Workspace sandbox only' : 'Follows the approval mode'
 }
 

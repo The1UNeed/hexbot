@@ -48,7 +48,8 @@ export const WORKSPACE = join(homedir(), 'Hexbot')
 /** Output is cut here; a bot reads what it needs with a narrower command. */
 const OUTPUT_LIMIT = 100_000
 const DEFAULT_TIMEOUT_S = 120
-const MAX_TIMEOUT_S = 600
+/** Under the daemon's 150-second wait, so a command never outlives the bot's answer. */
+const MAX_TIMEOUT_S = 140
 
 function osName(): string {
   return { darwin: 'macOS', linux: 'Linux', win32: 'Windows' }[platform() as string] ?? platform()
@@ -380,7 +381,10 @@ export async function fetchLocal(
 
   return {
     body: bytes.toString('base64'),
-    headers: [...response.headers.entries()],
+    // fetch has already decompressed the body.
+    headers: [...response.headers.entries()].filter(
+      ([name]) => !['content-encoding', 'content-length', 'transfer-encoding'].includes(name)
+    ),
     status: response.status
   }
 }

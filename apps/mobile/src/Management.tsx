@@ -271,7 +271,11 @@ function ComputerChoices({ mobile }: { mobile: ReturnType<typeof useMobile> }) {
     mobile.bots.length ? (
       <Group
         title={`Bots that use the screen of ${computer.name}`}
-        footer="They see your apps and files, and click and type there. Auto asks once a conversation, Manual before every action, Bypass never. They never click or type in Hexbot's own windows. On a Mac, allow Screen Recording and Accessibility when macOS asks."
+        footer={`They see your apps and files, and click and type there. Auto asks once a conversation, Manual before every action, Bypass never. They never click or type in Hexbot's own windows. ${
+          computer.kind === 'daemon'
+            ? 'On a Mac, allow Screen Recording and Accessibility when macOS asks.'
+            : 'The Hexbot app on that computer lent its screen.'
+        }`}
       >
         {mobile.bots.map(bot => (
           <SwitchRow

@@ -245,7 +245,8 @@ export default function hexbot(pi: any) {
     const reads = ACCOUNT_READS[event.toolName];
     const account = reads !== undefined && !reads.includes(event.input?.action);
     // The user's own screen (computers_host.rs); without `computer` it is the bots'.
-    const desktop = event.toolName === 'computer_use' && typeof event.input?.computer === 'string' && event.input.computer.trim() !== '';
+    // A preview needs the computer, not its screen; the daemon checks access.
+    const desktop = event.toolName === 'computer_use' && event.input?.action !== 'preview' && typeof event.input?.computer === 'string' && event.input.computer.trim() !== '';
     if (!['bash', 'read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName) && !browser && !mcp && !resource && !script && !connector && !account && !desktop) return;
     try {
       await refresh(ctx);
@@ -267,9 +268,11 @@ export default function hexbot(pi: any) {
         if (limited() && event.input?.full_access === true) return {block: true, reason: 'Your computers are off in Settings, Computers, so commands stay in the workspace sandbox. Run it without full_access, or on the bots\' computer if you have it.'};
         if (limited() && !isolationAvailable()) return {block: true, reason: 'Your computers are off in Settings, Computers, and this system has no sandbox to keep commands in the workspace.'};
       }
-      // Only the daemon's screen asks; the bots' computer never does.
-      const onScreen = desktop ? computerFor(event.input.computer).computer : undefined;
-      if (desktop && onScreen?.id !== 'daemon') return;
+      // The user's screens ask, the daemon's and lent ones; the bots' computer never does.
+      const named = desktop ? computerFor(event.input.computer) : undefined;
+      if (named && !named.computer) return {block: true, reason: named.reason};
+      const onScreen = named?.computer?.id === 'bots' ? undefined : named?.computer;
+      if (desktop && !onScreen) return;
       if (onScreen && onScreen.screen !== true) return {block: true, reason: `Bots can't use the screen of ${onScreen.name}. The user picks the bots that may in Settings, Computers.`};
       if (filesConfined() && ['read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName)) {
         const input = event.input?.path ?? '.';
@@ -349,7 +352,10 @@ export default function hexbot(pi: any) {
           ask = {key: 'shell:unsandboxed', command: event.input.command, reason: 'Hexbot has no OS sandbox on this system, so this command can read and change any file you can. Install bubblewrap and restart the daemon to restore isolation.'};
         } else if (event.input.full_access === true) {
           const why = typeof event.input.reason === 'string' && event.input.reason.trim() ? event.input.reason.trim() : 'No reason given.';
-          ask = {key: 'shell:full-access', command: event.input.command, reason: 'Run outside the sandbox, with internet access and writes outside the workspace. ' + why};
+          // A grant covers one computer: allowing it here never allows it on a lent one.
+          const lent = remote ? computerFor(event.input?.computer).computer : undefined;
+          ask = {key: lent ? `shell:full-access:${lent.id}` : 'shell:full-access', command: event.input.command,
+            reason: (lent ? `On ${lent.name}: run` : 'Run') + ' outside the sandbox, with internet access and writes outside the workspace. ' + why};
         }
       }
       if (!remote && process.platform === 'linux' && event.toolName === 'bash' && levelFor(event.input) === 'confined' && isolationAvailable()) {
@@ -363,7 +369,7 @@ export default function hexbot(pi: any) {
         catch (error: any) { return {block: true, reason: error.message}; }
       }
       if (browser) ask = {key: 'browser_console', command: event.input.expression, reason: 'This runs code in a web page.'};
-      if (onScreen) ask = {key: 'desktop:daemon', command: screenAction(event.input, onScreen.name),
+      if (onScreen) ask = {key: `desktop:${onScreen.id}`, command: screenAction(event.input, onScreen.name),
         reason: live.approvalMode === 'manual' ? 'Manual mode asks before a bot uses your screen.' : 'Let this bot see and use your screen for the rest of this conversation.'};
       if (!ask) return;
       if (live.canAsk === false) return {block: true, reason: 'This action needs approval. Run it in a visible section.'};
@@ -371,7 +377,7 @@ export default function hexbot(pi: any) {
       // In Auto the daemon's reviewer answers routine steps outside the sandbox
       // one at a time, so a grant remembered in another mode does not cover them.
       // Host configuration uses user approvals; incomplete scans ask every time.
-      const review = mode === 'smart' && !ask.once && (REVIEWED.includes(ask.key) || ask.key.startsWith('mcp:') || ask.key.startsWith('connector:'));
+      const review = mode === 'smart' && !ask.once && (REVIEWED.includes(ask.key) || ask.key.startsWith('shell:full-access:') || ask.key.startsWith('mcp:') || ask.key.startsWith('connector:'));
       if (sessionAllowed.has(ask.key) && !ask.once && !review) return;
       // The reviewer reads the whole input the tool will run with, not the card's preview,
       // and uses the model Pi runs now, which is the fallback after the primary failed.

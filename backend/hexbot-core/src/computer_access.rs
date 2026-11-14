@@ -222,7 +222,7 @@ pub fn for_bot(home: &Path, bot: &str) -> Vec<Value> {
 fn active_in(saved: &Value, bot: &str, list: &[Value]) -> Option<String> {
     let picked = saved["active"][bot].as_str();
     list.iter()
-        .find(|c| picked.is_some() && c["id"].as_str() == picked)
+        .find(|c| picked.is_some() && c["id"].as_str() == picked && c["online"] != false)
         .or_else(|| list.iter().find(|c| c["ready"] == true))
         .or_else(|| list.first())
         .and_then(|c| c["id"].as_str())
@@ -282,7 +282,14 @@ pub fn session(home: &Path, bot: &str) -> Value {
 /// What this bot can use, as one note. It changes only when the user changes
 /// computers, so it is offered once per change.
 fn note_text(home: &Path, bot: &str) -> String {
-    let list = for_bot(home, bot);
+    let saved = saved(home);
+    let mut list = for_bot(home, bot);
+    // A lent computer by the name it was lent under, not its live state.
+    for c in &mut list {
+        if let Some(device) = c["id"].as_str().and_then(|id| device_of(&saved, id)) {
+            c["name"] = saved["devices"][&device]["name"].clone();
+        }
+    }
     if list.is_empty() {
         return "[Computers] You have no computer right now: commands are refused. The user chooses where bots work in Settings, Computers.".into();
     }
@@ -296,8 +303,7 @@ fn note_text(home: &Path, bot: &str) -> String {
                 c["os"].as_str().unwrap_or("")
             );
             line.push_str(match c["id"].as_str() {
-                _ if c["kind"] == "device" && c["online"] != true => ". The user's computer, offline now: the Hexbot app there is closed.",
-                _ if c["kind"] == "device" => ". The user's computer, lent by the Hexbot app there: commands run in its workspace sandbox (~/Hexbot) and may ask the user, as the approval mode says. Files you make there stay there.",
+                _ if c["kind"] == "device" => ". The user's computer, lent by the Hexbot app there while it is open: commands run in its workspace sandbox (~/Hexbot) and may ask the user, as the approval mode says. Files you make there stay there.",
                 Some(BOTS) => ". A desktop your bots share, separate from the user's computer. Nothing there asks for approval and a reset undoes it, so install, browse and try risky things here. Each command has 30 seconds; start longer jobs in the background.",
                 _ if c["limited"] == true => ". The user's computer: commands stay in the workspace sandbox, without internet, and full_access is refused.",
                 _ => ". The user's computer: commands run in the workspace sandbox and may ask the user, as the approval mode says.",
@@ -309,7 +315,9 @@ fn note_text(home: &Path, bot: &str) -> String {
                 ));
                 line.push_str(" It shows the user's own apps and files: the user may be asked first, look before each action, act only on what the task needs, and never touch Hexbot's own windows.");
             }
-            if c["active"] == true {
+            // Active follows a lent computer coming and going; leave it out of
+            // lent ones so the note doesn't repeat each time.
+            if c["active"] == true && c["kind"] != "device" {
                 line.push_str(" Active: used when you name no computer.");
             }
             line
@@ -331,6 +339,10 @@ fn note_hash(text: &str) -> String {
 const OFFERS: u64 = 2;
 /// The note this conversation has not taken yet, with its id.
 pub fn note(home: &Path, bot: &str, section: &str) -> Option<(String, String)> {
+    // Heartbeats and dreams run no commands, and there is one per run.
+    if section.starts_with("heartbeat-") || section.starts_with("dream-") {
+        return None;
+    }
     let text = note_text(home, bot);
     let hash = note_hash(&text);
     let saved = saved(home);
@@ -355,9 +367,36 @@ pub fn take_note(home: &Path, bot: &str, section: &str) -> Option<(String, Strin
             _ => 0,
         };
         saved["offered"][section] = json!({"hash": hash, "times": times + 1});
+        prune(home, saved);
     });
     Some((text, id))
 }
+/// Past this many conversations, notes kept for ones that are gone are dropped.
+const KEPT: usize = 300;
+fn prune(home: &Path, saved: &mut Value) {
+    let size = |field: &str| saved[field].as_object().map_or(0, serde_json::Map::len);
+    if size("told") + size("offered") <= KEPT {
+        return;
+    }
+    let Ok(store) = crate::runtime_store::open(home) else {
+        return;
+    };
+    let alive = |section: &String| {
+        store
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM native_sessions WHERE stored_id=?)",
+                [section],
+                |r| r.get::<_, bool>(0),
+            )
+            .unwrap_or(true)
+    };
+    for field in ["told", "offered"] {
+        if let Some(map) = saved[field].as_object_mut() {
+            map.retain(|section, _| alive(section));
+        }
+    }
+}
+
 /// Pi reported the message carrying the note: the conversation has it.
 pub fn acknowledge(home: &Path, section: &str, ids: &Value) -> Result<()> {
     let Some(hash) = ids
@@ -374,6 +413,7 @@ pub fn acknowledge(home: &Path, section: &str, ids: &Value) -> Result<()> {
             saved["told"] = json!({});
         }
         saved["told"][section] = json!(hash);
+        prune(home, saved);
     })
 }
 
@@ -747,8 +787,9 @@ mod tests {
             note(home.path(), "owl", "chat")
                 .unwrap()
                 .0
-                .contains("offline now")
+                .contains("lent by the Hexbot app")
         );
+        assert!(note(home.path(), "owl", "heartbeat-1").is_none());
         assert_eq!(
             resolve(home.path(), "owl", Some("laptop")).unwrap()["id"],
             id.as_str()

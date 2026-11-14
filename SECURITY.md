@@ -70,8 +70,11 @@ without `allow-same-origin`: the page runs with an opaque origin and cannot
 read the daemon's cookies or storage or call its API as the user. The
 daemon drops cookies, `Authorization`, `DPoP` and `Origin` from requests and
 `Set-Cookie`, `X-Frame-Options` and the page's own CSP from responses. The
-token is the credential; it lasts four hours and reaches only the loopback
-port the bot named.
+token is the credential; it lasts four hours, reaches only the loopback
+port the bot named, ends when the bot loses that computer, and goes only to
+the user's apps: the bot never sees it, so it cannot open it from the bots'
+computer and reach the user's ports. The daemon's own port is never
+previewed.
 
 Windows remains unsupported. Its build work does not implement a sandbox.
 Auto and Manual refuse local shell commands, Python code, and Pi's file tools

@@ -42,9 +42,26 @@ enum Target {
 #[derive(Clone)]
 struct Link {
     home: PathBuf,
+    /// The bot that opened it and the computer it reaches: every request
+    /// checks the bot may still use that computer.
+    bot: String,
+    computer: String,
     target: Target,
     port: u16,
     made: Instant,
+}
+
+/// The port each daemon serves on: never previewed, or a page could call
+/// Hexbot itself from the daemon's own computer.
+fn ports() -> &'static Mutex<HashMap<PathBuf, u16>> {
+    static PORTS: OnceLock<Mutex<HashMap<PathBuf, u16>>> = OnceLock::new();
+    PORTS.get_or_init(Default::default)
+}
+pub fn daemon_port(home: &Path, port: u16) {
+    ports()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(home.to_owned(), port);
 }
 
 fn links() -> &'static Mutex<HashMap<String, Link>> {
@@ -52,11 +69,23 @@ fn links() -> &'static Mutex<HashMap<String, Link>> {
     LINKS.get_or_init(Default::default)
 }
 
-/// A link to `port` on a computer: the daemon's, or a lent one (`device`).
+/// A link to `port` on a computer, the daemon's or a lent one, for `bot`.
 /// The path starts at the page the bot named.
-pub fn open(home: &Path, device: Option<&str>, port: u16, path: &str) -> Result<String> {
+pub fn open(home: &Path, bot: &str, computer: &str, port: u16, path: &str) -> Result<String> {
     if port == 0 {
         return Err(Error::new(4202, "port must be between 1 and 65535"));
+    }
+    let lent = crate::computer_access::device_for(home, computer).is_some();
+    let own = ports()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(home)
+        .copied();
+    if !lent && own == Some(port) {
+        return Err(Error::new(
+            4302,
+            "That port is Hexbot's own. Preview a server you started.",
+        ));
     }
     let token = crate::common::id();
     let mut links = links().lock().unwrap_or_else(|e| e.into_inner());
@@ -65,7 +94,10 @@ pub fn open(home: &Path, device: Option<&str>, port: u16, path: &str) -> Result<
         token.clone(),
         Link {
             home: home.to_owned(),
-            target: device.map_or(Target::Daemon, |d| Target::Device(d.to_owned())),
+            bot: bot.to_owned(),
+            computer: computer.to_owned(),
+            target: crate::computer_access::device_for(home, computer)
+                .map_or(Target::Daemon, Target::Device),
             port,
             made: Instant::now(),
         },
@@ -122,6 +154,19 @@ pub async fn proxy(token: String, rest: String, request: Request) -> Response {
             "This preview ended. Ask the bot to open it again.",
         );
     };
+    // The user may have taken the computer from the bot since.
+    if crate::computer_access::resolve(&link.home, &link.bot, Some(&link.computer)).is_err() {
+        return refused(
+            StatusCode::FORBIDDEN,
+            "This bot can no longer use that computer, so its preview ended.",
+        );
+    }
+    // The page has an opaque origin, so its scripts and fetches ask first.
+    if request.method() == axum::http::Method::OPTIONS {
+        let mut response = refused(StatusCode::NO_CONTENT, "");
+        cors(response.headers_mut());
+        return response;
+    }
     let (parts, body) = request.into_parts();
     let Ok(body) = axum::body::to_bytes(body, BODY_LIMIT).await else {
         return refused(StatusCode::PAYLOAD_TOO_LARGE, "That request is too large.");
@@ -163,7 +208,7 @@ pub async fn proxy(token: String, rest: String, request: Request) -> Response {
         }
     };
     match answer {
-        Ok((status, headers, body)) => respond(status, &headers, body),
+        Ok((status, headers, body)) => respond(&token, link.port, status, &headers, body),
         Err(error) => refused(StatusCode::BAD_GATEWAY, &error.message),
     }
 }
@@ -251,7 +296,78 @@ async fn lent(
     Ok((status, headers, body))
 }
 
-fn respond(status: u16, headers: &[(String, String)], body: Vec<u8>) -> Response {
+/// Anyone with the link may read the page: it carries no credential, and
+/// its own frame has an opaque origin that needs this to load scripts.
+fn cors(map: &mut HeaderMap) {
+    for (name, value) in [
+        ("access-control-allow-origin", "*"),
+        (
+            "access-control-allow-methods",
+            "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+        ),
+        ("access-control-allow-headers", "*"),
+    ] {
+        map.insert(
+            HeaderName::from_static(name),
+            HeaderValue::from_static(value),
+        );
+    }
+}
+
+/// A root-relative address on the served page stays inside the preview:
+/// `/style.css` becomes `/hexbot/preview/<token>/style.css`.
+fn inside(prefix: &str, port: u16, location: &str) -> String {
+    let local = [
+        format!("http://127.0.0.1:{port}"),
+        format!("http://localhost:{port}"),
+    ];
+    let path = local
+        .iter()
+        .find_map(|origin| location.strip_prefix(origin.as_str()))
+        .unwrap_or(location);
+    if path.starts_with('/') && !path.starts_with("//") {
+        format!("{prefix}{path}")
+    } else {
+        path.to_owned()
+    }
+}
+
+/// Root-relative `src`, `href` and `action` in an HTML page, kept inside the
+/// preview. Paths a script builds are the page's own; bots are told to use
+/// relative ones.
+fn rewrite_html(prefix: &str, body: Vec<u8>) -> Vec<u8> {
+    static ATTRIBUTE: OnceLock<regex::Regex> = OnceLock::new();
+    let attribute = ATTRIBUTE.get_or_init(|| {
+        regex::Regex::new(r#"(?i)(\s(?:src|href|action)\s*=\s*["'])/([^/])"#).unwrap()
+    });
+    match String::from_utf8(body) {
+        Ok(text) => attribute
+            .replace_all(&text, |caps: &regex::Captures| {
+                format!("{}{prefix}/{}", &caps[1], &caps[2])
+            })
+            .into_owned()
+            .into_bytes(),
+        Err(error) => error.into_bytes(),
+    }
+}
+
+fn respond(
+    token: &str,
+    port: u16,
+    status: u16,
+    headers: &[(String, String)],
+    body: Vec<u8>,
+) -> Response {
+    let prefix = format!("/hexbot/preview/{token}");
+    let html = headers.iter().any(|(name, value)| {
+        name.eq_ignore_ascii_case("content-type")
+            && value.to_ascii_lowercase().contains("text/html")
+    });
+    let body = if html {
+        rewrite_html(&prefix, body)
+    } else {
+        body
+    };
     let mut response = Response::new(Body::from(body));
     *response.status_mut() = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
     let map: &mut HeaderMap = response.headers_mut();
@@ -259,11 +375,14 @@ fn respond(status: u16, headers: &[(String, String)], body: Vec<u8>) -> Response
         if !kept(name) {
             continue;
         }
-        // A redirect stays inside the preview: an absolute one to the same
-        // port loses its origin, a relative one already works.
+        let value = if name.eq_ignore_ascii_case("location") {
+            inside(&prefix, port, value)
+        } else {
+            value.clone()
+        };
         if let (Ok(name), Ok(value)) = (
             HeaderName::from_bytes(name.as_bytes()),
-            HeaderValue::from_str(value),
+            HeaderValue::from_str(&value),
         ) {
             map.append(name, value);
         }
@@ -276,20 +395,22 @@ fn respond(status: u16, headers: &[(String, String)], body: Vec<u8>) -> Response
         HeaderName::from_static("referrer-policy"),
         HeaderValue::from_static("no-referrer"),
     );
+    cors(map);
     response
 }
 
 /// `preview` in `computer_use`: show `port` on the computer the bot named.
 /// The bots' computer opens it in its own browser; the others get a link.
-pub fn for_bot(home: &Path, computer: &Value, port: u16, path: &str) -> Result<Value> {
-    let device = computer["id"]
-        .as_str()
-        .and_then(|id| crate::computer_access::device_for(home, id));
-    let link = open(home, device.as_deref(), port, path)?;
+pub fn for_bot(home: &Path, bot: &str, computer: &Value, port: u16, path: &str) -> Result<Value> {
+    let id = computer["id"].as_str().unwrap_or_default();
+    let link = open(home, bot, id, port, path)?;
+    // The link is the user's: the bot never sees it, so it can't open it from
+    // another computer and reach this one's ports.
     Ok(json!({
-        "preview": link,
+        "shown": true,
+        "link": link,
         "computer": computer["name"],
-        "note": "The user sees it beside the chat. Say what to look at; don't paste the link.",
+        "note": "The user sees it beside the chat. Say what to look at; don't paste the link. It is served under a path of its own, so the page's links and scripts should use relative paths (Vite: --base ./).",
     }))
 }
 
@@ -314,7 +435,7 @@ mod tests {
             request
         });
         let home = tempfile::tempdir().unwrap();
-        let link = open(home.path(), None, port, "/app/").unwrap();
+        let link = open(home.path(), "owl", "daemon", port, "/app/").unwrap();
         let token = link.split('/').nth(3).unwrap().to_owned();
         let request = Request::builder()
             .uri(format!("{link}index.html?x=1"))
@@ -362,10 +483,47 @@ mod tests {
         );
         let home = tempfile::tempdir().unwrap();
         // Port 9 (discard) answers nothing over HTTP here.
-        let link = open(home.path(), None, 9, "").unwrap();
+        let link = open(home.path(), "owl", "daemon", 9, "").unwrap();
         let token = link.split('/').nth(3).unwrap().to_owned();
         let closed = proxy(token, String::new(), request()).await;
         assert_eq!(closed.status(), StatusCode::BAD_GATEWAY);
-        assert!(open(home.path(), None, 0, "").is_err());
+        assert!(open(home.path(), "owl", "daemon", 0, "").is_err());
+        // Hexbot's own port is never previewed.
+        daemon_port(home.path(), 9119);
+        assert!(open(home.path(), "owl", "daemon", 9119, "").is_err());
+    }
+
+    #[tokio::test]
+    async fn a_preview_ends_when_the_bot_loses_the_computer() {
+        let home = tempfile::tempdir().unwrap();
+        let link = open(home.path(), "owl", "daemon", 9, "").unwrap();
+        let token = link.split('/').nth(3).unwrap().to_owned();
+        std::fs::write(home.path().join("computers.json"), r#"{"choice":"bots"}"#).unwrap();
+        let request = Request::builder().uri("/").body(Body::empty()).unwrap();
+        let ended = proxy(token, String::new(), request).await;
+        assert_eq!(ended.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn root_relative_addresses_stay_inside_the_preview() {
+        let prefix = "/hexbot/preview/t";
+        assert_eq!(inside(prefix, 5173, "/app/"), "/hexbot/preview/t/app/");
+        assert_eq!(
+            inside(prefix, 5173, "http://localhost:5173/login"),
+            "/hexbot/preview/t/login"
+        );
+        assert_eq!(
+            inside(prefix, 5173, "https://example.com/x"),
+            "https://example.com/x"
+        );
+        assert_eq!(
+            inside(prefix, 5173, "//cdn.example.com/x"),
+            "//cdn.example.com/x"
+        );
+        let page = rewrite_html(prefix, br#"<link href="/style.css"><script type="module" src='/src/main.js'></script><a href="//cdn.x/y">x</a><img src="pic.png">"#.to_vec());
+        assert_eq!(
+            String::from_utf8(page).unwrap(),
+            r#"<link href="/hexbot/preview/t/style.css"><script type="module" src='/hexbot/preview/t/src/main.js'></script><a href="//cdn.x/y">x</a><img src="pic.png">"#
+        );
     }
 }

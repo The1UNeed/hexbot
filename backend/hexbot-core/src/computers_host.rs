@@ -146,7 +146,7 @@ fn text_json(result: &Value) -> Value {
 
 /// Hexbot's own windows: the app's, or a browser's showing it.
 pub(crate) fn is_hexbot(window: &Value) -> bool {
-    ["app", "title"].iter().any(|field| {
+    ["app", "app_name", "title"].iter().any(|field| {
         window[field]
             .as_str()
             .is_some_and(|text| text.to_lowercase().contains("hexbot"))
@@ -163,17 +163,52 @@ fn refused() -> Error {
 /// Whether a screenshot point lands inside a window, given the screen's size
 /// in points and the screenshot's in pixels.
 pub(crate) fn inside(window: &Value, at: (i64, i64), screen: (f64, f64), shot: (f64, f64)) -> bool {
-    let (Some(position), Some(size)) = (window["position"].as_array(), window["size"].as_array())
-    else {
+    let Some((left, top, width, height)) = frame(window) else {
         // A window without a frame might be anywhere: count it.
         return true;
     };
-    let number = |list: &Vec<Value>, i: usize| list.get(i).and_then(Value::as_f64).unwrap_or(0.);
     let x = at.0 as f64 * screen.0 / shot.0.max(1.);
     let y = at.1 as f64 * screen.1 / shot.1.max(1.);
-    let (left, top) = (number(position, 0), number(position, 1));
-    let (width, height) = (number(size, 0), number(size, 1));
     x >= left && x <= left + width && y >= top && y <= top + height
+}
+
+/// A window's frame in screen points, as Cua reports it on Linux
+/// (`position`, `size`) or macOS (`bounds`, a list or an object).
+fn frame(window: &Value) -> Option<(f64, f64, f64, f64)> {
+    let at = |list: &Value, i: usize| list.get(i).and_then(Value::as_f64);
+    if let (Some(position), Some(size)) = (window.get("position"), window.get("size")) {
+        return Some((
+            at(position, 0)?,
+            at(position, 1)?,
+            at(size, 0)?,
+            at(size, 1)?,
+        ));
+    }
+    let bounds = window.get("bounds")?;
+    if bounds.is_array() {
+        return Some((
+            at(bounds, 0)?,
+            at(bounds, 1)?,
+            at(bounds, 2)?,
+            at(bounds, 3)?,
+        ));
+    }
+    let field = |name: &str| bounds.get(name).and_then(Value::as_f64);
+    Some((field("x")?, field("y")?, field("width")?, field("height")?))
+}
+
+/// The windows Cua listed: `{windows: [...]}` or a bare list, as text or
+/// structured content. None when it can't be read, so the guard refuses.
+fn windows(listed: &Value) -> Option<Vec<Value>> {
+    let parsed = text_json(listed);
+    [&parsed, &listed["structuredContent"]]
+        .into_iter()
+        .find_map(|value| {
+            value
+                .as_array()
+                .or_else(|| value["windows"].as_array())
+                .cloned()
+        })
 }
 
 /// Refuse a click, drag, scroll or keystroke that would reach Hexbot.
@@ -187,10 +222,14 @@ async fn guard(driver: &Driver<'_>, action: &str, args: &Value) -> Result<()> {
         return Ok(());
     }
     let listed = driver.call("computer_window_list", json!({})).await?;
-    let ours = text_json(&listed)["windows"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
+    // Unreadable means unknown: Hexbot may be under the pointer, so refuse.
+    let Some(listed) = windows(&listed) else {
+        return Err(Error::new(
+            4302,
+            "Hexbot couldn't read this screen's windows, so it won't click or type there. Try again, or ask the user.",
+        ));
+    };
+    let ours = listed
         .into_iter()
         .filter(|window| is_hexbot(window) && window["state"] != "minimized")
         .collect::<Vec<_>>();
@@ -216,6 +255,7 @@ async fn guard(driver: &Driver<'_>, action: &str, args: &Value) -> Result<()> {
     );
     let points = [
         point(args, "coordinate").ok(),
+        point(args, "from_coordinate").ok(),
         point(args, "to_coordinate").ok(),
     ];
     for at in points.into_iter().flatten() {
@@ -246,7 +286,9 @@ pub async fn act(
         ));
     }
     let key = key(home, &screen);
-    if with(&key, |c| c.paused) {
+    // Pause bots stops them on every screen, not only the bots' computer.
+    let paused = || with(home, |c| c.paused) || with(&key, |c| c.paused);
+    if paused() {
         return Err(paused_error());
     }
     let server = match screen {
@@ -269,6 +311,10 @@ pub async fn act(
         server,
         turn: Arc::new(turn),
     };
+    // The user may have paused the bots while this one waited its turn.
+    if paused() {
+        return Err(paused_error());
+    }
     guard(&driver, action, args).await?;
     with(&key, |c| {
         c.actor = Some(bot.to_owned());
@@ -280,6 +326,14 @@ pub async fn act(
         }
         crate::native_tools::save_capture(home, bot, result)
     };
+    // A scroll lands where the pointer is: put it where the guard looked.
+    if action == "scroll"
+        && let Ok((x, y)) = point(args, "coordinate")
+    {
+        driver
+            .call("computer_move_cursor", json!({"x": x, "y": y}))
+            .await?;
+    }
     let result = match driver.call(tool, params).await {
         Ok(result) if action == "screenshot" => look(result),
         Ok(result) if args["capture_after"] == true => {
@@ -327,6 +381,43 @@ mod tests {
             &json!({"app":"Google Chrome","title":"Owl – Hexbot"})
         ));
         assert!(!is_hexbot(&json!({"app":"Safari","title":"Weather"})));
+    }
+
+    #[test]
+    fn windows_are_read_in_either_shape_and_unreadable_means_refuse() {
+        let text = |body: &str| json!({"content":[{"type":"text","text":body}]});
+        assert_eq!(
+            windows(&text(r#"{"windows":[{"app":"Hexbot"}]}"#))
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            windows(&text(r#"[{"app_name":"Hexbot"}]"#)).unwrap().len(),
+            1
+        );
+        assert_eq!(
+            windows(&json!({"content":[],"structuredContent":{"windows":[]}}))
+                .unwrap()
+                .len(),
+            0
+        );
+        assert!(windows(&text("not json")).is_none());
+        assert!(is_hexbot(&json!({"app_name":"Hexbot Nightly"})));
+        // macOS bounds, as a list or an object.
+        let (screen, shot) = ((1280., 800.), (1280., 800.));
+        assert!(inside(
+            &json!({"bounds":[100, 100, 200, 100]}),
+            (150, 150),
+            screen,
+            shot
+        ));
+        assert!(!inside(
+            &json!({"bounds":{"x":100,"y":100,"width":200,"height":100}}),
+            (50, 150),
+            screen,
+            shot
+        ));
     }
 
     #[test]

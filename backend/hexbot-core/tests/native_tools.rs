@@ -1473,11 +1473,10 @@ fn missing_explicit_optional_commands_are_not_advertised() {
     cfg["browser"]["command"] = json!(missing);
     common::write_config(h.path(), &cfg).unwrap();
     let tools = native_tools::descriptors(h.path(), "tester").unwrap();
-    assert!(
-        !tools
-            .iter()
-            .any(|d| matches!(d["name"].as_str(), Some("computer_use" | "browser_exec")))
-    );
+    assert!(!tools.iter().any(|d| d["name"] == "browser_exec"));
+    // Computer use stays declared without Cua: previews and lent screens need
+    // none, and the tool list doesn't change when Cua comes or goes.
+    assert!(tools.iter().any(|d| d["name"] == "computer_use"));
 }
 #[cfg(unix)]
 #[test]

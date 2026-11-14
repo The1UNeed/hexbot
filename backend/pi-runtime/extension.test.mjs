@@ -736,12 +736,29 @@ test('the daemon\'s screen asks once a conversation in Auto, every time in Manua
   // A denied card denies.
   const denied = screen('smart');
   assert.equal((await denied.gate('computer_use', {action:'screenshot', computer:'daemon'})).block, true);
+
+  // A lent computer's screen asks too, with a grant of its own.
+  const lent = screen('smart');
+  lent.settings.computers.list.push({id:'app-1f2e3d4c', kind:'device', name:'Laptop', screen:true, online:true});
+  lent.ctx.choice = 'session';
+  await lent.gate('computer_use', {action:'click', coordinate:[1, 1], computer:'daemon'});
+  await lent.gate('computer_use', {action:'click', coordinate:[1, 1], computer:'Laptop'});
+  assert.deepEqual(lent.choices.map(choice => choice.command), ['click at 1, 1 on Studio', 'click at 1, 1 on Laptop']);
+  const manualLent = screen('manual');
+  manualLent.settings.computers.list.push({id:'app-1f2e3d4c', kind:'device', name:'Laptop', screen:true, online:true});
+  await manualLent.gate('computer_use', {action:'type', text:'x', computer:'app-1f2e3d4c'});
+  assert.equal(manualLent.choices.length, 1);
+
+  // A preview needs no screen and no card: a terminal-only bot may show its server.
+  const preview = screen('manual', false);
+  assert.equal(await preview.gate('computer_use', {action:'preview', port:5173, computer:'daemon'}), undefined);
+  assert.equal(preview.choices.length, 0);
 });
 
 test('a lent computer runs commands at the level the gate settled, and asks as the mode says', async t => {
   const lent = (mode, online = true) => {
     const f = fixture(t, mode, ['terminal']);
-    f.settings.computers = {choice:'both', list:[{id:'bots', name:"Bots' computer", active:true}, {id:'app-1f2e3d4c', kind:'device', name:'Laptop', online}]};
+    f.settings.computers = {choice:'both', list:[{id:'bots', name:"Bots' computer", active:true}, {id:'daemon', name:'Studio'}, {id:'app-1f2e3d4c', kind:'device', name:'Laptop', online}]};
     return f;
   };
   const auto = lent('smart');
@@ -760,6 +777,14 @@ test('a lent computer runs commands at the level the gate settled, and asks as t
   const bypass = lent('off');
   await bypass.run('bash', {command:'brew update', computer:'app-1f2e3d4c'});
   assert.equal(bypass.requests.find(request => request.name === 'hexbot_computer_shell').args.level, 'none');
+
+  // Allowing full access for now on the daemon's computer never covers the lent one, and the card names it.
+  const both = lent('manual');
+  both.ctx.choice = 'session';
+  await both.gate('bash', {command:'curl a', computer:'daemon', full_access:true, reason:'Network.'});
+  await both.gate('bash', {command:'curl b', computer:'app-1f2e3d4c', full_access:true, reason:'Network.'});
+  assert.equal(both.choices.length, 2);
+  assert.match(both.choices[1].reason, /^On Laptop: run outside the sandbox/);
 
   const offline = lent('smart', false);
   assert.match((await offline.gate('bash', {command:'ls', computer:'app-1f2e3d4c'})).reason, /offline/);

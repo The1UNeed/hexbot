@@ -44,12 +44,17 @@ describe('lending this computer', () => {
     const fetcher = (async (url: string) => {
       seen.push(url)
 
-      return new Response('hi', { headers: { 'content-type': 'text/html' }, status: 200 })
+      return new Response('hi', {
+        headers: { 'content-encoding': 'gzip', 'content-type': 'text/html' },
+        status: 200
+      })
     }) as unknown as typeof fetch
     const page = await fetchLocal({ method: 'GET', path: '/app?x=1', port: 5173 }, fetcher)
     expect(seen).toEqual(['http://127.0.0.1:5173/app?x=1'])
     expect(page.status).toBe(200)
     expect(Buffer.from(page.body, 'base64').toString()).toBe('hi')
+    // The body arrives decompressed, so the header goes.
+    expect(page.headers.map(([name]) => name)).not.toContain('content-encoding')
     await fetchLocal({ path: '//evil.example/x', port: 80 }, fetcher)
     expect(seen.at(-1)).toBe('http://127.0.0.1:80//evil.example/x')
     await expect(fetchLocal({ port: 0 }, fetcher)).rejects.toThrow(/port/)
