@@ -958,8 +958,11 @@ before every action in Manual, never in Bypass. Before a pointer action or
 keystroke the daemon reads `computer_window_list` and
 `computer_get_screen_size`, maps the screenshot point to screen points, and
 refuses with 4302 one landing on a window whose app or title says Hexbot,
-or any keystroke while one is focused. A pointer action needs a screenshot
-first. `shell` is refused there.
+and any action while one is focused. While a Hexbot window is open, a
+keystroke runs only when another app is known to have focus, a pointer
+action needs a screenshot first and a readable screen size, and a scroll
+needs `coordinate`; a window list it can't read refuses everything.
+`shell` is refused there.
 
 ### Computer
 

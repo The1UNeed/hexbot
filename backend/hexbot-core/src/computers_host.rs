@@ -234,8 +234,11 @@ async fn guard(driver: &Driver<'_>, action: &str, args: &Value) -> Result<()> {
             .iter()
             .find_map(|field| window[field].as_bool())
     };
-    // Without a focus field Hexbot might be the window keys go to.
-    let knows_focus = listed.iter().any(|window| focus(window).is_some());
+    // Keys go to the focused window: only another app known to have focus
+    // is safe while Hexbot is open.
+    let elsewhere = listed
+        .iter()
+        .any(|window| !is_hexbot(window) && focus(window) == Some(true));
     let ours = listed
         .into_iter()
         .filter(|window| is_hexbot(window) && window["state"] != "minimized")
@@ -243,11 +246,11 @@ async fn guard(driver: &Driver<'_>, action: &str, args: &Value) -> Result<()> {
     if ours.is_empty() {
         return Ok(());
     }
-    if !knows_focus || ours.iter().any(|window| focus(window) == Some(true)) {
+    if ours.iter().any(|window| focus(window) == Some(true)) {
         return Err(refused());
     }
     if keyboard {
-        return Ok(());
+        return if elsewhere { Ok(()) } else { Err(refused()) };
     }
     let Some(shot) = with(&key(driver.home, driver.screen), |c| c.screen) else {
         return Err(Error::new(
@@ -272,7 +275,15 @@ async fn guard(driver: &Driver<'_>, action: &str, args: &Value) -> Result<()> {
         point(args, "from_coordinate").ok(),
         point(args, "to_coordinate").ok(),
     ];
-    for at in points.into_iter().flatten() {
+    let points = points.into_iter().flatten().collect::<Vec<_>>();
+    // A scroll with no point lands wherever the pointer is, maybe on Hexbot.
+    if points.is_empty() {
+        return Err(Error::new(
+            4302,
+            "Say where with coordinate: Hexbot is open on this screen, and it checks every point first.",
+        ));
+    }
+    for at in points {
         if ours.iter().any(|window| inside(window, at, screen, shot)) {
             return Err(refused());
         }
@@ -429,6 +440,127 @@ mod tests {
         drop(held);
         assert!(waiting.await.unwrap().is_err());
         assert!(frames.try_recv().is_err(), "nothing reached the laptop");
+    }
+
+    /// A lent laptop that answers every screen tool with `answer(tool)`.
+    async fn lent_screen(
+        answer: fn(&str) -> Value,
+    ) -> (tempfile::TempDir, tokio::task::JoinHandle<Vec<String>>) {
+        let home = tempfile::tempdir().unwrap();
+        let (send, mut frames) = tokio::sync::mpsc::unbounded_channel::<String>();
+        crate::computer_lend::offer(
+            home.path(),
+            "local",
+            "d1-abc",
+            1,
+            send,
+            &json!({"name":"Laptop","os":"macOS","screen":true}),
+        )
+        .unwrap();
+        let file = home.path().join("computers.json");
+        let mut saved: Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        saved["devices"]["d1-abc"]["bots"] = json!(["owl"]);
+        saved["devices"]["d1-abc"]["screen"] = json!(["owl"]);
+        std::fs::write(&file, saved.to_string()).unwrap();
+        let path = home.path().to_owned();
+        let laptop = tokio::spawn(async move {
+            let mut tools = vec![];
+            while let Some(frame) = frames.recv().await {
+                let frame: Value = serde_json::from_str(frame.trim()).unwrap();
+                let payload = &frame["params"]["payload"];
+                let tool = payload["tool"].as_str().unwrap_or("").to_owned();
+                let result = answer(&tool);
+                crate::computer_lend::reply(
+                    &path,
+                    "d1-abc",
+                    &json!({"id":payload["id"],"result":result}),
+                )
+                .unwrap();
+                tools.push(tool);
+            }
+            tools
+        });
+        (home, laptop)
+    }
+    async fn on_laptop(home: &Path, action: &str, tool: &str, args: Value) -> Result<Value> {
+        act(
+            home,
+            "owl",
+            &json!({}),
+            &BTreeMap::new(),
+            Screen::Device("d1-abc".into()),
+            action,
+            tool,
+            json!({}),
+            &args,
+        )
+        .await
+    }
+    fn windows_reply(windows: Value) -> Value {
+        json!({"content":[{"type":"text","text":json!({"windows":windows}).to_string()}]})
+    }
+
+    #[tokio::test]
+    async fn keys_need_another_app_known_to_have_focus_while_hexbot_is_open() {
+        // Hexbot's focus unknown, the other window not focused: refuse.
+        let (home, _) = lent_screen(|tool| match tool {
+            "computer_window_list" => {
+                windows_reply(json!([{"app":"Hexbot"},{"app":"Notes","focused":false}]))
+            }
+            _ => json!({"content":[]}),
+        })
+        .await;
+        assert!(
+            on_laptop(home.path(), "key", "computer_key", json!({"keys":"enter"}))
+                .await
+                .is_err()
+        );
+        // Another app has focus: allowed.
+        let (home, laptop) = lent_screen(|tool| match tool {
+            "computer_window_list" => windows_reply(
+                json!([{"app":"Hexbot","focused":false},{"app":"Notes","focused":true}]),
+            ),
+            _ => json!({"content":[]}),
+        })
+        .await;
+        assert!(
+            on_laptop(home.path(), "key", "computer_key", json!({"keys":"enter"}))
+                .await
+                .is_ok()
+        );
+        crate::computer_lend::withdraw(home.path(), "d1-abc", 1);
+        assert!(laptop.await.unwrap().contains(&"computer_key".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn a_scroll_with_no_point_is_refused_while_hexbot_is_open() {
+        let (home, laptop) = lent_screen(|tool| match tool {
+            "computer_window_list" => windows_reply(
+                json!([{"app":"Hexbot","focused":false,"position":[0,0],"size":[10,10]}]),
+            ),
+            "computer_get_screen_size" => json!({"content":[{"type":"text","text":"{\"size\":{\"width\":100.0,\"height\":100.0}}"}]}),
+            _ => json!({"content":[]}),
+        })
+        .await;
+        with(&key(home.path(), &Screen::Device("d1-abc".into())), |c| {
+            c.screen = Some((100., 100.))
+        });
+        let refused = on_laptop(
+            home.path(),
+            "scroll",
+            "computer_scroll",
+            json!({"direction":"down"}),
+        )
+        .await;
+        assert!(refused.unwrap_err().message.contains("coordinate"));
+        crate::computer_lend::withdraw(home.path(), "d1-abc", 1);
+        assert!(
+            !laptop
+                .await
+                .unwrap()
+                .contains(&"computer_scroll".to_owned())
+        );
     }
 
     #[test]

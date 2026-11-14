@@ -297,8 +297,20 @@ fn note_text(home: &Path, bot: &str) -> String {
         }
         if pick_listed {
             c["active"] = json!(Some(id.as_str()) == picked.as_deref());
-        } else if c["kind"] == "device" {
-            c["active"] = json!(false);
+        }
+    }
+    // Without a pick, the first of the daemon's own computers that is ready:
+    // a lent one coming and going never moves it.
+    if !pick_listed {
+        let fallback = list
+            .iter()
+            .filter(|c| c["kind"] != "device")
+            .find(|c| c["ready"] == true)
+            .or_else(|| list.iter().find(|c| c["kind"] != "device"))
+            .and_then(|c| c["id"].as_str())
+            .map(str::to_owned);
+        for c in &mut list {
+            c["active"] = json!(c["id"].as_str() == fallback.as_deref());
         }
     }
     if list.is_empty() {
@@ -854,6 +866,21 @@ mod tests {
         assert_eq!(note_text(home.path(), "owl"), offline);
         crate::computer_lend::withdraw(home.path(), "d1-abc", 1);
         assert_eq!(note_text(home.path(), "owl"), offline);
+        // Without a pick, connecting the laptop doesn't move Active either.
+        save(home.path(), |saved| saved["active"] = json!({})).unwrap();
+        let unpicked = note_text(home.path(), "owl");
+        let (send, _frames) = tokio::sync::mpsc::unbounded_channel();
+        crate::computer_lend::offer(
+            home.path(),
+            "local",
+            "d1-abc",
+            2,
+            send,
+            &json!({"name":"Laptop","os":"macOS","screen":true}),
+        )
+        .unwrap();
+        assert_eq!(note_text(home.path(), "owl"), unpicked);
+        crate::computer_lend::withdraw(home.path(), "d1-abc", 2);
         // The lent computer is the pick, so it is the one called active.
         assert!(offline.contains("Laptop, macOS"));
         assert!(
