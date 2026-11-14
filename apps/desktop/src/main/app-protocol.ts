@@ -80,6 +80,8 @@ export function appResponseHeaders(
 
 /** A bot's computer screen, served by its daemon (`hexbot.computer.view`). */
 const COMPUTER_SCREEN = /^\/hexbot\/computer\/[0-9a-f]{64}\/viewer\/$/
+/** A page a bot serves, shown beside the chat (`/hexbot/preview/<token>/…`), and its own links. */
+const PREVIEW = /^\/hexbot\/preview\/[0-9a-f]{32}\//
 
 /**
  * A frame inside the app may load the visual frame page from the app's own
@@ -111,7 +113,7 @@ export function frameNavigationAllowed(url: string, pageUrl: string, frameUrl = 
     return (
       !showingVisual &&
       (target.protocol === 'http:' || target.protocol === 'https:') &&
-      COMPUTER_SCREEN.test(target.pathname)
+      (COMPUTER_SCREEN.test(target.pathname) || PREVIEW.test(target.pathname))
     )
   } catch {
     return false

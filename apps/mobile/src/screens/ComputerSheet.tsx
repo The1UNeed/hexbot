@@ -14,7 +14,13 @@ import Svg, { Path } from 'react-native-svg'
 import { ComputerFrame } from '../ComputerFrame'
 import { COMPUTER_QUALITIES, computerActivity, screenPlays } from '../core/computer'
 import { loadComputerQuality, saveComputerQuality } from '../core/storage'
-import type { Bot, ComputerCursor, ComputerQuality, ComputerStatus } from '../core/types'
+import type {
+  Bot,
+  ComputerCursor,
+  ComputerInfo,
+  ComputerQuality,
+  ComputerStatus
+} from '../core/types'
 import {
   BotFace,
   Button,
@@ -265,6 +271,9 @@ export interface ComputerSheetProps {
   onEnable?: () => void
   /** Moves on at every reconnect; a restarted daemon forgets the old link. */
   connects: number
+  /** The computers `bot` may use, its active one marked; the card switches it. */
+  computers?: ComputerInfo[]
+  onPick?: (computer: string) => void
 }
 
 /** A screen that says nothing about its state, from an older daemon, takes over after this. */
@@ -333,9 +342,11 @@ export function ComputerSheet({
   bot,
   bots,
   call,
+  computers,
   connects,
   faceOf,
   onEnable,
+  onPick,
   origin,
   status,
   view
@@ -427,9 +438,35 @@ export function ComputerSheet({
     </View>
   )
 
+  // Where the bot works when it names no computer, switched here as on the web.
+  const worksOn =
+    bot && computers && computers.length > 1 && onPick ? (
+      <Group title={`${bot.display_name} works on`}>
+        {computers.map(computer => (
+          <ChoiceRow
+            key={computer.id}
+            onPress={() => onPick(computer.id)}
+            selected={!!computer.active}
+            subtitle={
+              computer.kind === 'bots'
+                ? 'Nothing asks here'
+                : !computer.online
+                  ? 'Offline: the Hexbot app there is closed'
+                  : computer.limited
+                  ? 'Workspace sandbox only'
+                  : 'Follows the approval mode'
+            }
+            testID={`computer-pick-${computer.id}`}
+            title={computer.kind === 'bots' ? "Bots' computer" : computer.name}
+          />
+        ))}
+      </Group>
+    ) : null
+
   if (!status.available)
     return (
       <View style={styles.body}>
+        {worksOn}
         {placeholder(
           "To give your bots a computer, install Cua on the daemon's computer (uv tool install cua) and start Docker."
         )}
@@ -439,6 +476,7 @@ export function ComputerSheet({
   if (!enabled)
     return (
       <View style={styles.body}>
+        {worksOn}
         {placeholder(
           `${bot?.display_name ?? 'This bot'} can work on your bots' computer: a Linux desktop you can watch and use alongside them.`,
           onEnable
@@ -453,6 +491,7 @@ export function ComputerSheet({
 
   return (
     <View style={styles.body}>
+      {worksOn}
       <View onLayout={event => setWidth(event.nativeEvent.layout.width)}>
         {running && !plays ? (
           placeholder(

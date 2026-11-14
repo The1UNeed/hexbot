@@ -200,8 +200,27 @@ export default function hexbot(pi: any) {
     return workspaceRoots().some(root => under(target, canonicalPath(root, process.cwd())));
   };
   type Level = 'none' | 'base' | 'confined';
-  type AllowedCall = {mode: string, cwd: string, level: Level, target?: string, overwrites?: boolean};
-  const levelFor = (input: any): Level => live.approvalMode === 'off' ? 'none' : input?.full_access === true ? 'base' : 'confined';
+  type AllowedCall = {mode: string, cwd: string, level: Level, target?: string, overwrites?: boolean, computer?: string, remote?: boolean};
+  // Where bots work (computer_access.rs). With `none` the daemon's commands
+  // stay in the workspace sandbox in every mode; with `bots` or `none` the
+  // file tools stay in the workspace too. Older daemons send no computers:
+  // everything runs here, as before.
+  const choice = () => live.computers?.choice ?? 'both';
+  const limited = () => choice() === 'none';
+  const filesConfined = () => choice() === 'bots' || choice() === 'none';
+  const levelFor = (input: any): Level => limited() ? 'confined' : live.approvalMode === 'off' ? 'none' : input?.full_access === true ? 'base' : 'confined';
+  // The computer a command names, by id or name, or the bot's active one.
+  const computerFor = (requested: any): {computer?: any, reason?: string} => {
+    const list = live.computers?.list;
+    if (!Array.isArray(list)) return {computer: {id: 'daemon'}};
+    const name = typeof requested === 'string' ? requested.trim() : '';
+    const found = name
+      ? list.find((c: any) => c.id === name || String(c.name ?? '').toLowerCase() === name.toLowerCase())
+      : list.find((c: any) => c.active);
+    if (found) return {computer: found};
+    if (!list.length) return {reason: 'You have no computer to use. The user chooses where bots work in Settings, Computers.'};
+    return {reason: `There is no computer called ${name} for you. Use one of: ${list.map((c: any) => `${c.id} (${c.name})`).join(', ')}.`};
+  };
   // What the gate allowed for each call: the mode it decided under, how bash
   // runs, and the file it checked. Pi may gate several calls before running
   // them, so execution refuses a call whose mode or target has changed since.
@@ -225,11 +244,43 @@ export default function hexbot(pi: any) {
     // action of these tools that is not one of its reads.
     const reads = ACCOUNT_READS[event.toolName];
     const account = reads !== undefined && !reads.includes(event.input?.action);
-    if (!['bash', 'read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName) && !browser && !mcp && !resource && !script && !connector && !account) return;
+    // The user's own screen (computers_host.rs); without `computer` it is the bots'.
+    // A preview needs the computer, not its screen; the daemon checks access.
+    const desktop = event.toolName === 'computer_use' && event.input?.action !== 'preview' && typeof event.input?.computer === 'string' && event.input.computer.trim() !== '';
+    if (!['bash', 'read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName) && !browser && !mcp && !resource && !script && !connector && !account && !desktop) return;
     try {
       await refresh(ctx);
       // Retain what this check saw, even if another gate refreshes live settings.
       checked({mode: live.approvalMode, cwd: live.cwd ?? config.cwd, level: levelFor(event.input)});
+      if (event.toolName === 'bash') {
+        // The user's own commands always run here; the bot's go where it says.
+        const {computer, reason} = event.user ? {computer: {id: 'daemon'}, reason: undefined} : computerFor(event.input?.computer);
+        if (!computer) return {block: true, reason};
+        checked({computer: computer.id});
+        // Nothing on the bots' computer asks: a reset undoes it.
+        if (computer.id === 'bots') return;
+        // A computer a desktop app lent sandboxes its own commands; this gate
+        // still asks as the mode says.
+        if (computer.kind === 'device') {
+          checked({remote: true});
+          if (computer.online === false) return {block: true, reason: `${computer.name} is offline: the Hexbot app there is closed or stopped lending it.`};
+        }
+        if (limited() && event.input?.full_access === true) return {block: true, reason: 'Your computers are off in Settings, Computers, so commands stay in the workspace sandbox. Run it without full_access, or on the bots\' computer if you have it.'};
+        if (limited() && !isolationAvailable()) return {block: true, reason: 'Your computers are off in Settings, Computers, and this system has no sandbox to keep commands in the workspace.'};
+      }
+      // The user's screens ask, the daemon's and lent ones; the bots' computer never does.
+      const named = desktop ? computerFor(event.input.computer) : undefined;
+      if (named && !named.computer) return {block: true, reason: named.reason};
+      const onScreen = named?.computer?.id === 'bots' ? undefined : named?.computer;
+      if (desktop && !onScreen) return;
+      if (onScreen && onScreen.kind === 'device' && onScreen.online === false) return {block: true, reason: `${onScreen.name} is offline: the Hexbot app there is closed or stopped lending it.`};
+      if (onScreen && onScreen.screen !== true) return {block: true, reason: `Bots can't use the screen of ${onScreen.name}. The user picks the bots that may in Settings, Computers.`};
+      if (filesConfined() && ['read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName)) {
+        const input = event.input?.path ?? '.';
+        if (!inWorkspace(resolve(live.cwd ?? config.cwd, input)) || !inWorkspace(canonicalPath(input, live.cwd ?? config.cwd))) {
+          return {block: true, reason: 'Bots work only in the workspace on this computer (Settings, Computers).'};
+        }
+      }
       if (script) {
         // A revoked server's tools are gone once the next prompt unregisters it,
         // so a script naming them would fail inside the VM with a bare TypeError.
@@ -248,7 +299,7 @@ export default function hexbot(pi: any) {
         const reason = mcpDenial(event.toolName);
         if (reason) return {block: true, reason};
       }
-      if (live.approvalMode === 'off') return;
+      if (live.approvalMode === 'off' && !(limited() && event.toolName === 'bash')) return;
       if (process.platform === 'win32' && ['bash', 'read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName)) {
         // No approvals or remembered grants can bypass an unavailable boundary.
         return {block: true, reason: WINDOWS_ISOLATION_UNAVAILABLE};
@@ -295,16 +346,20 @@ export default function hexbot(pi: any) {
           if (uncertain) ask = {key: ask?.key ?? 'file:scan', command: path, reason: ask ? `${ask.reason} ${uncertain}` : uncertain, once: true};
         }
       }
+      const remote = event.toolName === 'bash' && !event.user && computerFor(event.input?.computer).computer?.kind === 'device';
       if (event.toolName === 'bash') {
-        if (!isolationAvailable()) {
+        if (!remote && !isolationAvailable()) {
           // Requesting full access cannot bypass the missing-sandbox user card.
           ask = {key: 'shell:unsandboxed', command: event.input.command, reason: 'Hexbot has no OS sandbox on this system, so this command can read and change any file you can. Install bubblewrap and restart the daemon to restore isolation.'};
         } else if (event.input.full_access === true) {
           const why = typeof event.input.reason === 'string' && event.input.reason.trim() ? event.input.reason.trim() : 'No reason given.';
-          ask = {key: 'shell:full-access', command: event.input.command, reason: 'Run outside the sandbox, with internet access and writes outside the workspace. ' + why};
+          // A grant covers one computer: allowing it here never allows it on a lent one.
+          const lent = remote ? computerFor(event.input?.computer).computer : undefined;
+          ask = {key: lent ? `shell:full-access:${lent.id}` : 'shell:full-access', command: event.input.command,
+            reason: (lent ? `On ${lent.name}: run` : 'Run') + ' outside the sandbox, with internet access and writes outside the workspace. ' + why};
         }
       }
-      if (process.platform === 'linux' && event.toolName === 'bash' && levelFor(event.input) === 'confined' && isolationAvailable()) {
+      if (!remote && process.platform === 'linux' && event.toolName === 'bash' && levelFor(event.input) === 'confined' && isolationAvailable()) {
         try {
           const scan = workspaceProtected([cwd, ...live.outputDirs ?? []]);
           if (scan.exhausted || scan.failure) return {block: true, reason: scan.exhausted ? SCAN_REASON : scanFailureReason(scan)};
@@ -315,13 +370,15 @@ export default function hexbot(pi: any) {
         catch (error: any) { return {block: true, reason: error.message}; }
       }
       if (browser) ask = {key: 'browser_console', command: event.input.expression, reason: 'This runs code in a web page.'};
+      if (onScreen) ask = {key: `desktop:${onScreen.id}`, command: screenAction(event.input, onScreen.name),
+        reason: live.approvalMode === 'manual' ? 'Manual mode asks before a bot uses your screen.' : 'Let this bot see and use your screen for the rest of this conversation.'};
       if (!ask) return;
       if (live.canAsk === false) return {block: true, reason: 'This action needs approval. Run it in a visible section.'};
       const mode = live.approvalMode;
       // In Auto the daemon's reviewer answers routine steps outside the sandbox
       // one at a time, so a grant remembered in another mode does not cover them.
       // Host configuration uses user approvals; incomplete scans ask every time.
-      const review = mode === 'smart' && !ask.once && (REVIEWED.includes(ask.key) || ask.key.startsWith('mcp:') || ask.key.startsWith('connector:'));
+      const review = mode === 'smart' && !ask.once && (REVIEWED.includes(ask.key) || ask.key.startsWith('shell:full-access:') || ask.key.startsWith('mcp:') || ask.key.startsWith('connector:'));
       if (sessionAllowed.has(ask.key) && !ask.once && !review) return;
       // The reviewer reads the whole input the tool will run with, not the card's preview,
       // and uses the model Pi runs now, which is the fallback after the primary failed.
@@ -329,8 +386,10 @@ export default function hexbot(pi: any) {
       if (overwrites !== undefined) checked({overwrites});
       const model = ctx.model ? {model: {provider: ctx.model.provider, model: ctx.model.id}} : {};
       const reviewed = review ? {review: true, input: event.input, cwd, ...model, ...overwrites !== undefined ? {overwrites} : {}} : {};
+      // In Auto the user lets a bot use their screen once for the conversation.
+      const forConversation = mode === 'smart' && ask.key.startsWith('desktop:');
       const choice = await ctx.ui.select('__HEXBOT_APPROVAL__' + JSON.stringify({tool: event.toolName, command: ask.command, reason: ask.reason, ...reviewed}),
-        ask.once ? ['once', 'deny'] : ['once', 'session', 'deny']);
+        ask.once ? ['once', 'deny'] : forConversation ? ['session', 'deny'] : ['once', 'session', 'deny']);
       if (mcp || review) {
         // Pi emits execution_start before tool_call. Its public API has no MCP
         // execute wrapper; the last blocking hook is this gate. Recheck after UI,
@@ -341,7 +400,7 @@ export default function hexbot(pi: any) {
         const reason = mcp && mcpDenial(event.toolName);
         if (reason) return {block: true, reason};
       }
-      if (choice === 'session' && !ask.once && !review) sessionAllowed.add(ask.key);
+      if ((choice === 'session' || (forConversation && choice === 'once')) && !ask.once && !review) sessionAllowed.add(ask.key);
       else if (choice !== 'once' && choice !== 'session') return {block: true, reason: 'The user denied this action.'};
     } catch {
       return {block: true, reason: 'The approval settings could not be checked. Try again.'};
@@ -350,7 +409,9 @@ export default function hexbot(pi: any) {
   // The user's own commands and the code runtime's terminal have no full_access.
   const spawnFor = (level: Level, command: string) => level === 'none' ? command :
     isolatedCommand(command, live.home, live.outputDirs, level === 'confined' ? workspace() : undefined, [live.cwd ?? config.cwd, ...live.outputDirs ?? []]);
-  const sandboxNote = () => live.approvalMode === 'manual'
+  const sandboxNote = () => limited()
+    ? '[The command ran in the workspace sandbox, without internet access. The user turned their computers off in Settings, Computers, so full_access is refused. Use the bots\' computer for anything else, if you have it.]'
+    : live.approvalMode === 'manual'
     ? '[The command ran in the read-only sandbox, without internet access. If it failed for that reason, run it again with full_access and a reason.]'
     : `[The command ran in the sandbox, without internet access and with writes only in ${live.cwd ?? config.cwd}, its output folders, and temporary folders. If it failed for that reason, run it again with full_access and a reason.]`;
 
@@ -373,20 +434,41 @@ export default function hexbot(pi: any) {
     const definition = name === 'bash' ? {
       description: tool.description + (process.platform === 'win32'
         ? ' Windows is unsupported: Auto and Manual refuse local tools, including full_access. In Bypass this is Pi\'s Bash shell, such as Git Bash, with no sandbox. Use Bash syntax, not cmd.exe or PowerShell syntax.'
-        : ' Commands may run in a sandbox that blocks internet access and writes outside the workspace. When a command needs either, set full_access and give a reason.'),
+        : ' Commands may run in a sandbox that blocks internet access and writes outside the workspace. When a command needs either, set full_access and give a reason.')
+        + ' Set computer to run it on another computer from your Computers note; on the bots\' computer nothing asks and full_access is not needed.',
       parameters: {type: 'object', properties: {
         command: {type: 'string', description: 'Shell command to execute'},
         timeout: {type: 'number', description: 'Timeout in seconds (optional, no default timeout)'},
         full_access: {type: 'boolean', description: 'Run outside the sandbox, with internet access and writes outside the workspace. The user may be asked first.'},
-        reason: {type: 'string', description: 'With full_access: one short sentence, shown to the user, saying why the command needs it.'}
+        reason: {type: 'string', description: 'With full_access: one short sentence, shown to the user, saying why the command needs it.'},
+        computer: {type: 'string', description: 'Which computer runs it, by an id from your Computers note. Leave it out to use the active one.'}
       }, required: ['command']}
     } : {};
     pi.registerTool({...tool, ...definition, async execute(id: string, args: any, signal: any, update: any, ctx: any) {
       const allowed = allowedCalls.get(id);
       allowedCalls.delete(id);
       if (ctx) await refresh(ctx);
-      if (!bypass()) requireSupportedExecution();
+      if (name === 'bash' && allowed?.computer === 'bots') {
+        // The bots' computer runs it; the daemon checks the bot may use it.
+        if (computerFor(args.computer).computer?.id !== 'bots') throw new Error('Where this bot works changed before this ran. Try again.');
+        const reply = await bridge(ctx, 'hexbot_computer_shell', {command: args.command, computer: 'bots'});
+        const content = Array.isArray(reply?.content) ? reply.content.filter((item: any) => item.type === 'text' || item.type === 'image') : [];
+        return {content: content.length ? content : [{type: 'text', text: '(no output)'}], details: {computer: 'bots'}};
+      }
+      if (name === 'bash' && allowed?.remote) {
+        // The app that lent the computer runs it at the level this gate settled.
+        if (allowed.mode !== live.approvalMode) throw new Error('The approval mode changed before this ran. Try again.');
+        if (computerFor(args.computer).computer?.id !== allowed.computer) throw new Error('Where this bot works changed before this ran. Try again.');
+        const reply = await bridge(ctx, 'hexbot_computer_shell', {command: args.command, computer: allowed.computer, level: allowed.level, read_only: live.approvalMode === 'manual', timeout: args.timeout});
+        const text = typeof reply?.output === 'string' ? reply.output : '';
+        const result = {content: [{type: 'text', text: text || '(no output)'}], details: {computer: allowed.computer, exitCode: reply?.exit_code}};
+        if (typeof reply?.exit_code === 'number' && reply.exit_code !== 0) throw new Error(`${text}\n\nCommand exited with code ${reply.exit_code}${allowed.level === 'confined' ? '\n\n[The command ran in the sandbox on that computer, without internet access and with writes only in ~/Hexbot and temporary folders. If it failed for that reason, run it again with full_access and a reason.]' : ''}`);
+        return result;
+      }
+      if (!bypass() || limited()) requireSupportedExecution();
       if (!allowed || allowed.mode !== live.approvalMode) throw new Error('The approval mode changed before this ran. Try again.');
+      if (name === 'bash' && allowed.computer !== undefined && computerFor(args.computer).computer?.id !== allowed.computer) throw new Error('Where this bot works changed before this ran. Try again.');
+      if (name === 'bash' && allowed.level !== levelFor(args)) throw new Error('Where this bot works changed before this ran. Try again.');
       if (allowed.cwd !== (live.cwd ?? config.cwd)) throw new Error('The working directory changed before this ran. Try again.');
       const cwd = live.cwd ?? config.cwd;
       // Recheck at execution too, before a factory can touch files or launch.
@@ -402,6 +484,7 @@ export default function hexbot(pi: any) {
           throw new Error(error.message + '\n\n' + sandboxNote());
         }
       }
+      if (filesConfined() && !inWorkspace(canonicalPath(args.path ?? '.', cwd))) throw new Error('Bots work only in the workspace on this computer (Settings, Computers).');
       if (bypass()) return factory(cwd, options()).execute(id, args, signal, ['grep', 'find', 'ls'].includes(name) ? undefined : update);
       // Pass the checked canonical target to Pi too: its lexical normalization
       // of '..' must not select a different file after a symlink was checked.
@@ -430,7 +513,7 @@ export default function hexbot(pi: any) {
     }});
   }
   pi.on('user_bash', async (event: any, ctx: any) => {
-    const denial = await gate({toolName: 'bash', input: {command: event.command}}, ctx);
+    const denial = await gate({toolName: 'bash', user: true, input: {command: event.command}}, ctx);
     if (denial) return {result: {output: denial.reason, exitCode: 1, cancelled: false, truncated: false}};
     const level = levelFor({});
     const approvedCwd = live.cwd ?? config.cwd;
@@ -752,4 +835,14 @@ export function shellEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 
 export function escapeMcpValues(values: Record<string, string>): Record<string, string> {
   return Object.fromEntries(Object.entries(values).map(([key, value]) => [key, value.replace(/\$/g, '$$$$').replace(/^!/, '$!')]));
+}
+
+// What a screen action does, as its approval card words it.
+export function screenAction(input: any, computer: string): string {
+  const at = Array.isArray(input?.coordinate) ? ` at ${input.coordinate.join(', ')}` : '';
+  const what = typeof input?.text === 'string' ? ` "${input.text.length > 80 ? input.text.slice(0, 80) + '…' : input.text}"`
+    : typeof input?.keys === 'string' ? ` ${input.keys}`
+    : typeof input?.url === 'string' ? ` ${input.url}`
+    : typeof input?.app === 'string' ? ` ${input.app}` : '';
+  return `${input?.action ?? 'use'}${what}${at} on ${computer}`;
 }

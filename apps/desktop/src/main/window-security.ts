@@ -1,5 +1,5 @@
 import type { BrowserWindow, Event, IpcMainEvent, IpcMainInvokeEvent, WebContents } from 'electron'
-import { APP_ORIGIN } from './app-protocol'
+import { APP_ORIGIN, frameNavigationAllowed } from './app-protocol'
 
 export function isRendererUrl(value: string, devUrl?: string): boolean {
   try {
@@ -50,6 +50,18 @@ export function guardWindow(
     if (!isRendererUrl(url, devUrl)) event.preventDefault()
   }
   contents.on('will-navigate', blockNavigation)
-  contents.on('will-redirect', blockNavigation)
+  // A frame's redirect follows the frames' own rule, as its navigations do: a
+  // preview's server may redirect inside the preview.
+  contents.on('will-redirect', (event, url) => {
+    const redirect = event as Event & { frame?: { url?: string } | null; isMainFrame?: boolean }
+    if (redirect.isMainFrame !== false) return blockNavigation(event, url)
+    try {
+      if (!frameNavigationAllowed(url, contents.getURL(), redirect.frame?.url ?? ''))
+        event.preventDefault()
+    } catch {
+      // A frame already gone can't be checked: refuse.
+      event.preventDefault()
+    }
+  })
   contents.on('will-attach-webview', event => event.preventDefault())
 }

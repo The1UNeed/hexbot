@@ -77,4 +77,25 @@ describe('window navigation', () => {
     handlers.get('will-attach-webview')!(event, '')
     expect(event.preventDefault).toHaveBeenCalledOnce()
   })
+
+  it('lets a preview frame follow its server\'s redirects, and nothing else', () => {
+    const handlers = new Map<string, (event: object, url: string) => void>()
+    const contents = {
+      getURL: () => 'hexbot-app://app/b/owl',
+      on: (name: string, handler: (event: object, url: string) => void) => handlers.set(name, handler),
+      setWindowOpenHandler: vi.fn()
+    } as unknown as WebContents
+    guardWindow(contents, vi.fn())
+    const redirect = handlers.get('will-redirect')!
+    const preview = `http://192.168.1.10:9119/hexbot/preview/${'c3'.repeat(16)}/`
+    const frame = { isMainFrame: false, frame: { url: preview }, preventDefault: vi.fn() }
+    redirect(frame, `${preview}app/`)
+    expect(frame.preventDefault).not.toHaveBeenCalled()
+    redirect(frame, 'https://attacker.test/')
+    expect(frame.preventDefault).toHaveBeenCalledOnce()
+    // The window itself still never leaves the app.
+    const main = { isMainFrame: true, preventDefault: vi.fn() }
+    redirect(main, `${preview}app/`)
+    expect(main.preventDefault).toHaveBeenCalledOnce()
+  })
 })

@@ -68,6 +68,7 @@ import {
 } from './src/ui'
 import { MarkdownText, type ResolveTag } from './src/MarkdownText'
 import { VisualFrame } from './src/VisualFrame'
+import { PreviewFrame } from './src/PreviewFrame'
 import { visualDocument } from './src/core/visual'
 import { parseArgs, sharedFiles } from './src/core/chat'
 import { type SearchDocument, searchEntries } from './src/core/search'
@@ -408,6 +409,14 @@ function MobileApp({ children }: { children?: ReactNode }) {
   const route = mobile.route
   const chatKey =
     route?.kind === 'section' ? route.section.id : route?.kind === 'room' ? route.room.id : null
+  // The computer card switches where the open chat's bot works; read its computers as it opens.
+  const computerBot = computerOpen && route?.kind === 'section' ? route.bot.name : null
+  useEffect(() => {
+    if (computerBot)
+      void mobile
+        .computersCall('hexbot.computers.for_bot', { bot: computerBot })
+        .catch(() => {})
+  }, [computerBot, mobile.connects])
   const openChat = useRef(chatKey)
   openChat.current = chatKey
   // Opening a chat or a room, from the list, a link or Settings, shows it in
@@ -779,7 +788,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
             area('activity', 'Bot activity', 'pulse-outline')
           ]
         },
-        { title: 'Manuals', areas: [area('computer', 'Computer use', 'desktop-outline')] },
+        { title: 'Manuals', areas: [area('computer', 'Computers', 'desktop-outline')] },
         {
           title: 'Devices',
           areas: [
@@ -1876,7 +1885,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
         <Layer
           visible={computerOpen}
           onClose={() => setComputerOpen(false)}
-          title="Your bots' computer"
+          title="Computer"
           testID="computer-sheet"
         >
           {computerOpen ? (
@@ -1884,6 +1893,9 @@ function MobileApp({ children }: { children?: ReactNode }) {
               bot={route?.kind === 'section' ? (botByName(route.bot.name) ?? route.bot) : undefined}
               bots={mobile.bots}
               call={mobile.computerCall}
+              computers={
+                route?.kind === 'section' ? mobile.botComputers[route.bot.name] : undefined
+              }
               connects={mobile.connects}
               faceOf={faceOf}
               onEnable={
@@ -1899,10 +1911,31 @@ function MobileApp({ children }: { children?: ReactNode }) {
                       })
                   : undefined
               }
+              onPick={
+                route?.kind === 'section'
+                  ? computer =>
+                      act(() =>
+                        mobile.computersCall('hexbot.computers.use', {
+                          bot: route.bot.name,
+                          computer
+                        })
+                      )
+                  : undefined
+              }
               origin={mobile.active?.origin ?? null}
               status={mobile.computer}
               view={mobile.computerView}
             />
+          ) : null}
+        </Layer>
+        <Layer
+          visible={!!mobile.preview}
+          onClose={mobile.closePreview}
+          title={mobile.preview?.title ?? 'Preview'}
+          testID="preview-sheet"
+        >
+          {mobile.preview && mobile.active?.origin ? (
+            <PreviewFrame uri={`${mobile.active.origin}${mobile.preview.path}`} />
           ) : null}
         </Layer>
         {/* iOS pushes these pages on its own navigation stack, in `src/shell/SplitView.tsx`. */}

@@ -15,6 +15,7 @@ import { useComputer } from '../../stores/computer'
 import { useConnection } from '../../stores/connection'
 import { useUi } from '../../stores/ui'
 import type { SaveBot } from '../bot-settings/shared'
+import { ComputerPicker } from '../computer-picker'
 import { computerLabel } from '../conversation/steps'
 
 const BUSY: Partial<Record<ComputerStatus['state'], string>> = {
@@ -589,7 +590,15 @@ function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   )
 }
 
-/** The Computer tab: the bots' computer alone, with no list of steps. */
+/** The Computer tab: where the bot works, and the bots' computer's screen. */
 export function ComputerTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
-  return <Screen bot={bot} onSave={onSave} />
+  return (
+    <div className="grid grid-cols-1 gap-2.5">
+      <div className="flex min-h-8 items-center justify-between gap-2 px-1">
+        <span className="text-[length:var(--text-secondary)] text-muted">Works on</span>
+        <ComputerPicker bot={bot.name} variant="panel" />
+      </div>
+      <Screen bot={bot} onSave={onSave} />
+    </div>
+  )
 }

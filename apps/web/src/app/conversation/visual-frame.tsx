@@ -1,4 +1,4 @@
-import { ChartColumn, ChevronsRight, ExternalLink, FileText, Maximize2, X } from 'lucide-react'
+import { ChartColumn, ChevronsRight, ExternalLink, FileText, Globe, Maximize2, X } from 'lucide-react'
 import {
   type KeyboardEvent,
   type ReactNode,
@@ -14,9 +14,10 @@ import { ScrollArea } from '../../components/ui/scroll-area'
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
 import { useUi } from '../../stores/ui'
-import { isFileTab, useVisuals, visualsActions } from '../../stores/visuals'
+import { fillsPanel, isFileTab, isPreviewTab, useVisuals, visualsActions } from '../../stores/visuals'
 
 import { closeTabs, FileTabView } from './file-tab'
+import { PreviewFrame } from './preview-frame'
 import {
   hostContext,
   mixHex,
@@ -405,7 +406,7 @@ export function VisualPanel() {
     }
   }
 
-  const fileShown = tabs.some(tab => tab.toolId === active && isFileTab(tab))
+  const fileShown = tabs.some(tab => tab.toolId === active && fillsPanel(tab))
 
   return (
     // The tabs float as the chat's header does: visuals scroll under them, and an
@@ -443,7 +444,9 @@ export function VisualPanel() {
                     tabIndex={shown ? 0 : -1}
                     type="button"
                   >
-                    {isFileTab(tab) ? (
+                    {isPreviewTab(tab) ? (
+                      <Globe className="shrink-0" size={13} />
+                    ) : isFileTab(tab) ? (
                       <FileText className="shrink-0" size={13} />
                     ) : (
                       <ChartColumn className="shrink-0" size={13} />
@@ -478,7 +481,7 @@ export function VisualPanel() {
       {/* Every open file stays mounted, hidden when another tab shows, so an
           edit that has not saved survives a switch of tabs. */}
       {tabs.map(tab =>
-        isFileTab(tab) ? (
+        fillsPanel(tab) ? (
           <div
             className={cn(
               'h-full overflow-hidden rounded-[16px] bg-background shadow-card',
@@ -486,13 +489,17 @@ export function VisualPanel() {
             )}
             key={tab.toolId}
           >
-            <FileTabView shown={tab.toolId === active} tab={tab} />
+            {isPreviewTab(tab) ? (
+              <PreviewFrame tab={tab} />
+            ) : (
+              <FileTabView shown={tab.toolId === active} tab={tab} />
+            )}
           </div>
         ) : null
       )}
       <div className={cn(fileShown && 'hidden')}>
         {tabs.map(tab =>
-          isFileTab(tab) ? null : (
+          fillsPanel(tab) ? null : (
             <VisualTab key={tab.toolId} shown={tab.toolId === active} visual={tab} />
           )
         )}

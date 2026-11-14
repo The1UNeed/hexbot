@@ -190,7 +190,174 @@ const COMPUTER_STATE: Record<string, string> = {
   stopping: 'Turning off…'
 }
 const COMPUTER_BUSY = ['repairing', 'resetting', 'restarting', 'starting', 'stopping']
-/** What bots do on their computer, as Settings, Computer use says on the web. */
+/** The four choices of where bots work, as Settings, Computers says them on the web. */
+const COMPUTER_CHOICES: {
+  value: 'both' | 'bots' | 'yours' | 'none'
+  title: string
+  describe: (name: string) => string
+}[] = [
+  {
+    value: 'both',
+    title: "Bots' computer and yours",
+    describe: name =>
+      `Bots work on their own computer, and run commands on ${name} when a task needs it.`
+  },
+  {
+    value: 'bots',
+    title: "Bots' computer only",
+    describe: name => `Nothing runs on ${name}. File tools stay in the workspace.`
+  },
+  {
+    value: 'yours',
+    title: 'Your computer only',
+    describe: name =>
+      `Bots run commands on ${name}, as the approval mode allows. They don't use their own computer.`
+  },
+  {
+    value: 'none',
+    title: 'Neither',
+    describe: name =>
+      `Commands stay in the workspace sandbox on ${name}, without internet, in every approval mode.`
+  }
+]
+const COMPUTER_TERMINAL: Record<string, string> = {
+  both: 'Commands run in the workspace sandbox. Leaving it follows the approval mode.',
+  bots: "Off. Bots don't run anything here.",
+  none: 'Commands stay in the workspace sandbox, in every approval mode.',
+  yours: 'Commands run in the workspace sandbox. Leaving it follows the approval mode.'
+}
+/** Where bots work: the choice, the daemon's computer and the bots allowed on each computer. */
+function ComputerChoices({ mobile }: { mobile: ReturnType<typeof useMobile> }) {
+  const [error, setError] = useState<string | null>(null)
+  const call = (method: string, params?: Record<string, unknown>) => {
+    setError(null)
+    void mobile.computersCall(method, params).catch((e: unknown) => setError(String(e)))
+  }
+  useEffect(() => call('hexbot.computers.list'), [mobile.connects])
+  const list = mobile.computers
+  const offline = mobile.connection !== 'connected'
+  if (!list) return error ? <Banner message={error} tone="danger" testID="computers-error" /> : null
+  const daemon = list.computers.find(computer => computer.kind === 'daemon')
+  const name = daemon?.name ?? 'this computer'
+  const access = (computer: (typeof list.computers)[number]) =>
+    mobile.bots.length ? (
+      <Group
+        title={`Bots that use ${computer.kind === 'bots' ? "Bots' computer" : computer.name}`}
+        footer={
+          computer.on === false ? 'Your choice above keeps this computer off for every bot.' : undefined
+        }
+      >
+        {mobile.bots.map(bot => (
+          <SwitchRow
+            key={bot.name}
+            disabled={offline}
+            leading={
+              <BotFace face={bot.face} imageUri={botPhoto(bot)} name={bot.display_name} size={28} />
+            }
+            onValueChange={allowed =>
+              call('hexbot.computers.configure', { computer: computer.id, bot: bot.name, allowed })
+            }
+            testID={`computers-${computer.id}-${bot.name}`}
+            title={bot.display_name}
+            value={computer.bots?.includes(bot.name) ?? false}
+          />
+        ))}
+      </Group>
+    ) : null
+  const botsComputer = list.computers.find(computer => computer.kind === 'bots')
+  // The bots picked for a computer's screen, apart from its terminal: the
+  // daemon's, or one a desktop app lent.
+  const screenAccess = (computer: (typeof list.computers)[number]) =>
+    mobile.bots.length ? (
+      <Group
+        title={`Bots that use the screen of ${computer.name}`}
+        footer={`They see your apps and files, and click and type there. Auto asks once a conversation, Manual before every action, Bypass never. They never click or type in Hexbot's own windows. ${
+          computer.kind === 'daemon'
+            ? 'On a Mac, allow Screen Recording and Accessibility when macOS asks.'
+            : 'The Hexbot app on that computer lent its screen.'
+        }`}
+      >
+        {mobile.bots.map(bot => (
+          <SwitchRow
+            key={bot.name}
+            disabled={offline}
+            leading={
+              <BotFace face={bot.face} imageUri={botPhoto(bot)} name={bot.display_name} size={28} />
+            }
+            onValueChange={screen =>
+              call('hexbot.computers.configure', { computer: computer.id, bot: bot.name, screen })
+            }
+            testID={`computers-screen-${computer.id}-${bot.name}`}
+            title={bot.display_name}
+            value={computer.screen_bots?.includes(bot.name) ?? false}
+          />
+        ))}
+      </Group>
+    ) : null
+  return (
+    <>
+      {error ? <Banner message={error} tone="danger" testID="computers-error" /> : null}
+      <Group
+        title="Where bots work"
+        footer="Nothing on the bots' computer asks before it runs. On yours, the approval mode decides."
+      >
+        {COMPUTER_CHOICES.map(choice => (
+          <ChoiceRow
+            key={choice.value}
+            disabled={offline}
+            onPress={() => call('hexbot.computers.configure', { choice: choice.value })}
+            selected={list.choice === choice.value}
+            subtitle={choice.describe(name)}
+            testID={`computers-choice-${choice.value}`}
+            title={choice.title}
+          />
+        ))}
+      </Group>
+      {daemon ? (
+        <Group title={daemon.name} footer={`${daemon.os}. The computer the daemon runs on.`}>
+          <Row
+            title="Terminal"
+            subtitle={COMPUTER_TERMINAL[list.choice]}
+            subtitleLines={3}
+            testID="computers-terminal"
+          />
+          <Row
+            title="Files"
+            subtitle="Always in the workspace, where attachments and files bots make are kept."
+            subtitleLines={3}
+            testID="computers-files"
+          />
+        </Group>
+      ) : null}
+      {daemon && list.choice !== 'bots' ? access(daemon) : null}
+      {daemon && list.choice !== 'bots' && list.choice !== 'none' ? screenAccess(daemon) : null}
+      {list.computers
+        .filter(computer => computer.kind === 'device')
+        .map(computer => (
+          <View key={computer.id}>
+            <Group
+              title={computer.name}
+              footer={`${computer.os}. ${
+                computer.online
+                  ? 'Lent by the Hexbot app there. Commands run in its workspace sandbox, ~/Hexbot.'
+                  : 'Offline: the Hexbot app there is closed or stopped lending it.'
+              } A computer is lent from the desktop app on it.`}
+            >
+              <Row
+                title="Terminal"
+                subtitle={computer.online ? 'Online' : 'Offline'}
+                testID={`computers-${computer.id}-terminal`}
+              />
+            </Group>
+            {access(computer)}
+            {computer.lends_screen ? screenAccess(computer) : null}
+          </View>
+        ))}
+      {botsComputer ? access(botsComputer) : null}
+    </>
+  )
+}
+/** What bots do on their computer, as Settings, Computers says on the web. */
 const COMPUTER_USES: { title: string; description: string; icon: IconName }[] = [
   {
     title: 'Code execution',
@@ -208,7 +375,7 @@ const COMPUTER_USES: { title: string; description: string; icon: IconName }[] = 
     icon: 'browsers-outline'
   }
 ]
-/** Settings, Manuals, Computer use: the bots' one shared computer, its size and its power. */
+/** Settings, Manuals, Computers: where bots work, then the bots' one shared computer, its size and its power. */
 function ComputerUse({ mobile }: { mobile: ReturnType<typeof useMobile> }) {
   const theme = useTheme()
   const status = mobile.computer
@@ -229,7 +396,7 @@ function ComputerUse({ mobile }: { mobile: ReturnType<typeof useMobile> }) {
         <Banner message={error ?? String(status.error)} tone="danger" testID="computer-error" />
       ) : null}
       {status.available === false ? (
-        <Group title="Set up">
+        <Group title="Bots' computer">
           <Row
             title="Your bots need Cua for their computer"
             subtitle="Install Cua on the daemon's computer with uv tool install cua, and start Docker."
@@ -238,7 +405,10 @@ function ComputerUse({ mobile }: { mobile: ReturnType<typeof useMobile> }) {
           />
         </Group>
       ) : (
-        <Group title="Computer">
+        <Group
+          title="Bots' computer"
+          footer="A Linux desktop your bots share, separate from yours. They run code, install programs and browse there."
+        >
           <Row
             title="Status"
             meta={COMPUTER_STATE[status.state] ?? status.state}
@@ -1033,7 +1203,12 @@ export function Management({
       )
       break
     case 'computer':
-      content = <ComputerUse mobile={mobile} />
+      content = (
+        <>
+          <ComputerChoices mobile={mobile} />
+          <ComputerUse mobile={mobile} />
+        </>
+      )
       break
     case 'bot-create':
     case 'bot':
@@ -2909,7 +3084,7 @@ export function Management({
   }
   const titles: Record<string, string> = {
     settings: 'Daemon settings',
-    computer: 'Computer use',
+    computer: 'Computers',
     'bot-create': 'New bot',
     bot: bot ? `Edit ${bot.display_name}` : 'Edit bot',
     memory: 'Memory',

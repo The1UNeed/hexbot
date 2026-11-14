@@ -279,7 +279,8 @@ fn set_up(
     let has = |name: &str| !credential(env, name).is_empty();
     match toolset {
         "code_execution" => on_path(&python_command(home, cfg, env)).is_some(),
-        "computer_use" => crate::computers::command(cfg, env).is_some(),
+        // Previews and lent screens need no Cua here; each action says what it lacks.
+        "computer_use" => true,
         "browser" => {
             let browser = &cfg["browser"];
             if text(browser, "backend", "") == "off" {
@@ -418,9 +419,10 @@ pub fn descriptors(home: &Path, bot: &str) -> Result<Vec<Value>> {
             ),
         );
     }
-    if crate::computers::command(&cfg, &env).is_some() {
-        add("computer_use", crate::computers::descriptor());
-    }
+    // Declared whether or not this computer has Cua, so the tool list stays
+    // the same when Cua comes or goes; the bots' computer and the daemon's
+    // screen need it, previews and lent screens don't.
+    add("computer_use", crate::computers::descriptor());
     if !matches!(text(&cfg["browser"], "backend", ""), "browser-use" | "off") {
         for (name, description, properties, required) in [
             (

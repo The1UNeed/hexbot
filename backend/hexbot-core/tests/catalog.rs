@@ -310,7 +310,7 @@ fn lifecycle_preserves_memory_and_reopens_archived_sections() {
     );
     assert_eq!(updated["bot"]["approval_mode"], "off");
     assert_eq!(updated["bot"]["persona"], "Custom soul");
-    assert_eq!(updated["bot"]["tools"], json!(["files"]));
+    assert_eq!(updated["bot"]["tools"], json!(["files", "computer_use"]));
     assert_eq!(updated["bot"]["workdir"], "/tmp/work");
     assert_eq!(updated["bot"]["dream_enabled"], false);
     assert_eq!(updated["bot"]["reasoning_effort"], Value::Null);
@@ -1159,7 +1159,9 @@ fn create_accepts_explicit_empty_tool_selection_before_registry_insert() {
         "hexbot.bots.create",
         json!({"name":"no-tools","tools":[]}),
     );
-    assert_eq!(created["bot"]["tools"], json!([]));
+    // Every bot has Computer use, with or without Cua here: previews and lent
+    // screens need none.
+    assert_eq!(created["bot"]["tools"], json!(["computer_use"]));
 }
 
 #[test]
@@ -1204,11 +1206,11 @@ fn tools_not_set_up_are_hidden_and_dropped_on_save() {
         json!({"name":"research-owl","tools":["files","voice","computer_use"]}),
     )["bot"]
         .clone();
-    assert_eq!(bot["tools"], json!(["files"]));
+    assert_eq!(bot["tools"], json!(["files", "computer_use"]));
     let available = bot["available_tools"].as_array().unwrap();
     assert!(available.contains(&json!("files")));
     assert!(!available.contains(&json!("voice")));
-    assert!(!available.contains(&json!("computer_use")));
+    assert!(available.contains(&json!("computer_use")));
 }
 
 #[test]
@@ -1223,21 +1225,21 @@ fn combined_model_and_tool_edits_use_the_pending_provider() {
         "hexbot.bots.update",
         json!({"name":"research-owl","provider":"ollama","tools":["vision"]}),
     );
-    assert_eq!(changed["bot"]["tools"], json!(["vision"]));
+    assert_eq!(changed["bot"]["tools"], json!(["computer_use", "vision"]));
     let changed = call(
         home.path(),
         "alice",
         "hexbot.bots.update",
         json!({"name":"research-owl","provider":"codex","tools":["vision"]}),
     );
-    assert_eq!(changed["bot"]["tools"], json!([]));
+    assert_eq!(changed["bot"]["tools"], json!(["computer_use"]));
     let created = call(
         home.path(),
         "alice",
         "hexbot.bots.create",
         json!({"name":"local-vision","provider":"ollama","tools":["vision"]}),
     );
-    assert_eq!(created["bot"]["tools"], json!(["vision"]));
+    assert_eq!(created["bot"]["tools"], json!(["computer_use", "vision"]));
 }
 
 #[test]
@@ -1372,7 +1374,7 @@ fn create_persists_every_accepted_field() {
     assert_eq!(bot["notify"], false);
     assert_eq!(bot["approval_mode"], "manual");
     assert_eq!(bot["workdir"], json!(workdir.path()));
-    assert_eq!(bot["tools"], json!(["files"]));
+    assert_eq!(bot["tools"], json!(["files", "computer_use"]));
 }
 
 #[test]

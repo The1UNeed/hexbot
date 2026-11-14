@@ -29,6 +29,9 @@ use std::{
 };
 use tokio_tungstenite::tungstenite::{self, client::IntoClientRequest};
 
+#[path = "computers_host.rs"]
+pub mod host;
+
 /// Sizes the user picks, as (name, vCPUs, GB of memory). The computer gets
 /// its size when it is created; Reset applies a new one.
 pub const SIZES: [(&str, u32, u32); 3] = [("small", 2, 4), ("medium", 4, 8), ("large", 8, 16)];
@@ -191,6 +194,10 @@ pub fn command(cfg: &Value, env: &BTreeMap<String, String>) -> Option<PathBuf> {
     } else {
         &configured
     })
+}
+/// Whether this daemon has Cua, which the bots' computer needs.
+pub fn available(home: &Path) -> bool {
+    setup(home).is_ok_and(|(cfg, env)| command(&cfg, &env).is_some())
 }
 /// The daemon's settings and credentials; the computer belongs to no one bot.
 fn setup(home: &Path) -> Result<(Value, BTreeMap<String, String>)> {
@@ -902,6 +909,7 @@ fn tell(home: &Path, why: &str) -> bool {
 /// A deleted bot leaves the computer; only its cursor goes.
 pub async fn forget_bot(home: &Path, bot: &str) {
     connectors::close_config(home, bot, SERVER).await;
+    connectors::close_config(home, bot, host::SERVER).await;
     if with(home, |c| c.cursors.remove(bot).is_some()) {
         changed(home);
     }
@@ -1620,13 +1628,13 @@ pub fn descriptor() -> Value {
     let point = json!({"type":"array","items":{"type":"integer"},"minItems":2,"maxItems":2});
     json!({
         "name": "computer_use",
-        "description": "Use the computer your bots share: a Linux desktop with a browser and a terminal, separate from the user's computer and your workspace. Run code, install programs and browse the web there, not on the user's computer. It starts on first use. Every bot shares it with the others and with the user, and it keeps whatever anyone left open: tabs, windows and pages already on the screen are usually earlier work, not someone using it now, so never wait or give up because of them. Bots take turns one action at a time, and you wait for your turn on your own while another bot acts. Work in a new tab or window of your own, leave the others' as they are unless the user asks, and look before each action, since the screen can change between yours. Start with screenshot; coordinates are pixels in the latest screenshot. After an action that changes the screen, look again, or pass capture_after. Use shell for installs and files on that computer and open for a URL. If the user has paused the bots, wait for them to resume.",
+        "description": "Use the computer your bots share: a Linux desktop with a browser and a terminal, separate from the user's computer and your workspace. Run code, install programs and browse the web there, not on the user's computer. It starts on first use. Every bot shares it with the others and with the user, and it keeps whatever anyone left open: tabs, windows and pages already on the screen are usually earlier work, not someone using it now, so never wait or give up because of them. Bots take turns one action at a time, and you wait for your turn on your own while another bot acts. Work in a new tab or window of your own, leave the others' as they are unless the user asks, and look before each action, since the screen can change between yours. Start with screenshot; coordinates are pixels in the latest screenshot. After an action that changes the screen, look again, or pass capture_after. Use shell for installs and files on that computer and open for a URL. If the user has paused the bots, wait for them to resume. `computer` picks which computer, by an id from your Computers note; without it you use the bots' computer. After you start a web server on a computer, preview with its port shows the page to the user beside the chat, wherever they are; on the bots' computer it opens in its browser.",
         "parameters": {
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["screenshot", "click", "double_click", "right_click", "middle_click", "move", "drag", "scroll", "type", "key", "open", "launch", "windows", "shell", "wait"]
+                    "enum": ["screenshot", "click", "double_click", "right_click", "middle_click", "move", "drag", "scroll", "type", "key", "open", "launch", "windows", "shell", "wait", "preview"]
                 },
                 "coordinate": point,
                 "to_coordinate": point,
@@ -1638,7 +1646,10 @@ pub fn descriptor() -> Value {
                 "app": { "type": "string", "description": "Application for launch, such as firefox" },
                 "command": { "type": "string", "description": "Shell command for shell; runs on that computer, 30 s limit; start longer jobs in the background" },
                 "seconds": { "type": "number", "minimum": 0, "maximum": 30 },
-                "capture_after": { "type": "boolean" }
+                "capture_after": { "type": "boolean" },
+                "computer": { "type": "string", "description": "Which computer, by an id from your Computers note. Leave it out for the bots' computer." },
+                "port": { "type": "integer", "minimum": 1, "maximum": 65535, "description": "For preview: the port a server you started listens on, on that computer" },
+                "path": { "type": "string", "description": "For preview: the page to open, such as /index.html" }
             },
             "required": ["action"]
         }
@@ -1730,6 +1741,10 @@ pub async fn act(
     env: &BTreeMap<String, String>,
     args: &Value,
 ) -> Result<Value> {
+    if common::required(args, "action")? == "preview" {
+        return preview(home, bot, cfg, env, args).await;
+    }
+    let target = on_screen(home, bot, args["computer"].as_str())?;
     // Conversations that started with the earlier computer tool keep its names.
     let action = match common::required(args, "action")? {
         "capture" => "screenshot",
@@ -1811,6 +1826,14 @@ pub async fn act(
             ));
         }
     };
+    if target != crate::computer_access::BOTS {
+        // The daemon's own screen, or a computer a desktop app lent.
+        let screen = match crate::computer_access::device_for(home, &target) {
+            Some(device) => host::Screen::Device(device),
+            None => host::Screen::Host,
+        };
+        return host::act(home, bot, cfg, env, screen, action, tool, params, args).await;
+    }
     if with(home, |c| c.paused) {
         return Err(paused_error());
     }
@@ -1872,6 +1895,96 @@ pub async fn act(
     }
     Ok(result)
 }
+/// The computer whose screen a bot asked for must be one it may use, and
+/// one with a screen it may use: the bots' computer, or the daemon's for the
+/// bots the user picked. Its id.
+fn on_screen(home: &Path, bot: &str, requested: Option<&str>) -> Result<String> {
+    let requested = requested.filter(|name| !name.trim().is_empty());
+    let target = crate::computer_access::resolve(
+        home,
+        bot,
+        Some(requested.unwrap_or(crate::computer_access::BOTS)),
+    )?;
+    if target["screen"] != true {
+        return Err(Error::new(
+            4302,
+            format!(
+                "Bots can't use the screen of {}. Run commands there with your terminal and computer {}.",
+                target["name"].as_str().unwrap_or("that computer"),
+                target["id"].as_str().unwrap_or("")
+            ),
+        ));
+    }
+    Ok(target["id"].as_str().unwrap_or_default().to_owned())
+}
+/// `preview`: a page a bot serves. The bots' computer opens it in its own
+/// browser; the user's computers get a link beside the chat (preview.rs). A
+/// preview needs no screen, only the computer.
+async fn preview(
+    home: &Path,
+    bot: &str,
+    cfg: &Value,
+    env: &BTreeMap<String, String>,
+    args: &Value,
+) -> Result<Value> {
+    let port = args["port"]
+        .as_u64()
+        .filter(|port| (1..=65535).contains(port))
+        .ok_or_else(|| Error::new(4202, "preview needs the port the server listens on"))?
+        as u16;
+    let path = args["path"].as_str().unwrap_or("/");
+    let path = if path.starts_with('/') {
+        path.to_owned()
+    } else {
+        format!("/{path}")
+    };
+    let requested = args["computer"]
+        .as_str()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or(crate::computer_access::BOTS);
+    let computer = crate::computer_access::resolve(home, bot, Some(requested))?;
+    if computer["id"] == crate::computer_access::BOTS {
+        let mut open = json!({"action":"open","url":format!("http://localhost:{port}{path}")});
+        open["capture_after"] = args["capture_after"].clone();
+        return Box::pin(act(home, bot, cfg, env, &open)).await;
+    }
+    let mut shown = crate::preview::for_bot(home, bot, &computer, port, &path)?;
+    // Only the user's apps get the link.
+    let link = shown
+        .as_object_mut()
+        .and_then(|shown| shown.remove("link"))
+        .unwrap_or_default();
+    announce(
+        home,
+        "hexbot.preview.opened",
+        json!({
+            "bot": bot,
+            "path": link,
+            "computer": computer["name"],
+            "title": format!("{} · {port}", computer["name"].as_str().unwrap_or("Preview")),
+        }),
+    );
+    Ok(shown)
+}
+/// Tell the daemon's clients about something on its computers.
+fn announce(home: &Path, kind: &str, payload: Value) {
+    let Some(events) = hubs()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(home)
+        .cloned()
+    else {
+        return;
+    };
+    let owners = db::open(home)
+        .and_then(|conn| common::rows(&conn, "SELECT DISTINCT owner_id FROM bots", &[]))
+        .unwrap_or_default();
+    for owner in owners {
+        if let Some(owner) = owner["owner_id"].as_str() {
+            events.emit(owner, None, kind, payload.clone());
+        }
+    }
+}
 fn paused_error() -> Error {
     Error::new(
         4302,
@@ -1904,6 +2017,8 @@ pub async fn fill(
     env: &BTreeMap<String, String>,
     fills: &[(Option<(i64, i64)>, String)],
 ) -> Result<()> {
+    // Saved passwords are typed only on the bots' computer.
+    on_screen(home, bot, Some(crate::computer_access::BOTS))?;
     if with(home, |c| c.paused) {
         return Err(paused_error());
     }
@@ -1967,6 +2082,19 @@ async fn request(
     args: Value,
     turn: &Arc<tokio::sync::OwnedMutexGuard<()>>,
 ) -> Result<Value> {
+    request_on(SERVER, home, bot, server, tool, args, turn).await
+}
+/// One call through the named MCP connection: the bots' computer's, or the
+/// daemon's screen's.
+async fn request_on(
+    connection: &'static str,
+    home: &Path,
+    bot: &str,
+    server: &Value,
+    tool: &str,
+    args: Value,
+    turn: &Arc<tokio::sync::OwnedMutexGuard<()>>,
+) -> Result<Value> {
     let (home, bot, server, name) = (
         home.to_owned(),
         bot.to_owned(),
@@ -1976,7 +2104,7 @@ async fn request(
     let held = turn.clone();
     let result = tokio::spawn(async move {
         let _held = held;
-        connectors::mcp_call_config(&home, &bot, SERVER, &server, &name, args).await
+        connectors::mcp_call_config(&home, &bot, connection, &server, &name, args).await
     })
     .await
     .map_err(|_| Error::new(4211, "The computer action stopped unexpectedly."))??;

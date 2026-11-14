@@ -3731,10 +3731,14 @@ impl Runtime {
         }
         // The extension asks for heartbeat messages only when some are waiting.
         // The user's reactions wait with them and arrive the same way.
+        // So does what changed about the computers the bot can use.
         saved["pendingHeartbeat"] = json!(
             heartbeat::pending_context(&self.home, &s.stored)?
                 || crate::reactions::pending_context(&self.home, &s.stored)?
+                || crate::computer_access::note(&self.home, &s.bot, &s.stored).is_some()
         );
+        // Where the bot's commands run, and how they are gated there.
+        saved["computers"] = crate::computer_access::session(&self.home, &s.bot);
         saved["canAsk"] = json!(db.query_row(
             "SELECT EXISTS(SELECT 1 FROM sections WHERE id=?) OR EXISTS(SELECT 1 FROM room_sessions WHERE stored_session_id=?)",
             params![s.stored,s.stored], |r| r.get::<_,bool>(0)
@@ -4532,7 +4536,12 @@ impl Runtime {
             "hexbot_heartbeat_context" => {
                 let posted = heartbeat::take_context(&self.home, &s.owner, &s.stored)?;
                 let reacted = crate::reactions::take_context(&self.home, &s.stored)?;
-                let parts = [posted, reacted].into_iter().flatten().collect::<Vec<_>>();
+                let computers = crate::computer_access::take_note(&self.home, &s.bot, &s.stored)
+                    .map(|(text, id)| json!({"text":text,"ids":[id]}));
+                let parts = [posted, reacted, computers]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>();
                 if parts.is_empty() {
                     return Ok(json!({"text":null,"ids":[]}));
                 }
@@ -4846,6 +4855,58 @@ impl Runtime {
                 )?))
             }
             "hexbot_session_settings" => self.session_settings(s),
+            // The terminal's commands for the bots' computer. The extension
+            // sends them here without asking: nothing there needs approval.
+            "hexbot_computer_shell" => {
+                if s.stored.starts_with("heartbeat-")
+                    || !crate::connectors::toolsets(&self.home, &s.bot)?
+                        .iter()
+                        .any(|set| set == "terminal")
+                {
+                    return Err(Error::new(4210, "This tool is disabled for this section."));
+                }
+                let target =
+                    crate::computer_access::resolve(&self.home, &s.bot, args["computer"].as_str())?;
+                // A computer a desktop app lent runs it there, at the level the
+                // extension's gate settled.
+                if let Some(device) = target["id"]
+                    .as_str()
+                    .and_then(|id| crate::computer_access::device_for(&self.home, id))
+                {
+                    let level = args["level"].as_str().unwrap_or("confined");
+                    if !matches!(level, "confined" | "base" | "none") {
+                        return Err(Error::new(4202, "level must be confined, base or none"));
+                    }
+                    return crate::computer_lend::request(
+                        &self.home,
+                        &device,
+                        "shell",
+                        json!({
+                            "command": required(args, "command")?,
+                            "level": level,
+                            "read_only": args["read_only"] == true,
+                            "timeout": args["timeout"],
+                        }),
+                    )
+                    .await;
+                }
+                if target["id"] != crate::computer_access::BOTS {
+                    return Err(Error::new(
+                        4302,
+                        "This command is not for the bots' computer.",
+                    ));
+                }
+                let cfg = common::merged_config(&self.home, &s.bot)?;
+                let env = crate::connectors::credentials(&self.home, &s.bot)?;
+                crate::computers::act(
+                    &self.home,
+                    &s.bot,
+                    &cfg,
+                    &env,
+                    &json!({"action":"shell","command":required(args, "command")?}),
+                )
+                .await
+            }
             // Threads started before chats replaced sections still offer it;
             // titles are no longer shown, so there is nothing to rename.
             "hexbot_rename_section" => Ok(json!({"ok":true})),
@@ -5158,6 +5219,14 @@ impl Runtime {
                         ) {
                             eprintln!("Reaction context for {}: {}", s.stored, error.message);
                         }
+                        // And the note on where the bot works.
+                        if let Err(error) = crate::computer_access::acknowledge(
+                            &self.home,
+                            &s.stored,
+                            &message["details"]["heartbeat"],
+                        ) {
+                            eprintln!("Computers note for {}: {}", s.stored, error.message);
+                        }
                     }
                     "toolResult" => {
                         let context = s
@@ -5189,8 +5258,11 @@ impl Runtime {
                         ),
                     );
                     state.tool_context.insert(id.into(), context.clone());
-                    let to_computer =
-                        name == "computer_use" && state.busy && state.on_computer.is_none();
+                    let to_computer = (name == "computer_use"
+                        || (name == "terminal"
+                            && on_bots_computer(&self.home, &s.bot, &event["args"])))
+                        && state.busy
+                        && state.on_computer.is_none();
                     if to_computer {
                         state.on_computer = Some(common::now());
                     }
@@ -6072,6 +6144,11 @@ fn check_memory_edit(old: &str, text: &str) -> Result<()> {
 }
 
 /// The one argument worth showing after the verb ("Ran ls", "Searched the web for weather").
+/// Whether a terminal command goes to the bots' computer.
+fn on_bots_computer(home: &Path, bot: &str, args: &Value) -> bool {
+    crate::computer_access::resolve(home, bot, args["computer"].as_str())
+        .is_ok_and(|target| target["id"] == crate::computer_access::BOTS)
+}
 fn tool_context(name: &str, args: &Value) -> String {
     let key = match name {
         "terminal" => "command",
@@ -7513,6 +7590,17 @@ rl.on('line',line=>{{const c=JSON.parse(line);emit({{type:'response',id:c.id,com
                 .code,
             4202
         );
+        // A new chat first hears where the bot works, by the same way in.
+        assert_eq!(
+            runtime.session_settings(&s).unwrap()["pendingHeartbeat"],
+            true
+        );
+        let first = runtime
+            .tool(&s, "hexbot_heartbeat_context", &json!({}))
+            .await
+            .unwrap();
+        assert!(first["text"].as_str().unwrap().starts_with("[Computers]"));
+        crate::computer_access::acknowledge(home.path(), &s.stored, &first["ids"]).unwrap();
         // Nothing waits for the chat's context until the user reacts.
         assert_eq!(
             runtime.session_settings(&s).unwrap()["pendingHeartbeat"],

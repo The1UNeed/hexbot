@@ -49,7 +49,9 @@ import type {
   Bot,
   ChatMessage,
   ChatState,
+  ComputerInfo,
   ComputerQuality,
+  ComputersList,
   ComputerStatus,
   Reaction,
   ReactionsChanged,
@@ -90,6 +92,17 @@ export function useMobile() {
   const [settings, setSettings] = useState<Settings | null>(null)
   /** The bots' shared computer, once something shows it; events keep it current. */
   const [computer, setComputer] = useState<ComputerStatus | null>(null)
+  /** Where bots work, once Settings shows it, and each bot's computers once its card does. */
+  const [computers, setComputers] = useState<ComputersList | null>(null)
+  const computersRef = useRef(computers)
+  computersRef.current = computers
+  const [botComputers, setBotComputers] = useState<Record<string, ComputerInfo[]>>({})
+  /** A page the open chat's bot serves on one of the user's computers, shown on a card. */
+  const [preview, setPreview] = useState<{ path: string; title: string; computer: string } | null>(
+    null
+  )
+  const botComputersRef = useRef(botComputers)
+  botComputersRef.current = botComputers
   /** Counts connections, so what a daemon forgets on restart is asked for again. */
   const [connects, setConnects] = useState(0)
   /** Counts heartbeat changes, so an open heartbeat card reads its status again. */
@@ -607,6 +620,34 @@ export function useMobile() {
         )
         return
       }
+      // A bot showed a page it serves; it opens if its chat is the one open.
+      if (event.type === 'hexbot.preview.opened') {
+        const current = routeRef.current
+        if (
+          typeof p.path === 'string' &&
+          p.path.startsWith('/hexbot/preview/') &&
+          current?.kind === 'section' &&
+          current.bot.name === p.bot
+        )
+          setPreview({
+            path: p.path,
+            title: typeof p.title === 'string' ? p.title : 'Preview',
+            computer: typeof p.computer === 'string' ? p.computer : ''
+          })
+        return
+      }
+      // Where bots work changed somewhere: read again what this app shows.
+      if (event.type === 'hexbot.computers.changed') {
+        if (computersRef.current)
+          void rpc<ComputersList>('hexbot.computers.list')
+            .then(setComputers)
+            .catch(() => {})
+        for (const bot of Object.keys(botComputersRef.current))
+          void rpc<{ bot: string; computers: ComputerInfo[] }>('hexbot.computers.for_bot', { bot })
+            .then(result => setBotComputers(current => ({ ...current, [bot]: result.computers })))
+            .catch(() => {})
+        return
+      }
       // One message's reactions changed; nothing in the lists moves.
       if (event.type === 'hexbot.reactions.changed') {
         if (
@@ -770,6 +811,9 @@ export function useMobile() {
       setError(null)
       setActive(daemon)
       setComputer(null)
+      setComputers(null)
+      setBotComputers({})
+      setPreview(null)
       setBots([])
       setRooms([])
       setSections([])
@@ -1250,6 +1294,23 @@ export function useMobile() {
     ) => {
       const result = await rpc<ComputerStatus>(method, params)
       setComputer(current => ({ ...current, ...result }) as ComputerStatus)
+      return result
+    },
+    computers,
+    botComputers,
+    preview,
+    closePreview: () => setPreview(null),
+    /**
+     * Run a `hexbot.computers.*` method and keep what it returns: the whole
+     * list, or one bot's computers.
+     */
+    computersCall: async (method: string, params: Record<string, unknown> = {}) => {
+      const result = await rpc<ComputersList | { bot: string; computers: ComputerInfo[] }>(
+        method,
+        params
+      )
+      if ('choice' in result) setComputers(result)
+      else setBotComputers(current => ({ ...current, [result.bot]: result.computers }))
       return result
     },
     /** A link, relative to the daemon, to the computer's screen; with `control` it takes touches. */

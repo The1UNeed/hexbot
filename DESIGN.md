@@ -245,6 +245,60 @@ more freedom and more capability than a hosted product can offer.
 
 ### Approvals and tools
 
+- Computers (`computer_access.rs`): the user chooses where bots work. Both
+  the bots' computer and the daemon's (the default), the bots' computer only,
+  the daemon's only, or neither. Each computer lists the bots allowed on it;
+  a new bot gets both. Each bot has an active computer, used when a command
+  names none, which the user switches from the chat. The approval modes
+  below govern the daemon's computer only. Work on the bots' computer never
+  asks in any mode: it is a separate desktop a reset undoes, so the terminal
+  sends commands there through the daemon's `cua` without the gate. With
+  only the bots' computer, the daemon runs no commands and the file tools
+  stay in the workspace. With neither, commands stay in the workspace
+  sandbox even in Bypass, `full_access` is refused, and the file tools stay
+  in the workspace. Saved passwords are typed only on the bots' computer.
+- The daemon's screen (`computers_host.rs`) is for the bots the user picks,
+  none at first, and never under neither. Picking the first runs
+  `cua do-host-consent`; macOS then asks for Screen Recording and
+  Accessibility. `computer_use` with `computer: daemon` drives it through
+  `cua mcp --sandbox host`, one action at a time, with its own pause and
+  turns. Bypass never asks; Auto asks once for the rest of the conversation
+  (screen actions are not model-reviewable); Manual asks before every action
+  unless the user allows it for now. Before a click, drag, scroll or
+  keystroke the daemon lists the windows and refuses one that lands on
+  Hexbot, the app or a browser showing it, or any keystroke while Hexbot is
+  focused, so a bot cannot press its own approval card. There is no shell on
+  the screen: commands use the terminal and its sandbox. Pause bots stops
+  them on every screen. A lent computer's screen asks the same way, with a
+  grant of its own.
+- A desktop app lends its computer (`computer_lend.rs`,
+  `apps/desktop/src/main/computer.ts`) when the user turns it on in that
+  app. The page offers it over its own connection on every connect; it goes
+  offline when the connection closes. The daemon decides everything and
+  sends only three kinds of request to that connection (the third, a
+  loopback page for Preview, is below): a shell command at the level
+  the extension's gate settled (`confined`, `base` or `none`, read-only in
+  Manual), which the app runs with the extension's own `isolation.ts` in its
+  `~/Hexbot`, keeping its `~/.hexbot` and credential stores unreadable; and a
+  Cua screen tool, relayed to the app's own `cua mcp --sandbox host`, for
+  which the daemon runs the same guard as on its own screen. A lent computer
+  is off with the bots' computer only or neither, and serves only the bots
+  the user picks for it and, apart, its screen. Revoking the device forgets
+  it. Browsers and phones cannot lend.
+- Preview (`preview.rs`): `computer_use` `preview` with a port mints a link
+  that lasts four hours, `/hexbot/preview/<token>/`, forwarding to
+  `127.0.0.1:<port>` on the daemon's computer or, through the lending app,
+  on a lent one. The daemon tells clients with `hexbot.preview.opened`, and
+  the chat of that bot opens it beside the conversation. Responses carry a
+  CSP `sandbox` without `allow-same-origin`, and cookies, credentials,
+  `X-Frame-Options` and the page's own CSP are dropped, so a bot's page can
+  never act as the daemon's origin. On the bots' computer, `preview` opens
+  the page in that computer's browser, which the Computer tab shows.
+- Choosing a computer never changes a chat's tools: the terminal and
+  `computer_use` always declare a free-text `computer`, and the bot hears
+  what it can use from a note after the user's next message, offered again
+  only when that changes (the heartbeat's way in). Every call is checked
+  against the current choice when it runs.
 - Modes: Auto (default, `smart` in config), Manual, Bypass (`off` in
   config). Overridable per bot and per room. The model follows Codex: the
   OS sandbox is the boundary, not pattern matching. In Auto, a step that
@@ -353,7 +407,7 @@ more freedom and more capability than a hosted product can offer.
   approvals). Every bot has Computer use: the bots' own computer, a Cua
   sandbox separate from the daemon's computer, where they run code, install
   programs, browse and use apps. Nothing a bot runs there lands on the
-  daemon's computer. Settings, Manuals, Computer use holds its size and
+  daemon's computer. Settings, Manuals, Computers holds its size and
   controls; Settings, Plugins shows connectors, MCP servers and skills on
   three tabs. Self-authored skills are on,
   with a transcript notice. Bundled and user-shared skills form one library,

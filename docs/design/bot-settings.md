@@ -105,8 +105,8 @@ Tabs, in order:
    bot's Memory tab, which reads as if each bot had its own.
 5. **Tools.** Switches grouped as Workspace (terminal, files, and the
    working directory), Senses (vision, built-in voice), and Working with
-   others (message other bots, delegate, scheduling). Computer use is not
-   here: every bot has it, and Settings, Manuals, Computer use holds the
+   others (message other bots, delegate, scheduling). A Computers group
+   holds the same switches as Settings, Manuals, Computers, which holds the
    computer's size and controls. Code execution and the browser are what
    bots do on that computer, not tools of their own. A tool with a missing prerequisite
    shows what to install instead of a switch.

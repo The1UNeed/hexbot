@@ -99,6 +99,7 @@ impl App {
         }
         let events = EventHub::new();
         crate::computers::attach(&home, events.clone());
+        crate::preview::daemon_port(&home, address.port());
         let runtime = Runtime::new(home.clone(), events.clone(), pi)?;
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let runtime = runtime.clone();
@@ -153,6 +154,7 @@ impl App {
     /// Serve another address with the same bots: running turns and the event
     /// log carry over; connections to the old address are closed by `disconnect`.
     pub fn rebind(&self, address: SocketAddr) -> Result<Arc<Self>> {
+        crate::preview::daemon_port(&self.home, address.port());
         let (stop, _) = tokio::sync::watch::channel(false);
         let app = Arc::new(Self {
             memory: MemoryStore::new(self.home.clone()),
@@ -523,6 +525,23 @@ impl App {
                     result
                 } else if let Some(result) = crate::computers::call(&self.home, method, p).await {
                     result
+                } else if method == "hexbot.computers.configure"
+                    && p["screen"] == true
+                    // A lent screen's app asks its own Cua; only the daemon's asks here.
+                    && p["computer"] == crate::computer_access::DAEMON
+                    && let Err(error) = crate::computers::host::consent(&self.home).await
+                {
+                    // Picking a bot for the daemon's screen first lets Cua use it.
+                    Err(error)
+                } else if let Some(result) =
+                    crate::computer_access::call(&self.home, owner, method, p)
+                {
+                    // Every app showing a computer picker or Settings redraws it.
+                    if result.is_ok() && crate::computer_access::CHANGES.contains(&method) {
+                        self.events
+                            .emit(owner, None, "hexbot.computers.changed", json!({}));
+                    }
+                    result
                 } else if let Some(result) = connectors::call(&self.home, owner, method, p).await {
                     result
                 } else if let Some(result) = crate::plugins::call(&self.home, owner, method, p) {
@@ -629,6 +648,7 @@ impl App {
             let name = common::required(p, "name")?;
             crate::connectors::close_bot(&self.home, name).await;
             crate::computers::forget_bot(&self.home, name).await;
+            crate::computer_access::forget_bot(&self.home, name);
         }
         if method == "hexbot.pairing.code" {
             let code = result["code"].as_str().unwrap_or("");
@@ -1457,6 +1477,12 @@ async fn origin_guard(
         );
         return response;
     }
+    // A preview is a bot's page in a sandbox with no origin of its own, so its
+    // scripts and posts say `Origin: null`. It carries no credential either
+    // way: preview.rs drops them and answers its own CORS.
+    if request.uri().path().starts_with("/hexbot/preview/") {
+        return next.run(request).await;
+    }
     if !valid_origin(&app, request.headers()) {
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -1855,8 +1881,19 @@ async fn connection(
     let mut verify = tokio::time::interval(Duration::from_secs(1));
     let mut tasks = tokio::task::JoinSet::new();
     let bytes = Arc::new(tokio::sync::Semaphore::new(WS_MESSAGE_LIMIT));
+    // Requests for a computer this app lends go to this connection alone.
+    let (lend_send, mut lend_frames) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let lend = Lend {
+        connection: crate::computer_lend::connection_id(),
+        send: lend_send,
+    };
     'connection: loop {
         tokio::select! {
+            Some(frame) = lend_frames.recv() => {
+                if socket.send(Message::Text(frame.into())).await.is_err() {
+                    break;
+                }
+            }
             _ = stop.changed() => {
                 let _ = socket
                     .send(Message::Close(Some(CloseFrame {
@@ -1952,9 +1989,10 @@ async fn connection(
                         let owner = owner.clone();
                         let device_id = device_id.clone();
                         let token = token.clone();
+                        let lend = lend.clone();
                         tasks.spawn(async move {
                             let _permit = permit;
-                            handle_request(app, owner, device_id, token, request).await
+                            handle_request(app, owner, device_id, token, lend, request).await
                         });
                     }
                 }
@@ -1971,12 +2009,24 @@ async fn connection(
     // Runtime RPCs own their command tasks. One-shot requests still cancel
     // with this connection and run their scoped cleanup.
     tasks.abort_all();
+    // A computer this app lent goes offline with it.
+    if crate::computer_lend::withdraw(&app.home, &device_id, lend.connection) {
+        app.events
+            .emit(&owner, None, "hexbot.computers.changed", json!({}));
+    }
+}
+/// The connection's way to send requests for the computer its app lends.
+#[derive(Clone)]
+struct Lend {
+    connection: u64,
+    send: tokio::sync::mpsc::UnboundedSender<String>,
 }
 async fn handle_request(
     app: Arc<App>,
     owner: String,
     device_id: String,
     token: String,
+    lend: Lend,
     request: std::result::Result<Value, serde_json::Error>,
 ) -> Option<Value> {
     let request = match request {
@@ -2004,6 +2054,30 @@ async fn handle_request(
         Err(Error::new(-32602, "params must be an object"))
     } else if method == "hexbot.devices.set_push" {
         set_push(&app.home, &owner, &device_id, &params)
+    } else if method == "hexbot.computers.offer" {
+        // The app on this connection lends its computer to the daemon's bots.
+        let offered = crate::computer_lend::offer(
+            &app.home,
+            &owner,
+            &device_id,
+            lend.connection,
+            lend.send.clone(),
+            &params,
+        );
+        if offered.is_ok() {
+            app.events
+                .emit(&owner, None, "hexbot.computers.changed", json!({}));
+        }
+        offered
+    } else if method == "hexbot.computers.withdraw" {
+        let withdrawn = crate::computer_lend::withdraw(&app.home, &device_id, lend.connection);
+        if withdrawn {
+            app.events
+                .emit(&owner, None, "hexbot.computers.changed", json!({}));
+        }
+        Ok(json!({"withdrawn": withdrawn}))
+    } else if method == "hexbot.computers.reply" {
+        crate::computer_lend::reply(&app.home, &device_id, &params)
     } else {
         app.call(&owner, method, &params).await
     };
@@ -2070,6 +2144,20 @@ fn set_push(home: &std::path::Path, owner: &str, device: &str, p: &Value) -> Res
     Ok(json!({"ok":true}))
 }
 /// A bot's computer screen, from the link `hexbot.computer.view` gave out.
+/// A page a bot serves on one of the user's computers (preview.rs). The token
+/// in the path is the credential; the page runs sandboxed.
+async fn preview_view(
+    axum::extract::Path((token, rest)): axum::extract::Path<(String, String)>,
+    request: axum::extract::Request,
+) -> Response {
+    crate::preview::proxy(token, rest, request).await
+}
+async fn preview_root(
+    axum::extract::Path(token): axum::extract::Path<String>,
+    request: axum::extract::Request,
+) -> Response {
+    crate::preview::proxy(token, String::new(), request).await
+}
 async fn computer_view(
     axum::extract::Path((token, _rest)): axum::extract::Path<(String, String)>,
     request: axum::extract::Request,
@@ -2131,7 +2219,9 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/auth/ws-ticket", post(ticket))
         .route("/hexbot/pair", post(pair))
         .route("/hexbot/session", post(session))
-        .route("/hexbot/computer/{token}/{*rest}", any(computer_view));
+        .route("/hexbot/computer/{token}/{*rest}", any(computer_view))
+        .route("/hexbot/preview/{token}/", any(preview_root))
+        .route("/hexbot/preview/{token}/{*rest}", any(preview_view));
     if let Some(dist) = app.web_dist.clone() {
         router = router.fallback_service(
             tower_http::services::ServeDir::new(dist)
@@ -2404,6 +2494,82 @@ mod auth_tests {
         assert_eq!(ids.len(), 1);
         assert!(home.path().join("install_id").is_file());
     }
+    #[tokio::test]
+    async fn a_preview_takes_its_sandboxed_pages_requests_through_the_real_router() {
+        // The bot's server: answers whatever it is asked.
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = upstream.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = upstream.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buffer = vec![0; 4096];
+                    let _ = socket.read(&mut buffer).await;
+                    let _ = socket
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                        .await;
+                });
+            }
+        });
+        let home = tempfile::tempdir().unwrap();
+        let app = App::new(
+            home.path().into(),
+            "127.0.0.1:9119".parse().unwrap(),
+            "unused".into(),
+            None,
+        )
+        .unwrap();
+        let link = crate::preview::open(home.path(), "owl", "daemon", port, "/main.js").unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let daemon = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                router(app).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+        let client = reqwest::Client::new();
+        // A module script from the sandboxed frame says `Origin: null`.
+        let script = client
+            .get(format!("http://{daemon}{link}"))
+            .header("origin", "null")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(script.status(), 200);
+        assert_eq!(script.headers()["access-control-allow-origin"], "*");
+        assert!(
+            script.headers()["content-security-policy"]
+                .to_str()
+                .unwrap()
+                .starts_with("sandbox")
+        );
+        assert_eq!(script.text().await.unwrap(), "ok");
+        // Its preflight is answered by the preview, not refused.
+        let preflight = client
+            .request(reqwest::Method::OPTIONS, format!("http://{daemon}{link}"))
+            .header("origin", "null")
+            .header("access-control-request-method", "POST")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(preflight.status(), 204);
+        assert_eq!(preflight.headers()["access-control-allow-origin"], "*");
+        // Everything else still refuses a foreign origin.
+        let refused = client
+            .get(format!("http://{daemon}/api/ws"))
+            .header("origin", "null")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), 403);
+    }
+
     #[tokio::test]
     async fn lan_signin_redirects_before_setting_cookie_and_tunnel_logins_are_bounded() {
         let (_home, app) = connect_fixture();

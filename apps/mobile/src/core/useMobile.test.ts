@@ -691,6 +691,40 @@ it("keeps the bots' computer current from its events without reloading everythin
   expect(state.request).not.toHaveBeenCalled()
 })
 
+it('keeps where bots work, and reads again only what this app shows when it changes', async () => {
+  const hook = await connected()
+  const owlOn = (active: string) => ({
+    bot: 'owl',
+    computers: [
+      { id: 'bots', kind: 'bots', name: "Bots' computer", active: active === 'bots' },
+      { id: 'daemon', kind: 'daemon', name: 'Studio', active: active === 'daemon' }
+    ]
+  })
+  let active = 'bots'
+  state.request.mockImplementation(async (method: string, params: Record<string, unknown> = {}) =>
+    method === 'hexbot.computers.for_bot' || method === 'hexbot.computers.use'
+      ? owlOn(method === 'hexbot.computers.use' ? (active = String(params.computer)) : active)
+      : reply(method, params)
+  )
+  await act(async () => {
+    await hook.result.current.computersCall('hexbot.computers.for_bot', { bot: 'owl' })
+  })
+  expect(hook.result.current.botComputers.owl?.find(c => c.active)?.id).toBe('bots')
+  await act(async () => {
+    await hook.result.current.computersCall('hexbot.computers.use', { bot: 'owl', computer: 'daemon' })
+  })
+  expect(hook.result.current.botComputers.owl?.find(c => c.active)?.id).toBe('daemon')
+  // Another app switched it back: the event reads the owl's list again, and not Settings' list.
+  active = 'bots'
+  state.request.mockClear()
+  await act(async () => {
+    state.event({ type: 'hexbot.computers.changed', payload: {} })
+    await new Promise(resolve => setTimeout(resolve, 50))
+  })
+  expect(state.request.mock.calls.map(call => call[0])).toEqual(['hexbot.computers.for_bot'])
+  expect(hook.result.current.botComputers.owl?.find(c => c.active)?.id).toBe('bots')
+})
+
 describe('recall and closing an error in a bot chat', () => {
   const daemonWith = (bots: Bot[]) =>
     state.request.mockImplementation(async (method: string, params: Record<string, unknown> = {}) => {

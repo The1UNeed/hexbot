@@ -34,7 +34,25 @@ export interface BridgeHttpResponse {
   text: string
 }
 
+/** This computer as the desktop app lends it to the daemon's bots. */
+export interface LendState {
+  /** This computer has Cua, which its screen needs. */
+  cua: boolean
+  name: string
+  on: boolean
+  os: string
+  /** This computer has an OS sandbox for the commands bots run. */
+  sandbox: boolean
+  screen: boolean
+}
+
 export interface HexbotBridge {
+  /** This computer, lent to the daemon's bots; apps from before it leave it out. */
+  computer?: {
+    run(request: unknown): Promise<unknown>
+    set(choice: { on: boolean; screen: boolean }): Promise<LendState>
+    state(): Promise<LendState>
+  }
   daemon: {
     localToken(): Promise<null | string>
     onProgress(callback: (progress: DaemonProgress) => void): () => void

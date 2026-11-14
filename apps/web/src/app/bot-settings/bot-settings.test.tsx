@@ -742,7 +742,7 @@ describe('tools tab', () => {
     expect(screen.getByRole('switch', { name: 'Vision' })).toBeInTheDocument()
   })
 
-  it('leaves Computer use, code and the browser to Settings, Manuals', () => {
+  it('leaves code and the browser to the computers, chosen in Settings, Computers', () => {
     render(<ToolsTab bot={bot} onSave={vi.fn()} />)
 
     for (const name of ['Computer use', 'Code execution', 'Browser']) {
