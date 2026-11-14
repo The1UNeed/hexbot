@@ -223,6 +223,12 @@ fn active_in(saved: &Value, bot: &str, list: &[Value]) -> Option<String> {
     let picked = saved["active"][bot].as_str();
     list.iter()
         .find(|c| picked.is_some() && c["id"].as_str() == picked && c["online"] != false)
+        // Without a pick, the daemon's own computers first, as the note says.
+        .or_else(|| {
+            list.iter()
+                .find(|c| c["kind"] != "device" && c["ready"] == true)
+        })
+        .or_else(|| list.iter().find(|c| c["kind"] != "device"))
         .or_else(|| list.iter().find(|c| c["ready"] == true))
         .or_else(|| list.first())
         .and_then(|c| c["id"].as_str())

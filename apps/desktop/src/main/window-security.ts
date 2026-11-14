@@ -55,8 +55,13 @@ export function guardWindow(
   contents.on('will-redirect', (event, url) => {
     const redirect = event as Event & { frame?: { url?: string } | null; isMainFrame?: boolean }
     if (redirect.isMainFrame !== false) return blockNavigation(event, url)
-    if (!frameNavigationAllowed(url, contents.getURL(), redirect.frame?.url ?? ''))
+    try {
+      if (!frameNavigationAllowed(url, contents.getURL(), redirect.frame?.url ?? ''))
+        event.preventDefault()
+    } catch {
+      // A frame already gone can't be checked: refuse.
       event.preventDefault()
+    }
   })
   contents.on('will-attach-webview', event => event.preventDefault())
 }

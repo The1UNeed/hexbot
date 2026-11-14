@@ -276,8 +276,9 @@ async fn guard(driver: &Driver<'_>, action: &str, args: &Value) -> Result<()> {
         point(args, "to_coordinate").ok(),
     ];
     let points = points.into_iter().flatten().collect::<Vec<_>>();
-    // A scroll with no point lands wherever the pointer is, maybe on Hexbot.
-    if points.is_empty() {
+    // A scroll lands where the pointer is, which only `coordinate` moves;
+    // without it, that might be Hexbot.
+    if points.is_empty() || (action == "scroll" && point(args, "coordinate").is_err()) {
         return Err(Error::new(
             4302,
             "Say where with coordinate: Hexbot is open on this screen, and it checks every point first.",
@@ -551,6 +552,15 @@ mod tests {
             "scroll",
             "computer_scroll",
             json!({"direction":"down"}),
+        )
+        .await;
+        assert!(refused.unwrap_err().message.contains("coordinate"));
+        // A drag's end point doesn't move the pointer for a scroll.
+        let refused = on_laptop(
+            home.path(),
+            "scroll",
+            "computer_scroll",
+            json!({"direction":"down","to_coordinate":[90, 90]}),
         )
         .await;
         assert!(refused.unwrap_err().message.contains("coordinate"));
