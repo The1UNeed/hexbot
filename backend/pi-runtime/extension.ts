@@ -273,6 +273,7 @@ export default function hexbot(pi: any) {
       if (named && !named.computer) return {block: true, reason: named.reason};
       const onScreen = named?.computer?.id === 'bots' ? undefined : named?.computer;
       if (desktop && !onScreen) return;
+      if (onScreen && onScreen.kind === 'device' && onScreen.online === false) return {block: true, reason: `${onScreen.name} is offline: the Hexbot app there is closed or stopped lending it.`};
       if (onScreen && onScreen.screen !== true) return {block: true, reason: `Bots can't use the screen of ${onScreen.name}. The user picks the bots that may in Settings, Computers.`};
       if (filesConfined() && ['read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName)) {
         const input = event.input?.path ?? '.';

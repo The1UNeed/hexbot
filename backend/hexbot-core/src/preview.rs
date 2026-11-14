@@ -117,7 +117,7 @@ fn refused(status: StatusCode, text: &str) -> Response {
 
 /// Headers that never cross: hop-by-hop ones, and anything that carries a
 /// credential or lets the page out of its sandbox.
-const DROPPED: [&str; 16] = [
+const DROPPED: [&str; 17] = [
     "host",
     "connection",
     "keep-alive",
@@ -131,6 +131,8 @@ const DROPPED: [&str; 16] = [
     "authorization",
     "proxy-authorization",
     "dpop",
+    // The daemon reads HTML to keep its links inside; it asks for it plain.
+    "accept-encoding",
     "content-security-policy",
     "x-frame-options",
     "origin",
@@ -325,7 +327,9 @@ fn inside(prefix: &str, port: u16, location: &str) -> String {
         .iter()
         .find_map(|origin| location.strip_prefix(origin.as_str()))
         .unwrap_or(location);
-    if path.starts_with('/') && !path.starts_with("//") {
+    if path.is_empty() {
+        format!("{prefix}/")
+    } else if path.starts_with('/') && !path.starts_with("//") {
         format!("{prefix}{path}")
     } else {
         path.to_owned()
@@ -508,6 +512,10 @@ mod tests {
     fn root_relative_addresses_stay_inside_the_preview() {
         let prefix = "/hexbot/preview/t";
         assert_eq!(inside(prefix, 5173, "/app/"), "/hexbot/preview/t/app/");
+        assert_eq!(
+            inside(prefix, 5173, "http://127.0.0.1:5173"),
+            "/hexbot/preview/t/"
+        );
         assert_eq!(
             inside(prefix, 5173, "http://localhost:5173/login"),
             "/hexbot/preview/t/login"

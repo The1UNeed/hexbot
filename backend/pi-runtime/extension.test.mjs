@@ -749,6 +749,11 @@ test('the daemon\'s screen asks once a conversation in Auto, every time in Manua
   await manualLent.gate('computer_use', {action:'type', text:'x', computer:'app-1f2e3d4c'});
   assert.equal(manualLent.choices.length, 1);
 
+  // An offline lent screen says so, not that the bot wasn't picked.
+  const away = screen('smart');
+  away.settings.computers.list.push({id:'app-1f2e3d4c', kind:'device', name:'Laptop', screen:false, online:false});
+  assert.match((await away.gate('computer_use', {action:'screenshot', computer:'Laptop'})).reason, /Laptop is offline/);
+
   // A preview needs no screen and no card: a terminal-only bot may show its server.
   const preview = screen('manual', false);
   assert.equal(await preview.gate('computer_use', {action:'preview', port:5173, computer:'daemon'}), undefined);

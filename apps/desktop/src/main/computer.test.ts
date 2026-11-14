@@ -60,6 +60,20 @@ describe('lending this computer', () => {
     await expect(fetchLocal({ port: 0 }, fetcher)).rejects.toThrow(/port/)
   })
 
+  it('stops a command and everything it started at its timeout', async () => {
+    const home = temp()
+    const started = Date.now()
+    // A child holds the pipes open long after the shell would be killed.
+    const result = await runShell(
+      { command: 'sleep 30 & sleep 30; echo late', level: 'none', timeout: 1 },
+      home
+    )
+    expect(Date.now() - started).toBeLessThan(5000)
+    expect(result.exit_code).toBe(124)
+    expect(result.output).toContain('[Stopped after 1 s.]')
+    expect(result.output).not.toContain('late')
+  })
+
   it('runs a command in the workspace and reports its exit code', async () => {
     const home = temp()
     const result = await runShell({ command: 'pwd; exit 3', level: 'none' }, home)

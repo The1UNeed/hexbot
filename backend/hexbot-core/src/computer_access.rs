@@ -284,10 +284,21 @@ pub fn session(home: &Path, bot: &str) -> Value {
 fn note_text(home: &Path, bot: &str) -> String {
     let saved = saved(home);
     let mut list = for_bot(home, bot);
-    // A lent computer by the name it was lent under, not its live state.
+    // Only what the user chose, never a lent computer coming and going: its
+    // name and screen as it was lent, and the bot's own pick as active.
+    let picked = saved["active"][bot].as_str().map(str::to_owned);
+    let pick_listed = list.iter().any(|c| c["id"].as_str() == picked.as_deref());
     for c in &mut list {
-        if let Some(device) = c["id"].as_str().and_then(|id| device_of(&saved, id)) {
-            c["name"] = saved["devices"][&device]["name"].clone();
+        let id = c["id"].as_str().unwrap_or_default().to_owned();
+        if let Some(device) = device_of(&saved, &id) {
+            let entry = &saved["devices"][&device];
+            c["name"] = entry["name"].clone();
+            c["screen"] = json!(entry["lends_screen"] == true && on_screen_of(&saved, &id, bot));
+        }
+        if pick_listed {
+            c["active"] = json!(Some(id.as_str()) == picked.as_deref());
+        } else if c["kind"] == "device" {
+            c["active"] = json!(false);
         }
     }
     if list.is_empty() {
@@ -315,9 +326,7 @@ fn note_text(home: &Path, bot: &str) -> String {
                 ));
                 line.push_str(" It shows the user's own apps and files: the user may be asked first, look before each action, act only on what the task needs, and never touch Hexbot's own windows.");
             }
-            // Active follows a lent computer coming and going; leave it out of
-            // lent ones so the note doesn't repeat each time.
-            if c["active"] == true && c["kind"] != "device" {
+            if c["active"] == true {
                 line.push_str(" Active: used when you name no computer.");
             }
             line
@@ -325,7 +334,7 @@ fn note_text(home: &Path, bot: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "[Computers] The user changed where you work, or this is the first time you hear it. Your terminal and computer_use take `computer`, one of these ids:\n{lines}\nFile tools always work in the workspace on the daemon's computer."
+        "[Computers] The user changed where you work, or this is the first time you hear it. Your terminal and computer_use take `computer`, one of these ids:\n{lines}\nWhen your active computer is offline, the first one here that is ready is used instead. File tools always work in the workspace on the daemon's computer."
     )
 }
 fn note_hash(text: &str) -> String {
@@ -546,7 +555,13 @@ fn use_computer(home: &Path, owner: &str, p: &Value) -> Result<Value> {
 
 /// A desktop app lent its computer: remember it for Settings and the bots
 /// picked for it, even while it is offline.
-pub fn remember_device(home: &Path, device: &str, name: &str, os: &str) -> Result<()> {
+pub fn remember_device(
+    home: &Path,
+    device: &str,
+    name: &str,
+    os: &str,
+    screen: bool,
+) -> Result<()> {
     save(home, |saved| {
         if !saved["devices"].is_object() {
             saved["devices"] = json!({});
@@ -557,6 +572,8 @@ pub fn remember_device(home: &Path, device: &str, name: &str, os: &str) -> Resul
         }
         entry["name"] = json!(name);
         entry["os"] = json!(os);
+        // Whether it lent its screen the last time it was lent, for the note.
+        entry["lends_screen"] = json!(screen);
     })
 }
 /// A revoked device's computer is gone, with the bots picked for it.
@@ -770,7 +787,7 @@ mod tests {
     #[test]
     fn a_lent_computer_is_for_the_bots_picked_for_it_and_only_while_online() {
         let home = home();
-        remember_device(home.path(), "d1-abc", "Laptop", "macOS").unwrap();
+        remember_device(home.path(), "d1-abc", "Laptop", "macOS", false).unwrap();
         let id = crate::computer_lend::computer_id("d1-abc");
         // Nobody uses it until picked.
         assert_eq!(ids(&for_bot(home.path(), "owl")), [BOTS, DAEMON]);
@@ -808,6 +825,41 @@ mod tests {
                 .unwrap()
                 .len(),
             2
+        );
+    }
+
+    #[test]
+    fn the_note_stays_the_same_while_a_lent_computer_comes_and_goes() {
+        let home = home();
+        remember_device(home.path(), "d1-abc", "Laptop", "macOS", true).unwrap();
+        let id = crate::computer_lend::computer_id("d1-abc");
+        save(home.path(), |saved| {
+            saved["devices"]["d1-abc"]["bots"] = json!(["owl"]);
+            saved["devices"]["d1-abc"]["screen"] = json!(["owl"]);
+            saved["active"] = json!({"owl": id});
+        })
+        .unwrap();
+        let offline = note_text(home.path(), "owl");
+        assert!(offline.contains(&format!("computer {id}")), "{offline}");
+        let (send, _frames) = tokio::sync::mpsc::unbounded_channel();
+        crate::computer_lend::offer(
+            home.path(),
+            "local",
+            "d1-abc",
+            1,
+            send,
+            &json!({"name":"Laptop","os":"macOS","screen":true}),
+        )
+        .unwrap();
+        assert_eq!(note_text(home.path(), "owl"), offline);
+        crate::computer_lend::withdraw(home.path(), "d1-abc", 1);
+        assert_eq!(note_text(home.path(), "owl"), offline);
+        // The lent computer is the pick, so it is the one called active.
+        assert!(offline.contains("Laptop, macOS"));
+        assert!(
+            offline
+                .lines()
+                .any(|l| l.contains("Laptop") && l.contains("Active"))
         );
     }
 

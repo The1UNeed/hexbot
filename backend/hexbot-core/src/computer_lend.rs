@@ -98,7 +98,7 @@ pub fn offer(
     let name = short(p, "name", 64)?;
     let os = short(p, "os", 32)?;
     let screen = p["screen"] == true;
-    crate::computer_access::remember_device(home, device, &name, &os)?;
+    crate::computer_access::remember_device(home, device, &name, &os, screen)?;
     offers().lock().unwrap_or_else(|e| e.into_inner()).insert(
         (home.to_owned(), device.to_owned()),
         Offer {

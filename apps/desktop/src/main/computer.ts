@@ -162,29 +162,50 @@ export function runShell(
   )
 
   return new Promise((resolve, reject) => {
+    // Its own process group, so a timeout stops everything it started.
     const child = spawnShell('/bin/bash', ['-c', command], {
       cwd: WORKSPACE,
+      detached: true,
       env: request.level === 'none' ? process.env : environment(process.env)
     })
     let output = ''
+    let settled = false
+    let stopped = false
     const take = (chunk: Buffer) => {
       if (output.length < OUTPUT_LIMIT) {
         output += chunk.toString('utf8')
       }
     }
-    const timer = setTimeout(() => child.kill('SIGKILL'), seconds * 1000)
+    const finish = (code: null | number) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      clearTimeout(grace)
+      const cut = output.length >= OUTPUT_LIMIT ? '\n[Output cut short.]' : ''
+      const note = stopped ? `\n[Stopped after ${seconds} s.]` : ''
+      resolve({ exit_code: stopped ? 124 : (code ?? 124), output: output.slice(0, OUTPUT_LIMIT) + cut + note })
+    }
+    let grace: ReturnType<typeof setTimeout> | undefined
+    const timer = setTimeout(() => {
+      stopped = true
+      try {
+        if (child.pid) process.kill(-child.pid, 'SIGKILL')
+      } catch {
+        child.kill('SIGKILL')
+      }
+      // A process outside the group may still hold the pipes: answer anyway.
+      grace = setTimeout(() => finish(null), 1000)
+    }, seconds * 1000)
     child.stdout.on('data', take)
     child.stderr.on('data', take)
     child.on('error', error => {
+      if (settled) return
+      settled = true
       clearTimeout(timer)
+      clearTimeout(grace)
       reject(error)
     })
-    child.on('close', (code, signal) => {
-      clearTimeout(timer)
-      const cut = output.length >= OUTPUT_LIMIT ? '\n[Output cut short.]' : ''
-      const stopped = signal ? `\n[Stopped after ${seconds} s.]` : ''
-      resolve({ exit_code: code ?? 124, output: output.slice(0, OUTPUT_LIMIT) + cut + stopped })
-    })
+    child.on('close', code => finish(code))
   })
 }
 

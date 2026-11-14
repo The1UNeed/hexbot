@@ -229,6 +229,13 @@ async fn guard(driver: &Driver<'_>, action: &str, args: &Value) -> Result<()> {
             "Hexbot couldn't read this screen's windows, so it won't click or type there. Try again, or ask the user.",
         ));
     };
+    let focus = |window: &Value| {
+        ["focused", "is_focused"]
+            .iter()
+            .find_map(|field| window[field].as_bool())
+    };
+    // Without a focus field Hexbot might be the window keys go to.
+    let knows_focus = listed.iter().any(|window| focus(window).is_some());
     let ours = listed
         .into_iter()
         .filter(|window| is_hexbot(window) && window["state"] != "minimized")
@@ -236,7 +243,7 @@ async fn guard(driver: &Driver<'_>, action: &str, args: &Value) -> Result<()> {
     if ours.is_empty() {
         return Ok(());
     }
-    if ours.iter().any(|window| window["focused"] == true) {
+    if !knows_focus || ours.iter().any(|window| focus(window) == Some(true)) {
         return Err(refused());
     }
     if keyboard {
@@ -249,10 +256,17 @@ async fn guard(driver: &Driver<'_>, action: &str, args: &Value) -> Result<()> {
         ));
     };
     let size = text_json(&driver.call("computer_get_screen_size", json!({})).await?);
-    let screen = (
-        size["size"]["width"].as_f64().unwrap_or(shot.0),
-        size["size"]["height"].as_f64().unwrap_or(shot.1),
-    );
+    // Unknown size means unknown scale: the point might be inside Hexbot.
+    let (Some(width), Some(height)) = (
+        size["size"]["width"].as_f64(),
+        size["size"]["height"].as_f64(),
+    ) else {
+        return Err(Error::new(
+            4302,
+            "Hexbot couldn't read this screen's size, so it won't click there while Hexbot is open. Ask the user.",
+        ));
+    };
+    let screen = (width, height);
     let points = [
         point(args, "coordinate").ok(),
         point(args, "from_coordinate").ok(),
@@ -311,10 +325,16 @@ pub async fn act(
         server,
         turn: Arc::new(turn),
     };
-    // The user may have paused the bots while this one waited its turn.
+    // The user may have paused the bots, or taken this screen from the bot,
+    // while it waited its turn.
     if paused() {
         return Err(paused_error());
     }
+    let id = match &screen {
+        Screen::Host => crate::computer_access::DAEMON.to_owned(),
+        Screen::Device(device) => crate::computer_lend::computer_id(device),
+    };
+    super::on_screen(home, bot, Some(&id))?;
     guard(&driver, action, args).await?;
     with(&key, |c| {
         c.actor = Some(bot.to_owned());
@@ -360,6 +380,56 @@ pub async fn act(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn an_action_waiting_its_turn_stops_if_the_screen_is_taken_away() {
+        let home = tempfile::tempdir().unwrap();
+        let (send, mut frames) = tokio::sync::mpsc::unbounded_channel();
+        crate::computer_lend::offer(
+            home.path(),
+            "local",
+            "d1-abc",
+            1,
+            send,
+            &json!({"name":"Laptop","os":"macOS","screen":true}),
+        )
+        .unwrap();
+        let file = home.path().join("computers.json");
+        let mut saved: Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        saved["devices"]["d1-abc"]["bots"] = json!(["owl"]);
+        saved["devices"]["d1-abc"]["screen"] = json!(["owl"]);
+        std::fs::write(&file, saved.to_string()).unwrap();
+        let screen = Screen::Device("d1-abc".into());
+        // Another bot holds the screen.
+        let held = super::super::turns(&key(home.path(), &screen))
+            .lock_owned()
+            .await;
+        let waiting = tokio::spawn({
+            let home = home.path().to_owned();
+            async move {
+                act(
+                    &home,
+                    "owl",
+                    &json!({}),
+                    &BTreeMap::new(),
+                    Screen::Device("d1-abc".into()),
+                    "screenshot",
+                    "computer_screenshot",
+                    json!({}),
+                    &json!({}),
+                )
+                .await
+            }
+        });
+        tokio::task::yield_now().await;
+        // The user takes the screen from the bot while it waits.
+        saved["devices"]["d1-abc"]["screen"] = json!([]);
+        std::fs::write(&file, saved.to_string()).unwrap();
+        drop(held);
+        assert!(waiting.await.unwrap().is_err());
+        assert!(frames.try_recv().is_err(), "nothing reached the laptop");
+    }
 
     #[test]
     fn the_users_own_cua_target_is_put_back() {

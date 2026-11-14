@@ -57,6 +57,30 @@ describe('frameNavigationAllowed', () => {
       )
     ).toBe(false)
   })
+  it('lets a frame show a preview and follow its links, never from a visual', () => {
+    const preview = `/hexbot/preview/${'b2'.repeat(16)}/`
+    expect(
+      frameNavigationAllowed(`http://192.168.1.10:9119${preview}`, 'hexbot-app://app/b/owl', '')
+    ).toBe(true)
+    expect(
+      frameNavigationAllowed(
+        `http://192.168.1.10:9119${preview}app/page?x=1`,
+        'hexbot-app://app/b/owl',
+        `http://192.168.1.10:9119${preview}`
+      )
+    ).toBe(true)
+    expect(
+      frameNavigationAllowed('http://192.168.1.10:9119/hexbot/preview/x/', 'hexbot-app://app/')
+    ).toBe(false)
+    expect(
+      frameNavigationAllowed(
+        `http://192.168.1.10:9119${preview}`,
+        'hexbot-app://app/b/owl',
+        'hexbot-app://app/visual-frame.html'
+      )
+    ).toBe(false)
+  })
+
   it('keeps a frame showing a visual on the visual frame page', () => {
     expect(
       frameNavigationAllowed(

@@ -1477,6 +1477,12 @@ async fn origin_guard(
         );
         return response;
     }
+    // A preview is a bot's page in a sandbox with no origin of its own, so its
+    // scripts and posts say `Origin: null`. It carries no credential either
+    // way: preview.rs drops them and answers its own CORS.
+    if request.uri().path().starts_with("/hexbot/preview/") {
+        return next.run(request).await;
+    }
     if !valid_origin(&app, request.headers()) {
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -2488,6 +2494,82 @@ mod auth_tests {
         assert_eq!(ids.len(), 1);
         assert!(home.path().join("install_id").is_file());
     }
+    #[tokio::test]
+    async fn a_preview_takes_its_sandboxed_pages_requests_through_the_real_router() {
+        // The bot's server: answers whatever it is asked.
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = upstream.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = upstream.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buffer = vec![0; 4096];
+                    let _ = socket.read(&mut buffer).await;
+                    let _ = socket
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                        .await;
+                });
+            }
+        });
+        let home = tempfile::tempdir().unwrap();
+        let app = App::new(
+            home.path().into(),
+            "127.0.0.1:9119".parse().unwrap(),
+            "unused".into(),
+            None,
+        )
+        .unwrap();
+        let link = crate::preview::open(home.path(), "owl", "daemon", port, "/main.js").unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let daemon = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                router(app).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+        let client = reqwest::Client::new();
+        // A module script from the sandboxed frame says `Origin: null`.
+        let script = client
+            .get(format!("http://{daemon}{link}"))
+            .header("origin", "null")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(script.status(), 200);
+        assert_eq!(script.headers()["access-control-allow-origin"], "*");
+        assert!(
+            script.headers()["content-security-policy"]
+                .to_str()
+                .unwrap()
+                .starts_with("sandbox")
+        );
+        assert_eq!(script.text().await.unwrap(), "ok");
+        // Its preflight is answered by the preview, not refused.
+        let preflight = client
+            .request(reqwest::Method::OPTIONS, format!("http://{daemon}{link}"))
+            .header("origin", "null")
+            .header("access-control-request-method", "POST")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(preflight.status(), 204);
+        assert_eq!(preflight.headers()["access-control-allow-origin"], "*");
+        // Everything else still refuses a foreign origin.
+        let refused = client
+            .get(format!("http://{daemon}/api/ws"))
+            .header("origin", "null")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), 403);
+    }
+
     #[tokio::test]
     async fn lan_signin_redirects_before_setting_cookie_and_tunnel_logins_are_bounded() {
         let (_home, app) = connect_fixture();
