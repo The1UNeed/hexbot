@@ -5,7 +5,7 @@ import { ChatChooser } from '../app/chat-chooser'
 import { ConnectionLost, useConnectionLost } from '../app/connection-lost'
 import { UpdateInstalling, useUpdateInstalling } from '../app/update-installing'
 import { cancelConfirm, ConfirmHost } from '../components/ui/confirm'
-import { userMemoryGet } from '../lib/api'
+import { sectionsList, userMemoryGet } from '../lib/api'
 import { getBridge, hasLocalRuntime } from '../lib/bridge'
 import { getSupervisor, setLocalDaemonPort } from '../lib/connection'
 import { OPEN_SECTION_EVENT } from '../lib/notify'
@@ -78,23 +78,29 @@ function RootLayout() {
         return
       }
 
-      const check = () => {
-        const found = sectionBot(section)
+      let waiting = true
 
-        if (found) {
+      const found = (bot: string | undefined) => {
+        if (bot && waiting) {
           stop()
-          open(found)
+          open(bot)
         }
       }
 
+      const check = () => found(sectionBot(section))
       const offSections = useSections.subscribe(check)
       const offBots = useBots.subscribe(check)
 
       const stop = () => {
+        waiting = false
         offSections()
         offBots()
       }
 
+      // A thread is in no list, and a bot waiting in two reports only one: ask the daemon.
+      void sectionsList({ include_archived: true, include_threads: true })
+        .then(result => found(result.sections?.find(row => row.id === section)?.bot))
+        .catch(() => undefined)
       window.setTimeout(stop, 60_000)
     }
 
