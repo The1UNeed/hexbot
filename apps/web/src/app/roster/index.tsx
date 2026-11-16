@@ -864,7 +864,14 @@ export function RosterColumn() {
             No bots or rooms match “{query}”.
           </p>
         ) : null}
-        {query ? null : <WaitingThreads bots={ordered} />}
+        {query ? null : (
+          <WaitingThreads
+            bots={ordered}
+            onOpen={(bot, section) =>
+              void navigate({ to: '/b/$bot/s/$section', params: { bot, section } })
+            }
+          />
+        )}
         {pinnedRoster.length ? (
           <div className="flex flex-wrap justify-center pb-1" data-testid="roster-pinned">
             {pinnedRoster.map(entry => rosterEntry(entry, true))}

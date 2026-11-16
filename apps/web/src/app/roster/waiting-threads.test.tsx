@@ -1,7 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 
 import type { Bot, BotStatusDetail } from '../../lib/types'
-import { useUi } from '../../stores/ui'
 
 import { WaitingThreads } from './waiting-threads'
 
@@ -24,8 +23,6 @@ const bot = (name: string, status: Bot['status'], fields?: Partial<BotStatusDeta
   }) as Bot
 
 describe('bots waiting in a thread', () => {
-  beforeEach(() => useUi.setState({ thread: null }))
-
   it('lists only bots waiting on you in a thread', () => {
     render(
       <WaitingThreads
@@ -35,6 +32,7 @@ describe('bots waiting in a thread', () => {
           bot('pico', 'working', { peer_bot: 'vex', section_id: 'other' }),
           bot('apc', 'idle')
         ]}
+        onOpen={vi.fn()}
       />
     )
 
@@ -43,18 +41,21 @@ describe('bots waiting in a thread', () => {
   })
 
   it('opens the thread where the bot waits', () => {
+    const onOpen = vi.fn()
+
     render(
       <WaitingThreads
         bots={[bot('hexbot', 'needs_you', { peer_bot: 'vex', section_id: 'thread' })]}
+        onOpen={onOpen}
       />
     )
 
     fireEvent.click(screen.getByRole('button', { name: /HexBot is waiting for you/ }))
-    expect(useUi.getState().thread).toEqual({ bot: 'hexbot', peer: 'vex', sectionId: 'thread' })
+    expect(onOpen).toHaveBeenCalledWith('hexbot', 'thread')
   })
 
   it('draws nothing when no bot waits in a thread', () => {
-    const { container } = render(<WaitingThreads bots={[bot('hexbot', 'idle')]} />)
+    const { container } = render(<WaitingThreads bots={[bot('hexbot', 'idle')]} onOpen={vi.fn()} />)
 
     expect(container).toBeEmptyDOMElement()
   })
