@@ -389,7 +389,7 @@ async fn stopping_cancels_an_inflight_auto_review_without_a_fallback_card() {
     runtime.shutdown().await;
 }
 
-// Pi 1.0.1 queues follow-ups while streaming, retains them on abort, and
+// Pi 1.5.2 queues follow-ups while streaming, retains them on abort, and
 // starts a fresh run for a prompt received while idle. stop-queue.test.mjs
 // checks this contract against the pinned package with a local provider.
 fn install_queue_pi(home: &Path, idle_before_settled: bool) {
@@ -760,7 +760,7 @@ async fn stop_never_cancels_again_a_late_dialog_its_task_already_answered() {
 }
 
 // Control command replies independently of run events. Idle abort and manual
-// compaction do not produce agent_settled in Pi 1.0.1.
+// compaction do not produce agent_settled in Pi 1.5.2.
 fn install_stop_lifecycle_pi(home: &Path) {
     fs::write(home.join("pi.cjs"), r#"#!/usr/bin/env node
 const fs = require('node:fs');

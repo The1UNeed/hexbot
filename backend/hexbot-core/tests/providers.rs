@@ -876,6 +876,58 @@ fn response_providers_and_acp_keep_their_transport() {
     }
 }
 
+#[test]
+fn native_providers_keep_pis_own_model_endpoints() {
+    let home = setup();
+    let dir = home.path().join("pi");
+    let models = |config: Value| {
+        common::write_config(home.path(), &config).unwrap();
+        providers::prepare_pi_for_bot(home.path(), "owl", &dir).unwrap();
+        serde_json::from_slice::<Value>(&fs::read(dir.join("models.json")).unwrap()).unwrap()
+    };
+    // Pi 1.5 sends each OpenCode model to its protocol's endpoint. A provider
+    // baseUrl would move every built-in model to Hexbot's one URL.
+    let written =
+        models(json!({"model":{"provider":"opencode-zen","default":"operator-new-model"}}));
+    let opencode = &written["providers"]["opencode"];
+    assert!(opencode.get("baseUrl").is_none(), "{opencode}");
+    let added = opencode["models"].as_array().unwrap();
+    let added = added
+        .iter()
+        .find(|m| m["id"] == "operator-new-model")
+        .unwrap();
+    assert_eq!(added["baseUrl"], "https://opencode.ai/zen/v1");
+    // A base URL the user chose still covers the whole provider.
+    let written = models(
+        json!({"model":{"provider":"opencode-zen","default":"operator-new-model",
+        "base_url":"https://proxy.example.test/v1"}}),
+    );
+    assert_eq!(
+        written["providers"]["opencode"]["baseUrl"],
+        "https://proxy.example.test/v1"
+    );
+    // Pi's own Copilot models name the individual plan's host; every plan uses the generic one.
+    let written = models(json!({"model":{"provider":"copilot","default":"operator-new-model"}}));
+    assert_eq!(
+        written["providers"]["github-copilot"]["baseUrl"],
+        "https://api.githubcopilot.com"
+    );
+    // The two xAI profiles share one Pi provider; its override covers both profiles' rows.
+    let written = models(
+        json!({"model":{"provider":"xai","default":"operator-new-model",
+        "base_url":"https://proxy.example.test/v1"},
+        "fallback_providers":[{"provider":"xai-oauth","model":"operator-oauth-model"}]}),
+    );
+    let xai = &written["providers"]["xai"];
+    assert_eq!(xai["baseUrl"], "https://proxy.example.test/v1");
+    let rows = xai["models"].as_array().unwrap();
+    assert!(
+        rows.iter().any(|m| m["id"] == "operator-oauth-model"),
+        "{xai}"
+    );
+    assert!(rows.iter().all(|m| m.get("baseUrl").is_none()), "{xai}");
+}
+
 #[tokio::test]
 async fn refreshing_one_provider_does_not_block_another() {
     use axum::{Json, Router, routing::post};

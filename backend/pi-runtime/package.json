@@ -4,12 +4,12 @@
   "version": "0.0.0",
   "type": "module",
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "1.0.1"
+    "@earendil-works/pi-coding-agent": "1.5.2"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "1.0.1"
+    "@earendil-works/pi-ai": "1.5.2"
   },
   "overrides": {
-    "undici": "8.12.2"
+    "undici": "8.12.3"
   }
 }

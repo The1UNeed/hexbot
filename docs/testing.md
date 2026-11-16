@@ -460,7 +460,7 @@ workspace's Playwright installation and needs its Chromium browser.
 ### Connected tools through Pi
 
 `node --test backend/pi-runtime/*.test.mjs` includes `mcp.test.mjs`, which runs
-real Pi 1.0.1 against a local streaming model fixture and stdio server. It checks
+real Pi 1.5.2 against a local streaming model fixture and stdio server. It checks
 first-call connection, nested approval enforcement, literal credential values,
 untrusted workspace config, and stable provider prompt/tool declarations across
 turns. No provider account is needed. Rust tests cover frozen names, restricted

@@ -137,11 +137,14 @@ export default function hexbot(pi: any) {
   };
   let live = config;
   let primary: any;
-  // Pi 1.0.1 holds its forced prompt for the whole run. Only adopt a rebuilt
+  // Pi 1.5.2 holds its forced prompt for the whole run. Only adopt a rebuilt
   // prompt if the first request after compaction starts a new run. A resumed
   // request caches the old prompt again, so discard the replacement then.
   let prompt = config.prompt;
   let pendingPrompt: string | undefined;
+  // Whether this run has made a provider request yet; compaction before that is
+  // compaction before the run's first message.
+  let requested = false;
   const refresh = async (ctx: any) => { live = {...config, ...await bridge(ctx, 'hexbot_session_settings')}; };
   // Resolve credentials in memory on the first prompt. RPC cannot answer a
   // bridge request during session_start, before its stdin reader is attached.
@@ -367,8 +370,7 @@ export default function hexbot(pi: any) {
     if (!enabled(name)) continue;
     wrapped.add(name);
     const bypass = () => live.approvalMode === 'off';
-    const options = (level: Level = 'confined', denied?: string[]) => name === 'bash' ? {spawnHook: (c: any) => level === 'none' ? c : {...c, command: spawnFor(level, c.command), env: shellEnvironment(c.env)}} :
-      name === 'grep' && !bypass() ? {operations: {isDirectory: (path: string) => statSync(path).isDirectory(), readFile: (path: string) => credentialPath(path, live.home, denied) ? '' : readFileSync(path, 'utf8')}} : {};
+    const options = (level: Level = 'confined') => name === 'bash' ? {spawnHook: (c: any) => level === 'none' ? c : {...c, command: spawnFor(level, c.command), env: shellEnvironment(c.env)}} : {};
     const tool = factory(config.cwd, options());
     const definition = name === 'bash' ? {
       description: tool.description + (process.platform === 'win32'
@@ -420,7 +422,7 @@ export default function hexbot(pi: any) {
       // Avoid streaming unfiltered search output.
       const operations = ['write','edit'].includes(name) ? {operations:fileOperations(ctx, id, name, path, {
         approvalMode:live.approvalMode, cwd, outputDirs:live.outputDirs ?? [], fileWorkdir:live.fileWorkdir, fileEpoch:live.fileEpoch,
-      })} : options('confined', denied);
+      })} : options();
       const result = await factory(cwd, operations).execute(id, args, signal, ['grep', 'find', 'ls'].includes(name) ? undefined : update);
       if (['grep', 'find', 'ls'].includes(name)) {
         const base = statSync(path).isDirectory() ? path : dirname(path);
@@ -467,6 +469,7 @@ export default function hexbot(pi: any) {
   });
   pi.on('before_provider_request', async (event: any, ctx: any) => {
     pendingPrompt = undefined;
+    requested = true;
     ranFast = false;
     const provider = ctx.model?.provider ?? config.provider;
     // The daemon says when this section runs fast; a fallback model never does.
@@ -488,7 +491,7 @@ export default function hexbot(pi: any) {
     Object.assign(event.headers, reply.result?.headers ?? {});
   });
   pi.on('before_agent_start', async (_event: any, ctx: any) => {
-    // Pi 1.0.1 drops the result of a handler that throws and runs on its
+    // Pi 1.5.2 drops the result of a handler that throws and runs on its
     // launch prompt, which is stale once a section adopts a refreshed one.
     // Whatever fails here, still return the prompt Pi is running.
     try {
@@ -537,7 +540,9 @@ export default function hexbot(pi: any) {
     // never stops the other.
     try {
       const todo = await bridge(ctx, 'hexbot_todo_context');
-      if (todo?.text) pi.sendMessage({customType: 'hexbot_todo', content: todo.text, display: false});
+      // Pi 1.5.2 counts a starting run as streaming, so a plain message steers in
+      // after the user's. Held, it goes before them; during a run it still steers.
+      if (todo?.text) pi.sendMessage({customType: 'hexbot_todo', content: todo.text, display: false}, requested ? undefined : {triggerTurn: false});
     } catch {}
     // Compare with the live prompt: an earlier offer may have been lost, or a
     // mid-run request discarded it.
@@ -562,6 +567,7 @@ export default function hexbot(pi: any) {
       pi.appendEntry('hexbot_recall', {entryId: id});
     },
   });
+  pi.on('agent_settled', () => { requested = false; });
   pi.on('agent_before_settle', async (event: any, ctx: any) => {
     if (limitReached || event.outcome !== 'error' || fallbackUsed) return;
     await refresh(ctx);

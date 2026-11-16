@@ -1422,7 +1422,7 @@ async fn remote_index_and_secure_cookies_do_not_expose_local_token() {
     let mut socket = fixture.socket(&fixture.token).await;
     assert_eq!(
         request(&mut socket, "info-version", "hexbot.info", json!({})).await["result"]["hermes_version"],
-        "1.0.1"
+        "1.5.2"
     );
     fixture.shutdown().await;
 }

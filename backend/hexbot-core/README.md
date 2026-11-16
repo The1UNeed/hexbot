@@ -2,7 +2,7 @@
 
 The `hexbot` binary is the native daemon. Rust owns HTTP/WebSocket serving,
 authentication, storage, rooms, tool dispatch, providers, scheduling, Connect,
-and updates. A pinned **Pi 1.0.1** subprocess runs each agent conversation.
+and updates. A pinned **Pi 1.5.2** subprocess runs each agent conversation.
 Pi is the agent runtime at [earendil-works/pi](https://github.com/earendil-works/pi),
 not Raspberry Pi hardware. The private extension in `../pi-runtime/extension.ts`
 connects Pi tools, approvals, clarification, provider auth, and events to Rust.
@@ -197,7 +197,7 @@ it also installs over SSH when nobody is signed in at the screen.
   includes the restart that moves a chat to new tools or a new model. Replay
   retention is bounded by session count and bytes.
   Stop also blocks retirement and input admission through its cleanup and queue
-  recovery. Pi 1.0.1 retains queued user input on abort. After Stop, the old
+  recovery. Pi 1.5.2 retains queued user input on abort. After Stop, the old
   operation and its preflights finish before `clear_queue` clears Pi's actual
   queues. Its text metadata can omit identical queued messages; acknowledged
   queued preflights and actual user projections determine what remains. Unknown
@@ -219,9 +219,11 @@ it also installs over SSH when nobody is signed in at the screen.
   holds the shared bot/room boundary through enqueue. Deletion refuses pending
   work and prevents later input from starting after its final busy check.
 - `profiles/<bot>/pi/` is the bot's Pi agent directory. The daemon rewrites
-  `auth.json`, `models.json`, and the `compaction` key of `settings.json`
-  atomically before every Pi start and whenever credentials change; other
-  `settings.json` keys are kept. Compaction uses Pi 1.0.1's defaults, written
+  `auth.json`, `models.json`, and the `compaction` and `cacheWarming` keys of
+  `settings.json` atomically before every Pi start and whenever credentials
+  change; other `settings.json` keys are kept. `cacheWarming` stays
+  `streaming`: Pi refreshes a cache only during a run, never between runs,
+  so a bot sends no request the user did not start. Compaction uses Pi 1.5.2's defaults, written
   out so a Pi upgrade cannot move them: reserve 16,384 tokens, keep the most
   recent 20,000. Each model Hexbot lists in `models.json` gets a
   `modelOverrides` entry capping the reserve and recent context kept at a
@@ -254,7 +256,7 @@ it also installs over SSH when nobody is signed in at the screen.
   differs, even if an earlier reply was interrupted, and also when the saved
   prompt differs from the live one. Offering writes nothing.
   The extension stages the offer until `before_agent_start`. If a provider
-  request comes first, it discards the offer: Pi 1.0.1 keeps its forced
+  request comes first, it discards the offer: Pi 1.5.2 keeps its forced
   prompt through a run, including automatic compaction and continuation.
   The next ordinary turn must not rewrite a prefix that continuation cached.
   Manual compaction and compaction before a new prompt can refresh before the
@@ -414,7 +416,7 @@ inline skill bodies. Compatible sections refresh their catalog at the
 compaction boundary described above. The former shared-session About you
 repair is no longer needed after ownership is folded.
 
-Pi starts with `--no-skills` and receives no `--skill` paths. Pi 1.0.1 accepts
+Pi starts with `--no-skills` and receives no `--skill` paths. Pi 1.5.2 accepts
 explicit skill paths even with `--no-skills`; its `/skill:name` commands load
 bodies directly, bypassing daemon grants. Its generated skill prompt is also
 replaced by the private extension's `before_agent_start` handler. Scheduled
@@ -654,7 +656,7 @@ request retries at the next prompt. One invalid entry cannot disable the rest.
 Approvals for sections with no chat or room entry fail immediately. Visible
 sections retain the existing approval-card behavior.
 
-Pi 1.0.1 exposes no execute wrapper for a tool owned by its MCP extension.
+Pi 1.5.2 exposes no execute wrapper for a tool owned by its MCP extension.
 `getAllTools()` returns metadata, and `tool_execution_start` fires *before*
 `tool_call`, including for nested calls. We re-check mode and server revision
 after an approval answer in the last blocking hook. Unlike Hexbot's wrapped
@@ -671,7 +673,7 @@ and codemode once at `session_start`. Deferred tools never enter the model's
 tool declarations. Every Pi process runs with `--no-approve`, so a workspace
 `.pi/` directory (settings, `mcp.json`, extensions, skills, prompts, system
 prompt files) is never loaded, whatever Pi's trust store or
-`defaultProjectTrust` says. Without the flag Pi 1.0.1 resolves trust through
+`defaultProjectTrust` says. Without the flag Pi 1.5.2 resolves trust through
 the extension's `project_trust` event, then `<agent-dir>/trust.json`, then
 `defaultProjectTrust`; in RPC mode the `ask` default answers no, but a trust
 entry for the workspace or any parent would let a project `.pi/settings.json`

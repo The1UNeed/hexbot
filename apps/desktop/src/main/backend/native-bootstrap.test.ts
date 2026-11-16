@@ -278,7 +278,7 @@ it.skipIf(!process.env.HEXBOT_NATIVE_TEST_BUNDLE)(
       expect(result.stdout.trim()).toBe(metadata.version)
       const installed = dirname(await realpath(launcher))
       const pi = await promisify(execFile)(join(installed, 'pi/hexbot-pi'), ['--version'])
-      expect(pi.stdout).toContain('1.0.1')
+      expect(pi.stdout).toContain('1.5.2')
       const daemon = spawn(launcher, ['serve', '--port', '0', '--host', '127.0.0.1'], {
         env: { ...process.env, HEXBOT_HOME: root },
         stdio: ['ignore', 'pipe', 'pipe']
