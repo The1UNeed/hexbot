@@ -30,6 +30,7 @@ import type {
   DaemonInfo,
   DaemonUpdateStatus,
   Device,
+  DiscordStatus,
   EmailDraftAnswer,
   HeartbeatStatus,
   Message,
@@ -567,6 +568,15 @@ export const computerView = (control: boolean, quality: ComputerQuality = 'auto'
 export const computerConfigure = (size: ComputerSize) =>
   rpcCall<ComputerStatus>('hexbot.computer.configure', { size })
 
+/** The bot's own Discord app, or null when it has none. */
+export const discordGet = (bot: string) =>
+  rpcCall<{ discord: DiscordStatus | null }>('hexbot.discord.get', { bot })
+/** Checks the token with Discord, saves it on the daemon and connects. */
+export const discordConnect = (bot: string, token: string) =>
+  rpcCall<{ discord: DiscordStatus }>('hexbot.discord.connect', { bot, token })
+/** Disconnects and drops the token; the bot's Discord rooms stay. */
+export const discordDisconnect = (bot: string) =>
+  rpcCall<{ discord: null }>('hexbot.discord.disconnect', { bot })
 export const heartbeatStatus = (bot: string) =>
   rpcCall<HeartbeatStatus>('hexbot.heartbeat.status', { bot })
 /** Replaces the bot's HEARTBEAT.md. */

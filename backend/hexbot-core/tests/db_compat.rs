@@ -201,6 +201,61 @@ fn team_shape(connection: &Connection) -> Vec<(String, Vec<Column>)> {
             real("noted_at", false),
         ],
     ));
+    // Discord: each bot's own app, the channels that became rooms, which
+    // Discord message is which room event, and when a channel's room was deleted.
+    let int = |name: &str, required: bool, default: Option<&str>| {
+        (
+            name.into(),
+            "INTEGER".into(),
+            required,
+            default.map(str::to_owned),
+            0,
+        )
+    };
+    expected.push((
+        "discord_bots".into(),
+        vec![
+            key("bot"),
+            text("owner_id", true),
+            text("application_id", true),
+            text("user_id", false),
+            text("username", false),
+            (
+                "status".into(),
+                "TEXT".into(),
+                true,
+                Some("'connecting'".into()),
+                0,
+            ),
+            text("error", false),
+            real("connected_at", false),
+            real("updated_at", false),
+        ],
+    ));
+    expected.push((
+        "discord_channels".into(),
+        vec![
+            key("channel_id"),
+            text("guild_id", true),
+            text("room_id", true),
+            text("guild_name", false),
+            text("channel_name", false),
+            int("posted_seq", true, Some("0")),
+        ],
+    ));
+    expected.push((
+        "discord_messages".into(),
+        vec![
+            key("message_id"),
+            text("room_id", true),
+            int("seq", false, None),
+            text("bot", false),
+        ],
+    ));
+    expected.push((
+        "discord_closed".into(),
+        vec![key("channel_id"), real("closed_at", true)],
+    ));
     expected.sort_by(|a, b| a.0.cmp(&b.0));
     expected
 }

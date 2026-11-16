@@ -10,7 +10,15 @@ import {
   useRef,
   useState
 } from 'react'
-import { ActivityIndicator, AppState, BackHandler, Platform, StyleSheet, View } from 'react-native'
+import {
+  ActivityIndicator,
+  AppState,
+  BackHandler,
+  Linking,
+  Platform,
+  StyleSheet,
+  View
+} from 'react-native'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 import { StatusBar } from 'expo-status-bar'
 import { router } from 'expo-router'
@@ -1155,7 +1163,12 @@ function MobileApp({ children }: { children?: ReactNode }) {
                   setPanels([
                     { kind: 'plugins' },
                     ...(found
-                      ? [{ kind: 'plugin' as const, data: found as unknown as Record<string, unknown> }]
+                      ? [
+                          {
+                            kind: 'plugin' as const,
+                            data: found as unknown as Record<string, unknown>
+                          }
+                        ]
                       : [])
                   ])
                 })
@@ -1532,10 +1545,20 @@ function MobileApp({ children }: { children?: ReactNode }) {
       title={route.room.name}
       subtitle={(() => {
         const names = membersOf(route.room).map(m => m.name)
+        if (route.room.discord) return names.length ? `${names.join(', ')} in Discord` : null
         return names.length ? `${names.join(', ')} and you` : null
       })()}
       members={membersOf(route.room)}
       archived={!!route.room.archived_at}
+      elsewhere={
+        route.room.discord
+          ? {
+              text: 'This room is in Discord. Reply there.',
+              actionLabel: 'Open in Discord',
+              onAction: () => void Linking.openURL(route.room.discord!.url)
+            }
+          : null
+      }
       hasEarlier={mobile.hasEarlier}
       loadingEarlier={mobile.loadingEarlier}
       onLoadEarlier={() => act(mobile.loadEarlier)}
@@ -1722,8 +1745,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
       Platform.OS === 'ios' ? select('settings') : router.navigate('/settings'),
     onOpenLibrary: () => (Platform.OS === 'ios' ? select('library') : router.navigate('/bots')),
     onSwitchDaemon: saved.length > 1 ? () => setSwitcherOpen(true) : undefined,
-    selected:
-      selected === 'chat' ? (opening && askedRow) || openChatRow || null : selected,
+    selected: selected === 'chat' ? (opening && askedRow) || openChatRow || null : selected,
     onReconnect: reconnect,
     refreshing,
     onRefresh: demo ? undefined : refresh,

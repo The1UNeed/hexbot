@@ -211,4 +211,21 @@ describe('room history', () => {
     expect(state.messages[0]).toMatchObject({ sender: 'former', senderName: 'Ada', role: 'user' })
     expect(state.messages[1].sender).toBe('owner')
   })
+
+  it('names people in a Discord channel as Discord showed them', () => {
+    const state = restoreRoom(room, [
+      {
+        ...log(
+          1,
+          'message.user',
+          { author: { id: '300', name: 'Sam' }, text: 'What is new?' },
+          '300'
+        ),
+        actor_kind: 'discord'
+      },
+      { ...log(2, 'message.user', { text: 'No name' }, '301'), actor_kind: 'discord' }
+    ])
+    expect(state.messages[0]).toMatchObject({ sender: '300', senderName: 'Sam', role: 'user' })
+    expect(state.messages[1].senderName).toBe('Someone')
+  })
 })

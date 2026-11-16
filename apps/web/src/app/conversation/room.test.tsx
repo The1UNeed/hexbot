@@ -149,7 +149,9 @@ describe('reading a room', () => {
     useRooms.setState({ byId: { r1: room }, eventsByRoom: {}, liveTurnsByRoom: {}, order: ['r1'] })
 
     const call = vi.fn((method: string) =>
-      Promise.resolve(method === 'hexbot.rooms.log' ? { events: [message(1)] } : { room: { ...room } })
+      Promise.resolve(
+        method === 'hexbot.rooms.log' ? { events: [message(1)] } : { room: { ...room } }
+      )
     )
 
     setActiveRpc({ call } as never)
@@ -471,6 +473,63 @@ describe('room history', () => {
       screen.getByRole('button', { name: 'Open the conversation between Owl and Writer' })
     )
     expect(useUi.getState().thread).toEqual({ bot: 'writer', peer: 'owl', sectionId: 'th1' })
+  })
+})
+
+describe('a Discord room', () => {
+  it('names people as Discord shows them, on the left, never as your bubble', () => {
+    useMe.setState({ me: { display_name: 'Alex', id: 'local' } })
+    useRooms.setState({ byId: { r1: { id: 'r1', members: [] } as unknown as Room } })
+    render(
+      <RoomEventRow
+        event={
+          {
+            actor_id: '300',
+            actor_kind: 'discord',
+            kind: 'message.user',
+            payload: { author: { id: '300', name: 'Sam' }, text: 'What is new?' },
+            room_id: 'r1',
+            seq: 4
+          } as never
+        }
+      />
+    )
+    expect(screen.getByText('Sam')).toBeVisible()
+    expect(screen.getByText('What is new?')).toBeVisible()
+    expect(screen.getByTestId('room-event')).not.toHaveClass('flex-row-reverse')
+  })
+
+  it('sends you to Discord to reply instead of offering a composer', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+
+    const room = {
+      discord: {
+        channel_id: 'c1',
+        channel_name: 'general',
+        guild_id: 'g1',
+        guild_name: 'Test Server',
+        url: 'https://discord.com/channels/g1/c1'
+      },
+      id: 'r1',
+      members: [],
+      name: '#general · Test Server',
+      owner_id: 'local'
+    } as unknown as Room
+
+    useRooms.setState({ byId: { r1: room }, eventsByRoom: {}, liveTurnsByRoom: {}, order: ['r1'] })
+    setActiveRpc({
+      call: vi.fn((method: string) =>
+        Promise.resolve(method === 'hexbot.rooms.log' ? { events: [] } : { room })
+      )
+    } as never)
+    render(<RoomConversation />)
+    expect(await screen.findByText('This room is in Discord. Reply there.')).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Open in Discord' })).toHaveAttribute(
+      'href',
+      'https://discord.com/channels/g1/c1'
+    )
+    expect(screen.queryByLabelText('Message room')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Send' })).toBeNull()
   })
 })
 

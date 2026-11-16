@@ -38,6 +38,11 @@ impl Admission {
         })
     }
 
+    /// Wait out a deletion or removal in progress instead of refusing.
+    pub(crate) async fn wait(&self, scope: Scope) -> OwnedRwLockReadGuard<()> {
+        self.lock(scope).read_owned().await
+    }
+
     pub(crate) async fn pause(&self, scope: Scope) -> OwnedRwLockWriteGuard<()> {
         self.lock(scope).write_owned().await
     }

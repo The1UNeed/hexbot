@@ -4763,7 +4763,7 @@ fn team_prompt_uses_descriptions_owner_scope_toolsets_order_and_limit() {
     // at the time of a rebuild: message_bot lists the teammates.
     let messaging = [json!({"name":"memory"}), json!({"name":"message_bot"})];
     let prompt = runtime
-        .session_prompt(&row, "alice", "owl", &home.workspace(), &messaging)
+        .session_prompt(&row, "alice", "owl", &home.workspace(), &messaging, false)
         .unwrap()
         .0;
     assert!(prompt.contains("Other bots see you as: User description"));
@@ -6670,4 +6670,160 @@ async fn only_messages_in_a_bots_chat_move_it_up_the_list() {
     .await
     .unwrap();
     runtime.shutdown().await;
+}
+
+/// People in a Discord room are not the owner: the bot's conversation there
+/// gets only notes and the web, its prompt leaves out About you, and an
+/// ordinary room keeps both.
+#[test]
+fn a_discord_room_session_gets_only_notes_and_the_web() {
+    let (home, runtime, _hub) = setup();
+    let h = home.path();
+    fs::create_dir_all(h.join("users/alice")).unwrap();
+    fs::write(
+        h.join("users/alice/user.md"),
+        "Alice lives at 1 Secret Lane.",
+    )
+    .unwrap();
+    fs::write(
+        h.join("profiles/owl/config.yaml"),
+        "model:\n  provider: openai\n  default: fixture\ntools:\n  enabled_toolsets: [hexbot, web, file, terminal, delegation, cronjob]\n",
+    )
+    .unwrap();
+    MemoryStore::new(h.into())
+        .set_bot("alice", "owl", "Alice's bank is Northwind.")
+        .unwrap();
+    db::open(h).unwrap().execute_batch(
+        "INSERT INTO rooms(id,name,owner_id,approval_mode) VALUES('d','#general · Server','alice','manual'),('r','Room','alice',NULL);
+         INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('d','owl','in-discord'),('r','owl','in-room');
+         INSERT INTO discord_channels(channel_id,guild_id,room_id) VALUES('c1','g1','d');",
+    ).unwrap();
+    let row = bot_row(h, "owl").unwrap();
+    let settings = crate::settings::get(h).unwrap();
+    let open = |stored: &str| {
+        runtime
+            .fresh_options(
+                "alice",
+                "owl",
+                stored,
+                &row,
+                &home.workspace(),
+                &settings,
+                None,
+                None,
+            )
+            .unwrap()
+    };
+    let (prompt, options) = open("in-discord");
+    let names: Vec<&str> = options["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    assert!(names.contains(&"memory"), "{names:?}");
+    assert!(
+        names.iter().all(|n| crate::discord::TOOLS.contains(n)),
+        "{names:?}"
+    );
+    assert_eq!(options["restricted"], json!(crate::discord::TOOLS));
+    assert_eq!(options["public"], true);
+    assert_eq!(options["mcpServers"], json!([]));
+    // Strangers get the soul and nothing of the owner's: no About you,
+    // memory, files or teammates.
+    assert!(!prompt.contains("Secret Lane"));
+    assert!(!prompt.contains("Northwind"), "{prompt}");
+    assert!(!prompt.contains(&h.display().to_string()), "{prompt}");
+    assert!(!prompt.contains(crate::team::HEADER), "{prompt}");
+    assert!(prompt.contains("# Discord\nThis conversation is a Discord channel."));
+    let (prompt, options) = open("in-room");
+    assert!(prompt.contains("Secret Lane"));
+    assert!(prompt.contains("Northwind"));
+    assert!(!prompt.contains("# Discord"));
+    assert_eq!(options["public"], false);
+    assert!(options["restricted"].is_null());
+    assert!(
+        options["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["name"] == "message_bot")
+    );
+}
+
+/// Anyone in a Discord channel can talk to the bot, so what it notes there
+/// waits for its dream as an untrusted proposal and it reads nothing back.
+#[tokio::test]
+async fn a_discord_room_session_files_notes_as_proposals() {
+    let (home, runtime, _) = setup();
+    let h = home.path();
+    let memory = MemoryStore::new(h.into());
+    memory.set_bot("alice", "owl", "Likes tea.").unwrap();
+    db::open(h).unwrap().execute_batch(
+        "INSERT INTO rooms(id,name,owner_id,approval_mode) VALUES('d','#general · Server','alice','manual');
+         INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('d','owl','in-discord');
+         INSERT INTO discord_channels(channel_id,guild_id,room_id) VALUES('c1','g1','d');",
+    ).unwrap();
+    let session = runtime
+        .open_session_with_tools("alice", "owl", "in-discord", None, None, false)
+        .await
+        .unwrap();
+    let noted = runtime
+        .tool(
+            &session,
+            "memory",
+            &json!({"action":"note","text":"Sam runs the chess club."}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(noted["proposed"], true);
+    let source: String = db::open(h)
+        .unwrap()
+        .query_row(
+            "SELECT job_id FROM memory_proposals WHERE bot='owl'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(source, crate::discord::PROPOSAL_SOURCE);
+    assert_eq!(
+        memory.get_bot("alice", "owl").unwrap()["memory_md"],
+        "Likes tea."
+    );
+    for action in ["read", "add"] {
+        let refused = runtime
+            .tool(&session, "memory", &json!({"action":action,"text":"x"}))
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, 4202, "{action}");
+    }
+    // Strangers asking for note after note can't push out a scheduled job's proposal.
+    crate::dreaming::propose_memory(
+        h,
+        "alice",
+        "owl",
+        "job-1",
+        "add",
+        &json!({"text":"Prefers mornings."}),
+    )
+    .unwrap();
+    for i in 0..30 {
+        runtime
+            .tool(
+                &session,
+                "memory",
+                &json!({"action":"note","text":format!("Note {i}.")}),
+            )
+            .await
+            .unwrap();
+    }
+    let counts: (i64, i64) = db::open(h)
+        .unwrap()
+        .query_row(
+            "SELECT SUM(job_id='discord'),SUM(job_id='job-1') FROM memory_proposals WHERE bot='owl'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(counts, (20, 1));
 }

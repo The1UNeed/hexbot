@@ -73,6 +73,7 @@ export type Panel = {
     | 'connector'
     | 'connectors'
     | 'devices'
+    | 'discord'
     | 'dreams'
     | 'face'
     | 'heartbeat'
@@ -424,6 +425,7 @@ export function Management({
           'jobs',
           'dreams',
           'heartbeat',
+          'discord',
           'network',
           'notifications',
           'usage',
@@ -655,6 +657,18 @@ export function Management({
         data = (await rpc<{ dreams: RowData[] }>('hexbot.dreaming.list', { bot: bot?.name })).dreams
         detail = await rpc('hexbot.dreaming.status', { bot: bot?.name })
         break
+      case 'discord':
+        try {
+          detail =
+            (await rpc<{ discord: RowData | null }>('hexbot.discord.get', { bot: bot?.name }))
+              .discord ?? {}
+        } catch (e) {
+          // A daemon from before Discord has no such method.
+          if (!/unknown method/i.test(e instanceof Error ? e.message : String(e))) throw e
+          detail = { unsupported: true }
+        }
+        fields = { token: '' }
+        break
       case 'heartbeat':
         detail = await rpc('hexbot.heartbeat.status', { bot: bot?.name })
         data = (detail.recent as RowData[] | undefined) ?? []
@@ -778,6 +792,14 @@ export function Management({
       newer = true
     }
   }, [mobile.heartbeats])
+  // A bot's Discord connection comes online, drops, or joins a room while its page is open.
+  useEffect(() => {
+    if (kind !== 'discord' || panelLoading) return
+    const current = epoch.current
+    void load(true).catch(e => {
+      if (current === epoch.current) setError(e instanceof Error ? e.message : String(e))
+    })
+  }, [mobile.discordChanges])
   // A connector panel reads its row again after a sign-in or sign-out, so
   // it shows who is signed in and offers the right actions.
   const reloadConnector = async () => {
@@ -808,9 +830,7 @@ export function Management({
     // From a bot's own plugins, that bot gets it, as on the web.
     const give = bot
       ? [bot.name]
-      : pluginRoster
-          .filter(b => latestValues.current[`give:${b.name}`] === true)
-          .map(b => b.name)
+      : pluginRoster.filter(b => latestValues.current[`give:${b.name}`] === true).map(b => b.name)
     if (!account?.signed_in && give.length) {
       // An older daemon connects the one connector and does not say so.
       const ids = Array.isArray(next.connected) ? next.connected.map(str) : [str(panel?.data?.id)]
@@ -1223,6 +1243,7 @@ export function Management({
                 {row('Tools', 'tools', `${bot.tools.length} on`)}
                 {row('Connectors', 'connectors')}
                 {row('Skills', 'skills', bot.skills.length ? `${bot.skills.length} on` : undefined)}
+                {row('Discord', 'discord')}
               </Group>
               <Group title="What it remembers">
                 {toggle('dream_enabled', 'Dreaming')}
@@ -1396,11 +1417,13 @@ export function Management({
                     bot_turns_per_human_turn: num(values.bot_turns_per_human_turn),
                     budget_tokens_per_human_turn: num(values.budget_tokens_per_human_turn)
                   },
-                  approval_mode: values.approval_mode
+                  // A Discord room stays on Manual.
+                  ...(room.discord ? {} : { approval_mode: values.approval_mode })
                 }
               : { members }),
             name: values.name,
-            main_bot: mainBot || null
+            // A Discord room has no main bot.
+            ...(room?.discord ? {} : { main_bot: mainBot || null })
           }
         )
         if (!room) await mobile.openRoom(result.room)
@@ -1409,68 +1432,95 @@ export function Management({
       content = (
         <>
           {field('name', 'Room name')}
-          <Group
-            title="Main bot"
-            footer="Answers when nobody is mentioned. Mention a bot with @ to ask it directly. Only bots in the room can be its main bot."
-          >
-            {[
-              { name: '', display_name: 'No main bot' },
-              ...mobile.bots.filter(b => joined(b.name))
-            ].map(b => (
-              <ChoiceRow
-                key={b.name || 'none'}
-                title={b.display_name}
-                testID={`main-bot-${b.name || 'none'}`}
-                selected={mainBot === b.name}
-                onPress={() => set('main_bot', b.name)}
-              />
-            ))}
-          </Group>
-          <Group title="Bots">
-            {mobile.bots.map(b => {
-              return (
-                <SwitchRow
-                  key={b.name}
+          {room?.discord ? null : (
+            <Group
+              title="Main bot"
+              footer="Answers when nobody is mentioned. Mention a bot with @ to ask it directly. Only bots in the room can be its main bot."
+            >
+              {[
+                { name: '', display_name: 'No main bot' },
+                ...mobile.bots.filter(b => joined(b.name))
+              ].map(b => (
+                <ChoiceRow
+                  key={b.name || 'none'}
                   title={b.display_name}
-                  testID={`member-${b.name}`}
-                  value={joined(b.name)}
-                  disabled={busy || mobile.connection !== 'connected'}
-                  leading={
-                    <BotFace face={b.face} imageUri={botPhoto(b)} name={b.display_name} size={28} />
-                  }
-                  onValueChange={enabled => {
-                    if (!room) {
-                      // A bot that leaves the new room cannot stay its main bot.
-                      if (!enabled && str(values.main_bot) === b.name) set('main_bot', '')
-                      return set(`member-${b.name}`, enabled)
-                    }
-                    const change = () =>
-                      void run(async () => {
-                        const updated = await rpc<{ room: Room & { deleted?: boolean } }>(
-                          enabled ? 'hexbot.rooms.add_member' : 'hexbot.rooms.remove_member',
-                          { id: room.id, bot: b.name }
-                        )
-                        // Removing the last bot deleted the room; the refresh leaves it.
-                        if (updated.room.deleted) return onClose()
-                        onNavigate({ kind: 'room', room: updated.room })
-                      })
-                    const last = !room.members.some(
-                      m => m.member_kind === 'bot' && m.member_id !== b.name && !m.left_at
-                    )
-                    if (enabled || !last) return change()
-                    confirm(
-                      'Remove and delete room',
-                      `${b.display_name} is the last bot here. Removing it deletes this room, its transcript and the memory made from it. The bot itself stays.`,
-                      change
-                    )
-                  }}
+                  testID={`main-bot-${b.name || 'none'}`}
+                  selected={mainBot === b.name}
+                  onPress={() => set('main_bot', b.name)}
                 />
-              )
-            })}
+              ))}
+            </Group>
+          )}
+          <Group
+            title="Bots"
+            footer={
+              room?.discord
+                ? 'A bot joins when someone mentions it in Discord, and comes back the same way after you remove it.'
+                : undefined
+            }
+          >
+            {mobile.bots
+              .filter(b => !room?.discord || joined(b.name))
+              .map(b => {
+                return (
+                  <SwitchRow
+                    key={b.name}
+                    title={b.display_name}
+                    testID={`member-${b.name}`}
+                    value={joined(b.name)}
+                    disabled={busy || mobile.connection !== 'connected'}
+                    leading={
+                      <BotFace
+                        face={b.face}
+                        imageUri={botPhoto(b)}
+                        name={b.display_name}
+                        size={28}
+                      />
+                    }
+                    onValueChange={enabled => {
+                      if (!room) {
+                        // A bot that leaves the new room cannot stay its main bot.
+                        if (!enabled && str(values.main_bot) === b.name) set('main_bot', '')
+                        return set(`member-${b.name}`, enabled)
+                      }
+                      const change = () =>
+                        void run(async () => {
+                          const updated = await rpc<{ room: Room & { deleted?: boolean } }>(
+                            enabled ? 'hexbot.rooms.add_member' : 'hexbot.rooms.remove_member',
+                            { id: room.id, bot: b.name }
+                          )
+                          // Removing the last bot deleted the room; the refresh leaves it.
+                          if (updated.room.deleted) return onClose()
+                          onNavigate({ kind: 'room', room: updated.room })
+                        })
+                      const last = !room.members.some(
+                        m => m.member_kind === 'bot' && m.member_id !== b.name && !m.left_at
+                      )
+                      if (enabled || !last) return change()
+                      confirm(
+                        'Remove and delete room',
+                        `${b.display_name} is the last bot here. Removing it deletes this room, its transcript and the memory made from it. The bot itself stays.`,
+                        change
+                      )
+                    }}
+                  />
+                )
+              })}
           </Group>
           {room ? (
             <>
-              {chooseMode('approval_mode')}
+              {room.discord ? (
+                <Group title="Approvals">
+                  <Row
+                    title="Manual"
+                    subtitle="People in Discord are not you, so bots there only search the web and keep notes."
+                    testID="room-discord-approvals"
+                  />
+                  {action('Open in Discord', () => Linking.openURL(room.discord!.url))}
+                </Group>
+              ) : (
+                chooseMode('approval_mode')
+              )}
               <Group title="Budgets" footer="Leave a budget empty to use the daemon setting.">
                 {field('bot_turns_per_human_turn', 'Bot replies per message')}
                 {field('budget_tokens_per_human_turn', 'Tokens per message')}
@@ -1933,7 +1983,10 @@ export function Management({
                 <ChoiceRow
                   key={p.id}
                   title={p.label}
-                  subtitle={[p.configured ? (p.sign_in ? 'Signed in' : 'Connected') : '', p.description]
+                  subtitle={[
+                    p.configured ? (p.sign_in ? 'Signed in' : 'Connected') : '',
+                    p.description
+                  ]
                     .filter(Boolean)
                     .join(' · ')}
                   testID={`connector-provider-${p.id}`}
@@ -2242,9 +2295,7 @@ export function Management({
                   (!canGive(p, b.name) && !shown.bots.includes(b.name))
                 }
                 onValueChange={on =>
-                  choose(
-                    on ? [...shown.bots, b.name] : shown.bots.filter(name => name !== b.name)
-                  )
+                  choose(on ? [...shown.bots, b.name] : shown.bots.filter(name => name !== b.name))
                 }
               />
             ))}
@@ -2709,6 +2760,118 @@ export function Management({
       )
       break
     }
+    case 'discord': {
+      const name = bot?.display_name ?? 'The bot'
+      const token = str(values.token).trim()
+      const connect = action(
+        'Connect',
+        async () => {
+          await rpc('hexbot.discord.connect', { bot: bot?.name, token })
+          set('token', '')
+        },
+        false,
+        '',
+        !token
+      )
+      const tokenField = field(
+        'token',
+        'Bot token',
+        false,
+        "Saved on the daemon, where bots' tools can't read it, except in Bypass.",
+        true
+      )
+      if (extra.unsupported) {
+        content = <Text tone="muted">Update the daemon to connect bots to Discord.</Text>
+        break
+      }
+      if (!extra.bot) {
+        content = (
+          <>
+            <Text tone="muted" variant="callout">
+              {`${name} joins Discord servers as its own Discord app. People there @mention it to talk to it, and each channel it is mentioned in becomes a room you can watch here.`}
+            </Text>
+            <Group title="Make a Discord app for this bot">
+              <Row
+                title="1. Open the Discord Developer Portal"
+                subtitle={`Choose New Application and name it ${name}.`}
+                testID="discord-portal"
+                chevron
+                onPress={() => void Linking.openURL('https://discord.com/developers/applications')}
+              />
+              <Row
+                title="2. Under Bot, turn on Message Content Intent"
+                testID="discord-intent"
+                subtitle="Without it the app sees only messages that mention it."
+              />
+              <Row
+                title="3. Copy the bot's token"
+                testID="discord-token-step"
+                subtitle="Still under Bot, choose Reset Token and copy the token."
+              />
+            </Group>
+            <Group>
+              {tokenField}
+              {connect}
+            </Group>
+          </>
+        )
+        break
+      }
+      const state =
+        extra.status === 'online'
+          ? 'Online in Discord'
+          : extra.status === 'error'
+            ? str(extra.error) || 'Not connected'
+            : 'Connecting'
+      const discordRooms = (extra.rooms as RowData[] | undefined) ?? []
+      content = (
+        <>
+          <Group
+            footer={`In Discord, ${name} can only search the web and keep notes. It never sees About you, and it is told never to share what it knows about you.`}
+          >
+            <Row title={str(extra.username) || name} subtitle={state} testID="discord-state" />
+            {action('Add to a server', () => Linking.openURL(str(extra.invite_url)))}
+          </Group>
+          {extra.status === 'error' ? (
+            <Group title="Connect again">
+              {tokenField}
+              {connect}
+            </Group>
+          ) : null}
+          <Group
+            title="Rooms in Discord"
+            footer={
+              discordRooms.length
+                ? undefined
+                : `Add ${name} to a server, then @mention it in a channel. That channel becomes a room here.`
+            }
+          >
+            {discordRooms.map(r => {
+              const opened = mobile.rooms.find(item => item.id === r.id)
+              return (
+                <Row
+                  key={str(r.id)}
+                  title={`#${str(r.channel_name) || 'channel'}`}
+                  subtitle={str(r.guild_name)}
+                  testID={`discord-room-${r.id}`}
+                  chevron={Boolean(opened && onOpenRoom)}
+                  onPress={opened && onOpenRoom ? () => onOpenRoom(opened) : undefined}
+                />
+              )
+            })}
+          </Group>
+          <Group>
+            {action(
+              'Disconnect',
+              () => rpc('hexbot.discord.disconnect', { bot: bot?.name }),
+              true,
+              `${name} goes offline in Discord and the token is deleted. Its Discord rooms stay here.`
+            )}
+          </Group>
+        </>
+      )
+      break
+    }
     case 'connect':
       content = (
         <>
@@ -2952,6 +3115,7 @@ export function Management({
     'skill-create': 'Create skill',
     dreams: 'Dreaming',
     heartbeat: 'Heartbeat',
+    discord: 'Discord',
     connect: 'Hex Connect',
     updates: 'Daemon updates',
     jobs: 'Scheduled jobs',

@@ -4,6 +4,7 @@ import {
   Brain,
   Cpu,
   HeartPulse,
+  MessagesSquare,
   Plug,
   ShieldCheck,
   SlidersHorizontal,
@@ -55,6 +56,7 @@ const ICONS: Record<BotSettingsTab, SettingsTabItem['icon']> = {
   advanced: SlidersHorizontal,
   approvals: ShieldCheck,
   connectors: Plug,
+  discord: MessagesSquare,
   face: Smile,
   heartbeat: HeartPulse,
   memory: Brain,
@@ -67,7 +69,7 @@ const ICONS: Record<BotSettingsTab, SettingsTabItem['icon']> = {
 
 const GROUPS: { ids: BotSettingsTab[]; label?: string }[] = [
   { ids: ['profile', 'face', 'persona', 'model'] },
-  { ids: ['memory', 'tools', 'connectors', 'skills'], label: 'Abilities' },
+  { ids: ['memory', 'tools', 'connectors', 'skills', 'discord'], label: 'Abilities' },
   { ids: ['approvals', 'heartbeat', 'advanced'], label: 'Manage' }
 ]
 

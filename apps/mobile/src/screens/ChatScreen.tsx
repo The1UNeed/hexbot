@@ -130,6 +130,8 @@ export interface ChatScreenProps {
 
   archived?: boolean
   onUnarchive?: () => void
+  /** Replies go somewhere else, such as a room that is a Discord channel: no composer. */
+  elsewhere?: { text: string; actionLabel: string; onAction: () => void } | null
 
   /** The history is still on its way: show the face loading, not an empty chat. */
   opening?: boolean
@@ -407,8 +409,7 @@ function ChatBody(props: ChatScreenProps) {
       )
       if (!item?.text) return recall?.()
       // What the bubble shows: a bot's Markdown marks are drawn, not written.
-      const text =
-        item.role === 'user' || !renderMessageText ? item.text : messageText(item.text)
+      const text = item.role === 'user' || !renderMessageText ? item.text : messageText(item.text)
       // A bot's message that can take a reaction opens the menu with the emoji row.
       if (item.role === 'bot' && item.rowId && onReact && !item.streaming) {
         setReacting({
@@ -437,7 +438,11 @@ function ChatBody(props: ChatScreenProps) {
         <TranscriptEntry
           entry={entry}
           continued={continued}
-          face={(entry.kind === 'message' || entry.kind === 'visual') && !room ? fallbackFace : undefined}
+          face={
+            (entry.kind === 'message' || entry.kind === 'visual') && !room
+              ? fallbackFace
+              : undefined
+          }
           room={room}
           onLongPress={entry.kind === 'message' ? pressMessage : undefined}
           renderText={entry.kind === 'message' ? renderMessageText : undefined}
@@ -589,6 +594,28 @@ function ChatBody(props: ChatScreenProps) {
               variant="secondary"
             />
           ) : null}
+        </View>
+      ) : props.elsewhere ? (
+        <View style={[styles.archived, { paddingBottom: bottom }]} testID="chat-elsewhere">
+          <Text style={styles.archivedText} tone="muted" variant="callout">
+            {props.elsewhere.text}
+          </Text>
+          <View style={styles.elsewhereActions}>
+            {busy && props.onStop ? (
+              <Button
+                label="Stop"
+                onPress={props.onStop}
+                testID="chat-elsewhere-stop"
+                variant="secondary"
+              />
+            ) : null}
+            <Button
+              label={props.elsewhere.actionLabel}
+              onPress={props.elsewhere.onAction}
+              testID="chat-elsewhere-open"
+              variant="secondary"
+            />
+          </View>
         </View>
       ) : (
         <>
@@ -1242,6 +1269,7 @@ const styles = StyleSheet.create({
   approvalButton: { minHeight: 44, paddingHorizontal: 18 },
   approvalHead: { alignItems: 'center', flexDirection: 'row', gap: 8 },
   archived: { alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingTop: 12 },
+  elsewhereActions: { flexDirection: 'row', gap: 8 },
   // In the middle of the column, like the time between messages.
   ask: {
     alignItems: 'center',

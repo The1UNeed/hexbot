@@ -98,6 +98,14 @@ more freedom and more capability than a hosted product can offer.
   When a limit trips the room posts a notice and stops.
 - Usage comes from the core's `session_model_usage` table and the native
   runtime's usage rows, all on the owner's keys.
+- A Discord channel can be a room. Each bot is its own Discord app, so the
+  owner can put different bots in different servers and each keeps what a
+  channel says to itself. The first mention of a bot makes the channel a
+  room; the bot replies in Discord as itself; the owner reads along, since
+  Discord is where people reply. The people there are not the owner: the
+  room stays Manual with no main bot, and its bots get notes and the web
+  only, without memory or About you. One Gateway connection per bot, outbound, so a daemon at home needs no
+  open port (`docs/rooms.md`, Discord rooms).
 
 ### Bots talking to bots
 
