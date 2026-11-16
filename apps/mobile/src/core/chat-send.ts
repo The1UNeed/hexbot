@@ -11,8 +11,8 @@ export function forgetWholeOnly() {
   wholeOnly.clear()
 }
 
-/** A daemon from before part uploads. */
-function unknownMethod(e: unknown): boolean {
+/** A daemon from before a method, such as part uploads. */
+export function unknownMethod(e: unknown): boolean {
   const code = (e as { code?: number } | null)?.code
   const message = e instanceof Error ? e.message : String(e)
   return code === -32601 || /unknown (runtime )?method|method not found/i.test(message)

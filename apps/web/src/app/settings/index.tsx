@@ -20,7 +20,6 @@ import {
   modelsList,
   pairingCode,
   providerModels,
-  usageSummary,
   userMemoryGet,
   userMemorySet
 } from '../../lib/api'
@@ -70,6 +69,7 @@ import { NotificationsSettings } from './notifications'
 import { PasswordsSettings } from './passwords'
 import { PluginsSettings } from './plugins'
 import { PrivacySettings } from './privacy'
+import { UsageSettings } from './usage'
 
 export const SETTINGS_TABS = [
   'providers',
@@ -518,67 +518,6 @@ export function ConnectSettings() {
       {status?.registered && status.identity_error ? (
         <ErrorLine>{connectStatusMessage(status.identity_error, true)}</ErrorLine>
       ) : null}
-    </>
-  )
-}
-
-export function UsageSettings() {
-  const [summary, setSummary] = useState<Awaited<ReturnType<typeof usageSummary>> | null>(null)
-  useEffect(() => {
-    void usageSummary().then(setSummary)
-  }, [])
-
-  const bots = useBots(state => state.byName)
-
-  const rows = summary
-    ? Array.isArray(summary.by_bot)
-      ? summary.by_bot
-      : Object.entries(summary.by_bot).map(([bot, value]) => ({ bot, ...value }))
-    : []
-
-  const number = (value: number) => (
-    <span className="font-mono text-[length:var(--text-secondary)] tabular-nums">
-      {value.toLocaleString()}
-    </span>
-  )
-
-  return (
-    <>
-      <Heading description="Token use reported by this daemon.">Usage</Heading>
-      {summary ? (
-        <div className="space-y-8">
-          <Group title="This daemon">
-            <Row control={number(summary.input_tokens)} title="Input tokens" />
-            <Row control={number(summary.output_tokens)} title="Output tokens" />
-            <Row
-              control={
-                <span className="font-mono text-[length:var(--text-secondary)] tabular-nums">
-                  ${summary.estimated_cost_usd.toFixed(2)}
-                </span>
-              }
-              title="Estimated cost"
-            />
-          </Group>
-          {rows.length ? (
-            <Group title="By bot">
-              {rows.map(row => (
-                <Row
-                  control={
-                    <span className="font-mono text-[length:var(--text-secondary)] tabular-nums">
-                      ${(row.estimated_cost_usd ?? 0).toFixed(2)}
-                    </span>
-                  }
-                  description={`${row.input_tokens.toLocaleString()} in · ${row.output_tokens.toLocaleString()} out`}
-                  key={row.bot}
-                  title={bots[row.bot]?.display_name ?? row.bot}
-                />
-              ))}
-            </Group>
-          ) : null}
-        </div>
-      ) : (
-        <SkeletonLines label="Loading usage" />
-      )}
     </>
   )
 }

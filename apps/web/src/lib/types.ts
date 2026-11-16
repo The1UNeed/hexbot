@@ -1138,6 +1138,40 @@ export interface UsageSummary {
       }>
 }
 
+/** Where a model call happened: a bot's chat, a room, a background run. */
+export type UsagePlace =
+  'chat' | 'dream' | 'heartbeat' | 'job' | 'other' | 'room' | 'subagent' | 'thread'
+
+/** One bucket, bot, model and place from `hexbot.usage.report`. */
+export interface UsageReportRow {
+  /** Start of the bucket, Unix seconds. */
+  t: number
+  bot: string
+  model: string
+  provider: string
+  place: UsagePlace
+  calls: number
+  input: number
+  cache_read: number
+  cache_write: number
+  output: number
+  cost: number
+}
+
+export interface UsageReport {
+  since: number
+  until: number
+  /** `t` is the edge each row's bucket starts at. */
+  rows: UsageReportRow[]
+  /** The window as long just before `since`. */
+  previous: { calls: number; cost: number; tokens: number }
+  /**
+   * Usage from before the native runtime, which kept running totals with no
+   * time per call, so it has no day.
+   */
+  earlier: { cost: number; tokens: number }
+}
+
 export interface RoomMember {
   added_at: number
   added_by: string

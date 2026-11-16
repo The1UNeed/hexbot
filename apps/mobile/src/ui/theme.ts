@@ -46,10 +46,13 @@ export interface Palette {
   chromeBorder: string
   /** Inner block inside a bubble, such as a command in an approval card. */
   inset: string
+  /** Series colours for charts, as the web's --hex-chart-1 to 6. */
+  chart: readonly string[]
 }
 
 const light: Palette = {
   accent: '#4f46e5',
+  chart: ['#4f46e5', '#0d9488', '#d97706', '#db2777', '#2f7cf6', '#65a30d'],
   background: '#ffffff',
   chrome: 'rgba(250, 250, 252, 0.96)',
   chromeBorder: 'rgba(0, 0, 0, 0.08)',
@@ -75,6 +78,7 @@ const light: Palette = {
 
 const dark: Palette = {
   accent: '#8b85ff',
+  chart: ['#8b85ff', '#2dd4bf', '#fbbf24', '#f472b6', '#4c9aff', '#a3e635'],
   background: '#000000',
   chrome: 'rgba(28, 28, 30, 0.96)',
   chromeBorder: 'rgba(255, 255, 255, 0.1)',
