@@ -116,6 +116,19 @@ export interface AttachmentView {
   uri?: string | null
   /** The daemon's copy, read when it shows. */
   path?: string
+  /** The file itself, for one only this phone holds whole, such as a PDF in the composer. */
+  local?: import('../core/files').OpenedFile
+}
+
+/** A file in the composer. It uploads as soon as it is picked; Send waits for it. */
+export interface ComposerAttachment extends AttachmentView {
+  status: 'uploading' | 'ready' | 'failed'
+  /** The share the daemon has while it uploads, 0 to 1. */
+  progress?: number
+  /** False for a file kept on the phone for an older daemon that this phone cannot show. */
+  previewable?: boolean
+  /** Why it did not upload. */
+  error?: string
 }
 
 /** One entry in a chat transcript, oldest first. */

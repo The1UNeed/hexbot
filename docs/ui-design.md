@@ -268,7 +268,20 @@ with Viewport Segments place both poses on the exact halves.
   wrote or edited along the way, such as scripts and tests, do not show.
   A shared picture, video or audio file shows or plays there instead, and so
   do the voice replies, pictures and clips its media tools make. The composer shows pictures as
-  thumbnails and other files as cards, each with a remove button. A room's
+  thumbnails and other files as cards, each with a remove button. A file
+  uploads the moment it is dropped on the chat, picked or pasted, one at a
+  time, in parts: a picture dims under its percentage, a card says
+  "Uploading 42%" over a thin bar (or "Waiting to upload" behind another
+  file). The percentage is what the daemon has confirmed, and it reaches 100%
+  only when the daemon has the file staged. A daemon from before part
+  uploads cannot take a file back, so there a file stays on this device
+  until Send, as before, and only a picture, PDF, video or audio file
+  previews from the local copy. Send waits until every file is up. A file that is up opens to preview as it will in the
+  message (a picture over the chat, any other file beside it); one that did
+  not upload says why ("Not uploaded: attachment exceeds 45 MiB") and tries
+  again when clicked. Dragging files over the chat shows "Drop files to
+  attach". On the phone each file shows its percentage while it uploads, the
+  composer says "Uploading files" and Send waits, and a tap previews it. A room's
   cards only name the file. On the phone, the same card opens the file on
   its own card: a CSV or TSV as a table, Markdown formatted, other text as
   it is, a picture, video, audio file or PDF shown or played (Android has no
@@ -315,8 +328,9 @@ with Viewport Segments place both poses on the exact halves.
 - Errors: a turn the bot could not finish, on your message or not (a
   provider error, a dream), is a Stopped card: "{bot} stopped", the time,
   the reason in plain words, and Retry or Fix {connector}. A request of
-  this app's that failed with no message of its own, such as an upload or
-  a Recall, has the same card headed "Didn't go through". One card per
+  this app's that failed with no message of its own, such as a Recall, has
+  the same card headed "Didn't go through"; an upload that fails stays on
+  its file in the composer. One card per
   failure, even when the gateway and the daemon both report it. Retry requires
   durable input ownership. Older daemons offer no Retry for failed sends or
   answers; failed sends retain their draft for manual resend.

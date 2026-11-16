@@ -204,7 +204,11 @@ struct Staged {
     images: Vec<Value>,
     refs: Vec<String>,
     files: Vec<PathBuf>,
+    /// When it was staged, so one nobody sends does not wait forever.
+    at: f64,
 }
+/// How long an upload nobody named in a message waits, parked, for one.
+const STAGED_TTL: f64 = 24. * 60. * 60.;
 type SessionAdmission = Arc<Vec<tokio::sync::OwnedRwLockReadGuard<()>>>;
 /// Input on its way into a section: an upload being staged or a message being
 /// sent. Taken under the open lock, so the section cannot retire before the
@@ -485,9 +489,67 @@ impl Runtime {
             Ok((self.open_session(caller, &bot, &stored).await?, None))
         }
     }
+    /// Takes back an upload parked by a section with no process, without
+    /// starting its bot just to delete a file. None when the section is live
+    /// or the upload is not parked: the ordinary path answers then.
+    fn remove_parked(&self, caller: &str, id: &str, upload: &str) -> Result<Option<Value>> {
+        common::user(&self.home, caller)?;
+        if self
+            .sessions
+            .lock()
+            .unwrap()
+            .values()
+            .any(|s| s.id == id && s.owner == caller)
+        {
+            return Ok(None);
+        }
+        let Some((stored, bot)) = store::open(&self.home)?
+            .query_row(
+                "SELECT s.stored_id,s.bot FROM native_live_sessions l JOIN native_sessions s ON s.stored_id=l.stored_id WHERE l.live_id=? AND s.owner=?",
+                params![id, caller],
+                |r| Ok::<(String, String), _>((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        common::bot_owner(&self.home, caller, &bot)?;
+        let taken = {
+            let mut parked = self.parked.lock().unwrap();
+            let Some(entry) = parked.get_mut(&stored) else {
+                return Ok(None);
+            };
+            let Some(index) = entry.uploads.iter().position(|u| u.id == upload) else {
+                return Ok(None);
+            };
+            let taken = entry.uploads.remove(index);
+            if entry.uploads.is_empty() {
+                parked.remove(&stored);
+            }
+            taken
+        };
+        remove_staged(vec![taken]);
+        Ok(Some(json!({"removed": true})))
+    }
+    /// Uploads parked by a section that has not opened since, staged over a
+    /// day ago and never sent, go with the maintenance pass.
+    fn expire_parked(&self) {
+        let now = common::now();
+        let mut stale = vec![];
+        self.parked.lock().unwrap().retain(|_, parked| {
+            let (kept, old): (Vec<_>, Vec<_>) = std::mem::take(&mut parked.uploads)
+                .into_iter()
+                .partition(|u| now - u.at < STAGED_TTL);
+            parked.uploads = kept;
+            stale.extend(old);
+            !parked.uploads.is_empty()
+        });
+        remove_staged(stale);
+    }
     // Retire only settled sessions. Their frozen prompt, tools, JSONL and live ID
     // remain durable, so any unchanged client RPC can resume the same section.
     async fn retire_idle(&self, before: f64) -> Result<usize> {
+        self.expire_parked();
         let mut candidates = self
             .sessions
             .lock()
@@ -521,10 +583,11 @@ impl Runtime {
     }
     /// Marks a section closed and takes it out of the map when nothing in it is
     /// still running or unsaved and it was last used before `before`. Uploads
-    /// waiting for the next prompt keep it open unless `uploads_move`: the
-    /// caller then hands them to the process that replaces it. Input still on
-    /// its way in always keeps it open. The caller holds its open lock and
-    /// then stops it with `stop_retired`.
+    /// waiting for the next prompt move with it: with `uploads_move` the caller
+    /// hands them to the process that replaces it; otherwise they are parked
+    /// for the section's next open, so a file left in a composer never keeps
+    /// a process. Input still on its way in always keeps it open. The caller
+    /// holds its open lock and then stops it with `stop_retired`.
     fn retire_quiet(
         &self,
         s: &Arc<Live>,
@@ -554,13 +617,33 @@ impl Runtime {
             || !state.inputs.is_empty()
             || state.closed
             || !state.pending.is_empty()
-            || !(uploads_move || state.staged.is_empty())
             || state.landing > 0
             || !state.unsaved.is_empty()
             || state.last_activity >= before
             || !s.requests.lock().unwrap().is_empty()
         {
             return false;
+        }
+        if !uploads_move && !state.staged.is_empty() {
+            // A file left in a composer that closed without taking it back
+            // goes after a day; younger ones wait for the next open.
+            let now = common::now();
+            let (mut kept, stale): (Vec<_>, Vec<_>) = std::mem::take(&mut state.staged)
+                .into_iter()
+                .partition(|u| now - u.at < STAGED_TTL);
+            remove_staged(stale);
+            if !kept.is_empty() {
+                self.parked
+                    .lock()
+                    .unwrap()
+                    .entry(s.stored.clone())
+                    .or_insert_with(|| Parked {
+                        uploads: vec![],
+                        _lease: s._conversation_lease.clone(),
+                    })
+                    .uploads
+                    .append(&mut kept);
+            }
         }
         s.replaced.store(uploads_move, Ordering::Release);
         state.closed = true;
@@ -2359,13 +2442,14 @@ impl Runtime {
         let mut settled = s.settled.subscribe();
         let before = *settled.borrow();
         let finished = tokio::time::timeout(deadline, async {
+            // Hidden input never takes the files waiting in the user's composer.
             self.submit_admitted(
                 &s,
                 text,
                 true,
                 false,
                 chain,
-                None,
+                Some(&[]),
                 landing.into_admission(),
                 None,
             )
@@ -2860,6 +2944,8 @@ impl Runtime {
             // Staging already under way finishes, sees the close and removes
             // its files before the section folder can be deleted.
             drop(s.attachment_gate.lock().await);
+            // No part can land after that, so its unfinished uploads go now.
+            remove_parts(&self.home, stored);
             for child in self
                 .children
                 .lock()
@@ -2889,6 +2975,8 @@ impl Runtime {
             )?;
             return Ok(true);
         }
+        // Without a live process no part can be on its way.
+        remove_parts(&self.home, stored);
         // Native tools can exist before a Pi process opens, or after it retires.
         // Cancel and clean those sessions even without an in-memory Pi session.
         crate::native_tools::close_session(&self.home, stored).await;
@@ -2960,6 +3048,8 @@ impl Runtime {
                 | "pdf.attach"
                 | "file.attach"
                 | "attachments.clear"
+                | "attachments.remove"
+                | "attachments.part"
                 | "hexbot.files.read"
                 | "hexbot.files.write"
         );
@@ -3034,13 +3124,14 @@ impl Runtime {
                     ));
                 }
                 let bot = crate::catalog::bot(&self.home, caller, &bot)?;
+                // The hidden kickoff never takes files waiting in the composer.
                 self.submit_admitted(
                     &s,
                     &crate::catalog::kickoff_prompt(&bot),
                     true,
                     false,
                     None,
-                    None,
+                    Some(&[]),
                     _landing.and_then(Landing::into_admission),
                     None,
                 )
@@ -3094,9 +3185,14 @@ impl Runtime {
         }
         // New input moves a section to its bot's new model, and a chat to its
         // bot's new tools; reads and controls keep the process that is running.
+        // A part counts too: on its way in, it keeps the section open.
         let input = matches!(
             method,
-            "prompt.submit" | "image.attach_bytes" | "pdf.attach" | "file.attach"
+            "prompt.submit"
+                | "image.attach_bytes"
+                | "pdf.attach"
+                | "file.attach"
+                | "attachments.part"
         );
         let input_id = if matches!(method, "prompt.submit" | "session.steer") {
             p.get("input_id")
@@ -3110,6 +3206,12 @@ impl Runtime {
         };
         if let Some(id) = input_id {
             store::check_input_id(&self.home, id)?;
+        }
+        if method == "attachments.remove"
+            && let Some(removed) =
+                self.remove_parked(caller, required(p, "session_id")?, required(p, "id")?)?
+        {
+            return Ok(removed);
         }
         let (s, _landing) = self.live(caller, required(p, "session_id")?, input).await?;
         match method {
@@ -3321,6 +3423,8 @@ impl Runtime {
             }
             "image.attach_bytes" | "pdf.attach" | "file.attach" => self.attach(&s, method, p).await,
             "attachments.clear" => self.clear_attachments(&s).await,
+            "attachments.remove" => self.remove_attachment(&s, p).await,
+            "attachments.part" => self.attach_part(&s, p).await,
             "hexbot.files.read" => self.read_file(&s, p).await,
             "hexbot.files.write" => self.write_file(&s, p).await,
             _ => Err(Error::new(-32601, "unknown runtime method")),
@@ -3532,13 +3636,14 @@ impl Runtime {
             let mut landing = Landing::new(&parent)?;
             landing.1 = Some(admission);
             drop(guard);
+            // A background result never takes the files waiting in the user's composer.
             self.submit_admitted(
                 &parent,
                 text,
                 true,
                 true,
                 chain,
-                None,
+                Some(&[]),
                 landing.into_admission(),
                 None,
             )
@@ -5670,6 +5775,12 @@ fn pump(
             }
         }
     })
+}
+/// Parts of files a closed section never finished receiving.
+fn remove_parts(home: &Path, stored: &str) {
+    if common::identifier(stored).is_ok() {
+        let _ = fs::remove_dir_all(home.join("runtime/sessions").join(stored).join("uploads"));
+    }
 }
 fn remove_staged(uploads: Vec<Staged>) {
     for path in uploads.into_iter().flat_map(|u| u.files) {

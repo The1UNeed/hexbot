@@ -35,7 +35,6 @@ import { StatusDot } from '../../components/ui/status-dot'
 import {
   approvalRespond,
   attachFile,
-  attachmentKind,
   type AttachResult,
   botsClearStatus,
   newInputId,
@@ -68,7 +67,7 @@ import { useConnection } from '../../stores/connection'
 import { connectorsActions } from '../../stores/connectors'
 import { draftsActions } from '../../stores/drafts'
 import { useConversationFeelings, useEmotion } from '../../stores/emotions'
-import { holdCopy } from '../../stores/page-copies'
+import { holdCopy, stillHeld } from '../../stores/page-copies'
 import { useChatReactions } from '../../stores/reactions'
 import { useSearch } from '../../stores/search'
 import {
@@ -89,10 +88,12 @@ import {
   useTranscripts
 } from '../../stores/transcripts'
 import { useUi } from '../../stores/ui'
+import { visualsActions } from '../../stores/visuals'
 
 import { AskingRow } from './asking-row'
 import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
+import { type DraftAttachment, DraftFiles, sentKind, useDraftFiles } from './draft-files'
 import { EmailDraftCard } from './email-draft-card'
 import { FileCard } from './file-card'
 import { filesOf, type FileTarget, mimeOf, openFile } from './file-tab'
@@ -1481,12 +1482,6 @@ export async function sendText(
   return submitOrReopen(sessionId, sectionId, text, { current, files: [], pending, uploads: [] })
 }
 
-interface DraftAttachment {
-  file: File
-  id: string
-  preview?: string
-}
-
 /**
  * What the composer held for each message it sent, by input key. The field
  * clears when the bubble appears; a send that ends where neither its bubble
@@ -1537,6 +1532,8 @@ function Composer({
   accessory,
   bot,
   draftVersion,
+  onFile,
+  onImage,
   sectionId,
   sessionId,
   status,
@@ -1546,6 +1543,10 @@ function Composer({
   bot?: Bot
   /** Changes when the draft was written outside the composer, as by Recall. */
   draftVersion?: number
+  /** Opens an uploaded file beside the chat. */
+  onFile: (file: FileTarget) => void
+  /** Opens an uploaded picture over the chat. */
+  onImage: (source: string) => void
   sectionId: string | null
   sessionId: string | null
   status?: BotStatus
@@ -1567,26 +1568,31 @@ function Composer({
       : saved
   })
 
-  const [files, setFiles] = useState<DraftAttachment[]>([])
   const [sending, setSending] = useState(false)
+  // While a message is on its way its files stay as they are; a reopen that
+  // sends them again does so for that message.
+  const draft = useDraftFiles(sending ? null : sessionId)
+  const { files } = draft
+  // One page copy per file, so opening it again goes back to its tab.
+  const copies = useRef(new Map<string, string>())
+
+  const copyOf = (id: string, file: File) => {
+    const kept = copies.current.get(id)
+    const url = kept && stillHeld(kept) ? kept : holdCopy(file)
+    copies.current.set(id, url)
+
+    return url
+  }
+
   // Sent while the chat was still opening: it goes the moment the chat opens.
   const [queued, setQueued] = useState(false)
   // The newest send owns `sending`: an earlier one ending never unlocks it.
   const sends = useRef(0)
   const picker = useRef<HTMLInputElement>(null)
 
-  const addFiles = (incoming: File[]) =>
-    setFiles(current => [
-      ...current,
-      ...incoming.map(file => ({
-        file,
-        id: `${file.name}-${file.size}-${newInputId()}`,
-        preview: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined
-      }))
-    ])
-
   const send = async () => {
-    if (sending || (!text.trim() && !files.length)) {
+    // A file still on its way, or one that did not get there, holds the message back.
+    if (sending || (!text.trim() && !files.length) || !draft.ready) {
       return
     }
 
@@ -1599,8 +1605,7 @@ function Composer({
     const own = ++sends.current
     setSending(true)
 
-    // Capture the sender before uploading: a route or daemon can change
-    // while a file is on its way in, before prompt submission even starts.
+    // Capture the sender: a route or daemon can change before the bot takes it.
     const { target, epoch, daemon } = useConnection.getState()
     const source = picker.current
 
@@ -1614,12 +1619,20 @@ function Composer({
 
     try {
       const identified = useConnection.getState().daemon?.transcript_identity === true
-      const uploads: string[] = []
+
+      // Each file was staged as it arrived; `ready` says each is in this
+      // session. One kept here for a daemon from before part uploads goes
+      // now, as before.
       const answers: AttachResult[] = []
 
       for (const item of files) {
+        if (item.upload.state === 'ready') {
+          answers.push(item.upload.result)
+
+          continue
+        }
+
         const uploaded = await attachFile(sessionId, item.file)
-        answers.push(uploaded)
 
         if (!current()) {
           return
@@ -1629,15 +1642,15 @@ function Composer({
           throw new Error('The daemon did not return an attachment ID. Attach the file again.')
         }
 
-        uploads.push(typeof uploaded.id === 'string' ? uploaded.id : item.id)
+        answers.push(uploaded)
       }
 
+      const uploads = answers.map((answer, index) =>
+        typeof answer.id === 'string' ? answer.id : files[index]!.id
+      )
+
       const attachments: Attachment[] = files.map((item, index) => {
-        // The same reading the upload used, so a .pdf with no type is a PDF here
-        // too; a video or audio file with no type is known by its name.
-        const sent = attachmentKind(item.file.type, item.file.name)
-        const media = mediaKind(item.file.type || mimeOf(item.file.name), item.file.name)
-        const kind = sent === 'file' && (media === 'video' || media === 'audio') ? media : sent
+        const kind = sentKind(item.file)
 
         return {
           dataUrl: item.preview,
@@ -1663,7 +1676,7 @@ function Composer({
 
       const clear = () => {
         setText('')
-        setFiles([])
+        draft.take()
 
         if (sectionId) {
           draftsActions().clear(sectionId)
@@ -1676,7 +1689,7 @@ function Composer({
       if (identified) {
         sentDrafts.set(pending.inputId!, { files, section: sectionId, text })
         setText('')
-        setFiles([])
+        draft.take()
         setSending(false)
       }
 
@@ -1695,8 +1708,8 @@ function Composer({
         clear()
       }
     } catch (error) {
-      // An upload failed, so nothing was sent. The files stay in the composer,
-      // and a turn already running keeps its stream and Stop.
+      // Nothing was sent, as when a kept file failed to upload. The files stay
+      // in the composer, and a turn already running keeps its stream and Stop.
       if (current()) {
         transcriptActions().requestFailed(
           sessionId,
@@ -1714,14 +1727,16 @@ function Composer({
     }
   }
 
+  // A message sent while the chat opened goes once it is open and any file
+  // added meanwhile is up.
   useEffect(() => {
-    if (queued && sessionId) {
+    if (queued && sessionId && draft.ready) {
       setQueued(false)
       void send()
     }
     // `send` reads the latest text and files when the chat opens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [queued, sessionId])
+  }, [queued, sessionId, draft.ready])
 
   // A chat you switch to takes your typing at once. A touch screen keeps its
   // keyboard down until you tap the field.
@@ -1780,11 +1795,13 @@ function Composer({
 
     sentDrafts.delete(strandedId)
     setText(held.text)
-    setFiles(held.files)
+    draft.restore(held.files)
 
     if (sectionId) {
       draftsActions().set(sectionId, held.text)
     }
+    // `draft.restore` is new each render; the files come back once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [empty, sectionId, strandedId])
 
   useEffect(() => {
@@ -1798,40 +1815,50 @@ function Composer({
     <ComposerShell
       above={
         files.length ? (
-          <div className="mb-2 flex flex-wrap gap-2">
-            {files.map(item => {
-              const remove = () => setFiles(current => current.filter(file => file.id !== item.id))
+          <DraftFiles
+            files={files}
+            onOpen={({ file, id, preview, upload }) => {
+              const kind = sentKind(file)
 
-              return item.preview ? (
-                <div className="relative" key={item.id} title={item.file.name}>
-                  <img
-                    alt={item.file.name}
-                    className="size-14 rounded-[14px] object-cover shadow-card"
-                    src={item.preview}
-                  />
-                  <button
-                    aria-label={`Remove ${item.file.name}`}
-                    className="hex-focus absolute -top-1.5 -right-1.5 grid size-5 place-items-center rounded-full bg-foreground text-background shadow-card"
-                    onClick={remove}
-                    type="button"
-                  >
-                    <X size={11} strokeWidth={2.5} />
-                  </button>
-                </div>
-              ) : (
-                <FileCard
-                  key={item.id}
-                  name={item.file.name}
-                  onRemove={remove}
-                  size={item.file.size}
-                />
-              )
-            })}
-          </div>
+              if (kind === 'image' && preview) {
+                onImage(preview)
+              } else if (upload.state === 'ready' || upload.state === 'kept') {
+                // As the message will open it: a file the daemon keeps from
+                // there, a PDF, video or audio file, or one not sent yet,
+                // from this page's copy.
+                const local =
+                  upload.state === 'kept' || kind === 'pdf' || kind === 'video' || kind === 'audio'
+
+                onFile({
+                  mime: file.type || mimeOf(file.name),
+                  name: file.name,
+                  path: upload.state === 'ready' && !local ? upload.result.path : undefined,
+                  url: local ? copyOf(id, file) : undefined
+                })
+              }
+            }}
+            onRemove={id => {
+              // Its tab beside the chat goes with it: the daemon's copy is gone.
+              const item = files.find(file => file.id === id)
+              const copy = copies.current.get(id)
+
+              if (item?.upload.state === 'ready' && item.upload.result.path) {
+                visualsActions().close(`file:${item.upload.result.path}`)
+              }
+
+              if (copy) {
+                visualsActions().close(`file:${copy}`)
+                copies.current.delete(id)
+              }
+
+              draft.remove(id)
+            }}
+            onRetry={draft.retry}
+          />
         ) : null
       }
       accessory={accessory}
-      canSend={Boolean(text.trim()) || files.length > 0}
+      canSend={(Boolean(text.trim()) || files.length > 0) && draft.ready}
       onAttach={() => picker.current?.click()}
       onSend={() => void send()}
       sending={sending || queued}
@@ -1841,7 +1868,11 @@ function Composer({
       <input
         className="hidden"
         multiple
-        onChange={event => addFiles([...(event.target.files ?? [])])}
+        onChange={event => {
+          draft.add([...(event.target.files ?? [])])
+          // The same file chosen again is a new attachment.
+          event.target.value = ''
+        }}
         ref={picker}
         type="file"
       />
@@ -1869,7 +1900,7 @@ function Composer({
 
           if (pasted.length) {
             event.preventDefault()
-            addFiles(pasted)
+            draft.add(pasted)
           }
         }}
         placeholder={`Message ${bot?.display_name ?? 'bot'}`}
@@ -2039,6 +2070,11 @@ function BotConversation() {
     }
   }, [params.bot])
   const [lightbox, setLightbox] = useState<string | null>(null)
+  // Files dragged over the chat, on their way to the composer. Enters and
+  // leaves are counted: every child the drag crosses sends both, and Safari
+  // gives no `relatedTarget` to tell them apart.
+  const [dropping, setDropping] = useState(false)
+  const dragDepth = useRef(0)
   // A chat opens on its newest messages, so switching paints in one frame;
   // the rest of the first page follows without holding up input.
   const [historyWindow, setWindow] = useState({ section: params.section, count: FIRST_PAINT })
@@ -2928,9 +2964,22 @@ function BotConversation() {
   return (
     <div
       className="@container relative h-full min-h-0 overflow-hidden bg-background"
+      onDragEnter={event => {
+        if (canPrompt() && event.dataTransfer.types.includes('Files')) {
+          dragDepth.current += 1
+          setDropping(true)
+        }
+      }}
+      onDragLeave={() => {
+        if (dragDepth.current > 0 && --dragDepth.current === 0) {
+          setDropping(false)
+        }
+      }}
       onDragOver={event => event.preventDefault()}
       onDrop={event => {
         event.preventDefault()
+        dragDepth.current = 0
+        setDropping(false)
 
         if (!canPrompt()) {
           return
@@ -2951,6 +3000,14 @@ function BotConversation() {
         }
       }}
     >
+      {dropping ? (
+        <div
+          className="pointer-events-none absolute inset-3 z-40 grid place-items-center rounded-panel border-2 border-dashed border-accent/60 bg-background/70"
+          data-testid="drop-target"
+        >
+          <p className="hex-glass rounded-full px-4 py-2 font-medium">Drop files to attach</p>
+        </div>
+      ) : null}
       {/* Messages fade out under the header and the composer, as every
           scroller does (`.hex-fade-mask`), and are whole where they end. */}
       <div
@@ -3190,6 +3247,8 @@ function BotConversation() {
               bot={bot}
               draftVersion={draftVersion}
               key={params.section}
+              onFile={openBeside}
+              onImage={setLightbox}
               sectionId={params.section ?? null}
               sessionId={liveId}
               // A stopped turn is the Retry pill under it; the field stays calm.

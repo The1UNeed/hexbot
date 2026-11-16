@@ -1,7 +1,14 @@
 import { JsonRpcGatewayError } from '@hermes/shared'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { attachFile, botsCreate, botsUpdate, messagesFromHistory } from './api'
+import {
+  attachFile,
+  botsCreate,
+  botsUpdate,
+  messagesFromHistory,
+  PART_BYTES,
+  WholeFilesOnly
+} from './api'
 import { rpcCall } from './rpc'
 
 vi.mock('./rpc', () => ({ rpcCall: vi.fn() }))
@@ -19,19 +26,81 @@ describe('attachment size limits', () => {
     expect(rpcCall).not.toHaveBeenCalled()
   })
 
-  it('sends a supported file through the existing RPC', async () => {
-    vi.mocked(rpcCall).mockResolvedValue({ attached: true })
+  it('sends a file in parts, saying how much the daemon has, then attaches it', async () => {
+    vi.mocked(rpcCall).mockReset().mockResolvedValue({ attached: true })
+    const bytes = new Uint8Array(PART_BYTES * 2.5).map((_, i) => i % 251)
+    const progress: (number | undefined)[] = []
     await expect(
-      attachFile('session', new File(['hello'], 'small.txt', { type: 'text/plain' }))
-    ).resolves.toEqual({ attached: true })
-    expect(rpcCall).toHaveBeenCalledWith(
-      'file.attach',
-      expect.objectContaining({
-        session_id: 'session',
-        name: 'small.txt',
-        data_url: 'data:text/plain;base64,aGVsbG8='
+      attachFile('session', new File([bytes], 'notes.bin', { type: 'application/octet-stream' }), {
+        onProgress: value => progress.push(value)
       })
-    )
+    ).resolves.toEqual({ attached: true })
+    const calls = vi.mocked(rpcCall).mock.calls as [string, Record<string, unknown>][]
+    expect(calls.map(([method, input]) => [method, input.offset])).toEqual([
+      ['attachments.part', 0],
+      ['attachments.part', PART_BYTES],
+      ['attachments.part', PART_BYTES * 2],
+      ['file.attach', undefined]
+    ])
+    const upload = calls[0]![1].upload
+    expect(
+      calls.every(([, input]) => input.upload === upload && input.session_id === 'session')
+    ).toBe(true)
+    expect(calls[3]![1]).toEqual({ name: 'notes.bin', session_id: 'session', upload })
+
+    const sent = calls
+      .slice(0, 3)
+      .flatMap(([, input]) => [...Buffer.from(String(input.data), 'base64')])
+
+    expect(sent).toEqual([...bytes])
+    // Whole only when the daemon answers the attach.
+    expect(progress).toEqual([0.4, 0.8, 0.99])
+  })
+
+  it('sends the file whole to a daemon without part uploads', async () => {
+    vi.mocked(rpcCall)
+      .mockReset()
+      .mockRejectedValueOnce(new JsonRpcGatewayError('unknown runtime method', { code: -32601 }))
+      .mockResolvedValue({ attached: true })
+    await expect(
+      attachFile('old-chat', new File(['hello'], 'small.txt', { type: 'text/plain' }))
+    ).resolves.toEqual({ attached: true })
+    expect(rpcCall).toHaveBeenLastCalledWith('file.attach', {
+      session_id: 'old-chat',
+      name: 'small.txt',
+      data_url: 'data:text/plain;base64,aGVsbG8='
+    })
+    // Asked once: the next file there goes whole straight away.
+    await attachFile('old-chat', new File(['again'], 'again.txt', { type: 'text/plain' }))
+    expect(vi.mocked(rpcCall).mock.calls.map(([method]) => method)).toEqual([
+      'attachments.part',
+      'file.attach',
+      'file.attach'
+    ])
+  })
+
+  it('stages nothing ahead of Send on a daemon without part uploads', async () => {
+    vi.mocked(rpcCall)
+      .mockReset()
+      .mockRejectedValueOnce(new JsonRpcGatewayError('unknown runtime method', { code: -32601 }))
+    await expect(
+      attachFile('older-chat', new File(['hello'], 'small.txt'), { ahead: true })
+    ).rejects.toBeInstanceOf(WholeFilesOnly)
+    expect(vi.mocked(rpcCall).mock.calls.map(([method]) => method)).toEqual(['attachments.part'])
+  })
+
+  it('sends nothing more once nobody wants the file', async () => {
+    vi.mocked(rpcCall).mockReset().mockResolvedValue({})
+    const stop = new AbortController()
+    const file = new File([new Uint8Array(PART_BYTES * 3)], 'big.bin')
+
+    const sent = attachFile('session', file, {
+      onProgress: () => stop.abort(),
+      signal: stop.signal
+    })
+
+    await expect(sent).rejects.toThrow()
+    expect(vi.mocked(rpcCall).mock.calls.map(([method]) => method)).toEqual(['attachments.part'])
   })
 })
 
@@ -40,6 +109,7 @@ describe('PDF attachments', () => {
 
   it('sends a PDF as a file when the daemon cannot render its pages', async () => {
     vi.mocked(rpcCall)
+      .mockResolvedValueOnce({ received: 8 })
       .mockRejectedValueOnce(
         new JsonRpcGatewayError('pdftoppm not installed (poppler-utils package required)', {
           code: 5028
@@ -50,21 +120,25 @@ describe('PDF attachments', () => {
     await expect(
       attachFile('session', new File(['%PDF-1.4'], 'board.pdf', { type: 'application/pdf' }))
     ).resolves.toEqual({ attached: true, path: '/s/attachments/a-board.pdf' })
-    expect(vi.mocked(rpcCall).mock.calls.map(([method]) => method)).toEqual([
+    const calls = vi.mocked(rpcCall).mock.calls as [string, Record<string, unknown>][]
+    expect(calls.map(([method]) => method)).toEqual([
+      'attachments.part',
       'pdf.attach',
       'file.attach'
     ])
+    // The daemon keeps the parts of a PDF it could not draw, for the file.
+    expect(calls[2]![1].upload).toBe(calls[0]![1].upload)
   })
 
   it('keeps any other refusal', async () => {
-    vi.mocked(rpcCall).mockRejectedValueOnce(
-      new JsonRpcGatewayError('payload is not a PDF', { code: 4017 })
-    )
+    vi.mocked(rpcCall)
+      .mockResolvedValueOnce({ received: 4 })
+      .mockRejectedValueOnce(new JsonRpcGatewayError('payload is not a PDF', { code: 4017 }))
 
     await expect(
       attachFile('session', new File(['nope'], 'board.pdf', { type: 'application/pdf' }))
     ).rejects.toThrow('payload is not a PDF')
-    expect(rpcCall).toHaveBeenCalledTimes(1)
+    expect(rpcCall).toHaveBeenCalledTimes(2)
   })
 })
 

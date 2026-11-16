@@ -766,6 +766,7 @@ async fn recovery_waiters_keep_fifo_uploads_and_chain_across_configuration_resta
         images: vec![image.clone()],
         refs: vec![file.display().to_string()],
         files: vec![file.clone()],
+        at: common::now(),
     });
     let recovery = old.recovery_gate.lock().await;
     runtime

@@ -57,6 +57,25 @@ data model. The native transport and event projection live in
   `file.attach {session_id, data_url, name}`, `pdf.attach {session_id, content_base64}`.
   `attachments.clear {session_id}` clears all unsubmitted attachments and removes
   their staged files. It refuses while the bot is working and keeps the session.
+  `attachments.remove {session_id, id}` → `{removed: true}` takes back one
+  staged upload and removes its files, for a file the user took out of the
+  composer; it works while the bot is working, and an upload a message
+  already took, or one never staged, answers 4204. Clients stage each file
+  the moment it is attached and send only once every one is staged.
+  `attachments.part {session_id, upload, offset, data}` → `{received}` sends
+  a file in parts, so a client can show how much of it the daemon has:
+  `upload` is the client's name for it (1 to 64 letters, digits, `-` or `_`),
+  `offset` the bytes sent so far (0 starts it afresh), `data` base64 of at
+  most 8 MiB. A part out of order answers 4202, a continuation of an
+  unknown upload 4204, and an upload past 45 MiB 4202. Parts wait on disk in
+  the chat's folder, so a new process for the chat keeps them; a new upload
+  drops ones idle for an hour and keeps at most four. Then
+  `image.attach_bytes`, `file.attach` or `pdf.attach` with `upload` in place
+  of `content_base64` or `data_url` stages it with the same checks and drops
+  the parts; a refused attach keeps them, so a PDF the daemon cannot draw
+  (5028) can go as a file. `attachments.clear` drops parts too. A daemon
+  without the method answers -32601, and has no `attachments.remove` either:
+  clients keep files until Send there and send them whole.
   Each attach call answers with an `id`. `prompt.submit` with
   `attachments: [id, ...]` consumes only those staged uploads. Unselected
   uploads remain staged for a later submission, including uploads from another
@@ -64,8 +83,13 @@ data model. The native transport and event projection live in
   An id that is no longer staged answers 4204 and changes nothing. Without
   `attachments`, every staged upload goes with the prompt as before. Rejected
   prompts restore selected uploads alongside unselected and newly staged ones.
-  Retained uploads still count toward staging limits, prevent idle retirement,
-  and survive a tools or model restart. `attachments.clear`, session close and
+  Retained uploads still count toward staging limits and survive a tools or
+  model restart. They do not keep a process: one retiring idle parks them, and
+  the section's next open takes them back. One staged over a day ago and
+  never sent is removed instead, at retirement or by the daemon's
+  maintenance pass, without the chat opening. A background result, a hidden
+  deadline input or a new chat's kickoff never takes staged uploads; a
+  client's own `prompt.submit` without `attachments` still takes them all. `attachments.clear`, session close and
   section deletion remove unused staged files; submitting an exact list does not.
   Images allow 25 MiB decoded; PDFs and generic files allow 45 MiB.
   Larger attachments return 4202 with the size limit. Browser clients check

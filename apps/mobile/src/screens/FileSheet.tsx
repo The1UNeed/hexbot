@@ -51,6 +51,10 @@ export function FileSheet({
   const [sharing, setSharing] = useState(false)
 
   useEffect(() => {
+    if (file?.local) {
+      setOpened({ id: file.id, file: file.local })
+      return
+    }
     if (!file?.path) return
     let live = true
     setOpened({ id: file.id })

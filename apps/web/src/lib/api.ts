@@ -1115,11 +1115,93 @@ export function attachmentKind(mime: string, name: string): 'file' | 'image' | '
   return 'file'
 }
 
+/** How much of a file each `attachments.part` carries. */
+export const PART_BYTES = 768 * 1024
+
+/** Sessions whose daemon refused parts once: they are not asked again. */
+const wholeOnly = new Set<string>()
+
+/** A new daemon process, as after an update, may take parts: ask again. */
+export function forgetWholeOnly() {
+  wholeOnly.clear()
+}
+
+/** A daemon from before part uploads. */
+function unknownMethod(error: unknown): boolean {
+  return (
+    error instanceof JsonRpcGatewayError &&
+    (error.code === -32601 || /unknown (runtime )?method|method not found/i.test(error.message))
+  )
+}
+
+/**
+ * Sends a file to the daemon in parts, `onProgress` hearing the share it
+ * has, and returns the upload's name for the attach call. Null from a daemon
+ * that takes files only whole.
+ */
+async function sendParts(
+  sessionId: string,
+  file: File,
+  onProgress?: (fraction: number) => void,
+  signal?: AbortSignal
+): Promise<null | string> {
+  if (wholeOnly.has(sessionId)) {
+    return null
+  }
+
+  const upload = newInputId()
+
+  for (let offset = 0; offset === 0 || offset < file.size; offset += PART_BYTES) {
+    signal?.throwIfAborted()
+    const data = base64FromDataUrl(await readFileAsDataUrl(file.slice(offset, offset + PART_BYTES)))
+    signal?.throwIfAborted()
+
+    try {
+      await rpcCall('attachments.part', { data, offset, session_id: sessionId, upload })
+    } catch (error) {
+      if (offset === 0 && unknownMethod(error)) {
+        wholeOnly.add(sessionId)
+
+        return null
+      }
+
+      throw error
+    }
+
+    // Whole only once the daemon has staged it, which for a PDF means drawing its pages.
+    onProgress?.(file.size ? Math.min(0.99, (offset + PART_BYTES) / file.size) : 0.99)
+  }
+
+  return upload
+}
+
+/**
+ * A daemon from before part uploads, asked to stage a file ahead of Send. It
+ * cannot take a file back either, so the file stays here until Send.
+ */
+export class WholeFilesOnly extends Error {
+  constructor() {
+    super('This daemon takes files only when the message is sent.')
+    this.name = 'WholeFilesOnly'
+  }
+}
+
 /**
  * Stage one file for the next `prompt.submit`, picking the right Hexbot
- * method from its type.
+ * method from its type. It goes in parts, so `onProgress` hears how much the
+ * daemon has, 0 to 1; a daemon from before part uploads gets it whole, or,
+ * with `ahead` (staging before Send), nothing and `WholeFilesOnly`.
+ * `signal` stops it once nobody wants it.
  */
-export async function attachFile(sessionId: string, file: File): Promise<AttachResult> {
+export async function attachFile(
+  sessionId: string,
+  file: File,
+  {
+    ahead = false,
+    onProgress,
+    signal
+  }: { ahead?: boolean; onProgress?: (fraction: number) => void; signal?: AbortSignal } = {}
+): Promise<AttachResult> {
   const kind = attachmentKind(file.type, file.name)
   const limitMiB = kind === 'image' ? 25 : 45
 
@@ -1127,25 +1209,55 @@ export async function attachFile(sessionId: string, file: File): Promise<AttachR
     throw new Error(`attachment exceeds ${limitMiB} MiB`)
   }
 
-  const dataUrl = await readFileAsDataUrl(file)
+  const upload = await sendParts(sessionId, file, onProgress, signal)
+
+  if (!upload && ahead) {
+    throw new WholeFilesOnly()
+  }
+
+  const whole = async () => {
+    const dataUrl = await readFileAsDataUrl(file)
+    signal?.throwIfAborted()
+
+    return dataUrl
+  }
 
   if (kind === 'image') {
-    return imageAttachBytes(sessionId, base64FromDataUrl(dataUrl), file.name)
+    return upload
+      ? rpcCall('image.attach_bytes', { filename: file.name, session_id: sessionId, upload })
+      : imageAttachBytes(sessionId, base64FromDataUrl(await whole()), file.name)
   }
 
   if (kind === 'pdf') {
     try {
-      return await pdfAttach(sessionId, base64FromDataUrl(dataUrl))
+      return upload
+        ? await rpcCall('pdf.attach', { session_id: sessionId, upload })
+        : await pdfAttach(sessionId, base64FromDataUrl(await whole()))
     } catch (error) {
       // A daemon without a PDF renderer (5028) still takes the PDF as a file:
-      // the bot reads it with its tools, and it opens beside the chat.
+      // the bot reads it with its tools, and it opens beside the chat. It
+      // keeps the parts of a PDF it could not draw.
       if (!(error instanceof JsonRpcGatewayError && error.code === 5028)) {
         throw error
       }
     }
   }
 
-  return fileAttach(sessionId, dataUrl, file.name)
+  return upload
+    ? rpcCall('file.attach', { name: file.name, session_id: sessionId, upload })
+    : fileAttach(sessionId, await whole(), file.name)
+}
+
+/**
+ * Takes back one staged upload the user removed before sending. Best effort:
+ * an older daemon without the method, or an upload already gone, keeps it
+ * out of the next message all the same, since a message names its uploads.
+ */
+export function attachmentRemove(sessionId: string, id: string): Promise<void> {
+  return rpcCall('attachments.remove', { id, session_id: sessionId }).then(
+    () => undefined,
+    () => undefined
+  )
 }
 
 // ---------------------------------------------------------------------------

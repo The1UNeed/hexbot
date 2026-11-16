@@ -23,6 +23,11 @@ export function holdCopy(file: Blob): string {
   return url
 }
 
+/** True while `url` from `holdCopy` has not been released. */
+export function stillHeld(url: string): boolean {
+  return held.has(url)
+}
+
 function inUse(): Set<string> {
   const used = new Set<string>()
 

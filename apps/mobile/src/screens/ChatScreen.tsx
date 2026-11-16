@@ -67,6 +67,7 @@ import type {
   ApprovalRequestView,
   AttachmentView,
   CardAnswer,
+  ComposerAttachment,
   ChatItem
 } from './types'
 
@@ -99,8 +100,12 @@ export interface ChatScreenProps {
   onStop?: () => void
   /** Leave out to hide the attach button. Its menu offers photos, the camera and files. */
   onAttach?: (source: AttachSource) => void
-  attachments?: AttachmentView[]
+  attachments?: ComposerAttachment[]
   onRemoveAttachment?: (id: string) => void
+  /** Opens a file that finished uploading, to preview it. */
+  onOpenAttachment?: (id: string) => void
+  /** Tries a failed upload again. */
+  onRetryAttachment?: (id: string) => void
   /** Controlled draft; leave both out to let the screen keep it. */
   draft?: string
   onDraftChange?: (text: string) => void
@@ -1129,7 +1134,9 @@ function Composer({
   draft,
   onAttach,
   onDraftChange,
+  onOpenAttachment,
   onRemoveAttachment,
+  onRetryAttachment,
   onSend,
   onStop,
   sendDisabledReason,
@@ -1172,20 +1179,64 @@ function Composer({
         >
           {attachments.map(file => (
             <View key={file.id} style={[styles.pendingFile, { backgroundColor: theme.fill }]}>
-              <Ionicons
-                color={theme.muted}
-                name={
-                  file.kind === 'image'
-                    ? 'image-outline'
-                    : file.kind === 'video'
-                      ? 'videocam-outline'
-                      : 'document-outline'
+              {/* Uploading spins; a failed upload says why and tries again; a
+                  finished one opens to preview. */}
+              <Pressable
+                accessibilityLabel={
+                  file.status === 'ready'
+                    ? file.previewable === false
+                      ? file.name
+                      : `Preview ${file.name}`
+                    : file.status === 'failed'
+                      ? `Retry uploading ${file.name}. ${file.error ?? ''}`
+                      : `Uploading ${file.name}, ${Math.floor((file.progress ?? 0) * 100)}%`
                 }
-                size={16}
-              />
-              <Text numberOfLines={1} style={styles.fileName} variant="footnote">
-                {file.name}
-              </Text>
+                accessibilityRole="button"
+                accessibilityState={{ busy: file.status === 'uploading' }}
+                disabled={
+                  file.status === 'uploading' ||
+                  (file.status === 'ready'
+                    ? !onOpenAttachment || file.previewable === false
+                    : !onRetryAttachment)
+                }
+                onPress={() =>
+                  file.status === 'ready'
+                    ? onOpenAttachment?.(file.id)
+                    : onRetryAttachment?.(file.id)
+                }
+                style={styles.pendingOpen}
+                testID={`chat-attachment-${file.id}`}
+              >
+                {file.status === 'uploading' ? (
+                  <Text style={styles.percent} tone="muted" variant="footnote">
+                    {Math.floor((file.progress ?? 0) * 100)}%
+                  </Text>
+                ) : (
+                  <Ionicons
+                    color={file.status === 'failed' ? theme.danger : theme.muted}
+                    name={
+                      file.status === 'failed'
+                        ? 'refresh'
+                        : file.kind === 'image'
+                          ? 'image-outline'
+                          : file.kind === 'video'
+                            ? 'videocam-outline'
+                            : 'document-outline'
+                    }
+                    size={16}
+                  />
+                )}
+                <Text
+                  numberOfLines={1}
+                  style={styles.fileName}
+                  tone={file.status === 'failed' ? 'danger' : undefined}
+                  variant="footnote"
+                >
+                  {file.status === 'failed'
+                    ? `${file.name}: ${file.error ?? 'not uploaded'}`
+                    : file.name}
+                </Text>
+              </Pressable>
               {onRemoveAttachment ? (
                 <IconButton
                   accessibilityLabel={`Remove ${file.name}`}
@@ -1340,6 +1391,8 @@ const styles = StyleSheet.create({
   reactions: { flexDirection: 'row', gap: 4, marginTop: -8, paddingHorizontal: 10, zIndex: 1 },
   notice: { marginTop: 14, paddingHorizontal: 24 },
   pending: { gap: 8 },
+  pendingOpen: { alignItems: 'center', flexDirection: 'row', flexShrink: 1, gap: 6 },
+  percent: { fontVariant: ['tabular-nums'], minWidth: 30 },
   pendingFile: {
     alignItems: 'center',
     borderRadius: 999,

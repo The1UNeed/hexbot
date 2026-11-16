@@ -697,3 +697,88 @@ async fn background_reply_retries_after_an_earlier_replacement_fails() {
     assert_eq!(processes(home.path()).len(), 3);
     runtime.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_background_result_leaves_the_files_waiting_in_the_composer() {
+    let (home, runtime, _) = setup();
+    let id = open(&runtime).await;
+    let file = runtime
+        .call(
+            "alice",
+            "file.attach",
+            &json!({"session_id":id,"name":"contract.txt","data_url":"data:text/plain;base64,aGVsbG8="}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    runtime
+        .return_result("alice", "owl", "first", "the delegate finished", None)
+        .await;
+    // The bot took the result, not the file the user has not sent.
+    let live = runtime.sessions.lock().unwrap()["first"].clone();
+    let staged = live
+        .state
+        .lock()
+        .unwrap()
+        .staged
+        .iter()
+        .map(|u| u.id.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(staged, vec![file["id"].as_str().unwrap().to_owned()]);
+    let intents: Vec<String> = store::open(home.path())
+        .unwrap()
+        .prepare("SELECT text FROM native_prompt_intents WHERE session_id='first'")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<std::result::Result<_, _>>()
+        .unwrap();
+    assert!(intents.iter().any(|t| t.contains("the delegate finished")));
+    assert!(intents.iter().all(|t| !t.contains("Attached files")));
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_new_chat_greeting_leaves_the_files_waiting_in_the_composer() {
+    let (home, runtime, _) = setup();
+    let id = open(&runtime).await;
+    let file = runtime
+        .call(
+            "alice",
+            "file.attach",
+            &json!({"session_id":id,"name":"brief.txt","data_url":"data:text/plain;base64,aGVsbG8="}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    runtime
+        .call(
+            "alice",
+            "hexbot.bots.introduce",
+            &json!({"name":"owl","section":"first"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let live = runtime.sessions.lock().unwrap()["first"].clone();
+    let staged = live
+        .state
+        .lock()
+        .unwrap()
+        .staged
+        .iter()
+        .map(|u| u.id.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(staged, vec![file["id"].as_str().unwrap().to_owned()]);
+    let intents: Vec<String> = store::open(home.path())
+        .unwrap()
+        .prepare("SELECT text FROM native_prompt_intents WHERE session_id='first'")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<std::result::Result<_, _>>()
+        .unwrap();
+    assert!(!intents.is_empty());
+    assert!(intents.iter().all(|t| !t.contains("Attached files")));
+    runtime.shutdown().await;
+}
