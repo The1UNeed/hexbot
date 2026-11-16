@@ -21,6 +21,7 @@ export const docGroups = [
       { title: 'Email', summary: 'Let bots read Gmail, Outlook or any other mailbox and draft email you edit and send.', href: '/docs/email/' },
       { title: 'Memory', summary: "Edit a bot's soul and memory, and your About you text.", href: '/docs/memory/' },
       { title: 'Rooms', summary: 'Work with several bots and people, or ask another bot for private help.', href: '/docs/rooms/' },
+      { title: 'Discord', summary: 'Add a bot to a Discord server. People @mention it there, and you watch the conversation in Hexbot.', href: '/docs/discord/' },
       { title: 'Scheduled work', summary: 'Ask a bot to run reminders, recurring jobs, or scripts.', href: '/docs/scheduling/' },
       { title: 'Dreaming', summary: 'Review recent conversations and restore earlier bot memory.', href: '/docs/dreaming/' },
     ],

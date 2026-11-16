@@ -116,6 +116,61 @@ Rooms appear in the roster list next to bots, ordered by
 `last_activity_at`, and use the same section semantics: a room is one
 section today; room sections come with threads later.
 
+## Discord rooms
+
+A Discord channel can be a room (`discord.rs`, API in `docs/api.md`,
+Discord). Each bot connects its own Discord app with a token from the
+Discord Developer Portal, so several of the owner's bots can sit in one
+server and each keeps what it hears in its own room session and notes.
+
+- `discord_bots(bot, owner_id, application_id, user_id, username, status,
+  error, connected_at, updated_at)`: the bot's app. The token is
+  `accounts/discord/<bot>.json`.
+- `discord_channels(channel_id, guild_id, room_id, guild_name,
+  channel_name, posted_seq)`: the channel a room mirrors and the last room
+  event the outbox handled.
+- `discord_messages(message_id, room_id, seq, bot)`: which Discord message
+  is which room event; `bot` is the bot that posted it, NULL for people. A
+  message seen by several bots' connections lands once.
+- `discord_closed(channel_id, closed_at)`: when a channel's last Discord room
+  was deleted.
+
+The first mention of a bot in a channel creates the room, Manual, with the
+20 messages before it marked `history`, except that a person's mention of a
+connected bot in the minute before, possibly still on its way through another
+bot's connection, and what followed it are ingested live (`IN_FLIGHT_MS`),
+each with its own retries, unless it was said before the channel's last room
+was deleted (`discord_closed`); a late copy of such a message is dropped. It has no main bot. A bot joins the
+room when it is mentioned there or replied to, also by another of the
+owner's bots, and comes back that way after the owner removed it or it was
+disconnected. Every mentioned bot joins in the transaction that saves the
+message, with `added_at` now, or the time of the bot reply that brought it
+in, and in a Discord room only messages from `added_at` on address it. The
+message is saved even while a member removal holds the room; the wake waits
+for the removal (`RoomEngine::notify_later`).
+Messages from other apps' Discord bots, and messages that arrive while the
+room is archived, start no turn; another app's bot also opens no room and
+brings no bot in. Only the first copy of a person's message brings bots in,
+and a bot reply never brings back a bot removed after it was written. A bot
+reply is matched to its room event by the message id recorded when it was
+posted, else its nonce, else, when it has no nonce, the author's oldest reply
+not yet posted; a post whose nonce names another room brings nobody in. People's messages are `message.user` events with `actor_kind:
+discord` and the author's name in the payload; the prompt names them as
+Discord shows them, after `speaker()` strips anything that could pose as a
+bot or a line. Each bot's reply goes out through its own app. One worker
+takes the Gateway's messages in order, trying a failed one twice more; one
+outbox worker posts, woken by `message.bot` events and on start, from
+`posted_seq`, part by part with a nonce, and tries again every 30 seconds
+while Discord is unreachable or answering 5xx or the database is busy. A
+bot's own post coming back on its Gateway marks its part sent.
+
+Bots in a Discord room have only notes and the web (`discord::TOOLS`). Their
+prompt is the soul and the Discord rules, without memory, About you, files,
+teammates or skills, and every line a person wrote is prefixed with their
+name. Notes become memory proposals the dream treats as untrusted, and the
+dream leaves Discord rooms out. The app shows the room read-only with an
+Open in Discord link.
+
 ## Bot-to-bot messages
 
 The native daemon provides `message_bot {to, text, wait: bool}` for bots:

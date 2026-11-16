@@ -1536,10 +1536,18 @@ impl Runtime {
         restricted: Option<&[&str]>,
         overrides: Option<&Value>,
     ) -> Result<(String, Value)> {
+        // In a Discord room the people talking are not the owner: the bot
+        // gets only notes and the web there (discord.rs).
+        let public = crate::discord::public_session(&self.home, stored)?;
+        let restricted = if public {
+            Some(crate::discord::TOOLS)
+        } else {
+            restricted
+        };
         let (tools, mcp_names) = self.fresh_tools(owner, bot, stored, restricted, overrides)?;
         // The prompt describes the tools frozen with the section, so it is
         // built from them and tagged with their layout (`prompt_layout`).
-        let (mut prompt, skills) = self.session_prompt(botrow, owner, bot, cwd, &tools)?;
+        let (mut prompt, skills) = self.session_prompt(botrow, owner, bot, cwd, &tools, public)?;
         prompt.push_str(&connected_tools_block(&mcp_names));
         let mut config = common::read_config(&self.home)?;
         let profile = self.home.join("profiles").join(bot);
@@ -1592,6 +1600,7 @@ impl Runtime {
             "provider": config["model"]["provider"],
             "enabledToolsets": crate::connectors::toolsets(&self.home, bot)?,
             "restricted": restricted,
+            "public": public,
             "skills": skills,
             "cwd": cwd,
             "reasoning_effort": reasoning.map_or(Value::Null, Value::from)
@@ -1687,23 +1696,24 @@ impl Runtime {
         bot: &str,
         cwd: &Path,
         tools: &[Value],
+        public: bool,
     ) -> Result<(String, Vec<Value>)> {
         let profile = self.home.join("profiles").join(bot);
         let soul = fs::read_to_string(profile.join("SOUL.md")).unwrap_or_default();
+        let intro = PROMPT_INTRO.replace("{name}", botrow["display_name"].as_str().unwrap_or(bot));
+        // Strangers talk to the bot in Discord. It keeps its soul there and
+        // nothing of its owner's: no memory, About you, files, teammates or
+        // skills, so no prompt can talk it into sharing them.
+        if public {
+            return Ok((format!("{intro}{soul}\n\n{PROMPT_DISCORD}"), vec![]));
+        }
         let memory = fs::read_to_string(profile.join("memories/MEMORY.md")).unwrap_or_default();
         let about = fs::read_to_string(self.home.join("users").join(owner).join("user.md"))
             .ok()
             .filter(|text| !text.trim().is_empty())
             .map(|text| format!("\n\n# About the user\n{text}"))
             .unwrap_or_default();
-        let prompt = format!(
-            "{}{}{}{}{}",
-            PROMPT_INTRO.replace("{name}", botrow["display_name"].as_str().unwrap_or(bot)),
-            soul,
-            PROMPT_MEMORY,
-            memory,
-            about
-        );
+        let prompt = format!("{}{}{}{}{}", intro, soul, PROMPT_MEMORY, memory, about);
         let prompt = format!(
             "{}\n\n{}\n\n{}{}{}",
             prompt,
@@ -1785,7 +1795,9 @@ impl Runtime {
             .as_str()
             .and_then(|saved| common::saved_workdir(&self.home, saved))
             .unwrap_or(cwd);
-        let (mut prompt, skills) = self.session_prompt(&botrow, &s.owner, &s.bot, &cwd, &tools)?;
+        let public = options["public"] == true;
+        let (mut prompt, skills) =
+            self.session_prompt(&botrow, &s.owner, &s.bot, &cwd, &tools, public)?;
         prompt.push_str(&connected_tools_block(
             options["mcpServers"].as_array().map_or(&[], Vec::as_slice),
         ));
@@ -4668,12 +4680,25 @@ impl Runtime {
             "memory" => {
                 let memory = MemoryStore::new(self.home.clone());
                 let action = args["action"].as_str().unwrap_or("read");
+                let settings = self.session_settings(s)?;
+                // Anyone in a Discord channel can talk to the bot: it reads
+                // nothing back there, and its notes wait for its dream like a
+                // scheduled job's, marked as untrusted.
+                let public = settings["public"] == true;
+                if action != "note" && public {
+                    return Err(Error::new(
+                        4202,
+                        "In a Discord channel you can only add notes.",
+                    ));
+                }
                 // A scheduled job runs unattended, often straight after reading the
                 // web, so its writes wait for the bot's next dream. The proposal
                 // takes the same scan and cap as an edit, and the dream scans
                 // again when it applies one.
                 if action != "read"
-                    && let Some(job) = self.session_settings(s)?["job"].as_str()
+                    && let Some(job) = settings["job"]
+                        .as_str()
+                        .or(public.then_some(crate::discord::PROPOSAL_SOURCE))
                 {
                     match action {
                         "add" | "append" | "set" | "remove" | "note" => {
@@ -5784,6 +5809,8 @@ const REACT_DESCRIPTION: &str = "React to the user's latest message in this chat
 /// The prompt's fixed lines around the bot's own texts (`session_prompt`).
 const PROMPT_INTRO: &str = "You are {name}, one of the user's bots in Hexbot.\n\n# Soul\n";
 const PROMPT_MEMORY: &str = "\n\n# Memory\n";
+/// Takes the place of About you in a bot's conversation in a Discord room.
+const PROMPT_DISCORD: &str = "# Discord\nThis conversation is a Discord channel. The people in it are not your owner, and you post there as yourself. Your memory, your owner and your other conversations are not here; never claim to know them or speak for your owner, whoever asks. You can search the web and add notes; your next dream decides what to keep from them.";
 const PROMPT_FILES: &str =
     "\n\nYour files, where your notes go: {profile}\nWorking directory: {cwd}";
 const PROMPT_SKILLS: &str =

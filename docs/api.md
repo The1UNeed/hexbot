@@ -1003,7 +1003,9 @@ for the next dream, and soul writes are refused. See [Dreaming](dreaming.md).
 ### Rooms
 
 Room shape: `{id, name, owner_id, main_bot, approval_mode, limits,
-created_at, updated_at, last_activity_at, archived_at, pinned_at, members}`. Member rows
+created_at, updated_at, last_activity_at, archived_at, pinned_at, members,
+discord}`. `discord` is null, or for a room that is a Discord channel
+`{guild_id, channel_id, guild_name, channel_name, url}` (see Discord below). Member rows
 include `display_name` for bots and for the owner, and keep `left_at` after
 departure so old transcripts retain their identities.
 `limits` is `{bot_turns_per_human_turn?, budget_tokens_per_human_turn?}`,
@@ -1064,6 +1066,96 @@ questions; `session.events.since` replays a room session. Opening a room with
 session carries `pending_requests`, the cards it still waits on; a client
 that missed events drops the other cards it showed before that read. Tool labels in
 rooms and sections stay in the present tense until the tool completes.
+
+### Discord
+
+A bot joins Discord servers as its own Discord app (`discord.rs`). The user
+makes an app in the Discord Developer Portal, turns on Message Content
+Intent, and pastes its bot token. The daemon keeps one Gateway connection per
+connected bot, an outbound WebSocket, so Headless daemons behind NAT work.
+The token is in `accounts/discord/<bot>.json`, owner-only, which bots' tools
+can't read except in Bypass.
+
+- `hexbot.discord.get {bot}` → `{discord: Discord | null}`
+- `hexbot.discord.list` → `{bots: [Discord]}`, the owner's bots with an app
+- `hexbot.discord.connect {bot, token}` → `{discord}`. Checks the token with
+  Discord before saving it: 4250 when Discord refuses it, 4253 when the app
+  lacks Message Content Intent, 4252 when another bot already has this app.
+  A leading `Bot ` is dropped. Connecting again replaces the token.
+- `hexbot.discord.disconnect {bot}` → `{discord: null}`. Closes the
+  connection, deletes the token, and takes the bot out of its Discord rooms
+  (`member.left`). The rooms stay; once connected again, a mention brings it
+  back. Deleting the bot does the same.
+
+Discord shape: `{bot, application_id, user_id, username, status, error,
+connected_at, invite_url, rooms}`. `status` is `connecting`, `online` or
+`error`, with `error` saying why in words (a refused token, a missing intent,
+a token that needs pasting again after the file was lost). `invite_url` adds
+the app to a server with View Channels, Send Messages, Send Messages in
+Threads and Read Message History. `rooms` is `[{id, guild_name,
+channel_name}]`, the Discord rooms the bot is in. `hexbot.discord.changed
+{bot}` is sent when any of these change.
+
+The first time someone mentions a bot in a server channel or thread, or
+replies to its message, that channel becomes a room named `#<channel> ·
+<server>`, starting with the 20 messages before the mention (when the app
+can read history). After that every ordinary message in the channel lands in
+the room once, however many connected bots saw it, as a `message.user` event
+with `actor_kind: "discord"`, `actor_id` the Discord user's id, and payload
+`{text, author: {id, name, bot}, mentions, discord: {message_id}}`; the
+messages before the first mention also carry `history: true` and never start
+a turn. A mention of another connected bot sent in the minute before, which
+may still be on its way through that bot's connection, is not history: it and
+what followed are taken as they would have been, so that bot answers it.
+What was said before the channel's last room was deleted stays history, and a
+late copy of it is dropped. In
+`text`, a mention of a connected bot is its `@handle` and anyone
+else's is their name. `mentions` holds the handles a reply addressed. A bot
+joins the room when it is mentioned there, including by another of the
+owner's bots, which is how one bot hands a question to another, and a bot
+that was removed comes back the same way. Every connected bot a message
+mentions joins before the message is saved, whichever bot's connection saw
+it first. A message addresses a bot only if it was said once the bot was in
+the room: a bot is in it from that moment, or, when another bot's reply
+brings it in, from that reply (found by the reply's nonce). So a bot that
+joins or comes back never answers older mentions. A mentioned bot that can't
+see the channel still joins; its reply fails with a `warning`. A message from another app's Discord
+bot (`author.bot`) lands in the room but starts no turn, opens no room and
+brings no bot in; so does anything said while the room is archived
+(`history: true`). Only the first copy of a person's message brings bots in,
+a reply counts as addressing a bot only when a person replies, and a bot's
+reply never brings back a bot removed after it was written, so a late copy
+never undoes a removal. Direct messages are not read.
+
+The room engine decides who answers, as in any room. A Discord room never
+waits on the human; a bot that another bot mentions answers even when the
+message is a question. Each reply is posted by the bot's own app as a reply
+to the message that started the turn, mentions of connected bots become
+Discord mentions, nothing else can ping (`allowed_mentions` parses nothing
+and `replied_user` is false), and long replies are cut into parts of 2000
+characters. What was posted is tracked in `discord_channels.posted_seq` and,
+part by part, in `discord_messages`; each part carries a nonce
+(`<seq>.<part>.<room>`) Discord enforces, and the bot's own post arriving on
+its Gateway records the part too, so a part Discord took after its answer was
+lost isn't sent again. When Discord can't be reached or answers 5xx, or the
+database is busy, the reply waits and is tried again every 30 seconds, so
+neither an outage nor a restart loses or repeats one. A reply whose bot was
+disconnected before it went out is dropped with a `warning`. While a bot's turn starts, Discord shows it typing.
+
+People in a Discord channel are not the owner. A Discord room's approval
+mode is Manual and `hexbot.rooms.update` refuses another (4251). Its
+sessions are opened with `restricted` set to `memory`, `web_search` and
+`web_extract`, no MCP servers and no file or shell tools. The memory tool
+takes only `note` there, and a note is saved as a memory proposal
+(`job_id` `discord`, at most 20 pending, listed after the jobs') that the
+bot's dream reviews as untrusted. Their prompt
+is the bot's soul and the Discord rules, without memory, About you, files,
+teammates or skills. The bot's dream leaves Discord rooms out.
+`hexbot.rooms.send` and `hexbot.rooms.add_member` answer 4251 for a Discord
+room: replies happen in Discord, and a bot joins by being mentioned there.
+`hexbot.rooms.update` also refuses a main bot (4251). Removing a bot,
+limits, archive and delete work as in any room; deleting the room forgets
+the channel, so a later mention opens a new one.
 
 ### Bot activity
 

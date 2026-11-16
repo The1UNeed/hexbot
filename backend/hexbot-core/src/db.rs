@@ -104,6 +104,23 @@ CREATE TABLE IF NOT EXISTS message_reactions(
  emoji TEXT NOT NULL, owner_id TEXT NOT NULL, created_at REAL NOT NULL,
  offered INTEGER NOT NULL DEFAULT 0, noted_at REAL,
  PRIMARY KEY(section_id, message_id, by_bot));
+-- Discord (discord.rs): each bot's own Discord app, the channels that became
+-- rooms (posted_seq: the last room event the outbox handled), and which
+-- Discord message is which room event (bot: the bot that posted it, NULL for people).
+CREATE TABLE IF NOT EXISTS discord_bots(
+ bot TEXT PRIMARY KEY, owner_id TEXT NOT NULL, application_id TEXT NOT NULL, user_id TEXT,
+ username TEXT, status TEXT NOT NULL DEFAULT 'connecting', error TEXT, connected_at REAL,
+ updated_at REAL);
+CREATE TABLE IF NOT EXISTS discord_channels(
+ channel_id TEXT PRIMARY KEY, guild_id TEXT NOT NULL, room_id TEXT NOT NULL UNIQUE,
+ guild_name TEXT, channel_name TEXT, posted_seq INTEGER NOT NULL DEFAULT 0,
+ FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS discord_messages(
+ message_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, seq INTEGER, bot TEXT,
+ FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE);
+CREATE INDEX IF NOT EXISTS idx_discord_messages_room_seq ON discord_messages(room_id,seq);
+-- When each channel's last Discord room was deleted (discord.rs `closing`).
+CREATE TABLE IF NOT EXISTS discord_closed(channel_id TEXT PRIMARY KEY, closed_at REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_heartbeats_bot_started ON heartbeats(bot,started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_heartbeat_messages_section ON heartbeat_messages(section_id,context_at);
 CREATE INDEX IF NOT EXISTS idx_sections_bot ON sections(bot);

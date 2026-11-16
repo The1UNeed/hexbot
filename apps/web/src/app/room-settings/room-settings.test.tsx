@@ -53,6 +53,31 @@ describe('room settings', () => {
     })
   })
 
+  it('offers no main bot or Add bot in a Discord room, which stays on Manual', () => {
+    const discord: Room = {
+      ...room(['scout', 'writer']),
+      discord: {
+        channel_id: 'c1',
+        channel_name: 'general',
+        guild_id: 'g1',
+        guild_name: 'Server',
+        url: 'https://discord.com/channels/g1/c1'
+      },
+      main_bot: null
+    }
+
+    render(<RoomSettingsPanel room={discord} />)
+    expect(screen.getAllByTestId('room-member')).toHaveLength(2)
+    expect(screen.queryByRole('button', { name: 'Make main' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Add bot' })).toBeNull()
+    expect(screen.getByRole('link', { name: 'Open in Discord' })).toHaveAttribute(
+      'href',
+      'https://discord.com/channels/g1/c1'
+    )
+    expect(screen.getByText(/comes back the same way after you remove it/)).toBeVisible()
+    expect(screen.queryByLabelText('Room approval mode')).toBeNull()
+  })
+
   it('names bots from member rows when their profiles are not loaded', () => {
     const one = room(['scout'])
     one.members[0]!.display_name = 'Scout'

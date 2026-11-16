@@ -8,6 +8,7 @@ import { useBots } from '../../stores/bots'
 import { AdvancedTab } from './advanced'
 import { ApprovalsTab } from './approvals'
 import { ConnectorsTab } from './connectors'
+import { DiscordTab } from './discord'
 import { FaceTab } from './face'
 import { HeartbeatTab } from './heartbeat'
 import { MemoryTab } from './memory'
@@ -27,6 +28,7 @@ export const BOT_SETTINGS_TABS = [
   'tools',
   'connectors',
   'skills',
+  'discord',
   'approvals',
   'heartbeat',
   'advanced'
@@ -38,6 +40,7 @@ export const TAB_LABELS: Record<BotSettingsTab, string> = {
   advanced: 'Advanced',
   approvals: 'Approvals',
   connectors: 'Connectors',
+  discord: 'Discord',
   face: 'Face',
   heartbeat: 'Heartbeat',
   memory: 'Memory',
@@ -113,6 +116,7 @@ export function BotSettingsPanel({
       {tab === 'tools' && <ToolsTab bot={bot} onSave={save} />}
       {tab === 'connectors' && <ConnectorsTab bot={bot} initialConnector={connector} />}
       {tab === 'skills' && <SkillsTab bot={bot} onSave={save} />}
+      {tab === 'discord' && <DiscordTab bot={bot} />}
       {tab === 'approvals' && <ApprovalsTab bot={bot} onSave={save} />}
       {tab === 'heartbeat' && <HeartbeatTab bot={bot} />}
       {tab === 'advanced' && <AdvancedTab bot={bot} onDelete={remove} />}

@@ -61,9 +61,12 @@ export function roomMessage(event: RoomEvent, room: Room): ChatMessage | null {
     text: String(event.payload.text ?? ''),
     sender: event.actor_id ?? undefined,
     senderName:
-      event.kind === 'message.user'
-        ? memberName(room, 'human', event.actor_id) || 'Former member'
-        : undefined
+      event.kind !== 'message.user'
+        ? undefined
+        : // Someone in a Discord channel, named as Discord showed them.
+          event.actor_kind === 'discord'
+          ? event.payload.author?.name || 'Someone'
+          : memberName(room, 'human', event.actor_id) || 'Former member'
   }
 }
 

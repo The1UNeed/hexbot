@@ -101,7 +101,14 @@ export const RoomEventRow = memo(function RoomEventRow({
 
   const botName = useBots(state => (memberId ? state.byName[memberId]?.display_name : undefined))
 
+  // Someone in a Discord channel is named as Discord showed them.
+  const discordName =
+    event.actor_kind === 'discord' && typeof event.payload.author?.name === 'string'
+      ? event.payload.author.name
+      : undefined
+
   const member =
+    discordName ??
     (me && memberKind === 'human' && memberId === me.id ? me.display_name : undefined) ??
     (memberKind === 'bot' ? botName : undefined) ??
     memberName ??
@@ -170,7 +177,11 @@ export const RoomEventRow = memo(function RoomEventRow({
 
   // Your messages are the right-hand bubble; other people speak like the bots.
   // Without user accounts (or before you are known) every message is yours.
-  const mine = event.kind === 'message.user' && (!me || event.actor_id === me.id)
+  const mine =
+    event.kind === 'message.user' &&
+    event.actor_kind !== 'discord' &&
+    (!me || event.actor_id === me.id)
+
   const name = member
   // The teammates this bot asked during its turn, kept with its reply.
   const asked = event.kind === 'message.bot' ? storedAsks(event.payload.asks) : []
@@ -592,7 +603,7 @@ export function RoomConversation() {
           <div className="mx-auto max-w-[52rem] px-1" data-testid="room-composer" ref={composerBox}>
             <ComposerShell
               above={
-                mention === undefined ? null : (
+                mention === undefined || room.discord ? null : (
                   <RoomMentionPopover
                     bots={bots}
                     members={members}
@@ -601,27 +612,46 @@ export function RoomConversation() {
                   />
                 )
               }
-              canSend={Boolean(text.trim())}
+              canSend={!room.discord && Boolean(text.trim())}
               notice={status === 'stopped' && failure ? plainError(failure) : null}
-              onSend={send}
+              onSend={room.discord ? undefined : send}
               onStop={() => void roomsStop(roomId)}
               status={status}
               streaming={streaming}
             >
-              <textarea
-                aria-label="Message room"
-                className={composerFieldClass}
-                onChange={event => setText(event.target.value)}
-                onKeyDown={event => {
-                  if (event.key === 'Enter' && !event.shiftKey) {
-                    event.preventDefault()
-                    send()
-                  }
-                }}
-                placeholder={`Message ${room.name}`}
-                rows={1}
-                value={text}
-              />
+              {room.discord ? (
+                <p
+                  className="flex min-h-[30px] items-center gap-3 py-1 text-[length:var(--text-secondary)] text-muted"
+                  data-testid="room-discord"
+                >
+                  <span className="min-w-0 flex-1 truncate">
+                    This room is in Discord. Reply there.
+                  </span>
+                  <a
+                    className="shrink-0 font-medium text-foreground underline-offset-2 hover:underline"
+                    href={room.discord.url}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    Open in Discord
+                  </a>
+                </p>
+              ) : (
+                <textarea
+                  aria-label="Message room"
+                  className={composerFieldClass}
+                  onChange={event => setText(event.target.value)}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter' && !event.shiftKey) {
+                      event.preventDefault()
+                      send()
+                    }
+                  }}
+                  placeholder={`Message ${room.name}`}
+                  rows={1}
+                  value={text}
+                />
+              )}
             </ComposerShell>
           </div>
         }

@@ -283,6 +283,29 @@ Google's token for each covers all of them; the daemon still uses each
 connector's grant for its own tool alone, and a Microsoft token is renewed
 for its connector's permissions only.
 
+A bot's Discord app token is in `accounts/discord/<bot>.json`, owner-only
+plain JSON like the connectors' grants. It can read and post in every
+channel the app was added to, as that bot. Bots' shells and file tools can't
+read it in Manual or Auto; a bot in Bypass can. The daemon checks it with
+Discord before saving it and sends it only to Discord.
+
+Anyone in a Discord channel a bot was added to can talk to it, so a Discord
+room is a public room. Its bots run in Manual with only the memory tool's
+note action, web search and web page reading: no shell, files, other bots,
+plugins, MCP servers, passwords, connectors or the bots' computer. Their
+prompt there is the bot's soul and the Discord rules, without its memory,
+About you, files, teammates or skills, so there is nothing of the owner's
+for a stranger to talk it into sharing; keep secrets out of the soul of a
+bot you put in a public server. What strangers write never reaches memory
+directly: the bot's dream leaves Discord rooms out, and a note taken there
+waits as a proposal that the dream is told is untrusted, like a scheduled
+job's. A Discord room has no main bot, and messages from other Discord bots
+start no turn, so bots can't answer each other in a loop. Anyone in the
+channel can still make the bot spend tokens by mentioning it; for a busy
+server, set a daily token budget for each bot (`bot_daily_token_budget`). Replies can mention only
+connected bots and never `@everyone`, roles, other people, or the person
+they answer.
+
 IMAP mail's address, app password and servers are connector fields in
 `.env`, like other connector keys: plain text in an owner-only file. An app
 password can read, change and send all of that mailbox's mail. The daemon

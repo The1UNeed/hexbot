@@ -347,6 +347,9 @@ async fn run() -> Result<()> {
             app.rooms.reconcile().await?;
             diagnostics.launch_phase("Recover room turns", phase);
             let phase = Instant::now();
+            app.discord.start().await?;
+            diagnostics.launch_phase("Connect bots to Discord", phase);
+            let phase = Instant::now();
             app.dreaming.start().await?;
             diagnostics.launch_phase("Schedule dreaming", phase);
         }

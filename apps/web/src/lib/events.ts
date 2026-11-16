@@ -29,6 +29,7 @@ import type { GatewayEvent } from '@hermes/shared'
 import { useBots } from '../stores/bots'
 import { useComputer } from '../stores/computer'
 import { useConnectors } from '../stores/connectors'
+import { useDiscord } from '../stores/discord'
 import { useHeartbeat } from '../stores/heartbeat'
 import { useMe } from '../stores/me'
 import { refreshPasswordsIfLoaded } from '../stores/passwords'
@@ -260,6 +261,14 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
 
     case 'hexbot.connectors.changed':
       effects.refreshConnectors()
+
+      return
+
+    // A bot's Discord app connected, went offline or joined a channel.
+    case 'hexbot.discord.changed':
+      void useDiscord
+        .getState()
+        .refreshLoaded(typeof payload.bot === 'string' ? payload.bot : undefined)
 
       return
 

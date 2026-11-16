@@ -24,7 +24,8 @@ export interface ComposerShellProps {
   /** One line above the field, coloured by `status` (an error, "Waiting on you"). */
   notice?: ReactNode
   onAttach?: () => void
-  onSend: () => void
+  /** Without it the pill has no Send, as in a room that is a Discord channel. */
+  onSend?: () => void
   /** A room's Stop. A bot's chat has none: Recall takes a message back. */
   onStop?: () => void
   sending?: boolean
@@ -105,7 +106,7 @@ export function ComposerShell({
           >
             <Square className="fill-current" size={12} />
           </button>
-        ) : (
+        ) : onSend ? (
           <button
             aria-label="Send"
             className={cn(
@@ -120,7 +121,7 @@ export function ComposerShell({
           >
             {sending ? <Spinner size="sm" /> : <ArrowUp size={16} strokeWidth={2.5} />}
           </button>
-        )}
+        ) : null}
       </div>
     </div>
   )

@@ -1151,10 +1151,38 @@ export interface RoomLimits {
   [key: string]: unknown
 }
 
+/** The Discord channel a room mirrors (`discord_channels`). */
+export interface RoomDiscord {
+  channel_id: string
+  channel_name: null | string
+  guild_id: string
+  guild_name: null | string
+  /** Opens the channel in Discord. */
+  url: string
+}
+
+/** A bot's own Discord app (`hexbot.discord.*`); null when it has none. */
+export interface DiscordStatus {
+  application_id: string
+  bot: string
+  connected_at: null | number
+  /** What went wrong, in words, when `status` is `error`. */
+  error: null | string
+  /** Adds the bot's Discord app to a server. */
+  invite_url: string
+  /** The Discord rooms the bot is in. */
+  rooms: { channel_name: null | string; guild_name: null | string; id: string }[]
+  status: 'connecting' | 'error' | 'online'
+  user_id: null | string
+  username: null | string
+}
+
 export interface Room {
   approval_mode: BotApprovalMode | null
   archived_at: null | number
   created_at: number
+  /** Set when the room is a Discord channel; older daemons leave it out. */
+  discord?: null | RoomDiscord
   id: string
   last_activity_at: number
   limits: RoomLimits
@@ -1182,10 +1210,16 @@ export type RoomEventKind =
 
 export interface RoomEvent {
   actor_id: null | string
-  actor_kind: null | 'bot' | 'human' | 'system'
+  /** `discord`: someone in the Discord channel, named in `payload.author`. */
+  actor_kind: null | 'bot' | 'discord' | 'human' | 'system'
   created_at: number
   kind: RoomEventKind
-  payload: Record<string, unknown> & { attachments?: unknown[]; bot?: string; text?: string }
+  payload: Record<string, unknown> & {
+    attachments?: unknown[]
+    author?: { id?: string; name?: string }
+    bot?: string
+    text?: string
+  }
   room_id: string
   seq: number
 }

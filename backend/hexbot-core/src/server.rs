@@ -36,6 +36,7 @@ pub struct App {
     pub runtime: Arc<Runtime>,
     pub rooms: Arc<RoomEngine>,
     pub dreaming: Arc<crate::dreaming::Dreaming>,
+    pub discord: Arc<crate::discord::Discord>,
     memory: MemoryStore,
     tickets: Mutex<HashMap<String, (String, f64)>>,
     proofs: Arc<dpop::Proofs>,
@@ -127,6 +128,7 @@ impl App {
         ));
         let dreaming =
             crate::dreaming::Dreaming::new(home.clone(), runtime.clone(), events.clone());
+        let discord = crate::discord::Discord::new(home.clone(), events.clone(), rooms.clone());
         auth::local_token(&home)?;
         let (stop, _) = tokio::sync::watch::channel(false);
         let app = Arc::new(Self {
@@ -138,6 +140,7 @@ impl App {
             runtime,
             rooms,
             dreaming,
+            discord,
             tickets: Mutex::new(HashMap::new()),
             proofs: Arc::new(dpop::Proofs::default()),
             logins: Mutex::new(HashMap::new()),
@@ -163,6 +166,7 @@ impl App {
             runtime: self.runtime.clone(),
             rooms: self.rooms.clone(),
             dreaming: self.dreaming.clone(),
+            discord: self.discord.clone(),
             tickets: Mutex::new(std::mem::take(&mut *self.tickets.lock().unwrap())),
             proofs: self.proofs.clone(),
             logins: Mutex::new(std::mem::take(&mut *self.logins.lock().unwrap())),
@@ -480,7 +484,9 @@ impl App {
                 p["keep_room"] == true,
             ),
             _ => {
-                if let Some(result) = self.dreaming.call(owner, method, p).await {
+                if let Some(result) = self.discord.call(owner, method, p).await {
+                    result
+                } else if let Some(result) = self.dreaming.call(owner, method, p).await {
                     result
                 } else if let Some(result) = self.runtime.call(owner, method, p).await {
                     result
@@ -652,6 +658,13 @@ impl App {
                 result["bind_host"] = json!(self.address.ip().to_string());
             }
         }
+        // A deleted bot's Discord app goes offline and its token goes.
+        if method == "hexbot.bots.delete"
+            && let Some(bot) = p["name"].as_str()
+            && let Err(error) = self.discord.forget(bot)
+        {
+            eprintln!("Could not disconnect {bot} from Discord: {}", error.message);
+        }
         if method == "hexbot.rooms.send" {
             let id = common::required(p, "id")?;
             self.events.emit(
@@ -719,6 +732,7 @@ impl App {
     }
     pub async fn shutdown(&self) {
         self.disconnect();
+        self.discord.shutdown().await;
         self.rooms.shutdown().await;
         self.dreaming.shutdown().await;
         self.runtime.shutdown().await;
