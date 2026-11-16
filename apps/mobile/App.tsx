@@ -86,7 +86,14 @@ import { captureUsage, sendDailyUsage, useUsageData, watchUsageErrors } from './
 import { useFeeling } from './src/core/feelings'
 import { clearTapped, useTappedSection } from './src/core/tapped'
 import { useNotificationsPrompt } from './src/core/notificationsPrompt'
-import { chatPreview, pulseTarget, purposeOf, stoppedIn } from './src/core/routes'
+import {
+  botStatusOf,
+  chatPreview,
+  pulseTarget,
+  purposeOf,
+  stoppedIn,
+  unreadOf as unreadOfBot
+} from './src/core/routes'
 import { previewLine } from '../web/src/lib/preview'
 import { mediaKind, mediaOf, mimeOf } from '../web/src/lib/media'
 import { asksOf, askWords } from '../web/src/lib/asks'
@@ -584,11 +591,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
     via: d.kind === 'connect' ? 'connect' : 'lan',
     current: d.id === mobile.active?.id
   }))
-  // A finished turn in a bot's chat you have not seen; Check-ins do not count.
-  const unreadOf = (b: Bot) =>
-    (b.sections_recent ?? []).filter(
-      s => s.done_at && !s.archived_at && !purposeOf(s, mobile.sections)
-    )
+  const unreadOf = (b: Bot) => unreadOfBot(b, mobile.sections)
   const bots: BotSummary[] = mobile.bots.map(b => {
     return {
       ...faceOf(b),
@@ -598,7 +601,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
       description: b.description,
       preview: previewLine(chatPreview(b.name, mobile.sections, b.sections_recent) ?? '') || null,
       activity: b.status_detail?.text,
-      status: b.status === 'idle' && unreadOf(b).length ? ('done' as const) : b.status,
+      status: botStatusOf(b, mobile.sections),
       updatedAt: ms(b.last_activity_at)
     }
   })

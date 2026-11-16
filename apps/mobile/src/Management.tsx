@@ -15,6 +15,7 @@ import {
   Group,
   type IconName,
   Layer,
+  moodForStatus,
   PageLook,
   radius,
   randomFace,
@@ -57,7 +58,7 @@ import {
 } from '../../web/src/lib/plugin-rows'
 import { BrandSignInButton } from './ui/BrandSignInButton'
 import { PluginIcon } from './ui/PluginIcon'
-import { isOpenRoom } from './core/routes'
+import { botStatusOf, isOpenRoom } from './core/routes'
 import { allowPush, pushPermission, testNotification } from './core/push'
 import { FaceEditor } from './FaceEditor'
 import { aboutFile, DocumentPanel, FingerprintCards } from './Fingerprint'
@@ -1118,6 +1119,8 @@ export function Management({
             <BotFace
               face={bot ? bot.face : newFace}
               imageUri={botPhoto(bot)}
+              // What the bot is doing now, wherever it is, as in Library.
+              mood={bot ? moodForStatus(botStatusOf(bot, mobile.sections)) : undefined}
               name={
                 bot ? bot.display_name : str(values.display_name) || str(values.name) || 'New bot'
               }

@@ -369,8 +369,8 @@ export function workSentence(name: string, label: WorkLabel): string {
 
 /**
  * The live face of every section with a reply streaming in an open
- * transcript, by section. The sidebar and the header read it so they wear
- * the face the chat shows on that reply.
+ * transcript, by section. The sidebar, the header and the profile read it
+ * so they wear the face the chat shows on that reply.
  */
 export function liveMoodsOf(
   bySession: Record<

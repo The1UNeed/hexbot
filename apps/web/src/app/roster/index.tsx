@@ -24,7 +24,6 @@ import {
 import { toHandle } from '../../lib/bot-handle'
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
-import { moodForStatus } from '../../lib/face'
 import { setShownSection, usePageFocused } from '../../lib/page-visible'
 import { previewLine } from '../../lib/preview'
 import { reasoningOptions, runningLevel } from '../../lib/reasoning'
@@ -38,7 +37,6 @@ import { useEmotion } from '../../stores/emotions'
 import { useMe } from '../../stores/me'
 import { roomStatus, roomUnread, useRoomList, useRooms } from '../../stores/rooms'
 import {
-  botStatusWithLive,
   introduceBot,
   knownChat,
   legacyChat,
@@ -51,6 +49,7 @@ import {
 import { useSettings } from '../../stores/settings'
 import { useTranscripts } from '../../stores/transcripts'
 import { useUi } from '../../stores/ui'
+import { botRowState, chatShown } from '../bot-mood'
 import { rememberedTab } from '../bot-settings'
 import { type LiveMood, liveMoodsOf } from '../conversation/steps'
 import { UpdatePill } from '../update-pill'
@@ -315,33 +314,19 @@ function BotRow({
     return null
   }
 
-  // Prefer the live sections store; the bot row's recent list can lag behind.
-  const available = [
-    ...sections,
-    ...bot.sections_recent.filter(recent => !sections.some(section => section.id === recent.id))
-  ]
+  const { available, dot, mood, status, unread } = botRowState(
+    bot,
+    sections,
+    live,
+    moods,
+    active,
+    emotion
+  )
 
   // The last thing either side said in the chat, as a messaging app lists it.
   const chat = legacyChat(available, bot.name)
   const preview = chat && 'section' in chat ? previewLine(chat.section.preview) : ''
   const label = preview || bot.title || bot.description
-  const status = botStatusWithLive(bot, available, live)
-
-  // A turn finished in the chat that you have not seen on any device. Check-ins
-  // and archived sections do not count: opening the bot never clears them.
-  const unread = available.filter(
-    section => section.done_at && !section.archived_at && !section.purpose
-  )
-
-  const dot = status === 'idle' && !active && unread.length ? 'done' : status
-
-  const mood =
-    emotion ??
-    moodForStatus(
-      dot,
-      moods[bot.status_detail?.section_id ?? ''] ??
-        available.map(section => moods[section.id]).find(Boolean)
-    )
 
   const pinned = isPinned({ item: bot, kind: 'bot' })
 
@@ -717,11 +702,7 @@ export function RosterColumn() {
       />
     ) : (
       <BotRow
-        active={
-          asking
-            ? asking === (entry.item as Bot).name
-            : Boolean(params.section) && params.bot === (entry.item as Bot).name
-        }
+        active={chatShown((entry.item as Bot).name, asking, params)}
         bot={entry.item as Bot}
         draft={Object.values(sectionMap).some(
           section => section.bot === (entry.item as Bot).name && Boolean(drafts[section.id])

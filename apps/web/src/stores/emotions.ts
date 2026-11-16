@@ -1,8 +1,8 @@
 /**
  * What each bot feels right now, by bot name, for every face of it on
- * screen: its chat header, its live face, its latest room message and its
- * roster row. Fed by the conversation open on screen through the rules in
- * lib/emotions.ts. Not persisted.
+ * screen: its chat header, its live face, its latest room message, its
+ * roster row and its profile. Fed by the conversation open on screen
+ * through the rules in lib/emotions.ts. Not persisted.
  */
 
 import { useEffect, useMemo, useRef } from 'react'

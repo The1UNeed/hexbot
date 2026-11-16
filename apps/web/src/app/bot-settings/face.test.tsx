@@ -10,7 +10,7 @@ import { ProfileFace } from './shared'
 
 const navigate = vi.hoisted(() => vi.fn())
 
-vi.mock('@tanstack/react-router', () => ({ useNavigate: () => navigate }))
+vi.mock('@tanstack/react-router', () => ({ useNavigate: () => navigate, useParams: () => ({}) }))
 
 // jsdom has no canvas: the picture of a face is whatever names it.
 vi.mock('../../lib/avatar-builder', async original => ({
