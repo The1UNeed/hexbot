@@ -313,7 +313,9 @@ mutation methods check ownership.
   only if the original file has no ID.
 - `hexbot.settings.get {}` → `{approval_mode, lan_enabled,
   service_installed, workspace_dir, billing_notice_ack, dream_time, dream_enabled,
-  usage_data}`. `approval_mode` defaults to `smart` (Auto). `usage_data`
+  review_model, usage_data}`. `approval_mode` defaults to `smart` (Auto).
+  `review_model` (`provider/model`, default `null`) is the model that reviews
+  Auto mode's steps for every bot; `null` uses each bot's own. `usage_data`
   (default `false`) lets the daemon send anonymous usage data
   (`docs/usage-data.md`); turning it off deletes `<HEXBOT_HOME>/usage.json`.
   Bots cannot change it.
