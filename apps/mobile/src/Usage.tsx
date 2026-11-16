@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { type GestureResponderEvent, Platform, Pressable, StyleSheet, View } from 'react-native'
 import Svg, { Line, Path, Text as SvgText } from 'react-native-svg'
 
@@ -133,6 +133,13 @@ function Columns({
     }
   }
 
+  // Where the touch began, to tell a tap or a sideways drag from a swipe that scrolls the page.
+  const start = useRef({ x: 0, y: 0 })
+  const moved = (event: GestureResponderEvent) => ({
+    x: Math.abs(event.nativeEvent.pageX - start.current.x),
+    y: Math.abs(event.nativeEvent.pageY - start.current.y)
+  })
+
   return (
     <View
       accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
@@ -143,10 +150,18 @@ function Columns({
       accessible
       onAccessibilityAction={event => step(event.nativeEvent.actionName === 'increment' ? 1 : -1)}
       onLayout={event => setWidth(event.nativeEvent.layout.width)}
-      onMoveShouldSetResponder={() => true}
-      onResponderGrant={pick}
-      onResponderMove={pick}
-      onResponderTerminationRequest={() => false}
+      // A tap or a sideways drag reads a column. A vertical swipe is left to the page's
+      // scroll view and chooses none.
+      onResponderGrant={event => {
+        start.current = { x: event.nativeEvent.pageX, y: event.nativeEvent.pageY }
+      }}
+      onResponderMove={event => {
+        const { x, y } = moved(event)
+        if (x > y) pick(event)
+      }}
+      onResponderRelease={event => {
+        if (moved(event).y < 10) pick(event)
+      }}
       onStartShouldSetResponder={() => true}
       style={{ height }}
       testID="usage-chart"

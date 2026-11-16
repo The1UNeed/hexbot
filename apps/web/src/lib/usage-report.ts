@@ -370,11 +370,32 @@ export function seriesOf(
   return { buckets, keys }
 }
 
-const compact = new Intl.NumberFormat('en', { maximumFractionDigits: 1, notation: 'compact' })
+const UNITS: [number, string][] = [
+  [1e12, 'T'],
+  [1e9, 'B'],
+  [1e6, 'M'],
+  [1e3, 'K']
+]
+
+/**
+ * 12.9K, 329.1M, 1.2B for a positive value. Written out because Hermes, which
+ * runs the mobile app, ignores `Intl.NumberFormat`'s compact notation.
+ */
+function compact(value: number): string {
+  for (const [size, unit] of UNITS) {
+    const scaled = Math.round((value / size) * 10) / 10
+
+    if (scaled >= 1) {
+      return `${scaled}${unit}`
+    }
+  }
+
+  return String(Math.round(value))
+}
 
 /** 9,876 in full; 12.9K, 329M and 1.2B past ten thousand. */
 export function formatTokens(value: number): string {
-  return Math.abs(value) < 10_000 ? Math.round(value).toLocaleString('en') : compact.format(value)
+  return value < 10_000 ? Math.round(value).toLocaleString('en') : compact(value)
 }
 
 /** Dollars: cents always, and "<$0.01" for a cost too small to show. */
@@ -389,7 +410,7 @@ export function formatCost(value: number): string {
 /** An axis tick: $0, $0.50, $12, $1.2K. */
 export function formatCostTick(value: number): string {
   if (value >= 1000) {
-    return `$${compact.format(value)}`
+    return `$${compact(value)}`
   }
 
   return `$${value < 10 && value % 1 ? value.toFixed(2) : Math.round(value)}`

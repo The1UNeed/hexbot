@@ -8,6 +8,7 @@ import {
   earlierNote,
   filterRows,
   formatCost,
+  formatCostTick,
   formatTokens,
   groupsOf,
   modelKey,
@@ -237,6 +238,12 @@ describe('formats', () => {
   it('reads like the rest of Hexbot', () => {
     expect(formatTokens(9876)).toBe('9,876')
     expect(formatTokens(329_148_754)).toBe('329.1M')
+    // Written out, not Intl's compact notation, which Hermes ignores.
+    expect(formatTokens(10_000)).toBe('10K')
+    expect(formatTokens(999_960)).toBe('1M')
+    expect(formatTokens(1_236_128)).toBe('1.2M')
+    expect(formatTokens(2_100_000_000)).toBe('2.1B')
+    expect(formatCostTick(1500)).toBe('$1.5K')
     expect(formatCost(120.705)).toBe('$120.71')
     expect(formatCost(0.001)).toBe('<$0.01')
     expect(formatCost(0)).toBe('$0.00')
