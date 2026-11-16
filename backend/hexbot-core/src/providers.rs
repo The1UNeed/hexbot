@@ -142,10 +142,14 @@ fn credentials_lock() -> &'static Mutex<()> {
 /// nor `model.context_length` gives. Small enough that a local server does not
 /// truncate the prompt unnoticed; compaction scales to it below.
 const DEFAULT_CONTEXT_WINDOW: u64 = 32768;
-/// Pi 1.0.1's own compaction defaults, written explicitly so a Pi upgrade cannot
+/// Pi 1.5.2's own compaction defaults, written explicitly so a Pi upgrade cannot
 /// move them. Compaction fires when the context exceeds `window - reserve`.
 const COMPACTION_RESERVE_TOKENS: u64 = 16384;
 const COMPACTION_KEEP_RECENT_TOKENS: u64 = 20000;
+/// Pi 1.5.1 changed its default to "idle", which also re-sends a section's
+/// request between runs to keep its cache warm. Those requests cost money the
+/// user never asked for, so bots keep warming only while a run streams.
+const CACHE_WARMING: &str = "streaming";
 /// The custom endpoint uses the same window for every model request, including
 /// fallbacks, regardless of the bot's selected provider.
 fn custom_context_window(provider: &str, root: &Value, profile: &Value) -> Option<u64> {
@@ -166,11 +170,12 @@ fn compaction_budget(context_window: u64) -> (u64, u64) {
         COMPACTION_KEEP_RECENT_TOKENS.min(quarter),
     )
 }
-/// Hexbot owns the `compaction` key of the bot's Pi `settings.json`; every other
-/// key is kept. Models Pi knows natively keep Pi's metadata, and their budgets
-/// scale by the windows in the pinned catalog, so a small built-in model such as
-/// `openai/gpt-4` (8,192) does not keep a reserve larger than its window. A
-/// running Pi keeps the settings it loaded, so an unchanged file is left alone.
+/// Hexbot owns the `compaction` and `cacheWarming` keys of the bot's Pi
+/// `settings.json`; every other key is kept. Models Pi knows natively keep Pi's
+/// metadata, and their budgets scale by the windows in the pinned catalog, so a
+/// small built-in model such as `openai/gpt-4` (8,192) does not keep a reserve
+/// larger than its window. A running Pi keeps the settings it loaded, so an
+/// unchanged file is left alone.
 fn write_pi_settings(agent_dir: &Path, providers: &Value) -> Result<()> {
     let mut overrides = json!({});
     // A registry model can use the global budgets and need no override.
@@ -212,10 +217,11 @@ fn write_pi_settings(agent_dir: &Path, providers: &Value) -> Result<()> {
         "keepRecentTokens": COMPACTION_KEEP_RECENT_TOKENS,
         "modelOverrides": overrides
     });
-    if settings["compaction"] == compaction {
+    if settings["compaction"] == compaction && settings["cacheWarming"] == CACHE_WARMING {
         return Ok(());
     }
     settings["compaction"] = compaction;
+    settings["cacheWarming"] = json!(CACHE_WARMING);
     write_json(&path, &settings)
 }
 /// The `compaction` key of the bot's Pi `settings.json` as `write_pi_settings`
@@ -1458,7 +1464,9 @@ fn prepare_pi_config_locked(
             None
         };
         let native = NATIVE.contains(&pi.as_str());
-        let override_base = configured_url.is_some() || override_url.is_some() || slug == "zai";
+        // Copilot's generic host serves every plan; Pi's own models name the individual one.
+        let override_base =
+            configured_url.is_some() || override_url.is_some() || matches!(slug, "zai" | "copilot");
         let base = configured_url
             .or(override_url.as_deref())
             .unwrap_or(string(p, "base_url"));
@@ -1495,8 +1503,10 @@ fn prepare_pi_config_locked(
             .into_iter()
             .map(|id| {
                 let meta = metadata(&cache, &cfg, slug, &id);
+                // Pi 1.5 rejects the whole models.json for a zero window or output limit.
                 let window = configured_window
                     .or_else(|| meta["limit"]["context"].as_u64())
+                    .filter(|&window| window > 0)
                     .unwrap_or(DEFAULT_CONTEXT_WINDOW);
                 let mut model = json!({
                     "id": id,
@@ -1513,7 +1523,7 @@ fn prepare_pi_config_locked(
                         "cacheWrite": meta["cost"]["cache_write"].as_f64().unwrap_or(0.0)
                     },
                     "contextWindow": window,
-                    "maxTokens": meta["limit"]["output"].as_u64().unwrap_or(8192)
+                    "maxTokens": meta["limit"]["output"].as_u64().filter(|&n| n > 0).unwrap_or(8192)
                 });
                 // A model newer than the pinned Pi takes the levels its provider reported.
                 if let Some(levels) = strings(&live_levels[slug][&id]) {
@@ -1542,16 +1552,31 @@ fn prepare_pi_config_locked(
                 _ => "openai-completions",
             }
         };
-        let mut entry = json!({"baseUrl":base,"api":api,"models":models});
+        let mut entry = json!({"api":api,"models":models});
+        if native && !override_base {
+            // A provider baseUrl also replaces the endpoints of Pi's own models, which
+            // can differ by model (OpenCode by protocol, OpenRouter's Anthropic aliases).
+            for model in entry["models"].as_array_mut().unwrap() {
+                model["baseUrl"] = json!(base);
+            }
+        } else {
+            entry["baseUrl"] = json!(base);
+        }
         if !native {
             entry["authHeader"] = json!(!matches!(slug, "custom" | "ollama" | "lmstudio"));
         }
         // xAI API and subscription auth share one Pi provider and contribute different ids.
+        // A provider-wide URL covers the other profile's rows too.
+        let wide = entry.get("baseUrl").is_some();
         if let Some(existing) = providers[&pi]["models"].as_array() {
             let models = entry["models"].as_array_mut().unwrap();
             for model in existing {
                 if !models.iter().any(|m| m["id"] == model["id"]) {
-                    models.push(model.clone());
+                    let mut model = model.clone();
+                    if wide && let Some(model) = model.as_object_mut() {
+                        model.remove("baseUrl");
+                    }
+                    models.push(model);
                 }
             }
         }
@@ -1583,8 +1608,8 @@ fn prepare_pi_config_locked(
                 json!({
                     "id": id,
                     "name": id,
-                    "contextWindow": meta["limit"]["context"].as_u64().unwrap_or(DEFAULT_CONTEXT_WINDOW),
-                    "maxTokens": meta["limit"]["output"].as_u64().unwrap_or(8192),
+                    "contextWindow": meta["limit"]["context"].as_u64().filter(|&n| n > 0).unwrap_or(DEFAULT_CONTEXT_WINDOW),
+                    "maxTokens": meta["limit"]["output"].as_u64().filter(|&n| n > 0).unwrap_or(8192),
                     "reasoning": meta["reasoning"].as_bool().unwrap_or(false),
                     "input": meta["modalities"]["input"]
                         .as_array()
@@ -1619,7 +1644,9 @@ fn prepare_pi_config_locked(
         models["providers"][k] = v.clone()
     }
     // Retained custom models use the same current window as outgoing requests.
-    if let Some(window) = custom_context_window("custom", &root, &profile_cfg) {
+    if let Some(window) =
+        custom_context_window("custom", &root, &profile_cfg).filter(|&window| window > 0)
+    {
         for provider in ["custom", "custom:custom"] {
             for model in models["providers"]
                 .get_mut(provider)
@@ -3046,9 +3073,12 @@ mod migration_tests {
     fn registry_windows_take_precedence_over_catalog_compaction_budgets() {
         let home = tempfile::tempdir().unwrap();
         crate::db::migrate(home.path()).unwrap();
-        let id = "Qwen/Qwen2.5-7B-Instruct-Turbo";
-        let key = format!("together/{id}");
-        assert_eq!(pi_catalog()["providers"]["together"]["windows"][id], 32768);
+        let id = "@cf/qwen/qwen3-30b-a3b-fp8";
+        let key = format!("cloudflare-workers-ai/{id}");
+        assert_eq!(
+            pi_catalog()["providers"]["cloudflare-workers-ai"]["windows"][id],
+            32768
+        );
         let dir = home.path().join("profiles/owl/pi");
         for (window, expected) in [
             (131072, None),
@@ -3064,13 +3094,13 @@ mod migration_tests {
         ] {
             common::write_config(
                 home.path(),
-                &json!({"providers":{"together":{"base_url":"http://example.test/v1","models":[id]}},
-                    "model_overrides":{"together":{id:{"context_window":window}}}}),
+                &json!({"providers":{"cloudflare-workers-ai":{"base_url":"http://example.test/v1","models":[id]}},
+                    "model_overrides":{"cloudflare-workers-ai":{id:{"context_window":window}}}}),
             )
             .unwrap();
             prepare_pi_for_bot(home.path(), "owl", &dir).unwrap();
             let models = read_json(&dir.join("models.json")).unwrap();
-            let model = models["providers"]["together"]["models"]
+            let model = models["providers"]["cloudflare-workers-ai"]["models"]
                 .as_array()
                 .unwrap()
                 .iter()
@@ -3157,7 +3187,7 @@ mod migration_tests {
             "reserveTokens": 16384,
             "modelOverrides": {"custom/small": {"reserveTokens": 2048}}
         });
-        // Pi 1.0.1 shouldCompact uses tokens > window - reserveTokens.
+        // Pi 1.5.2 shouldCompact uses tokens > window - reserveTokens.
         for (model, window, expected) in [
             ("small", 8192, 6144),
             ("wide", 200000, 183616),
@@ -3184,19 +3214,20 @@ mod migration_tests {
             &profile,
             &json!({"model":{"provider":"ollama","default":"small","base_url":"http://127.0.0.1:11434/v1"},
                 "model_overrides":{"custom":{"small":{"context_window":8192}}},
-                "fallback_providers":[{"provider":"custom","model":"unknown"},{"provider":"custom","model":"wide"}]}),
+                "fallback_providers":[{"provider":"custom","model":"unknown"},{"provider":"custom","model":"wide"},{"provider":"custom","model":"zero"}]}),
         )
         .unwrap();
         write_json(
             &home.path().join("models_dev_cache.json"),
-            &json!({"custom":{"models":{"wide":{"limit":{"context":200000}}}}}),
+            &json!({"custom":{"models":{"wide":{"limit":{"context":200000}},
+                "zero":{"limit":{"context":0,"output":0}}}}}),
         )
         .unwrap();
         let dir = profile.join("pi");
         // Pi's own keys and Hexbot's stale compaction values are replaced or kept as a whole.
         write_json(
             &dir.join("settings.json"),
-            &json!({"theme":"dark","compaction":{"reserveTokens":1,"modelOverrides":{"custom/gone":{}}}}),
+            &json!({"theme":"dark","cacheWarming":"idle","compaction":{"reserveTokens":1,"modelOverrides":{"custom/gone":{}}}}),
         )
         .unwrap();
         prepare_pi_for_bot(home.path(), "owl", &dir).unwrap();
@@ -3213,8 +3244,16 @@ mod migration_tests {
         assert_eq!(window("small"), 8192);
         assert_eq!(window("unknown"), DEFAULT_CONTEXT_WINDOW);
         assert_eq!(window("wide"), 200000);
+        // Pi 1.5 rejects the whole file for a zero limit, so zero means unknown.
+        assert_eq!(window("zero"), DEFAULT_CONTEXT_WINDOW);
+        let zero = models["providers"]["custom"]["models"].as_array().unwrap();
+        assert_eq!(
+            zero.iter().find(|m| m["id"] == "zero").unwrap()["maxTokens"],
+            8192
+        );
         let settings = read_json(&dir.join("settings.json")).unwrap();
         assert_eq!(settings["theme"], "dark");
+        assert_eq!(settings["cacheWarming"], "streaming");
         let compaction = &settings["compaction"];
         assert_eq!(compaction["enabled"], true);
         assert_eq!(compaction["reserveTokens"], 16384);
@@ -3255,6 +3294,12 @@ mod migration_tests {
         fs::write(&path, &bytes).unwrap();
         prepare_pi_for_bot(home.path(), "owl", &dir).unwrap();
         assert_eq!(fs::read(&path).unwrap(), bytes);
+        // A file from before Hexbot pinned cache warming gets it, compaction untouched.
+        let mut older = settings.clone();
+        older.as_object_mut().unwrap().remove("cacheWarming");
+        write_json(&path, &older).unwrap();
+        prepare_pi_for_bot(home.path(), "owl", &dir).unwrap();
+        assert_eq!(read_json(&path).unwrap(), settings);
         // The meter's compaction point comes from the same key: a listed model
         // uses its override, a native small model its scaled one, a wide model
         // the global reserve, even if that reserve exceeds the window.

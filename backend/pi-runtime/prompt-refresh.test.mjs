@@ -38,7 +38,7 @@ async function fixture(t, {midRun = false, prePrompt = false, mcp = false} = {})
   });
   // A fake daemon: `prompt` is what it would build now, `offered` its last
   // offer, and `persisted` the saved prompt a reopened section starts on.
-  const state = {prompt:'Changed prompt', persisted:'Original prompt', offered:undefined, drop:false, adoptReply:'answer', fail:undefined, warnings:[], requests:[], hashes:[], adopts:[], events:[], timeline:[], replies:0};
+  const state = {prompt:'Changed prompt', persisted:'Original prompt', offered:undefined, drop:false, adoptReply:'answer', fail:undefined, todo:undefined, warnings:[], requests:[], messages:[], hashes:[], adopts:[], events:[], timeline:[], replies:0};
   const settingsManager = SettingsManager.inMemory({compaction:{enabled:!prePrompt, reserveTokens:8192, keepRecentTokens:1}, retry:{enabled:false}});
   let session;
   let sessionFile;
@@ -57,6 +57,7 @@ async function fixture(t, {midRun = false, prePrompt = false, mcp = false} = {})
               try {
                 await options.onPayload?.({}, model);
                 state.requests.push(getCurrentSystemPrompt(context.messages));
+                state.messages.push(context.messages.filter(m => m.role !== 'system').map(m => m.role + ':' + (typeof m.content === 'string' ? m.content : m.content.map(part => part.text ?? '').join(''))));
                 state.timeline.push({prompt:state.requests.at(-1)});
                 state.events.push('request');
                 const first = state.replies++ === 0;
@@ -94,6 +95,7 @@ async function fixture(t, {midRun = false, prePrompt = false, mcp = false} = {})
         // A changed connected-tools state makes the extension fetch servers again.
         return JSON.stringify({result:state.fail === 'connected tools' ? {...config, mcpState:state.requests.length} : config});
       }
+      if (name === 'hexbot_todo_context') return JSON.stringify({result:state.todo ? {text:state.todo} : null});
       if (name === 'hexbot_mcp_servers') return JSON.stringify({result:state.fail === 'connected tools' ? null : []});
       if (name === 'hexbot_session_prompt' && args.adopt) {
         state.adopts.push(args.adopt);
@@ -163,6 +165,26 @@ test('Pi pre-prompt _checkCompaction refreshes before the new run first request'
   await session.prompt('Trigger pre-prompt compaction');
   assert.deepEqual(state.events, ['start', 'request', 'compact:threshold', 'start', 'request']);
   assert.deepEqual(state.requests, ['Original prompt', 'Changed prompt']);
+});
+
+// The todo list is restated after compaction drops it. Pi 1.5.2 counts a run
+// that is starting as streaming, so before its first request the list must be
+// held for the run's start, which writes it ahead of the user's message.
+test('Pi pre-prompt compaction restates the todo list before the user message', {timeout:30000}, async t => {
+  const {session, settingsManager, state} = await fixture(t, {prePrompt:true});
+  state.todo = 'TODO: finish report';
+  await session.prompt('First run');
+  settingsManager.setCompactionEnabled(true);
+  await session.prompt('Second run');
+  assert.deepEqual(state.messages.at(-1).slice(-2), ['user:TODO: finish report', 'user:Second run']);
+});
+
+test('Pi mid-run compaction restates the todo list in the continuation', {timeout:30000}, async t => {
+  const {session, state} = await fixture(t, {midRun:true});
+  state.todo = 'TODO: finish report';
+  await session.prompt('Use the probe');
+  assert.equal(state.messages.length, 2);
+  assert.equal(state.messages[1].filter(m => m === 'user:TODO: finish report').length, 1);
 });
 
 for (const boundary of ['mid-run', 'manual', 'pre-prompt']) {

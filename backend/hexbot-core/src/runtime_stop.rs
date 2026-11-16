@@ -1,4 +1,4 @@
-//! Stop recovery clears Pi 1.0.1's actual queues, then replays the daemon's
+//! Stop recovery clears Pi 1.5.2's actual queues, then replays the daemon's
 //! unprojected input ledger. Pi's returned text metadata can omit queued input.
 use super::*;
 
