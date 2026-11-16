@@ -85,6 +85,7 @@ async fn accepted_follow_up_keeps_its_uploads_intent_and_caller_chain_until_old_
         images: vec![image.clone()],
         refs: vec![path.to_string_lossy().into_owned()],
         files: vec![path.clone()],
+        at: common::now(),
     });
     let chain = Chain {
         hops: Arc::new(AtomicUsize::new(3)),
@@ -1123,6 +1124,7 @@ async fn omitted_queue_metadata_replays_ordered_original_envelopes() {
             images: vec![image.clone()],
             refs: vec![path.to_string_lossy().into_owned()],
             files: vec![path.clone()],
+            at: common::now(),
         });
         runtime
             .submit(

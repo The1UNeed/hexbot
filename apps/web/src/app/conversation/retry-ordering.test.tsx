@@ -222,6 +222,8 @@ async function send(view: Awaited<ReturnType<typeof mount>>, names = ['plan.txt'
     target: { files: names.map(name => new File([`${name} bytes`], name, { type: 'text/plain' })) }
   })
   fireEvent.change(field, { target: { value: 'Read my plan' } })
+  // Files upload as they are attached, and Send waits for them.
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled())
   fireEvent.click(screen.getByRole('button', { name: 'Send' }))
 }
 
@@ -988,6 +990,8 @@ async function sendNow(view: Awaited<ReturnType<typeof mount>>, text: string, na
         files: names.map(name => new File([`${name} bytes`], name, { type: 'text/plain' }))
       }
     })
+    // Files upload as they are attached; Enter waits for them.
+    await waitFor(() => expect(screen.queryAllByRole('progressbar')).toHaveLength(0))
   }
 
   fireEvent.change(field, { target: { value: text } })
@@ -1097,10 +1101,15 @@ it.each([true, false])(
     expect(await screen.findByText('Earlier reply')).toBeVisible()
     const unchanged = runTurn(identified)
     await sendNow(view, 'Also look at this', ['photo.bmp'])
-    const card = await screen.findByText('payload is not a supported PNG, JPEG, GIF, or WebP image')
+    // The failure stays on the file; the message waits, and the turn is untouched.
+    expect(
+      await screen.findByText(
+        'Not uploaded: payload is not a supported PNG, JPEG, GIF, or WebP image'
+      )
+    ).toBeVisible()
     unchanged()
-    // Nothing was sent, so nothing can be sent again from the card.
-    expect(retryOn(card.closest<HTMLElement>('[data-testid=stopped-card]')!)).toBeNull()
+    expect(cards()).toHaveLength(0)
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
     expect(submits()).toHaveLength(0)
     expect(userRows().map(row => row.text)).toEqual(['Earlier question'])
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Also look at this')
@@ -1118,10 +1127,11 @@ it('sends only the uploads of the files still selected after an upload fails', a
   const view = await mount()
   expect(await screen.findByText('Earlier reply')).toBeVisible()
   await sendNow(view, 'Read my plan', ['plan.txt', 'photo.bmp'])
-  expect(await screen.findByText('payload is not a supported image')).toBeVisible()
-  // plan.txt reached the daemon before photo.bmp failed; that upload stays unnamed.
+  expect(await screen.findByText('Not uploaded: payload is not a supported image')).toBeVisible()
+  // plan.txt is staged; the message waits for photo.bmp to be retried or removed.
   expect([...staged.keys()]).toEqual(['srv-1'])
   expect(submits()).toHaveLength(0)
+  expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
   fireEvent.click(screen.getByRole('button', { name: 'Remove photo.bmp' }))
   fireEvent.click(screen.getByRole('button', { name: 'Send' }))
   await waitFor(() => expect(delivered).toHaveLength(1))
@@ -1129,12 +1139,13 @@ it('sends only the uploads of the files still selected after an upload fails', a
     session_id: 'chat',
     text: 'Read my plan',
     input_id: expect.any(String),
-    attachments: ['srv-2'],
+    attachments: ['srv-1'],
     interrupt: true
   })
   expect(delivered[0]!.files).toEqual(['plan.txt'])
-  expect(staged.has('srv-1')).toBe(true)
-  expect(userRows().map(row => row.attachments.map(item => item.id))).toEqual([['srv-2']])
+  // Uploaded once, as it was attached.
+  expect(call.mock.calls.filter(([method]) => method === 'file.attach')).toHaveLength(2)
+  expect(userRows().map(row => row.attachments.map(item => item.id))).toEqual([['srv-1']])
   await waitFor(() => expect(screen.queryByRole('button', { name: 'Remove plan.txt' })).toBeNull())
 })
 
@@ -1772,12 +1783,18 @@ it('offers no Retry for an empty-text refusal, which the same send cannot pass',
   fireEvent.change(view.container.querySelector('input[type=file]')!, {
     target: { files: [new File(['plan'], 'plan.txt', { type: 'text/plain' })] }
   })
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled())
   fireEvent.click(screen.getByRole('button', { name: 'Send' }))
   expect(await screen.findByTestId('stopped-card')).toHaveTextContent('missing parameter: text')
   expect(retries()).toHaveLength(0)
   expect(submits()[0]).toMatchObject({ text: '', attachments: ['srv-1'] })
-  expect(staged.has('srv-1')).toBe(true)
+  // The file comes back to the composer and is staged afresh for the next try.
   expect(await screen.findByRole('button', { name: 'Remove plan.txt' })).toBeVisible()
+  expect(await screen.findByRole('button', { name: 'Preview plan.txt' })).toBeVisible()
+  expect(
+    call.mock.calls.filter(([method]) => method === 'attachments.remove').map(([, input]) => input)
+  ).toEqual([{ id: 'srv-1', session_id: 'chat' }])
+  expect(call.mock.calls.filter(([method]) => method === 'file.attach')).toHaveLength(2)
 })
 
 it.each(['accepted', 'unknown', 'refused'] as const)(

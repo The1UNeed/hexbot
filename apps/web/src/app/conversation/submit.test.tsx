@@ -152,6 +152,8 @@ async function send() {
   const field = await screen.findByRole('textbox', { name: 'Message' })
   await waitFor(() => expect(field).toBeEnabled())
   fireEvent.change(field, { target: { value: 'Read my plan' } })
+  // Files upload as they are attached, and Send waits for them.
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled())
   fireEvent.click(screen.getByRole('button', { name: 'Send' }))
 }
 
@@ -196,11 +198,14 @@ it.each(['durable-id', 'replacement-id'])(
     const uploads = call.mock.calls.filter(([method]) => method === 'file.attach')
     expect(uploads).toHaveLength(2)
     expect(acceptedFiles).toEqual([[uploads[1]?.[1]]])
-    expect(uploads[1]?.[1]).toMatchObject({
-      session_id: id,
-      name: 'plan.txt',
-      data_url: 'data:text/plain;base64,YWN0dWFsIHBsYW4gYnl0ZXM='
-    })
+    expect(uploads[1]?.[1]).toMatchObject({ session_id: id, name: 'plan.txt' })
+
+    // The same bytes, in the part the attach names.
+    const part = call.mock.calls.find(
+      ([method, input]) => method === 'attachments.part' && input.upload === uploads[1]?.[1].upload
+    )
+
+    expect(part?.[1]).toMatchObject({ session_id: id, data: 'YWN0dWFsIHBsYW4gYnl0ZXM=' })
   }
 )
 
@@ -312,7 +317,7 @@ it('does not resend after navigation during attachment restaging', async () => {
 })
 
 it.each(['navigate', 'daemon', 'epoch', 'unmount'])(
-  'cancels before prompt acceptance when the first upload outlives %s',
+  'never sends while the first upload is out, and takes it back when it outlives %s',
   async action => {
     const upload = deferred()
     const original = call.getMockImplementation()!
@@ -320,14 +325,18 @@ it.each(['navigate', 'daemon', 'epoch', 'unmount'])(
       method === 'file.attach' ? upload.promise : original(method, input)
     )
     const view = render(<ConversationColumn />)
-    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled())
+    const field = await screen.findByRole('textbox', { name: 'Message' })
+    await waitFor(() => expect(field).toBeEnabled())
     fireEvent.change(view.container.querySelector('input[type=file]')!, {
       target: { files: [new File(['keep me'], 'plan.txt', { type: 'text/plain' })] }
     })
-    await send()
     await waitFor(() =>
       expect(call.mock.calls.some(([method]) => method === 'file.attach')).toBe(true)
     )
+    expect(screen.getByRole('progressbar', { name: 'Uploading plan.txt' })).toBeVisible()
+    fireEvent.change(field, { target: { value: 'Read my plan' } })
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
+    fireEvent.keyDown(field, { key: 'Enter' })
 
     if (action === 'navigate') {
       params = { bot: 'owl', section: 'other' }
@@ -343,6 +352,15 @@ it.each(['navigate', 'daemon', 'epoch', 'unmount'])(
     await act(async () => upload.resolve({ attached: true, id: 'late-upload' }))
     expect(submits).toBe(0)
     expect(accepted).toHaveLength(0)
+    // The same daemon process is asked to drop the upload nobody will send.
+    const removed = call.mock.calls.filter(([method]) => method === 'attachments.remove')
+    expect(removed.map(([, input]) => input)).toEqual(
+      action === 'navigate' || action === 'unmount'
+        ? [{ id: 'late-upload', session_id: 'durable-id' }]
+        : action === 'epoch'
+          ? []
+          : expect.any(Array)
+    )
   }
 )
 
@@ -409,4 +427,49 @@ it('gives an explicitly rejected retry a fresh correlation key, without promisin
       .getState()
       .bySession['durable-id']!.messages.find(message => message.role === 'user')?.inputId
   ).toBe(inputs[1]!.input_id)
+})
+
+it('keeps files here until Send on a daemon without part uploads, as before', async () => {
+  const original = call.getMockImplementation()!
+  call.mockImplementation((method, input) =>
+    method === 'attachments.part'
+      ? Promise.reject(new JsonRpcGatewayError('unknown runtime method', { code: -32601 }))
+      : original(method, input)
+  )
+  const view = render(<ConversationColumn />)
+  const field = await screen.findByRole('textbox', { name: 'Message' })
+  await waitFor(() => expect(field).toBeEnabled())
+  fireEvent.change(view.container.querySelector('input[type=file]')!, {
+    target: {
+      files: [
+        new File(['keep'], 'keep.txt', { type: 'text/plain' }),
+        new File(['drop'], 'drop.txt', { type: 'text/plain' })
+      ]
+    }
+  })
+  fireEvent.change(field, { target: { value: 'Read my plan' } })
+  // That daemon could not take a file back, so nothing is staged before Send.
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled())
+  // Not on the daemon yet, and a text file this page cannot show by itself.
+  expect(screen.queryByRole('button', { name: 'Preview keep.txt' })).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Remove drop.txt' }))
+  expect(call.mock.calls.some(([method]) => method === 'file.attach')).toBe(false)
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(() => expect(accepted).toHaveLength(1))
+  expect(acceptedFiles).toEqual([[expect.objectContaining({ name: 'keep.txt' })]])
+})
+
+it('shows the drop target while files are over the chat, through every child they cross', async () => {
+  const view = render(<ConversationColumn />)
+  await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled())
+  const column = view.container.querySelector<HTMLElement>('.\\@container')!
+  const child = screen.getByRole('textbox', { name: 'Message' })
+  const files = { types: ['Files'] }
+  fireEvent.dragEnter(column, { dataTransfer: files })
+  fireEvent.dragEnter(child, { dataTransfer: files })
+  // Safari: leaving the column for a child, with no relatedTarget.
+  fireEvent.dragLeave(column, { dataTransfer: files })
+  expect(screen.getByTestId('drop-target')).toBeVisible()
+  fireEvent.dragLeave(child, { dataTransfer: files })
+  expect(screen.queryByTestId('drop-target')).toBeNull()
 })

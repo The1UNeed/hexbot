@@ -116,15 +116,20 @@ A bot's chat takes one message at a time, so Stop replaces Send while it works.
 
 The composer's + offers Photos and videos (up to 10 at once, HEIC arrives as
 JPEG), Camera (a photo or a video; Android, whose camera does one at a time,
-shows Take photo and Record video) and Files. Attachments stay on the phone
-until Send. Sending files without text uses
+shows Take photo and Record video) and Files. Each file uploads in parts as
+soon as it is picked, showing the percentage the daemon has, and Send waits
+until every file is up; a tap on one that is up previews it. A daemon from
+before part uploads cannot take a file back, so there files stay on the phone
+until Send, as before. Sending files without text uses
 "Please review the attached files." Chips clear only after the daemon accepts
 the message. Answer bot questions before sending attached files; the files stay
 ready for the next message. Failed uploads can be retried without
 resending attachments that already reached the daemon. Each upload returns an
 id, and `prompt.submit` names the ids for that message: the daemon sends only
 those and keeps other files staged. Leaving the chat, switching daemons or
-disconnecting asks the daemon to clear unsent uploads; that clear is best effort.
+disconnecting takes back the files uploaded here and not sent, one by one with
+`attachments.remove`, so another app's draft keeps its files (an older daemon
+clears them all); it is best effort.
 This uses the new `attachments.clear` RPC and the `attachments` list on
 `prompt.submit`; requests without this list send every staged file for compatibility. Scheduled job controls use the new
 owner-scoped `hexbot.jobs.*` RPCs; use a daemon built from this checkout for both. The app shows an update notice

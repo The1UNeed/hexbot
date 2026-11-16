@@ -126,8 +126,11 @@ export function useMobile() {
    */
   const shown = useRef(new Map<string, { patch: object; settled?: number; token: object }>())
   const mounted = useRef(true)
-  /** Sessions holding files uploaded here for a message that was not sent. */
-  const unsent = useRef(new Set<string>())
+  /**
+   * Files uploaded here for a message that was not sent, by session: their
+   * ids, or `all` on a daemon from before `attachments.remove`.
+   */
+  const unsent = useRef(new Map<string, Set<string> | 'all'>())
   /** The live session whose running turn was half in the history when it loaded. */
   const straddling = useRef<string | null>(null)
   /** An older daemon's sections to pick a bot's chat from, while asked. */
@@ -199,16 +202,23 @@ export function useMobile() {
     models.clear()
     setListModels(() => models.get)
   }, [models])
-  // Messages sent from here name their files, and the daemon drops the rest.
-  // Clearing on leave keeps an abandoned upload off a message sent from
-  // another app; it is best effort.
+  // Messages sent from here name their files. Leaving takes back only the
+  // ones uploaded here, so another app's draft in the same chat keeps its
+  // files; it is best effort.
   const releaseStaged = useCallback((except?: string) => {
     const current = session.current
-    for (const id of unsent.current) {
-      if (id === except) continue
-      unsent.current.delete(id)
-      if (current?.client.connectionState === 'open')
-        void current.client.request('attachments.clear', { session_id: id }).catch(() => {})
+    for (const [sessionId, uploads] of unsent.current) {
+      if (sessionId === except) continue
+      unsent.current.delete(sessionId)
+      if (current?.client.connectionState !== 'open') continue
+      if (uploads === 'all') {
+        void current.client.request('attachments.clear', { session_id: sessionId }).catch(() => {})
+        continue
+      }
+      for (const id of uploads)
+        void current.client
+          .request('attachments.remove', { session_id: sessionId, id })
+          .catch(() => {})
     }
   }, [])
   const leave = useCallback(() => {
@@ -1051,7 +1061,12 @@ export function useMobile() {
           interrupt: true,
           ...(inputId && { input_id: inputId })
         })
-        unsent.current.delete(sessionId)
+        // The message took the files it names; any others staged here stay tracked.
+        const uploads = unsent.current.get(sessionId)
+        if (attachments && uploads instanceof Set) {
+          for (const id of attachments) uploads.delete(id)
+          if (!uploads.size) unsent.current.delete(sessionId)
+        } else unsent.current.delete(sessionId)
       }
     } catch (e) {
       // Another app cleared this thread's files after they were uploaded.
@@ -1262,12 +1277,28 @@ export function useMobile() {
         control,
         quality
       }),
-    /** A file reached the daemon and waits for that session's next message. */
-    stage: (sessionId: string) => {
-      unsent.current.add(sessionId)
-      // The upload finished after its conversation was left.
-      releaseStaged(liveId.current ?? undefined)
+    /**
+     * A file reached the daemon and waits for that session's next message.
+     * Without an id, on a daemon that cannot take one file back, leaving
+     * clears them all, as before.
+     */
+    stage: (sessionId: string, id: string | null) => {
+      const uploads = unsent.current.get(sessionId)
+      unsent.current.set(
+        sessionId,
+        id === null || uploads === 'all' ? 'all' : (uploads ?? new Set<string>()).add(id)
+      )
+      // The upload finished after its conversation was left. A chat still
+      // open but reconnecting has no live id for a moment; its files stay.
+      releaseStaged(liveId.current ?? (routeRef.current ? sessionId : undefined))
     },
+    /** A staged file taken out of the composer, already taken back. */
+    unstage: (sessionId: string, id: string) => {
+      const uploads = unsent.current.get(sessionId)
+      if (uploads !== 'all') uploads?.delete(id)
+    },
+    /** The daemon process this app talks to; a restart drops what was staged. */
+    epoch: () => session.current?.client.epoch ?? null,
     back: leave,
     disconnect: async () => {
       leave()

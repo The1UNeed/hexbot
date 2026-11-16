@@ -85,6 +85,268 @@ async fn open(runtime: &Runtime) -> String {
 }
 
 #[tokio::test]
+async fn removing_one_upload_keeps_the_others_and_checks_owner() {
+    let (_home, runtime, _) = setup();
+    let id = open(&runtime).await;
+    let attach = |name: &str| json!({"session_id":id,"name":name,"data_url":"data:text/plain;base64,aGVsbG8="});
+    let gone = runtime
+        .call("alice", "file.attach", &attach("gone.txt"))
+        .await
+        .unwrap()
+        .unwrap();
+    let kept = runtime
+        .call("alice", "file.attach", &attach("kept.txt"))
+        .await
+        .unwrap()
+        .unwrap();
+    let remove = json!({"session_id":id,"id":gone["id"]});
+    assert_eq!(
+        runtime
+            .call("bob", "attachments.remove", &remove)
+            .await
+            .unwrap()
+            .unwrap_err()
+            .code,
+        4001
+    );
+    let live = runtime.sessions.lock().unwrap()["first"].clone();
+    // A turn on its way does not stop the user tidying the composer.
+    live.state.lock().unwrap().busy = true;
+    runtime
+        .call("alice", "attachments.remove", &remove)
+        .await
+        .unwrap()
+        .unwrap();
+    live.state.lock().unwrap().busy = false;
+    assert!(!PathBuf::from(gone["path"].as_str().unwrap()).exists());
+    assert!(PathBuf::from(kept["path"].as_str().unwrap()).exists());
+    let staged = live
+        .state
+        .lock()
+        .unwrap()
+        .staged
+        .iter()
+        .map(|u| u.id.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(staged, vec![kept["id"].as_str().unwrap().to_owned()]);
+    assert_eq!(
+        runtime
+            .call("alice", "attachments.remove", &remove)
+            .await
+            .unwrap()
+            .unwrap_err()
+            .code,
+        4204
+    );
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_file_sent_in_parts_is_staged_whole_and_its_parts_go() {
+    let (_home, runtime, _) = setup();
+    let id = open(&runtime).await;
+    let part = |upload: &str, offset: u64, data: &[u8]| {
+        json!({"session_id":id,"upload":upload,"offset":offset,
+            "data":base64::engine::general_purpose::STANDARD.encode(data)})
+    };
+    let call = |method: &'static str, p: Value| {
+        let runtime = &runtime;
+        async move { runtime.call("alice", method, &p).await.unwrap() }
+    };
+    for (offset, data) in [(0, &b"hello "[..]), (6, b"in "), (9, b"parts")] {
+        let sent = call("attachments.part", part("note", offset, data))
+            .await
+            .unwrap();
+        assert_eq!(sent["received"], offset + data.len() as u64);
+    }
+    // Parts go in order; a gap or a repeat is refused and changes nothing.
+    assert_eq!(
+        call("attachments.part", part("note", 3, b"x"))
+            .await
+            .unwrap_err()
+            .code,
+        4202
+    );
+    assert_eq!(
+        call("attachments.part", part("lost", 5, b"x"))
+            .await
+            .unwrap_err()
+            .code,
+        4204
+    );
+    let attached = call(
+        "file.attach",
+        json!({"session_id":id,"name":"note.txt","upload":"note"}),
+    )
+    .await
+    .unwrap();
+    let path = PathBuf::from(attached["path"].as_str().unwrap());
+    assert_eq!(fs::read(&path).unwrap(), b"hello in parts");
+    assert!(
+        !path
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("uploads/note.part")
+            .exists()
+    );
+    // Named once: the parts are gone with the attach that took them.
+    let again = json!({"session_id":id,"name":"note.txt","upload":"note"});
+    assert_eq!(call("file.attach", again).await.unwrap_err().code, 4204);
+
+    // A file of no bytes is one empty part.
+    call("attachments.part", part("empty", 0, b""))
+        .await
+        .unwrap();
+    let empty = call(
+        "file.attach",
+        json!({"session_id":id,"name":"empty.txt","upload":"empty"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(fs::read(empty["path"].as_str().unwrap()).unwrap(), b"");
+
+    // A picture goes the same way, checked as a picture.
+    let png = b"\x89PNG\r\n\x1a\nrest of the picture";
+    call("attachments.part", part("photo", 0, png))
+        .await
+        .unwrap();
+    let image = json!({"session_id":id,"filename":"photo.png","upload":"photo"});
+    assert_eq!(call("image.attach_bytes", image).await.unwrap()["count"], 3);
+    call("attachments.part", part("text", 0, b"not a picture"))
+        .await
+        .unwrap();
+    let wrong = json!({"session_id":id,"filename":"photo.png","upload":"text"});
+    assert_eq!(
+        call("image.attach_bytes", wrong).await.unwrap_err().code,
+        4017
+    );
+    assert_eq!(
+        runtime
+            .call("bob", "attachments.part", &part("note", 0, b"x"))
+            .await
+            .unwrap()
+            .unwrap_err()
+            .code,
+        4001
+    );
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_file_left_in_a_composer_does_not_keep_its_bot_running() {
+    let (_home, runtime, _) = setup();
+    let id = open(&runtime).await;
+    let file = runtime
+        .call(
+            "alice",
+            "file.attach",
+            &json!({"session_id":id,"name":"left.txt","data_url":"data:text/plain;base64,aGVsbG8="}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    // Idle, the process retires; the upload waits for the chat's next open.
+    assert_eq!(runtime.retire_idle(common::now() + 1.).await.unwrap(), 1);
+    assert!(runtime.sessions.lock().unwrap().is_empty());
+    assert!(Path::new(file["path"].as_str().unwrap()).is_file());
+    assert_eq!(open(&runtime).await, id);
+    let live = runtime.sessions.lock().unwrap()["first"].clone();
+    let staged = live
+        .state
+        .lock()
+        .unwrap()
+        .staged
+        .iter()
+        .map(|u| u.id.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(staged, vec![file["id"].as_str().unwrap().to_owned()]);
+    // A day later, still unsent, it goes when the process next retires.
+    live.state.lock().unwrap().staged[0].at -= STAGED_TTL;
+    assert_eq!(runtime.retire_idle(common::now() + 1.).await.unwrap(), 1);
+    assert!(!Path::new(file["path"].as_str().unwrap()).exists());
+    assert_eq!(open(&runtime).await, id);
+    let live = runtime.sessions.lock().unwrap()["first"].clone();
+    assert!(live.state.lock().unwrap().staged.is_empty());
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn taking_back_a_parked_upload_does_not_start_the_bot() {
+    let (_home, runtime, _) = setup();
+    let id = open(&runtime).await;
+    let attach = |name: &str| json!({"session_id":id,"name":name,"data_url":"data:text/plain;base64,aGVsbG8="});
+    let gone = runtime
+        .call("alice", "file.attach", &attach("gone.txt"))
+        .await
+        .unwrap()
+        .unwrap();
+    let kept = runtime
+        .call("alice", "file.attach", &attach("kept.txt"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(runtime.retire_idle(common::now() + 1.).await.unwrap(), 1);
+    let remove = json!({"session_id":id,"id":gone["id"]});
+    // Another user cannot reach it.
+    assert!(
+        runtime
+            .call("bob", "attachments.remove", &remove)
+            .await
+            .unwrap()
+            .is_err()
+    );
+    runtime
+        .call("alice", "attachments.remove", &remove)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(runtime.sessions.lock().unwrap().is_empty());
+    assert!(!Path::new(gone["path"].as_str().unwrap()).exists());
+    assert!(Path::new(kept["path"].as_str().unwrap()).exists());
+    let parked = runtime.parked.lock().unwrap()["first"]
+        .uploads
+        .iter()
+        .map(|u| u.id.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(parked, vec![kept["id"].as_str().unwrap().to_owned()]);
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_parked_upload_nobody_sends_goes_after_a_day_without_the_chat_opening() {
+    let (_home, runtime, _) = setup();
+    let id = open(&runtime).await;
+    let file = runtime
+        .call(
+            "alice",
+            "file.attach",
+            &json!({"session_id":id,"name":"left.txt","data_url":"data:text/plain;base64,aGVsbG8="}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(runtime.retire_idle(common::now() + 1.).await.unwrap(), 1);
+    assert_eq!(runtime.parked.lock().unwrap()["first"].uploads.len(), 1);
+    // A later maintenance pass keeps it while it is young, and drops it after a day.
+    assert_eq!(runtime.retire_idle(common::now() + 1.).await.unwrap(), 0);
+    assert_eq!(runtime.parked.lock().unwrap().len(), 1);
+    runtime
+        .parked
+        .lock()
+        .unwrap()
+        .get_mut("first")
+        .unwrap()
+        .uploads[0]
+        .at -= STAGED_TTL;
+    assert_eq!(runtime.retire_idle(common::now() + 1.).await.unwrap(), 0);
+    assert!(runtime.parked.lock().unwrap().is_empty());
+    assert!(!Path::new(file["path"].as_str().unwrap()).exists());
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
 async fn clearing_unsubmitted_attachments_preserves_the_session_and_checks_owner() {
     let (home, runtime, _) = setup();
     let id = open(&runtime).await;
@@ -1119,33 +1381,19 @@ async fn sections_report_context_usage_and_compaction_point() {
 }
 
 #[tokio::test]
-async fn retire_skips_staged_attachments_busy_turns_and_pending_dialogs() {
+// Staged uploads no longer keep a process: they park
+// (`a_file_left_in_a_composer_does_not_keep_its_bot_running`).
+async fn retire_skips_busy_turns_and_pending_dialogs() {
     let (_home, runtime, _) = setup();
     let id = open(&runtime).await;
     let s = runtime.sessions.lock().unwrap()["first"].clone();
-    for kind in ["busy", "pending", "image", "file"] {
+    for kind in ["busy", "pending"] {
         {
             let mut state = s.state.lock().unwrap();
             state.last_activity = 0.;
             state.busy = kind == "busy";
             if kind == "pending" {
                 state.pending.insert("question".into(), json!({}));
-            }
-            if kind == "image" || kind == "file" {
-                state.staged.push(Staged {
-                    id: kind.into(),
-                    images: if kind == "image" {
-                        vec![json!({"type":"image"})]
-                    } else {
-                        vec![]
-                    },
-                    refs: if kind == "file" {
-                        vec!["note.txt".into()]
-                    } else {
-                        vec![]
-                    },
-                    files: vec![],
-                });
             }
         }
         assert_eq!(
@@ -1156,7 +1404,6 @@ async fn retire_skips_staged_attachments_busy_turns_and_pending_dialogs() {
         let mut state = s.state.lock().unwrap();
         state.busy = false;
         state.pending.clear();
-        state.staged.clear();
     }
     age(&runtime);
     runtime
@@ -5968,6 +6215,43 @@ emit({type:'response',id:c.id,command:c.type,success:true,data:{}});});
     assert!(!s.state.lock().unwrap().busy);
     runtime.shutdown().await;
 }
+#[tokio::test]
+async fn a_part_on_its_way_in_keeps_its_section_running() {
+    let (home, runtime, _) = setup();
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    // The part is past the open and waiting for the attachment gate.
+    let staging = s.attachment_gate.lock().await;
+    let part = {
+        let (runtime, id) = (runtime.clone(), id.clone());
+        tokio::spawn(async move {
+            runtime
+                .call(
+                    "alice",
+                    "attachments.part",
+                    &json!({"session_id":id,"upload":"held","offset":0,"data":"aGVsbG8="}),
+                )
+                .await
+                .unwrap()
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(5), s.landed.notified())
+        .await
+        .unwrap();
+    assert_eq!(s.state.lock().unwrap().landing, 1);
+    // Running out of room does not retire it under the part.
+    assert_eq!(runtime.retire_idle(f64::INFINITY).await.unwrap(), 0);
+    drop(staging);
+    assert_eq!(part.await.unwrap().unwrap()["received"], 5);
+    assert!(
+        home.path()
+            .join("runtime/sessions/first/uploads/held.part")
+            .is_file()
+    );
+    assert!(Arc::ptr_eq(&s, &runtime.sessions.lock().unwrap()["first"]));
+    runtime.shutdown().await;
+}
+
 #[tokio::test]
 async fn an_upload_on_its_way_in_keeps_its_section_running() {
     let (home, runtime, _) = setup();

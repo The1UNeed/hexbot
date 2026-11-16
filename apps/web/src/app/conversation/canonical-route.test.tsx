@@ -18,6 +18,7 @@ import { useConnection } from '../../stores/connection'
 import { useSections } from '../../stores/sections'
 import { useTranscripts } from '../../stores/transcripts'
 import { useUi } from '../../stores/ui'
+import { useVisuals } from '../../stores/visuals'
 import { ChatChooser } from '../chat-chooser'
 
 import { ConversationColumn } from './index'
@@ -74,7 +75,9 @@ const reply = (method: string, input: Record<string, unknown> = {}) =>
                     ? { pending_clarify: { request_id: 'question', question: 'Which file?' } }
                     : {})
                 }
-              : { connectors: [] }
+              : method === 'file.attach'
+                ? { attached: true, id: `upload-${String(input.session_id)}` }
+                : { connectors: [] }
   )
 
 const calls = (method: string) => call.mock.calls.filter(([name]) => name === method)
@@ -579,7 +582,12 @@ async function stageOwnerFile(view: Awaited<ReturnType<typeof mount>>) {
     target: { files: [new File(['plan body'], 'plan.txt', { type: 'text/plain' })] }
   })
   expect(stagedChip()).toBeVisible()
+  // It uploads as it is attached; Send waits for it.
+  await waitFor(() => expect(sendButton()).toBeEnabled())
+  expect(calls('file.attach').map(([, params]) => params.session_id)).toEqual(['canonical'])
 }
+
+const sendButton = () => screen.getByRole('button', { name: 'Send' })
 
 /** Later canonical lookups wait for the test; history reads name the current live ID. */
 function holdLookups() {
@@ -646,20 +654,25 @@ it.each(['connection drop', 'daemon restart'] as const)(
     expect(stagedChip()).toBeVisible()
     fireEvent.keyDown(waiting, { key: 'Enter' })
     await act(async () => {})
-    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
+    expect(sendButton()).toBeDisabled()
     fireEvent.drop(view.container.firstElementChild!, {
       dataTransfer: { files: [new File(['late'], 'late.txt')] }
     })
     await act(async () => {})
     expect(screen.queryByText('late.txt')).toBeNull()
-    expect(calls('file.attach')).toHaveLength(0)
+    expect(calls('file.attach')).toHaveLength(1)
     expect(calls('prompt.submit')).toHaveLength(0)
 
-    // The message goes, with its file, once the chat opens.
+    // Once the chat opens, a restarted daemon is sent the file again, and
+    // then the message can go with it.
     await act(async () => state.release())
+    await waitFor(() => expect(sendButton()).toBeEnabled())
+    expect(calls('file.attach').map(([, params]) => params.session_id)).toEqual(
+      action === 'daemon restart' ? ['canonical', 'canonical-restarted'] : ['canonical']
+    )
+    expect(calls('prompt.submit')).toHaveLength(0)
+    fireEvent.click(sendButton())
     await waitFor(() => expect(stagedChip()).toBeNull())
-    expect(calls('file.attach')).toHaveLength(1)
-    expect(calls('file.attach')[0]![1]).toMatchObject({ name: 'plan.txt', session_id: state.live })
     expect(calls('prompt.submit')).toHaveLength(1)
     expect(calls('prompt.submit')[0]![1]).toEqual({
       session_id: state.live,
@@ -830,15 +843,18 @@ it('a lookup from before a daemon restart cannot send from the kept composer', a
   fireEvent.keyDown(composer, { key: 'Enter' })
   await act(async () => {})
   expect(calls('hexbot.sections.open')).toHaveLength(opened)
-  expect(calls('file.attach')).toHaveLength(0)
+  expect(calls('file.attach')).toHaveLength(1)
   expect(calls('prompt.submit')).toHaveLength(0)
 
-  // The message waited for the current lookup and goes to the restarted chat.
+  // The current lookup opens the restarted chat: the file goes there, then the message.
   await act(async () => state.lookups.at(-1)!.resolve({ section: canonical }))
-  await waitFor(() => expect(calls('prompt.submit')).toHaveLength(1))
+  await waitFor(() => expect(sendButton()).toBeEnabled())
   expect(calls('file.attach').map(([, params]) => params.session_id)).toEqual([
+    'canonical',
     'canonical-restarted'
   ])
+  fireEvent.click(sendButton())
+  await waitFor(() => expect(calls('prompt.submit')).toHaveLength(1))
   expect(calls('prompt.submit')[0]![1]).toEqual({
     session_id: 'canonical-restarted',
     text: 'Please read the attached plan'
@@ -897,7 +913,8 @@ it.each(['another daemon', 'another installation', 'a peer thread'] as const)(
     }
 
     expect(stagedChip()).toBeNull()
-    expect(calls('file.attach')).toHaveLength(0)
+    // Only the upload made on the first chat.
+    expect(calls('file.attach')).toHaveLength(1)
     expect(calls('prompt.submit')).toHaveLength(0)
   }
 )
@@ -1068,4 +1085,44 @@ it('takes typing and Enter while the chat opens, and sends once it opens', async
     session_id: 'canonical',
     text: 'Typed before it opened'
   })
+})
+
+it('sends a message typed while the chat is checked once a file added meanwhile is up', async () => {
+  const state = holdLookups()
+  const view = await mount('/b/owl/s/canonical')
+  expect(await screen.findByText('canonical history')).toBeVisible()
+  state.hold = true
+  await act(async () => useConnection.getState().setDaemon(null))
+  await act(async () => useConnection.getState().setDaemon({ one_chat: true } as DaemonInfo))
+  await waitFor(() => expect(state.lookups.length).toBeGreaterThan(0))
+  const field = screen.getByRole('textbox', { name: 'Message' })
+  fireEvent.change(field, { target: { value: 'Please read the attached plan' } })
+  // Sent while the chat is checked: it waits for the chat.
+  fireEvent.keyDown(field, { key: 'Enter' })
+  fireEvent.change(view.container.querySelector('input[type=file]')!, {
+    target: { files: [new File(['plan body'], 'plan.txt', { type: 'text/plain' })] }
+  })
+  await act(async () => {})
+  expect(calls('prompt.submit')).toHaveLength(0)
+  // Once open, the file goes up and then the waiting message goes with it.
+  await act(async () => state.release())
+  await waitFor(() => expect(calls('prompt.submit')).toHaveLength(1))
+  expect(calls('file.attach')).toHaveLength(1)
+  // This daemon has no input ids, so the composer clears once the bot takes it.
+  await waitFor(() => expect(stagedChip()).toBeNull())
+})
+
+it('opens a file again in the tab it already has', async () => {
+  const view = await mount('/b/owl/s/canonical')
+  expect(await screen.findByText('canonical history')).toBeVisible()
+  fireEvent.change(view.container.querySelector('input[type=file]')!, {
+    target: { files: [new File(['frames'], 'clip.mp4', { type: 'video/mp4' })] }
+  })
+  const preview = await screen.findByRole('button', { name: 'Preview clip.mp4' })
+  fireEvent.click(preview)
+  fireEvent.click(preview)
+  expect(useVisuals.getState().tabs.filter(tab => tab.title === 'clip.mp4')).toHaveLength(1)
+  // Taken out of the composer, its tab goes too.
+  fireEvent.click(screen.getByRole('button', { name: 'Remove clip.mp4' }))
+  expect(useVisuals.getState().tabs.filter(tab => tab.title === 'clip.mp4')).toHaveLength(0)
 })

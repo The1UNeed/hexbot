@@ -13,6 +13,26 @@ fn attachment_limit_mib(method: &str) -> usize {
         45
     }
 }
+/// The largest file a part upload can grow to, the largest attachment.
+const UPLOAD_LIMIT: u64 = 45 * 1024 * 1024;
+/// One part, decoded; clients send far less, so progress moves often.
+const PART_LIMIT: usize = 8 * 1024 * 1024;
+/// Part uploads a chat keeps at once, and how long one nobody finishes stays.
+const UPLOADS_KEPT: usize = 4;
+const UPLOAD_IDLE: Duration = Duration::from_secs(60 * 60);
+/// A client's name for one part upload.
+fn upload_id(value: &Value) -> Result<&str> {
+    value
+        .as_str()
+        .filter(|id| {
+            !id.is_empty()
+                && id.len() <= 64
+                && id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        })
+        .ok_or_else(|| Error::new(4202, "upload must be 1 to 64 letters, digits, - or _"))
+}
 impl Runtime {
     pub(super) async fn clear_attachments(&self, s: &Live) -> Result<Value> {
         let _attachment = s.attachment_gate.lock().await;
@@ -34,9 +54,114 @@ impl Runtime {
                 Err(error) => return Err(error.into()),
             }
         }
+        // Parts of a file still on its way go too.
+        let uploads = store::session_dir(&self.home, &s.stored)?.join("uploads");
+        match fs::remove_dir_all(uploads) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
         Ok(json!({"cleared": true}))
     }
+    /// One upload the user took out of the composer. A message on its way
+    /// already holds its uploads, so this never reaches into a turn: an upload
+    /// that is no longer staged answers 4204.
+    pub(super) async fn remove_attachment(&self, s: &Live, p: &Value) -> Result<Value> {
+        let id = required(p, "id")?;
+        let _attachment = s.attachment_gate.lock().await;
+        ensure_open(s)?;
+        let upload = {
+            let mut state = s.state.lock().unwrap();
+            let index = state
+                .staged
+                .iter()
+                .position(|u| u.id == id)
+                .ok_or_else(|| Error::new(4204, format!("attachment not found: {id}")))?;
+            state.staged.remove(index)
+        };
+        for path in upload.files {
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(json!({"removed": true}))
+    }
+    /// One part of a file sent in parts, so a client can show how much of it
+    /// arrived. Parts go in order: `offset` is the size so far, and 0 starts
+    /// the upload afresh. They wait on disk in the chat's folder, where a new
+    /// process for the chat finds them, until an attach call names the upload.
+    pub(super) async fn attach_part(&self, s: &Live, p: &Value) -> Result<Value> {
+        let upload = upload_id(&p["upload"])?.to_owned();
+        let offset = p["offset"]
+            .as_u64()
+            .ok_or_else(|| Error::new(4015, "offset must be a non-negative integer"))?;
+        // An empty part is fine: it starts a file of no bytes.
+        let data = p["data"]
+            .as_str()
+            .ok_or_else(|| Error::new(4200, "missing parameter: data"))?;
+        if data.len() > 4 * PART_LIMIT.div_ceil(3) {
+            return Err(Error::new(4202, "a part may hold at most 8 MiB"));
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .map_err(|_| Error::new(4202, "invalid base64 part"))?;
+        let _attachment = s.attachment_gate.lock().await;
+        ensure_open(s)?;
+        let dir = store::session_dir(&self.home, &s.stored)?.join("uploads");
+        let received =
+            tokio::task::spawn_blocking(move || write_part(&dir, &upload, offset, &bytes))
+                .await
+                .map_err(|e| Error::new(5200, e.to_string()))??;
+        Ok(json!({"received": received}))
+    }
     pub(super) async fn attach(&self, s: &Live, method: &str, p: &Value) -> Result<Value> {
+        let (bytes, part) = self.attachment_bytes(s, method, p).await?;
+        let staged = self.attach_bytes(s, method, p, bytes).await;
+        // A failed attach keeps the parts, so a PDF the daemon cannot draw
+        // can still go as a file.
+        if staged.is_ok()
+            && let Some(part) = part
+        {
+            let _ = fs::remove_file(part);
+        }
+        staged
+    }
+    /// The file an attach call carries: whole, or sent before in parts.
+    async fn attachment_bytes(
+        &self,
+        s: &Live,
+        method: &str,
+        p: &Value,
+    ) -> Result<(Vec<u8>, Option<PathBuf>)> {
+        let limit_mib = attachment_limit_mib(method);
+        let limit = limit_mib * 1024 * 1024;
+        let too_big = || Error::new(4202, format!("attachment exceeds {limit_mib} MiB"));
+        if let Some(upload) = p.get("upload").filter(|v| !v.is_null()) {
+            let upload = upload_id(upload)?;
+            // Under the gate, so no part lands while the file is read.
+            let _attachment = s.attachment_gate.lock().await;
+            ensure_open(s)?;
+            let path = store::session_dir(&self.home, &s.stored)?
+                .join("uploads")
+                .join(format!("{upload}.part"));
+            let reading = path.clone();
+            let bytes = tokio::task::spawn_blocking(move || fs::read(reading))
+                .await
+                .map_err(|e| Error::new(5200, e.to_string()))?
+                .map_err(|error| {
+                    if error.kind() == std::io::ErrorKind::NotFound {
+                        Error::new(4204, "upload not found; send the file again")
+                    } else {
+                        error.into()
+                    }
+                })?;
+            if bytes.len() > limit {
+                return Err(too_big());
+            }
+            return Ok((bytes, Some(path)));
+        }
         let encoded = if method == "file.attach" {
             let url = required(p, "data_url")?;
             let (head, body) = url
@@ -49,23 +174,24 @@ impl Runtime {
         } else {
             required(p, "content_base64")?
         };
-        let limit_mib = attachment_limit_mib(method);
-        let limit = limit_mib * 1024 * 1024;
         if encoded.len() > 4 * limit.div_ceil(3) {
-            return Err(Error::new(
-                4202,
-                format!("attachment exceeds {limit_mib} MiB"),
-            ));
+            return Err(too_big());
         }
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(encoded)
             .map_err(|_| Error::new(4202, "invalid base64 attachment"))?;
         if bytes.len() > limit {
-            return Err(Error::new(
-                4202,
-                format!("attachment exceeds {limit_mib} MiB"),
-            ));
+            return Err(too_big());
         }
+        Ok((bytes, None))
+    }
+    async fn attach_bytes(
+        &self,
+        s: &Live,
+        method: &str,
+        p: &Value,
+        bytes: Vec<u8>,
+    ) -> Result<Value> {
         let name =
             p["name"]
                 .as_str()
@@ -98,7 +224,8 @@ impl Runtime {
                     "payload is not a supported PNG, JPEG, GIF, or WebP image",
                 ));
             };
-            Some(json!({"type":"image","data":encoded,"mimeType":mime}))
+            let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            Some(json!({"type":"image","data":data,"mimeType":mime}))
         } else {
             None
         };
@@ -125,6 +252,7 @@ impl Runtime {
             images,
             refs,
             files: std::mem::take(&mut staged.0),
+            at: common::now(),
         });
         state.last_activity = common::now();
         Ok(
@@ -251,6 +379,7 @@ impl Runtime {
             images,
             refs: vec![],
             files: std::mem::take(&mut staged.0),
+            at: common::now(),
         });
         state.last_activity = common::now();
         Ok(json!({
@@ -263,6 +392,69 @@ impl Runtime {
             "text": format!("[User attached PDF: {name} ({} page(s))]", pages.len())
         }))
     }
+}
+/// Appends one part; returns the upload's size so far.
+fn write_part(dir: &Path, upload: &str, offset: u64, bytes: &[u8]) -> Result<u64> {
+    use std::io::{Seek, Write};
+    fs::create_dir_all(dir)?;
+    let path = dir.join(format!("{upload}.part"));
+    if offset == 0 {
+        prune_parts(dir, &path)?;
+    }
+    let mut options = fs::OpenOptions::new();
+    options
+        .create(offset == 0)
+        .truncate(offset == 0)
+        .write(true);
+    // Readable only by the daemon's user, as staged files are.
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(&path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            Error::new(4204, "upload not found; send the file again from the start")
+        } else {
+            error.into()
+        }
+    })?;
+    let size = file.metadata()?.len();
+    if size != offset {
+        return Err(Error::new(
+            4202,
+            format!("the upload holds {size} bytes, not {offset}; send the file again"),
+        ));
+    }
+    if size + bytes.len() as u64 > UPLOAD_LIMIT {
+        drop(file);
+        let _ = fs::remove_file(&path);
+        return Err(Error::new(4202, "attachment exceeds 45 MiB"));
+    }
+    file.seek(std::io::SeekFrom::End(0))?;
+    file.write_all(bytes)?;
+    Ok(size + bytes.len() as u64)
+}
+/// Before a new upload: drop ones idle for an hour, and the oldest past a few.
+fn prune_parts(dir: &Path, starting: &Path) -> Result<()> {
+    let now = std::time::SystemTime::now();
+    let mut kept = vec![];
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path == starting || path.extension().is_none_or(|ext| ext != "part") {
+            continue;
+        }
+        let modified = entry.metadata()?.modified()?;
+        if now.duration_since(modified).unwrap_or_default() > UPLOAD_IDLE {
+            let _ = fs::remove_file(&path);
+        } else {
+            kept.push((modified, path));
+        }
+    }
+    kept.sort();
+    let extra = (kept.len() + 1).saturating_sub(UPLOADS_KEPT);
+    for (_, path) in kept.into_iter().take(extra) {
+        let _ = fs::remove_file(path);
+    }
+    Ok(())
 }
 // Unregistered files are removed on errors, cancellation, or a concurrent close.
 /// Staging must not recreate the folder of a section that is closing.
@@ -337,6 +529,55 @@ mod tests {
             let bytes = attachment_limit_mib(method) * 1024 * 1024;
             assert!(4 * bytes.div_ceil(3) + 1024 * 1024 < crate::server::WS_MESSAGE_LIMIT);
         }
+    }
+    #[test]
+    fn an_upload_in_parts_stops_at_the_attachment_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let most = vec![0; UPLOAD_LIMIT as usize - 1];
+        assert_eq!(
+            write_part(dir.path(), "big", 0, &most).unwrap(),
+            UPLOAD_LIMIT - 1
+        );
+        assert_eq!(
+            write_part(dir.path(), "big", UPLOAD_LIMIT - 1, b"xy")
+                .unwrap_err()
+                .code,
+            4202
+        );
+        assert!(!dir.path().join("big.part").exists());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn parts_are_readable_only_by_the_daemon_user() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        write_part(dir.path(), "secret", 0, b"x").unwrap();
+        let mode = fs::metadata(dir.path().join("secret.part"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+    #[test]
+    fn a_new_upload_keeps_only_a_few_unfinished_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let start = std::time::SystemTime::now() - Duration::from_secs(60);
+        for (age, name) in ["a", "b", "c", "d", "e"].into_iter().enumerate() {
+            write_part(dir.path(), name, 0, b"x").unwrap();
+            // Distinct modification times, oldest first, without waiting.
+            fs::File::options()
+                .write(true)
+                .open(dir.path().join(format!("{name}.part")))
+                .unwrap()
+                .set_modified(start + Duration::from_secs(age as u64))
+                .unwrap();
+        }
+        let mut left = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect::<Vec<_>>();
+        left.sort();
+        assert_eq!(left, ["b.part", "c.part", "d.part", "e.part"]);
     }
     #[test]
     fn total_includes_files_from_prior_turns_and_rendered_pages() {

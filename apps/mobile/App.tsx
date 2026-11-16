@@ -28,7 +28,13 @@ import * as Crypto from 'expo-crypto'
 import { avatarSrc } from './src/core/avatar'
 import { waitingStatus } from './src/core/status'
 import { reactionsOn } from './src/core/reactions'
-import { encodeAnswer, imageMime } from './src/core/chat-send'
+import {
+  attachInParts,
+  encodeAnswer,
+  forgetWholeOnly,
+  imageMime,
+  WholeFilesOnly
+} from './src/core/chat-send'
 import { daemonBehind } from './src/core/version-skew'
 import { version as appVersion } from '../desktop/package.json'
 import { type AttachSource, pickAttachments } from './src/core/pickFile'
@@ -51,6 +57,7 @@ import {
   type ApprovalChoice,
   type CardAnswer,
   type AttachmentView,
+  type ComposerAttachment,
   type BotStatus,
   type BotSummary,
   type ChatItem,
@@ -235,6 +242,9 @@ export default function App({ children }: { children?: ReactNode }) {
     </SafeAreaProvider>
   )
 }
+/** Where a composer file is staged: the daemon, its process (`replay_epoch`) and the chat's live session. */
+type Staging = { daemon: string | null; epoch: string | null; session: string | null }
+
 function MobileApp({ children }: { children?: ReactNode }) {
   const mobile = useMobile()
   const usage = useUsageData()
@@ -277,7 +287,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
   const [early, setEarly] = useState<{ row: string; text: string } | null>(null)
   const earlyRef = useRef(early)
   earlyRef.current = early
-  const [attachments, setAttachments] = useState<AttachmentView[]>([])
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
   const [question, setQuestion] = useState<{
     requestId: string
     questionId: string
@@ -292,10 +302,21 @@ function MobileApp({ children }: { children?: ReactNode }) {
         method: string
         params: Record<string, unknown>
         /** Where the file was uploaded, and the id and path the daemon gave it. */
-        upload?: { session: string | null; id?: string; path?: string }
+        upload?: Staging & { id?: string; path?: string }
+        /** The upload on its way; another one, or none, means its answer no longer counts. */
+        going?: object
+        /** Its turn came while the chat had no live session, as during a reconnect. */
+        waiting?: boolean
+        /**
+         * Kept on the phone for a daemon from before part uploads, which
+         * could not take it back: it goes with Send, as before.
+         */
+        kept?: boolean
       }
     >()
   )
+  /** Files upload one after another, each as soon as it is picked. */
+  const uploads = useRef<Promise<void>>(Promise.resolve())
   const [uploading, setUploading] = useState(false)
   const [questionAnswer, setQuestionAnswer] = useState('')
   const [questionChoices, setQuestionChoices] = useState<string[]>([])
@@ -544,8 +565,14 @@ function MobileApp({ children }: { children?: ReactNode }) {
     if (mobile.route?.kind !== 'section') return
     const sessionId = mobile.liveSessionId()
     if (!sessionId) throw new Error('Open this chat again before attaching a file.')
+    // Picking can take a while; the files belong to the chat it started in.
+    // On Android the picker sends the app to the background, so the chat
+    // reconnects meanwhile: that is still the same chat.
+    const origin = chatNow()
     const { files, refused } = await pickAttachments(source)
-    const added: AttachmentView[] = []
+    if (files.length && !sameChat(origin, chatNow()))
+      throw new Error('The chat changed while you picked. Attach the files again.')
+    const added: ComposerAttachment[] = []
     let tooBig: string | null = null
     for (const asset of files) {
       const image = imageMime(asset.name, asset.mimeType)
@@ -571,18 +598,151 @@ function MobileApp({ children }: { children?: ReactNode }) {
         id,
         name: asset.name,
         kind,
-        uri: kind === 'file' || kind === 'pdf' ? null : asset.uri
+        uri: kind === 'file' || kind === 'pdf' ? null : asset.uri,
+        status: 'uploading'
       })
     }
     if (added.length) setAttachments(list => [...list, ...added])
+    for (const item of added) uploadAttachment(item.id)
     const problem = refused ?? tooBig
     if (problem) throw new Error(problem)
   }
-  // An uploaded file left out of the message is dropped by the daemon when it is sent.
+  const setAttachment = (id: string, patch: Partial<ComposerAttachment>) =>
+    setAttachments(list => list.map(item => (item.id === id ? { ...item, ...patch } : item)))
+  /** Where a file is staged: the daemon, its process, and the chat's live session. */
+  const stagingNow = (): Staging => ({
+    daemon: mobileRef.current.active?.id ?? null,
+    epoch: mobileRef.current.epoch(),
+    session: mobileRef.current.liveSessionId()
+  })
+  const sameStaging = (a: Staging, b: Staging) =>
+    a.daemon === b.daemon && a.epoch === b.epoch && a.session === b.session
+  /** The daemon and chat the composer belongs to, which a reconnect does not change. */
+  const chatNow = () => ({
+    daemon: mobileRef.current.active?.id ?? null,
+    section:
+      mobileRef.current.route?.kind === 'section' ? mobileRef.current.route.section.id : null
+  })
+  const sameChat = (a: ReturnType<typeof chatNow>, b: ReturnType<typeof chatNow>) =>
+    a.daemon === b.daemon && a.section === b.section
+  /** Takes back an upload nobody will send, on the daemon process that holds it. Best effort. */
+  const releaseUpload = (upload?: Staging & { id?: string }) => {
+    if (!upload?.session || !upload.id) return
+    const now = stagingNow()
+    if (upload.daemon !== now.daemon || upload.epoch !== now.epoch) return
+    const { session, id } = upload
+    // Tracked until the daemon has it back, so leaving the chat tries again
+    // after a dropped connection.
+    void mobileRef.current.rpc('attachments.remove', { session_id: session, id }).then(
+      () => mobileRef.current.unstage(session, id),
+      (e: { code?: number } | null) => {
+        if (e?.code === 4204) mobileRef.current.unstage(session, id)
+      }
+    )
+  }
+  /**
+   * Stages a picked file in this chat's live session, so Send only names what
+   * the daemon holds. It waits its turn. While the chat has no live session,
+   * as during a reconnect, it waits at 0% and goes once the chat is back; if
+   * the daemon or the chat changed, nothing is sent and the file asks to be
+   * retried.
+   */
+  const uploadAttachment = (id: string): Promise<void> => {
+    const asset = attachmentData.current.get(id)
+    if (!asset) return Promise.resolve()
+    const going = {}
+    const origin = chatNow()
+    asset.going = going
+    asset.waiting = false
+    setAttachment(id, { status: 'uploading', error: undefined, progress: 0 })
+    uploads.current = uploads.current.then(async () => {
+      if (asset.going !== going || attachmentData.current.get(id) !== asset) return
+      try {
+        if (!sameChat(origin, chatNow())) throw new Error('Open this chat again, then retry.')
+        const staging = stagingNow()
+        const current = mobileRef.current
+        if (!staging.session || current.connection !== 'connected' || current.loading) {
+          asset.waiting = true
+          return
+        }
+        const reply = await attachInParts<{ id?: string; path?: string }>(
+          mobileRef.current.rpc,
+          staging.session,
+          asset.method,
+          asset.params,
+          Crypto.randomUUID(),
+          {
+            ahead: true,
+            onProgress: progress => {
+              if (asset.going === going) setAttachment(id, { progress })
+            },
+            // Taken out, or the chat left: no more parts go.
+            wanted: () => asset.going === going && attachmentData.current.get(id) === asset
+          }
+        )
+        const upload = { ...staging, id: reply.id, path: reply.path }
+        // Removed, or the chat left, while it went.
+        if (asset.going !== going || attachmentData.current.get(id) !== asset) {
+          releaseUpload(upload)
+          return
+        }
+        asset.upload = upload
+        if (reply.id) mobileRef.current.stage(staging.session, reply.id)
+        setAttachment(id, { status: 'ready', path: reply.path, progress: undefined })
+      } catch (e) {
+        if (asset.going === going && e instanceof WholeFilesOnly) {
+          asset.kept = true
+          // Not on the daemon yet: only what this phone can show previews.
+          setAttachments(list =>
+            list.map(item =>
+              item.id === id
+                ? { ...item, status: 'ready', progress: undefined, previewable: item.kind !== 'file' }
+                : item
+            )
+          )
+        } else if (asset.going === going)
+          setAttachment(id, { status: 'failed', error: e instanceof Error ? e.message : String(e) })
+      } finally {
+        if (asset.going === going) asset.going = undefined
+      }
+    })
+    return uploads.current
+  }
+  // A new daemon process, as after an update, may take parts.
+  const daemonProcess = mobile.epoch()
+  useEffect(() => forgetWholeOnly(), [daemonProcess])
+  // Files whose turn came during a reconnect go once the chat is live again.
+  const liveChat =
+    mobile.connection === 'connected' && !mobile.loading ? mobile.liveSessionId() : null
+  useEffect(() => {
+    if (!liveChat) return
+    for (const [id, asset] of attachmentData.current)
+      if (asset.waiting) void uploadAttachment(id)
+  }, [liveChat])
   const removeAttachment = (id: string) => {
     if (uploading) return
+    const asset = attachmentData.current.get(id)
     attachmentData.current.delete(id)
     setAttachments(a => a.filter(item => item.id !== id))
+    if (!asset) return
+    asset.going = undefined
+    releaseUpload(asset.upload)
+  }
+  // A finished upload opens as it will in the message: from the daemon's
+  // copy, or from this phone's for a PDF (the daemon keeps only its page
+  // pictures) and for a file kept here until Send.
+  const openAttachment = (id: string) => {
+    const item = attachments.find(file => file.id === id)
+    const asset = attachmentData.current.get(id)
+    if (item?.status !== 'ready' || !asset) return
+    if (item.path && item.kind !== 'pdf' && !asset.kept) return setFile(item)
+    const base64 =
+      typeof asset.params.content_base64 === 'string'
+        ? asset.params.content_base64
+        : (String(asset.params.data_url ?? '').split(',')[1] ?? '')
+    const mime =
+      item.kind === 'pdf' ? 'application/pdf' : (imageMime(item.name) ?? mimeOf(item.name))
+    setFile({ ...item, local: { name: item.name, mime, data_url: `data:${mime};base64,${base64}` } })
   }
   const saved: DaemonEntry[] = mobile.saved.map(d => ({
     id: d.id,
@@ -1015,14 +1175,29 @@ function MobileApp({ children }: { children?: ReactNode }) {
       setUploading(true)
       try {
         const ids: string[] = []
-        for (const asset of attachmentData.current.values()) {
-          if (!asset.upload || asset.upload.session !== sessionId) {
-            const reply = await mobile.rpc<{ id?: string; path?: string }>(asset.method, {
-              ...asset.params,
-              session_id: sessionId
-            })
-            asset.upload = { session: sessionId, id: reply.id, path: reply.path }
-            if (sessionId) mobile.stage(sessionId)
+        // Each file was staged as it was picked. One staged in a chat that
+        // reopened since, or on a daemon that restarted, goes again first,
+        // showing its progress; the message waits for it.
+        for (const [id, asset] of attachmentData.current) {
+          if (asset.kept) {
+            // Kept here for a daemon from before part uploads: it goes now, whole.
+            const now = stagingNow()
+            if (!now.session) throw new Error('Open this chat again before sending.')
+            const reply = await attachInParts<{ id?: string; path?: string }>(
+              mobile.rpc,
+              now.session,
+              asset.method,
+              asset.params,
+              Crypto.randomUUID()
+            )
+            asset.upload = { ...now, id: reply.id, path: reply.path }
+            mobile.stage(now.session, null)
+          } else if (!asset.upload || !sameStaging(asset.upload, stagingNow())) {
+            // The copy staged in the chat before it reopened is taken back first.
+            releaseUpload(asset.upload)
+            await uploadAttachment(id)
+            if (!asset.upload || !sameStaging(asset.upload, stagingNow()))
+              throw new Error('A file did not upload. Retry or remove it, then send.')
           }
           if (asset.upload.id) ids.push(asset.upload.id)
         }
@@ -1040,14 +1215,24 @@ function MobileApp({ children }: { children?: ReactNode }) {
             files > 0,
             named ? ids : undefined,
             // The daemon's copy, so a file you just sent previews before the chat reloads.
-            attachments.map(file => ({
-              ...file,
-              path: attachmentData.current.get(file.id)?.upload?.path ?? file.path
+            attachments.map(({ id, name, kind, uri, path }) => ({
+              id,
+              name,
+              kind,
+              uri,
+              path: attachmentData.current.get(id)?.upload?.path ?? path
             }))
           )
           .catch((e: unknown) => {
-            // The next Send uploads the files again; the daemon drops the copies it holds.
-            if (named) for (const asset of attachmentData.current.values()) asset.upload = undefined
+            // The copies the daemon may still hold are taken back and each
+            // file goes again, so a chip never previews a removed copy.
+            if (named)
+              for (const [id, asset] of attachmentData.current) {
+                if (asset.kept) continue
+                releaseUpload(asset.upload)
+                asset.upload = undefined
+                void uploadAttachment(id)
+              }
             throw e
           })
         setAttachments([])
@@ -1307,6 +1492,8 @@ function MobileApp({ children }: { children?: ReactNode }) {
     onStop: route?.kind === 'room' ? () => act(mobile.stop) : undefined,
     attachments,
     onRemoveAttachment: removeAttachment,
+    onOpenAttachment: route?.kind === 'section' ? openAttachment : undefined,
+    onRetryAttachment: uploadAttachment,
     onApprove: approve,
     rpc: mobile.rpc,
     onOpenVisual: openVisual,
@@ -1315,15 +1502,19 @@ function MobileApp({ children }: { children?: ReactNode }) {
     onOpenThread: openThread,
     sendDisabledReason: uploading
       ? 'Sending attachments'
-      : mobile.loading
-        ? 'Opening conversation'
-        : mobile.connection !== 'connected'
-          ? 'Reconnect to send'
-          : route?.kind === 'section' && route.section.peer_bot
-            ? 'Conversation between bots'
-            : route?.kind === 'section' && !mobile.liveSessionId()
-              ? 'Open this chat to send'
-              : undefined,
+      : attachments.some(file => file.status === 'uploading')
+        ? 'Uploading files'
+        : attachments.some(file => file.status === 'failed')
+          ? 'A file did not upload. Retry or remove it'
+          : mobile.loading
+            ? 'Opening conversation'
+            : mobile.connection !== 'connected'
+              ? 'Reconnect to send'
+              : route?.kind === 'section' && route.section.peer_bot
+                ? 'Conversation between bots'
+                : route?.kind === 'section' && !mobile.liveSessionId()
+                  ? 'Open this chat to send'
+                  : undefined,
     error: mobile.chat.error || mobile.error || stoppedElsewhere?.text || null,
     onDismissError: () => {
       setClosedOn(mobile.chat.messages.findLast(m => m.role === 'user')?.id ?? null)

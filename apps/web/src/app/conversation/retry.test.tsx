@@ -222,6 +222,8 @@ async function send(view: Awaited<ReturnType<typeof mount>>, names = ['plan.txt'
     target: { files: names.map(name => new File([`${name} bytes`], name, { type: 'text/plain' })) }
   })
   fireEvent.change(field, { target: { value: 'Read my plan' } })
+  // Files upload as they are attached, and Send waits for them.
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled())
   fireEvent.click(screen.getByRole('button', { name: 'Send' }))
 }
 
@@ -731,25 +733,46 @@ it('does not trust a code property on an arbitrary transport error', async () =>
   expect(submits()).toHaveLength(1)
 })
 
-it('requires reattachment when an initial upload has no server ID', async () => {
+/** Attaches files and types a message, without sending it. */
+async function compose(view: Awaited<ReturnType<typeof mount>>, names: string[]) {
+  expect(await screen.findByText('Earlier reply')).toBeVisible()
+  const field = screen.getByRole('textbox', { name: 'Message' })
+  await waitFor(() => expect(field).toBeEnabled())
+  fireEvent.change(view.container.querySelector('input[type=file]')!, {
+    target: { files: names.map(name => new File([`${name} bytes`], name, { type: 'text/plain' })) }
+  })
+  fireEvent.change(field, { target: { value: 'Read my plan' } })
+
+  return field
+}
+
+it('holds the message back when an upload has no server ID, and tries again on click', async () => {
   const original = call.getMockImplementation()!
+  let attaches = 0
   call.mockImplementation(async (method: string, input: Record<string, unknown>) => {
     const result = await original(method, input)
 
-    return method === 'file.attach' ? { attached: true } : result
+    return method === 'file.attach' && ++attaches === 1 ? { attached: true } : result
   })
   const view = await mount()
-  await send(view)
-  expect(await screen.findByTestId('stopped-card')).toHaveTextContent(
-    'did not return an attachment ID'
-  )
+  const field = await compose(view, ['plan.txt'])
+  expect(await screen.findByText(/did not return an attachment ID/)).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
+  fireEvent.keyDown(field, { key: 'Enter' })
   expect(submits()).toHaveLength(0)
   expect(userRows()).toHaveLength(0)
-  expect(retries()).toHaveLength(0)
+  expect(cards()).toHaveLength(0)
   expect(screen.getByRole('button', { name: 'Remove plan.txt' })).toBeVisible()
+
+  fireEvent.click(screen.getByRole('button', { name: 'Retry uploading plan.txt' }))
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled())
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(() => expect(delivered).toHaveLength(1))
+  expect(attaches).toBe(2)
+  expect(delivered[0]!.files).toEqual(['plan.txt'])
 })
 
-it('does not submit text or retry a previous row when an initial upload fails partway', async () => {
+it('sends nothing while one of its files did not upload, and leaves an earlier row alone', async () => {
   answers = [refused()]
   const view = await mount()
   await send(view)
@@ -770,10 +793,11 @@ it('does not submit text or retry a previous row when an initial upload fails pa
       ]
     }
   })
-  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
-  await waitFor(() => expect(cards()).toHaveLength(2))
-  expect(cards()[1]).toHaveTextContent('Too large')
-  expect(retryOn(cards()[1]!)).toBeNull()
+  expect(await screen.findByText('Not uploaded: Too large')).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Preview outline.txt' })).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
+  fireEvent.keyDown(screen.getByRole('textbox', { name: 'Message' }), { key: 'Enter' })
+  expect(cards()).toHaveLength(1)
   expect(submits()).toHaveLength(1)
   expect(delivered).toHaveLength(0)
 })
@@ -923,75 +947,59 @@ async function proveAccepted(inputId: string, turnId: string) {
   await reload()
 }
 
-it.each(['send', 'upload'] as const)(
-  'keeps a failed %s request and its Retry ownership separate from nearby turn incidents',
-  async failure => {
-    if (failure === 'send') {
-      answers = [refused()]
-    } else {
-      const original = call.getMockImplementation()!
-      call.mockImplementation((method: string, input: Record<string, unknown>) =>
-        method === 'file.attach'
-          ? Promise.reject(new JsonRpcGatewayError('Upload refused', { code: 4202 }))
-          : original(method, input)
-      )
-    }
+// An upload that fails stays on its file in the composer, never a card here.
+it('keeps a failed send request and its Retry ownership separate from nearby turn incidents', async () => {
+  answers = [refused()]
 
-    const view = await mount()
-    await send(view)
-    await screen.findByTestId('stopped-card')
-    const transcript = () => useTranscripts.getState().bySession.chat!
-    const request = transcript().messages.find(message => message.request)!
-    const provenance = userRows()[0]?.submission
-    expect(request.error).toBe(failure === 'send' ? 'Prompt rejected' : 'Upload refused')
-    expect(Boolean(request.retryRow)).toBe(failure === 'send')
+  const view = await mount()
+  await send(view)
+  await screen.findByTestId('stopped-card')
+  const transcript = () => useTranscripts.getState().bySession.chat!
+  const request = transcript().messages.find(message => message.request)!
+  const provenance = userRows()[0]?.submission
+  expect(request.error).toBe('Prompt rejected')
+  expect(Boolean(request.retryRow)).toBe(true)
 
-    const incident = (id: string, text: string) =>
-      routeEvent({
-        type: 'hexbot.bots.incident',
-        payload: {
-          bot: 'owl',
-          section_id: 'chat',
-          session_id: 'chat',
-          incident: { id, text, connector: 'notion' }
-        }
-      } as GatewayEvent)
+  const incident = (id: string, text: string) =>
+    routeEvent({
+      type: 'hexbot.bots.incident',
+      payload: {
+        bot: 'owl',
+        section_id: 'chat',
+        session_id: 'chat',
+        incident: { id, text, connector: 'notion' }
+      }
+    } as GatewayEvent)
 
-    act(() => {
-      incident('first-incident', 'The actual turn failed')
-      incident('first-incident', 'Updated first incident')
-      incident('second-incident', 'Another turn incident')
-      incident('second-incident', 'Updated second incident')
-    })
-    expect(transcript().messages.find(message => message.id === request.id)).toBe(request)
-    expect(userRows()[0]?.submission).toBe(provenance)
-    expect(cards()).toHaveLength(3)
-    expect(screen.queryByText('The actual turn failed')).toBeNull()
-    expect(screen.getByText('Updated first incident')).toBeVisible()
-    expect(screen.getByText('Updated second incident')).toBeVisible()
+  act(() => {
+    incident('first-incident', 'The actual turn failed')
+    incident('first-incident', 'Updated first incident')
+    incident('second-incident', 'Another turn incident')
+    incident('second-incident', 'Updated second incident')
+  })
+  expect(transcript().messages.find(message => message.id === request.id)).toBe(request)
+  expect(userRows()[0]?.submission).toBe(provenance)
+  expect(cards()).toHaveLength(3)
+  expect(screen.queryByText('The actual turn failed')).toBeNull()
+  expect(screen.getByText('Updated first incident')).toBeVisible()
+  expect(screen.getByText('Updated second incident')).toBeVisible()
 
-    for (const card of cards().filter(card => !card.textContent?.includes(request.error!))) {
-      expect(retryOn(card)).toBeNull()
-    }
-
-    if (failure === 'send') {
-      const requestCard = screen
-        .getByText('Prompt rejected')
-        .closest<HTMLElement>('[data-testid=stopped-card]')!
-
-      fireEvent.click(retryOn(requestCard)!)
-      await waitFor(() => expect(delivered).toHaveLength(1))
-      expect(submits()[1]).toMatchObject({
-        text: 'Read my plan',
-        attachments: submits()[0]!.attachments
-      })
-      expect(delivered[0]!.files).toEqual(['plan.txt'])
-    } else {
-      expect(retries()).toHaveLength(0)
-      expect(submits()).toHaveLength(0)
-    }
+  for (const card of cards().filter(card => !card.textContent?.includes(request.error!))) {
+    expect(retryOn(card)).toBeNull()
   }
-)
+
+  const requestCard = screen
+    .getByText('Prompt rejected')
+    .closest<HTMLElement>('[data-testid=stopped-card]')!
+
+  fireEvent.click(retryOn(requestCard)!)
+  await waitFor(() => expect(delivered).toHaveLength(1))
+  expect(submits()[1]).toMatchObject({
+    text: 'Read my plan',
+    attachments: submits()[0]!.attachments
+  })
+  expect(delivered[0]!.files).toEqual(['plan.txt'])
+})
 
 describe('Retry on a turn that failed on your latest message', () => {
   // The daemon's session.recall, as in runtime_recall.rs: the row and what
@@ -1192,19 +1200,24 @@ it('keeps a newer upload busy when an earlier send finishes', async () => {
   await send(view, [])
   const field = screen.getByRole('textbox', { name: 'Message' })
   await waitFor(() => expect(field).toHaveValue(''))
-  // A second message with a file starts uploading while the first is still out.
+  // A second message's file starts uploading while the first is still out.
   fireEvent.change(view.container.querySelector('input[type=file]')!, {
     target: { files: [new File(['notes'], 'notes.txt', { type: 'text/plain' })] }
   })
   fireEvent.change(field, { target: { value: 'And my notes' } })
-  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(() => expect(attaches).toBe(1))
+  expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
   await act(async () => gate!.resolve())
   await waitFor(() => expect(delivered).toHaveLength(1))
+  // The first send finishing does not let the second go before its file is up.
   fireEvent.keyDown(field, { key: 'Enter' })
   fireEvent.click(screen.getByRole('button', { name: 'Send' }))
-  expect(attaches).toBe(1)
+  expect(delivered).toHaveLength(1)
   await act(async () => upload.resolve())
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled())
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
   await waitFor(() => expect(delivered).toHaveLength(2))
+  expect(attaches).toBe(1)
   expect(userRows()).toHaveLength(2)
 })
 

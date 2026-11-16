@@ -182,9 +182,19 @@ when multiple preserved owner conversations make its source uncertain.
 | `hexbot.passwords.changed` | refresh Settings, Passwords while it is open |
 | `hexbot.reactions.changed` | replace one message's reactions in `stores/reactions.ts`, by its history row; `input_id` finds your own message before it is read back from history |
 
-Sending: `prompt.submit {session_id, text}`; before it, attachments are
-staged with `image.attach_bytes` (images) or `file.attach {data_url,
-name}` (other files) or `pdf.attach`. Stop: `session.interrupt`.
+Sending: `prompt.submit {session_id, text, attachments}`. Each file is
+staged the moment it is dropped, picked or pasted, with `image.attach_bytes`
+(images), `file.attach {data_url, name}` (other files) or `pdf.attach`, one
+at a time (`app/conversation/draft-files.tsx`), in 768 KiB
+`attachments.part` calls, so the chip's percentage is what the daemon has
+confirmed; the attach call then names the upload. A daemon without parts
+cannot take a file back either: there the file stays on this device (`kept`)
+and goes whole with Send, as before; only media and PDFs preview from the
+local copy. A file taken out while it is on its
+way sends no more parts. Send waits until every file is staged in
+the chat's live session in this daemon process (`replay_epoch`); a reopen or
+restart stages them again, and a file taken out is taken back with
+`attachments.remove`. Stop: `session.interrupt`.
 
 ## Routes
 
