@@ -100,9 +100,11 @@ it also installs over SSH when nobody is signed in at the screen.
   `heartbeat_messages`; the scheduler tick runs each bot's, and pushes go out
   through Hex Connect (`services::push`). Every migration drops the
   check-in tables it replaced.
-  Discord (`src/discord.rs`) adds `discord_bots`, `discord_channels` and
-  `discord_messages`, created by the same table list without a version
-  bump; tokens are in `accounts/discord/<bot>.json`.
+  Discord (`src/discord.rs`) adds `discord_bots`, `discord_channels`,
+  `discord_messages`, `discord_closed`, `discord_plugin` (the bots it is on
+  for in Plugins, with each one's mode) and `discord_guilds` (each app's
+  servers and their own modes), created by the same table list without a
+  version bump; tokens are in `accounts/discord/<bot>.json`.
 - Memory stays in `profiles/<bot>/memories/MEMORY.md`, soul in `SOUL.md`, and
   About you in `users/<id>/user.md`. Deleting a section leaves bot memory alone.
   Only sections, rooms, and dreams write it; a scheduled job's memory tool

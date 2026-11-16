@@ -121,6 +121,17 @@ CREATE TABLE IF NOT EXISTS discord_messages(
 CREATE INDEX IF NOT EXISTS idx_discord_messages_room_seq ON discord_messages(room_id,seq);
 -- When each channel's last Discord room was deleted (discord.rs `closing`).
 CREATE TABLE IF NOT EXISTS discord_closed(channel_id TEXT PRIMARY KEY, closed_at REAL NOT NULL);
+-- The bots Discord is turned on for in Plugins, and how each acts there by
+-- default (discord.rs MODES). Kept when the bot disconnects.
+CREATE TABLE IF NOT EXISTS discord_plugin(
+ bot TEXT PRIMARY KEY, owner_id TEXT NOT NULL, mode TEXT NOT NULL DEFAULT 'reads',
+ enabled_at REAL NOT NULL);
+-- The servers each bot's Discord app is in, from its Gateway connection, and
+-- how it acts in each when that differs from its default (mode NULL).
+-- joined_at: when the app was last added to it.
+CREATE TABLE IF NOT EXISTS discord_guilds(
+ bot TEXT NOT NULL, guild_id TEXT NOT NULL, name TEXT, mode TEXT,
+ present INTEGER NOT NULL DEFAULT 1, joined_at REAL, PRIMARY KEY(bot,guild_id));
 CREATE INDEX IF NOT EXISTS idx_heartbeats_bot_started ON heartbeats(bot,started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_heartbeat_messages_section ON heartbeat_messages(section_id,context_at);
 CREATE INDEX IF NOT EXISTS idx_sections_bot ON sections(bot);
@@ -215,7 +226,15 @@ pub fn migrate(home: &Path) -> Result<()> {
             ));
         }
     }
+    let discord_plugin = table_exists(&transaction, "discord_plugin")?;
     transaction.execute_batch(TABLES)?;
+    // Discord became a plugin: a bot connected before keeps it, once.
+    if !discord_plugin {
+        transaction.execute(
+            "INSERT OR IGNORE INTO discord_plugin(bot,owner_id,mode,enabled_at) SELECT bot,owner_id,'reads',COALESCE(connected_at,updated_at,0) FROM discord_bots",
+            [],
+        )?;
+    }
     for (table, column, definition) in COLUMNS {
         if !column_exists(&transaction, table, column)? {
             // All identifiers and definitions are constants above.

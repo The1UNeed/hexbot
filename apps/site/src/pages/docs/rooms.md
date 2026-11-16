@@ -6,7 +6,7 @@ description: Put your bots in one conversation and control who responds.
 
 A room is a group chat with you and your bots. Each bot keeps its own persona, model, skills, tools, and private memory while it works in the room.
 
-A Discord channel can be a room too: add a bot to a server and @mention it there. See [Discord](/docs/discord/).
+A Discord channel can be a room too: add a bot to a server and @mention it there, or let it join in on its own. See [Discord](/docs/discord/).
 
 ## Choose who responds
 

@@ -9,6 +9,12 @@
 //! back to Discord as that bot. Each bot keeps its own room session, so what a
 //! Discord channel says reaches only the bots in it.
 //!
+//! How a bot acts is its mode (`MODES`), a default for the bot that each
+//! server can change: it answers mentions and sees only them, answers
+//! mentions and reads along, joins in as an active member, or answers every
+//! message. A bot that reads along can also read the server's other channels
+//! and threads (`read`), never another server's.
+//!
 //! People in a Discord channel are not the owner. A Discord room is locked to
 //! Manual, its sessions get only `TOOLS`, notes are the only memory they can
 //! write, and their prompt leaves out About you (`SECURITY.md`).
@@ -25,8 +31,195 @@ use std::{
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
-/// The only tools a bot has in a Discord room: notes, and the web.
-pub const TOOLS: &[&str] = &["memory", "web_search", "web_extract"];
+/// The only tools a bot has in a Discord room: notes, the web, and reading
+/// the server it is in.
+pub const TOOLS: &[&str] = &["memory", "web_search", "web_extract", TOOL];
+/// Reads the other channels and threads of the server a Discord room is in.
+pub const TOOL: &str = "hexbot_discord";
+/// How a bot acts in a server. `mentions`: answers when mentioned or replied
+/// to, and sees only those messages and the start of the ones they reply
+/// to. `reads`: answers then, and reads
+/// everything said in its channels. `active`: reads every channel it can see
+/// and speaks when it has something to add. `everyone`: answers every
+/// message from a person.
+pub const MODES: &[&str] = &["mentions", "reads", "active", "everyone"];
+/// A new bot's mode, and what every bot did before modes.
+pub const DEFAULT_MODE: &str = "reads";
+/// Whether a bot in this mode reads what isn't said to it.
+pub fn reads(mode: &str) -> bool {
+    mode != "mentions"
+}
+/// Whether a bot in this mode may speak when nobody mentions it.
+pub fn listens(mode: &str) -> bool {
+    matches!(mode, "active" | "everyone")
+}
+/// Messages the read tool returns at most at once.
+const READ_LIMIT: u64 = 50;
+/// Channels and threads the read tool lists at most at once.
+const LIST_LIMIT: usize = 200;
+/// Discord's View Channel, Send Messages, Send Messages in Threads and
+/// Administrator permissions.
+const VIEW_CHANNEL: u64 = 1 << 10;
+const SEND_MESSAGES: u64 = 1 << 11;
+const SEND_IN_THREADS: u64 = 1 << 38;
+const READ_HISTORY: u64 = 1 << 16;
+const ADMINISTRATOR: u64 = 1 << 3;
+/// How long a listening bot's refusal to open a room where it can't post is
+/// remembered, so a read-only channel costs no Discord calls per message.
+const CANT_POST_FOR: Duration = Duration::from_secs(600);
+
+/// Whether a member of a server can see one of its channels.
+pub(crate) fn can_view(server: &Value, member: &Value, channel: &Value, user: &str) -> bool {
+    permissions(server, member, channel, user) & VIEW_CHANNEL != 0
+}
+
+/// Whether everyone who can see `here` can certainly see `there` and scroll
+/// back in it too: what a bot reads there and repeats here is then nothing
+/// the people here couldn't read themselves. Discord merges overwrites
+/// across a member's roles, so this is decided conservatively, whatever
+/// roles a person holds: nothing on `there` may deny View Channel or Read
+/// Message History; each way into `here` (the @everyone overwrite, a role's,
+/// a person's own) must lead to both on `there`, by an allow, by @everyone,
+/// or by base permissions; and each role that sees channels by default must
+/// bring history. `here` itself needs only the history part: everyone in it
+/// sees it. `bot` is the asking bot's own user, not a person here.
+pub(crate) fn as_public(server: &Value, here: &Value, there: &Value, bot: &str) -> bool {
+    let bits = |v: &Value| -> u64 {
+        v.as_str()
+            .and_then(|s| s.parse().ok())
+            .or_else(|| v.as_u64())
+            .unwrap_or(0)
+    };
+    let guild = server["id"].as_str().unwrap_or("");
+    let base: HashMap<&str, u64> = server["roles"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| Some((r["id"].as_str()?, bits(&r["permissions"]))))
+        .collect();
+    let admin = |role: &str| base.get(role).is_some_and(|p| p & ADMINISTRATOR != 0);
+    let has = |role: &str, what: u64| admin(role) || base.get(role).is_some_and(|p| p & what != 0);
+    let overwrites = |c: &Value| -> Vec<Value> {
+        c["permission_overwrites"].as_array().cloned().unwrap_or_default()
+    };
+    let (into_here, into_there) = (overwrites(here), overwrites(there));
+    let allowed = |id: &str, what: u64| {
+        into_there
+            .iter()
+            .any(|o| o["id"] == id && bits(&o["allow"]) & what != 0)
+    };
+    // Everyone in the channel asked in sees it; reading it back still takes
+    // Read Message History for all of them.
+    let same = here["id"].is_string() && here["id"] == there["id"];
+    let needed: &[u64] = if same {
+        &[READ_HISTORY]
+    } else {
+        &[VIEW_CHANNEL, READ_HISTORY]
+    };
+    let denied = needed.iter().fold(0, |all, what| all | what);
+    if into_there.iter().any(|o| bits(&o["deny"]) & denied != 0) {
+        return false;
+    }
+    // Everyone, by the @everyone overwrite there or base permissions.
+    let everyone = |what: u64| allowed(guild, what) || has(guild, what);
+    // Through a role (or @everyone), or as a person added by name: can that
+    // way in see there, and read back its history?
+    let leads = |id: &str, person: bool| {
+        needed.iter().all(|&what| {
+            allowed(id, what) || everyone(what) || (!person && has(id, what))
+        })
+    };
+    // Who sees `here` by base permissions alone, with no overwrite letting
+    // them in: each role that grants View there must bring history too.
+    let by_base = base
+        .keys()
+        .filter(|role| has(role, VIEW_CHANNEL))
+        .all(|role| has(role, READ_HISTORY) || allowed(role, READ_HISTORY) || everyone(READ_HISTORY));
+    by_base
+        && into_here
+            .iter()
+            .filter(|o| bits(&o["allow"]) & VIEW_CHANNEL != 0)
+            .all(|o| {
+                let id = o["id"].as_str().unwrap_or("");
+                match o["type"].as_i64() {
+                    Some(1) => id == bot || leads(id, true),
+                    _ => leads(id, false),
+                }
+            })
+}
+
+/// A member's permissions in one of a server's channels, worked out as
+/// Discord does: the server's @everyone role and the member's roles, then
+/// the channel's overwrites for @everyone, for those roles, and for the
+/// member. The owner and Administrators have them all.
+fn permissions(server: &Value, member: &Value, channel: &Value, user: &str) -> u64 {
+    let bits = |v: &Value| -> u64 {
+        v.as_str()
+            .and_then(|s| s.parse().ok())
+            .or_else(|| v.as_u64())
+            .unwrap_or(0)
+    };
+    let guild = server["id"].as_str().unwrap_or("");
+    if !user.is_empty() && server["owner_id"].as_str() == Some(user) {
+        return u64::MAX;
+    }
+    let mine: HashSet<&str> = member["roles"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    let mut allowed = 0;
+    for role in server["roles"].as_array().into_iter().flatten() {
+        let id = role["id"].as_str().unwrap_or("");
+        if id == guild || mine.contains(id) {
+            allowed |= bits(&role["permissions"]);
+        }
+    }
+    if allowed & ADMINISTRATOR != 0 {
+        return u64::MAX;
+    }
+    let overwrites: Vec<&Value> = channel["permission_overwrites"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .collect();
+    let apply = |allowed: u64, o: &Value| (allowed & !bits(&o["deny"])) | bits(&o["allow"]);
+    if let Some(o) = overwrites.iter().find(|o| o["id"] == guild) {
+        allowed = apply(allowed, o);
+    }
+    let (mut deny, mut allow) = (0, 0);
+    for o in overwrites.iter().filter(|o| {
+        o["type"] == 0 && o["id"] != guild && o["id"].as_str().is_some_and(|id| mine.contains(id))
+    }) {
+        deny |= bits(&o["deny"]);
+        allow |= bits(&o["allow"]);
+    }
+    allowed = (allowed & !deny) | allow;
+    if let Some(o) = overwrites.iter().find(|o| o["type"] == 1 && o["id"] == user) {
+        allowed = apply(allowed, o);
+    }
+    allowed
+}
+
+/// The read tool, offered in every Discord room session; it says so when
+/// the bot's mode there doesn't let it read.
+pub fn descriptor() -> Value {
+    json!({
+        "name": TOOL,
+        "description": "Read the other channels and threads of the Discord server you are in: list them, or read the latest messages of one. Use it when someone refers to something said elsewhere in the server, or when you need context before you answer. Only this server.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": { "type": "string", "enum": ["channels", "read"], "description": "channels lists the server's channels and active threads; read returns messages from one" },
+                "channel": { "type": "string", "description": "For read: the channel or thread id, or its #name" },
+                "limit": { "type": "integer", "description": "For read: how many messages, newest first, at most 50 (25 if left out)" },
+                "before": { "type": "string", "description": "For read: a message id, to read the messages before it" }
+            },
+            "required": ["action"]
+        }
+    })
+}
 /// What a note taken in a Discord room is filed under for the bot's dream,
 /// which treats it as untrusted, like a scheduled job's proposal.
 pub const PROPOSAL_SOURCE: &str = "discord";
@@ -49,6 +242,8 @@ pub const TOKEN_REFUSED: i64 = 4250;
 pub const NOT_IN_DISCORD: i64 = 4251;
 pub const TAKEN: i64 = 4252;
 pub const INTENT: i64 = 4253;
+/// Turning Discord off for a bot that is still connected.
+pub const CONNECTED: i64 = 4254;
 /// Discord can't be reached or is having trouble: what was being sent waits.
 const OFFLINE: i64 = 5250;
 const INTENT_TEXT: &str =
@@ -66,6 +261,25 @@ fn waits(error: &Error) -> bool {
             .is_some_and(|data| data["transient"] == true)
 }
 
+/// Whether a Discord room session can read its server: one opened before the
+/// read tool keeps the tools it started with. One not opened yet will.
+pub(crate) fn session_reads_server(home: &Path, stored: &str) -> bool {
+    let options: Option<String> = crate::runtime_store::open(home).ok().and_then(|c| {
+        c.query_row(
+            "SELECT options FROM native_sessions WHERE stored_id=?",
+            [stored],
+            |r| r.get(0),
+        )
+        .ok()
+    });
+    match options.and_then(|o| serde_json::from_str::<Value>(&o).ok()) {
+        Some(options) => options["tools"]
+            .as_array()
+            .is_some_and(|tools| tools.iter().any(|t| t["name"] == TOOL)),
+        None => true,
+    }
+}
+
 /// Whether a stored session is a bot's conversation in a Discord room.
 pub fn public_session(home: &Path, stored: &str) -> Result<bool> {
     Ok(db::open(home)?.query_row(
@@ -75,24 +289,212 @@ pub fn public_session(home: &Path, stored: &str) -> Result<bool> {
     )?)
 }
 
-/// The Discord channel a room mirrors, or null.
+/// The Discord channel a room mirrors, with how each of its bots acts in
+/// that server, or null.
 pub(crate) fn room_info(conn: &rusqlite::Connection, room: &str) -> Result<Value> {
-    Ok(rows(
+    let Some(mut row) = rows(
         conn,
         "SELECT guild_id,channel_id,guild_name,channel_name FROM discord_channels WHERE room_id=?",
         &[&room],
     )?
     .into_iter()
-    .next()
-    .map(|mut row| {
-        row["url"] = json!(format!(
-            "https://discord.com/channels/{}/{}",
-            row["guild_id"].as_str().unwrap_or(""),
-            row["channel_id"].as_str().unwrap_or("")
+    .next() else {
+        return Ok(Value::Null);
+    };
+    let guild = row["guild_id"].as_str().unwrap_or("").to_owned();
+    row["url"] = json!(format!(
+        "https://discord.com/channels/{guild}/{}",
+        row["channel_id"].as_str().unwrap_or("")
+    ));
+    let mut modes = serde_json::Map::new();
+    for member in rows(
+        conn,
+        "SELECT member_id FROM room_members WHERE room_id=? AND member_kind='bot'",
+        &[&room],
+    )? {
+        if let Some(bot) = member["member_id"].as_str() {
+            modes.insert(bot.to_owned(), json!(mode(conn, bot, &guild)?));
+        }
+    }
+    row["modes"] = Value::Object(modes);
+    // The newest thing a person said to none of the room's bots: the one a
+    // listening bot answers, with whatever came after it. A message for a bot
+    // is that bot's; one said just before it still gets its answer.
+    let bots: HashSet<String> = rows(
+        conn,
+        "SELECT member_id FROM room_members WHERE room_id=? AND member_kind='bot' AND left_at IS NULL",
+        &[&room],
+    )?
+    .iter()
+    .filter_map(|m| m["member_id"].as_str().map(str::to_lowercase))
+    .collect();
+    let mut latest = None;
+    for event in rows(
+        conn,
+        "SELECT seq,payload_json FROM room_events WHERE room_id=? AND kind='message.user' AND actor_kind='discord' AND json_extract(payload_json,'$.author.bot') IS NOT 1 AND json_extract(payload_json,'$.history') IS NOT 1 ORDER BY seq DESC LIMIT 50",
+        &[&room],
+    )? {
+        let payload = json_field(&event["payload_json"]);
+        let mentioned = payload["mentions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_lowercase)
+            .chain(crate::rooms::typed_handles(payload["text"].as_str().unwrap_or("")))
+            .any(|h| bots.contains(&h));
+        if !mentioned {
+            latest = event["seq"].as_i64();
+            break;
+        }
+    }
+    row["latest_seq"] = json!(latest);
+    Ok(row)
+}
+
+/// How a bot acts in a server: the server's own choice, else the bot's.
+pub(crate) fn mode(conn: &rusqlite::Connection, bot: &str, guild: &str) -> Result<String> {
+    let chosen: Option<String> = conn
+        .query_row(
+            "SELECT COALESCE((SELECT mode FROM discord_guilds WHERE bot=?1 AND guild_id=?2),(SELECT mode FROM discord_plugin WHERE bot=?1))",
+            params![bot, guild],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(chosen
+        .filter(|m| MODES.contains(&m.as_str()))
+        .unwrap_or_else(|| DEFAULT_MODE.to_owned()))
+}
+
+/// Whether a bot can still take part in a server: it is connected, and it
+/// wasn't taken out of that server. Read again in each transaction that
+/// opens a room for it or brings it in, since a disconnect or a removal can
+/// land while a room is being opened.
+fn can_listen(conn: &rusqlite::Connection, bot: &str, guild: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM discord_bots WHERE bot=?1) AND NOT EXISTS(SELECT 1 FROM discord_guilds WHERE bot=?1 AND guild_id=?2 AND present=0)",
+        params![bot, guild],
+        |r| r.get(0),
+    )?)
+}
+
+/// Whether Discord is on for a bot in Plugins.
+pub(crate) fn enabled(conn: &rusqlite::Connection, bot: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM discord_plugin WHERE bot=?)",
+        [bot],
+        |r| r.get(0),
+    )?)
+}
+
+/// Turn Discord on or off for a bot in Plugins. A connected bot is
+/// disconnected first (`Discord::forget`), so it never stays online off.
+pub(crate) fn set_enabled(home: &Path, owner: &str, bot: &str, on: bool) -> Result<()> {
+    let mut conn = db::open(home)?;
+    if on {
+        conn.execute(
+            "INSERT OR IGNORE INTO discord_plugin(bot,owner_id,mode,enabled_at) VALUES (?,?,?,?)",
+            params![bot, owner, DEFAULT_MODE, now()],
+        )?;
+        return Ok(());
+    }
+    // One transaction with the check, so a connection being saved
+    // (`Discord::connect`) is either seen here or refused there.
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let connected: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM discord_bots WHERE bot=?)",
+        [bot],
+        |r| r.get(0),
+    )?;
+    if connected {
+        return Err(Error::new(
+            CONNECTED,
+            format!("Disconnect {bot} from Discord first, in its Discord settings."),
         ));
-        row
-    })
-    .unwrap_or(Value::Null))
+    }
+    tx.execute("DELETE FROM discord_plugin WHERE bot=?", [bot])?;
+    tx.execute("DELETE FROM discord_guilds WHERE bot=?", [bot])?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// A deleted bot leaves no Discord settings for a new bot of its name.
+pub(crate) fn forget_bot(home: &Path, bot: &str) -> Result<()> {
+    let conn = db::open(home)?;
+    conn.execute("DELETE FROM discord_plugin WHERE bot=?", [bot])?;
+    conn.execute("DELETE FROM discord_guilds WHERE bot=?", [bot])?;
+    Ok(())
+}
+
+/// Discord as the Plugins list shows it, next to the connectors: on for
+/// the bots that have it, each with its own Discord app's state. It is set
+/// up in each bot's Discord settings, so it can be given to any bot.
+pub(crate) fn plugin_row(home: &Path, own: &[String]) -> Result<Value> {
+    let conn = db::open(home)?;
+    let mut bots = vec![];
+    let mut states = serde_json::Map::new();
+    for bot in own {
+        if !enabled(&conn, bot)? {
+            continue;
+        }
+        bots.push(bot.clone());
+        let row: Option<(String, Option<String>, Option<String>)> = conn
+            .query_row(
+                "SELECT status,error,username FROM discord_bots WHERE bot=?",
+                [bot],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        states.insert(
+            bot.clone(),
+            match row {
+                Some((status, error, username)) => {
+                    json!({"status":status,"error":error,"username":username})
+                }
+                None => json!({"status":"not_connected","error":null,"username":null}),
+            },
+        );
+    }
+    let online = states.values().filter(|s| s["status"] == "online").count();
+    let failing = states.values().any(|s| s["status"] == "error");
+    let (state, text) = if bots.is_empty() {
+        ("not_set_up", "Not set up".to_owned())
+    } else if failing {
+        ("error", "A bot needs connecting again".to_owned())
+    } else if online == 0 {
+        ("ready", "No bot connected yet".to_owned())
+    } else if online == 1 {
+        ("ready", "1 bot online".to_owned())
+    } else {
+        ("ready", format!("{online} bots online"))
+    };
+    Ok(json!({
+        "id": "discord",
+        "name": "Discord",
+        "description": "Bots join your Discord servers as their own Discord apps and talk with people there.",
+        "group": "social_home",
+        "icon": "discord",
+        "scope": "bot",
+        "ready": true,
+        "state": state,
+        "state_text": text,
+        "providers": null,
+        "provider": null,
+        "fields": [],
+        "abilities": [
+            "Each bot joins as its own Discord app, with its name and face",
+            "Choose for each server when it answers and what it reads",
+            "Only the web, its server and notes there, never your files or memory"
+        ],
+        "last_error": null,
+        "enabled_bots": bots,
+        "ready_bots": own,
+        "waiting_bots": [],
+        "discord": states,
+        "kind": "connector",
+        "bots": bots,
+    }))
 }
 
 /// A Discord room is being deleted: its channel remembers when, so a room it
@@ -238,6 +640,34 @@ fn addressed(message: &Value, ours: &HashMap<String, String>) -> Vec<String> {
     addressed
 }
 
+/// The message a message replies to, as a speaker and the start of what
+/// they said on one line, or null.
+pub(crate) fn reply_to(message: &Value, ours: &HashMap<String, String>) -> Value {
+    let quoted = &message["referenced_message"];
+    if !quoted.is_object() {
+        return Value::Null;
+    }
+    let author = quoted["author"]["id"].as_str().unwrap_or("");
+    let name = match ours.get(author) {
+        Some(handle) => format!("@{handle}"),
+        None => speaker(
+            quoted["author"]["global_name"]
+                .as_str()
+                .or(quoted["author"]["username"].as_str())
+                .unwrap_or("Someone"),
+        ),
+    };
+    let text: String = inbound_text(quoted, ours)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut text: String = text.chars().take(200).collect();
+    if text.chars().count() == 200 {
+        text.push('…');
+    }
+    json!({"name": name, "text": text})
+}
+
 /// Whether a message turns its channel into a room: a person, not a bot,
 /// speaks to one of the owner's connected bots.
 fn opens_room(message: &Value, ours: &HashMap<String, String>) -> bool {
@@ -338,6 +768,12 @@ pub struct Discord {
     /// Rooms whose replies wait for Discord, and how long they wait.
     retrying: Mutex<std::collections::HashSet<String>>,
     retry: std::sync::atomic::AtomicU64,
+    /// Held while a connection is saved and started, and while one is
+    /// dropped, so a disconnect never lands between the two.
+    lifecycle: Mutex<()>,
+    /// Channels where a listening bot can't post, by bot and channel, and
+    /// when that was found (`CANT_POST_FOR`).
+    cant_post: Mutex<HashMap<(String, String), std::time::Instant>>,
 }
 
 impl Discord {
@@ -364,6 +800,8 @@ impl Discord {
             tasks: Mutex::default(),
             retrying: Mutex::default(),
             retry: 30_000.into(),
+            lifecycle: Mutex::default(),
+            cant_post: Mutex::default(),
         })
     }
 
@@ -526,11 +964,24 @@ impl Discord {
                     "hexbot.discord.get" => {
                         let bot = required(p, "bot")?;
                         bot_owner(&self.home, owner, bot)?;
+                        let on = enabled(&db::open(&self.home)?, bot)?;
+                        Ok(json!({"discord": self.status(bot)?, "enabled": on}))
+                    }
+                    "hexbot.discord.set_mode" => {
+                        let bot = required(p, "bot")?;
+                        bot_owner(&self.home, owner, bot)?;
+                        self.set_mode(owner, bot, p)?;
                         Ok(json!({"discord": self.status(bot)?}))
                     }
                     "hexbot.discord.connect" => {
                         let bot = required(p, "bot")?;
                         bot_owner(&self.home, owner, bot)?;
+                        if !enabled(&db::open(&self.home)?, bot)? {
+                            return Err(Error::new(
+                                NOT_IN_DISCORD,
+                                format!("Turn on Discord for {bot} in Settings, Plugins."),
+                            ));
+                        }
                         let token = required(p, "token")?.trim();
                         let token = token.strip_prefix("Bot ").unwrap_or(token).trim();
                         self.connect(owner, bot, token).await?;
@@ -581,7 +1032,62 @@ impl Discord {
             "SELECT d.room_id AS id,d.guild_name,d.channel_name FROM discord_channels d JOIN room_members m ON m.room_id=d.room_id AND m.member_kind='bot' AND m.member_id=? AND m.left_at IS NULL ORDER BY d.guild_name,d.channel_name",
             &[&bot],
         )?);
+        row["mode"] = json!(mode(&conn, bot, "")?);
+        // Each server it is in, with its own mode, or null to follow the bot's.
+        row["servers"] = json!(rows(
+            &conn,
+            "SELECT guild_id AS id,COALESCE(name,'Discord server') AS name,mode FROM discord_guilds WHERE bot=? AND present=1 ORDER BY name COLLATE NOCASE,guild_id",
+            &[&bot],
+        )?);
         Ok(row)
+    }
+
+    /// Choose how a bot acts in Discord: its default, or, with a server, that
+    /// server's own mode (null follows the default).
+    fn set_mode(&self, owner: &str, bot: &str, p: &Value) -> Result<()> {
+        if !(p["mode"].is_string() || (p["mode"].is_null() && p.get("mode").is_some())) {
+            return Err(Error::new(4202, "mode must be a mode, or null to follow the default"));
+        }
+        let chosen = p["mode"].as_str();
+        if let Some(mode) = chosen
+            && !MODES.contains(&mode)
+        {
+            return Err(Error::new(
+                4202,
+                format!("mode must be one of {}", MODES.join(", ")),
+            ));
+        }
+        let conn = db::open(&self.home)?;
+        if !enabled(&conn, bot)? {
+            return Err(Error::new(
+                NOT_IN_DISCORD,
+                format!("Turn on Discord for {bot} in Settings, Plugins."),
+            ));
+        }
+        match p["guild_id"].as_str().filter(|g| !g.is_empty()) {
+            Some(guild) => {
+                if conn.execute(
+                    "UPDATE discord_guilds SET mode=? WHERE bot=? AND guild_id=?",
+                    params![chosen, bot, guild],
+                )? == 0
+                {
+                    return Err(Error::new(
+                        NOT_IN_DISCORD,
+                        format!("{bot} isn't in that Discord server."),
+                    ));
+                }
+            }
+            None => {
+                let mode = chosen.ok_or_else(|| Error::new(4202, "mode is required"))?;
+                conn.execute(
+                    "UPDATE discord_plugin SET mode=? WHERE bot=?",
+                    params![mode, bot],
+                )?;
+            }
+        }
+        self.events
+            .emit(owner, None, "hexbot.discord.changed", json!({"bot":bot}));
+        Ok(())
     }
 
     fn set_status(&self, bot: &str, status: &str, error: Option<&str>) {
@@ -631,8 +1137,25 @@ impl Discord {
         if app["flags"].as_u64().unwrap_or(0) & CONTENT_FLAGS == 0 {
             return Err(Error::new(INTENT, INTENT_TEXT));
         }
-        let conn = db::open(&self.home)?;
-        let other: Option<String> = conn
+        let name = me["global_name"]
+            .as_str()
+            .or(me["username"].as_str())
+            .unwrap_or("")
+            .to_owned();
+        // Discord may have been turned off for the bot while Discord answered:
+        // what is on is read where turning it off (`set_enabled`) can't land
+        // before the bot's app is saved, and nothing below awaits, so a
+        // disconnect (`forget`) waits until the connection has started.
+        let _lifecycle = self.lifecycle.lock().unwrap();
+        let mut conn = db::open(&self.home)?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if !enabled(&tx, bot)? {
+            return Err(Error::new(
+                NOT_IN_DISCORD,
+                format!("Turn on Discord for {bot} in Settings, Plugins."),
+            ));
+        }
+        let other: Option<String> = tx
             .query_row(
                 "SELECT bot FROM discord_bots WHERE user_id=? AND bot<>?",
                 params![user_id, bot],
@@ -646,15 +1169,11 @@ impl Discord {
             ));
         }
         write_token(&self.home, bot, token)?;
-        let name = me["global_name"]
-            .as_str()
-            .or(me["username"].as_str())
-            .unwrap_or("")
-            .to_owned();
-        conn.execute(
+        tx.execute(
             "INSERT INTO discord_bots(bot,owner_id,application_id,user_id,username,status,error,connected_at,updated_at) VALUES (?1,?2,?3,?4,?5,'connecting',NULL,?6,?6) ON CONFLICT(bot) DO UPDATE SET owner_id=excluded.owner_id,application_id=excluded.application_id,user_id=excluded.user_id,username=excluded.username,status='connecting',error=NULL,connected_at=excluded.connected_at,updated_at=excluded.updated_at",
             params![bot, owner, application, user_id, name, now()],
         )?;
+        tx.commit()?;
         self.events
             .emit(owner, None, "hexbot.discord.changed", json!({"bot":bot}));
         self.link(bot, token.to_owned());
@@ -665,6 +1184,7 @@ impl Discord {
     /// their history; it leaves them, and joins again when it's connected and
     /// mentioned there.
     pub fn forget(&self, bot: &str) -> Result<()> {
+        let _lifecycle = self.lifecycle.lock().unwrap();
         if let Some(link) = self.links.lock().unwrap().remove(bot) {
             link.abort();
         }
@@ -853,6 +1373,7 @@ impl Discord {
                                 if let Some(id) = d["user"]["id"].as_str() {
                                     let _ = db::open(&self.home).and_then(|c| Ok(c.execute("UPDATE discord_bots SET user_id=? WHERE bot=?", params![id, bot])?));
                                 }
+                                self.servers(bot, "READY", d);
                                 *wait = 1;
                                 self.set_status(bot, "online", None);
                             }
@@ -864,6 +1385,9 @@ impl Discord {
                                 if let Some(inbox) = self.inbox.lock().unwrap().as_ref() {
                                     let _ = inbox.send((bot.to_owned(), frame["d"].clone()));
                                 }
+                            }
+                            Some(kind @ ("GUILD_CREATE" | "GUILD_UPDATE" | "GUILD_DELETE")) => {
+                                self.servers(bot, kind, &frame["d"]);
                             }
                             _ => {}
                         },
@@ -885,6 +1409,124 @@ impl Discord {
                     }
                 }
             }
+        }
+    }
+
+    /// Keep the servers a bot's app is in as its Gateway reports them. READY
+    /// names every one; a server it was taken out of is kept with its mode,
+    /// marked gone, in case it is added back, and the bot leaves that
+    /// server's rooms, so it is never asked to answer where it can't post.
+    pub(crate) fn servers(&self, bot: &str, kind: &str, d: &Value) {
+        let changed = (|| -> Result<(bool, Vec<(String, Value)>)> {
+            let mut conn = db::open(&self.home)?;
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let mut changed = 0;
+            let mut gone: Vec<String> = vec![];
+            let time = now();
+            // Added, or added back: the app is in it as of now.
+            let joined = |tx: &rusqlite::Transaction, id: &str, name: Option<&str>| {
+                tx.execute(
+                    "INSERT INTO discord_guilds(bot,guild_id,name,present,joined_at) VALUES (?1,?2,?3,1,?4) ON CONFLICT(bot,guild_id) DO UPDATE SET name=COALESCE(?3,name),joined_at=CASE WHEN present=0 THEN ?4 ELSE joined_at END,present=1 WHERE present=0 OR name IS NOT COALESCE(?3,name)",
+                    params![bot, id, name, time],
+                )
+            };
+            match kind {
+                "READY" => {
+                    let ids: Vec<&str> = d["guilds"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|g| g["id"].as_str())
+                        .collect();
+                    for id in &ids {
+                        changed += joined(&tx, id, None)?;
+                    }
+                    let list = serde_json::to_string(&ids).unwrap_or_default();
+                    gone = rows(
+                        &tx,
+                        "SELECT guild_id FROM discord_guilds WHERE bot=? AND present=1 AND guild_id NOT IN (SELECT value FROM json_each(?))",
+                        &[&bot, &list],
+                    )?
+                    .iter()
+                    .filter_map(|r| r["guild_id"].as_str().map(str::to_owned))
+                    .collect();
+                }
+                "GUILD_CREATE" | "GUILD_UPDATE" => {
+                    let Some(id) = d["id"].as_str() else {
+                        return Ok((false, vec![]));
+                    };
+                    changed += joined(&tx, id, d["name"].as_str())?;
+                }
+                // `unavailable` is an outage: the bot is still in the server.
+                "GUILD_DELETE" if d["unavailable"] != true => {
+                    let id = d["id"].as_str().unwrap_or("");
+                    let present: bool = tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM discord_guilds WHERE bot=? AND guild_id=? AND present=1)",
+                        params![bot, id],
+                        |r| r.get(0),
+                    )?;
+                    if present {
+                        gone.push(id.to_owned());
+                    }
+                }
+                _ => {}
+            }
+            let mut left = vec![];
+            for guild in &gone {
+                changed += tx.execute(
+                    "UPDATE discord_guilds SET present=0 WHERE bot=? AND guild_id=?",
+                    params![bot, guild],
+                )?;
+                for room in rows(
+                    &tx,
+                    "SELECT m.room_id FROM room_members m JOIN discord_channels d ON d.room_id=m.room_id WHERE d.guild_id=? AND m.member_kind='bot' AND m.member_id=? AND m.left_at IS NULL",
+                    &[guild, &bot],
+                )? {
+                    let room = required(&room, "room_id")?.to_owned();
+                    tx.execute(
+                        "UPDATE room_members SET left_at=? WHERE room_id=? AND member_kind='bot' AND member_id=?",
+                        params![time, room, bot],
+                    )?;
+                    let event = crate::rooms::append_with_conn(
+                        &tx,
+                        &room,
+                        "member.left",
+                        "system",
+                        None,
+                        json!({"bot":bot}),
+                    )?;
+                    left.push((room, event));
+                }
+            }
+            tx.commit()?;
+            Ok((changed > 0, left))
+        })();
+        match changed {
+            Ok((changed, left)) if changed || !left.is_empty() => {
+                if let Ok(Some(owner)) = db::open(&self.home).and_then(|c| {
+                    Ok(c.query_row(
+                        "SELECT owner_id FROM discord_bots WHERE bot=?",
+                        [bot],
+                        |r| r.get::<_, String>(0),
+                    )
+                    .optional()?)
+                }) {
+                    for (room, event) in left {
+                        self.events.emit(
+                            &owner,
+                            None,
+                            "hexbot.rooms.event",
+                            json!({"room_id":room,"event":event}),
+                        );
+                        self.events
+                            .emit(&owner, None, "hexbot.rooms.changed", json!({"id":room}));
+                    }
+                    self.events
+                        .emit(&owner, None, "hexbot.discord.changed", json!({"bot":bot}));
+                }
+            }
+            Ok(_) => {}
+            Err(error) => eprintln!("Discord: {bot}'s servers: {}", error.message),
         }
     }
 
@@ -934,7 +1576,9 @@ impl Discord {
                 }
                 _ => {
                     let said = value["message"].as_str().unwrap_or("no reason given");
-                    return Err(Error::new(5251, format!("Discord said: {said} ({status})")));
+                    let mut error = Error::new(5251, format!("Discord said: {said} ({status})"));
+                    error.data = Some(json!({"status": status, "discord_code": value["code"]}));
+                    return Err(error);
                 }
             }
         }
@@ -1019,6 +1663,14 @@ impl Discord {
         // is saved but opens no room and brings no bot in.
         let foreign = !own && message["author"]["bot"] == true;
         let addressed = addressed(message, &ours);
+        let person = !own && !foreign;
+        // A bot that listens here takes in what anyone says, mentioned or not.
+        // A message queued before the bot was disconnected or taken out of
+        // the server neither opens a room for it nor brings it in.
+        let listener = person && {
+            let conn = db::open(&self.home)?;
+            listens(&mode(&conn, bot, guild)?) && can_listen(&conn, bot, guild)?
+        };
         let mapped: Option<String> = db::open(&self.home)?
             .query_row(
                 "SELECT room_id FROM discord_channels WHERE channel_id=?",
@@ -1026,10 +1678,55 @@ impl Discord {
                 |r| r.get(0),
             )
             .optional()?;
+        // A listening bot takes part only where it can post: asked before it
+        // opens a room or joins one, once, and a refusal is remembered, so a
+        // read-only channel such as #announcements costs nothing per message.
+        // Its place in the room decides first: in it, it listens; out of it
+        // for good (removed by the owner, or after a refused post), it
+        // doesn't; only a bot that would join asks Discord.
+        let listener = listener && {
+            let place: Option<(bool, bool)> = match &mapped {
+                Some(room) => db::open(&self.home)?
+                    .query_row(
+                        "SELECT left_at IS NULL, left_at<=MAX(COALESCE((SELECT connected_at FROM discord_bots WHERE bot=?2),0),COALESCE((SELECT joined_at FROM discord_guilds WHERE bot=?2 AND guild_id=?3),0)) FROM room_members WHERE room_id=?1 AND member_kind='bot' AND member_id=?2",
+                        params![room, bot, guild],
+                        |r| Ok((r.get::<_, bool>(0)?, r.get::<_, Option<bool>>(1)?.unwrap_or(false))),
+                    )
+                    .optional()?,
+                None => None,
+            };
+            match place {
+                Some((true, _)) => true,
+                Some((false, false)) => false,
+                _ => self.can_post(bot, guild, channel).await,
+            }
+        };
         let (room, created) = match mapped {
             Some(room) => (room, false),
-            None if opens_room(message, &ours) => {
-                let Some((room, live)) = self.open_room(&owner, bot, guild, channel, id).await?
+            None if opens_room(message, &ours) || listener => {
+                // The bots the room is opened for; it is made only if one of
+                // them can still take part when it is.
+                let mut joiners = if opens_room(message, &ours) {
+                    addressed.clone()
+                } else {
+                    vec![]
+                };
+                if listener {
+                    joiners.push(bot.to_owned());
+                }
+                // A room for bots that see only their mentions starts without
+                // what was said before.
+                let history = listener || {
+                    let conn = db::open(&self.home)?;
+                    let mut any = false;
+                    for handle in &addressed {
+                        any |= reads(&mode(&conn, handle, guild)?);
+                    }
+                    any
+                };
+                let Some((room, live)) = self
+                    .open_room(&owner, bot, guild, channel, id, history, &joiners)
+                    .await?
                 else {
                     return Ok(());
                 };
@@ -1050,6 +1747,8 @@ impl Discord {
         // to finish; then the wake waits for it in its own task.
         let admission = self.rooms.admit(&room).ok();
         let text = inbound_text(message, &ours);
+        let named = crate::rooms::typed_handles(&text);
+        let typed = ours.values().any(|h| named.contains(&h.to_lowercase()));
         // A connected bot's own post carries a nonce saying which reply and
         // part of which room it is (`post`); one from another room, such as a
         // deleted one, says nothing about this one.
@@ -1063,7 +1762,7 @@ impl Discord {
                 room.starts_with(parts.next()?).then_some(seq)
             });
         // The connection closes before the room engine is woken.
-        let (emitted, joined) = {
+        let (emitted, joined, listening) = {
             let mut conn = db::open(&self.home)?;
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let mut emitted = vec![];
@@ -1144,6 +1843,11 @@ impl Discord {
                 if own && (reply.is_none() || left.is_some_and(|left| left > since)) {
                     continue;
                 }
+                // Nor does anything bring in a bot disconnected or taken out of
+                // this server since the message came.
+                if !can_listen(&tx, handle, guild)? {
+                    continue;
+                }
                 if tx.execute(
                     "INSERT INTO room_members VALUES (?,'bot',?,?,?,NULL,0) ON CONFLICT(room_id,member_kind,member_id) DO UPDATE SET left_at=NULL,added_at=excluded.added_at WHERE left_at IS NOT NULL",
                     params![room, handle, owner, since],
@@ -1160,7 +1864,61 @@ impl Discord {
                     joined.push(handle.clone());
                 }
             }
-            if fresh {
+            // A listening bot joins the first time it sees someone speak here,
+            // as of that message, so it can answer it. One that left before
+            // its app was last connected or added to this server, as it does
+            // when disconnected or taken out of the server, joins again; one
+            // the owner removed since stays out until someone mentions it.
+            // Checked again here: the bot may have been disconnected or taken
+            // out of the server while the room was being opened.
+            if listener && can_listen(&tx, bot, guild)? {
+                let said: Option<f64> = tx
+                    .query_row(
+                        "SELECT e.created_at FROM discord_messages d JOIN room_events e ON e.room_id=d.room_id AND e.seq=d.seq WHERE d.message_id=?",
+                        [id],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if tx.execute(
+                    "INSERT INTO room_members VALUES (?1,'bot',?2,?3,?4,NULL,0) ON CONFLICT(room_id,member_kind,member_id) DO UPDATE SET left_at=NULL,added_at=excluded.added_at WHERE left_at IS NOT NULL AND left_at<=MAX(COALESCE((SELECT connected_at FROM discord_bots WHERE bot=?2),0),COALESCE((SELECT joined_at FROM discord_guilds WHERE bot=?2 AND guild_id=?5),0))",
+                    params![room, bot, owner, said.unwrap_or_else(now), guild],
+                )? > 0
+                {
+                    emitted.push(crate::rooms::append_with_conn(
+                        &tx,
+                        &room,
+                        "member.added",
+                        "system",
+                        None,
+                        json!({"bot":bot}),
+                    )?);
+                    joined.push(bot.to_owned());
+                }
+            }
+            let mut modes = vec![];
+            for member in rows(
+                &tx,
+                "SELECT member_id FROM room_members WHERE room_id=? AND member_kind='bot' AND left_at IS NULL",
+                &[&room],
+            )? {
+                modes.push(mode(&tx, member["member_id"].as_str().unwrap_or(""), guild)?);
+            }
+            // A room being opened has no bot yet: what comes before its first
+            // mention is kept for the bots that mention brings.
+            let members_read = modes.is_empty() || modes.iter().any(|m| reads(m));
+            let listening = modes.iter().any(|m| listens(m));
+            // What is said to nobody is kept only for bots that read along.
+            // One not kept leaves no claim, so a copy that reaches a bot that
+            // reads along, through another connection, still saves it; it
+            // addresses nobody, so taking it again brings no bot in twice.
+            let keep = members_read || !addressed.is_empty() || typed;
+            if fresh && !keep {
+                tx.execute(
+                    "DELETE FROM discord_messages WHERE message_id=? AND seq IS NULL AND bot IS NULL",
+                    [id],
+                )?;
+            }
+            if fresh && keep {
                 // What is said while the room is archived starts nothing later.
                 let archived: bool = tx.query_row(
                     "SELECT archived_at IS NOT NULL FROM rooms WHERE id=?",
@@ -1183,6 +1941,7 @@ impl Discord {
                         "attachments": [],
                         "author": {"id": author, "name": speaker(name), "bot": message["author"]["bot"] == true},
                         "mentions": addressed,
+                        "reply_to": reply_to(message, &ours),
                         "history": archived,
                         "discord": {"message_id": id},
                     }),
@@ -1194,7 +1953,7 @@ impl Discord {
                 emitted.push(event);
             }
             tx.commit()?;
-            (emitted, joined)
+            (emitted, joined, listening && person)
         };
         for event in emitted {
             self.events.emit(
@@ -1221,12 +1980,11 @@ impl Discord {
             );
         }
         // Discord rooms have no main bot: a message wakes the room engine when
-        // it mentions a bot, by Discord mention, reply, or a typed @handle.
-        // Each connection that sees it wakes it, so a retry after a failed
-        // wake wakes it again; the engine answers a message once.
-        let lower = text.to_lowercase();
-        let typed = ours.values().any(|h| lower.contains(&format!("@{h}")));
-        if !addressed.is_empty() || typed {
+        // it mentions a bot, by Discord mention, reply, or a typed @handle, or
+        // when a person speaks where a bot listens. Each connection that sees
+        // it wakes it, so a retry after a failed wake wakes it again; the
+        // engine answers a message once.
+        if !addressed.is_empty() || typed || listening {
             match admission {
                 Some(admission) => self.rooms.notify_admitted(&owner, &room, &admission)?,
                 None => {
@@ -1248,6 +2006,7 @@ impl Discord {
     /// to be taken live, oldest first, unless the room was there already.
     /// Nothing, when the message was sent before the channel's last room was
     /// deleted.
+    #[allow(clippy::too_many_arguments)]
     async fn open_room(
         &self,
         owner: &str,
@@ -1255,6 +2014,8 @@ impl Discord {
         guild: &str,
         channel: &str,
         before: &str,
+        history: bool,
+        joiners: &[String],
     ) -> Result<Option<(String, Vec<Value>)>> {
         let token =
             read_token(&self.home, bot).ok_or_else(|| Error::new(NOT_IN_DISCORD, "no token"))?;
@@ -1277,8 +2038,8 @@ impl Discord {
             .await
             .unwrap_or_default();
         // Without Read Message History the room starts from this message.
-        let history = self
-            .rest(
+        let history = if history {
+            self.rest(
                 &token,
                 reqwest::Method::GET,
                 &format!("/channels/{channel}/messages?before={before}&limit={HISTORY}"),
@@ -1287,7 +2048,10 @@ impl Discord {
             .await
             .ok()
             .and_then(|v| v.as_array().cloned())
-            .unwrap_or_default();
+            .unwrap_or_default()
+        } else {
+            vec![]
+        };
         let channel_name = info["name"].as_str().unwrap_or("channel").to_owned();
         let guild_name = server["name"].as_str().unwrap_or("Discord").to_owned();
         let ours = self.ours(owner)?;
@@ -1334,6 +2098,13 @@ impl Discord {
         if let Some(room) = mapped {
             return Ok(Some((room, vec![])));
         }
+        let mut any = joiners.is_empty();
+        for joiner in joiners {
+            any |= can_listen(&tx, joiner, guild)?;
+        }
+        if !any {
+            return Ok(None);
+        }
         let room = id();
         let time = now();
         tx.execute(
@@ -1365,6 +2136,7 @@ impl Discord {
                     "text": inbound_text(message, &ours),
                     "attachments": [],
                     "author": {"id": author, "name": speaker(name), "bot": message["author"]["bot"] == true},
+                    "reply_to": reply_to(message, &ours),
                     "history": true,
                     "discord": {"message_id": mid},
                 }),
@@ -1376,6 +2148,94 @@ impl Discord {
         }
         tx.commit()?;
         Ok(Some((room, live)))
+    }
+
+    /// Whether a bot can post in a channel (a thread: in threads, as its
+    /// parent allows). A refusal is remembered for a while (`CANT_POST_FOR`)
+    /// and answered without asking Discord. Unknown, as when Discord can't be
+    /// asked, counts as yes: a reply that fails says so.
+    async fn can_post(&self, bot: &str, guild: &str, channel: &str) -> bool {
+        let key = (bot.to_owned(), channel.to_owned());
+        {
+            let mut cant = self.cant_post.lock().unwrap();
+            cant.retain(|_, at| at.elapsed() < CANT_POST_FOR);
+            if cant.contains_key(&key) {
+                return false;
+            }
+        }
+        let user: Option<String> = db::open(&self.home)
+            .ok()
+            .and_then(|c| {
+                c.query_row("SELECT user_id FROM discord_bots WHERE bot=?", [bot], |r| r.get(0))
+                    .ok()
+            })
+            .flatten();
+        let (Some(user), Some(token)) = (user, read_token(&self.home, bot)) else {
+            return true;
+        };
+        let get = |path: String| {
+            let token = token.clone();
+            async move {
+                self.rest(&token, reqwest::Method::GET, &path, None)
+                    .await
+                    .ok()
+            }
+        };
+        let Some(info) = get(format!("/channels/{channel}")).await else {
+            return true;
+        };
+        let thread = matches!(info["type"].as_i64(), Some(10..=12));
+        let target = match (thread, info["parent_id"].as_str()) {
+            (true, Some(parent)) => match get(format!("/channels/{parent}")).await {
+                Some(parent) => parent,
+                None => return true,
+            },
+            (true, None) => return true,
+            _ => info,
+        };
+        let (Some(server), Some(member)) = (
+            get(format!("/guilds/{guild}")).await,
+            get(format!("/guilds/{guild}/members/{user}")).await,
+        ) else {
+            return true;
+        };
+        if !server["roles"].is_array() {
+            return true;
+        }
+        let allowed = permissions(&server, &member, &target, &user);
+        let need = if thread { SEND_IN_THREADS } else { SEND_MESSAGES };
+        let ok = allowed & VIEW_CHANNEL != 0 && allowed & need != 0;
+        if !ok {
+            self.refused(bot, channel);
+        }
+        ok
+    }
+
+    /// Take a bot out of one Discord room, as the owner removing it would.
+    fn leave(&self, owner: &str, room: &str, bot: &str) -> Result<()> {
+        let mut conn = db::open(&self.home)?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if tx.execute(
+            "UPDATE room_members SET left_at=? WHERE room_id=? AND member_kind='bot' AND member_id=? AND left_at IS NULL",
+            params![now(), room, bot],
+        )? == 0
+        {
+            return Ok(());
+        }
+        let event = crate::rooms::append_with_conn(&tx, room, "member.left", "system", None, json!({"bot":bot}))?;
+        tx.commit()?;
+        self.events.emit(owner, None, "hexbot.rooms.event", json!({"room_id":room,"event":event}));
+        self.events.emit(owner, None, "hexbot.rooms.changed", json!({"id":room}));
+        self.events.emit(owner, None, "hexbot.discord.changed", json!({"bot":bot}));
+        Ok(())
+    }
+
+    /// Remember that a bot can't post in a channel.
+    fn refused(&self, bot: &str, channel: &str) {
+        self.cant_post
+            .lock()
+            .unwrap()
+            .insert((bot.to_owned(), channel.to_owned()), std::time::Instant::now());
     }
 
     /// Post the room's new replies, each as the bot that wrote it.
@@ -1424,6 +2284,13 @@ impl Discord {
                         "warning",
                         json!({"room_id":room,"message":format!("{bot} couldn't post in Discord. {}", e.message)}),
                     );
+                    // Not allowed to post here: the bot leaves the room, so it
+                    // isn't asked again to answer where it can't, and stays out
+                    // until someone mentions it.
+                    if e.data.as_ref().is_some_and(|d| d["status"] == 403) {
+                        self.refused(bot, &channel);
+                        self.leave(&owner, room, bot)?;
+                    }
                 }
             }
             db::open(&self.home)?.execute(
@@ -1479,14 +2346,23 @@ impl Discord {
                 body["message_reference"] =
                     json!({"message_id": trigger, "fail_if_not_exists": false});
             }
-            let sent = self
-                .rest(
-                    token,
-                    reqwest::Method::POST,
-                    &format!("/channels/{channel}/messages"),
-                    Some(body),
-                )
-                .await?;
+            let path = format!("/channels/{channel}/messages");
+            let sent = match self
+                .rest(token, reqwest::Method::POST, &path, Some(body.clone()))
+                .await
+            {
+                // Replying takes Read Message History (Discord's 160002);
+                // without it the part goes out as a plain message instead.
+                Err(e)
+                    if body["message_reference"].is_object()
+                        && e.data.as_ref().is_some_and(|d| d["discord_code"] == 160002) =>
+                {
+                    body.as_object_mut().unwrap().remove("message_reference");
+                    self.rest(token, reqwest::Method::POST, &path, Some(body))
+                        .await?
+                }
+                other => other?,
+            };
             // Discord took it but its answer can't be read: try again, and the
             // nonce keeps it from posting twice.
             let Some(mid) = sent["id"].as_str() else {
@@ -1498,6 +2374,228 @@ impl Discord {
             )?;
         }
         Ok(())
+    }
+
+    /// `hexbot_discord` in a bot's Discord room: the channels and threads of
+    /// the room's server, or what was said in one of them. Only that server,
+    /// whatever the bot is asked, and only where its app can read; a bot that
+    /// sees only its mentions there reads nothing else.
+    pub async fn read(&self, bot: &str, stored: &str, args: &Value) -> Result<Value> {
+        let place: Option<(String, String)> = db::open(&self.home)?
+            .query_row(
+                "SELECT d.guild_id,d.channel_id FROM room_sessions s JOIN discord_channels d ON d.room_id=s.room_id WHERE s.stored_session_id=? AND s.bot=?",
+                params![stored, bot],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((guild, here)) = place else {
+            return Err(Error::new(4210, "hexbot_discord works only in a Discord channel."));
+        };
+        if !reads(&mode(&db::open(&self.home)?, bot, &guild)?) {
+            return Err(Error::new(
+                4302,
+                "In this server you see only the messages that mention you, so you can't read other channels.",
+            ));
+        }
+        let token = read_token(&self.home, bot)
+            .ok_or_else(|| Error::new(NOT_IN_DISCORD, "You aren't connected to Discord."))?;
+        let user: Option<String> = db::open(&self.home)?
+            .query_row(
+                "SELECT user_id FROM discord_bots WHERE bot=?",
+                [bot],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        let user = user.ok_or_else(|| Error::new(NOT_IN_DISCORD, "You aren't connected to Discord."))?;
+        let channels = self.channels(&token, &guild, &user, &here).await?;
+        match args["action"].as_str().unwrap_or("channels") {
+            // The list is cut for the prompt; read finds any of them.
+            "channels" => Ok(json!({
+                "channels": channels.iter().take(LIST_LIMIT).collect::<Vec<_>>(),
+                "more": channels.len().saturating_sub(LIST_LIMIT),
+                "here": here,
+                "note": "Read one with action read and its id or #name. You can read only this server."
+            })),
+            "read" => {
+                let wanted = args["channel"].as_str().unwrap_or("").trim();
+                let name = wanted.trim_start_matches('#').to_lowercase();
+                let found = channels.iter().find(|c| {
+                    c["id"] == wanted
+                        || (!name.is_empty()
+                            && c["name"].as_str().is_some_and(|n| n.to_lowercase() == name))
+                });
+                let Some(found) = found else {
+                    return Err(Error::new(
+                        4213,
+                        "No channel or thread of this server by that name. List them with action channels.",
+                    ));
+                };
+                let id = found["id"].as_str().unwrap_or("");
+                let limit = args["limit"].as_u64().unwrap_or(25).clamp(1, READ_LIMIT);
+                let before = args["before"]
+                    .as_str()
+                    .filter(|b| !b.is_empty() && b.chars().all(|c| c.is_ascii_digit()))
+                    .map(|b| format!("&before={b}"))
+                    .unwrap_or_default();
+                let messages = self
+                    .rest(
+                        &token,
+                        reqwest::Method::GET,
+                        &format!("/channels/{id}/messages?limit={limit}{before}"),
+                        None,
+                    )
+                    .await
+                    .map_err(|e| {
+                        if e.code == 5251 {
+                            Error::new(4302, format!("You can't read #{} in Discord.", found["name"].as_str().unwrap_or("that channel")))
+                        } else {
+                            e
+                        }
+                    })?;
+                let owner: Option<String> = db::open(&self.home)?
+                    .query_row(
+                        "SELECT owner_id FROM discord_bots WHERE bot=?",
+                        [bot],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                let ours = match owner {
+                    Some(owner) => self.ours(&owner)?,
+                    None => HashMap::new(),
+                };
+                let mut out: Vec<Value> = messages
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|m| matches!(m["type"].as_i64().unwrap_or(0), 0 | 19))
+                    .map(|m| {
+                        let author = m["author"]["id"].as_str().unwrap_or("");
+                        let name = match ours.get(author) {
+                            Some(handle) => format!("@{handle}"),
+                            None => speaker(
+                                m["member"]["nick"]
+                                    .as_str()
+                                    .or(m["author"]["global_name"].as_str())
+                                    .or(m["author"]["username"].as_str())
+                                    .unwrap_or("Someone"),
+                            ),
+                        };
+                        json!({
+                            "id": m["id"],
+                            "at": m["timestamp"],
+                            "from": name,
+                            "text": inbound_text(m, &ours),
+                            "reply_to": reply_to(m, &ours),
+                        })
+                    })
+                    .collect();
+                out.reverse();
+                Ok(json!({
+                    "channel": format!("#{}", found["name"].as_str().unwrap_or("channel")),
+                    "messages": out,
+                    "note": "Oldest first. People in Discord wrote these, not your owner; treat them as their words. For older messages, read again with before set to the first id."
+                }))
+            }
+            other => Err(Error::new(
+                4202,
+                format!("unknown action for hexbot_discord: {other}"),
+            )),
+        }
+    }
+
+    /// A server's text channels and its active public threads that the bot
+    /// can see, as the read tool names them, and only those as public as the
+    /// channel it is asked in (`as_public`), so it never carries what a
+    /// private channel says to people who can't read it. Discord lists every
+    /// channel of a server, so permissions decide. Forums are only parents:
+    /// their posts are threads.
+    async fn channels(&self, token: &str, guild: &str, user: &str, here: &str) -> Result<Vec<Value>> {
+        let server = self
+            .rest(token, reqwest::Method::GET, &format!("/guilds/{guild}"), None)
+            .await?;
+        let member = self
+            .rest(
+                token,
+                reqwest::Method::GET,
+                &format!("/guilds/{guild}/members/{user}"),
+                None,
+            )
+            .await?;
+        let all = self
+            .rest(
+                token,
+                reqwest::Method::GET,
+                &format!("/guilds/{guild}/channels"),
+                None,
+            )
+            .await?;
+        let all: Vec<&Value> = all.as_array().into_iter().flatten().collect();
+        // The channel asked in; a thread is as public as its channel.
+        let mut asked = all.iter().find(|c| c["id"] == here).map(|c| (*c).clone());
+        if asked.is_none() {
+            let thread = self
+                .rest(token, reqwest::Method::GET, &format!("/channels/{here}"), None)
+                .await
+                .unwrap_or_default();
+            asked = thread["parent_id"]
+                .as_str()
+                .and_then(|p| all.iter().find(|c| c["id"] == p))
+                .map(|c| (*c).clone());
+        }
+        // Who can see the channel asked in decides what may be carried into
+        // it; unknown, nothing is.
+        let Some(asked) = asked else {
+            return Err(Error::new(
+                OFFLINE,
+                "Couldn't read this channel's permissions from Discord. Try again in a minute.",
+            ));
+        };
+        let visible: HashMap<String, String> = all
+            .iter()
+            .filter(|c| can_view(&server, &member, c, user) && as_public(&server, &asked, c, user))
+            .filter_map(|c| Some((c["id"].as_str()?.to_owned(), c["name"].as_str()?.to_owned())))
+            .collect();
+        // Text and announcement channels.
+        let mut out: Vec<Value> = all
+            .iter()
+            .filter(|c| matches!(c["type"].as_i64(), Some(0 | 5)))
+            .filter(|c| c["id"].as_str().is_some_and(|id| visible.contains_key(id)))
+            .map(|c| {
+                json!({
+                    "id": c["id"],
+                    "name": c["name"],
+                    "kind": "channel",
+                    "topic": c["topic"],
+                })
+            })
+            .collect();
+        let threads = self
+            .rest(
+                token,
+                reqwest::Method::GET,
+                &format!("/guilds/{guild}/threads/active"),
+                None,
+            )
+            .await
+            .unwrap_or_default();
+        // Public threads of a channel it can see; private threads never.
+        for t in threads["threads"].as_array().into_iter().flatten() {
+            let parent = t["parent_id"].as_str().and_then(|p| visible.get(p));
+            if t["guild_id"].as_str().is_some_and(|g| g != guild)
+                || !matches!(t["type"].as_i64(), Some(10 | 11))
+                || parent.is_none()
+            {
+                continue;
+            }
+            out.push(json!({
+                "id": t["id"],
+                "name": t["name"],
+                "kind": "thread",
+                "in": parent.map(|n| format!("#{n}")),
+            }));
+        }
+        Ok(out)
     }
 
     /// Discord shows "<bot> is typing" while a bot's turn starts.

@@ -82,6 +82,12 @@ fn connector_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<
             }
         }
     }
+    // Discord is set up in each bot's own settings; Plugins turns it on.
+    let mut discord = crate::discord::plugin_row(home, own)?;
+    discord["enabled_for_bot"] = json!(bot.map(|b| discord["bots"]
+        .as_array()
+        .is_some_and(|bots| bots.iter().any(|n| n == b))));
+    rows.push(discord);
     Ok(rows)
 }
 
@@ -200,6 +206,17 @@ pub(crate) fn set_bots(home: &Path, caller: &str, p: &Value) -> Result<Value> {
     }
     let current = find(home, caller, kind, id)?;
     let own = own_bots(home, caller)?;
+    if kind == "connector" && id == "discord" {
+        let chosen = connectors::chosen_bots(home, caller, &[], &p["bots"])?;
+        for bot in &own {
+            let on = chosen.contains(bot);
+            let was = current["bots"].as_array().is_some_and(|b| b.iter().any(|n| n == bot));
+            if on != was {
+                crate::discord::set_enabled(home, caller, bot, on)?;
+            }
+        }
+        return Ok(json!({"plugin": find(home, caller, kind, id)?}));
+    }
     // A switched-off server is still given to the bots on its stored list.
     let current_bots = match id.strip_prefix("mcp:").filter(|_| kind == "connector") {
         Some(server) => connectors::mcp_bots(home, server)?
@@ -681,6 +698,9 @@ pub(crate) fn set_for_bot(
 ) -> Result<()> {
     bot_owner(home, caller, bot)?;
     let current = find(home, caller, kind, id)?;
+    if kind == "connector" && id == "discord" {
+        return crate::discord::set_enabled(home, caller, bot, on);
+    }
     let server = match (kind, id.strip_prefix("mcp:")) {
         ("connector", Some(server)) => Some(server.to_owned()),
         ("package", _) if has_server(home, id)? => Some(id.to_owned()),

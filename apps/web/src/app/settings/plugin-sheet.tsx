@@ -1,3 +1,4 @@
+import { useNavigate } from '@tanstack/react-router'
 import { Check, X } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
@@ -15,6 +16,7 @@ import {
   connectorsClear,
   connectorsRemoveMcp,
   connectorsTest,
+  discordDisconnect,
   pluginsSetBots,
   skillsSetGlobal
 } from '../../lib/api'
@@ -25,10 +27,13 @@ import {
   accountProvider,
   accountSiblings,
   canGive,
+  discordBotText,
+  isDiscord,
   shownBots,
   withWaiting
 } from '../../lib/plugin-rows'
 import type { AccountSignIn, Bot, Plugin, PluginValue } from '../../lib/types'
+import { useBots } from '../../stores/bots'
 import { usePlugins } from '../../stores/plugins'
 import { ConnectorSetupSheet } from '../bot-settings/connector-setup'
 import { cardClass, dividerClass, errorText } from '../bot-settings/shared'
@@ -97,8 +102,11 @@ export function PluginSheet({
   const givable = (bot: string) => canGive(plugin, bot)
 
   const shown = shownBots(plugin)
+  // Discord is connected in each bot's own settings, never here.
+  const discord = isDiscord(plugin)
 
-  const showBots = bots.length > 0 && (bots.some(bot => givable(bot.name)) || shown.bots.length > 0)
+  const showBots =
+    !discord && bots.length > 0 && (bots.some(bot => givable(bot.name)) || shown.bots.length > 0)
 
   return (
     <>
@@ -241,6 +249,15 @@ export function PluginSheet({
             </section>
           ) : null}
 
+          {discord ? (
+            <DiscordBots
+              bots={bots}
+              onClose={onClose}
+              onError={text => setMessage({ ok: false, text })}
+              plugin={plugin}
+            />
+          ) : null}
+
           {showBots && (!account || account.signed_in) ? (
             <BotSwitches
               bots={bots}
@@ -292,7 +309,9 @@ export function PluginSheet({
                 Undo Off for every bot
               </Button>
             ) : null}
-            {connector && (plugin.kind !== 'connector' || plugin.state !== 'not_set_up') ? (
+            {connector &&
+            !discord &&
+            (plugin.kind !== 'connector' || plugin.state !== 'not_set_up') ? (
               <Button busy={busy} onClick={test} size="sm">
                 Test
               </Button>
@@ -529,6 +548,128 @@ function AccountConnect({
           Use your own OAuth client
         </button>
       )}
+    </section>
+  )
+}
+
+/**
+ * Turns Discord on or off for one bot. On, it opens that bot's Discord
+ * settings, where the bot is connected; off, a connected bot is
+ * disconnected first, once the user agrees.
+ */
+export function useDiscordSwitch() {
+  const setBots = usePlugins(state => state.setBots)
+  const navigate = useNavigate()
+
+  return async (plugin: Plugin, bot: Bot, on: boolean, beforeOpen?: () => void) => {
+    if (on) {
+      await setBots(plugin, [...new Set([...plugin.bots, bot.name])])
+      // The bot's settings show Discord once its row says so.
+      await useBots.getState().refresh()
+      beforeOpen?.()
+      await navigate({ params: { bot: bot.name, tab: 'discord' }, to: '/b/$bot/settings/$tab' })
+
+      return
+    }
+
+    const state = plugin.discord?.[bot.name]?.status
+
+    if (state && state !== 'not_connected') {
+      const yes = await confirm({
+        detail: `${bot.display_name} goes offline in Discord, the token is deleted and its Discord choices are reset. Its Discord rooms stay here.`,
+        title: `Turn off Discord for ${bot.display_name}?`
+      })
+
+      if (!yes) {
+        return
+      }
+    }
+
+    // Harmless when the bot isn't connected, and right when another device
+    // connected it since this list was read.
+    await discordDisconnect(bot.name)
+
+    await setBots(
+      plugin,
+      plugin.bots.filter(name => name !== bot.name)
+    )
+  }
+}
+
+/**
+ * Discord's bots: on or off for each, with its own Discord app's state. A bot
+ * it is on for opens its Discord settings, where it is connected and where
+ * the user chooses how it acts.
+ */
+function DiscordBots({
+  bots,
+  onClose,
+  onError,
+  plugin
+}: {
+  bots: Bot[]
+  onClose: () => void
+  onError: (text: string) => void
+  plugin: Plugin
+}) {
+  const navigate = useNavigate()
+  const toggle = useDiscordSwitch()
+
+  const open = (bot: Bot) => {
+    onClose()
+    void navigate({ params: { bot: bot.name, tab: 'discord' }, to: '/b/$bot/settings/$tab' })
+  }
+
+  return (
+    <section>
+      <p className={label}>Bots</p>
+      <p className="mb-3 text-muted">
+        Each bot joins Discord as its own app. Turn it on for a bot, then connect it and choose how
+        it acts in that bot&apos;s settings.
+      </p>
+      <div aria-label="Bots that use Discord" className={cn(cardClass, dividerClass)} role="group">
+        {bots.map(bot => {
+          const on = plugin.bots.includes(bot.name)
+          const state = plugin.discord?.[bot.name]?.status
+
+          return (
+            <div className="flex min-h-[56px] items-center gap-3 px-4 py-2" key={bot.name}>
+              <span aria-hidden className="inline-flex">
+                <Avatar {...botFace(bot)} name={bot.display_name} size="sm" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[length:var(--text-body)]">
+                  {bot.display_name}
+                </span>
+                <span
+                  className={cn(
+                    'block truncate text-[length:var(--text-meta)]',
+                    state === 'error' ? 'text-danger' : 'text-muted'
+                  )}
+                >
+                  {discordBotText(plugin, bot.name)}
+                </span>
+              </span>
+              {on ? (
+                <Button
+                  onClick={() => open(bot)}
+                  size="sm"
+                  variant={state === 'online' ? 'ghost' : 'primary'}
+                >
+                  {state === 'online' ? 'Open' : state === 'error' ? 'Fix' : 'Connect'}
+                </Button>
+              ) : null}
+              <Switch
+                aria-label={`Discord for ${bot.display_name}`}
+                checked={on}
+                onCheckedChange={next =>
+                  void toggle(plugin, bot, next, onClose).catch(cause => onError(errorText(cause)))
+                }
+              />
+            </div>
+          )
+        })}
+      </div>
     </section>
   )
 }

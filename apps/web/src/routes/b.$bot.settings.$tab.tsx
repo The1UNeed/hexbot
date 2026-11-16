@@ -73,11 +73,15 @@ const GROUPS: { ids: BotSettingsTab[]; label?: string }[] = [
   { ids: ['approvals', 'heartbeat', 'advanced'], label: 'Manage' }
 ]
 
-/** Every bot has a heartbeat, on a daemon that has one. */
-function tabsFor(heartbeat: boolean): SettingsTabGroup<BotSettingsTab>[] {
+/**
+ * Every bot has a heartbeat, on a daemon that has one. Discord shows once it
+ * is on for the bot in Plugins, or on a daemon from before that.
+ */
+function tabsFor(heartbeat: boolean, discord: boolean): SettingsTabGroup<BotSettingsTab>[] {
   return GROUPS.map(group => ({
     items: group.ids
       .filter(id => heartbeat || id !== 'heartbeat')
+      .filter(id => discord || id !== 'discord')
       .map(id => ({ icon: ICONS[id], id, label: TAB_LABELS[id] })),
     label: group.label
   }))
@@ -181,7 +185,7 @@ function BotSettingsDialog() {
         onSelect={item =>
           void navigate({ params: { bot: botName, tab: item }, to: '/b/$bot/settings/$tab' })
         }
-        tabs={tabsFor(heartbeat)}
+        tabs={tabsFor(heartbeat, bot?.discord !== false)}
       >
         {closeError ? (
           <p className="px-6 pt-4 text-danger" role="alert">

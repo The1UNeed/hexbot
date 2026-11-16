@@ -291,8 +291,22 @@ Discord before saving it and sends it only to Discord.
 
 Anyone in a Discord channel a bot was added to can talk to it, so a Discord
 room is a public room. Its bots run in Manual with only the memory tool's
-note action, web search and web page reading: no shell, files, other bots,
-plugins, MCP servers, passwords, connectors or the bots' computer. Their
+note action, web search, web page reading and reading their server
+(`hexbot_discord`): no shell, files, other bots, plugins, MCP servers,
+passwords, connectors or the bots' computer. Reading the server reaches only
+the room's own server, never another, and only channels the bot's Discord
+app can see. A bot that reads along can be asked what was said in another
+channel of that server and repeat it where it is asked, so the tool reads
+only channels at least as public as the one it is asked in, decided
+conservatively whatever roles a person holds: nothing may deny View Channel
+or Read Message History on the other channel, and every way into the asking
+channel (@everyone, a role, a person added by name) must let people see and
+scroll back in the other one too, and every role that sees channels by
+default must bring Read Message History. From a
+ticket channel opened to one person, the bot reads only what that person
+could read anyway; if the asking channel's permissions can't be read, it
+reads nothing. A bot set to see only its mentions reads nothing
+else, and Hexbot keeps only the messages that address such bots. Their
 prompt there is the bot's soul and the Discord rules, without its memory,
 About you, files, teammates or skills, so there is nothing of the owner's
 for a stranger to talk it into sharing; keep secrets out of the soul of a
@@ -301,8 +315,9 @@ directly: the bot's dream leaves Discord rooms out, and a note taken there
 waits as a proposal that the dream is told is untrusted, like a scheduled
 job's. A Discord room has no main bot, and messages from other Discord bots
 start no turn, so bots can't answer each other in a loop. Anyone in the
-channel can still make the bot spend tokens by mentioning it; for a busy
-server, set a daily token budget for each bot (`bot_daily_token_budget`). Replies can mention only
+channel can still make the bot spend tokens by mentioning it, and where a
+bot is an active member or answers everyone, by writing anything at all; for
+a busy server, set a daily token budget for each bot (`bot_daily_token_budget`). Replies can mention only
 connected bots and never `@everyone`, roles, other people, or the person
 they answer.
 

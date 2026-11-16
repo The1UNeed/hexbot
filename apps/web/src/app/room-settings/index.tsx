@@ -269,7 +269,7 @@ export function RoomSettingsPanel({ room }: { room: Room }): React.JSX.Element {
             <div className="flex min-h-[48px] items-center justify-between gap-3 px-4 py-2">
               <span className="text-[length:var(--text-secondary)] text-muted">
                 {room.discord
-                  ? 'A bot joins when someone mentions it in Discord, and comes back the same way after you remove it.'
+                  ? 'A bot joins when someone mentions it in Discord, or when anyone writes where it is an active member or answers everyone. One you remove comes back when someone mentions it.'
                   : room.main_bot
                     ? 'The main bot answers when nobody is mentioned.'
                     : 'Without a main bot, only mentioned bots answer.'}
@@ -311,7 +311,7 @@ export function RoomSettingsPanel({ room }: { room: Room }): React.JSX.Element {
                 control={
                   <span className="text-[length:var(--text-secondary)] text-muted">Manual</span>
                 }
-                description="People in Discord are not you, so bots there only search the web and keep notes."
+                description="People in Discord are not you, so bots there only search the web, read the server and keep notes."
                 title="Approval mode"
               />
             ) : (

@@ -134,9 +134,37 @@ server and each keeps what it hears in its own room session and notes.
   message seen by several bots' connections lands once.
 - `discord_closed(channel_id, closed_at)`: when a channel's last Discord room
   was deleted.
+- `discord_plugin(bot, owner_id, mode, enabled_at)`: the bots Discord is on
+  for in Plugins, and how each acts by default. Kept when a bot disconnects;
+  a bot connected before this table existed gets a row once.
+- `discord_guilds(bot, guild_id, name, mode, present)`: the servers a bot's
+  app is in, from its Gateway, and a server's own mode (NULL follows the
+  bot's).
 
-The first mention of a bot in a channel creates the room, Manual, with the
-20 messages before it marked `history`, except that a person's mention of a
+A bot's mode in a server (`discord::mode`) is `mentions`, `reads` (the
+default), `active` or `everyone`. `reads` and up read the whole channel and
+can read the rest of the server with `hexbot_discord`; `active` and
+`everyone` listen: they open a room for a channel the first time a person
+writes there, join it as of that message, and are picked for the room's
+newest person message they haven't read (`rooms::select_responders`, with
+`modes` and `latest_seq` from `discord::room_info`). `mentions` sees only
+the messages that address it, in its prompt and in the room: what is said to
+nobody is not kept when every bot in a room sees only mentions, and a room
+opened for such bots starts without history. A whole `@handle` addresses a
+bot (`rooms::typed_handles`): `@owl-admin` never addresses `owl`. A bot taken
+out of a server leaves its rooms there; a listening bot that left before its
+app was last connected or added to the server (`discord_guilds.joined_at`)
+joins again when a person writes. A listening bot opens or joins a room only
+where it can post (Send Messages, or Send Messages in Threads for a thread),
+asked once before it joins; a refusal is remembered for ten minutes and
+costs no Discord call meanwhile. A bot whose post Discord refuses (403)
+leaves the room until it is mentioned. A listening bot leaves a message that
+addresses another bot in the room to that bot, and answers the newest message
+said to none of them (`latest_seq`).
+
+The first mention of a bot in a channel, or the first message where a bot
+listens, creates the room, Manual, with the 20 messages before it marked
+`history`, except that a person's mention of a
 connected bot in the minute before, possibly still on its way through another
 bot's connection, and what followed it are ingested live (`IN_FLIGHT_MS`),
 each with its own retries, unless it was said before the channel's last room
@@ -164,7 +192,8 @@ outbox worker posts, woken by `message.bot` events and on start, from
 while Discord is unreachable or answering 5xx or the database is busy. A
 bot's own post coming back on its Gateway marks its part sent.
 
-Bots in a Discord room have only notes and the web (`discord::TOOLS`). Their
+Bots in a Discord room have only notes, the web and reading their server
+(`discord::TOOLS`). Their
 prompt is the soul and the Discord rules, without memory, About you, files,
 teammates or skills, and every line a person wrote is prefixed with their
 name. Notes become memory proposals the dream treats as untrusted, and the

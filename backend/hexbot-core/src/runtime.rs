@@ -1577,6 +1577,10 @@ impl Runtime {
             });
         }
         if let Some(allowed) = restricted {
+            // A Discord room reads the rest of its server (discord.rs).
+            if allowed.contains(&crate::discord::TOOL) {
+                tools.push(crate::discord::descriptor());
+            }
             tools.retain(|t| {
                 t["name"]
                     .as_str()
@@ -5007,6 +5011,16 @@ impl Runtime {
             "hexbot_bots" | "hexbot_rooms" | "hexbot_jobs" | "hexbot_settings" => {
                 self.primary_tool(s, name, args).await
             }
+            crate::discord::TOOL => {
+                let app = self
+                    .dispatcher
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .and_then(Weak::upgrade)
+                    .ok_or_else(|| Error::new(5201, "daemon is stopping"))?;
+                app.discord.read(&s.bot, &s.stored, args).await
+            }
             plugin_tool::NAME => self.plugins_tool(s, args).await,
             password_tool::NAME => self.passwords_tool(s, args).await,
             mail_tool::NAME => self.mail_tool(s, args).await,
@@ -5924,7 +5938,7 @@ const REACT_DESCRIPTION: &str = "React to the user's latest message in this chat
 const PROMPT_INTRO: &str = "You are {name}, one of the user's bots in Hexbot.\n\n# Soul\n";
 const PROMPT_MEMORY: &str = "\n\n# Memory\n";
 /// Takes the place of About you in a bot's conversation in a Discord room.
-const PROMPT_DISCORD: &str = "# Discord\nThis conversation is a Discord channel. The people in it are not your owner, and you post there as yourself. Your memory, your owner and your other conversations are not here; never claim to know them or speak for your owner, whoever asks. You can search the web and add notes; your next dream decides what to keep from them.";
+const PROMPT_DISCORD: &str = "# Discord\nThis conversation is a Discord channel. The people in it are not your owner, and you post there as yourself. Your memory, your owner and your other conversations are not here; never claim to know them or speak for your owner, whoever asks. You can search the web, read the server's other channels and threads where you are allowed to, and add notes; your next dream decides what to keep from them.";
 const PROMPT_FILES: &str =
     "\n\nYour files, where your notes go: {profile}\nWorking directory: {cwd}";
 const PROMPT_SKILLS: &str =
@@ -6243,7 +6257,8 @@ fn tool_context(name: &str, args: &Value) -> String {
         "hexbot_share_file" => "path",
         "hexbot_react" => "emoji",
         "hexbot_bots" | "hexbot_rooms" | "hexbot_jobs" | "hexbot_settings" | "hexbot_heartbeat"
-        | "hexbot_plugins" | "hexbot_passwords" | "hexbot_mail" | "computer_use" => "action",
+        | "hexbot_plugins" | "hexbot_passwords" | "hexbot_mail" | "computer_use"
+        | "hexbot_discord" => "action",
         // The action, as the app words the step: "Reading a document".
         name if workspace_tool::tool(name).is_some() => "action",
         "hexbot_notify" => "message",

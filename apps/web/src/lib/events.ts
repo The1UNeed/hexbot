@@ -264,11 +264,13 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
 
       return
 
-    // A bot's Discord app connected, went offline or joined a channel.
+    // A bot's Discord app connected, went offline, joined a channel or a
+    // server, or acts another way. Plugins shows each bot's Discord state.
     case 'hexbot.discord.changed':
       void useDiscord
         .getState()
         .refreshLoaded(typeof payload.bot === 'string' ? payload.bot : undefined)
+      refreshPluginsIfLoaded()
 
       return
 

@@ -155,6 +155,7 @@ export function pluginRows(list: PluginsList): Plugin[] {
       category: row.mcp ? 'mcp' : row.group,
       connector: row,
       description: row.description,
+      ...(row.discord ? { discord: row.discord } : {}),
       icon: row.mcp ? serverIcon(row.mcp.name ?? row.name, row.server) : row.icon,
       id: row.id,
       kind: 'connector',
@@ -212,4 +213,32 @@ export function pluginRows(list: PluginsList): Plugin[] {
                 : 'Added by you'
     }))
   ]
+}
+
+/** Discord, the one connector each bot sets up in its own settings. */
+export function isDiscord(plugin: Plugin): boolean {
+  return plugin.kind === 'connector' && plugin.id === 'discord'
+}
+
+/** A bot's Discord app, in a few words, as its row in Plugins says it. */
+export function discordBotText(plugin: Plugin, bot: string): string {
+  const state = plugin.discord?.[bot]
+
+  if (!plugin.bots.includes(bot) || !state) {
+    return 'Off'
+  }
+
+  switch (state.status) {
+    case 'online':
+      return 'Online in Discord'
+
+    case 'connecting':
+      return 'Connecting'
+
+    case 'error':
+      return state.error ?? 'Needs connecting again'
+
+    default:
+      return 'Not connected yet'
+  }
 }

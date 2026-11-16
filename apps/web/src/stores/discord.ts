@@ -5,14 +5,16 @@
 
 import { create } from 'zustand'
 
-import { discordConnect, discordDisconnect, discordGet } from '../lib/api'
-import type { DiscordStatus } from '../lib/types'
+import { discordConnect, discordDisconnect, discordGet, discordSetMode } from '../lib/api'
+import type { DiscordMode, DiscordStatus } from '../lib/types'
 
 export interface DiscordState {
   /** null: the bot has no Discord app. Missing: not loaded. */
   byBot: Record<string, DiscordStatus | null>
   errors: Record<string, string>
   connect: (bot: string, token: string) => Promise<void>
+  /** How the bot acts in Discord; with a server, that server's own mode (null follows the default). */
+  setMode: (bot: string, mode: DiscordMode | null, guildId?: string) => Promise<void>
   disconnect: (bot: string) => Promise<void>
   refresh: (bot: string) => Promise<void>
   /** Refresh the bots already loaded, or just `bot` when it is one of them. */
@@ -57,6 +59,13 @@ export const useDiscord = create<DiscordState>((set, get) => ({
   async connect(bot, token) {
     reads[bot] = (reads[bot] ?? 0) + 1
     const { discord } = await discordConnect(bot, token)
+
+    set(state => ({ byBot: { ...state.byBot, [bot]: discord } }))
+  },
+
+  async setMode(bot, mode, guildId) {
+    reads[bot] = (reads[bot] ?? 0) + 1
+    const { discord } = await discordSetMode(bot, mode, guildId)
 
     set(state => ({ byBot: { ...state.byBot, [bot]: discord } }))
   },

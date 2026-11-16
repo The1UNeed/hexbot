@@ -92,6 +92,7 @@ const FIXED: Record<string, WorkLabel> = {
   hexbot_bots: { object: 'your bots', verb: 'Looking after' },
   hexbot_connector_read: { object: 'a connected service', verb: 'Reading from' },
   hexbot_connector_write: { object: 'a connected service', verb: 'Writing to' },
+  hexbot_discord: { object: 'the Discord server', verb: 'Reading' },
   hexbot_jobs: { object: 'scheduled jobs', verb: 'Setting up' },
   hexbot_notify: { object: 'you', verb: 'Notifying' },
   hexbot_passwords: { object: 'to a site', verb: 'Signing in' },

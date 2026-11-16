@@ -1,8 +1,9 @@
 # Bot settings: two levels
 
 Status: phases 1 and 2 implemented (window, panel, status in the chat,
-connectors). Discord is the first channel, as its own Discord tab
-(`docs/rooms.md`, Discord rooms); other channels, Spotify, and the skills
+connectors). Discord is the first channel, as its own Discord tab that
+shows once Discord is on for the bot in Settings, Plugins, where turning it
+on opens that tab (`docs/rooms.md`, Discord rooms); other channels, Spotify, and the skills
 hub are still to come.
 Mockups: https://claude.ai/code/artifact/6430c704-4d70-4363-adf8-affcef0ccfb8
 

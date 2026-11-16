@@ -1673,6 +1673,8 @@ fn shape_bot(
         "title": row["title"].as_str().unwrap_or(""),
         "description": row["description"].as_str().unwrap_or(""),
         "primary": row["is_primary"].as_i64() == Some(1),
+        // Discord is on for it in Plugins, so its settings show Discord.
+        "discord": crate::discord::enabled(conn, name)?,
         "pinned_at": row["pinned_at"],
         "persona": read_text(home, &profile(home, name)?.join("SOUL.md"))?,
         "persona_updated_at": crate::common::modified_at(&profile(home, name)?.join("SOUL.md"))?,
