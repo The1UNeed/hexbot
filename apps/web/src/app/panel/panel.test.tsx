@@ -1,10 +1,11 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { vi } from 'vitest'
 
-import type { Bot, ToolCall } from '../../lib/types'
+import type { Bot, Section, ToolCall } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useComputer } from '../../stores/computer'
 import { useConnection } from '../../stores/connection'
+import { useEmotions } from '../../stores/emotions'
 import { useSections } from '../../stores/sections'
 import { useTranscripts } from '../../stores/transcripts'
 import { useUi } from '../../stores/ui'
@@ -41,9 +42,12 @@ vi.mock('../../lib/api', async importOriginal => ({
   ...api
 }))
 
+// The route on screen; `seed` puts it back on no chat.
+const route = vi.hoisted(() => ({ params: {} as { bot?: string; section?: string } }))
+
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => vi.fn(),
-  useParams: () => ({})
+  useParams: () => route.params
 }))
 
 const bot = {
@@ -91,9 +95,15 @@ const call = (partial: Partial<ToolCall>): ToolCall => ({
 })
 
 function seed(calls: ToolCall[], streaming: boolean) {
+  route.params = {}
+  useEmotions.setState({ feelings: {} })
   useBots.setState({ byName: { scout: bot } })
-  useUi.setState({ lastSection: { bot: 'scout', section: 'daily' }, panelTab: 'details' })
-  useSections.setState({ liveSessionId: { daily: 's' } })
+  useUi.setState({
+    lastSection: { bot: 'scout', section: 'daily' },
+    openingBot: null,
+    panelTab: 'details'
+  })
+  useSections.setState({ byId: {}, liveSessionId: { daily: 's' } })
   useTranscripts.setState({
     bySession: {
       s: {
@@ -156,6 +166,69 @@ describe('ProfilePanel', () => {
     // The click came to nothing: the chat shown before is back.
     act(() => useUi.setState({ openingShown: null }))
     expect(screen.getByPlaceholderText('What Scout is for')).toBeVisible()
+  })
+
+  it('wears the face its roster row wears: the step the bot is on, then what it feels', () => {
+    const daily = {
+      archived_at: null,
+      bot: 'scout',
+      created_at: 0,
+      id: 'daily',
+      live_session_id: 's',
+      message_count: 2,
+      preview: '',
+      title: '',
+      title_by: null,
+      updated_at: 0
+    } satisfies Section
+
+    seed(
+      [call({ name: 'web_search', status: 'running', summary: 'gear ratios', toolId: 'w' })],
+      true
+    )
+    useSections.setState({ byId: { daily } })
+    useTranscripts.setState(state => ({
+      bySession: { s: { ...state.bySession.s!, sectionId: 'daily' } }
+    }))
+    const { rerender } = render(<ProfilePanel />)
+
+    const face = () =>
+      screen.getByRole('button', { name: 'Change face' }).querySelector('[data-mood]')
+
+    expect(face()).toHaveAttribute('data-mood', 'searching')
+
+    act(() => useEmotions.getState().feel('scout', 'drowsy'))
+    expect(face()).toHaveAttribute('data-mood', 'drowsy')
+
+    // The reply ends and the feeling passes: the face rests, as the row's does.
+    act(() => {
+      useEmotions.getState().calm('scout')
+      useTranscripts.setState(state => ({
+        bySession: { s: { ...state.bySession.s!, streamingMessageId: null } }
+      }))
+    })
+    expect(face()).toHaveAttribute('data-mood', 'idle')
+
+    // A finished turn you have not seen, while the chat is not on screen: happy.
+    act(() => useSections.setState({ byId: { daily: { ...daily, done_at: 1 } } }))
+    expect(face()).toHaveAttribute('data-mood', 'happy')
+
+    // With its chat on screen the row rests, and so does the face.
+    route.params = { bot: 'scout', section: 'daily' }
+    rerender(<ProfilePanel />)
+    expect(face()).toHaveAttribute('data-mood', 'idle')
+
+    // Another bot's chat opening from the roster takes the screen: happy again.
+    act(() => useUi.setState({ openingBot: 'muse' }))
+    expect(face()).toHaveAttribute('data-mood', 'happy')
+
+    // This bot's chat opening from another bot's: it rests.
+    route.params = { bot: 'muse', section: 'muse-chat' }
+    act(() => useUi.setState({ openingBot: 'scout' }))
+    expect(face()).toHaveAttribute('data-mood', 'idle')
+
+    act(() => useUi.setState({ openingBot: null }))
+    expect(face()).toHaveAttribute('data-mood', 'happy')
   })
 
   it('says how to fill an empty Library', () => {

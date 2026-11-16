@@ -42,8 +42,8 @@ export const FACE_VIEWBOX = '0 0 100 100'
 
 /**
  * A bot's face for its status. While it works, the live face of the reply it
- * is writing (thinking, searching, writing) when one is open, so the sidebar
- * and the header wear the face the chat shows.
+ * is writing (thinking, searching, writing) when one is open, so the sidebar,
+ * the header and the profile wear the face the chat shows.
  */
 export function moodForStatus(status?: null | string, live?: FaceMood | null): FaceMood {
   if (status === 'working' && live) {

@@ -64,7 +64,8 @@ own visual identity. Read `CLAUDE.md` for the words.
   Roster and header
   faces, including every face in a room's cluster, match their status dots;
   while a reply streams, the roster and header wear the chat's live face, so
-  a thinking bot thinks in all three places;
+  a thinking bot thinks in all three places; the big face on the bot's
+  profile, in the side panel and Bot settings, wears its roster row's face;
   a cluster without a dot, as in room settings, stays idle. Faces in asks
   turn and look toward each other.
   Faces also show emotions (`lib/emotions.ts`), read from what happens in
@@ -78,12 +79,13 @@ own visual identity. Read `CLAUDE.md` for the words.
   long or many-step one is proud, and one that ends in a question is
   curious. A quiet open chat gets bored after 3 minutes and
   drowsy after 8, and anything happening wakes it. Each emotion shows for
-  a second or a few over what the bot is doing, on its header, live and
-  roster faces and its latest room message; drowsy stays until something
-  happens. Moving between moods is one gesture: a blink and a dip, a jump
-  for surprise, a slump for sadness, a jolt awake, and a hop, a turn and
-  sparks to celebrate. Mobile shows the same emotions, still, on a bot
-  chat's header and waiting faces.
+  a second or a few over what the bot is doing, on its header, live,
+  roster and profile faces and its latest room message; drowsy stays
+  until something happens. Moving between moods is one gesture: a blink
+  and a dip, a jump for surprise, a slump for sadness, a jolt awake, and a
+  hop, a turn and sparks to celebrate. Mobile shows the same emotions,
+  still, on a bot chat's header and waiting faces; its profile face
+  follows the bot's status, as its face in Library does.
   One frame loop moves every visible face and stops when none moves.
   Every face of one bot in one mood and look shares one motion, so the
   sidebar, header and chat copies sway, blink and glance in step however

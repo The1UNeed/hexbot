@@ -9,6 +9,7 @@ import { Textarea } from '../../components/ui/textarea'
 import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 import type { Bot, BotUpdatePatch } from '../../lib/types'
+import { useBotMood } from '../bot-mood'
 
 /** One grouped-list card: white over the glass, rows divided by hairlines. */
 export const cardClass = 'hex-card rounded-2xl'
@@ -328,10 +329,14 @@ export function InlineField({
   return multiline ? <Textarea {...props} /> : <Input {...props} />
 }
 
-/** The bot's face, large, as one button that opens the Face page and says so. */
+/**
+ * The bot's face, large, as one button that opens the Face page and says so.
+ * It wears the face its roster row wears: what the bot feels and does now.
+ */
 export function ProfileFace({ bot }: { bot: Bot }) {
   const navigate = useNavigate()
   const shown = botFace(bot)
+  const mood = useBotMood(bot)
 
   return (
     <button
@@ -345,6 +350,7 @@ export function ProfileFace({ bot }: { bot: Bot }) {
       <Avatar
         className="transition-transform duration-[var(--hex-motion-fast)] group-hover:scale-105"
         image={shown.image}
+        mood={mood}
         name={bot.display_name}
         size="xl"
         style={shown.style ?? bot.kept_face ?? undefined}

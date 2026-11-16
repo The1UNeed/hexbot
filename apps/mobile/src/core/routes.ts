@@ -9,6 +9,15 @@ export const purposeOf = (s: Section, sections: Section[]) =>
   s.purpose ?? sections.find(listed => listed.id === s.id)?.purpose
 /** The bot's chat with its owner: not a teammate thread or a section with its own purpose. */
 export const ownerChat = (s: Section) => !s.peer_bot && !s.purpose
+/** A finished turn in a bot's chat you have not seen; Check-ins do not count. */
+export const unreadOf = (b: Bot, sections: Section[]) =>
+  (b.sections_recent ?? []).filter(s => s.done_at && !s.archived_at && !purposeOf(s, sections))
+/**
+ * What a bot's status says, or done for a finished turn in its chat you have
+ * not seen: its face in Library and on its profile.
+ */
+export const botStatusOf = (b: Bot, sections: Section[]) =>
+  b.status === 'idle' && unreadOf(b, sections).length ? ('done' as const) : b.status
 /**
  * Whether a stopped bot's failure shows in this section: the one it names, or
  * the bot's chat for a failure nothing else shows (`in_chat`), such as a dream's.
