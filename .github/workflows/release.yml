@@ -255,6 +255,15 @@ jobs:
         run: HEXBOT_PACKAGED_TEST_DIR="$GITHUB_WORKSPACE/apps/desktop/release" node --test scripts/desktop/runtime-signing.test.mjs
       - name: List the output
         run: ls -l apps/desktop/release
+      # The legacy AppImage runtime needs libfuse2, which Ubuntu 22.04 and
+      # later and CachyOS do not install (electron-builder.base.yml).
+      - name: Check the AppImage runtime is static
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          runtime=$(file apps/desktop/release/*.AppImage)
+          echo "$runtime"
+          grep -q 'static-pie linked' <<<"$runtime"
       # The minimal backend/python-handoff package for existing Python services
       # following the source feed. It installs the native daemon. Clients request
       # their own version, so every release publishes one.

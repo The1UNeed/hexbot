@@ -172,7 +172,9 @@ The Hexbot Installer and the direct downloads are .dmg files. Open the installer
 
 ## Linux
 
-The installer installs the AppImage for you. To run a downloaded AppImage yourself, make it executable first:
+The installer installs the AppImage for you. The AppImage needs no `libfuse2`, which Ubuntu 22.04 and later and Arch-based systems such as CachyOS do not install. An older AppImage that stops at "AppImages require FUSE to run" needs replacing: run the installer again, or download the current AppImage.
+
+To run a downloaded AppImage yourself, make it executable first:
 
 ```sh
 chmod +x "./Hexbot-<version>-linux-x86_64.AppImage"

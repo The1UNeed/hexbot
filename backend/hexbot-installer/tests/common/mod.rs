@@ -145,6 +145,11 @@ pub fn versioned_app_artifact(
         runtime[8..11].copy_from_slice(b"AI\x02");
         image.write_all(&runtime).unwrap();
         let mut filesystem = backhand::FilesystemWriter::default();
+        // The static AppImage runtime (electron-builder.base.yml) uses zstd.
+        filesystem.set_compressor(
+            backhand::FilesystemCompressor::new(backhand::compression::Compressor::Zstd, None)
+                .unwrap(),
+        );
         let desktop = format!("[Desktop Entry]\nName=Hexbot\nX-AppImage-Version={version}\n");
         filesystem
             .push_file(

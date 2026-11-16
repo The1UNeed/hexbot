@@ -527,6 +527,8 @@ On Linux x86_64:
 
 - Launch the AppImage and install the Debian package on a clean supported
   distribution.
+- Launch the full and client-only AppImages on a system without `libfuse2`,
+  such as a fresh Ubuntu 24.04 desktop.
 - Confirm the application menu entry uses the Hexbot name, Utility category,
   and correct window grouping.
 - Start the daemon, pair a client, restart the machine, and confirm saved
