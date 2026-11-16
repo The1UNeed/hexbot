@@ -87,20 +87,31 @@ function RootLayout() {
         }
       }
 
+      // A thread is in no list, and a bot waiting in two reports only one: ask the
+      // daemon, and again once a connection that was not up yet comes back.
+      const lookup = () =>
+        void sectionsList({ include_archived: true, include_threads: true })
+          .then(result => found(result.sections?.find(row => row.id === section)?.bot))
+          .catch(() => undefined)
+
       const check = () => found(sectionBot(section))
       const offSections = useSections.subscribe(check)
       const offBots = useBots.subscribe(check)
+
+      const offConnection = useConnection.subscribe((state, previous) => {
+        if (state.status === 'connected' && previous.status !== 'connected') {
+          lookup()
+        }
+      })
 
       const stop = () => {
         waiting = false
         offSections()
         offBots()
+        offConnection()
       }
 
-      // A thread is in no list, and a bot waiting in two reports only one: ask the daemon.
-      void sectionsList({ include_archived: true, include_threads: true })
-        .then(result => found(result.sections?.find(row => row.id === section)?.bot))
-        .catch(() => undefined)
+      lookup()
       window.setTimeout(stop, 60_000)
     }
 
