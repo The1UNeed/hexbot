@@ -282,8 +282,10 @@ threads keep their own route and accept only answers to existing approval and
 question cards. Metadata or open failures offer Retry. The same
 navigation and daemon guards cover closing bot settings, so a late lookup cannot
 pull the user out of a later room or route. Mobile Pulse opens a waiting teammate
-thread's approval or question on its own live ID; ordinary bot taps still open
-the canonical owner chat. Reconnects discard old chooser state, and a fresh
+thread's approval or question on its own live ID; the web roster's waiting row
+opens the thread's route from `status_detail.peer_bot` and `section_id`, and a
+notification for a thread finds its bot through the same status or
+`include_threads`. Ordinary bot taps still open the canonical owner chat. Reconnects discard old chooser state, and a fresh
 modern capability never accepts a stale ordinary chooser row as canonical.
 
 Closing settings for a deleted bot clears only that bot's remembered chat and
