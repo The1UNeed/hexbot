@@ -1981,6 +1981,21 @@ devices, and removes the invite and update methods.
   The name is trimmed, nonempty (4200) and at most 64 characters (4202).
 - `hexbot.usage.summary {since?}` → `{input_tokens, output_tokens,
   estimated_cost_usd, by_bot}`.
+- `hexbot.usage.report {edges}` → `{since, until, rows, previous, earlier}`,
+  what Settings, Usage charts. `edges` are 2 to 8000 ascending Unix timestamps:
+  each bucket's start, then the window's end. The client computes them in its
+  own time zone, so a day stays midnight to midnight across daylight-saving
+  changes. `rows` holds one entry per bucket, bot, model and place: `{t, bot,
+  model, provider, place, calls, input, cache_read, cache_write, output, cost}`,
+  where `t` is the bucket's edge. `place` is `chat`, `thread` (between bots),
+  `room`, `job`, `subagent`, `heartbeat`, `dream` or `other` (deleted
+  conversations and messages sent with `hexbot send`). Zeroed copies of earlier
+  calls, made when a conversation is copied, are left out. `previous` is
+  `{calls, tokens, cost}` for the window as long just before the first edge.
+  `earlier` is `{tokens, cost}` from before the native runtime, which kept
+  running totals with no time per call, so it is on no day and in no window; a
+  profile whose old database can't be read is skipped. Bad edges return 4202.
+  Clients fall back to `hexbot.usage.summary` on an unknown-method error.
 
 ### Diagnostics
 

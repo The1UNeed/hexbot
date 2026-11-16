@@ -27,6 +27,7 @@ import {
   useTheme
 } from './ui'
 import { Licenses } from './Licenses'
+import { Usage } from './Usage'
 import { ModelPill, useCurrentModel } from './screens/ModelMenu'
 import { SubscriptionSignIn } from './screens/SubscriptionSignIn'
 import {
@@ -559,9 +560,6 @@ export function Management({
         detail = permission as unknown as RowData
         break
       }
-      case 'usage':
-        detail = await rpc('hexbot.usage.summary')
-        break
       case 'connectors':
         data = (
           await rpc<{ connectors: Connector[] }>(
@@ -1805,17 +1803,7 @@ export function Management({
       break
     }
     case 'usage':
-      content = (
-        <Group>
-          <Row title="Input tokens" meta={str(extra.input_tokens ?? 0)} testID="usage-input" />
-          <Row title="Output tokens" meta={str(extra.output_tokens ?? 0)} testID="usage-output" />
-          <Row
-            title="Estimated cost"
-            meta={`$${Number(extra.estimated_cost_usd ?? 0).toFixed(4)}`}
-            testID="usage-cost"
-          />
-        </Group>
-      )
+      content = <Usage mobile={mobile} />
       break
     case 'connectors':
       content = (
@@ -3145,7 +3133,7 @@ export function Management({
     settings:
       'Choose when Hexbot asks before a bot acts, and set the defaults, budgets and daily work of every bot.',
     updates: 'Version and release status for this daemon.',
-    usage: 'Token use reported by this daemon.'
+    usage: 'Tokens and estimated cost reported by this daemon, by bot, model, and kind of work.'
   }
   const empty: Record<string, string> = {
     devices: 'No paired devices.',

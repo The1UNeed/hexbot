@@ -59,6 +59,7 @@ import type {
   DiagnosticsLogs,
   DiagnosticsSnapshot,
   DiagnosticsSpan,
+  UsageReport,
   UsageSummary
 } from './types'
 
@@ -616,6 +617,10 @@ export const usersMe = () => rpcCall<CurrentUser>('hexbot.users.me')
 export const usersMeSet = (displayName: string) =>
   rpcCall<CurrentUser>('hexbot.users.me.set', { display_name: displayName })
 export const usageSummary = () => rpcCall<UsageSummary>('hexbot.usage.summary')
+
+/** Usage by bucket, bot, model and place; `usageWindow` in lib/usage-report gives the edges. */
+export const usageReport = (edges: number[]) =>
+  rpcCall<UsageReport>('hexbot.usage.report', { edges })
 
 // ---------------------------------------------------------------------------
 // Diagnostics

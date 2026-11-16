@@ -91,7 +91,7 @@ Providers commonly charge for input and output tokens. Tool results, conversatio
 
 Hexbot does not add a fee to provider requests. Your provider dashboard is the source of truth for invoices and quotas.
 
-Rooms, private teammate exchanges, delegated subtasks, scheduled jobs, and dreaming can all make additional model requests. Settings, Usage reports token counts and estimated costs; estimates may differ from provider invoices. Room limits and a daily budget for each bot cap what rooms spend.
+Rooms, private teammate exchanges, delegated subtasks, scheduled jobs, and dreaming can all make additional model requests. Settings, Usage charts token counts and estimated costs over the last day, week, month or quarter, or all time, split by bot, by model, or by where they went (chats, rooms, conversations between bots, scheduled jobs, subagents, heartbeats and dreaming), with your prompt cache hit rate; estimates may differ from provider invoices. Room limits and a daily budget for each bot cap what rooms spend.
 
 ## If a provider fails
 
