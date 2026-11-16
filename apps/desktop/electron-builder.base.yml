@@ -52,6 +52,15 @@ linux:
   category: Utility
   executableName: hexbot
   artifactName: Hexbot-${version}-linux-${arch}.${ext}
+# Build the AppImage with the static runtime, which needs no libfuse2.
+# Ubuntu 22.04 and later, and Arch-based systems such as CachyOS, do not
+# install it, and the default legacy runtime (0.0.0) stops there at
+# "AppImages require FUSE to run". 1.0.3 has the same runtime as 1.0.2 and
+# fixes its mksquashfs on newer build hosts. The image is zstd-compressed,
+# which the installer reads (installed_version.rs). release.yml checks that
+# the AppImage is static.
+toolsets:
+  appimage: '1.0.3'
 deb:
   depends:
     - libgtk-3-0
