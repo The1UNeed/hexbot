@@ -56,6 +56,7 @@ import { type LiveMood, liveMoodsOf } from '../conversation/steps'
 import { UpdatePill } from '../update-pill'
 
 import { needsPrimary, PrimaryChoice } from './primary-choice'
+import { WaitingThreads } from './waiting-threads'
 
 const DAY = 86_400_000
 
@@ -863,6 +864,7 @@ export function RosterColumn() {
             No bots or rooms match “{query}”.
           </p>
         ) : null}
+        {query ? null : <WaitingThreads bots={ordered} />}
         {pinnedRoster.length ? (
           <div className="flex flex-wrap justify-center pb-1" data-testid="roster-pinned">
             {pinnedRoster.map(entry => rosterEntry(entry, true))}

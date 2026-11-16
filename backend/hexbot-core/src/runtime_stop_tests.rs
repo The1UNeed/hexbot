@@ -122,6 +122,34 @@ fn reviewed_request(id: &str) -> Value {
 }
 
 #[tokio::test]
+async fn waiting_in_a_thread_names_the_bot_that_asked() {
+    let (home, runtime, hub) = setup();
+    install_stop_pi(home.path());
+    db::open(home.path())
+        .unwrap()
+        .execute_batch(
+            "UPDATE bots SET approval_mode='manual'; UPDATE sections SET peer_bot='fox' WHERE id='first'",
+        )
+        .unwrap();
+    let id = open(&runtime).await;
+    let mut events = hub.subscribe();
+    runtime
+        .call_inner(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":id,"text":"late-dialogs"}),
+        )
+        .await
+        .unwrap();
+    stop_event(&mut events, |event| event["type"] == "approval.request").await;
+    let status = runtime.status_for_bot("alice", "owl").unwrap();
+    assert_eq!(status["status"], "needs_you");
+    assert_eq!(status["status_detail"]["section_id"], "first");
+    assert_eq!(status["status_detail"]["peer_bot"], "fox");
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
 async fn stopping_cancels_late_approvals_and_questions_before_abort_finishes() {
     let (home, runtime, hub) = setup();
     install_stop_pi(home.path());
