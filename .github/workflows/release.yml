@@ -263,7 +263,10 @@ jobs:
           set -euo pipefail
           runtime=$(file apps/desktop/release/*.AppImage)
           echo "$runtime"
-          grep -q 'static-pie linked' <<<"$runtime"
+          grep -q 'static-pie linked' <<<"$runtime" || {
+            echo "::error::The AppImage runtime is not static and needs libfuse2 (toolsets.appimage in electron-builder.base.yml)"
+            exit 1
+          }
       # The minimal backend/python-handoff package for existing Python services
       # following the source feed. It installs the native daemon. Clients request
       # their own version, so every release publishes one.
