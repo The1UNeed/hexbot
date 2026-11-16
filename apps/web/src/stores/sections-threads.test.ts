@@ -1,8 +1,9 @@
 import type * as api from '../lib/api'
 import { messagesFromHistory, sectionsList, sectionsOpen } from '../lib/api'
-import type { Section } from '../lib/types'
+import type { Bot, Section } from '../lib/types'
 
-import { isThread, selectSectionsForBot, useSections } from './sections'
+import { useBots } from './bots'
+import { isThread, sectionBot, selectSectionsForBot, useSections } from './sections'
 
 vi.mock('../lib/api', async importOriginal => ({
   ...(await importOriginal<typeof api>()),
@@ -100,5 +101,22 @@ describe('threads and the section index', () => {
     ]
 
     expect(messagesFromHistory(rows).map(item => item.text)).toEqual(['Hello.'])
+  })
+
+  it('finds the bot of a section in no list through the thread it waits in', () => {
+    useSections.setState({ byId: { s1: section() } })
+    useBots.setState({
+      byName: {
+        hexbot: {
+          name: 'hexbot',
+          status: 'needs_you',
+          status_detail: { peer_bot: 'vex', section_id: 'th1' }
+        } as Bot
+      }
+    })
+
+    expect(sectionBot('s1')).toBe('writer')
+    expect(sectionBot('th1')).toBe('hexbot')
+    expect(sectionBot('gone')).toBeUndefined()
   })
 })

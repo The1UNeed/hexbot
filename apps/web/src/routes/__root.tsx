@@ -5,12 +5,13 @@ import { ChatChooser } from '../app/chat-chooser'
 import { ConnectionLost, useConnectionLost } from '../app/connection-lost'
 import { UpdateInstalling, useUpdateInstalling } from '../app/update-installing'
 import { cancelConfirm, ConfirmHost } from '../components/ui/confirm'
-import { userMemoryGet } from '../lib/api'
+import { sectionsList, userMemoryGet } from '../lib/api'
 import { getBridge, hasLocalRuntime } from '../lib/bridge'
 import { getSupervisor, setLocalDaemonPort } from '../lib/connection'
 import { OPEN_SECTION_EVENT } from '../lib/notify'
+import { useBots } from '../stores/bots'
 import { useConnection } from '../stores/connection'
-import { useSections } from '../stores/sections'
+import { sectionBot, useSections } from '../stores/sections'
 import { applyTheme, useUi } from '../stores/ui'
 import { bindAppUpdates } from '../stores/updates'
 
@@ -69,7 +70,7 @@ function RootLayout() {
       const open = (bot: string) =>
         void navigate({ params: { bot, section }, to: '/b/$bot/s/$section' })
 
-      const bot = useSections.getState().byId[section]?.bot
+      const bot = sectionBot(section)
 
       if (bot) {
         open(bot)
@@ -77,15 +78,40 @@ function RootLayout() {
         return
       }
 
-      const stop = useSections.subscribe(state => {
-        const found = state.byId[section]?.bot
+      let waiting = true
 
-        if (found) {
+      const found = (bot: string | undefined) => {
+        if (bot && waiting) {
           stop()
-          open(found)
+          open(bot)
+        }
+      }
+
+      // A thread is in no list, and a bot waiting in two reports only one: ask the
+      // daemon, and again once a connection that was not up yet comes back.
+      const lookup = () =>
+        void sectionsList({ include_archived: true, include_threads: true })
+          .then(result => found(result.sections?.find(row => row.id === section)?.bot))
+          .catch(() => undefined)
+
+      const check = () => found(sectionBot(section))
+      const offSections = useSections.subscribe(check)
+      const offBots = useBots.subscribe(check)
+
+      const offConnection = useConnection.subscribe((state, previous) => {
+        if (state.status === 'connected' && previous.status !== 'connected') {
+          lookup()
         }
       })
 
+      const stop = () => {
+        waiting = false
+        offSections()
+        offBots()
+        offConnection()
+      }
+
+      lookup()
       window.setTimeout(stop, 60_000)
     }
 

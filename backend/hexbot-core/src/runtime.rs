@@ -3446,13 +3446,14 @@ impl Runtime {
                     .as_ref()
                     .and_then(|conn| {
                         conn.query_row(
-                            "SELECT (SELECT id FROM sections WHERE id=?1),(SELECT room_id FROM room_sessions WHERE stored_session_id=?1),(SELECT MAX(started_at) FROM room_turns WHERE bot=?2 AND status='running')",
+                            "SELECT (SELECT id FROM sections WHERE id=?1),(SELECT room_id FROM room_sessions WHERE stored_session_id=?1),(SELECT MAX(started_at) FROM room_turns WHERE bot=?2 AND status='running'),(SELECT peer_bot FROM sections WHERE id=?1)",
                             params![session.stored, bot],
                             |row| {
                                 Ok((
                                     row.get::<_, Option<String>>(0)?,
                                     row.get::<_, Option<String>>(1)?,
                                     row.get::<_, Option<f64>>(2)?,
+                                    row.get::<_, Option<String>>(3)?,
                                 ))
                             },
                         )
@@ -3484,6 +3485,8 @@ impl Runtime {
                 },
                 "section_id": context.0,
                 "room_id": context.1,
+                // A thread between bots has no row of its own; apps open it by the bot that asked.
+                "peer_bot": context.3,
                 "session_id": session.id,
                 "since": context.2.or(on_computer).unwrap_or_else(common::now),
                 "action": null

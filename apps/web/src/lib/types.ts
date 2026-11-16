@@ -260,6 +260,12 @@ export interface BotStatusDetail {
    * the bot's chat shows it. Older daemons leave it out.
    */
   in_chat?: boolean
+  /**
+   * Set while the bot works or waits in a thread: the bot that asked it.
+   * Threads have no roster row, so this is how the app opens one. Older
+   * daemons leave it out.
+   */
+  peer_bot?: null | string
   room_id: null | string
   section_id: null | string
   session_id: null | string

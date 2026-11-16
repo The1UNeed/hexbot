@@ -157,8 +157,9 @@ In a [room](/docs/rooms/), everyone sees the shared conversation. With **Message
 **Delegate** creates an isolated subagent for a subtask and returns the result to the originating conversation. It is a separate capability from asking a named teammate. Both use model tokens and the daemon's usage limits.
 
 Saved chat links also resolve the daemon's current chat before you can send.
-On mobile, a waiting item in Pulse opens the conversation containing its question
-or approval, including a private conversation between bots.
+When a bot waits on you in a private conversation between bots, every app lists
+it at the top of your chats as "is waiting for you". **Review** opens that
+conversation with its question or approval. So does the notification.
 
 If an old Dream log was already imported into Pi with reports in its context,
 Hexbot starts a separate owner conversation using its original human dialogue.
