@@ -9,8 +9,9 @@ import { userMemoryGet } from '../lib/api'
 import { getBridge, hasLocalRuntime } from '../lib/bridge'
 import { getSupervisor, setLocalDaemonPort } from '../lib/connection'
 import { OPEN_SECTION_EVENT } from '../lib/notify'
+import { useBots } from '../stores/bots'
 import { useConnection } from '../stores/connection'
-import { useSections } from '../stores/sections'
+import { sectionBot, useSections } from '../stores/sections'
 import { applyTheme, useUi } from '../stores/ui'
 import { bindAppUpdates } from '../stores/updates'
 
@@ -69,7 +70,7 @@ function RootLayout() {
       const open = (bot: string) =>
         void navigate({ params: { bot, section }, to: '/b/$bot/s/$section' })
 
-      const bot = useSections.getState().byId[section]?.bot
+      const bot = sectionBot(section)
 
       if (bot) {
         open(bot)
@@ -77,14 +78,22 @@ function RootLayout() {
         return
       }
 
-      const stop = useSections.subscribe(state => {
-        const found = state.byId[section]?.bot
+      const check = () => {
+        const found = sectionBot(section)
 
         if (found) {
           stop()
           open(found)
         }
-      })
+      }
+
+      const offSections = useSections.subscribe(check)
+      const offBots = useBots.subscribe(check)
+
+      const stop = () => {
+        offSections()
+        offBots()
+      }
 
       window.setTimeout(stop, 60_000)
     }

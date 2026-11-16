@@ -380,8 +380,8 @@ waiting on the user still makes it `needs_you`. The first `computer_use` call
 of a run sends `hexbot.bots.changed {name}`. `status_detail` is
 `{text, section_id, room_id, session_id, since, action, in_chat, peer_bot}` where `action` is
 null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`. While a bot
-works or waits in a thread, `peer_bot` names the bot that asked it; apps list
-threads nowhere else, so they open the thread from it. A stopped
+works or waits in a thread, `peer_bot` names the bot that asked it, so an app
+can open that thread without listing threads. A stopped
 bot's `in_chat` is true when the failure has no room and no conversation of
 its own, such as a dream's, a scheduled job's or a CLI run's; clients show it
 in the bot's chat. A room's

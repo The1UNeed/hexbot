@@ -54,6 +54,20 @@ function chatMessages(rows: HistoryRow[]) {
 export const isThread = (section: Pick<Section, 'peer_bot'>) => Boolean(section.peer_bot)
 
 /**
+ * The bot a section belongs to, for a link that names only the section, such
+ * as a notification. A thread is in no list, so the bot working or waiting
+ * there names it.
+ */
+export function sectionBot(section: string): string | undefined {
+  return (
+    useSections.getState().byId[section]?.bot ??
+    Object.values(useBots.getState().byName).find(
+      bot => bot.status_detail?.peer_bot && bot.status_detail.section_id === section
+    )?.name
+  )
+}
+
+/**
  * A bot's chat on a daemon from before one chat per bot, which keeps many
  * sections and makes another on every create. Its update keeps the one with
  * the latest conversation, giving way only for report-only logs, which its
