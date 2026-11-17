@@ -31,6 +31,8 @@ data model. The native transport and event projection live in
   finishes. A `/compact` in progress finishes first, and a `/compact` sent
   this way is still refused while the bot works. The web and mobile apps
   send every message from the composer this way.
+  `text` must not be empty; for files without words the apps send "Please
+  review the attached files.".
   `session.steer` steers a healthy busy run. During Stop or manual compaction
   it waits before staging input; when idle it starts a fresh run. Close or
   process exit rejects a waiting steer with a session error.

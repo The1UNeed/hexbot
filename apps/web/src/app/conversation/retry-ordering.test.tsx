@@ -1776,8 +1776,7 @@ it('keeps a refused request on its own row and uploads across the read for an ea
   expect(userRows().filter(row => row.text === 'Also read my notes')).toHaveLength(1)
 })
 
-it('offers no Retry for an empty-text refusal, which the same send cannot pass', async () => {
-  answers = [new JsonRpcGatewayError('missing parameter: text', { code: 4200 })]
+it('sends files without words with the prompt the bubble shows', async () => {
   const view = await mount()
   expect(await screen.findByText('Earlier reply')).toBeVisible()
   fireEvent.change(view.container.querySelector('input[type=file]')!, {
@@ -1785,16 +1784,13 @@ it('offers no Retry for an empty-text refusal, which the same send cannot pass',
   })
   await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled())
   fireEvent.click(screen.getByRole('button', { name: 'Send' }))
-  expect(await screen.findByTestId('stopped-card')).toHaveTextContent('missing parameter: text')
-  expect(retries()).toHaveLength(0)
-  expect(submits()[0]).toMatchObject({ text: '', attachments: ['srv-1'] })
-  // The file comes back to the composer and is staged afresh for the next try.
-  expect(await screen.findByRole('button', { name: 'Remove plan.txt' })).toBeVisible()
-  expect(await screen.findByRole('button', { name: 'Preview plan.txt' })).toBeVisible()
-  expect(
-    call.mock.calls.filter(([method]) => method === 'attachments.remove').map(([, input]) => input)
-  ).toEqual([{ id: 'srv-1', session_id: 'chat' }])
-  expect(call.mock.calls.filter(([method]) => method === 'file.attach')).toHaveLength(2)
+  expect(await screen.findByText('Please review the attached files.')).toBeVisible()
+  await waitFor(() =>
+    expect(submits()).toEqual([
+      expect.objectContaining({ text: 'Please review the attached files.', attachments: ['srv-1'] })
+    ])
+  )
+  expect(cards()).toHaveLength(0)
 })
 
 it.each(['accepted', 'unknown', 'refused'] as const)(

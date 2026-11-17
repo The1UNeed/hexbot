@@ -46,7 +46,7 @@ import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 import { moodForStatus } from '../../lib/face'
 import { mathDelimiters } from '../../lib/math'
-import { mediaKind, mediaOf } from '../../lib/media'
+import { attachmentPrompt, mediaKind, mediaOf } from '../../lib/media'
 import { plainError } from '../../lib/plain-error'
 import { NotConnectedError } from '../../lib/rpc'
 import { useTurnCues } from '../../lib/sounds'
@@ -1428,9 +1428,6 @@ async function submitOrReopen(
 
       const status = unavailable ? 'unavailable' : rejected ? 'rejected' : 'unknown'
 
-      // Sending the same empty text again would be refused the same way.
-      const retryable = !(failure instanceof JsonRpcGatewayError && failure.code === 4200 && !text)
-
       const detail =
         status === 'unavailable' && (files.length || uploads.length)
           ? `${message}. Attach the files again before sending.`
@@ -1444,7 +1441,7 @@ async function submitOrReopen(
           pending.submission?.row ?? pending.id,
           pending.inputId,
           status,
-          (status === 'rejected' && retryable) || status === 'unknown' ? staged : null,
+          status === 'rejected' || status === 'unknown' ? staged : null,
           current() ? detail : undefined
         )
       } else if (current()) {
@@ -1668,7 +1665,9 @@ function Composer({
         }
       })
 
-      const pending = transcriptActions().appendUserMessage(sessionId, text.trim(), attachments)
+      // Files sent without words say what the mobile app says for them.
+      const said = attachmentPrompt(text, files.length > 0)
+      const pending = transcriptActions().appendUserMessage(sessionId, said, attachments)
 
       if (sectionId) {
         sectionsActions().markTouched(sectionId, text)
@@ -1694,7 +1693,7 @@ function Composer({
       }
 
       if (
-        !(await submitOrReopen(sessionId, sectionId, text.trim(), {
+        !(await submitOrReopen(sessionId, sectionId, said, {
           current,
           files: files.map(item => item.file),
           pending,

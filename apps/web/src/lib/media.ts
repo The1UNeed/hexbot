@@ -72,6 +72,11 @@ function mediaFile(path: string): MediaFile {
 
 const ATTACHED = '\n\nAttached files:\n'
 
+/** What a message says when it has files and no words, in the web and mobile apps. */
+export function attachmentPrompt(text: string, hasAttachments: boolean): string {
+  return text.trim() || (hasAttachments ? 'Please review the attached files.' : '')
+}
+
 /** A file the daemon kept for a message: `<chat>/attachments/<32-hex id>-<name>`. */
 const KEPT = /[\\/]attachments[\\/][0-9a-f]{32}-[^\\/]+$/
 
