@@ -76,9 +76,7 @@ export async function attachInParts<T>(
   }
   return rpc<T>(method, { ...rest, session_id: sessionId, upload })
 }
-export function attachmentPrompt(text: string, hasAttachments: boolean): string {
-  return text.trim() || (hasAttachments ? 'Please review the attached files.' : '')
-}
+export { attachmentPrompt } from '../../../web/src/lib/media'
 export function imageMime(name: string, mime?: string): string | undefined {
   const images = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
   if (mime && images.includes(mime)) return mime
