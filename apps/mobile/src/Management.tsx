@@ -1840,15 +1840,22 @@ export function Management({
       const provider = account ? accountProvider(account) : 'google'
       const accountName = ACCOUNT_NAMES[provider]
       const pending = extra.account_login === true && extra.status === 'pending'
+      // Through Hex Connect Google comes back by itself; on 127.0.0.1 the
+      // phone can't load the page, so its address is pasted here.
+      const pasteBack =
+        pending && extra.mode === 'browser' && !str(extra.redirect_uri).startsWith('https:')
       // The account's other connectors that still wait for a sign-in.
       const listed = (extra.plugins as unknown as Plugin[] | undefined) ?? []
       const self = listed.find(p => p.kind === 'connector' && p.id === c.id)
       const siblings = self && !account?.signed_in ? accountSiblings(self, listed) : []
       const startSignIn = async () => {
         const also = siblings.filter(p => values[`also:${p.id}`] === true).map(p => p.id)
+        // The phone is never the daemon's computer: Google returns through
+        // Hex Connect when the daemon has it.
         const login = await rpc<RowData>('hexbot.accounts.sign_in_start', {
           service: account!.service,
-          ...(also.length ? { also } : {})
+          ...(also.length ? { also } : {}),
+          ...(provider === 'google' ? { return_via: 'connect' } : {})
         })
         setExtra(e => ({ ...e, ...login, account_login: true }))
         // Microsoft's page waits until the code is copied, so the phone
@@ -1903,7 +1910,7 @@ export function Management({
             <Group
               title="Account"
               footer={
-                pending && extra.mode === 'browser'
+                pasteBack
                   ? `Google ends on a page that doesn't load on this phone. Copy that page's address and paste it here.`
                   : `You sign in once on this daemon. Bots you turn ${c.name} on for use it.`
               }
@@ -1924,10 +1931,8 @@ export function Management({
                   testID="account-code"
                 />
               ) : null}
-              {pending && extra.mode === 'browser'
-                ? field('account_url', 'Address the browser ended on')
-                : null}
-              {pending && extra.mode === 'browser'
+              {pasteBack ? field('account_url', 'Address the browser ended on') : null}
+              {pasteBack
                 ? action(
                     'Finish sign-in',
                     async () => {

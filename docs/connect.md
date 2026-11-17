@@ -383,6 +383,30 @@ Spent grant ids live in the daemon's SQLite database (`spent_grants`), so a
 restart inside a grant's five minutes cannot replay it; grants are verified
 with sixty seconds of clock leeway.
 
+## Google sign-in return
+
+Google sends a browser back from a connector sign-in only to an address
+registered on Hexbot's OAuth client, and a daemon's tunnel hostname is its
+own, so a browser or phone on another computer comes back through
+`GET /oauth/google`. The daemon starts the sign-in with a Google web client
+whose one redirect URI is `https://connect.hexbot.app/oauth/google`, and its
+`state` starts with its Connect daemon id (`<id>.<random>`). Connect looks
+the daemon up and, when the browser is signed in to Connect as the daemon's
+owner, answers `303` to `https://<tunnel hostname>/oauth/google` with the
+query unchanged, `Cache-Control: no-store` and `Referrer-Policy: no-referrer`;
+with fake tunnels, to the daemon's loopback port. A signed-out browser,
+usually a phone's, goes to `/sign-in?redirect_url=/oauth/google` first;
+Google's query waits in an `HttpOnly` cookie scoped to `/oauth/google` for
+15 minutes, so the code never appears in the sign-in page's address, and is
+cleared once it goes on. `/sign-in` returns to any `redirect_url` that is a
+Connect path. Another account gets `403`. The owner check is what stops consent phishing: the
+daemon holds the PKCE verifier, so anyone who started a sign-in on their own
+daemon and sent someone else the consent page would otherwise receive that
+person's grant. A state without a daemon id gets `400`, an unknown or
+removed daemon `404`. Connect stores and logs nothing from it, and the
+daemon accepts the code only for a sign-in still waiting with that state. The desktop app doesn't use this: Google returns to
+the app's own loopback port.
+
 ## Disconnecting and revoking
 
 Disconnect in Settings and `hexbot connect disconnect` both run
@@ -487,6 +511,7 @@ count. On `replaced: false` nothing is rewritten and nothing is reset. A
 - `GET /connect/authorize` (page), `POST /api/authorize/poll {verifier}`,
   `GET /api/me`, `DELETE /api/sessions/{id}`.
 - `GET /.well-known/jwks.json`, `GET /api/health`.
+- `GET /oauth/google` (Clerk session of the daemon's owner; see "Google sign-in return").
 
 Authentication: Clerk session for pages, server actions, and
 `POST /api/register/approve`; bearer tokens for daemons and apps (hashes

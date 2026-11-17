@@ -1,11 +1,17 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { SignIn } from "@clerk/nextjs";
-import { authMode, currentClerkUserId } from "@/lib/auth";
+import { authMode, currentClerkUserId, localPath } from "@/lib/auth";
 
 export const metadata: Metadata = { title: "Sign in" };
-export default async function SignInPage() {
-  if (await currentClerkUserId()) redirect("/connect");
+/**
+ * Clerk itself goes back to `redirect_url` after signing in, through its own steps (MFA, SSO callback),
+ * which drop the query, so this sets no forced address. Someone already signed in goes there at once
+ * when it is a Connect address, otherwise to /connect.
+ */
+export default async function SignInPage({ searchParams }: { searchParams: Promise<{ redirect_url?: string | string[] }> }) {
+  const returnTo = localPath((await searchParams).redirect_url) ?? "/connect";
+  if (await currentClerkUserId()) redirect(returnTo);
   return (
     <div className="page narrow">
       <div className="auth">

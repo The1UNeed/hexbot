@@ -13,9 +13,16 @@
 //! (`/oauth/google`), and a browser on another computer, which can't reach
 //! that port, shows an error page whose address the user pastes back.
 //!
+//! The desktop app names its own loopback port instead (`return_port`), so
+//! Google comes back to the app wherever the daemon runs. A browser or phone
+//! elsewhere asks for Hex Connect (`return_via: "connect"`): Google returns
+//! to Connect's one fixed address, which sends the browser on to this
+//! daemon's tunnel by the daemon id at the start of the state. That needs a
+//! web client, since a desktop client may return only to loopback.
+//!
 //! The OAuth clients are Hexbot's, compiled in from the release build's
-//! environment (`HEXBOT_GOOGLE_CLIENT_ID` and friends). A client ID saved in
-//! the connector's own fields takes their place.
+//! environment (`HEXBOT_GOOGLE_CLIENT_ID`, `HEXBOT_GOOGLE_WEB_CLIENT_ID` and
+//! friends). A client ID saved in the connector's own fields takes their place.
 use crate::{Error, Result, common};
 use base64::Engine;
 use serde_json::{Value, json};
@@ -46,6 +53,11 @@ pub(crate) struct Provider {
     secret_key: Option<&'static str>,
     built_in: Option<&'static str>,
     built_in_secret: Option<&'static str>,
+    /// The web client Google returns to Hex Connect with: a saved one, else Hexbot's.
+    web_client_key: Option<&'static str>,
+    web_secret_key: Option<&'static str>,
+    built_in_web: Option<&'static str>,
+    built_in_web_secret: Option<&'static str>,
 }
 
 const GOOGLE_PROVIDER: Provider = Provider {
@@ -61,6 +73,10 @@ const GOOGLE_PROVIDER: Provider = Provider {
     secret_key: Some("GOOGLE_OAUTH_CLIENT_SECRET"),
     built_in: option_env!("HEXBOT_GOOGLE_CLIENT_ID"),
     built_in_secret: option_env!("HEXBOT_GOOGLE_CLIENT_SECRET"),
+    web_client_key: Some("GOOGLE_OAUTH_WEB_CLIENT_ID"),
+    web_secret_key: Some("GOOGLE_OAUTH_WEB_CLIENT_SECRET"),
+    built_in_web: option_env!("HEXBOT_GOOGLE_WEB_CLIENT_ID"),
+    built_in_web_secret: option_env!("HEXBOT_GOOGLE_WEB_CLIENT_SECRET"),
 };
 const MICROSOFT_PROVIDER: Provider = Provider {
     id: MICROSOFT,
@@ -75,6 +91,10 @@ const MICROSOFT_PROVIDER: Provider = Provider {
     secret_key: None,
     built_in: option_env!("HEXBOT_MICROSOFT_CLIENT_ID"),
     built_in_secret: None,
+    web_client_key: None,
+    web_secret_key: None,
+    built_in_web: None,
+    built_in_web_secret: None,
 };
 
 pub(crate) const GMAIL_API: &str = "https://gmail.googleapis.com";
@@ -354,19 +374,54 @@ fn client(home: &Path, svc: &Provider) -> Result<Client> {
         )),
     }
 }
+/// The web client for a return through Hex Connect, or none. A user who
+/// saved their own client uses their own web client too, never Hexbot's.
+fn web_client(home: &Path, svc: &Provider) -> Option<Client> {
+    let env = common::env_values(home).ok()?;
+    let saved = |key: &str| {
+        env.get(key)
+            .map(|v| v.trim().to_owned())
+            .filter(|v| !v.is_empty())
+    };
+    if let Some(id) = svc.web_client_key.and_then(saved) {
+        return Some(Client {
+            id,
+            secret: svc.web_secret_key.and_then(saved),
+        });
+    }
+    if saved(svc.client_key).is_some() {
+        return None;
+    }
+    svc.built_in_web
+        .filter(|id| !id.is_empty())
+        .map(|id| Client {
+            id: id.to_owned(),
+            secret: svc
+                .built_in_web_secret
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
+        })
+}
 /// The secret that goes with a client signed in earlier: the saved one when
 /// the saved ID is still the same, otherwise the built-in one if it matches.
 fn client_for(home: &Path, svc: &Provider, id: &str) -> Client {
-    if let Ok(current) = client(home, svc)
-        && current.id == id
-    {
-        return current;
-    }
-    let secret = (svc.built_in == Some(id))
-        .then_some(svc.built_in_secret)
+    for current in [client(home, svc).ok(), web_client(home, svc)]
+        .into_iter()
         .flatten()
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned);
+    {
+        if current.id == id {
+            return current;
+        }
+    }
+    let secret = if svc.built_in == Some(id) {
+        svc.built_in_secret
+    } else if svc.built_in_web == Some(id) {
+        svc.built_in_web_secret
+    } else {
+        None
+    }
+    .filter(|s| !s.is_empty())
+    .map(str::to_owned);
     Client {
         id: id.to_owned(),
         secret,
@@ -628,8 +683,42 @@ fn known_email(home: &Path, provider: &Provider) -> Option<String> {
         .find(|e| !e.is_empty())
 }
 
+/// Where Google sends the browser back to.
+#[derive(Clone, Copy, Debug)]
+enum Return {
+    /// 127.0.0.1 on this port: the daemon's own, or the desktop app's.
+    Loopback(u16),
+    /// Hex Connect, which sends the browser on to this daemon's tunnel. A
+    /// daemon without Connect or a web client returns to `Loopback` instead.
+    Connect(u16),
+}
+
+/// The return address, state and client for Google: through Connect when
+/// asked and set up, otherwise loopback.
+fn google_return(
+    home: &Path,
+    provider: &Provider,
+    back: Return,
+) -> Result<(String, String, Client)> {
+    if let Return::Connect(_) = back
+        && let Some(web) = web_client(home, provider)
+        && let Some(connect) = crate::services::ConnectConfig::load(home)
+            .ok()
+            .flatten()
+            .filter(|c| !c.daemon_id.is_empty())
+    {
+        return Ok((
+            format!("{}/oauth/google", connect.api_base),
+            format!("{}.{}", connect.daemon_id, random(32)),
+            web,
+        ));
+    }
+    let (Return::Loopback(port) | Return::Connect(port)) = back;
+    Ok((redirect_uri(port), random(32), client(home, provider)?))
+}
+
 /// Starts one sign-in for the connectors `ids`, which share a provider.
-async fn start(home: &Path, caller: &str, ids: &[&str], port: u16) -> Result<Value> {
+async fn start(home: &Path, caller: &str, ids: &[&str], back: Return) -> Result<Value> {
     let mut services: Vec<&'static Service> = vec![];
     for id in ids {
         let svc = service(id)?;
@@ -648,7 +737,14 @@ async fn start(home: &Path, caller: &str, ids: &[&str], port: u16) -> Result<Val
         ));
     }
     let scope = scopes(&services);
-    let client = client(home, provider)?;
+    // Google's return address and state, which choose its client too.
+    let (client, google) = match provider.device_path {
+        Some(_) => (client(home, provider)?, None),
+        None => {
+            let (redirect_uri, state, client) = google_return(home, provider, back)?;
+            (client, Some((redirect_uri, state)))
+        }
+    };
     let login_id = common::id();
     let now = common::now();
     let mut login = Login {
@@ -702,8 +798,7 @@ async fn start(home: &Path, caller: &str, ids: &[&str], port: u16) -> Result<Val
         login.public = json!({"login_id":login_id,"service":first.id,"services":names,"provider":provider.id,"mode":"device","status":"pending","url":url,"code":code,"message":""});
     } else {
         login.verifier = random(64);
-        login.state = random(32);
-        login.redirect_uri = redirect_uri(port);
+        (login.redirect_uri, login.state) = google.unwrap_or_default();
         let mut url = url::Url::parse(&auth_url(home, provider, provider.authorize_path)?)
             .map_err(|_| Error::new(4211, "invalid sign-in address"))?;
         url.query_pairs_mut()
@@ -1455,7 +1550,8 @@ pub const CHANGES: &[&str] = &[
     "hexbot.accounts.disconnect",
 ];
 
-/// `hexbot.accounts.*`. `port` is the daemon's own, where Google returns.
+/// `hexbot.accounts.*`. `port` is the daemon's own, where Google returns
+/// unless the app names its own (`return_port`) or asks for Hex Connect.
 pub async fn call(
     home: &Path,
     caller: &str,
@@ -1485,7 +1581,25 @@ pub async fn call(
                         }
                         _ => return Err(Error::new(4202, "also must list connectors")),
                     }
-                    start(home, caller, &ids, port).await
+                    // The desktop app's own port on 127.0.0.1: Google returns
+                    // there when the daemon runs on another computer, and the
+                    // app passes the address on with `sign_in_finish`.
+                    // Or Hex Connect, for a browser or phone elsewhere.
+                    let back = match (&p["return_port"], &p["return_via"]) {
+                        (Value::Null, Value::Null) => Return::Loopback(port),
+                        (Value::Null, via) if via == "connect" => Return::Connect(port),
+                        (Value::Null, _) => {
+                            return Err(Error::new(4202, "return_via must be connect"));
+                        }
+                        (value, _) => Return::Loopback(
+                            value
+                                .as_u64()
+                                .and_then(|n| u16::try_from(n).ok())
+                                .filter(|n| *n > 0)
+                                .ok_or_else(|| Error::new(4202, "return_port must be a port"))?,
+                        ),
+                    };
+                    start(home, caller, &ids, back).await
                 }
                 "hexbot.accounts.sign_in_poll" => {
                     poll(home, caller, common::required(p, "login_id")?, false)

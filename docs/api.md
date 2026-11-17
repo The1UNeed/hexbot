@@ -1485,19 +1485,33 @@ or a clear.
   and a revoked grant reads `error`, "Sign in again". Their fields hold only
   the user's own OAuth client (`GOOGLE_OAUTH_CLIENT_ID`,
   `GOOGLE_OAUTH_CLIENT_SECRET`, `MICROSOFT_OAUTH_CLIENT_ID`), which every
-  connector of the account uses in place of Hexbot's; `test` makes a light
+  connector of the account uses in place of Hexbot's (with it, a return
+  through Hex Connect needs the user's own web client too,
+  `GOOGLE_OAUTH_WEB_CLIENT_ID` and `GOOGLE_OAUTH_WEB_CLIENT_SECRET` in
+  `.env`, whose redirect URI is Connect's); `test` makes a light
   request on the connector's own API. The `google` and `microsoft`
   connectors of earlier versions, which did mail alone, are `gmail` and
   `outlook`: a bot that had one has the other, and its grant moves at start.
-- `hexbot.accounts.sign_in_start {service, also?}` → `AccountSignIn
-  {login_id, service, services, provider, mode, status, url, code?,
-  redirect_uri?, message}`. `service` is a connector; `also` lists others of
-  the same account to connect with the same sign-in (4202 for one of another
-  account). The sign-in asks for each connector's permissions, once.
-  Microsoft's `mode` is `device`: open `url` and enter `code`. Google's is
-  `browser`: open `url`; Google returns to `redirect_uri`, the daemon's own
+- `hexbot.accounts.sign_in_start {service, also?, return_port?,
+  return_via?}` → `AccountSignIn {login_id, service, services, provider,
+  mode, status, url, code?, redirect_uri?, message}`. `service` is a
+  connector; `also` lists others of the same account to connect with the
+  same sign-in (4202 for one of another account). The sign-in asks for each
+  connector's permissions, once. Microsoft's `mode` is `device`: open `url`
+  and enter `code`. Google's is `browser`: open `url`; Google returns to
+  `redirect_uri`. By default that is the daemon's own
   `http://127.0.0.1:<port>/oauth/google`, which finishes the sign-in when the
-  browser runs on the daemon's computer. When another connector of the
+  browser runs on the daemon's computer. The desktop app names its own
+  loopback port as `return_port`: Google returns to the app, which passes
+  the address on with `sign_in_finish`. A browser or phone elsewhere sends
+  `return_via: "connect"`: when the daemon is on Hex Connect and has a
+  Google web client, Google returns to
+  `https://connect.hexbot.app/oauth/google`, which sends the browser on to
+  the daemon's tunnel (the state starts with the Connect daemon id) once it
+  is signed in to Connect as the daemon's owner, and
+  the sign-in finishes there; otherwise it stays on loopback. `return_port`
+  wins over `return_via`; 4202 for a port out of range or another
+  `return_via`. When another connector of the
   account is signed in, Google is offered that address first. 4210 when the
   build has no client of its own and none is saved. Starting another for
   the same connector replaces a pending one.

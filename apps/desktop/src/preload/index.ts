@@ -83,6 +83,12 @@ const hexbot = Object.freeze({
   openNotificationSettings: () => ipcRenderer.invoke('hexbot:notifications:settings'),
   openExternal: (url: string) => ipcRenderer.invoke('hexbot:open-external', url),
   pickFiles: () => ipcRenderer.invoke('hexbot:pick-files'),
+  // Google's return to 127.0.0.1 on this computer (src/main/oauth-return.ts).
+  oauthReturn: Object.freeze({
+    open: () => ipcRenderer.invoke('hexbot:oauth-return:open'),
+    wait: (port: number) => ipcRenderer.invoke('hexbot:oauth-return:wait', port),
+    close: (port: number) => ipcRenderer.invoke('hexbot:oauth-return:close', port)
+  }),
   updater: Object.freeze({
     state: () => ipcRenderer.invoke('hexbot:updater:state'),
     channel: () => ipcRenderer.invoke('hexbot:updater:channel'),

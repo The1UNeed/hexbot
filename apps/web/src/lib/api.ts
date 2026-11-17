@@ -282,10 +282,22 @@ export function connectorsClear(
  * Starts a sign-in for the connector `service`. `also` names other
  * connectors of the same account to connect with the same sign-in.
  */
-export function accountsSignInStart(service: string, also: string[] = []): Promise<AccountSignIn> {
+/**
+ * Starts a sign-in. Google returns to 127.0.0.1: by default the daemon's
+ * port; `port`, the desktop app's own; `'connect'`, through Hex Connect,
+ * for a browser on another computer (a daemon without Connect stays on
+ * loopback, where the address is pasted back).
+ */
+export function accountsSignInStart(
+  service: string,
+  also: string[] = [],
+  back?: 'connect' | number
+): Promise<AccountSignIn> {
   return rpcCall<AccountSignIn>('hexbot.accounts.sign_in_start', {
     service,
-    ...(also.length ? { also } : {})
+    ...(also.length ? { also } : {}),
+    ...(back === 'connect' ? { return_via: 'connect' } : {}),
+    ...(typeof back === 'number' ? { return_port: back } : {})
   })
 }
 

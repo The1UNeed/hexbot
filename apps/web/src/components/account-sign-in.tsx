@@ -8,6 +8,7 @@ import {
   accountsSignInStart
 } from '../lib/api'
 import { SIGN_IN_BUTTONS } from '../lib/brand-logos'
+import { getBridge } from '../lib/bridge'
 import type { AccountProvider, AccountSignIn } from '../lib/types'
 
 import { openInBrowser } from './provider-panel'
@@ -18,13 +19,18 @@ const NAMES: Record<AccountProvider, string> = { google: 'Google', microsoft: 'M
 
 const errorText = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause))
 
+/** Whether this browser runs on the daemon's computer, where 127.0.0.1 is the daemon. */
+const besideDaemon = () => ['127.0.0.1', '::1', '[::1]', 'localhost'].includes(location.hostname)
+
 /**
  * Signs the daemon in to Google or Microsoft for the connector `service`,
  * and for the connectors in `also` with the same sign-in. Microsoft
  * shows a code to enter on its page. Google opens its page and comes back
- * to the daemon by itself when the browser runs on the daemon's computer;
- * a browser anywhere else ends on a page that can't load, and pasting that
- * page's address here finishes the sign-in.
+ * by itself: in the desktop app to the app, which hands the address on; in
+ * a browser on the daemon's computer to the daemon; in one elsewhere
+ * through Hex Connect. A daemon without Connect has Google return to
+ * 127.0.0.1, a page that can't load there, and pasting that page's address
+ * here finishes the sign-in.
  */
 export function AccountSignInPanel({
   also = [],
@@ -51,6 +57,15 @@ export function AccountSignInPanel({
   active.current = pending && loginId ? loginId : null
   const done = useRef(onDone)
   done.current = onDone
+  // The desktop app's port Google returns to, while it listens.
+  const relay = useRef<null | number>(null)
+
+  const closeRelay = () => {
+    if (relay.current !== null) {
+      void getBridge()?.oauthReturn?.close(relay.current).catch(() => undefined)
+      relay.current = null
+    }
+  }
 
   const settle = (next: AccountSignIn) => {
     setLogin(next)
@@ -78,9 +93,17 @@ export function AccountSignInPanel({
     return () => clearInterval(timer)
   }, [loginId, pending])
 
+  useEffect(() => {
+    if (!pending) {
+      closeRelay()
+    }
+  }, [pending])
+
   // A sign-in still waiting when the panel goes is cancelled, and only then.
   useEffect(
     () => () => {
+      closeRelay()
+
       if (active.current) {
         void accountsSignInCancel(active.current).catch(() => undefined)
       }
@@ -88,13 +111,78 @@ export function AccountSignInPanel({
     []
   )
 
+  const finishWith = async (id: string, url: string) => {
+    setBusy(true)
+    setError(null)
+
+    try {
+      const next = await accountsSignInFinish(id, url)
+
+      if (active.current === id) {
+        settle(next)
+      }
+    } catch (cause) {
+      if (active.current === id) {
+        setError(errorText(cause))
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /**
+   * Where Google returns: the desktop app's own port, which it finishes
+   * from; Hex Connect for a browser elsewhere; else the daemon itself.
+   */
+  const listen = async (): Promise<'connect' | number | undefined> => {
+    const bridge = getBridge()
+
+    if (provider !== 'google') {
+      return undefined
+    }
+
+    if (bridge) {
+      try {
+        return await bridge.oauthReturn?.open()
+      } catch {
+        // No port here: the browser returns to the daemon, or is pasted back.
+        return undefined
+      }
+    }
+
+    return besideDaemon() ? undefined : 'connect'
+  }
+
   const start = async () => {
     setBusy(true)
     setError(null)
     setPasted('')
+    closeRelay()
+    const back = await listen()
+    const port = typeof back === 'number' ? back : undefined
 
     try {
-      const started = await accountsSignInStart(service, also)
+      const started = await accountsSignInStart(service, also, back)
+
+      // A daemon from before the app's port returns to its own instead.
+      if (
+        port !== undefined &&
+        started.status === 'pending' &&
+        started.redirect_uri === `http://127.0.0.1:${port}/oauth/google`
+      ) {
+        relay.current = port
+        active.current = started.login_id
+        void getBridge()
+          ?.oauthReturn?.wait(port)
+          .then(url => {
+            if (url && active.current === started.login_id) {
+              void finishWith(started.login_id, url)
+            }
+          })
+      } else if (port !== undefined) {
+        void getBridge()?.oauthReturn?.close(port).catch(() => undefined)
+      }
+
       settle(started)
 
       // Google's page opens at once; Microsoft's waits until the code is
@@ -103,28 +191,21 @@ export function AccountSignInPanel({
         openInBrowser(started.url)
       }
     } catch (cause) {
+      if (port !== undefined) {
+        void getBridge()?.oauthReturn?.close(port).catch(() => undefined)
+      }
+
       setError(errorText(cause))
     } finally {
       setBusy(false)
     }
   }
 
-  const finish = async (event: FormEvent) => {
+  const finish = (event: FormEvent) => {
     event.preventDefault()
 
-    if (!loginId || !pasted.trim()) {
-      return
-    }
-
-    setBusy(true)
-    setError(null)
-
-    try {
-      settle(await accountsSignInFinish(loginId, pasted.trim()))
-    } catch (cause) {
-      setError(errorText(cause))
-    } finally {
-      setBusy(false)
+    if (loginId && pasted.trim()) {
+      void finishWith(loginId, pasted.trim())
     }
   }
 
@@ -213,6 +294,10 @@ export function AccountSignInPanel({
   }
 
   if (pending) {
+    // Through Hex Connect Google comes back by itself; on 127.0.0.1 a
+    // browser elsewhere can't load the page, so its address is pasted here.
+    const pasteBack = !login.redirect_uri?.startsWith('https:')
+
     return (
       <form className="grid gap-3 text-[length:var(--text-secondary)]" onSubmit={finish}>
         <p className="text-muted">
@@ -221,11 +306,13 @@ export function AccountSignInPanel({
             Open it again
           </button>
         </p>
-        <p className="text-muted">
-          Signing in on another computer or phone? {name} ends on a page that doesn't load. Copy
-          that page's address and paste it here.
-        </p>
-        <div className="flex gap-2">
+        {pasteBack ? (
+          <>
+            <p className="text-muted">
+              Signing in on another computer or phone? {name} ends on a page that doesn't load.
+              Copy that page's address and paste it here.
+            </p>
+            <div className="flex gap-2">
           <Input
             aria-label="The address the browser ended on"
             autoCapitalize="none"
@@ -239,6 +326,8 @@ export function AccountSignInPanel({
             Finish
           </Button>
         </div>
+          </>
+        ) : null}
         <p className="flex items-center gap-3 text-muted">
           Waiting for {name}
           <button className="ml-auto underline" onClick={cancel} type="button">

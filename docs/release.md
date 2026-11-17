@@ -459,7 +459,14 @@ every permission below; a connector asks for its own only (`SERVICES` in
   Create a **Desktop app** client. Save its client ID as the variable
   `HEXBOT_GOOGLE_CLIENT_ID` and its client secret as the secret
   `HEXBOT_GOOGLE_CLIENT_SECRET`; Google treats a desktop client's secret as
-  public, but it stays out of logs. Gmail's scopes, `drive.readonly` and
+  public, but it stays out of logs. Then create a **Web application** client
+  in the same project with the one authorized redirect URI
+  `https://connect.hexbot.app/oauth/google`, and add `hexbot.app` to the
+  consent screen's authorized domains. Save its ID as the variable
+  `HEXBOT_GOOGLE_WEB_CLIENT_ID` and its secret as the secret
+  `HEXBOT_GOOGLE_WEB_CLIENT_SECRET`. A browser or phone on another computer
+  comes back through Connect with it (`docs/connect.md`, "Google sign-in
+  return"); without it, those sign-ins fall back to pasting the address. Gmail's scopes, `drive.readonly` and
   `drive.metadata.readonly` are restricted: until Google verifies the app
   for every scope it asks for and its yearly security assessment passes,
   only the project's test users (up to 100) can sign in. A scope added to

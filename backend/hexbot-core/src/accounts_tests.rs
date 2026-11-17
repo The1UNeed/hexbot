@@ -60,7 +60,9 @@ async fn google_signs_in_with_pkce_through_the_loopback_return() {
         &origin,
         "GOOGLE_OAUTH_CLIENT_ID=\"own-client\"\nGOOGLE_OAUTH_CLIENT_SECRET=\"own-secret\"\n",
     );
-    let started = start(home.path(), "alice", &[GMAIL], 9119).await.unwrap();
+    let started = start(home.path(), "alice", &[GMAIL], Return::Loopback(9119))
+        .await
+        .unwrap();
     assert_eq!(started["mode"], "browser");
     let url = url::Url::parse(started["url"].as_str().unwrap()).unwrap();
     let query: HashMap<_, _> = url.query_pairs().into_owned().collect();
@@ -134,7 +136,9 @@ async fn a_pasted_address_finishes_google_and_a_refusal_says_so() {
     ))
     .await;
     let home = home_for("google", &origin, "GOOGLE_OAUTH_CLIENT_ID=\"own\"\n");
-    let started = start(home.path(), "alice", &[GMAIL], 9119).await.unwrap();
+    let started = start(home.path(), "alice", &[GMAIL], Return::Loopback(9119))
+        .await
+        .unwrap();
     let login = started["login_id"].as_str().unwrap();
     let state = url::Url::parse(started["url"].as_str().unwrap())
         .unwrap()
@@ -158,7 +162,9 @@ async fn a_pasted_address_finishes_google_and_a_refusal_says_so() {
     assert_eq!(declined["status"], "error");
     assert_eq!(declined["message"], "The sign-in was declined.");
 
-    let again = start(home.path(), "alice", &[GMAIL], 9119).await.unwrap();
+    let again = start(home.path(), "alice", &[GMAIL], Return::Loopback(9119))
+        .await
+        .unwrap();
     let state = url::Url::parse(again["url"].as_str().unwrap())
         .unwrap()
         .query_pairs()
@@ -222,7 +228,9 @@ async fn microsoft_signs_in_with_a_device_code() {
         &origin,
         "MICROSOFT_OAUTH_CLIENT_ID=\"ms-client\"\n",
     );
-    let started = start(home.path(), "alice", &[OUTLOOK], 9119).await.unwrap();
+    let started = start(home.path(), "alice", &[OUTLOOK], Return::Loopback(9119))
+        .await
+        .unwrap();
     assert_eq!(started["mode"], "device");
     assert_eq!(started["code"], "ABCD-1234");
     let login = started["login_id"].as_str().unwrap().to_owned();
@@ -263,7 +271,9 @@ async fn a_declined_or_partial_google_grant_ends_the_sign_in() {
             .1
             .into_owned()
     };
-    let started = start(home.path(), "alice", &[GMAIL], 9119).await.unwrap();
+    let started = start(home.path(), "alice", &[GMAIL], Return::Loopback(9119))
+        .await
+        .unwrap();
     let login = started["login_id"].as_str().unwrap();
     let (ok, page) = callback(
         home.path(),
@@ -276,7 +286,9 @@ async fn a_declined_or_partial_google_grant_ends_the_sign_in() {
     assert_eq!(polled["status"], "error");
     assert_eq!(polled["message"], "The sign-in was declined.");
 
-    let started = start(home.path(), "alice", &[GMAIL], 9119).await.unwrap();
+    let started = start(home.path(), "alice", &[GMAIL], Return::Loopback(9119))
+        .await
+        .unwrap();
     let (ok, page) = callback(home.path(), &format!("code=c&state={}", state_of(&started))).await;
     assert!(!ok);
     assert!(page.contains("leave every box ticked"), "{page}");
@@ -292,7 +304,9 @@ async fn signing_out_ends_a_sign_in_still_waiting() {
         "http://127.0.0.1:9",
         "GOOGLE_OAUTH_CLIENT_ID=\"own\"\n",
     );
-    let started = start(home.path(), "alice", &[GMAIL], 9119).await.unwrap();
+    let started = start(home.path(), "alice", &[GMAIL], Return::Loopback(9119))
+        .await
+        .unwrap();
     let state = url::Url::parse(started["url"].as_str().unwrap())
         .unwrap()
         .query_pairs()
@@ -428,7 +442,9 @@ async fn without_a_client_sign_in_says_what_to_add() {
         if svc.provider.built_in.is_some_and(|c| !c.is_empty()) {
             continue;
         }
-        let error = start(home.path(), "alice", &[id], 9119).await.unwrap_err();
+        let error = start(home.path(), "alice", &[id], Return::Loopback(9119))
+            .await
+            .unwrap_err();
         assert_eq!(error.code, 4210);
         assert!(error.message.contains("own OAuth client ID"));
     }
@@ -451,6 +467,206 @@ fn endpoint_overrides_stay_on_https_or_loopback() {
     assert_eq!(
         url_at(home.path(), svc, svc.api, "/x").unwrap_err().code,
         4211
+    );
+}
+
+/// The desktop app names its own port when the daemon is on another
+/// computer: Google returns there, and the address it passes on finishes
+/// the sign-in, with the same return address in the code exchange.
+#[tokio::test]
+async fn google_returns_to_the_apps_own_port_when_it_names_one() {
+    let seen: Seen = Default::default();
+    let record = seen.clone();
+    let origin = serve(Router::new().route(
+        "/token",
+        post(move |Form(form): Form<HashMap<String, String>>| {
+            let record = record.clone();
+            async move {
+                record.lock().unwrap().push(form);
+                Json(json!({"access_token":"at","refresh_token":"rt","expires_in":3600,"id_token":id_token(json!({"email":"ana@example.com"}))}))
+            }
+        }),
+    ))
+    .await;
+    let home = home_for("google", &origin, "GOOGLE_OAUTH_CLIENT_ID=\"own\"\n");
+    crate::db::open(home.path())
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);",
+        )
+        .unwrap();
+    for bad in [json!(0), json!(70000), json!("9119"), json!(-1)] {
+        let error = call(
+            home.path(),
+            "alice",
+            "hexbot.accounts.sign_in_start",
+            &json!({"service": GMAIL, "return_port": bad}),
+            9119,
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(error.code, 4202, "{bad}");
+    }
+    let started = call(
+        home.path(),
+        "alice",
+        "hexbot.accounts.sign_in_start",
+        &json!({"service": GMAIL, "return_port": 51234}),
+        9119,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        started["redirect_uri"],
+        "http://127.0.0.1:51234/oauth/google"
+    );
+    let query = query_of(&started);
+    assert_eq!(query["redirect_uri"], "http://127.0.0.1:51234/oauth/google");
+    let done = call(
+        home.path(),
+        "alice",
+        "hexbot.accounts.sign_in_finish",
+        &json!({
+            "login_id": started["login_id"],
+            "url": format!("http://127.0.0.1:51234/oauth/google?state={}&code=xyz", query["state"]),
+        }),
+        9119,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(done["status"], "done");
+    assert_eq!(
+        seen.lock().unwrap()[0]["redirect_uri"],
+        "http://127.0.0.1:51234/oauth/google"
+    );
+}
+
+/// A browser or phone elsewhere asks for Hex Connect: Google returns to
+/// Connect's one address with a web client, the state starts with the
+/// daemon id so Connect can send the browser on, and the daemon finishes
+/// when the tunnel brings it back. Without Connect or a web client the
+/// return stays on loopback, where the address is pasted back.
+#[tokio::test]
+async fn google_returns_through_hex_connect_when_asked_and_set_up() {
+    let seen: Seen = Default::default();
+    let record = seen.clone();
+    let origin = serve(Router::new().route(
+        "/token",
+        post(move |Form(form): Form<HashMap<String, String>>| {
+            let record = record.clone();
+            async move {
+                record.lock().unwrap().push(form);
+                Json(json!({"access_token":"at","refresh_token":"rt","expires_in":3600,"id_token":id_token(json!({"email":"ana@example.com"}))}))
+            }
+        }),
+    ))
+    .await;
+    let home = home_for(
+        "google",
+        &origin,
+        "GOOGLE_OAUTH_CLIENT_ID=\"own\"\nGOOGLE_OAUTH_WEB_CLIENT_ID=\"own-web\"\nGOOGLE_OAUTH_WEB_CLIENT_SECRET=\"web-secret\"\n",
+    );
+    let h = home.path();
+    crate::db::open(h)
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0);",
+        )
+        .unwrap();
+    let connect = json!({"service": GMAIL, "return_via": "connect"});
+    let via_connect = || call(h, "alice", "hexbot.accounts.sign_in_start", &connect, 9119);
+
+    // Not on Connect yet: loopback, and the desktop client.
+    let started = via_connect().await.unwrap().unwrap();
+    assert_eq!(
+        started["redirect_uri"],
+        "http://127.0.0.1:9119/oauth/google"
+    );
+    assert_eq!(query_of(&started)["client_id"], "own");
+
+    let daemon = "3f0b6c1e-6a52-4d7e-9a43-0c7e2b9d5a11";
+    std::fs::write(
+        h.join("connect.json"),
+        json!({
+            "api_base": "https://connect.hexbot.app",
+            "daemon_id": daemon,
+            "slug": "amber-otter-1234",
+            "tunnel_hostname": "amber-otter-1234.hexbot.app",
+            "owner_id": "u",
+            "issuer": "https://connect.hexbot.app",
+            "keys": [{"kty": "EC"}],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let started = via_connect().await.unwrap().unwrap();
+    assert_eq!(
+        started["redirect_uri"],
+        "https://connect.hexbot.app/oauth/google"
+    );
+    let query = query_of(&started);
+    assert_eq!(
+        query["redirect_uri"],
+        "https://connect.hexbot.app/oauth/google"
+    );
+    assert_eq!(query["client_id"], "own-web");
+    assert!(
+        query["state"].starts_with(&format!("{daemon}.")),
+        "{}",
+        query["state"]
+    );
+    assert_eq!(query["code_challenge_method"], "S256");
+
+    // Connect sends the browser on to the tunnel with the query unchanged.
+    let (ok, page) = callback(h, &format!("state={}&code=xyz", query["state"])).await;
+    assert!(ok, "{page}");
+    let sent = seen.lock().unwrap()[0].clone();
+    assert_eq!(sent["client_id"], "own-web");
+    assert_eq!(sent["client_secret"], "web-secret");
+    assert_eq!(
+        sent["redirect_uri"],
+        "https://connect.hexbot.app/oauth/google"
+    );
+    // A refresh later finds the web client's secret by its ID.
+    let renewed = client_for(h, &GOOGLE_PROVIDER, "own-web");
+    assert_eq!(renewed.secret.as_deref(), Some("web-secret"));
+
+    // An app's own port wins; anything else is refused.
+    let started = call(
+        h,
+        "alice",
+        "hexbot.accounts.sign_in_start",
+        &json!({"service": GMAIL, "return_via": "connect", "return_port": 51234}),
+        9119,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        started["redirect_uri"],
+        "http://127.0.0.1:51234/oauth/google"
+    );
+    let error = call(
+        h,
+        "alice",
+        "hexbot.accounts.sign_in_start",
+        &json!({"service": GMAIL, "return_via": "lan"}),
+        9119,
+    )
+    .await
+    .unwrap()
+    .unwrap_err();
+    assert_eq!(error.code, 4202);
+
+    // A user with their own client and no web client of theirs stays on loopback.
+    std::fs::write(h.join(".env"), "GOOGLE_OAUTH_CLIENT_ID=\"own\"\n").unwrap();
+    let started = via_connect().await.unwrap().unwrap();
+    assert_eq!(
+        started["redirect_uri"],
+        "http://127.0.0.1:9119/oauth/google"
     );
 }
 
@@ -482,7 +698,7 @@ async fn one_sign_in_connects_several_connectors_and_leaves_out_an_unticked_one(
         h,
         "alice",
         &[GMAIL, "google_calendar", "google_drive", GMAIL],
-        9119,
+        Return::Loopback(9119),
     )
     .await
     .unwrap();
@@ -526,22 +742,33 @@ async fn one_sign_in_connects_several_connectors_and_leaves_out_an_unticked_one(
     );
     assert!(!calendar["scope"].as_str().unwrap().contains("gmail"));
     // The next sign-in offers the account that is already there.
-    let next = start(h, "alice", &["google_drive"], 9119).await.unwrap();
+    let next = start(h, "alice", &["google_drive"], Return::Loopback(9119))
+        .await
+        .unwrap();
     assert_eq!(query_of(&next)["login_hint"], "ana@example.com");
     assert!(!query_of(&next)["scope"].contains("gmail"));
     // A sign-in covers one account, and only connectors that sign in.
     assert_eq!(
-        start(h, "alice", &[GMAIL, OUTLOOK], 9119)
+        start(h, "alice", &[GMAIL, OUTLOOK], Return::Loopback(9119))
             .await
             .unwrap_err()
             .code,
         4202
     );
     assert_eq!(
-        start(h, "alice", &["notion"], 9119).await.unwrap_err().code,
+        start(h, "alice", &["notion"], Return::Loopback(9119))
+            .await
+            .unwrap_err()
+            .code,
         4202
     );
-    assert_eq!(start(h, "alice", &[], 9119).await.unwrap_err().code, 4200);
+    assert_eq!(
+        start(h, "alice", &[], Return::Loopback(9119))
+            .await
+            .unwrap_err()
+            .code,
+        4200
+    );
 }
 
 /// Disconnecting one connector leaves the others of its account working:
