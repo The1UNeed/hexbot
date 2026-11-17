@@ -19,19 +19,36 @@ const escape = (text: string) => text.replace(/[&<>"']/g, c => `&#${c.charCodeAt
  * a daemon's tunnel hostname is its own, so the daemon starts its state with its id and this sends the
  * browser on to that daemon's `/oauth/google` with the query unchanged, but only for the daemon's own
  * Connect account, as browser sign-in does: anyone can start a sign-in on their daemon and send someone
- * else the consent page, and the code would complete there with the key that daemon holds. Nothing is
- * kept or logged.
+ * else the consent page, and the code would complete there with the key that daemon holds. A signed-out
+ * browser (a phone's, usually) signs in first; Google's answer waits meanwhile in a cookie only this
+ * address reads, so the code never rides in the sign-in page's address. Nothing is stored or logged.
  */
+const COOKIE = "hexbot_google_return";
+const cookie = (url: URL, value: string, maxAge: number) =>
+  `${COOKIE}=${encodeURIComponent(value)}; Path=/oauth/google; Max-Age=${maxAge}; HttpOnly; SameSite=Lax${url.protocol === "https:" ? "; Secure" : ""}`;
+const held = (request: Request) => {
+  const raw = /(?:^|;\s*)hexbot_google_return=([^;]*)/.exec(request.headers.get("cookie") ?? "")?.[1];
+  try { return raw ? decodeURIComponent(raw) : ""; } catch { return ""; }
+};
+
 export async function GET(request: Request) {
   const url = new URL(request.url);
+  // Back from signing in to Connect, with Google's answer in the cookie.
+  if (!url.search) url.search = held(request);
   const id = /^([0-9a-f-]{36})\./i.exec(url.searchParams.get("state") ?? "")?.[1];
   if (!id) return page(400, "This address isn't from a Hexbot sign-in. Start it again in Hexbot, Settings, Plugins.");
   const daemon = await getStore().getDaemon(id);
   if (!daemon || daemon.revokedAt) return page(404, "This daemon is no longer on Hex Connect. Start the sign-in again in Hexbot, Settings, Plugins.");
   const user = await currentUser();
-  if (!user) return new Response(null, { status: 303, headers: { ...HEADERS, Location: new URL(signInPath(`/oauth/google${url.search}`), url).href } });
+  if (!user) {
+    const headers = new Headers({ ...HEADERS, Location: new URL(signInPath("/oauth/google"), url).href });
+    headers.append("Set-Cookie", cookie(url, url.search, 15 * 60));
+    return new Response(null, { status: 303, headers });
+  }
   if (user.id !== daemon.userId) return page(403, `${escape(daemon.name)} belongs to another Hex Connect account, so the sign-in stops here. Sign in to Connect with the account that owns it, then start again in Hexbot, Settings, Plugins.`);
   const target = new URL(`${daemonOrigin(daemon, fakeTunnels())}/oauth/google`);
   target.search = url.search;
-  return new Response(null, { status: 303, headers: { ...HEADERS, Location: target.href } });
+  const headers = new Headers({ ...HEADERS, Location: target.href });
+  headers.append("Set-Cookie", cookie(url, "", 0));
+  return new Response(null, { status: 303, headers });
 }

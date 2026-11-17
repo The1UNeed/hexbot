@@ -18,5 +18,9 @@ export async function currentUser(): Promise<User | null> {
 
 export const authMode = () => process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ? "clerk" : process.env.DEV_USER_ID && process.env.NODE_ENV !== "production" ? "dev" : "none";
 
+/** A `redirect_url` that stays on Connect, or `null` for anything else. */
+export const localPath = (value: unknown) =>
+  typeof value === "string" && value.startsWith("/") && !value.startsWith("//") && !value.includes("\\") ? value : null;
+
 /** Where to send a signed-out visitor so they land back on `returnTo` afterwards. */
 export const signInPath = (returnTo: string) => `/sign-in?redirect_url=${encodeURIComponent(returnTo)}`;

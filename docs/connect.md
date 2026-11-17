@@ -394,9 +394,12 @@ whose one redirect URI is `https://connect.hexbot.app/oauth/google`, and its
 the daemon up and, when the browser is signed in to Connect as the daemon's
 owner, answers `303` to `https://<tunnel hostname>/oauth/google` with the
 query unchanged, `Cache-Control: no-store` and `Referrer-Policy: no-referrer`;
-with fake tunnels, to the daemon's loopback port. A signed-out browser goes
-to Connect's sign-in first and comes back to the same address; another
-account gets `403`. The owner check is what stops consent phishing: the
+with fake tunnels, to the daemon's loopback port. A signed-out browser,
+usually a phone's, goes to `/sign-in?redirect_url=/oauth/google` first;
+Google's query waits in an `HttpOnly` cookie scoped to `/oauth/google` for
+15 minutes, so the code never appears in the sign-in page's address, and is
+cleared once it goes on. `/sign-in` returns to any `redirect_url` that is a
+Connect path. Another account gets `403`. The owner check is what stops consent phishing: the
 daemon holds the PKCE verifier, so anyone who started a sign-in on their own
 daemon and sent someone else the consent page would otherwise receive that
 person's grant. A state without a daemon id gets `400`, an unknown or

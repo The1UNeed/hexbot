@@ -3,6 +3,7 @@ import { MemoryStore } from "@/lib/store";
 import { FakeTunnelProvider, type TunnelProvider } from "@/lib/tunnels";
 import { setRuntimeForTests } from "@/lib/runtime";
 import { GET } from "@/app/oauth/google/route";
+import { localPath } from "@/lib/auth";
 
 let store: MemoryStore;
 let owner: string;
@@ -42,10 +43,22 @@ describe("Google's return from a daemon's sign-in", () => {
     const row = await daemon("amber-otter-1234.hexbot.app");
     const query = `state=${row.id}.abc&code=c`;
 
+    // Signed out: Google's answer waits in a cookie only this address reads, not in the sign-in page's address.
     vi.stubEnv("DEV_USER_ID", "");
     const signedOut = await back(query);
     expect(signedOut.status).toBe(303);
-    expect(signedOut.headers.get("location")).toBe(`https://connect.hexbot.app/sign-in?redirect_url=${encodeURIComponent(`/oauth/google?${query}`)}`);
+    expect(signedOut.headers.get("location")).toBe("https://connect.hexbot.app/sign-in?redirect_url=%2Foauth%2Fgoogle");
+    const set = signedOut.headers.get("set-cookie") ?? "";
+    expect(set).toMatch(/^hexbot_google_return=[^;]+; Path=\/oauth\/google; Max-Age=900; HttpOnly; SameSite=Lax; Secure$/);
+
+    // Signed in, back at the bare address: it goes on with the answer it held, and forgets it.
+    vi.stubEnv("DEV_USER_ID", "clerk_owner");
+    const resumed = await GET(new Request("https://connect.hexbot.app/oauth/google", { headers: { cookie: `other=1; ${set.split(";")[0]}` } }));
+    expect(resumed.status).toBe(303);
+    expect(resumed.headers.get("location")).toBe(`https://amber-otter-1234.hexbot.app/oauth/google?${query}`);
+    expect(resumed.headers.get("set-cookie")).toContain("Max-Age=0");
+    expect(localPath("/oauth/google")).toBe("/oauth/google");
+    for (const elsewhere of ["https://evil.example/", "//evil.example/", "/\\evil.example", undefined, ["/a", "/b"]]) expect(localPath(elsewhere)).toBeNull();
 
     // Someone who sent another person the consent page for their own daemon gets nothing.
     vi.stubEnv("DEV_USER_ID", "clerk_owner");
