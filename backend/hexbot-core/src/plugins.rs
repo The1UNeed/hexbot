@@ -97,9 +97,11 @@ fn connector_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<
     }
     // Discord is set up in each bot's own settings; Plugins turns it on.
     let mut discord = crate::discord::plugin_row(home, own)?;
-    discord["enabled_for_bot"] = json!(bot.map(|b| discord["bots"]
-        .as_array()
-        .is_some_and(|bots| bots.iter().any(|n| n == b))));
+    discord["enabled_for_bot"] = json!(bot.map(|b| {
+        discord["bots"]
+            .as_array()
+            .is_some_and(|bots| bots.iter().any(|n| n == b))
+    }));
     rows.push(discord);
     Ok(rows)
 }
@@ -232,7 +234,9 @@ pub(crate) fn set_bots(home: &Path, caller: &str, p: &Value) -> Result<Value> {
         let chosen = connectors::chosen_bots(home, caller, &[], &p["bots"])?;
         for bot in &own {
             let on = chosen.contains(bot);
-            let was = current["bots"].as_array().is_some_and(|b| b.iter().any(|n| n == bot));
+            let was = current["bots"]
+                .as_array()
+                .is_some_and(|b| b.iter().any(|n| n == bot));
             if on != was {
                 crate::discord::set_enabled(home, caller, bot, on)?;
             }

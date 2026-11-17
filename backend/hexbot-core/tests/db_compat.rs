@@ -261,7 +261,13 @@ fn team_shape(connection: &Connection) -> Vec<(String, Vec<Column>)> {
         vec![
             key("bot"),
             text("owner_id", true),
-            ("mode".into(), "TEXT".into(), true, Some("'reads'".into()), 0),
+            (
+                "mode".into(),
+                "TEXT".into(),
+                true,
+                Some("'reads'".into()),
+                0,
+            ),
             real("enabled_at", true),
         ],
     ));

@@ -95,18 +95,22 @@ async fn application(headers: HeaderMap) -> impl IntoResponse {
 async fn channel(Path(id): Path<String>) -> Json<Value> {
     // #announcements: everyone reads, nobody but the admins posts.
     if id == "c-ro" {
-        return Json(json!({"id":id,"type":5,"name":"announcements","permission_overwrites":[
-            {"id":"g1","type":0,"allow":"0","deny":"2048"}
-        ]}));
+        return Json(
+            json!({"id":id,"type":5,"name":"announcements","permission_overwrites":[
+                {"id":"g1","type":0,"allow":"0","deny":"2048"}
+            ]}),
+        );
     }
     Json(json!({"id":id,"type":0,"name":"general"}))
 }
 async fn guild(Path(id): Path<String>) -> Json<Value> {
     // Everyone sees channels; the mods role has nothing more of its own.
     // View Channel, Send Messages and Read Message History.
-    Json(json!({"id":id,"name":"Test Server","owner_id":"999","roles":[
-        {"id":id,"permissions":"68608"},{"id":"mods","permissions":"0"}
-    ]}))
+    Json(
+        json!({"id":id,"name":"Test Server","owner_id":"999","roles":[
+            {"id":id,"permissions":"68608"},{"id":"mods","permissions":"0"}
+        ]}),
+    )
 }
 async fn member(Path((guild, _user)): Path<(String, String)>) -> Json<Value> {
     assert_eq!(guild, "g1");
@@ -175,7 +179,9 @@ async fn send(
     if channel == "c-log" && body["message_reference"].is_object() {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({"message":"Cannot reply without permission to read message history","code":160002})),
+            Json(
+                json!({"message":"Cannot reply without permission to read message history","code":160002}),
+            ),
         );
     }
     // Nobody but the admins posts in #announcements.
@@ -1127,7 +1133,8 @@ async fn each_bot_acts_as_its_mode_says_and_reads_the_rest_of_its_server() {
         if p["type"] == "hexbot.discord.changed" {
             for bot in ["owl", "fox"] {
                 let status = call("get", json!({"bot":bot})).await.unwrap();
-                if status["discord"]["servers"] == json!([{"id":"g1","name":"Test Server","mode":null}])
+                if status["discord"]["servers"]
+                    == json!([{"id":"g1","name":"Test Server","mode":null}])
                     && p["payload"]["bot"] == bot
                 {
                     servers += 1;
@@ -1139,9 +1146,12 @@ async fn each_bot_acts_as_its_mode_says_and_reads_the_rest_of_its_server() {
     assert_eq!(owl["discord"]["mode"], "reads");
     assert_eq!(owl["enabled"], true);
     // Owl is an active member of this server; fox sees only its mentions everywhere.
-    let owl = call("set_mode", json!({"bot":"owl","guild_id":"g1","mode":"active"}))
-        .await
-        .unwrap();
+    let owl = call(
+        "set_mode",
+        json!({"bot":"owl","guild_id":"g1","mode":"active"}),
+    )
+    .await
+    .unwrap();
     assert_eq!(owl["discord"]["mode"], "reads");
     assert_eq!(owl["discord"]["servers"][0]["mode"], "active");
     call("set_mode", json!({"bot":"fox","mode":"mentions"}))
@@ -1155,10 +1165,13 @@ async fn each_bot_acts_as_its_mode_says_and_reads_the_rest_of_its_server() {
         4202
     );
     assert_eq!(
-        call("set_mode", json!({"bot":"fox","guild_id":"elsewhere","mode":"active"}))
-            .await
-            .unwrap_err()
-            .code,
+        call(
+            "set_mode",
+            json!({"bot":"fox","guild_id":"elsewhere","mode":"active"})
+        )
+        .await
+        .unwrap_err()
+        .code,
         hexbot_core::discord::NOT_IN_DISCORD
     );
     let deliver = |token: &str, d: Value| {
@@ -1176,10 +1189,16 @@ async fn each_bot_acts_as_its_mode_says_and_reads_the_rest_of_its_server() {
     deliver("T-fox", hello);
     let (bot, prompt) = within("owl's turn", prompts.recv()).await;
     assert_eq!(bot, "owl");
-    assert!(prompt.contains("sam: older two\nSam: morning all"), "{prompt}");
+    assert!(
+        prompt.contains("sam: older two\nSam: morning all"),
+        "{prompt}"
+    );
     assert!(prompt.contains("active member of this server"), "{prompt}");
     let (_, token, body) = within("owl's reply", posts.recv()).await;
-    assert_eq!((token.as_str(), body["content"].as_str()), ("T-owl", Some("Hi Sam.")));
+    assert_eq!(
+        (token.as_str(), body["content"].as_str()),
+        ("T-owl", Some("Hi Sam."))
+    );
     assert_eq!(body["message_reference"]["message_id"], "m1");
     let mut own = message("p1", "Hi Sam.", ("100", "Owl"), &[]);
     own["nonce"] = body["nonce"].clone();
@@ -1188,7 +1207,11 @@ async fn each_bot_acts_as_its_mode_says_and_reads_the_rest_of_its_server() {
 
     let opened_ro: i64 = db::open(h)
         .unwrap()
-        .query_row("SELECT COUNT(*) FROM discord_channels WHERE channel_id='c-ro'", [], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM discord_channels WHERE channel_id='c-ro'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(opened_ro, 0);
 
@@ -1202,15 +1225,24 @@ async fn each_bot_acts_as_its_mode_says_and_reads_the_rest_of_its_server() {
     let (bot, fox) = within("fox's turn", prompts.recv()).await;
     assert_eq!(bot, "fox");
     let fox = &fox;
-    assert!(fox.contains("Messages to you since your last turn"), "{fox}");
+    assert!(
+        fox.contains("Messages to you since your last turn"),
+        "{fox}"
+    );
     assert!(
         fox.contains("Kim (replying to Sam: morning all): @fox are you around?"),
         "{fox}"
     );
-    assert!(!fox.contains("older two") && !fox.contains("Hi Sam."), "{fox}");
+    assert!(
+        !fox.contains("older two") && !fox.contains("Hi Sam."),
+        "{fox}"
+    );
     assert!(!fox.contains("read it."), "{fox}");
     let (_, token, body) = within("fox's reply", posts.recv()).await;
-    assert_eq!((token.as_str(), body["content"].as_str()), ("T-fox", Some("Here.")));
+    assert_eq!(
+        (token.as_str(), body["content"].as_str()),
+        ("T-fox", Some("Here."))
+    );
 
     // Owl reads the server's other channels and threads, and nothing else.
     let stored: String = db::open(h)
@@ -1243,7 +1275,11 @@ async fn each_bot_acts_as_its_mode_says_and_reads_the_rest_of_its_server() {
         4213
     );
     let news = discord
-        .read("owl", &stored, &json!({"action":"read","channel":"#news","limit":2}))
+        .read(
+            "owl",
+            &stored,
+            &json!({"action":"read","channel":"#news","limit":2}),
+        )
         .await
         .unwrap();
     assert_eq!(news["channel"], "#news");
@@ -1252,7 +1288,11 @@ async fn each_bot_acts_as_its_mode_says_and_reads_the_rest_of_its_server() {
     assert_eq!(news["messages"][1]["text"], "launch is friday");
     assert_eq!(
         discord
-            .read("owl", &stored, &json!({"action":"read","channel":"#elsewhere"}))
+            .read(
+                "owl",
+                &stored,
+                &json!({"action":"read","channel":"#elsewhere"})
+            )
             .await
             .unwrap_err()
             .code,
@@ -1285,11 +1325,20 @@ async fn each_bot_acts_as_its_mode_says_and_reads_the_rest_of_its_server() {
     call("set_mode", json!({"bot":"owl","guild_id":"g1","mode":null}))
         .await
         .unwrap();
-    deliver("T-fox", in_c3(message("m3", "<@200> hi", ("300", "Sam"), &["200"])));
+    deliver(
+        "T-fox",
+        in_c3(message("m3", "<@200> hi", ("300", "Sam"), &["200"])),
+    );
     let (bot, _) = within("fox's turn in c3", prompts.recv()).await;
     assert_eq!(bot, "fox");
-    deliver("T-fox", in_c3(message("m4", "just chatting", ("300", "Sam"), &[])));
-    deliver("T-fox", in_c3(message("m5", "<@200> again", ("300", "Sam"), &["200"])));
+    deliver(
+        "T-fox",
+        in_c3(message("m4", "just chatting", ("300", "Sam"), &[])),
+    );
+    deliver(
+        "T-fox",
+        in_c3(message("m5", "<@200> again", ("300", "Sam"), &["200"])),
+    );
     let (bot, prompt) = within("fox's second turn in c3", prompts.recv()).await;
     assert_eq!(bot, "fox");
     assert!(!prompt.contains("just chatting"), "{prompt}");
@@ -1306,17 +1355,31 @@ async fn each_bot_acts_as_its_mode_says_and_reads_the_rest_of_its_server() {
     // In #announcements a mention of fox opens a room; owl, an active member
     // again, can't post there, so it doesn't join. Fox answers, Discord
     // refuses its post, and fox leaves the room until it is mentioned.
-    call("set_mode", json!({"bot":"owl","guild_id":"g1","mode":"active"}))
-        .await
-        .unwrap();
+    call(
+        "set_mode",
+        json!({"bot":"owl","guild_id":"g1","mode":"active"}),
+    )
+    .await
+    .unwrap();
     let in_ro = |mut m: Value| {
         m["channel_id"] = json!("c-ro");
         m
     };
-    deliver("T-fox", in_ro(message("m6", "<@200> can you post?", ("300", "Sam"), &["200"])));
+    deliver(
+        "T-fox",
+        in_ro(message(
+            "m6",
+            "<@200> can you post?",
+            ("300", "Sam"),
+            &["200"],
+        )),
+    );
     let (bot, _) = within("fox's turn in #announcements", prompts.recv()).await;
     assert_eq!(bot, "fox");
-    deliver("T-owl", in_ro(message("m7", "anyone?", ("300", "Sam"), &[])));
+    deliver(
+        "T-owl",
+        in_ro(message("m7", "anyone?", ("300", "Sam"), &[])),
+    );
     loop {
         let event = within("fox's refused post", async { changes.recv().await.ok() }).await;
         let p = &event.frame["params"];
@@ -1326,7 +1389,10 @@ async fn each_bot_acts_as_its_mode_says_and_reads_the_rest_of_its_server() {
         }
     }
     // Owl's message was taken before fox's post failed, in order.
-    deliver("T-fox", in_c3(message("m8", "<@200> sync", ("300", "Sam"), &["200"])));
+    deliver(
+        "T-fox",
+        in_c3(message("m8", "<@200> sync", ("300", "Sam"), &["200"])),
+    );
     within("fox's turn in c3", prompts.recv()).await;
     let in_ro_room: Vec<(String, bool)> = db::open(h)
         .unwrap()

@@ -100,7 +100,10 @@ pub(crate) fn as_public(server: &Value, here: &Value, there: &Value, bot: &str) 
     let admin = |role: &str| base.get(role).is_some_and(|p| p & ADMINISTRATOR != 0);
     let has = |role: &str, what: u64| admin(role) || base.get(role).is_some_and(|p| p & what != 0);
     let overwrites = |c: &Value| -> Vec<Value> {
-        c["permission_overwrites"].as_array().cloned().unwrap_or_default()
+        c["permission_overwrites"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
     };
     let (into_here, into_there) = (overwrites(here), overwrites(there));
     let allowed = |id: &str, what: u64| {
@@ -125,16 +128,18 @@ pub(crate) fn as_public(server: &Value, here: &Value, there: &Value, bot: &str) 
     // Through a role (or @everyone), or as a person added by name: can that
     // way in see there, and read back its history?
     let leads = |id: &str, person: bool| {
-        needed.iter().all(|&what| {
-            allowed(id, what) || everyone(what) || (!person && has(id, what))
-        })
+        needed
+            .iter()
+            .all(|&what| allowed(id, what) || everyone(what) || (!person && has(id, what)))
     };
     // Who sees `here` by base permissions alone, with no overwrite letting
     // them in: each role that grants View there must bring history too.
     let by_base = base
         .keys()
         .filter(|role| has(role, VIEW_CHANNEL))
-        .all(|role| has(role, READ_HISTORY) || allowed(role, READ_HISTORY) || everyone(READ_HISTORY));
+        .all(|role| {
+            has(role, READ_HISTORY) || allowed(role, READ_HISTORY) || everyone(READ_HISTORY)
+        });
     by_base
         && into_here
             .iter()
@@ -196,7 +201,10 @@ fn permissions(server: &Value, member: &Value, channel: &Value, user: &str) -> u
         allow |= bits(&o["allow"]);
     }
     allowed = (allowed & !deny) | allow;
-    if let Some(o) = overwrites.iter().find(|o| o["type"] == 1 && o["id"] == user) {
+    if let Some(o) = overwrites
+        .iter()
+        .find(|o| o["type"] == 1 && o["id"] == user)
+    {
         allowed = apply(allowed, o);
     }
     allowed
@@ -341,7 +349,9 @@ pub(crate) fn room_info(conn: &rusqlite::Connection, room: &str) -> Result<Value
             .flatten()
             .filter_map(Value::as_str)
             .map(str::to_lowercase)
-            .chain(crate::rooms::typed_handles(payload["text"].as_str().unwrap_or("")))
+            .chain(crate::rooms::typed_handles(
+                payload["text"].as_str().unwrap_or(""),
+            ))
             .any(|h| bots.contains(&h));
         if !mentioned {
             latest = event["seq"].as_i64();
@@ -1046,7 +1056,10 @@ impl Discord {
     /// server's own mode (null follows the default).
     fn set_mode(&self, owner: &str, bot: &str, p: &Value) -> Result<()> {
         if !(p["mode"].is_string() || (p["mode"].is_null() && p.get("mode").is_some())) {
-            return Err(Error::new(4202, "mode must be a mode, or null to follow the default"));
+            return Err(Error::new(
+                4202,
+                "mode must be a mode, or null to follow the default",
+            ));
         }
         let chosen = p["mode"].as_str();
         if let Some(mode) = chosen
@@ -1684,8 +1697,9 @@ impl Discord {
         // Its place in the room decides first: in it, it listens; out of it
         // for good (removed by the owner, or after a refused post), it
         // doesn't; only a bot that would join asks Discord.
-        let listener = listener && {
-            let place: Option<(bool, bool)> = match &mapped {
+        let listener = listener
+            && {
+                let place: Option<(bool, bool)> = match &mapped {
                 Some(room) => db::open(&self.home)?
                     .query_row(
                         "SELECT left_at IS NULL, left_at<=MAX(COALESCE((SELECT connected_at FROM discord_bots WHERE bot=?2),0),COALESCE((SELECT joined_at FROM discord_guilds WHERE bot=?2 AND guild_id=?3),0)) FROM room_members WHERE room_id=?1 AND member_kind='bot' AND member_id=?2",
@@ -1695,12 +1709,12 @@ impl Discord {
                     .optional()?,
                 None => None,
             };
-            match place {
-                Some((true, _)) => true,
-                Some((false, false)) => false,
-                _ => self.can_post(bot, guild, channel).await,
-            }
-        };
+                match place {
+                    Some((true, _)) => true,
+                    Some((false, false)) => false,
+                    _ => self.can_post(bot, guild, channel).await,
+                }
+            };
         let (room, created) = match mapped {
             Some(room) => (room, false),
             None if opens_room(message, &ours) || listener => {
@@ -1901,7 +1915,11 @@ impl Discord {
                 "SELECT member_id FROM room_members WHERE room_id=? AND member_kind='bot' AND left_at IS NULL",
                 &[&room],
             )? {
-                modes.push(mode(&tx, member["member_id"].as_str().unwrap_or(""), guild)?);
+                modes.push(mode(
+                    &tx,
+                    member["member_id"].as_str().unwrap_or(""),
+                    guild,
+                )?);
             }
             // A room being opened has no bot yet: what comes before its first
             // mention is kept for the bots that mention brings.
@@ -2166,8 +2184,10 @@ impl Discord {
         let user: Option<String> = db::open(&self.home)
             .ok()
             .and_then(|c| {
-                c.query_row("SELECT user_id FROM discord_bots WHERE bot=?", [bot], |r| r.get(0))
-                    .ok()
+                c.query_row("SELECT user_id FROM discord_bots WHERE bot=?", [bot], |r| {
+                    r.get(0)
+                })
+                .ok()
             })
             .flatten();
         let (Some(user), Some(token)) = (user, read_token(&self.home, bot)) else {
@@ -2203,7 +2223,11 @@ impl Discord {
             return true;
         }
         let allowed = permissions(&server, &member, &target, &user);
-        let need = if thread { SEND_IN_THREADS } else { SEND_MESSAGES };
+        let need = if thread {
+            SEND_IN_THREADS
+        } else {
+            SEND_MESSAGES
+        };
         let ok = allowed & VIEW_CHANNEL != 0 && allowed & need != 0;
         if !ok {
             self.refused(bot, channel);
@@ -2222,20 +2246,34 @@ impl Discord {
         {
             return Ok(());
         }
-        let event = crate::rooms::append_with_conn(&tx, room, "member.left", "system", None, json!({"bot":bot}))?;
+        let event = crate::rooms::append_with_conn(
+            &tx,
+            room,
+            "member.left",
+            "system",
+            None,
+            json!({"bot":bot}),
+        )?;
         tx.commit()?;
-        self.events.emit(owner, None, "hexbot.rooms.event", json!({"room_id":room,"event":event}));
-        self.events.emit(owner, None, "hexbot.rooms.changed", json!({"id":room}));
-        self.events.emit(owner, None, "hexbot.discord.changed", json!({"bot":bot}));
+        self.events.emit(
+            owner,
+            None,
+            "hexbot.rooms.event",
+            json!({"room_id":room,"event":event}),
+        );
+        self.events
+            .emit(owner, None, "hexbot.rooms.changed", json!({"id":room}));
+        self.events
+            .emit(owner, None, "hexbot.discord.changed", json!({"bot":bot}));
         Ok(())
     }
 
     /// Remember that a bot can't post in a channel.
     fn refused(&self, bot: &str, channel: &str) {
-        self.cant_post
-            .lock()
-            .unwrap()
-            .insert((bot.to_owned(), channel.to_owned()), std::time::Instant::now());
+        self.cant_post.lock().unwrap().insert(
+            (bot.to_owned(), channel.to_owned()),
+            std::time::Instant::now(),
+        );
     }
 
     /// Post the room's new replies, each as the bot that wrote it.
@@ -2389,7 +2427,10 @@ impl Discord {
             )
             .optional()?;
         let Some((guild, here)) = place else {
-            return Err(Error::new(4210, "hexbot_discord works only in a Discord channel."));
+            return Err(Error::new(
+                4210,
+                "hexbot_discord works only in a Discord channel.",
+            ));
         };
         if !reads(&mode(&db::open(&self.home)?, bot, &guild)?) {
             return Err(Error::new(
@@ -2400,14 +2441,13 @@ impl Discord {
         let token = read_token(&self.home, bot)
             .ok_or_else(|| Error::new(NOT_IN_DISCORD, "You aren't connected to Discord."))?;
         let user: Option<String> = db::open(&self.home)?
-            .query_row(
-                "SELECT user_id FROM discord_bots WHERE bot=?",
-                [bot],
-                |r| r.get(0),
-            )
+            .query_row("SELECT user_id FROM discord_bots WHERE bot=?", [bot], |r| {
+                r.get(0)
+            })
             .optional()?
             .flatten();
-        let user = user.ok_or_else(|| Error::new(NOT_IN_DISCORD, "You aren't connected to Discord."))?;
+        let user =
+            user.ok_or_else(|| Error::new(NOT_IN_DISCORD, "You aren't connected to Discord."))?;
         let channels = self.channels(&token, &guild, &user, &here).await?;
         match args["action"].as_str().unwrap_or("channels") {
             // The list is cut for the prompt; read finds any of them.
@@ -2448,7 +2488,13 @@ impl Discord {
                     .await
                     .map_err(|e| {
                         if e.code == 5251 {
-                            Error::new(4302, format!("You can't read #{} in Discord.", found["name"].as_str().unwrap_or("that channel")))
+                            Error::new(
+                                4302,
+                                format!(
+                                    "You can't read #{} in Discord.",
+                                    found["name"].as_str().unwrap_or("that channel")
+                                ),
+                            )
                         } else {
                             e
                         }
@@ -2510,9 +2556,20 @@ impl Discord {
     /// private channel says to people who can't read it. Discord lists every
     /// channel of a server, so permissions decide. Forums are only parents:
     /// their posts are threads.
-    async fn channels(&self, token: &str, guild: &str, user: &str, here: &str) -> Result<Vec<Value>> {
+    async fn channels(
+        &self,
+        token: &str,
+        guild: &str,
+        user: &str,
+        here: &str,
+    ) -> Result<Vec<Value>> {
         let server = self
-            .rest(token, reqwest::Method::GET, &format!("/guilds/{guild}"), None)
+            .rest(
+                token,
+                reqwest::Method::GET,
+                &format!("/guilds/{guild}"),
+                None,
+            )
             .await?;
         let member = self
             .rest(
@@ -2535,7 +2592,12 @@ impl Discord {
         let mut asked = all.iter().find(|c| c["id"] == here).map(|c| (*c).clone());
         if asked.is_none() {
             let thread = self
-                .rest(token, reqwest::Method::GET, &format!("/channels/{here}"), None)
+                .rest(
+                    token,
+                    reqwest::Method::GET,
+                    &format!("/channels/{here}"),
+                    None,
+                )
                 .await
                 .unwrap_or_default();
             asked = thread["parent_id"]

@@ -136,7 +136,8 @@ fn a_listening_bot_answers_the_newest_message_once_and_never_another_bot() {
     room["members"][1]["last_read_seq"] = json!(3);
     room["members"][2]["last_read_seq"] = json!(3);
     let none = HashSet::new();
-    let newest = json!({"kind":"message.user","seq":7,"payload":{"text":"anyone?","author":{"bot":false}}});
+    let newest =
+        json!({"kind":"message.user","seq":7,"payload":{"text":"anyone?","author":{"bot":false}}});
     assert_eq!(
         rooms::select_responders(&room, &newest, &none),
         (vec!["owl".into()], false)
@@ -155,16 +156,24 @@ fn a_listening_bot_answers_the_newest_message_once_and_never_another_bot() {
     );
     room["members"][1]["last_read_seq"] = json!(3);
     // A message for fox is fox's to answer; owl, listening, leaves it.
-    let mention = json!({"kind":"message.user","seq":7,"payload":{"text":"@fox you?","mentions":["fox"]}});
+    let mention =
+        json!({"kind":"message.user","seq":7,"payload":{"text":"@fox you?","mentions":["fox"]}});
     assert_eq!(
         rooms::select_responders(&room, &mention, &none),
         (vec!["fox".into()], false)
     );
     // Another Discord bot, or one of ours, sets off no listener.
-    let bot = json!({"kind":"message.user","seq":7,"payload":{"text":"beep","author":{"bot":true}}});
-    assert_eq!(rooms::select_responders(&room, &bot, &none), (vec![], false));
+    let bot =
+        json!({"kind":"message.user","seq":7,"payload":{"text":"beep","author":{"bot":true}}});
+    assert_eq!(
+        rooms::select_responders(&room, &bot, &none),
+        (vec![], false)
+    );
     let ours = json!({"kind":"message.bot","seq":7,"actor_id":"fox","payload":{"text":"done"}});
-    assert_eq!(rooms::select_responders(&room, &ours, &none), (vec![], false));
+    assert_eq!(
+        rooms::select_responders(&room, &ours, &none),
+        (vec![], false)
+    );
 }
 
 #[tokio::test]
@@ -185,8 +194,12 @@ async fn discord_is_turned_on_in_plugins_and_servers_follow_the_gateway() {
     assert_eq!(discord["bots"], json!([]));
     assert_eq!(discord["ready"], true);
     // On for owl: owl's settings show Discord, waiting for its token.
-    crate::plugins::set_bots(h, "alice", &json!({"kind":"connector","id":"discord","bots":["owl"]}))
-        .unwrap();
+    crate::plugins::set_bots(
+        h,
+        "alice",
+        &json!({"kind":"connector","id":"discord","bots":["owl"]}),
+    )
+    .unwrap();
     let discord = row("discord");
     assert_eq!(discord["bots"], json!(["owl"]));
     assert_eq!(discord["state_text"], "No bot connected yet");
@@ -206,55 +219,98 @@ async fn discord_is_turned_on_in_plugins_and_servers_follow_the_gateway() {
     .unwrap();
     assert_eq!(row("discord")["state_text"], "1 bot online");
     assert_eq!(
-        crate::plugins::set_bots(h, "alice", &json!({"kind":"connector","id":"discord","bots":[]}))
-            .unwrap_err()
-            .code,
+        crate::plugins::set_bots(
+            h,
+            "alice",
+            &json!({"kind":"connector","id":"discord","bots":[]})
+        )
+        .unwrap_err()
+        .code,
         CONNECTED
     );
 
     let events = EventHub::new();
-    let engine = Arc::new(rooms::RoomEngine::with_runner(h.into(), Arc::new(Quiet), events.clone()));
-    let discord = Discord::with_endpoints(h.into(), events, engine, "http://127.0.0.1:9/api", "ws://127.0.0.1:9/gateway");
+    let engine = Arc::new(rooms::RoomEngine::with_runner(
+        h.into(),
+        Arc::new(Quiet),
+        events.clone(),
+    ));
+    let discord = Discord::with_endpoints(
+        h.into(),
+        events,
+        engine,
+        "http://127.0.0.1:9/api",
+        "ws://127.0.0.1:9/gateway",
+    );
     discord.servers("owl", "READY", &json!({"guilds":[{"id":"g1"},{"id":"g2"}]}));
     discord.servers("owl", "GUILD_CREATE", &json!({"id":"g1","name":"Friends"}));
-    discord.servers("owl", "GUILD_CREATE", &json!({"id":"g2","name":"Community"}));
+    discord.servers(
+        "owl",
+        "GUILD_CREATE",
+        &json!({"id":"g2","name":"Community"}),
+    );
     discord
-        .call("alice", "hexbot.discord.set_mode", &json!({"bot":"owl","guild_id":"g2","mode":"mentions"}))
+        .call(
+            "alice",
+            "hexbot.discord.set_mode",
+            &json!({"bot":"owl","guild_id":"g2","mode":"mentions"}),
+        )
         .await
         .unwrap()
         .unwrap();
-    let servers = || {
-        discord.status("owl").unwrap()["servers"].clone()
-    };
+    let servers = || discord.status("owl").unwrap()["servers"].clone();
     assert_eq!(
         servers(),
         json!([{"id":"g2","name":"Community","mode":"mentions"},{"id":"g1","name":"Friends","mode":null}])
     );
     assert_eq!(mode(&conn, "owl", "g2").unwrap(), "mentions");
     // An outage keeps a server; being taken out of one hides it, keeping its mode.
-    discord.servers("owl", "GUILD_DELETE", &json!({"id":"g2","unavailable":true}));
+    discord.servers(
+        "owl",
+        "GUILD_DELETE",
+        &json!({"id":"g2","unavailable":true}),
+    );
     assert_eq!(servers().as_array().unwrap().len(), 2);
     discord.servers("owl", "GUILD_DELETE", &json!({"id":"g2"}));
     assert_eq!(servers(), json!([{"id":"g1","name":"Friends","mode":null}]));
-    discord.servers("owl", "GUILD_CREATE", &json!({"id":"g2","name":"Community"}));
+    discord.servers(
+        "owl",
+        "GUILD_CREATE",
+        &json!({"id":"g2","name":"Community"}),
+    );
     assert_eq!(servers()[0]["mode"], "mentions");
     // The next READY drops a server it no longer names.
     discord.servers("owl", "READY", &json!({"guilds":[{"id":"g2"}]}));
-    assert_eq!(servers(), json!([{"id":"g2","name":"Community","mode":"mentions"}]));
+    assert_eq!(
+        servers(),
+        json!([{"id":"g2","name":"Community","mode":"mentions"}])
+    );
 
     // Disconnected, it can be turned off, and its Discord settings go.
     discord.forget("owl").unwrap();
-    crate::plugins::set_bots(h, "alice", &json!({"kind":"connector","id":"discord","bots":["fox"]}))
-        .unwrap();
+    crate::plugins::set_bots(
+        h,
+        "alice",
+        &json!({"kind":"connector","id":"discord","bots":["fox"]}),
+    )
+    .unwrap();
     assert!(!enabled(&conn, "owl").unwrap());
     let left: i64 = conn
-        .query_row("SELECT COUNT(*) FROM discord_guilds WHERE bot='owl'", [], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM discord_guilds WHERE bot='owl'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(left, 0);
     // And Discord stays out of reach while it is off.
     assert_eq!(
         discord
-            .call("alice", "hexbot.discord.connect", &json!({"bot":"owl","token":"T"}))
+            .call(
+                "alice",
+                "hexbot.discord.connect",
+                &json!({"bot":"owl","token":"T"})
+            )
             .await
             .unwrap()
             .unwrap_err()
@@ -838,11 +894,19 @@ async fn a_listener_takes_what_another_connection_dropped_and_leaves_a_server_it
         )
         .unwrap();
     let events = EventHub::new();
-    let engine = Arc::new(rooms::RoomEngine::with_runner(h.into(), Arc::new(Quiet), events.clone()));
-    let discord = Discord::with_endpoints(h.into(), events, engine, "http://127.0.0.1:9/api", "ws://127.0.0.1:9/gateway");
-    let said = |id: &str, text: &str| {
-        json!({"id":id,"type":0,"guild_id":"g1","channel_id":"c1","content":text,"author":{"id":"300","username":"sam"},"mentions":[]})
-    };
+    let engine = Arc::new(rooms::RoomEngine::with_runner(
+        h.into(),
+        Arc::new(Quiet),
+        events.clone(),
+    ));
+    let discord = Discord::with_endpoints(
+        h.into(),
+        events,
+        engine,
+        "http://127.0.0.1:9/api",
+        "ws://127.0.0.1:9/gateway",
+    );
+    let said = |id: &str, text: &str| json!({"id":id,"type":0,"guild_id":"g1","channel_id":"c1","content":text,"author":{"id":"300","username":"sam"},"mentions":[]});
     let texts = || -> Vec<String> {
         db::open(h)
             .unwrap()
@@ -865,9 +929,15 @@ async fn a_listener_takes_what_another_connection_dropped_and_leaves_a_server_it
     };
     // Fox, which sees only mentions, hears it first: nothing is kept. Owl,
     // an active member, hears it next: it joins and the message is kept.
-    discord.ingest("fox", &said("m1", "anyone around?")).await.unwrap();
+    discord
+        .ingest("fox", &said("m1", "anyone around?"))
+        .await
+        .unwrap();
     assert!(texts().is_empty());
-    discord.ingest("owl", &said("m1", "anyone around?")).await.unwrap();
+    discord
+        .ingest("owl", &said("m1", "anyone around?"))
+        .await
+        .unwrap();
     assert!(active("owl"));
     assert_eq!(texts(), ["anyone around?"]);
 
@@ -878,19 +948,32 @@ async fn a_listener_takes_what_another_connection_dropped_and_leaves_a_server_it
     assert!(!active("owl"));
     let left: i64 = db::open(h)
         .unwrap()
-        .query_row("SELECT COUNT(*) FROM room_events WHERE room_id='d' AND kind='member.left'", [], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM room_events WHERE room_id='d' AND kind='member.left'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(left, 1);
     discord.servers("owl", "GUILD_CREATE", &json!({"id":"g1","name":"Server"}));
-    discord.ingest("owl", &said("m2", "back now")).await.unwrap();
+    discord
+        .ingest("owl", &said("m2", "back now"))
+        .await
+        .unwrap();
     assert!(active("owl"));
 
     // Removed by the owner since, it stays out until someone mentions it.
     db::open(h)
         .unwrap()
-        .execute("UPDATE room_members SET left_at=? WHERE room_id='d' AND member_id='owl'", [now() + 1.0])
+        .execute(
+            "UPDATE room_members SET left_at=? WHERE room_id='d' AND member_id='owl'",
+            [now() + 1.0],
+        )
         .unwrap();
-    discord.ingest("owl", &said("m3", "still there?")).await.unwrap();
+    discord
+        .ingest("owl", &said("m3", "still there?"))
+        .await
+        .unwrap();
     assert!(!active("owl"));
 }
 
@@ -918,7 +1001,12 @@ fn a_bot_sees_a_channel_as_discord_decides() {
     ]});
     assert!(!can_view(&server, &modded, &shut, "100"));
     // Administrators and the owner see everything.
-    assert!(can_view(&server, &json!({"roles":["admins"]}), &shut, "100"));
+    assert!(can_view(
+        &server,
+        &json!({"roles":["admins"]}),
+        &shut,
+        "100"
+    ));
     assert!(can_view(&server, &plain, &private, "1"));
 }
 
@@ -941,8 +1029,18 @@ async fn nothing_brings_back_a_bot_taken_out_of_the_server() {
         )
         .unwrap();
     let events = EventHub::new();
-    let engine = Arc::new(rooms::RoomEngine::with_runner(h.into(), Arc::new(Quiet), events.clone()));
-    let discord = Discord::with_endpoints(h.into(), events, engine, "http://127.0.0.1:9/api", "ws://127.0.0.1:9/gateway");
+    let engine = Arc::new(rooms::RoomEngine::with_runner(
+        h.into(),
+        Arc::new(Quiet),
+        events.clone(),
+    ));
+    let discord = Discord::with_endpoints(
+        h.into(),
+        events,
+        engine,
+        "http://127.0.0.1:9/api",
+        "ws://127.0.0.1:9/gateway",
+    );
     // Through fox's connection, someone mentions owl and replies to it.
     discord
         .ingest(
@@ -955,14 +1053,21 @@ async fn nothing_brings_back_a_bot_taken_out_of_the_server() {
         .unwrap();
     let left: Option<f64> = db::open(h)
         .unwrap()
-        .query_row("SELECT left_at FROM room_members WHERE room_id='d' AND member_id='owl'", [], |r| r.get(0))
+        .query_row(
+            "SELECT left_at FROM room_members WHERE room_id='d' AND member_id='owl'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(left, Some(1.0));
     // Nor does owl's own message, queued on its connection before the
     // removal: as an active member it would join, here and in a new channel.
     db::open(h)
         .unwrap()
-        .execute("UPDATE discord_plugin SET mode='active' WHERE bot='owl'", [])
+        .execute(
+            "UPDATE discord_plugin SET mode='active' WHERE bot='owl'",
+            [],
+        )
         .unwrap();
     let queued = |id: &str, channel: &str| {
         json!({"id":id,"type":0,"guild_id":"g1","channel_id":channel,"content":"hello",
@@ -972,11 +1077,19 @@ async fn nothing_brings_back_a_bot_taken_out_of_the_server() {
     discord.ingest("owl", &queued("m3", "c9")).await.unwrap();
     let conn = db::open(h).unwrap();
     let left: Option<f64> = conn
-        .query_row("SELECT left_at FROM room_members WHERE room_id='d' AND member_id='owl'", [], |r| r.get(0))
+        .query_row(
+            "SELECT left_at FROM room_members WHERE room_id='d' AND member_id='owl'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(left, Some(1.0));
     let opened: i64 = conn
-        .query_row("SELECT COUNT(*) FROM discord_channels WHERE channel_id='c9'", [], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM discord_channels WHERE channel_id='c9'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(opened, 0);
     // A room being opened for a bot taken out of the server, or disconnected,
@@ -985,15 +1098,32 @@ async fn nothing_brings_back_a_bot_taken_out_of_the_server() {
     // decided in its transaction.)
     write_token(h, "fox", "T").unwrap();
     let fox_ok = discord
-        .open_room("alice", "fox", "g1", "c12", "99999999999999999999", false, &["owl".into(), "fox".into()])
+        .open_room(
+            "alice",
+            "fox",
+            "g1",
+            "c12",
+            "99999999999999999999",
+            false,
+            &["owl".into(), "fox".into()],
+        )
         .await
         .unwrap();
     assert!(fox_ok.is_some(), "one of them can still take part");
-    conn.execute("DELETE FROM discord_bots WHERE bot='fox'", []).unwrap();
+    conn.execute("DELETE FROM discord_bots WHERE bot='fox'", [])
+        .unwrap();
     for (bot, channel) in [("owl", "c10"), ("fox", "c11")] {
         write_token(h, bot, "T").unwrap();
         let made = discord
-            .open_room("alice", bot, "g1", channel, "99999999999999999999", false, &[bot.to_owned()])
+            .open_room(
+                "alice",
+                bot,
+                "g1",
+                channel,
+                "99999999999999999999",
+                false,
+                &[bot.to_owned()],
+            )
             .await
             .unwrap();
         assert!(made.is_none(), "{bot}");
@@ -1022,7 +1152,11 @@ async fn nothing_brings_back_a_bot_taken_out_of_the_server() {
         .await
         .unwrap();
     let room: String = conn
-        .query_row("SELECT room_id FROM discord_channels WHERE channel_id='c13'", [], |r| r.get(0))
+        .query_row(
+            "SELECT room_id FROM discord_channels WHERE channel_id='c13'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     let fox_in: bool = conn
         .query_row(
@@ -1066,17 +1200,24 @@ fn the_read_tool_carries_nothing_more_private_than_where_it_is_asked() {
     assert!(!as_public(&server, &here, &there, "bot"));
     // A ticket: support and one person by name. Another ticket, or the staff
     // channel, is never read into it; a channel everyone sees is.
-    let ticket = |id: &str, person: &str| json!({"id":id,"permission_overwrites":[
-        {"id":"g","type":0,"allow":"0","deny":"1024"},
-        {"id":"support","type":0,"allow":"1024","deny":"0"},
-        {"id":person,"type":1,"allow":"1024","deny":"0"},
-        {"id":"bot","type":1,"allow":"1024","deny":"0"}
-    ]});
+    let ticket = |id: &str, person: &str| {
+        json!({"id":id,"permission_overwrites":[
+            {"id":"g","type":0,"allow":"0","deny":"1024"},
+            {"id":"support","type":0,"allow":"1024","deny":"0"},
+            {"id":person,"type":1,"allow":"1024","deny":"0"},
+            {"id":"bot","type":1,"allow":"1024","deny":"0"}
+        ]})
+    };
     let staff = json!({"id":"s","permission_overwrites":[
         {"id":"g","type":0,"allow":"0","deny":"1024"},
         {"id":"support","type":0,"allow":"1024","deny":"0"}
     ]});
-    assert!(!as_public(&server, &ticket("t41", "u"), &ticket("t40", "v"), "bot"));
+    assert!(!as_public(
+        &server,
+        &ticket("t41", "u"),
+        &ticket("t40", "v"),
+        "bot"
+    ));
     assert!(!as_public(&server, &ticket("t41", "u"), &staff, "bot"));
     assert!(as_public(&server, &ticket("t41", "u"), &general, "bot"));
     // A server where only a role sees channels: the channels it sees are
@@ -1089,9 +1230,14 @@ fn the_read_tool_carries_nothing_more_private_than_where_it_is_asked() {
     let members_only = json!({"id":"x","permission_overwrites":[
         {"id":"member","type":0,"allow":"1024","deny":"0"}
     ]});
-    assert!(!as_public(&gated, &members_only, &json!({"id":"y","permission_overwrites":[
-        {"id":"g","type":0,"allow":"0","deny":"1024"}
-    ]}), "bot"));
+    assert!(!as_public(
+        &gated,
+        &members_only,
+        &json!({"id":"y","permission_overwrites":[
+            {"id":"g","type":0,"allow":"0","deny":"1024"}
+        ]}),
+        "bot"
+    ));
     // Reading back takes Read Message History: a channel people may watch
     // but not scroll back in isn't read back for them.
     let with_history = json!({"id":"g","roles":[{"id":"g","permissions":"66560"}]});
@@ -1126,11 +1272,12 @@ fn a_listener_answers_what_was_said_to_nobody_even_when_a_mention_follows() {
              INSERT INTO discord_channels(channel_id,guild_id,room_id,guild_name,channel_name) VALUES('c1','g1','d','Server','general');",
         )
         .unwrap();
-    let say = |text: &str, mentions: &[&str]| {
-        rooms::append(h, "alice", "d", "message.user", "discord", Some("300"),
+    let say =
+        |text: &str, mentions: &[&str]| {
+            rooms::append(h, "alice", "d", "message.user", "discord", Some("300"),
             json!({"text":text,"author":{"id":"300","name":"Kim","bot":false},"mentions":mentions}))
             .unwrap()
-    };
+        };
     let kim = say("what about Y?", &[]);
     say("@fox thoughts?", &["fox"]);
     let room = rooms::get(h, "alice", "d").unwrap();
