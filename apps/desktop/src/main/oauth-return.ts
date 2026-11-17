@@ -33,10 +33,10 @@ export class OAuthReturns {
   /** Listens for one return and gives the port to send Google back to. */
   async open(): Promise<number> {
     const server = createServer((request, response) => {
-      const url = new URL(request.url ?? '/', 'http://127.0.0.1')
+      const url = URL.parse(request.url ?? '/', 'http://127.0.0.1')
       const entry = this.pending.get(port)
 
-      if (request.method !== 'GET' || url.pathname !== PATH || !url.searchParams.has('state')) {
+      if (request.method !== 'GET' || url?.pathname !== PATH || !url.searchParams.has('state')) {
         response.writeHead(404).end()
         return
       }

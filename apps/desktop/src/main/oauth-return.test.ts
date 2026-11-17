@@ -1,3 +1,4 @@
+import { connect } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { OAuthReturns } from './oauth-return'
@@ -32,6 +33,19 @@ describe('Google sign-in returns to the app', () => {
     await fetch(`http://127.0.0.1:${port}/oauth/google?state=other&code=d`)
     expect(await relay.wait(port)).toBe(`http://127.0.0.1:${port}/oauth/google?state=s&code=c`)
     expect(onReturn).toHaveBeenCalledTimes(1)
+  })
+
+  it('turns away a request it cannot parse', async () => {
+    const relay = make()
+    const port = await relay.open()
+    const socket = connect(port, '127.0.0.1')
+    let reply = ''
+    socket.on('data', chunk => (reply += chunk))
+    socket.end('GET http://%/oauth/google?state=s HTTP/1.1\r\nHost: x\r\n\r\n')
+    await new Promise(resolve => socket.on('close', resolve))
+
+    expect(reply).toMatch(/^HTTP\/1.1 404/)
+    expect((await fetch(`http://127.0.0.1:${port}/oauth/google?state=s`)).status).toBe(200)
   })
 
   it('stops listening when closed and tells whoever waits', async () => {
