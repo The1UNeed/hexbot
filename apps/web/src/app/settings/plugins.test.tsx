@@ -10,6 +10,8 @@ import {
   pluginsList,
   pluginsRemove,
   pluginsSetBots,
+  skillsDelete,
+  skillsSave,
   skillsSetGlobal
 } from '../../lib/api'
 import type { Bot, Connector, PluginsList } from '../../lib/types'
@@ -30,6 +32,8 @@ vi.mock('../../lib/api', async importOriginal => ({
   pluginsList: vi.fn(),
   pluginsRemove: vi.fn().mockResolvedValue({ removed: true }),
   pluginsSetBots: vi.fn().mockResolvedValue({}),
+  skillsDelete: vi.fn().mockResolvedValue({ deleted: true }),
+  skillsSave: vi.fn().mockResolvedValue({}),
   skillsSetGlobal: vi.fn().mockResolvedValue({})
 }))
 
@@ -259,7 +263,7 @@ describe('Settings, Plugins', () => {
     expect(screen.getByText('Needs GITHUB_TOKEN')).toBeInTheDocument()
     expect(screen.queryByText('Web search')).not.toBeInTheDocument()
     await show('Skills')
-    expect(screen.getByText('Productivity')).toBeInTheDocument()
+    expect(screen.getByText('Built into Hexbot')).toBeInTheDocument()
     expect(screen.getByText('pdf')).toBeInTheDocument()
     // Built-in tools live in Settings, Manuals.
     expect(screen.queryByText('Built-in tools')).not.toBeInTheDocument()
@@ -270,6 +274,82 @@ describe('Settings, Plugins', () => {
         .getAllByRole('tab')
         .map(tab => tab.textContent)
     ).toEqual(['Every bot', 'HexBot', 'Owl'])
+  })
+
+  it('adds a skill of your own for the bot in view, then opens it', async () => {
+    render(<PluginsSettings />)
+    await show('Skills')
+    fireEvent.click(screen.getByRole('tab', { name: 'Owl' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add skill' }))
+    const add = screen.getByRole('button', { name: 'Add skill' })
+    expect(add).toBeDisabled()
+    fireEvent.change(screen.getByLabelText('Skill name'), { target: { value: 'Release-Notes' } })
+    fireEvent.change(screen.getByLabelText('When to use the skill'), {
+      target: { value: 'Write release notes.' }
+    })
+    fireEvent.change(screen.getByLabelText('Skill instructions'), {
+      target: { value: 'List merged pull requests.' }
+    })
+    expect(screen.getByText(/On for Owl\./)).toBeInTheDocument()
+
+    const added = {
+      bots: ['owl'],
+      category: '',
+      description: 'Write release notes.',
+      enabled: true,
+      id: 'release-notes',
+      kind: 'skill' as const,
+      name: 'release-notes',
+      ready: true,
+      source: 'library'
+    }
+
+    vi.mocked(pluginsList).mockResolvedValue(list({ skills: [...list().skills, added] }))
+    fireEvent.click(add)
+    await waitFor(() =>
+      expect(skillsSave).toHaveBeenCalledWith({
+        botsDisabled: ['hexbot'],
+        content: '---\ndescription: "Write release notes."\n---\n\nList merged pull requests.\n',
+        name: 'release-notes'
+      })
+    )
+    // Its sheet opens to choose more bots, and a skill you added can be deleted.
+    await screen.findByTestId('sheet-skill:release-notes')
+    fireEvent.click(sheet('skill:release-notes').getByRole('button', { name: 'Delete skill' }))
+    await waitFor(() => expect(skillsDelete).toHaveBeenCalledWith('release-notes'))
+  })
+
+  it('lists the skills a connector comes with, and never deletes a built-in skill', async () => {
+    vi.mocked(pluginsList).mockResolvedValue(
+      list({
+        connectors: [
+          {
+            ...search,
+            bots: ['hexbot', 'owl'],
+            kind: 'connector',
+            ready: true,
+            skills: [
+              {
+                description: 'Recover blocked pages.',
+                disabled_globally: true,
+                name: 'blocked-page-recovery'
+              }
+            ]
+          }
+        ]
+      })
+    )
+    render(<PluginsSettings />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Web search' }))
+    expect(sheet('connector:web_search').getByText('Skills that come with it')).toBeInTheDocument()
+    expect(sheet('connector:web_search').getByText('blocked-page-recovery')).toBeInTheDocument()
+    // One switched off for every bot before it came with the connector is turned back on here.
+    fireEvent.click(sheet('connector:web_search').getByRole('button', { name: 'Turn on' }))
+    await waitFor(() => expect(skillsSetGlobal).toHaveBeenCalledWith('blocked-page-recovery', true))
+    fireEvent.click(sheet('connector:web_search').getByRole('button', { name: 'Done' }))
+    await show('Skills')
+    fireEvent.click(screen.getByRole('button', { name: 'pdf' }))
+    expect(sheet('skill:pdf').queryByRole('button', { name: 'Delete skill' })).toBeNull()
   })
 
   it('shows the server a tag in a message named, on a first visit', async () => {

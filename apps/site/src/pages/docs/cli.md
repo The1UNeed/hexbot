@@ -141,7 +141,7 @@ The native CLI lists rooms; create rooms and manage their members in the app or 
 hexbot plugins                                   # connectors, MCP servers, skills and their bots
 hexbot plugins list --bot writer                 # the same, with writer's switches
 hexbot plugins assign connector mcp:files writer researcher
-hexbot plugins assign skill himalaya writer
+hexbot plugins assign skill release-notes writer
 hexbot plugins assign package github writer      # a server and its skills together
 ```
 

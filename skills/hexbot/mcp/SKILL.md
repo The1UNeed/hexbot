@@ -4,10 +4,6 @@ description: "Find an MCP server for a service you can't reach yet, and install 
 version: 1.0.0
 author: Hexbot
 license: MIT
-platforms: [linux, macos, windows]
-metadata:
-  hermes:
-    tags: [MCP, plugins, tools, setup]
 ---
 
 # Install an MCP server
@@ -56,7 +52,7 @@ Call `hexbot_plugins` with `action: "install"`:
 - `name`: lowercase letters, digits, `-` or `_`. The server's tools appear as `mcp__<name>__<tool>`.
 - For a URL server, give `"mcp": {"url": "https://…", "headers": {"Authorization": ""}}`.
 - **Leave secret values empty.** Never put a token you were not given in the plugin, and never ask the user to paste one in the chat. They fill empty values on the install card, or later on a setup card.
-- Add a skill when the server needs know-how: which tools to call, in what order, and what to avoid. Read the skill-create skill for how to write one. Keep it short.
+- Add a skill when the server needs know-how: which tools to call, in what order, and what to avoid. Read the skill-creator skill for how to write one. Keep it short.
 
 The user sees what the plugin runs on a card in your chat and installs or declines it. If they decline, do not try again with another server unless they ask; ask what they would like instead.
 

@@ -550,11 +550,35 @@ pub(crate) fn enabled(home: &Path, bot: &str, id: &str) -> Result<bool> {
             // Readiness only hides the skill; the bot's grant is its own.
             .any(|s| s.name == skill && s.enabled_for_bot && !s.disabled_globally));
     }
-    let tools = toolsets(home, bot)?;
-    if id == "web_search" {
-        return Ok(tools.iter().any(|t| t == "web" || t == "search"));
+    Ok(toolsets_on(&s, &toolsets(home, bot)?))
+}
+/// Whether a catalog connector's toolsets are all among `tools`.
+fn toolsets_on(spec: &Value, tools: &[String]) -> bool {
+    if spec["id"] == "web_search" {
+        return tools.iter().any(|t| t == "web" || t == "search");
     }
-    Ok(strings(&s["toolsets"]).iter().all(|t| tools.contains(t)))
+    strings(&spec["toolsets"]).iter().all(|t| tools.contains(t))
+}
+/// The connectors `bot` has, on for it and set up for it, among those that
+/// come with skills (`skills` in `connectors.json`). Their skills are the
+/// bot's while it has one of them (`skills::resolve`).
+pub(crate) fn with_skills(home: &Path, bot: &str) -> Result<BTreeSet<String>> {
+    let mut given = BTreeSet::new();
+    // A bot still being created has no connectors yet.
+    if !names(home)?.iter().any(|n| n == bot) {
+        return Ok(given);
+    }
+    let tools = toolsets(home, bot)?;
+    for s in catalog() {
+        // A skill-backed connector, such as Notion, is its skill's own grant.
+        if s["skill"].is_string() || strings(&s["skills"]).is_empty() {
+            continue;
+        }
+        if toolsets_on(&s, &tools) && set_up_for(home, Some(bot), &s)? {
+            given.insert(s["id"].as_str().unwrap_or("").to_owned());
+        }
+    }
+    Ok(given)
 }
 /// Turn a connector on or off for one bot. One that is not set up for that
 /// bot can be turned off but not on.

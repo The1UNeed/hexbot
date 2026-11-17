@@ -352,15 +352,25 @@ the production platform guard stays intact. Neither check establishes sandbox su
 ## Skills
 
 One resolver in `skills.rs` supplies prompts, tools, RPCs, scheduled jobs and
-skill-backed connectors. Skills resolve by directory name, with a bot's private
-copy taking precedence over `<home>/skills`, then bundled `skills/` selected by
-`HEXBOT_BUNDLED_SKILLS`. New bots do not copy bundled skills. Bot authoring writes
-only private skills; editing an inherited skill creates a private override.
-People can move a private skill into the library using the share RPC.
+skill-backed connectors. Skills resolve by directory name. A bundled skill
+(`skills/`, selected by `HEXBOT_BUNDLED_SKILLS`) always wins its name: nothing
+replaces it, and a library save, a share, a bot's `skill_manage` and a package
+install all refuse the name (`skills::built_in`). Among other names a bot's
+private copy takes precedence over `<home>/skills`, then over a package's. The
+one-time migration `migration:bundled-names-v1` renamed copies that had a
+bundled name to `<name>-own`, keeping their switches. New bots do not copy
+bundled skills. Bot authoring writes only private skills; editing an inherited
+library skill creates a private override. People can move a private skill into
+the library using the share RPC.
 
 A skill's `ready` and `missing` come from its frontmatter `platforms` and
 `prerequisites` (`commands`, `env_vars`), checked at every resolve; `enabled`
 requires `ready`, so every path that reads it hides a skill waiting for setup.
+A bundled skill named in a connector's `skills` (`connectors.json`) also needs
+the bot to have one of those connectors, on and set up
+(`connectors::with_skills`); until then `missing` holds a `connector`
+requirement naming them. Plugin lists show such a skill on its connector's row,
+not among the skills, as a package's skills show on the package.
 
 New library skills are on for every bot. The bot's `config.yaml` `skills.disabled`
 is the per-bot deny-list, and the root config's `skills.disabled` disables a

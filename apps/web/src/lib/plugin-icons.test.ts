@@ -5,8 +5,8 @@ describe('plugin icons', () => {
     expect(skillIcon({ category: 'productivity', name: 'notion', source: 'bundled' })).toBe(
       'notion'
     )
-    expect(skillIcon({ category: 'productivity', name: 'new-one', source: 'bundled' })).toBe(
-      'glyph:list-checks'
+    expect(skillIcon({ category: 'documents', name: 'new-one', source: 'bundled' })).toBe(
+      'glyph:file-text'
     )
   })
 

@@ -86,6 +86,12 @@ export function accountSiblings(plugin: Plugin, plugins: Plugin[]): Plugin[] {
 
 /** "Needs memo installed", as the bot's Skills tab words it. */
 function needs(missing: SkillRequirement[] = []): string {
+  const connector = missing.find(item => item.kind === 'connector')
+
+  if (connector) {
+    return `Comes with ${connector.name.join(' or ')}`
+  }
+
   const words = missing.map(item =>
     item.kind === 'command'
       ? `${item.name} installed`
@@ -164,6 +170,7 @@ export function pluginRows(list: PluginsList): Plugin[] {
       ready_bots: row.ready_bots,
       waiting_bots: row.waiting_bots,
       server: row.server ?? null,
+      skills: row.skills,
       state: row.state,
       state_text: row.state_text
     })),

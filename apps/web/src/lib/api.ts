@@ -440,6 +440,29 @@ export function skillsSetGlobal(name: string, enabled: boolean): Promise<unknown
   return rpcCall('hexbot.skills.set_global', { enabled, name })
 }
 
+/**
+ * Adds a skill to your library. It never replaces one: a name already in
+ * use, or a skill built into Hexbot, is refused. `botsDisabled` starts it
+ * off for those bots.
+ */
+export function skillsSave(input: {
+  botsDisabled?: string[]
+  content: string
+  name: string
+}): Promise<unknown> {
+  return rpcCall('hexbot.skills.save', {
+    content: input.content,
+    create: true,
+    name: input.name,
+    ...(input.botsDisabled?.length ? { bots_disabled: input.botsDisabled } : {})
+  })
+}
+
+/** Deletes a skill you added, for every bot. */
+export function skillsDelete(name: string): Promise<unknown> {
+  return rpcCall('hexbot.skills.delete', { name })
+}
+
 export function skillsList(bot: string): Promise<{ skills: SkillInfo[] }> {
   return rpcCall<{ skills: SkillInfo[] }>('hexbot.skills.list', { bot })
 }

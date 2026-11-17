@@ -380,8 +380,15 @@ more freedom and more capability than a hosted product can offer.
   daemon's computer. Settings, Manuals, Computer use holds its size and
   controls; Settings, Plugins shows connectors, MCP servers and skills on
   three tabs. Self-authored skills are on,
-  with a transcript notice. Bundled and user-shared skills form one library,
-  enabled for every bot unless disabled globally or for that bot. A skill
+  with a transcript notice. A bot gets only the skills it needs, since every
+  one it has is a line in its prompt. Hexbot bundles few: the ones for its
+  own tools (computer use, MCP servers, writing and installing skills) and
+  PDF files are on for every bot; the rest come with a connector
+  (`skills` in `connectors.json`), such as `xlsx` with Excel, and a bot has
+  them only while it has that connector. Bundled skills can be turned off,
+  never changed, deleted, or added again under their name, by the user, a
+  bot or a package. Skills the user adds in Settings, Plugins, Skills join
+  the library, on for the bots chosen there. A skill
   whose frontmatter names a platform, program or key this computer lacks
   stays hidden from bots until it is set up; settings say what it needs. Bots write
   private skills; the owner can share a bot's skills into the library.

@@ -1014,11 +1014,10 @@ try {
       await page.getByTestId('management-sheet-back').click()
       await page.getByTestId('manage-skill-create').click()
       await page.getByTestId('field-name').fill('mobile-update')
+      await page.getByTestId('field-description').fill('Send brief updates from your phone')
       await page
-        .getByTestId('field-content')
-        .fill(
-          '---\ndescription: Send brief updates from your phone\n---\n\nSend a short update when the work is ready.'
-        )
+        .getByTestId('field-instructions')
+        .fill('Send a short update when the work is ready.')
       await settle()
       await shot('skill-editor')
       await page.getByTestId('management-sheet-action').click()

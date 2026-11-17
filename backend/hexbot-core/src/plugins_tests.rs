@@ -965,7 +965,7 @@ fn installs_are_checked_before_anything_is_written() {
     // A bundled skill, and a skill a bot wrote for itself, keep their names.
     assert!(
         error(json!({"name":"mine","skills":[{"name":"notion","content":SKILL}]}))
-            .contains("A skill named notion already exists")
+            .contains("notion is a skill built into Hexbot")
     );
     let private = home.path().join("profiles/owl/skills/house-style");
     fs::create_dir_all(&private).unwrap();
@@ -1335,4 +1335,176 @@ fn a_package_of_skills_does_not_wait_on_a_server_it_does_not_own() {
             .iter()
             .any(|s| s.name == "notes-tips" && s.ready)
     );
+}
+
+/// A skill a connector comes with is the bot's while it has that connector,
+/// and is listed with the connector, not among the skills.
+#[test]
+fn a_connector_brings_its_skills_and_takes_them_away() {
+    let home = setup();
+    let h = home.path();
+    let skill = |bot: &str| {
+        crate::skills::resolve(h, Some(bot))
+            .unwrap()
+            .into_iter()
+            .find(|s| s.name == "blocked-page-recovery")
+            .unwrap()
+    };
+    // New bots search the web, which needs no key, so they have its skill.
+    let owl = skill("owl");
+    assert_eq!(owl.connectors, ["web_search"]);
+    assert!(owl.enabled, "{:?}", owl.missing);
+    assert!(
+        crate::catalog::enabled_skills(h, "owl")
+            .unwrap()
+            .iter()
+            .any(|s| s["name"] == "blocked-page-recovery")
+    );
+    let listed = call(h, "alice", "hexbot.plugins.list", json!({})).unwrap();
+    assert_eq!(
+        row(&listed, "connectors", "web_search")["skills"][0]["name"],
+        "blocked-page-recovery"
+    );
+    assert_eq!(
+        row(&listed, "connectors", "excel")["skills"],
+        json!([
+            {"name": "microsoft-365", "description": crate::skills::find(h, None, "microsoft-365").unwrap().description, "disabled_globally": false},
+            {"name": "xlsx", "description": crate::skills::find(h, None, "xlsx").unwrap().description, "disabled_globally": false}
+        ])
+    );
+    let skills = listed["skills"].as_array().unwrap();
+    assert!(
+        skills
+            .iter()
+            .all(|s| s["id"] != "blocked-page-recovery" && s["id"] != "xlsx")
+    );
+    assert!(skills.iter().any(|s| s["id"] == "pdf"));
+    // Notion's skill is the Notion connector's, listed with it.
+    assert!(skills.iter().all(|s| s["id"] != "notion"));
+    assert_eq!(
+        row(&listed, "connectors", "notion")["skills"][0]["name"],
+        "notion"
+    );
+
+    // Without the connector the skill waits for it, and nothing gives it.
+    connectors::switch_toolsets(h, "owl", &["web".into()], false).unwrap();
+    let owl = skill("owl");
+    assert!(!owl.enabled && owl.enabled_for_bot);
+    assert_eq!(
+        owl.missing,
+        [crate::skills::Requirement::Connector(vec![
+            "Web search".into()
+        ])]
+    );
+    assert!(skill("cat").enabled);
+    let error = crate::skills::call(
+        h,
+        "alice",
+        "hexbot.skills.set_for_bot",
+        &json!({"name": "blocked-page-recovery", "bot": "owl", "enabled": true}),
+    )
+    .unwrap_err();
+    assert_eq!(error.code, 4209);
+    assert!(
+        error.message.contains("comes with Web search"),
+        "{}",
+        error.message
+    );
+    // Excel isn't connected, so no bot has its skills.
+    assert!(!skill_on_ready(h, "cat", "xlsx"));
+
+    // Turned back on, the skill comes back with it.
+    connectors::switch_toolsets(h, "owl", &["web".into()], true).unwrap();
+    assert!(skill("owl").enabled);
+}
+
+fn skill_on_ready(home: &Path, bot: &str, name: &str) -> bool {
+    crate::skills::resolve(home, Some(bot))
+        .unwrap()
+        .into_iter()
+        .any(|s| s.name == name && s.enabled)
+}
+
+/// Nobody adds a skill under a built-in skill's name: not the user, a bot,
+/// nor a package. A bot's delete only turns a built-in skill off for it.
+#[tokio::test]
+async fn built_in_skill_names_stay_hexbots() {
+    let home = setup();
+    let h = home.path();
+    for args in [
+        json!({"name": "pdf", "content": SKILL}),
+        json!({"name": "pdf", "content": SKILL, "bot": "owl"}),
+    ] {
+        let error = crate::skills::call(h, "alice", "hexbot.skills.save", &args).unwrap_err();
+        assert!(
+            error.message.contains("pdf is a skill built into Hexbot"),
+            "{}",
+            error.message
+        );
+    }
+    db::open(h)
+        .unwrap()
+        .execute(
+            "INSERT INTO sections(id,bot,owner_id) VALUES ('owl-chat','owl','alice')",
+            [],
+        )
+        .unwrap();
+    crate::runtime_store::open(h)
+        .unwrap()
+        .execute(
+            "INSERT INTO native_sessions(stored_id,owner,bot,prompt) VALUES ('owl-chat','alice','owl','frozen')",
+            [],
+        )
+        .unwrap();
+    let manage = |operation: Value| {
+        let h = h.to_path_buf();
+        async move {
+            crate::native_product_tools::call(
+                &h,
+                "alice",
+                "owl",
+                "owl-chat",
+                "skill_manage",
+                &json!({"operations": [operation]}),
+            )
+            .await
+            .unwrap()
+        }
+    };
+    for operation in [
+        json!({"name": "pdf", "action": "patch", "old_string": "PDF", "new_string": "Mine"}),
+        json!({"name": "skill-creator", "action": "write_file", "file_path": "extra.md", "file_content": "x"}),
+    ] {
+        let error = manage(operation).await.unwrap_err();
+        assert!(
+            error.message.contains("built into Hexbot"),
+            "{}",
+            error.message
+        );
+    }
+    assert!(!h.join("profiles/owl/skills").exists());
+    manage(json!({"name": "pdf", "action": "delete"}))
+        .await
+        .unwrap();
+    assert_eq!(skill_on(h, "owl", "pdf"), Some(false));
+    assert_eq!(skill_on(h, "cat", "pdf"), Some(true));
+    // A skill of the user's own is still theirs to add and delete; adding
+    // never replaces one of the same name.
+    let add = json!({"name": "house-style", "content": SKILL, "create": true});
+    crate::skills::call(h, "alice", "hexbot.skills.save", &add).unwrap();
+    let error = crate::skills::call(h, "alice", "hexbot.skills.save", &add).unwrap_err();
+    assert!(
+        error
+            .message
+            .contains("A skill named house-style already exists"),
+        "{}",
+        error.message
+    );
+    crate::skills::call(
+        h,
+        "alice",
+        "hexbot.skills.delete",
+        &json!({"name": "house-style"}),
+    )
+    .unwrap();
 }

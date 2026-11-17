@@ -78,10 +78,16 @@ When a plugin needs a key, such as a Notion API key or an MCP server's token, th
 
 ## Choose skills
 
-Every bot draws on one shared skill library: the skills bundled with Hexbot plus any you add. A skill in the library is on for every bot until it is turned off for everyone or for one bot. Open Bot settings, Skills to see a bot's skills grouped by category and turn them on or off.
+Hexbot gives each bot only the skills it needs, so its conversations stay short:
 
-Some skills need something on the daemon's computer first: a program such as `imsg` or `himalaya`, a key such as `NOTION_API_KEY`, or a particular operating system. Until it is there, the skill is hidden from bots, and Bot settings, Skills says what it needs. Install the program or save the key, and the skill appears for bots that have it on.
+- **Built into Hexbot**: a few skills every bot has, for Hexbot's own tools: `computer-use` for the bots' computer, `mcp` for installing MCP servers, `skill-creator` and `skill-installer` for writing and installing skills, and `pdf` for PDF files. You can turn one off for a bot, but not change or delete it.
+- **Skills that come with a connector**: a bot has these while it has the connector. Excel brings `xlsx`, Word `docx`, PowerPoint `powerpoint`; each Google connector brings `google-workspace` and each Microsoft one `microsoft-365`; Gmail, Outlook and IMAP mail bring `email`; X search brings `xurl`, and web search `blocked-page-recovery`. Open a connector in Settings, Plugins to see its skills.
+- **Yours**: skills you add in Settings, Plugins, Skills, with **Add skill**: write when to use it and the instructions, or load a `SKILL.md`. It starts on for the bot you are looking at, or for every bot, and you choose its bots from there. A skill can't take the name of one built into Hexbot.
 
-A skill a bot writes for itself stays private to that bot. You can share a private skill from a bot into the library. A bot can also put skills in a package, which asks you first; the bundled `skill-create` skill shows it how. A skill can guide a workflow, but it does not supply credentials or make a disabled tool available.
+Open Bot settings, Skills to see a bot's skills and turn them on or off. A connector's skill says which connector it comes with until the bot has it.
+
+Some skills need something on the daemon's computer first: a program such as `xurl`, a key such as `NOTION_API_KEY`, or a particular operating system. Until it is there, the skill is hidden from bots, and Bot settings, Skills says what it needs.
+
+A skill a bot writes for itself stays private to that bot. You can share a private skill from a bot into the library. A bot can also put skills in a package, which asks you first; the built-in `skill-creator` skill shows it how, and `skill-installer` how to install one someone else wrote after reading it. A skill can guide a workflow, but it does not supply credentials or make a disabled tool available.
 
 The chat lists each skill's name and description, and the bot reads the full instructions only when it needs them. Turning a skill off or editing it takes effect the next time a bot reads it; a skill added later appears in the list after the chat next summarises older messages. Read a skill's instructions before relying on it for unattended work.
