@@ -135,10 +135,12 @@ mod tests {
 
     /// A single nonblocking attempt cannot show that a lock was released while
     /// other tests spawn processes (see `lock_once_released`). Tests outside
-    /// this module go through the helpers.
+    /// this module go through the helpers, or run alone in a child process
+    /// like `setup::tests::code_setup_lock_fixture`, the one allowed here.
     #[test]
     fn tests_check_locks_only_through_the_helpers() {
         let nonblocking = concat!("LOCK", "_NB");
+        let isolated = [("src/setup.rs", 1)];
         let negated = [
             "!lock_held(",
             "!osutil::lock_held(",
@@ -155,7 +157,13 @@ mod tests {
                     && !path.ends_with("src/osutil.rs")
                 {
                     let text = std::fs::read_to_string(&path).unwrap();
-                    if text.contains(nonblocking) || negated.iter().any(|n| text.contains(n)) {
+                    let allowed = isolated
+                        .iter()
+                        .find(|(file, _)| path.ends_with(file))
+                        .map_or(0, |(_, count)| *count);
+                    if text.matches(nonblocking).count() > allowed
+                        || negated.iter().any(|n| text.contains(n))
+                    {
                         offenders.push(path.display().to_string());
                     }
                 }

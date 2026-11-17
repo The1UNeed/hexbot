@@ -594,8 +594,29 @@ mod tests {
         fs::write(&receipt, "old").unwrap();
         assert!(!voice_current(home.path()));
     }
+    #[test]
+    fn code_setup_waits_for_the_home_lock_before_checking_receipts() {
+        // Other tests spawn children concurrently. Isolate this raw flock
+        // assertion so a fork cannot briefly retain this test's descriptor.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "setup::tests::code_setup_lock_fixture",
+                "--nocapture",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
     #[tokio::test]
-    async fn code_setup_waits_for_the_home_lock_before_checking_receipts() {
+    #[ignore = "isolated activation-lock descriptor lifetime fixture"]
+    async fn code_setup_lock_fixture() {
         let home = tempfile::tempdir().unwrap();
         fs::create_dir_all(home.path().join("runtime/tools")).unwrap();
         let lock = services::activation_lock(&home.path().join("runtime")).unwrap();
@@ -615,10 +636,18 @@ mod tests {
         )
         .unwrap();
         drop(lock);
-        install.await.unwrap();
-        // The guard is released even on the receipt fast path.
+        install.as_mut().await.unwrap();
+        // Check completion before retiring the pinned future too: its local
+        // guard must already be gone, not merely released by the future Drop.
+        use std::os::fd::AsRawFd;
         let contender = fs::File::open(home.path().join("runtime/activate.lock")).unwrap();
-        crate::osutil::lock_once_released(&contender);
+        let result = unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        let error = (result != 0).then(std::io::Error::last_os_error);
+        drop(install);
+        assert_eq!(
+            result, 0,
+            "fast-path activation lock did not release: {error:?}"
+        );
     }
     #[tokio::test]
     async fn concurrent_code_setup_builds_voice_once_under_the_home_lock() {

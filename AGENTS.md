@@ -192,7 +192,9 @@ shows that a file lock was released with `osutil::lock_once_released`, never
 with one nonblocking attempt: a child process that another test spawns holds
 copies of every open descriptor until it execs, so a released lock can look
 held for a moment. `osutil::lock_held` is for asserting that a lock is held.
-A guard test rejects raw `LOCK_NB` outside `osutil.rs`.
+A test that must check a release in one try runs alone in a child process,
+like `setup::tests::code_setup_lock_fixture`. A guard test rejects any other
+raw `LOCK_NB` outside `osutil.rs`.
 
 ## Hit every surface
 
