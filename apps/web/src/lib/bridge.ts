@@ -49,6 +49,16 @@ export interface HexbotBridge {
   isPackaged: boolean
   notify(input: { backgroundOnly?: boolean; body: string; sectionId?: string; title: string }): void
   openExternal(url: string): Promise<void> | void
+  /**
+   * Google's return to 127.0.0.1 on this computer, for a daemon elsewhere:
+   * `open` gives the port to send Google back to, `wait` the address the
+   * browser came back to (null once closed). Apps from before it leave it out.
+   */
+  oauthReturn?: {
+    close(port: number): Promise<void>
+    open(): Promise<number>
+    wait(port: number): Promise<null | string>
+  }
   /** Opens the system's page for Hexbot's notifications; apps from before it leave it out. */
   openNotificationSettings?(): Promise<void>
   onNavigate?(callback: (url: string) => void): () => void

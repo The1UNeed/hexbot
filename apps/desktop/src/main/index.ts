@@ -29,6 +29,7 @@ import { resolveWebDevUrl } from './dev-url'
 import { edition, hasRuntime, requireRuntime } from './edition'
 import { parseDeepLink } from './deep-link'
 import { askToNotify, notificationSettingsUrl, notify, reportShown, sendShown } from './notify'
+import { OAuthReturns } from './oauth-return'
 import { pair, pairingReply, pairWithGrant, type GrantPairOptions, type PairOptions } from './pair'
 import { installService, serviceStatus, uninstallService } from './service'
 import { createTray } from './tray'
@@ -67,11 +68,18 @@ let daemon: DaemonManager
 const lifecycle = new WindowLifecycle()
 let tray: Tray | undefined
 let creatingWindow: Promise<BrowserWindow> | undefined
+// Google sign-ins come back to the app; the app comes forward to show them finish.
+const oauthReturns = new OAuthReturns(() => void showWindow())
 
 function validString(value: unknown, name: string, max = 1_000): string {
   if (typeof value !== 'string' || !value.trim() || value.length > max)
     throw new TypeError(`Invalid ${name}`)
   return value.trim()
+}
+function validPort(value: unknown): number {
+  if (!Number.isInteger(value) || Number(value) < 1 || Number(value) > 65_535)
+    throw new TypeError('Invalid port')
+  return Number(value)
 }
 function validatePair(value: unknown): PairOptions {
   if (!value || typeof value !== 'object') throw new TypeError('Invalid pair options')
@@ -339,6 +347,9 @@ function registerIpc(): void {
     if (!['https:', 'http:'].includes(url.protocol)) throw new TypeError('Unsupported URL')
     return shell.openExternal(url.href)
   })
+  handle('hexbot:oauth-return:open', () => oauthReturns.open())
+  handle('hexbot:oauth-return:wait', (_event, port: unknown) => oauthReturns.wait(validPort(port)))
+  handle('hexbot:oauth-return:close', (_event, port: unknown) => oauthReturns.close(validPort(port)))
   handle(
     'hexbot:pick-files',
     async () =>
@@ -438,6 +449,7 @@ else {
 }
 app.on('before-quit', () => {
   lifecycle.beginQuit()
+  oauthReturns.closeAll()
 })
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()

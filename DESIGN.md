@@ -225,8 +225,13 @@ more freedom and more capability than a hosted product can offer.
   the mailbox, and the card says Sent only once the mailbox took it; a
   refusal leaves the card open with the user's edits. Mail stays in the bot's own chat and its jobs; rooms and
   threads between bots may have other readers. Google refuses Gmail scopes
-  to device codes, so it signs in with PKCE and returns to the daemon's
-  loopback port, or to a pasted address from another computer.
+  to device codes, so it signs in with PKCE, and a desktop client may only
+  return to 127.0.0.1. Google returns to the daemon's loopback port from a
+  browser beside it, to the desktop app's own port (the app passes the
+  address on) wherever the daemon runs, and through Hex Connect to the
+  daemon's tunnel from a browser or phone elsewhere. Connect forwards the
+  browser and keeps nothing; the code is useless without the PKCE key on
+  the daemon. A daemon without Connect falls back to a pasted address.
 - Its one way to speak is `hexbot_notify`: one message per run, eight a day
   from each bot. The message is posted as the bot's own message in its chat
   (made if it has none) and broadcast whole as `hexbot.heartbeat.message`:

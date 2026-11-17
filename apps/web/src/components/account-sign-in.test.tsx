@@ -64,7 +64,7 @@ describe('account sign-in', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Sign in with Google' }))
     // The connector, and the others to connect with the same sign-in.
     await waitFor(() =>
-      expect(accountsSignInStart).toHaveBeenCalledWith('gmail', ['google_calendar'])
+      expect(accountsSignInStart).toHaveBeenCalledWith('gmail', ['google_calendar'], undefined)
     )
     await screen.findByText(/Finish signing in on the Google page/)
     expect(opened).toEqual([google.url])
@@ -82,6 +82,115 @@ describe('account sign-in', () => {
     )
     expect(onDone).toHaveBeenCalledWith(expect.objectContaining({ email: 'ana@example.com' }))
     expect(screen.getByText('Signed in as ana@example.com.')).toBeVisible()
+  })
+
+  it('has Google return through Hex Connect for a browser on another computer', async () => {
+    vi.stubGlobal('location', { ...window.location, hostname: 'amber-otter-1234.hexbot.app' })
+    vi.mocked(accountsSignInStart).mockResolvedValue({
+      ...google,
+      redirect_uri: 'https://connect.hexbot.app/oauth/google'
+    })
+    render(<AccountSignInPanel onDone={vi.fn()} provider="google" service="gmail" />)
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in with Google' }))
+    await waitFor(() => expect(accountsSignInStart).toHaveBeenCalledWith('gmail', [], 'connect'))
+    await screen.findByText(/Finish signing in on the Google page/)
+    // It comes back by itself, so there is no address to paste.
+    expect(screen.queryByLabelText('The address the browser ended on')).toBeNull()
+    vi.unstubAllGlobals()
+  })
+
+  describe('in the desktop app', () => {
+    const relay = { close: vi.fn(), open: vi.fn(), wait: vi.fn() }
+
+    beforeEach(() => {
+      relay.close.mockResolvedValue(undefined)
+      relay.open.mockResolvedValue(51234)
+      window.hexbot = {
+        edition: 'client',
+        oauthReturn: relay,
+        openExternal: (url: string) => void opened.push(url)
+      } as unknown as typeof window.hexbot
+    })
+
+    afterEach(() => {
+      delete window.hexbot
+      relay.close.mockReset()
+      relay.open.mockReset()
+      relay.wait.mockReset()
+    })
+
+    it('has Google return to the app, which finishes the sign-in by itself', async () => {
+      const returned = 'http://127.0.0.1:51234/oauth/google?state=s&code=c'
+      let comeBack: (url: string) => void = () => undefined
+      relay.wait.mockReturnValue(new Promise(resolve => (comeBack = resolve)))
+      vi.mocked(accountsSignInStart).mockResolvedValue({
+        ...google,
+        redirect_uri: 'http://127.0.0.1:51234/oauth/google'
+      })
+      vi.mocked(accountsSignInFinish).mockResolvedValue({
+        ...google,
+        email: 'ana@example.com',
+        status: 'done'
+      })
+      const onDone = vi.fn()
+      render(<AccountSignInPanel onDone={onDone} provider="google" service="gmail" />)
+      fireEvent.click(screen.getByRole('button', { name: 'Sign in with Google' }))
+      await waitFor(() => expect(accountsSignInStart).toHaveBeenCalledWith('gmail', [], 51234))
+      await screen.findByText(/Finish signing in on the Google page/)
+      expect(opened).toEqual([google.url])
+      expect(relay.wait).toHaveBeenCalledWith(51234)
+
+      await act(async () => comeBack(returned))
+      expect(accountsSignInFinish).toHaveBeenCalledWith('l1', returned)
+      expect(onDone).toHaveBeenCalledWith(expect.objectContaining({ email: 'ana@example.com' }))
+      expect(screen.getByText('Signed in as ana@example.com.')).toBeVisible()
+      // The app stops listening once the sign-in is over.
+      expect(relay.close).toHaveBeenCalledWith(51234)
+    })
+
+    it('stops listening for a daemon that returns to its own port, or a stopped sign-in', async () => {
+      vi.mocked(accountsSignInStart).mockResolvedValue(google)
+
+      const { unmount } = render(
+        <AccountSignInPanel onDone={vi.fn()} provider="google" service="gmail" />
+      )
+
+      fireEvent.click(screen.getByRole('button', { name: 'Sign in with Google' }))
+      await screen.findByText(/Finish signing in on the Google page/)
+      expect(relay.close).toHaveBeenCalledWith(51234)
+      expect(relay.wait).not.toHaveBeenCalled()
+      unmount()
+
+      relay.close.mockClear()
+      relay.wait.mockReturnValue(new Promise(() => undefined))
+      vi.mocked(accountsSignInStart).mockResolvedValue({
+        ...google,
+        redirect_uri: 'http://127.0.0.1:51234/oauth/google'
+      })
+      render(<AccountSignInPanel onDone={vi.fn()} provider="google" service="gmail" />)
+      fireEvent.click(screen.getByRole('button', { name: 'Sign in with Google' }))
+      await screen.findByText(/Finish signing in on the Google page/)
+      expect(relay.close).not.toHaveBeenCalled()
+      fireEvent.click(screen.getByRole('button', { name: 'Stop signing in' }))
+      await waitFor(() => expect(relay.close).toHaveBeenCalledWith(51234))
+    })
+
+    it('leaves Microsoft to its device code', async () => {
+      vi.mocked(accountsSignInStart).mockResolvedValue({
+        code: 'ABCD-1234',
+        login_id: 'l2',
+        message: '',
+        mode: 'device',
+        service: 'outlook',
+        status: 'pending',
+        url: 'https://microsoft.com/devicelogin'
+      })
+      render(<AccountSignInPanel onDone={vi.fn()} provider="microsoft" service="outlook" />)
+      fireEvent.click(screen.getByRole('button', { name: 'Sign in with Microsoft' }))
+      await screen.findByTestId('account-code')
+      expect(relay.open).not.toHaveBeenCalled()
+      expect(accountsSignInStart).toHaveBeenCalledWith('outlook', [], undefined)
+    })
   })
 
   it('shows Microsoft’s code and finishes when the daemon says it is done', async () => {

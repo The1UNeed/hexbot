@@ -679,7 +679,7 @@ describe('Settings, Plugins', () => {
     fireEvent.click(opened.getByLabelText('Also connect Google Calendar'))
     fireEvent.click(opened.getByRole('button', { name: 'Sign in with Google' }))
     await waitFor(() =>
-      expect(accountsSignInStart).toHaveBeenCalledWith('gmail', ['google_calendar'])
+      expect(accountsSignInStart).toHaveBeenCalledWith('gmail', ['google_calendar'], undefined)
     )
     // Each connector it connected goes to the chosen bot, and a bot that
     // was waiting for one keeps it.
