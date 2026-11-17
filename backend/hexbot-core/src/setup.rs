@@ -617,16 +617,11 @@ mod tests {
         drop(lock);
         install.await.unwrap();
         // The guard is released even on the receipt fast path.
-        use std::os::fd::AsRawFd;
         let contender = fs::File::open(home.path().join("runtime/activate.lock")).unwrap();
-        assert_eq!(
-            unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-            0
-        );
+        crate::osutil::lock_once_released(&contender);
     }
     #[tokio::test]
     async fn concurrent_code_setup_builds_voice_once_under_the_home_lock() {
-        use std::os::fd::AsRawFd;
         let home = tempfile::tempdir().unwrap();
         let bin = home.path().join("bin");
         fs::create_dir(&bin).unwrap();
@@ -659,10 +654,7 @@ esac
             assert_eq!(stage, "voice");
             builds.set(builds.get() + 1);
             let contender = fs::File::open(home.path().join("runtime/activate.lock")).unwrap();
-            assert_ne!(
-                unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-                0
-            );
+            assert!(crate::osutil::lock_held(&contender));
         };
         let (first, second) = tokio::join!(
             install_code_runtime(home.path(), &emit),

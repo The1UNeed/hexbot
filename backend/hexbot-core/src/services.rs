@@ -2026,11 +2026,9 @@ mod activation_tests {
         // Setup finishing does not release the installer's hold.
         drop(setup);
         let contender = fs::File::open(&path).unwrap();
-        let try_lock =
-            || unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-        assert_ne!(try_lock(), 0);
+        assert!(crate::osutil::lock_held(&contender));
         drop(installer);
-        assert_eq!(try_lock(), 0);
+        crate::osutil::lock_once_released(&contender);
     }
 
     #[test]
@@ -2077,7 +2075,6 @@ mod activation_tests {
     #[test]
     fn concurrent_publications_keep_selection_and_metadata_together() {
         use std::{
-            os::fd::AsRawFd,
             sync::{Arc, Barrier},
             thread,
         };
@@ -2086,15 +2083,9 @@ mod activation_tests {
         let runtime = native.parent().unwrap();
         let lock = activation_lock(runtime).unwrap();
         let contender = fs::File::open(runtime.join("activate.lock")).unwrap();
-        assert_ne!(
-            unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-            0
-        );
+        assert!(crate::osutil::lock_held(&contender));
         drop(lock);
-        assert_eq!(
-            unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-            0
-        );
+        crate::osutil::lock_once_released(&contender);
         drop(contender);
         let barrier = Arc::new(Barrier::new(8));
         thread::scope(|scope| {
@@ -2234,14 +2225,10 @@ mod activation_tests {
 
     #[test]
     fn pruning_defers_when_lock_is_held_without_a_running_record() {
-        use std::os::fd::AsRawFd;
         let home = tempfile::tempdir().unwrap();
         let native = native_directory(home.path()).unwrap();
         let lock = fs::File::create(home.path().join("native-daemon.lock")).unwrap();
-        assert_eq!(
-            unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
-            0
-        );
+        crate::osutil::lock_exclusive(&lock).unwrap();
         for version in ["1", "2", "3"] {
             let dir = native.join(version);
             fs::create_dir(&dir).unwrap();

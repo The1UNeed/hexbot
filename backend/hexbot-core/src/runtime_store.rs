@@ -3927,7 +3927,7 @@ mod identity_tests {
         .unwrap();
         let before = history(home.path(), "source").unwrap();
         let lease = conversation_lock(home.path(), "source").unwrap();
-        lease.try_lock().unwrap();
+        crate::osutil::lock_once_released(&lease);
         assert!(
             fork_dream_chat(
                 home.path(),
