@@ -12,11 +12,21 @@ channel is nightly. Manual nightlies and scheduled nightlies with new commits
 include iOS; stable releases and ordinary pushes to `main` do nothing for iOS.
 `apps/mobile/.eas/workflows/testflight.yml` checks the
 mobile app, builds with the production profile, then uploads that exact build
-with EAS's `testflight` job. That job waits for Apple's processing, adds the
-build to the external group `Website0`, which holds the public link on
-hexbot.app, and submits it for Beta App Review. Success means Apple accepted
-the upload and the review submission; public testers get the build once Apple
-approves it.
+to App Store Connect with an EAS `submit` job. Once Apple has processed it,
+Apple's upload event starts `testflight-testers.yml` in Expo, whose
+`testflight` job adds the build to the external group `Website0`, which holds
+the public link on hexbot.app, and submits it for Beta App Review. The GitHub
+job waits for the build and the upload only: success means Apple accepted the
+upload. The tester step reports in Expo's Workflows page and emails, and
+public testers get the build once Apple approves it.
+
+The Expo account is on the free plan. Expo starts a `testflight` job that
+takes an EAS build (`build_id`) only on paid plans, so uploads use `submit`
+and the `testflight` job takes the App Store Connect build
+(`asc_build_id`) from Apple's event. `scripts/desktop/testflight-release.test.mjs`
+keeps it that way. The tester workflow needs the App Store Connect connection
+in the Expo project (Project settings, General, Connections), made with the
+submission API key.
 Build numbers increment remotely. The app version remains in
 `apps/mobile/app.config.ts`.
 
@@ -30,7 +40,7 @@ desktop publishing is independent of that job.
 The existing EAS signing credentials and assigned App Store Connect API key
 are used; the production submit profile targets Apple app `6824190699`.
 The internal group `Team (Expo)` receives every build through automatic
-distribution. `Website0` must keep its name (it is set in both workflow files)
+distribution. `Website0` must keep its name (it is set in `testflight-testers.yml`)
 and TestFlight's Test Information must stay filled in for Beta App Review.
 
 `pnpm mobile:testflight` starts the full workflow from a checkout and waits
@@ -38,7 +48,10 @@ for its result. If only uploading failed, use
 `pnpm mobile:testflight:upload --input build_id=YOUR_EAS_BUILD_ID` to retry
 that build without incrementing its number or starting another build.
 Both commands return nonzero on workflow failure and print the run link.
-Inspect its failed job logs before retrying. A successful build is not proof
+Inspect its failed job logs before retrying; GitHub shows only the failed
+job's name, and the reason is on the printed Expo link (or
+`pnpm exec eas workflow:view RUN_ID --json` in `apps/mobile`, under the job's
+`errors`). A successful build is not proof
 of a successful upload, and a workflow cannot guarantee Apple approval.
 Do not retry an already accepted build: if the upload worked and only the
 group or review step failed, add that build to `Website0` in App Store Connect

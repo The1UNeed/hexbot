@@ -14,11 +14,10 @@ defaults:
     pnpm: 10.29.3
 
 jobs:
-  testflight:
-    name: Upload to TestFlight
-    type: testflight
+  # Same upload as testflight.yml; testflight-testers.yml takes it from there.
+  submit_ios:
+    name: Upload to App Store Connect
+    type: submit
     params:
       build_id: ${{ inputs.build_id }}
       profile: production
-      external_groups: [Website0]
-      changelog: The latest Hexbot nightly. Pair it with your daemon and tell us what breaks.

@@ -284,6 +284,7 @@ With an Expo CLI login, validate the TestFlight workflow files from
 ```sh
 pnpm exec eas workflow:validate .eas/workflows/testflight.yml --non-interactive
 pnpm exec eas workflow:validate .eas/workflows/testflight-upload.yml --non-interactive
+pnpm exec eas workflow:validate .eas/workflows/testflight-testers.yml --non-interactive
 ```
 
 The build workflow runs the mobile checks before compiling iOS. Release

@@ -175,14 +175,21 @@ when its resolved channel is nightly and release checks pass. This includes
 manual nightlies and scheduled nightlies with new commits. Stable releases
 skip iOS. Ordinary pushes to `main` do not start a mobile release.
 The workflow builds the exact release commit. It checks the mobile
-app, builds iOS, then uploads that exact build with EAS's `testflight` job.
-That job waits for Apple to process the build, adds it to the external group
-`Website0`, the group behind the public link
+app, builds iOS, then uploads that exact build to App Store Connect with an
+EAS `submit` job. When Apple has processed it, Apple's upload event starts
+`.eas/workflows/testflight-testers.yml`, which adds the build to the external
+group `Website0`, the group behind the public link
 (https://testflight.apple.com/join/byKAKWMW) on hexbot.app, and submits it
 for Beta App Review. The internal group `Team (Expo)` gets every build through
-automatic distribution. A failed upload, group or review step fails the
-workflow; a successful build alone does not count. Each stage and its logs
-appear in the project's Workflows page. Public testers get a build once Apple
+automatic distribution. A failed build or upload fails the workflow and the
+Release action; a failed group or review step fails the tester workflow,
+which Expo reports by email. Each stage and its logs appear in the project's
+Workflows page.
+
+The project is on Expo's free plan, which does not run a `testflight` job
+given an EAS build (`build_id`). Uploads therefore use `submit`, and only the
+tester workflow uses a `testflight` job, with the App Store Connect build ID
+(`asc_build_id`) from Apple's event. Public testers get a build once Apple
 approves it, usually within a day; later builds of an approved version often
 skip review.
 
@@ -200,7 +207,10 @@ One-time setup in the [Expo GitHub settings](https://expo.dev/accounts/the1uneed
    group `Website0` with its public link, and fill in TestFlight's Test
    Information (beta description, feedback email, review contact), which
    Beta App Review needs. Renaming `Website0` means changing
-   `external_groups` in both workflow files.
+   `external_groups` in `testflight-testers.yml`.
+4. In the Expo project's settings, General, Connections, connect App Store
+   Connect app `6824190699` with the submission API key. Without it, Apple's
+   upload event never starts `testflight-testers.yml`.
 
 Subscribe to EAS Build, EAS Submit and workflow result emails in the Expo project's
 Notifications settings to receive success and failure notices.
@@ -235,7 +245,8 @@ pnpm mobile:testflight:upload --input build_id=YOUR_EAS_BUILD_ID
 ```
 
 This starts `.eas/workflows/testflight-upload.yml`, which can also be run
-from the Expo dashboard. Use the EAS build ID, not the App Store Connect
+from the Expo dashboard; `testflight-testers.yml` then takes the build to
+`Website0` as usual. Use the EAS build ID, not the App Store Connect
 build ID. Do not upload a build Apple has already accepted; for a new binary,
 start the full workflow to get a new build number.
 

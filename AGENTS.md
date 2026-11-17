@@ -187,7 +187,14 @@ node --test scripts/desktop/*.test.mjs scripts/dev/*.test.mjs && node scripts/de
 `ci.yml` runs all of these on every pull request and push to `main`, and `release.yml`
 runs it again before building packages.
 
-Backend tests wait on events and RPC replies, never on `sleep`.
+Backend tests wait on events and RPC replies, never on `sleep`. A test
+shows that a file lock was released with `osutil::lock_once_released`, never
+with one nonblocking attempt: a child process that another test spawns holds
+copies of every open descriptor until it execs, so a released lock can look
+held for a moment. `osutil::lock_held` is for asserting that a lock is held.
+A test that must check a release in one try runs alone in a child process,
+like `setup::tests::code_setup_lock_fixture`. A guard test rejects any other
+raw `LOCK_NB` outside `osutil.rs`.
 
 ## Hit every surface
 
@@ -232,6 +239,13 @@ nightly, and a finalize step that commits bookkeeping back to `main`.
 - A **nightly** is built by the same workflow every day `main` moved, as
   `<next>-nightly.<YYYYMMDD>.<run>`, published as a prerelease and to the
   nightly feed. Nightly versions are never committed. The last 14 are kept.
+- iOS nightlies go through Expo on its free plan
+  (`apps/mobile/.eas/workflows/`, `docs/release.md`). Use only jobs that plan
+  runs: upload with a `submit` job, and give a `testflight` job
+  `asc_build_id`, never `build_id`, which needs a paid plan.
+  `eas workflow:validate` does not catch plan limits. When the TestFlight
+  job fails, GitHub shows only the failed Expo job's name; read the reason
+  with `pnpm exec eas workflow:view RUN_ID --json` in `apps/mobile`.
 - **Dev** is your checkout (`pnpm dev`). `node scripts/desktop/dist.mjs
   --mac` produces a `Hexbot (dev)` package with its own app id.
 - The version lives in `apps/desktop/package.json`; Rust reads it at build
