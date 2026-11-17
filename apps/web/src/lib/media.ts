@@ -72,7 +72,11 @@ function mediaFile(path: string): MediaFile {
 
 const ATTACHED = '\n\nAttached files:\n'
 
-/** What a message says when it has files and no words, in the web and mobile apps. */
+/**
+ * What a message says when it has files and no words, in the web and mobile
+ * apps. The daemon's `FILES_PROMPT` (backend/hexbot-core/src/runtime.rs),
+ * which it uses for an app that sends no words, must match it.
+ */
 export function attachmentPrompt(text: string, hasAttachments: boolean): string {
   return text.trim() || (hasAttachments ? 'Please review the attached files.' : '')
 }

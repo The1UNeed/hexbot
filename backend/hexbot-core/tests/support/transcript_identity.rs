@@ -1956,6 +1956,64 @@ async fn explicit_upload_selection_restores_rejected_files_with_concurrent_attac
 }
 
 #[tokio::test]
+async fn files_without_words_go_with_the_prompt_and_never_name_the_chat() {
+    let home = setup();
+    let hub = EventHub::new();
+    let mut events = hub.subscribe();
+    let runtime = Runtime::new(home.path().into(), hub, identity_pi(home.path())).unwrap();
+    let live = open(&runtime, "alice").await["section"]["live_session_id"].clone();
+    let db = || db::open(home.path()).unwrap();
+    db().execute(
+        "UPDATE sections SET title='New section' WHERE id='section-a'",
+        [],
+    )
+    .unwrap();
+    let title = || {
+        db().query_row("SELECT title FROM sections WHERE id='section-a'", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap()
+    };
+    let submit = async |params: Value| runtime.call("alice", "prompt.submit", &params).await;
+    // Nothing at all is still refused.
+    let empty = submit(json!({"session_id":live,"text":"","attachments":[]})).await;
+    assert_eq!(empty.unwrap().unwrap_err().code, 4200);
+    // An image, like a drawn PDF, reaches Pi as images only; a file as a path.
+    // An app from before the prompt sends no words; a current one sends it.
+    let pixel = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
+    let image = json!({"session_id":live,"content_base64":pixel,"filename":"pixel.png"});
+    let image = runtime.call("alice", "image.attach_bytes", &image).await;
+    let file =
+        json!({"session_id":live,"name":"notes.txt","data_url":"data:text/plain;base64,cGFpcmVk"});
+    let file = runtime.call("alice", "file.attach", &file).await;
+    for (upload, text) in [
+        (image.unwrap().unwrap(), ""),
+        (file.unwrap().unwrap(), "Please review the attached files."),
+    ] {
+        let params = json!({"session_id":live,"text":text,"attachments":[upload["id"]]});
+        submit(params).await.unwrap().unwrap();
+        next_kind(&mut events, "message.complete").await;
+    }
+    let said = runtime_store::history(home.path(), "section-a")
+        .unwrap()
+        .into_iter()
+        .filter(|r| r["role"] == "user")
+        .map(|r| r["text"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(said[0], "Please review the attached files.");
+    assert!(said[1].starts_with("Please review the attached files.\n\nAttached files:\n"));
+    assert_eq!(title(), "New section");
+    // Your own words still name it.
+    submit(json!({"session_id":live,"text":"School plan"}))
+        .await
+        .unwrap()
+        .unwrap();
+    next_kind(&mut events, "message.complete").await;
+    assert_eq!(title(), "School plan");
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
 async fn retained_uploads_survive_refresh_and_obey_quota_and_explicit_cleanup() {
     for cleanup in ["attachments.clear", "session.close"] {
         let home = setup();
