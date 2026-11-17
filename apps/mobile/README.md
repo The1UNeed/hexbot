@@ -170,21 +170,22 @@ submissions to App Store Connect app `6824190699`. EAS stores the signing
 certificate, provisioning profile and assigned App Store Connect API key.
 Production build numbers are stored remotely and increment automatically.
 
-The GitHub Release action starts `.eas/workflows/testflight.yml` in Expo
-when its resolved channel is nightly and release checks pass. This includes
-manual nightlies and scheduled nightlies with new commits. Stable releases
-skip iOS. Ordinary pushes to `main` do not start a mobile release.
-The workflow builds the exact release commit. It checks the mobile
-app, builds iOS, then uploads that exact build to App Store Connect with an
-EAS `submit` job. When Apple has processed it, Apple's upload event starts
+The GitHub Release action builds iOS when its resolved channel is nightly
+and release checks pass. This includes manual nightlies and scheduled
+nightlies with new commits. Stable releases skip iOS. Ordinary pushes to
+`main` do not start a mobile release. On a macOS runner it builds the release
+checkout with `eas build --local --profile production`, using the signing
+credentials and build number stored in EAS, then uploads that `.ipa` to App
+Store Connect with `eas submit`. Expo's free plan allows 15 iOS cloud builds
+a month, fewer than one a night, so the nightly does not build in Expo's
+cloud. When Apple has processed it, Apple's upload event starts
 `.eas/workflows/testflight-testers.yml`, which adds the build to the external
 group `Website0`, the group behind the public link
 (https://testflight.apple.com/join/byKAKWMW) on hexbot.app, and submits it
 for Beta App Review. The internal group `Team (Expo)` gets every build through
-automatic distribution. A failed build or upload fails the workflow and the
-Release action; a failed group or review step fails the tester workflow,
-which Expo reports by email. Each stage and its logs appear in the project's
-Workflows page.
+automatic distribution. A failed build or upload fails the Release action,
+with the reason in its log; a failed group or review step fails the tester
+workflow, which Expo reports by email and in the project's Workflows page.
 
 The project is on Expo's free plan, which does not run a `testflight` job
 given an EAS build (`build_id`). Uploads therefore use `submit`, and only the
@@ -193,14 +194,15 @@ tester workflow uses a `testflight` job, with the App Store Connect build ID
 approves it, usually within a day; later builds of an approved version often
 skip review.
 
-One-time setup in the [Expo GitHub settings](https://expo.dev/accounts/the1uneed/projects/hexbot-mobile/github):
+One-time setup:
 
-1. Install or authorize the Expo GitHub app for `The1UNeed/hexbot` and link
-   that repository to this EAS project.
+1. For `pnpm mobile:testflight`, install or authorize the Expo GitHub app for
+   `The1UNeed/hexbot` in the [Expo GitHub settings](https://expo.dev/accounts/the1uneed/projects/hexbot-mobile/github)
+   and link that repository to this EAS project.
 2. Set the app's base directory to `apps/mobile`. Commit and merge the
    workflow files and app configuration into `main` so Expo can read them.
    Add an Expo access token as the GitHub repository secret `EXPO_TOKEN` so
-   the Release action can start and monitor the workflow. Nightly preflight
+   the Release action can read the credentials and upload. Nightly preflight
    fails clearly when this secret is missing; stable does not require it.
 3. In App Store Connect, enable automatic distribution on the internal
    TestFlight group `Team (Expo)` and add the testers once. Keep the external
@@ -221,7 +223,8 @@ only the Expo access token. Apple processing and any required
 review still happen on Apple's schedule. A workflow does not fix an Apple or
 Expo service failure; inspect the failed job before retrying.
 
-To start the same workflow directly from the repository root, use:
+To build in Expo's cloud instead, which uses one of the month's 15 iOS cloud
+builds, run `.eas/workflows/testflight.yml` from the repository root:
 
 ```sh
 pnpm mobile:testflight
@@ -237,8 +240,9 @@ the workspace's 14-day release-age rule applies then, not during a release.
 using the assigned API key, so you can verify which build reached Apple.
 An accepted upload can take several minutes to appear in Apple's build list.
 
-If the build succeeded but uploading failed, copy its EAS build ID from the
-workflow and upload it without rebuilding:
+When the Release action's iOS job fails, re-run it; a local build costs
+nothing. If a cloud build succeeded but uploading failed, copy its EAS build
+ID from the workflow and upload it without rebuilding:
 
 ```sh
 pnpm mobile:testflight:upload --input build_id=YOUR_EAS_BUILD_ID

@@ -46,18 +46,18 @@ provides development, internal preview and production build profiles.
 
 ## TestFlight builds
 
-The iOS app is distributed through TestFlight. Maintainers use Expo EAS
-Workflows to check the app, create a production build and upload it. The
-upload then goes to the internal group, through automatic distribution, and to
-the external group `Website0`, which holds the public link, after Apple's Beta
-App Review. The GitHub Release action starts Expo for nightly releases after
-checks pass, using the exact release commit. Stable releases currently skip
-iOS. Ordinary pushes to `main` do not release iOS. The Expo project must be
-linked to the repository with `apps/mobile` as its base directory, and GitHub
-needs the `EXPO_TOKEN` repository secret.
+The iOS app is distributed through TestFlight. For nightly releases, after
+checks pass, the GitHub Release action builds the exact release commit on a
+macOS runner with `eas build --local` and uploads it through Expo with
+`eas submit`. The upload then goes to the internal group, through automatic
+distribution, and to the external group `Website0`, which holds the public
+link, after Apple's Beta App Review. Stable releases currently skip iOS.
+Ordinary pushes to `main` do not release iOS. GitHub needs the `EXPO_TOKEN`
+repository secret.
 
-From the repository root, `pnpm mobile:testflight` starts the same workflow
-and waits for its result. If uploading fails after a successful build,
+From the repository root, `pnpm mobile:testflight` builds in Expo's cloud
+instead, using one of the 15 iOS builds a month on Expo's free plan, and
+waits for its result. If uploading fails after a successful build,
 `pnpm mobile:testflight:upload --input build_id=YOUR_EAS_BUILD_ID` retries
 the upload without rebuilding. Both workflows show their stages and logs in
 Expo. Apple decides when a reviewed build reaches public testers. Maintainer

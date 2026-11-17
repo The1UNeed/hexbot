@@ -287,8 +287,10 @@ pnpm exec eas workflow:validate .eas/workflows/testflight-upload.yml --non-inter
 pnpm exec eas workflow:validate .eas/workflows/testflight-testers.yml --non-interactive
 ```
 
-The build workflow runs the mobile checks before compiling iOS. Release
-commands and account setup are in `apps/mobile/README.md`. An actual
+The cloud build workflow runs the mobile checks before compiling iOS; the
+nightly's local build relies on CI's `pnpm mobile:check`.
+`scripts/desktop/testflight-release.test.mjs` covers the Release action's
+iOS job. Release commands and account setup are in `apps/mobile/README.md`. An actual
 TestFlight upload is a release operation, separate from these checks.
 
 For the integration test:

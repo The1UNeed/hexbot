@@ -6,57 +6,60 @@ page is the procedure and the one-time setup. Modelled on T3 Code's
 
 ## iOS TestFlight
 
-iOS beta releases run in Expo EAS Workflows. The GitHub Release action's
-`testflight` job starts Expo after release checks pass when the resolved
+iOS beta releases build on GitHub and upload through Expo. The GitHub Release
+action's `testflight` job runs after release checks pass when the resolved
 channel is nightly. Manual nightlies and scheduled nightlies with new commits
 include iOS; stable releases and ordinary pushes to `main` do nothing for iOS.
-`apps/mobile/.eas/workflows/testflight.yml` checks the
-mobile app, builds with the production profile, then uploads that exact build
-to App Store Connect with an EAS `submit` job. Once Apple has processed it,
-Apple's upload event starts `testflight-testers.yml` in Expo, whose
-`testflight` job adds the build to the external group `Website0`, which holds
-the public link on hexbot.app, and submits it for Beta App Review. The GitHub
-job waits for the build and the upload only: success means Apple accepted the
-upload. The tester step reports in Expo's Workflows page and emails, and
-public testers get the build once Apple approves it.
+On a `macos-26` runner it builds the release checkout with
+`eas build --local` and the production profile, then uploads that `.ipa` to
+App Store Connect with `eas submit`. Once Apple has processed it, Apple's
+upload event starts `testflight-testers.yml` in Expo, whose `testflight` job
+adds the build to the external group `Website0`, which holds the public link
+on hexbot.app, and submits it for Beta App Review. The GitHub job waits for
+the build and the upload only: success means Apple accepted the upload. The
+tester step reports in Expo's Workflows page and emails, and public testers
+get the build once Apple approves it.
 
-The Expo account is on the free plan. Expo starts a `testflight` job that
-takes an EAS build (`build_id`) only on paid plans, so uploads use `submit`
-and the `testflight` job takes the App Store Connect build
+The Expo account is on the free plan, which allows 15 iOS cloud builds a
+month, fewer than one a night; once they are used, Expo refuses to start a
+build until the month resets. Nightlies therefore build on GitHub's macOS
+runner, free for this public repository, and Expo only keeps the signing
+credentials and build number and uploads. Expo also starts a `testflight` job
+that takes an EAS build (`build_id`) only on paid plans, so uploads use
+`submit` and the `testflight` job takes the App Store Connect build
 (`asc_build_id`) from Apple's event. `scripts/desktop/testflight-release.test.mjs`
 keeps it that way. The tester workflow needs the App Store Connect connection
 in the Expo project (Project settings, General, Connections), made with the
 submission API key.
-Build numbers increment remotely. The app version remains in
-`apps/mobile/app.config.ts`.
+Build numbers increment remotely, for local builds too. The app version
+remains in `apps/mobile/app.config.ts`.
 
-Link `The1UNeed/hexbot` in the EAS project's GitHub settings and set its base
-directory to `apps/mobile`. Add an Expo access token with permission to run
-workflows on the owning account as the `EXPO_TOKEN` GitHub repository secret.
-Nightly preflight requires it; stable does not. The GitHub job passes its
-exact commit SHA to Expo and waits for the build and upload result, in
-parallel with desktop packaging. A failed iOS job fails the Release run;
-desktop publishing is independent of that job.
+Add an Expo access token for the owning account as the `EXPO_TOKEN` GitHub
+repository secret. Nightly preflight requires it; stable does not. The job
+runs in parallel with desktop packaging and needs fastlane and CocoaPods on
+the runner, which it installs with Homebrew if the image lacks them. A failed iOS job fails
+the Release run; desktop publishing is independent of that job.
 The existing EAS signing credentials and assigned App Store Connect API key
 are used; the production submit profile targets Apple app `6824190699`.
 The internal group `Team (Expo)` receives every build through automatic
 distribution. `Website0` must keep its name (it is set in `testflight-testers.yml`)
 and TestFlight's Test Information must stay filled in for Beta App Review.
 
-`pnpm mobile:testflight` starts the full workflow from a checkout and waits
-for its result. If only uploading failed, use
-`pnpm mobile:testflight:upload --input build_id=YOUR_EAS_BUILD_ID` to retry
-that build without incrementing its number or starting another build.
-Both commands return nonzero on workflow failure and print the run link.
-Inspect its failed job logs before retrying; GitHub shows only the failed
-job's name, and the reason is on the printed Expo link (or
+When the job fails, its GitHub log has the reason. Re-run the job to retry:
+a local build costs nothing and takes a new build number. Do not retry an
+already accepted build: if the upload worked and only the group or review
+step failed, add that build to `Website0` in App Store Connect instead. A
+successful build is not proof of a successful upload, and a workflow cannot
+guarantee Apple approval.
+
+`pnpm mobile:testflight` still runs the Expo cloud workflow
+(`apps/mobile/.eas/workflows/testflight.yml`) from a checkout and uses one of
+the month's 15 cloud builds. If only its upload failed,
+`pnpm mobile:testflight:upload --input build_id=YOUR_EAS_BUILD_ID` retries
+that build without starting another. Both print the run link and return
+nonzero on failure; read the reason on that link or with
 `pnpm exec eas workflow:view RUN_ID --json` in `apps/mobile`, under the job's
-`errors`). A successful build is not proof
-of a successful upload, and a workflow cannot guarantee Apple approval.
-Do not retry an already accepted build: if the upload worked and only the
-group or review step failed, add that build to `Website0` in App Store Connect
-instead. Full setup is in
-`apps/mobile/README.md`.
+`errors`. Full setup is in `apps/mobile/README.md`.
 
 ## What `release.yml` does
 
@@ -71,8 +74,8 @@ instead. Full setup is in
   Linux, POSIX bootstrap syntax and ShellCheck, service handoff, web, desktop,
   site, Connect, and the desktop script tests. Windowed installer typecheck
   and tests run when its package exists. Nothing is built until CI passes.
-- `testflight` (nightly only) starts the Expo iOS build and TestFlight upload
-  for the release commit, using `EXPO_TOKEN`, and waits for the result.
+- `testflight` (nightly only) builds iOS for the release commit on a macOS
+  runner and uploads it to TestFlight through Expo, using `EXPO_TOKEN`.
 - `build` makes six packages in parallel: full and client for macOS arm64,
   macOS x64, and Linux x64, signed and notarized when the Apple secrets are
   present.
