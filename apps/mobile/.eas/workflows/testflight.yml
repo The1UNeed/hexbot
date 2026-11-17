@@ -20,15 +20,14 @@ jobs:
         - name: Check the mobile app
           run: pnpm run check
 
-  # Uploads the build. Team (Expo), with automatic distribution, gets it as
-  # soon as Apple processes it. Website0 is the external group behind the
-  # public link on hexbot.app; each build goes to Beta App Review for it.
-  testflight:
-    name: Upload to TestFlight
+  # Uploads that exact build to App Store Connect. Team (Expo), with automatic
+  # distribution, gets it once Apple processes it. Apple's upload event then
+  # starts testflight-testers.yml, which hands it to the public link group.
+  # Not a testflight job with build_id: Expo runs that only on paid plans.
+  submit_ios:
+    name: Upload to App Store Connect
     needs: [build_ios]
-    type: testflight
+    type: submit
     params:
       build_id: ${{ needs.build_ios.outputs.build_id }}
       profile: production
-      external_groups: [Website0]
-      changelog: The latest Hexbot nightly. Pair it with your daemon and tell us what breaks.

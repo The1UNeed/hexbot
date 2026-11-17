@@ -1,0 +1,20 @@
+name: Send a processed build to TestFlight testers
+
+# Apple reports each upload to App Store Connect, including the ones
+# testflight.yml and testflight-upload.yml make. Once Apple has processed it,
+# add the build to Website0, the external group behind the public link on
+# hexbot.app, and submit it for Beta App Review. Needs the App Store Connect
+# connection in the Expo project's settings, General, Connections.
+on:
+  app_store_connect:
+    build_upload:
+      states: [complete]
+
+jobs:
+  testflight:
+    name: Send to TestFlight testers
+    type: testflight
+    params:
+      asc_build_id: ${{ app_store_connect.build_upload.build.id }}
+      external_groups: [Website0]
+      changelog: The latest Hexbot nightly. Pair it with your daemon and tell us what breaks.

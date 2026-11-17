@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -60,10 +60,29 @@ test('Expo does not also build on every push to main', async () => {
   assert.match(workflow, /workflow_dispatch: \{\}/)
 })
 
-test('every TestFlight upload also reaches the public link group', async () => {
+const easWorkflow = name => readFile(new URL(`../../apps/mobile/.eas/workflows/${name}`, import.meta.url), 'utf8')
+
+test('uploads use only jobs the free Expo plan runs', async () => {
+  // Expo starts a testflight job with build_id only on paid plans; it fails
+  // before running on the free plan the project uses. Upload with submit.
   for (const name of ['testflight.yml', 'testflight-upload.yml']) {
-    const workflow = await readFile(new URL(`../../apps/mobile/.eas/workflows/${name}`, import.meta.url), 'utf8')
-    assert.match(workflow, /^    type: testflight$/m, name)
-    assert.match(workflow, /^      external_groups: \[Website0\]$/m, name)
+    const workflow = await easWorkflow(name)
+    assert.match(workflow, /^    type: submit$/m, name)
+    assert.match(workflow, /^      build_id: \$\{\{ .+ \}\}$/m, name)
+    assert.match(workflow, /^      profile: production$/m, name)
   }
+  for (const name of await readdir(new URL('../../apps/mobile/.eas/workflows/', import.meta.url))) {
+    const jobs = (await easWorkflow(name)).split(/^  (?=\w+:\n)/m).slice(1)
+    for (const job of jobs.filter(job => /^    type: testflight$/m.test(job))) {
+      assert.doesNotMatch(job, /^      build_id:/m, `${name}: a testflight job needs asc_build_id`)
+    }
+  }
+})
+
+test('every build Apple processes reaches the public link group', async () => {
+  const workflow = await easWorkflow('testflight-testers.yml')
+  assert.match(workflow, /^on:\n  app_store_connect:\n    build_upload:\n      states: \[complete\]$/m)
+  assert.match(workflow, /^    type: testflight$/m)
+  assert.match(workflow, /^      asc_build_id: \$\{\{ app_store_connect\.build_upload\.build\.id \}\}$/m)
+  assert.match(workflow, /^      external_groups: \[Website0\]$/m)
 })
