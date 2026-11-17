@@ -23,7 +23,9 @@ export function localPath(value: unknown) {
   if (typeof value !== "string" || !value.startsWith("/")) return null;
   const base = "https://connect.invalid";
   const url = URL.parse(value, base);
-  return url?.origin === base ? `${url.pathname}${url.search}${url.hash}` : null;
+  const path = url?.origin === base ? `${url.pathname}${url.search}${url.hash}` : null;
+  // `/.//evil.example` keeps the origin here but comes out as `//evil.example`, another host to a browser.
+  return path && !path.startsWith("//") ? path : null;
 }
 
 /** Where to send a signed-out visitor so they land back on `returnTo` afterwards. */
