@@ -530,7 +530,9 @@ pub fn select_responders(
     {
         let seq = event["seq"].as_i64().unwrap_or(0);
         for bot in &active {
-            let mode = room["discord"]["modes"][bot.as_str()].as_str().unwrap_or("");
+            let mode = room["discord"]["modes"][bot.as_str()]
+                .as_str()
+                .unwrap_or("");
             let unread = room["members"].as_array().into_iter().flatten().any(|m| {
                 m["member_kind"] == "bot"
                     && m["member_id"] == bot.as_str()
@@ -586,9 +588,10 @@ pub fn render_prompt(
     // and its own replies, nothing else.
     let to_me = |e: &Value| {
         e["actor_id"] == bot
-            || e["payload"]["mentions"]
-                .as_array()
-                .is_some_and(|m| m.iter().any(|h| h.as_str().is_some_and(|h| h.eq_ignore_ascii_case(bot))))
+            || e["payload"]["mentions"].as_array().is_some_and(|m| {
+                m.iter()
+                    .any(|h| h.as_str().is_some_and(|h| h.eq_ignore_ascii_case(bot)))
+            })
             || e["payload"]["text"]
                 .as_str()
                 .is_some_and(|t| typed_handles(t).contains(&bot.to_lowercase()))
@@ -599,7 +602,11 @@ pub fn render_prompt(
         if !["message.user", "message.bot", "note"].contains(&kind) {
             continue;
         }
-        if room["discord"].is_object() && !crate::discord::reads(mode) && kind != "note" && !to_me(e) {
+        if room["discord"].is_object()
+            && !crate::discord::reads(mode)
+            && kind != "note"
+            && !to_me(e)
+        {
             continue;
         }
         let text = e["payload"]["text"]
@@ -627,7 +634,10 @@ pub fn render_prompt(
                     Some(handle) => format!("@{}", crate::discord::speaker(handle)),
                     None => crate::discord::speaker(name),
                 };
-                let said = quoted["text"].as_str().unwrap_or("").replace(['\r', '\n'], " ");
+                let said = quoted["text"]
+                    .as_str()
+                    .unwrap_or("")
+                    .replace(['\r', '\n'], " ");
                 if said.trim().is_empty() {
                     format!("{speaker} (replying to {name})")
                 } else {

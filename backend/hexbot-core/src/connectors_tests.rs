@@ -328,24 +328,32 @@ async fn toggles_preserve_other_toolsets_and_shared_credentials() {
 #[tokio::test]
 async fn skill_listing_reads_metadata_and_disabled_state() {
     let home = setup();
-    let root = home.path().join("profiles/owl/skills/work/notion");
-    fs::create_dir_all(&root).unwrap();
-    fs::write(
-        root.join("SKILL.md"),
-        "---\nname: notion\ndescription: Read workspace pages.\n---\n# Body\n",
-    )
-    .unwrap();
-    let listed = rpc(home.path(), "hexbot.skills.list", json!({"bot":"owl"})).await;
-    let notion = listed["skills"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|s| s["name"] == "notion")
+    for name in ["notes", "notion"] {
+        let root = home.path().join("profiles/owl/skills/work").join(name);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: Read workspace pages.\n---\n# Body\n"),
+        )
         .unwrap();
-    assert_eq!(notion["description"], "Read workspace pages.");
-    assert_eq!(notion["category"], "work");
-    assert_eq!(notion["source"], "bot");
-    assert_eq!(notion["enabled"], true);
+    }
+    let listed = rpc(home.path(), "hexbot.skills.list", json!({"bot":"owl"})).await;
+    let named = |name: &str| {
+        listed["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["name"] == name)
+            .unwrap()
+            .clone()
+    };
+    let notes = named("notes");
+    assert_eq!(notes["description"], "Read workspace pages.");
+    assert_eq!(notes["category"], "work");
+    assert_eq!(notes["source"], "bot");
+    assert_eq!(notes["enabled"], true);
+    // A bot's copy never replaces a bundled skill.
+    assert_eq!(named("notion")["source"], "bundled");
     rpc(
         home.path(),
         "hexbot.connectors.set_for_bot",

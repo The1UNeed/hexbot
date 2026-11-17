@@ -537,6 +537,8 @@ export interface PluginsList {
     bots: string[]
     kind: 'connector'
     server?: PluginServer
+    /** The skills it comes with: a bot has them while it has the connector. */
+    skills?: { description: string; disabled_globally?: boolean; name: string }[]
   })[]
   /** Absent on daemons from before packages. */
   packages?: {
@@ -596,7 +598,7 @@ export interface Plugin {
   /** On for these bots but waiting for setup: kept when the bots change, and given once set up. */
   waiting_bots?: string[]
   server?: null | PluginServer
-  skills?: { description: string; name: string }[]
+  skills?: { description: string; disabled_globally?: boolean; name: string }[]
   source?: string
   state: ConnectorState
   state_text: string
@@ -605,6 +607,8 @@ export interface Plugin {
 /** Something a skill needs before bots can use it. */
 export type SkillRequirement =
   | { kind: 'command'; name: string }
+  /** One of these connectors on for the bot, by name: the skill comes with them. */
+  | { kind: 'connector'; name: string[] }
   | { kind: 'env'; name: string }
   | { kind: 'platform'; name: string[] }
 

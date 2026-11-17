@@ -1,3 +1,3 @@
 ---
-description: Skills for working with Hexbot itself, such as adding plugins.
+description: Skills for working in Hexbot itself: its computer, plugins and skills.
 ---

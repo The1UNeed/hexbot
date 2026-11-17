@@ -86,6 +86,12 @@ export function accountSiblings(plugin: Plugin, plugins: Plugin[]): Plugin[] {
 
 /** "Needs memo installed", as the bot's Skills tab words it. */
 function needs(missing: SkillRequirement[] = []): string {
+  const connector = missing.find(item => item.kind === 'connector')
+
+  if (connector) {
+    return `Comes with ${connector.name.join(' or ')}`
+  }
+
   const words = missing.map(item =>
     item.kind === 'command'
       ? `${item.name} installed`
@@ -130,7 +136,8 @@ export function shownBots(plugin: Plugin): { bots: string[]; exact: boolean } {
 
 /**
  * The plugin a tag in a message names, by its name or its id. A skill tag
- * finds a skill or a package of skills; a plugin tag a connector or a server.
+ * finds a skill or a package of skills, or else the connector it comes with;
+ * a plugin tag a connector or a server.
  */
 export function namedPlugin(
   plugins: Plugin[],
@@ -140,10 +147,15 @@ export function namedPlugin(
   const needle = name.trim().toLowerCase()
   const skill = (plugin: Plugin) => plugin.category !== 'mcp' && plugin.kind !== 'connector'
 
-  return plugins.find(
-    plugin =>
-      (kind === 'skill') === skill(plugin) &&
-      (plugin.name.toLowerCase() === needle || plugin.id.toLowerCase() === needle)
+  return (
+    plugins.find(
+      plugin =>
+        (kind === 'skill') === skill(plugin) &&
+        (plugin.name.toLowerCase() === needle || plugin.id.toLowerCase() === needle)
+    ) ??
+    (kind === 'skill'
+      ? plugins.find(plugin => plugin.skills?.some(item => item.name.toLowerCase() === needle))
+      : undefined)
   )
 }
 
@@ -164,6 +176,7 @@ export function pluginRows(list: PluginsList): Plugin[] {
       ready_bots: row.ready_bots,
       waiting_bots: row.waiting_bots,
       server: row.server ?? null,
+      skills: row.skills,
       state: row.state,
       state_text: row.state_text
     })),

@@ -133,6 +133,9 @@ pub struct Skill {
     pub source: String,
     /// The plugin package the skill came with, if any (`plugins.rs`).
     pub plugin: Option<String>,
+    /// The connectors a bundled skill comes with (`skills` in
+    /// `connectors.json`). A bot has it only while it has one of them.
+    pub connectors: Vec<String>,
     pub path: PathBuf,
     pub enabled_for_bot: bool,
     pub disabled_globally: bool,
@@ -154,6 +157,8 @@ pub enum Requirement {
     Platform(Vec<String>),
     Command(String),
     Env(String),
+    /// One of these connectors on for the bot, by name: the skill comes with them.
+    Connector(Vec<String>),
 }
 
 fn requirements(meta: &Value) -> Vec<Requirement> {
@@ -203,6 +208,77 @@ fn met(need: &Requirement, env: &BTreeMap<String, String>) -> bool {
             env.get(name).is_some_and(|v| !v.is_empty())
                 || std::env::var(name).is_ok_and(|v| !v.is_empty())
         }
+        // Checked per bot in `resolve_discovered`, never declared.
+        Requirement::Connector(_) => true,
+    }
+}
+
+/// Each bundled skill a connector comes with, and those connectors as
+/// `(id, name)`, from `skills` in `connectors.json`.
+fn bindings() -> &'static BTreeMap<String, Vec<(String, String)>> {
+    static BINDINGS: OnceLock<BTreeMap<String, Vec<(String, String)>>> = OnceLock::new();
+    BINDINGS.get_or_init(|| {
+        let mut out: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+        for spec in crate::connectors::catalog() {
+            for skill in spec["skills"].as_array().into_iter().flatten() {
+                out.entry(skill.as_str().unwrap_or("").to_owned())
+                    .or_default()
+                    .push((
+                        spec["id"].as_str().unwrap_or("").to_owned(),
+                        spec["name"].as_str().unwrap_or("").to_owned(),
+                    ));
+            }
+        }
+        out
+    })
+}
+
+/// The bundled skills a connector's catalog entry comes with: its `skills`,
+/// or the skill a skill-backed connector such as Notion is.
+pub(crate) fn of_connector(spec: &Value) -> Vec<String> {
+    spec["skills"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(spec.get("skill"))
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The names of the skills that come with Hexbot. Nobody adds a skill under
+/// one of them: not the user, a bot, nor a package.
+pub(crate) fn bundled_names() -> Result<std::collections::BTreeSet<String>> {
+    let root = bundled_root();
+    let mut found = BTreeMap::new();
+    discover(&root, &root, "bundled", &mut found)?;
+    Ok(found.into_keys().collect())
+}
+
+/// Why a skill can't be added under a bundled skill's name.
+pub(crate) fn built_in(name: &str) -> Error {
+    Error::new(
+        4208,
+        format!("{name} is a skill built into Hexbot. Use another name."),
+    )
+}
+
+/// Why a skill that is not ready can't be given to a bot: the connector it
+/// comes with, or what it needs on this computer.
+pub(crate) fn not_ready(skill: &Skill) -> Error {
+    match skill.missing.iter().find_map(|need| match need {
+        Requirement::Connector(names) => Some(names),
+        _ => None,
+    }) {
+        Some(names) => Error::new(
+            4209,
+            format!(
+                "{} comes with {}. Turn that on for the bot instead.",
+                skill.name,
+                names.join(" or ")
+            ),
+        ),
+        None => crate::connectors::not_set_up(&skill.name),
     }
 }
 
@@ -298,6 +374,7 @@ fn discover(
                 category: (!category.is_empty()).then(|| category.into_owned()),
                 source: source.into(),
                 plugin: None,
+                connectors: vec![],
                 path: main,
                 enabled_for_bot: true,
                 disabled_globally: false,
@@ -367,6 +444,11 @@ fn resolve_with(home: &Path, bot: Option<&str>, bundled: &Path) -> Result<Vec<Sk
 fn discover_shared(home: &Path, bundled: &Path) -> Result<BTreeMap<String, Skill>> {
     let mut found = BTreeMap::new();
     discover(bundled, bundled, "bundled", &mut found)?;
+    for skill in found.values_mut() {
+        if let Some(connectors) = bindings().get(&skill.name) {
+            skill.connectors = connectors.iter().map(|(id, _)| id.clone()).collect();
+        }
+    }
     // A package's skills sit under its name, like a category of their own.
     for plugin in crate::plugins::package_names(home)? {
         let root = crate::plugins::packages_root(home)
@@ -378,24 +460,48 @@ fn discover_shared(home: &Path, bundled: &Path) -> Result<BTreeMap<String, Skill
         for mut skill in packaged.into_values() {
             skill.category = Some(plugin.clone());
             skill.plugin = Some(plugin.clone());
-            found.insert(skill.name.clone(), skill);
+            put_over(&mut found, skill);
         }
     }
     let library = home.join("skills");
     safe_path(home, &library)?;
-    discover(&library, &library, "library", &mut found)?;
+    discover_over(&library, "library", &mut found)?;
     Ok(found)
+}
+/// Discovers `root` over what is found already: its skills replace earlier
+/// ones of the same name, except a bundled skill, which nothing replaces.
+fn discover_over(root: &Path, source: &str, found: &mut BTreeMap<String, Skill>) -> Result<()> {
+    let mut more = BTreeMap::new();
+    discover(root, root, source, &mut more)?;
+    for skill in more.into_values() {
+        put_over(found, skill);
+    }
+    Ok(())
+}
+fn put_over(found: &mut BTreeMap<String, Skill>, skill: Skill) {
+    // Copies from before names were reserved were renamed by `migrate`; one
+    // made since by hand is left out rather than hiding Hexbot's own.
+    if found.get(&skill.name).is_none_or(|s| s.source != "bundled") {
+        found.insert(skill.name.clone(), skill);
+    }
 }
 fn resolve_discovered(
     home: &Path,
     bot: Option<&str>,
     mut found: BTreeMap<String, Skill>,
 ) -> Result<Vec<Skill>> {
+    // The connectors the bot has, for the skills that come with them.
+    let given = match bot {
+        Some(bot) if found.values().any(|s| !s.connectors.is_empty()) => {
+            Some(crate::connectors::with_skills(home, bot)?)
+        }
+        _ => None,
+    };
     let (config, env) = if let Some(bot) = bot {
         let profile = catalog::profile(home, bot)?;
         let root = profile.join("skills");
         safe_path(home, &root)?;
-        discover(&root, &root, "bot", &mut found)?;
+        discover_over(&root, "bot", &mut found)?;
         safe_path(home, &profile.join("config.yaml"))?;
         (
             common::read_config(&profile)?,
@@ -418,6 +524,19 @@ fn resolve_discovered(
             .filter(|need| !met(need, &env))
             .cloned()
             .collect();
+        // A connector's skill waits for the bot to have that connector.
+        if let Some(given) = &given
+            && !skill.connectors.is_empty()
+            && !skill.connectors.iter().any(|id| given.contains(id))
+        {
+            let names = bindings()
+                .get(&skill.name)
+                .into_iter()
+                .flatten()
+                .map(|(_, name)| name.clone())
+                .collect();
+            skill.missing.insert(0, Requirement::Connector(names));
+        }
         // A package's skills explain its server, so they wait for the values
         // the server was added without.
         if let Some(plugin) = &skill.plugin
@@ -576,6 +695,16 @@ fn save(home: &Path, bot: Option<&str>, p: &Value) -> Result<Skill> {
         .unwrap_or_else(|| home.to_path_buf())
         .join("skills");
     safe_path(home, &root)?;
+    if existing.as_ref().is_some_and(|s| s.source == "bundled") {
+        return Err(built_in(name));
+    }
+    // Adding a skill never replaces one: only an edit does.
+    if p["create"] == true && existing.is_some() {
+        return Err(Error::new(
+            4208,
+            format!("A skill named {name} already exists. Use another name."),
+        ));
+    }
     let category = match p.get("category") {
         Some(v) => Some(
             v.as_str()
@@ -626,6 +755,9 @@ fn share(home: &Path, bot: &str, name: &str, replace: bool) -> Result<Skill> {
             4208,
             format!("The skill {name} comes with the plugin {plugin}. Use another name."),
         ));
+    }
+    if library.as_ref().is_some_and(|s| s.source == "bundled") {
+        return Err(built_in(name));
     }
     if library.is_some() && !replace {
         return Err(Error::new(
@@ -781,7 +913,7 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Result<Value>
             let skill = find_unlocked(home, target, name)?;
             // Giving a skill to a bot waits for what it needs; taking it away does not.
             if target.is_some() && enabled && !skill.ready {
-                return Err(crate::connectors::not_set_up(&skill.name));
+                return Err(not_ready(&skill));
             }
             set_enabled(home, target, name, enabled)?;
             Ok(json!({"skill":find_unlocked(home, target, name)?}))
@@ -929,6 +1061,8 @@ fn migrate_with(home: &Path, bundled: &Path) -> Result<()> {
     // seeded every bundled skill into the library, where an unchanged copy
     // hides each newer bundled version, so the library has its own pass.
     let (profiles_key, library_key) = ("migration:shared-skills-v1", "migration:library-skills-v1");
+    // Bundled names became reserved: a copy under one would be hidden.
+    let names_key = "migration:bundled-names-v1";
     let done = |key: &str| -> Result<bool> {
         Ok(conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM settings WHERE key=?)",
@@ -937,7 +1071,8 @@ fn migrate_with(home: &Path, bundled: &Path) -> Result<()> {
         )?)
     };
     let (profiles_done, library_done) = (done(profiles_key)?, done(library_key)?);
-    if (profiles_done && library_done) || !bundled.is_dir() {
+    let names_done = done(names_key)?;
+    if (profiles_done && library_done && names_done) || !bundled.is_dir() {
         return Ok(());
     }
     let mut bundles = BTreeMap::new();
@@ -947,9 +1082,9 @@ fn migrate_with(home: &Path, bundled: &Path) -> Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
         Err(e) => return Err(e.into()),
     };
-    for (name, skill) in bundles {
+    for (name, skill) in &bundles {
         if let Some(hash) = fingerprint(skill.path.parent().unwrap())? {
-            history.entry(name).or_default().push(hash);
+            history.entry(name.clone()).or_default().push(hash);
         }
     }
     if !profiles_done {
@@ -979,7 +1114,146 @@ fn migrate_with(home: &Path, bundled: &Path) -> Result<()> {
             [library_key],
         )?;
     }
+    if !names_done {
+        let mut profiles = vec![];
+        let dir = home.join("profiles");
+        if dir.is_dir() {
+            for profile in fs::read_dir(&dir)? {
+                let profile = profile?;
+                if profile.file_type()?.is_dir() {
+                    profiles.push(profile.path());
+                }
+            }
+        }
+        // A library or package skill's switches are in the daemon's config
+        // and every bot's; a bot's own skill's, in the daemon's and that bot's.
+        let mut every = vec![home.to_path_buf()];
+        every.extend(profiles.iter().cloned());
+        let mut owners = vec![(home.to_path_buf(), every.clone())];
+        for plugin in crate::plugins::package_names(home)? {
+            owners.push((
+                crate::plugins::packages_root(home).join(plugin),
+                every.clone(),
+            ));
+        }
+        owners.extend(
+            profiles
+                .iter()
+                .map(|profile| (profile.clone(), vec![home.to_path_buf(), profile.clone()])),
+        );
+        // A new name is free everywhere a skill could be found, and switched
+        // off nowhere, so it never hides another skill or starts off.
+        let mut taken = bundles
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        for (owner, _) in &owners {
+            let mut found = BTreeMap::new();
+            let root = owner.join("skills");
+            safe_path(home, &root)?;
+            discover(&root, &root, "copy", &mut found)?;
+            taken.extend(found.into_keys());
+        }
+        for config in &every {
+            safe_path(home, &config.join("config.yaml"))?;
+            taken.extend(
+                common::read_config(config)?["skills"]["disabled"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|v| v.as_str().map(str::to_lowercase)),
+            );
+        }
+        // A package keeps its renamed skills, so it still gives and takes
+        // them away.
+        // A bot's copy overrode the shared copy of its name, the library's
+        // or else a package's; it takes that copy's new name, so it still does.
+        let mut shared_names = BTreeMap::new();
+        let none = BTreeMap::new();
+        for (owner, configs) in &owners {
+            let root = owner.join("skills");
+            let bot = owner.starts_with(home.join("profiles"));
+            let mapped = if bot { &shared_names } else { &none };
+            let renamed = keep_under_own_names(home, &root, &bundles, &mut taken, mapped, configs)?;
+            if !bot {
+                // The library comes first, and its copy won over a package's.
+                for (old, own) in renamed {
+                    shared_names.entry(old).or_insert(own);
+                }
+            }
+        }
+        conn.execute(
+            "INSERT INTO settings(key,value) VALUES (?, 'true')",
+            [names_key],
+        )?;
+    }
     Ok(())
+}
+
+/// Renames each skill in `root` that has a bundled skill's name, which the
+/// bundled one now always takes, to `<name>-own`, so the user's or bot's
+/// edits stay reachable. The new name is switched off in `configs` wherever
+/// the old one was, before the rename, so a stop part way never turns a skill
+/// on: the next run picks the same name and finishes. Returns old to new.
+fn keep_under_own_names(
+    home: &Path,
+    root: &Path,
+    bundles: &BTreeMap<String, Skill>,
+    taken: &mut std::collections::BTreeSet<String>,
+    library: &BTreeMap<String, String>,
+    configs: &[PathBuf],
+) -> Result<BTreeMap<String, String>> {
+    let mut renamed = BTreeMap::new();
+    if !root.is_dir() {
+        return Ok(renamed);
+    }
+    let mut found = BTreeMap::new();
+    discover(root, root, "copy", &mut found)?;
+    for (name, skill) in &found {
+        if !bundles.contains_key(name) {
+            continue;
+        }
+        let dir = skill.path.parent().unwrap();
+        let own = match library.get(name).filter(|own| !found.contains_key(*own)) {
+            Some(own) => own.clone(),
+            None => {
+                // Still a valid name: at most 64 characters with its suffix.
+                let base: String = name.chars().take(54).collect();
+                let mut own = format!("{base}-own");
+                let mut n = 1;
+                while taken.contains(&own) || dir.with_file_name(&own).exists() {
+                    n += 1;
+                    own = format!("{base}-own-{n}");
+                }
+                own
+            }
+        };
+        for config in configs {
+            keep_switched_off(home, config, name, &own)?;
+        }
+        fs::rename(dir, dir.with_file_name(&own))?;
+        taken.insert(own.clone());
+        renamed.insert(name.clone(), own);
+    }
+    Ok(renamed)
+}
+
+/// A renamed skill stays off wherever its old name was switched off, which
+/// stays for the bundled skill of that name.
+fn keep_switched_off(home: &Path, dir: &Path, old: &str, own: &str) -> Result<()> {
+    safe_path(home, &dir.join("config.yaml"))?;
+    let writer = common::config_writer()?;
+    let mut config = common::read_config(dir)?;
+    if !is_disabled(&config, old) || is_disabled(&config, own) {
+        return Ok(());
+    }
+    let mut disabled = config["skills"]["disabled"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    disabled.push(json!(own));
+    config["skills"]["disabled"] = json!(disabled);
+    writer.write(dir, &config)
 }
 
 #[cfg(test)]
@@ -1037,6 +1311,7 @@ mod tests {
     fn roster_discovery_matches_individual_reads_and_refreshes_between_calls() {
         let home = tempfile::tempdir().unwrap();
         let h = home.path();
+        db::migrate(h).unwrap();
         let package = h.join("plugins/test-package");
         put(&package.join("skills"), "work/packaged", "packaged");
         put(&package.join("skills"), "work/overridden", "packaged");
@@ -1106,18 +1381,21 @@ mod tests {
     fn precedence_grants_and_private_visibility() {
         let home = tempfile::tempdir().unwrap();
         let bundled = tempfile::tempdir().unwrap();
-        put(bundled.path(), "work/notes", "bundled");
+        put(bundled.path(), "work/guide", "bundled");
         put(&home.path().join("skills"), "writing/notes", "library");
         let private = put(
             &home.path().join("profiles/owl/skills"),
             "personal/notes",
             "private",
         );
-        let read = |bot| {
+        let read_named = |bot, name: &str| {
             resolve_with(home.path(), bot, bundled.path())
                 .unwrap()
-                .remove(0)
+                .into_iter()
+                .find(|s| s.name == name)
+                .unwrap()
         };
+        let read = |bot| read_named(bot, "notes");
         assert_eq!(read(None).source, "library");
         assert_eq!(read(Some("fox")).description, "library");
         let skill = read(Some("owl"));
@@ -1137,8 +1415,15 @@ mod tests {
         assert!(read(Some("owl")).enabled_for_bot);
         fs::remove_dir_all(private).unwrap();
         assert_eq!(read(Some("owl")).source, "library");
-        fs::remove_dir_all(home.path().join("skills")).unwrap();
-        assert_eq!(read(Some("owl")).source, "bundled");
+        // Nothing replaces a bundled skill, not a copy made by hand.
+        put(&home.path().join("skills"), "writing/guide", "library");
+        put(
+            &home.path().join("profiles/owl/skills"),
+            "personal/guide",
+            "private",
+        );
+        assert_eq!(read_named(None, "guide").source, "bundled");
+        assert_eq!(read_named(Some("owl"), "guide").description, "bundled");
     }
     #[test]
     fn migration_removes_only_identical_directories_once() {
@@ -1249,7 +1534,7 @@ mod tests {
         db::open(home.path())
             .unwrap()
             .execute(
-                "DELETE FROM settings WHERE key='migration:library-skills-v1'",
+                "DELETE FROM settings WHERE key IN ('migration:library-skills-v1','migration:bundled-names-v1')",
                 [],
             )
             .unwrap();
@@ -1268,9 +1553,31 @@ mod tests {
             json!({"computer-use":[old_hash]}).to_string(),
         )
         .unwrap();
+        // A bot's edited copy of a bundled skill is kept under its own name too.
+        let private = put(
+            &home.path().join("profiles/owl/skills"),
+            "desk/notion",
+            "bot edited",
+        );
+        // Switched off before, the copies stay off under their new names.
+        set_enabled(home.path(), None, "notion", false).unwrap();
+        set_enabled(home.path(), Some("fox"), "notion", false).unwrap();
         migrate_with(home.path(), bundled.path()).unwrap();
+        let disabled =
+            |dir: &Path, name: &str| is_disabled(&common::read_config(dir).unwrap(), name);
+        assert!(disabled(home.path(), "notion") && disabled(home.path(), "notion-own"));
+        let fox = home.path().join("profiles/fox");
+        assert!(disabled(&fox, "notion") && disabled(&fox, "notion-own"));
+        assert!(!disabled(&home.path().join("profiles/owl"), "notion-own"));
         assert!(!library.join("desk/computer-use").exists());
-        assert!(library.join("desk/notion/SKILL.md").is_file());
+        assert!(!library.join("desk/notion").exists());
+        assert!(library.join("desk/notion-own/SKILL.md").is_file());
+        assert!(!private.exists());
+        assert!(
+            home.path()
+                .join("profiles/owl/skills/desk/notion-own/SKILL.md")
+                .is_file()
+        );
         assert!(library.join("mine/own/SKILL.md").is_file());
         let skills = resolve_with(home.path(), None, bundled.path()).unwrap();
         let source = |name: &str| {
@@ -1282,13 +1589,92 @@ mod tests {
                 .clone()
         };
         assert_eq!(source("computer-use"), "bundled");
-        assert_eq!(source("notion"), "library");
+        assert_eq!(source("notion"), "bundled");
+        assert_eq!(source("notion-own"), "library");
         assert_eq!(source("own"), "library");
         copy_tree(&old, &library.join("desk/computer-use")).unwrap();
         migrate_with(home.path(), bundled.path()).unwrap();
         assert!(
             library.join("desk/computer-use").exists(),
             "completed migration is not rerun"
+        );
+    }
+    #[test]
+    fn renamed_copies_take_names_free_everywhere_and_keep_overriding() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        db::open(home.path())
+            .unwrap()
+            .execute(
+                "DELETE FROM settings WHERE key='migration:bundled-names-v1'",
+                [],
+            )
+            .unwrap();
+        let bundled = tempfile::tempdir().unwrap();
+        put(bundled.path(), "docs/pdf", "bundled");
+        let library = home.path().join("skills");
+        put(&library, "mine/pdf", "library edit");
+        // An unrelated skill already has the obvious new name, in a bot.
+        put(
+            &home.path().join("profiles/fox/skills"),
+            "mine/pdf-own",
+            "fox's own",
+        );
+        put(
+            &home.path().join("profiles/owl/skills"),
+            "mine/pdf",
+            "owl edit",
+        );
+        // Switched off for owl before: its copy stays off, fox's skill does not.
+        set_enabled(home.path(), Some("owl"), "pdf", false).unwrap();
+        // A deleted skill's "off" stays behind: no copy takes that name.
+        set_enabled(home.path(), None, "pdf-own-3", false).unwrap();
+        // A package's skill keeps its package under a new name.
+        let package = home.path().join("plugins/my-mail");
+        put(&package.join("skills"), "pdf", "package");
+        put(bundled.path(), "mail/email", "bundled");
+        put(&package.join("skills"), "email", "package email");
+        put(
+            &home.path().join("profiles/owl/skills"),
+            "mine/email",
+            "owl's email",
+        );
+        fs::write(package.join("plugin.json"), "{}").unwrap();
+        migrate_with(home.path(), bundled.path()).unwrap();
+        assert!(package.join("skills/pdf-own-4/SKILL.md").is_file());
+        assert!(library.join("mine/pdf-own-2/SKILL.md").is_file());
+        assert!(
+            home.path()
+                .join("profiles/owl/skills/mine/pdf-own-2/SKILL.md")
+                .is_file()
+        );
+        assert!(
+            home.path()
+                .join("profiles/fox/skills/mine/pdf-own/SKILL.md")
+                .is_file()
+        );
+        let read = |bot, name: &str| {
+            resolve_with(home.path(), bot, bundled.path())
+                .unwrap()
+                .into_iter()
+                .find(|s| s.name == name)
+                .unwrap()
+        };
+        assert_eq!(read(Some("owl"), "pdf-own-2").description, "owl edit");
+        assert!(!read(Some("owl"), "pdf-own-2").enabled_for_bot);
+        assert_eq!(read(Some("fox"), "pdf-own-2").description, "library edit");
+        assert_eq!(read(Some("fox"), "pdf-own").description, "fox's own");
+        assert!(read(Some("fox"), "pdf-own").enabled);
+        assert_eq!(read(Some("owl"), "pdf").source, "bundled");
+        let packaged = read(None, "pdf-own-4");
+        assert_eq!(packaged.plugin.as_deref(), Some("my-mail"));
+        assert!(packaged.enabled);
+        // A bot's edit of a package's skill still overrides it under the new name.
+        assert!(package.join("skills/email-own/SKILL.md").is_file());
+        assert_eq!(read(Some("owl"), "email-own").description, "owl's email");
+        assert_eq!(
+            read(Some("fox"), "email-own").plugin.as_deref(),
+            Some("my-mail")
         );
     }
     #[test]

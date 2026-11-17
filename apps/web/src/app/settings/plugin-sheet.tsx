@@ -18,6 +18,7 @@ import {
   connectorsTest,
   discordDisconnect,
   pluginsSetBots,
+  skillsDelete,
   skillsSetGlobal
 } from '../../lib/api'
 import { botFace } from '../../lib/avatar-builder'
@@ -235,13 +236,27 @@ export function PluginSheet({
 
           {plugin.skills?.length ? (
             <section>
-              <p className={label}>Skills</p>
+              <p className={label}>
+                {plugin.kind === 'connector' ? 'Skills that come with it' : 'Skills'}
+              </p>
               <ul className="grid gap-1">
                 {plugin.skills.map(skill => (
                   <li key={skill.name}>
                     <span className="font-medium">{skill.name}</span>
                     {skill.description ? (
                       <span className="text-muted"> · {skill.description}</span>
+                    ) : null}
+                    {skill.disabled_globally ? (
+                      <span className="mt-1 flex items-center gap-2">
+                        <span className="text-warning">Off for every bot</span>
+                        <Button
+                          busy={busy}
+                          onClick={() => run(() => skillsSetGlobal(skill.name, true).then(refresh))}
+                          size="sm"
+                        >
+                          Turn on
+                        </Button>
+                      </span>
                     ) : null}
                   </li>
                 ))}
@@ -284,7 +299,7 @@ export function PluginSheet({
               {plugin.disabled_globally
                 ? 'Off for every bot in Settings, whatever its switch here says.'
                 : plugin.source === 'bundled'
-                  ? 'Comes with Hexbot.'
+                  ? "Built into Hexbot. Turn it off for a bot here; it can't be deleted."
                   : 'In your skill library.'}
             </p>
           ) : null}
@@ -330,6 +345,28 @@ export function PluginSheet({
                 variant="ghost"
               >
                 Remove your client
+              </Button>
+            ) : null}
+            {plugin.kind === 'skill' && plugin.source === 'library' ? (
+              <Button
+                onClick={() =>
+                  void confirm({
+                    detail: 'Every bot loses it. A bot keeps its own copy if it made one.',
+                    title: `Delete ${plugin.name}?`
+                  }).then(yes =>
+                    yes
+                      ? run(async () => {
+                          await skillsDelete(plugin.id)
+                          await refresh()
+                          onClose()
+                        })
+                      : undefined
+                  )
+                }
+                size="sm"
+                variant="ghost"
+              >
+                Delete skill
               </Button>
             ) : null}
             {removable ? (

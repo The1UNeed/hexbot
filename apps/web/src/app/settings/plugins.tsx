@@ -8,7 +8,7 @@ import { Input } from '../../components/ui/input'
 import { SkeletonLines } from '../../components/ui/skeleton'
 import { Switch } from '../../components/ui/switch'
 import { Textarea } from '../../components/ui/textarea'
-import type { PluginInstallInput } from '../../lib/api'
+import { type PluginInstallInput, skillsSave } from '../../lib/api'
 import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 import {
@@ -20,6 +20,7 @@ import {
   namedPlugin,
   shelfOf
 } from '../../lib/plugin-rows'
+import { skillContent, skillFileName } from '../../lib/skill-file'
 import type { Bot, Plugin } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
@@ -27,13 +28,6 @@ import { usePlugins } from '../../stores/plugins'
 import { cardClass, errorText, fieldLabel, Group, Heading } from '../bot-settings/shared'
 
 import { PluginSheet, useDiscordSwitch } from './plugin-sheet'
-
-/** `software-development` reads as "Software development". */
-const categoryTitle = (category: string) => {
-  const words = category.replace(/[-_]+/g, ' ').trim()
-
-  return words ? words.charAt(0).toUpperCase() + words.slice(1) : 'Other'
-}
 
 const keyOf = (plugin: Plugin) => `${plugin.kind}:${plugin.id}`
 
@@ -83,7 +77,7 @@ const CATEGORIES: {
   },
   {
     description:
-      "Instructions bots follow for particular jobs. Skills a bot writes for itself stay in that bot's settings.",
+      "Instructions bots follow for particular jobs. A connector's skills come with it. Skills a bot writes for itself stay in that bot's settings.",
     empty: 'No skill matches that.',
     id: 'skills',
     label: 'Skills',
@@ -174,7 +168,8 @@ export function PluginsSettings(): React.JSX.Element {
 
   const skillPackages = visible.filter(item => item.kind === 'package')
   const skills = visible.filter(item => item.kind === 'skill')
-  const skillCategories = [...new Set(skills.map(item => item.category))].sort()
+  const builtIn = skills.filter(item => item.source === 'bundled')
+  const added = skills.filter(item => item.source !== 'bundled')
   const connected = visible.filter(isConnected)
   const opened = plugins.find(item => keyOf(item) === open)
 
@@ -337,17 +332,40 @@ export function PluginsSettings(): React.JSX.Element {
           ) : null}
           {category === 'skills' ? (
             <>
+              <Group title="Yours">
+                {added.map(row)}
+                {adding ? (
+                  <AddSkillForm
+                    bots={bots}
+                    focus={focused}
+                    onDone={name => {
+                      setAdding(false)
+
+                      if (name) {
+                        setOpen(`skill:${name}`)
+                      }
+                    }}
+                  />
+                ) : (
+                  <button
+                    className="flex min-h-[52px] w-full items-center gap-3 px-4 py-2.5 text-left text-muted transition-colors hover:text-foreground"
+                    onClick={() => setAdding(true)}
+                    type="button"
+                  >
+                    <span className="inline-flex size-7 items-center justify-center rounded-[8px] bg-foreground/[0.07]">
+                      <Plus size={16} />
+                    </span>
+                    Add skill
+                  </button>
+                )}
+              </Group>
               {skillPackages.length ? (
                 <Group title="Skill packages">{skillPackages.map(row)}</Group>
               ) : null}
-              {skillCategories.map(name => (
-                <Group key={name} title={categoryTitle(name)}>
-                  {skills.filter(item => item.category === name).map(row)}
-                </Group>
-              ))}
+              {builtIn.length ? <Group title="Built into Hexbot">{builtIn.map(row)}</Group> : null}
             </>
           ) : null}
-          {!visible.length && (category !== 'servers' || query.trim()) ? (
+          {!visible.length && (category === 'connectors' || query.trim()) ? (
             <p className="px-1 text-[length:var(--text-secondary)] text-muted">
               {query.trim() ? current.empty : 'Nothing here yet.'}
             </p>
@@ -712,6 +730,144 @@ function AddServerForm({ onDone }: { onDone: () => void }) {
           Add server
         </Button>
         <Button onClick={onDone} size="sm" variant="ghost">
+          Cancel
+        </Button>
+      </div>
+    </form>
+  )
+}
+
+/**
+ * A skill of your own: a description and instructions, or a SKILL.md you
+ * load. It starts on for the bot in view, or for every bot.
+ */
+function AddSkillForm({
+  bots,
+  focus,
+  onDone
+}: {
+  bots: Bot[]
+  focus: Bot | null
+  /** With the new skill's name once it is added, so its sheet can open. */
+  onDone: (name?: string) => void
+}) {
+  const refresh = usePlugins(state => state.refresh)
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [instructions, setInstructions] = useState('')
+  const [file, setFile] = useState<null | { content: string; name: string }>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<null | string>(null)
+  const ready = name.trim() && (file || (description.trim() && instructions.trim()))
+
+  const load = (picked: File | undefined) => {
+    if (!picked) {
+      return
+    }
+
+    setError(null)
+    void picked
+      .text()
+      .then(content => {
+        setFile({ content, name: picked.name })
+        setName(current => current || skillFileName(content))
+      })
+      .catch(cause => setError(errorText(cause)))
+  }
+
+  return (
+    <form
+      className="hex-fade grid gap-3 px-4 py-4"
+      onSubmit={event => {
+        event.preventDefault()
+        setBusy(true)
+        setError(null)
+        const skill = name.trim()
+
+        void skillsSave({
+          botsDisabled: focus
+            ? bots.filter(bot => bot.name !== focus.name).map(bot => bot.name)
+            : [],
+          content: file ? file.content : skillContent(description, instructions),
+          name: skill
+        })
+          .then(() => refresh())
+          .then(() => onDone(skill))
+          .catch(cause => setError(errorText(cause)))
+          .finally(() => setBusy(false))
+      }}
+    >
+      <label className="block">
+        <span className={fieldLabel}>Name</span>
+        <Input
+          aria-label="Skill name"
+          autoFocus
+          onChange={event => setName(event.target.value.toLowerCase())}
+          placeholder="release-notes"
+          value={name}
+        />
+      </label>
+      {file ? (
+        <div className="flex items-center justify-between gap-3 rounded-[10px] bg-foreground/[0.04] px-3 py-2.5 text-[length:var(--text-secondary)]">
+          <span className="min-w-0 truncate">{file.name}</span>
+          <Button onClick={() => setFile(null)} size="sm" variant="ghost">
+            Remove
+          </Button>
+        </div>
+      ) : (
+        <>
+          <label className="block">
+            <span className={fieldLabel}>When to use it</span>
+            <Input
+              aria-label="When to use the skill"
+              onChange={event => setDescription(event.target.value)}
+              placeholder="Write release notes from merged pull requests in the team's format."
+              value={description}
+            />
+          </label>
+          <label className="block">
+            <span className={fieldLabel}>Instructions</span>
+            <Textarea
+              aria-label="Skill instructions"
+              onChange={event => setInstructions(event.target.value)}
+              placeholder="The steps a bot follows, the tools it uses, and what to avoid."
+              rows={6}
+              value={instructions}
+            />
+          </label>
+        </>
+      )}
+      <p className="text-[length:var(--text-meta)] text-muted">
+        {focus
+          ? `On for ${focus.display_name}. Choose more bots once it is added.`
+          : 'On for every bot. Choose its bots once it is added.'}{' '}
+        A skill built into Hexbot can't be added again.
+      </p>
+      {error ? (
+        <p className="text-[length:var(--text-secondary)] text-danger" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <div className="flex flex-wrap gap-2">
+        <Button busy={busy} disabled={!ready} size="sm" type="submit" variant="primary">
+          Add skill
+        </Button>
+        {file ? null : (
+          <label className="hex-focus inline-flex h-8 cursor-pointer items-center rounded-full px-3 text-[length:var(--text-secondary)] text-muted transition-colors hover:bg-foreground/[0.06] hover:text-foreground">
+            Load SKILL.md
+            <input
+              accept=".md,text/markdown,text/plain"
+              aria-label="Load a SKILL.md file"
+              className="sr-only"
+              onChange={event => {
+                load(event.target.files?.[0])
+                event.target.value = ''
+              }}
+              type="file"
+            />
+          </label>
+        )}
+        <Button onClick={() => onDone()} size="sm" variant="ghost">
           Cancel
         </Button>
       </div>

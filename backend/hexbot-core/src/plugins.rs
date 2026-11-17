@@ -48,6 +48,9 @@ fn connector_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<
         .cloned()
         .unwrap_or_default();
     let config = read_config(home)?;
+    // The skills each connector comes with, as a package lists its own.
+    let library = skills::resolve(home, None)?;
+    let catalog = connectors::catalog();
     // A package's server is listed, given and removed with its package.
     rows.retain(|row| {
         row["mcp"]["name"]
@@ -56,6 +59,16 @@ fn connector_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<
     });
     for row in &mut rows {
         row["kind"] = json!("connector");
+        if let Some(spec) = catalog.iter().find(|s| s["id"] == row["id"]) {
+            row["skills"] = json!(
+                skills::of_connector(spec)
+                    .iter()
+                    .filter_map(|name| library.iter().find(|s| &s.name == name))
+                    // One switched off for every bot is turned back on here.
+                    .map(|s| json!({"name": s.name, "description": s.description, "disabled_globally": s.disabled_globally}))
+                    .collect::<Vec<_>>()
+            );
+        }
         if let Some(name) = row["mcp"]["name"].as_str() {
             let entry = &config["mcp_servers"][name];
             row["server"] = server_details(entry);
@@ -84,9 +97,11 @@ fn connector_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<
     }
     // Discord is set up in each bot's own settings; Plugins turns it on.
     let mut discord = crate::discord::plugin_row(home, own)?;
-    discord["enabled_for_bot"] = json!(bot.map(|b| discord["bots"]
-        .as_array()
-        .is_some_and(|bots| bots.iter().any(|n| n == b))));
+    discord["enabled_for_bot"] = json!(bot.map(|b| {
+        discord["bots"]
+            .as_array()
+            .is_some_and(|bots| bots.iter().any(|n| n == b))
+    }));
     rows.push(discord);
     Ok(rows)
 }
@@ -103,7 +118,16 @@ fn skill_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<Valu
         None => skills::resolve(home, None)?,
     };
     let mut rows = vec![];
-    for skill in listed.into_iter().filter(|s| s.plugin.is_none()) {
+    // A package's skills are listed with it, and a connector's with that
+    // connector, as is the skill a skill-backed connector such as Notion is:
+    // each comes and goes with what brought it.
+    let of_connectors = connectors::catalog()
+        .iter()
+        .flat_map(skills::of_connector)
+        .collect::<BTreeSet<_>>();
+    for skill in listed.into_iter().filter(|s| {
+        s.plugin.is_none() && s.connectors.is_empty() && !of_connectors.contains(&s.name)
+    }) {
         // A grant counts once the skill has what it needs for that bot.
         let given = per_bot
             .iter()
@@ -210,7 +234,9 @@ pub(crate) fn set_bots(home: &Path, caller: &str, p: &Value) -> Result<Value> {
         let chosen = connectors::chosen_bots(home, caller, &[], &p["bots"])?;
         for bot in &own {
             let on = chosen.contains(bot);
-            let was = current["bots"].as_array().is_some_and(|b| b.iter().any(|n| n == bot));
+            let was = current["bots"]
+                .as_array()
+                .is_some_and(|b| b.iter().any(|n| n == bot));
             if on != was {
                 crate::discord::set_enabled(home, caller, bot, on)?;
             }
@@ -559,6 +585,10 @@ pub(crate) fn install(
                 4208,
                 format!("An MCP server named {} already exists.", package.name),
             ));
+        }
+        let bundled = skills::bundled_names()?;
+        if let Some((skill, _)) = package.skills.iter().find(|(n, _)| bundled.contains(n)) {
+            return Err(skills::built_in(skill));
         }
         // A bot's private skill keeps its name too: giving the package to
         // that bot or taking it away would otherwise switch the private skill.
@@ -1053,7 +1083,9 @@ fn needs(missing: &[skills::Requirement]) -> String {
         .iter()
         .map(|need| match need {
             skills::Requirement::Env(name) | skills::Requirement::Command(name) => name.clone(),
-            skills::Requirement::Platform(list) => list.join(" or "),
+            skills::Requirement::Platform(list) | skills::Requirement::Connector(list) => {
+                list.join(" or ")
+            }
         })
         .collect::<Vec<_>>()
         .join(", ")

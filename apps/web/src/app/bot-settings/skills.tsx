@@ -13,11 +13,13 @@ const PLATFORMS: Record<string, string> = { linux: 'Linux', macos: 'macOS', wind
 export function requirementText(missing: SkillRequirement[]): string {
   return missing
     .map(item =>
-      item.kind === 'platform'
-        ? `Only on ${item.name.map(name => PLATFORMS[name] ?? name).join(' or ')}`
-        : item.kind === 'command'
-          ? `Needs ${item.name} installed`
-          : `Needs ${item.name}`
+      item.kind === 'connector'
+        ? `Comes with ${item.name.join(' or ')}`
+        : item.kind === 'platform'
+          ? `Only on ${item.name.map(name => PLATFORMS[name] ?? name).join(' or ')}`
+          : item.kind === 'command'
+            ? `Needs ${item.name} installed`
+            : `Needs ${item.name}`
     )
     .join(' · ')
 }
@@ -47,7 +49,7 @@ export function SkillsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
 
   return (
     <div>
-      <Heading description="Instructions this bot can follow for specific jobs. Installed skills are on unless you turn them off.">
+      <Heading description="Instructions this bot can follow for specific jobs. A connector's skills come with it; the rest are on unless you turn them off.">
         Skills
       </Heading>
       {error ? (

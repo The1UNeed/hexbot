@@ -61,6 +61,7 @@ import {
   withWaiting
 } from '../../web/src/lib/plugin-rows'
 import { DISCORD_MODES, discordModeLabel, discordModeListens } from '../../web/src/lib/discord-modes'
+import { skillContent } from '../../web/src/lib/skill-file'
 import { BrandSignInButton } from './ui/BrandSignInButton'
 import { PluginIcon } from './ui/PluginIcon'
 import { botStatusOf, isOpenRoom } from './core/routes'
@@ -126,7 +127,7 @@ const modes = [
 const modeHelp: Record<string, string> = {
   inherit: 'Uses the approval setting of this daemon.',
   smart:
-    "Works freely in the workspace. Steps outside it are checked by a model; only risky ones ask first.",
+    'Works freely in the workspace. Steps outside it are checked by a model; only risky ones ask first.',
   manual: 'Reads freely. Every file change and command asks first.',
   off: 'No prompts and no sandbox.'
 }
@@ -649,12 +650,13 @@ export function Management({
         fields = {
           content: str(result.content),
           name: str(result.name),
-          category: str(panel?.data?.category)
+          category: str(panel?.data?.category),
+          source: str(result.source)
         }
         break
       }
       case 'skill-create':
-        fields = { name: '', category: '', content: '---\ndescription: \n---\n\n' }
+        fields = { name: '', description: '', instructions: '' }
         break
       case 'dreams':
         data = (await rpc<{ dreams: RowData[] }>('hexbot.dreaming.list', { bot: bot?.name })).dreams
@@ -2429,15 +2431,37 @@ export function Management({
             </Group>
           ) : null}
           {p.skills?.length ? (
-            <Group title="Skills">
-              {p.skills.map(skill => (
-                <Row
-                  key={skill.name}
-                  title={skill.name}
-                  subtitle={skill.description}
-                  testID={`plugin-skill-${skill.name}`}
-                />
-              ))}
+            <Group
+              title={p.kind === 'connector' ? 'Skills that come with it' : 'Skills'}
+              footer={
+                p.kind === 'connector' ? `Bots that have ${p.name} have these skills.` : undefined
+              }
+            >
+              {p.skills.map(skill =>
+                skill.disabled_globally ? (
+                  // Switched off for every bot: turned back on here.
+                  <SwitchRow
+                    key={skill.name}
+                    title={skill.name}
+                    subtitle="Off for every bot"
+                    testID={`plugin-skill-${skill.name}`}
+                    value={false}
+                    disabled={busy || mobile.connection !== 'connected'}
+                    onValueChange={() =>
+                      void run(() =>
+                        rpc('hexbot.skills.set_global', { name: skill.name, enabled: true })
+                      )
+                    }
+                  />
+                ) : (
+                  <Row
+                    key={skill.name}
+                    title={skill.name}
+                    subtitle={skill.description}
+                    testID={`plugin-skill-${skill.name}`}
+                  />
+                )
+              )}
             </Group>
           ) : null}
           <Group>
@@ -2718,8 +2742,38 @@ export function Management({
         </Group>
       )
       break
-    case 'skill':
     case 'skill-create':
+      save = () =>
+        rpc('hexbot.skills.save', {
+          name: str(values.name).trim().toLowerCase(),
+          content: skillContent(str(values.description), str(values.instructions)),
+          // Adding never replaces a skill of the same name.
+          create: true,
+          ...(bot ? { bot: bot.name } : {})
+        })
+      content = (
+        <Group footer="A skill built into Hexbot can't be added again.">
+          {field(
+            'name',
+            'Skill name',
+            false,
+            'Lowercase letters, digits, - or _, such as release-notes.'
+          )}
+          {field('description', 'When to use it')}
+          {field('instructions', 'Instructions', true)}
+        </Group>
+      )
+      break
+    case 'skill':
+      // A skill built into Hexbot is read, not changed or deleted.
+      if (values.source === 'bundled') {
+        content = (
+          <Group footer="Built into Hexbot. Turn it off for a bot; it can't be changed or deleted.">
+            <Text selectable>{str(values.content)}</Text>
+          </Group>
+        )
+        break
+      }
       save = () =>
         rpc('hexbot.skills.save', {
           name: values.name,
@@ -2729,7 +2783,6 @@ export function Management({
         })
       content = (
         <>
-          {kind === 'skill-create' ? field('name', 'Skill name') : null}
           {field('category', 'Category')}
           {field('content', 'Skill instructions', true)}
           {kind === 'skill' ? (
