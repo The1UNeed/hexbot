@@ -230,8 +230,9 @@ more freedom and more capability than a hosted product can offer.
   browser beside it, to the desktop app's own port (the app passes the
   address on) wherever the daemon runs, and through Hex Connect to the
   daemon's tunnel from a browser or phone elsewhere. Connect forwards the
-  browser and keeps nothing; the code is useless without the PKCE key on
-  the daemon. A daemon without Connect falls back to a pasted address.
+  browser only when it is signed in as the daemon's owner, so a consent
+  page someone else started can't hand them your grant, and keeps nothing.
+  A daemon without Connect falls back to a pasted address.
 - Its one way to speak is `hexbot_notify`: one message per run, eight a day
   from each bot. The message is posted as the bot's own message in its chat
   (made if it has none) and broadcast whole as `hexbot.heartbeat.message`:

@@ -1507,7 +1507,8 @@ or a clear.
   `return_via: "connect"`: when the daemon is on Hex Connect and has a
   Google web client, Google returns to
   `https://connect.hexbot.app/oauth/google`, which sends the browser on to
-  the daemon's tunnel (the state starts with the Connect daemon id), and
+  the daemon's tunnel (the state starts with the Connect daemon id) once it
+  is signed in to Connect as the daemon's owner, and
   the sign-in finishes there; otherwise it stays on loopback. `return_port`
   wins over `return_via`; 4202 for a port out of range or another
   `return_via`. When another connector of the

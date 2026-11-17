@@ -1,15 +1,23 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryStore } from "@/lib/store";
 import { FakeTunnelProvider, type TunnelProvider } from "@/lib/tunnels";
 import { setRuntimeForTests } from "@/lib/runtime";
 import { GET } from "@/app/oauth/google/route";
 
 let store: MemoryStore;
-const daemon = (tunnelHostname: string) => store.createDaemon({ userId: "u", name: "Home", slug: tunnelHostname.split(".")[0], tunnelId: "t", tunnelHostname, ingressPort: 9200, tokenHash: `h-${tunnelHostname}` });
+let owner: string;
+const daemon = (tunnelHostname: string, userId = owner) => store.createDaemon({ userId, name: "Home", slug: tunnelHostname.split(".")[0], tunnelId: "t", tunnelHostname, ingressPort: 9200, tokenHash: `h-${tunnelHostname}` });
 const back = (query: string) => GET(new Request(`https://connect.hexbot.app/oauth/google?${query}`));
 const cloudflare = { kind: "cloudflare" } as unknown as TunnelProvider;
 
-beforeEach(() => { store = new MemoryStore(); setRuntimeForTests({ store, tunnels: cloudflare }); });
+beforeEach(async () => {
+  store = new MemoryStore();
+  setRuntimeForTests({ store, tunnels: cloudflare });
+  vi.stubEnv("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY", "");
+  vi.stubEnv("DEV_USER_ID", "clerk_owner");
+  owner = (await store.getOrCreateUser("clerk_owner")).id;
+});
+afterEach(() => { vi.unstubAllEnvs(); });
 
 describe("Google's return from a daemon's sign-in", () => {
   it("goes on to the daemon named in the state, with the query unchanged and nothing cached", async () => {
@@ -28,6 +36,24 @@ describe("Google's return from a daemon's sign-in", () => {
     setRuntimeForTests({ store, tunnels: new FakeTunnelProvider() });
     const row = await daemon("amber-otter-1234.hexbot.app");
     expect((await back(`state=${row.id}.abc&code=c`)).headers.get("location")).toBe(`http://127.0.0.1:9200/oauth/google?state=${row.id}.abc&code=c`);
+  });
+
+  it("goes on only for the daemon's own Connect account, and asks a signed-out browser to sign in first", async () => {
+    const row = await daemon("amber-otter-1234.hexbot.app");
+    const query = `state=${row.id}.abc&code=c`;
+
+    vi.stubEnv("DEV_USER_ID", "");
+    const signedOut = await back(query);
+    expect(signedOut.status).toBe(303);
+    expect(signedOut.headers.get("location")).toBe(`https://connect.hexbot.app/sign-in?redirect_url=${encodeURIComponent(`/oauth/google?${query}`)}`);
+
+    // Someone who sent another person the consent page for their own daemon gets nothing.
+    vi.stubEnv("DEV_USER_ID", "clerk_owner");
+    const theirs = await daemon("amber-otter-5678.hexbot.app", (await store.getOrCreateUser("clerk_other")).id);
+    const refused = await back(`state=${theirs.id}.abc&code=c`);
+    expect(refused.status).toBe(403);
+    expect(refused.headers.get("location")).toBeNull();
+    expect(await refused.text()).toContain("belongs to another Hex Connect account");
   });
 
   it("refuses a state that names no daemon, or one removed from Connect", async () => {
