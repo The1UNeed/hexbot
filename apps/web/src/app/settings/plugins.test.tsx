@@ -361,6 +361,26 @@ describe('Settings, Plugins', () => {
     expect(usePlugins.getState().sought).toBeNull()
   })
 
+  it('shows the connector a tag names a skill of', async () => {
+    vi.mocked(pluginsList).mockResolvedValue(
+      list({
+        connectors: [
+          {
+            ...search,
+            bots: ['hexbot'],
+            kind: 'connector',
+            ready: true,
+            skills: [{ description: 'Recover blocked pages.', name: 'blocked-page-recovery' }]
+          }
+        ]
+      })
+    )
+    usePlugins.getState().seek({ kind: 'skill', name: 'blocked-page-recovery' })
+    render(<PluginsSettings />)
+    expect(await screen.findByLabelText('Search connectors')).toHaveValue('Web search')
+    expect(screen.getByTestId('plugin-connector:web_search')).toBeInTheDocument()
+  })
+
   it('searches only the kind you are looking at', async () => {
     render(<PluginsSettings />)
     await show('Skills')

@@ -136,7 +136,8 @@ export function shownBots(plugin: Plugin): { bots: string[]; exact: boolean } {
 
 /**
  * The plugin a tag in a message names, by its name or its id. A skill tag
- * finds a skill or a package of skills; a plugin tag a connector or a server.
+ * finds a skill or a package of skills, or else the connector it comes with;
+ * a plugin tag a connector or a server.
  */
 export function namedPlugin(
   plugins: Plugin[],
@@ -146,10 +147,15 @@ export function namedPlugin(
   const needle = name.trim().toLowerCase()
   const skill = (plugin: Plugin) => plugin.category !== 'mcp' && plugin.kind !== 'connector'
 
-  return plugins.find(
-    plugin =>
-      (kind === 'skill') === skill(plugin) &&
-      (plugin.name.toLowerCase() === needle || plugin.id.toLowerCase() === needle)
+  return (
+    plugins.find(
+      plugin =>
+        (kind === 'skill') === skill(plugin) &&
+        (plugin.name.toLowerCase() === needle || plugin.id.toLowerCase() === needle)
+    ) ??
+    (kind === 'skill'
+      ? plugins.find(plugin => plugin.skills?.some(item => item.name.toLowerCase() === needle))
+      : undefined)
   )
 }
 
