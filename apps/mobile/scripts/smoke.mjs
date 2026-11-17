@@ -969,7 +969,7 @@ try {
       await page.getByTestId('management-sheet-back').click()
       await page.getByTestId('management-sheet-back').click()
       // One plugin card chooses the bots that get it.
-      await page.getByTestId('plugin-skill:github').click()
+      await page.getByTestId('plugin-skill:pdf').click()
       await expect(page.getByTestId('management-loading')).not.toBeVisible({ timeout: 30000 })
       await settle()
       await shot('plugin')
@@ -977,7 +977,7 @@ try {
       await expect
         .poll(async () =>
           (await rpc('hexbot.plugins.list')).skills
-            .find(p => p.id === 'github')
+            .find(p => p.id === 'pdf')
             .bots.includes('owl')
         )
         .toBe(false)
