@@ -40,18 +40,57 @@ test('missing Expo credentials fail preflight only for a nightly being built', a
   await run('bash', ['-c', script], { env: { ...process.env, EXPO_TOKEN: 'fixture-token' } })
 })
 
-test('TestFlight builds the exact release commit rather than a moving main branch', async t => {
+test('TestFlight builds the release checkout on the runner and uploads that build', async t => {
+  // Expo's free plan allows 15 iOS cloud builds a month, fewer than one a
+  // night, so the nightly builds locally and Expo only uploads it.
   assert.ok(job)
+  assert.match(job, /^    runs-on: macos-/m)
   assert.match(job, /EXPO_TOKEN: \$\{\{ secrets\.EXPO_TOKEN \}\}/)
-  const command = job.match(/run: (pnpm mobile:testflight .+)/)?.[1]
-  assert.ok(command)
+  assert.doesNotMatch(job, /workflow:run|mobile:testflight|^\s+ref:/m)
+  const build = job.match(/- name: Build iOS on this runner\n([\s\S]*?)(?=\n      - |$)/)?.[1]
+  const upload = job.match(/- name: Upload to App Store Connect\n([\s\S]*?)(?=\n      - |$)/)?.[1]
+  assert.ok(build && upload)
+  for (const step of [build, upload]) assert.match(step, /working-directory: apps\/mobile/)
+  const script = build.split('        run: |\n')[1].replace(/^          /gm, '')
+  const submit = upload.match(/run: (.+)/)?.[1]
+  assert.ok(script && submit)
+
   const root = await mkdtemp(join(tmpdir(), 'hexbot-testflight-release-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   await mkdir(join(root, 'bin'))
-  await writeFile(join(root, 'bin/pnpm'), `#!${process.execPath}\nrequire('node:fs').writeFileSync('arguments.json', JSON.stringify(process.argv.slice(2)))\n`, { mode: 0o755 })
-  const sha = '1234567890abcdef1234567890abcdef12345678'
-  await run('bash', ['-c', command], { cwd: root, env: { ...process.env, GITHUB_SHA: sha, PATH: `${join(root, 'bin')}:${process.env.PATH}` } })
-  assert.deepEqual(JSON.parse(await readFile(join(root, 'arguments.json'), 'utf8')), ['mobile:testflight', '--ref', sha])
+  const record = `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(join(root, 'calls'))}, JSON.stringify([require('node:path').basename(process.argv[1]), ...process.argv.slice(2)]) + '\\n')\n`
+  for (const tool of ['pnpm', 'brew', 'fastlane', 'pod']) await writeFile(join(root, 'bin', tool), record, { mode: 0o755 })
+  const env = { ...process.env, RUNNER_TEMP: '/runner/temp', PATH: `${join(root, 'bin')}:/usr/bin:/bin` }
+  await run('bash', ['-e', '-c', script], { cwd: root, env })
+  await run('bash', ['-e', '-c', submit], { cwd: root, env })
+  const calls = (await readFile(join(root, 'calls'), 'utf8')).trim().split('\n').map(line => JSON.parse(line))
+  assert.deepEqual(calls, [
+    ['pnpm', 'exec', 'eas', 'build', '--platform', 'ios', '--profile', 'production', '--local', '--non-interactive', '--output', '/runner/temp/Hexbot.ipa'],
+    ['pnpm', 'exec', 'eas', 'submit', '--platform', 'ios', '--profile', 'production', '--path', '/runner/temp/Hexbot.ipa', '--non-interactive']
+  ])
+})
+
+test('the iOS build installs fastlane and CocoaPods only when the runner lacks them', async t => {
+  // eas build --local needs both; GitHub's macOS images usually carry them.
+  const build = job?.match(/- name: Build iOS on this runner\n([\s\S]*?)(?=\n      - |$)/)?.[1]
+  const install = build?.split('        run: |\n')[1].split('\n').filter(line => line.includes('brew install')).join('\n')
+  assert.ok(install)
+  const root = await mkdtemp(join(tmpdir(), 'hexbot-testflight-tools-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await mkdir(join(root, 'bin'))
+  await writeFile(join(root, 'bin/brew'), `#!/bin/sh\necho "$@" >> ${join(root, 'brew')}\n`, { mode: 0o755 })
+  const env = { ...process.env, PATH: `${join(root, 'bin')}:/usr/bin:/bin` }
+  const installed = async () => (await readFile(join(root, 'brew'), 'utf8').catch(() => '')).trim().split('\n').filter(Boolean)
+  await run('bash', ['-e', '-c', install], { env })
+  assert.deepEqual(await installed(), ['install fastlane', 'install cocoapods'])
+  await rm(join(root, 'brew'))
+  await writeFile(join(root, 'bin/fastlane'), '#!/bin/sh\n', { mode: 0o755 })
+  await run('bash', ['-e', '-c', install], { env })
+  assert.deepEqual(await installed(), ['install cocoapods'])
+  await rm(join(root, 'brew'))
+  await writeFile(join(root, 'bin/pod'), '#!/bin/sh\n', { mode: 0o755 })
+  await run('bash', ['-e', '-c', install], { env })
+  assert.deepEqual(await installed(), [])
 })
 
 test('Expo does not also build on every push to main', async () => {

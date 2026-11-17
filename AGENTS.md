@@ -239,13 +239,16 @@ nightly, and a finalize step that commits bookkeeping back to `main`.
 - A **nightly** is built by the same workflow every day `main` moved, as
   `<next>-nightly.<YYYYMMDD>.<run>`, published as a prerelease and to the
   nightly feed. Nightly versions are never committed. The last 14 are kept.
-- iOS nightlies go through Expo on its free plan
-  (`apps/mobile/.eas/workflows/`, `docs/release.md`). Use only jobs that plan
-  runs: upload with a `submit` job, and give a `testflight` job
-  `asc_build_id`, never `build_id`, which needs a paid plan.
-  `eas workflow:validate` does not catch plan limits. When the TestFlight
-  job fails, GitHub shows only the failed Expo job's name; read the reason
-  with `pnpm exec eas workflow:view RUN_ID --json` in `apps/mobile`.
+- iOS nightlies build on the release run's macOS runner with
+  `eas build --local` and upload with `eas submit` (`docs/release.md`).
+  Expo's free plan allows 15 iOS cloud builds a month, fewer than one a
+  night, so never move the nightly back to an Expo cloud build. In the Expo
+  workflows (`apps/mobile/.eas/workflows/`) use only jobs that plan runs:
+  upload with a `submit` job, and give a `testflight` job `asc_build_id`,
+  never `build_id`, which needs a paid plan. `eas workflow:validate` does not
+  catch plan limits. When an Expo workflow fails, GitHub shows only the
+  failed Expo job's name; read the reason with
+  `pnpm exec eas workflow:view RUN_ID --json` in `apps/mobile`.
 - **Dev** is your checkout (`pnpm dev`). `node scripts/desktop/dist.mjs
   --mac` produces a `Hexbot (dev)` package with its own app id.
 - The version lives in `apps/desktop/package.json`; Rust reads it at build
