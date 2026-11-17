@@ -371,6 +371,9 @@ fn model_choice(options: &Value) -> Value {
 }
 /// Bot processes that may run at once.
 const SECTION_CAPACITY: usize = 16;
+/// What a message says when it has files and no words, as the apps send it
+/// (`attachmentPrompt` in apps/web/src/lib/media.ts); change both together.
+const FILES_PROMPT: &str = "Please review the attached files.";
 
 pub struct Runtime {
     pub(crate) admission: Arc<crate::admission::Admission>,
@@ -3243,7 +3246,14 @@ impl Runtime {
                 // a `/compact` in progress finishes first.
                 // A message that would be refused anyway leaves the reply
                 // alone, and so does `/compact`, which waits for an idle bot.
-                let text = required(p, "text")?;
+                // Files sent without words go with the prompt the apps send
+                // for them, so an app from before that still sends them.
+                let files = uploads.as_ref().is_some_and(|ids| !ids.is_empty());
+                let text = match p["text"].as_str() {
+                    Some(text) if !text.trim().is_empty() => text,
+                    _ if files => FILES_PROMPT,
+                    _ => required(p, "text")?,
+                };
                 let interrupt = p["interrupt"] == true && p["display_kind"] != "hidden";
                 if interrupt {
                     let compact = text.trim() == "/compact" || text.trim().starts_with("/compact ");
@@ -3282,12 +3292,10 @@ impl Runtime {
                 if p["display_kind"] != "hidden" {
                     self.chat_sent(&s);
                 }
+                // A title comes from your own words, never the files prompt.
                 if p["display_kind"] != "hidden"
-                    && crate::catalog::adopt_section_title(
-                        &self.home,
-                        &s.stored,
-                        required(p, "text")?,
-                    )?
+                    && !(files && text.trim() == FILES_PROMPT)
+                    && crate::catalog::adopt_section_title(&self.home, &s.stored, text)?
                 {
                     self.events.emit(
                         &s.owner,
