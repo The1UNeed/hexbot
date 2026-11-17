@@ -58,7 +58,8 @@ describe("Google's return from a daemon's sign-in", () => {
     expect(resumed.headers.get("location")).toBe(`https://amber-otter-1234.hexbot.app/oauth/google?${query}`);
     expect(resumed.headers.get("set-cookie")).toContain("Max-Age=0");
     expect(localPath("/oauth/google")).toBe("/oauth/google");
-    for (const elsewhere of ["https://evil.example/", "//evil.example/", "/\\evil.example", undefined, ["/a", "/b"]]) expect(localPath(elsewhere)).toBeNull();
+    expect(localPath("/connect?x=1#y")).toBe("/connect?x=1#y");
+    for (const elsewhere of ["https://evil.example/", "//evil.example/", "/\\evil.example", "/\t/evil.example", "/\n/evil.example", "\t//evil.example", undefined, ["/a", "/b"]]) expect(localPath(elsewhere)).toBeNull();
 
     // Someone who sent another person the consent page for their own daemon gets nothing.
     vi.stubEnv("DEV_USER_ID", "clerk_owner");
