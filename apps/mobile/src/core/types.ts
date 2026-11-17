@@ -1,6 +1,7 @@
 // Reuse the daemon's wire contract without bundling the web app.
 export type {
   Bot,
+  DiscordMode,
   Reaction,
   ReactionsChanged,
   Section,

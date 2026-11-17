@@ -30,6 +30,7 @@ import type {
   DaemonInfo,
   DaemonUpdateStatus,
   Device,
+  DiscordMode,
   DiscordStatus,
   EmailDraftAnswer,
   HeartbeatStatus,
@@ -569,9 +570,16 @@ export const computerView = (control: boolean, quality: ComputerQuality = 'auto'
 export const computerConfigure = (size: ComputerSize) =>
   rpcCall<ComputerStatus>('hexbot.computer.configure', { size })
 
-/** The bot's own Discord app, or null when it has none. */
+/** The bot's own Discord app, or null when it has none; `enabled`: Discord is on for it in Plugins. */
 export const discordGet = (bot: string) =>
-  rpcCall<{ discord: DiscordStatus | null }>('hexbot.discord.get', { bot })
+  rpcCall<{ discord: DiscordStatus | null; enabled?: boolean }>('hexbot.discord.get', { bot })
+/** How the bot acts in Discord: its default, or one server's own mode (null follows the default). */
+export const discordSetMode = (bot: string, mode: DiscordMode | null, guildId?: string) =>
+  rpcCall<{ discord: DiscordStatus }>('hexbot.discord.set_mode', {
+    bot,
+    mode,
+    ...(guildId ? { guild_id: guildId } : {})
+  })
 /** Checks the token with Discord, saves it on the daemon and connects. */
 export const discordConnect = (bot: string, token: string) =>
   rpcCall<{ discord: DiscordStatus }>('hexbot.discord.connect', { bot, token })

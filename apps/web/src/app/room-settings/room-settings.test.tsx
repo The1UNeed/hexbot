@@ -74,7 +74,7 @@ describe('room settings', () => {
       'href',
       'https://discord.com/channels/g1/c1'
     )
-    expect(screen.getByText(/comes back the same way after you remove it/)).toBeVisible()
+    expect(screen.getByText(/One you remove comes back when someone mentions it/)).toBeVisible()
     expect(screen.queryByLabelText('Room approval mode')).toBeNull()
   })
 

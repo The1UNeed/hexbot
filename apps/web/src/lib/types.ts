@@ -299,6 +299,8 @@ export interface Bot {
   pinned_at?: null | number
   /** The one bot that looks after the others; it can't be deleted. Older daemons leave it out. */
   primary?: boolean
+  /** Discord is on for it in Plugins, so its settings show Discord. Older daemons leave it out. */
+  discord?: boolean
   provider: null | string
   /**
    * Whether `provider` has a key or sign-in right now; null without a provider.
@@ -471,6 +473,8 @@ export interface Connector {
   /** Google and Microsoft: set up by signing in, not with a key. */
   account?: ConnectorAccount | null
   description: string
+  /** Discord: each bot it is on for, with its own Discord app's state. */
+  discord?: Record<string, DiscordBotState>
   enabled_bots: string[]
   /** Null when the list was fetched without a bot. */
   enabled_for_bot: boolean | null
@@ -578,6 +582,8 @@ export interface Plugin {
   description: string
   /** A skill switched off in Settings for every bot. */
   disabled_globally?: boolean
+  /** Discord: each bot it is on for, with its own Discord app's state. */
+  discord?: Record<string, DiscordBotState>
   icon: string
   id: string
   installed_by?: null | string
@@ -1201,6 +1207,21 @@ export interface RoomDiscord {
   url: string
 }
 
+/**
+ * How a bot acts in a Discord server: answers mentions and sees only them,
+ * answers mentions and reads along, joins in as an active member, or answers
+ * every message.
+ */
+export type DiscordMode = 'active' | 'everyone' | 'mentions' | 'reads'
+
+/** A Discord server a bot's app is in. */
+export interface DiscordServer {
+  id: string
+  /** Its own mode; null follows the bot's. */
+  mode: DiscordMode | null
+  name: string
+}
+
 /** A bot's own Discord app (`hexbot.discord.*`); null when it has none. */
 export interface DiscordStatus {
   application_id: string
@@ -1210,10 +1231,21 @@ export interface DiscordStatus {
   error: null | string
   /** Adds the bot's Discord app to a server. */
   invite_url: string
+  /** How it acts in a server that has no mode of its own. Older daemons leave it out. */
+  mode?: DiscordMode
   /** The Discord rooms the bot is in. */
   rooms: { channel_name: null | string; guild_name: null | string; id: string }[]
+  /** The servers its app is in. Older daemons leave it out. */
+  servers?: DiscordServer[]
   status: 'connecting' | 'error' | 'online'
   user_id: null | string
+  username: null | string
+}
+
+/** A bot's Discord app as Plugins shows it; `not_connected` before its token. */
+export interface DiscordBotState {
+  error: null | string
+  status: 'connecting' | 'error' | 'not_connected' | 'online'
   username: null | string
 }
 

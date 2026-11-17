@@ -14,7 +14,9 @@ import { cn } from '../../lib/cn'
 import {
   canGive,
   CONNECTOR_SHELVES,
+  discordBotText,
   isConnected,
+  isDiscord,
   namedPlugin,
   shelfOf
 } from '../../lib/plugin-rows'
@@ -24,7 +26,7 @@ import { useConnection } from '../../stores/connection'
 import { usePlugins } from '../../stores/plugins'
 import { cardClass, errorText, fieldLabel, Group, Heading } from '../bot-settings/shared'
 
-import { PluginSheet } from './plugin-sheet'
+import { PluginSheet, useDiscordSwitch } from './plugin-sheet'
 
 /** `software-development` reads as "Software development". */
 const categoryTitle = (category: string) => {
@@ -425,15 +427,20 @@ function ConnectorCard({
   plugin: Plugin
 }) {
   const setBots = usePlugins(state => state.setBots)
+  const discordSwitch = useDiscordSwitch()
   const [error, setError] = useState<null | string>(null)
   const connected = isConnected(plugin)
   const account = Boolean(plugin.connector?.account)
 
   const toggle = (bot: string, on: boolean) => {
     setError(null)
-    void setBots(
-      plugin,
-      on ? [...plugin.bots, bot] : plugin.bots.filter(name => name !== bot)
+    // Discord turned on for a bot opens its Discord settings to connect it.
+    const target = bots.find(item => item.name === bot)
+
+    void (
+      isDiscord(plugin) && target
+        ? discordSwitch(plugin, target, on)
+        : setBots(plugin, on ? [...plugin.bots, bot] : plugin.bots.filter(name => name !== bot))
     ).catch(cause => setError(errorText(cause)))
   }
 
@@ -481,7 +488,11 @@ function ConnectorCard({
             )}
             title={connected ? plugin.state_text : undefined}
           >
-            {connected ? plugin.state_text : plugin.description}
+            {connected
+              ? focus && isDiscord(plugin)
+                ? discordBotText(plugin, focus.name)
+                : plugin.state_text
+              : plugin.description}
           </p>
         </div>
       </div>

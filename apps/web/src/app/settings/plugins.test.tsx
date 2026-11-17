@@ -4,6 +4,7 @@ import { beforeEach, vi } from 'vitest'
 import {
   accountsDisconnect,
   accountsSignInStart,
+  discordDisconnect,
   pluginsConfigure,
   pluginsInstall,
   pluginsList,
@@ -23,6 +24,7 @@ vi.mock('../../lib/api', async importOriginal => ({
   accountsSignInCancel: vi.fn().mockResolvedValue({}),
   accountsSignInStart: vi.fn(),
   connectorsTest: vi.fn().mockResolvedValue({ message: 'Connected.', ok: true }),
+  discordDisconnect: vi.fn().mockResolvedValue({ discord: null }),
   pluginsConfigure: vi.fn().mockResolvedValue({}),
   pluginsInstall: vi.fn().mockResolvedValue({}),
   pluginsList: vi.fn(),
@@ -32,6 +34,10 @@ vi.mock('../../lib/api', async importOriginal => ({
 }))
 
 vi.mock('../../components/ui/confirm', () => ({ confirm: vi.fn().mockResolvedValue(true) }))
+
+const navigate = vi.fn()
+
+vi.mock('@tanstack/react-router', () => ({ useNavigate: () => navigate }))
 
 const search: Connector = {
   description: 'Search the web and read pages.',
@@ -141,6 +147,100 @@ describe('Settings, Plugins', () => {
       byName: { hexbot: bot('hexbot', 'HexBot', true), owl: bot('owl', 'Owl') },
       order: ['owl', 'hexbot']
     })
+  })
+
+  it("turns Discord on for a bot and opens that bot's Discord settings", async () => {
+    const discord = (bots: string[], states: Connector['discord'] = {}) =>
+      ({
+        abilities: ['Each bot joins as its own Discord app, with its name and face'],
+        bots,
+        description: 'Bots join your Discord servers as their own Discord apps.',
+        discord: states,
+        enabled_bots: bots,
+        enabled_for_bot: null,
+        fields: [],
+        group: 'social_home',
+        icon: 'discord',
+        id: 'discord',
+        kind: 'connector',
+        last_error: null,
+        name: 'Discord',
+        ready: true,
+        scope: 'bot',
+        state: bots.length ? 'ready' : 'not_set_up',
+        state_text: bots.length ? '1 bot online' : 'Not set up'
+      }) as PluginsList['connectors'][number]
+
+    navigate.mockReset()
+    vi.mocked(pluginsSetBots).mockClear()
+    // The bot list is read again before the bot's settings open.
+    const refreshBots = vi.fn().mockResolvedValue(undefined)
+    useBots.setState({ refresh: refreshBots })
+    vi.mocked(pluginsList).mockResolvedValue(
+      list({ connectors: [{ ...search, bots: [], kind: 'connector', ready: true }, discord([])] })
+    )
+    render(<PluginsSettings />)
+    const card = await screen.findByTestId('plugin-connector:discord')
+    fireEvent.click(within(card).getByRole('button', { name: 'Set up' }))
+    const bots = sheet('connector:discord').getByRole('group', { name: 'Bots that use Discord' })
+    expect(within(bots).getAllByText('Off')).toHaveLength(2)
+    expect(sheet('connector:discord').queryByRole('button', { name: 'Test' })).toBeNull()
+    vi.mocked(pluginsList).mockResolvedValue(
+      list({
+        connectors: [
+          { ...search, bots: [], kind: 'connector', ready: true },
+          discord(['owl'], { owl: { error: null, status: 'not_connected', username: null } })
+        ]
+      })
+    )
+    fireEvent.click(within(bots).getByRole('switch', { name: 'Discord for Owl' }))
+    await waitFor(() =>
+      expect(pluginsSetBots).toHaveBeenCalledWith('connector', 'discord', ['owl'])
+    )
+    await waitFor(() =>
+      expect(navigate).toHaveBeenCalledWith({
+        params: { bot: 'owl', tab: 'discord' },
+        to: '/b/$bot/settings/$tab'
+      })
+    )
+    expect(refreshBots).toHaveBeenCalled()
+  })
+
+  it('disconnects a bot in Discord before turning Discord off for it', async () => {
+    vi.mocked(pluginsSetBots).mockClear()
+    vi.mocked(pluginsList).mockResolvedValue(
+      list({
+        connectors: [
+          { ...search, bots: [], kind: 'connector', ready: true },
+          {
+            bots: ['owl'],
+            description: 'Bots join your Discord servers as their own Discord apps.',
+            discord: { owl: { error: null, status: 'online', username: 'Owl' } },
+            enabled_bots: ['owl'],
+            enabled_for_bot: null,
+            fields: [],
+            group: 'social_home',
+            icon: 'discord',
+            id: 'discord',
+            kind: 'connector',
+            last_error: null,
+            name: 'Discord',
+            ready: true,
+            scope: 'bot',
+            state: 'ready',
+            state_text: '1 bot online'
+          }
+        ]
+      })
+    )
+    render(<PluginsSettings />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Discord' }))
+    const bots = sheet('connector:discord').getByRole('group', { name: 'Bots that use Discord' })
+    expect(within(bots).getByText('Online in Discord')).toBeVisible()
+    expect(within(bots).getByRole('button', { name: 'Open' })).toBeVisible()
+    fireEvent.click(within(bots).getByRole('switch', { name: 'Discord for Owl' }))
+    await waitFor(() => expect(discordDisconnect).toHaveBeenCalledWith('owl'))
+    await waitFor(() => expect(pluginsSetBots).toHaveBeenCalledWith('connector', 'discord', []))
   })
 
   it('splits plugins into connectors, MCP servers and skills', async () => {

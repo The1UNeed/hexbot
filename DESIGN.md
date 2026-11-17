@@ -100,11 +100,18 @@ more freedom and more capability than a hosted product can offer.
   runtime's usage rows, all on the owner's keys.
 - A Discord channel can be a room. Each bot is its own Discord app, so the
   owner can put different bots in different servers and each keeps what a
-  channel says to itself. The first mention of a bot makes the channel a
-  room; the bot replies in Discord as itself; the owner reads along, since
-  Discord is where people reply. The people there are not the owner: the
-  room stays Manual with no main bot, and its bots get notes and the web
-  only, without memory or About you. One Gateway connection per bot, outbound, so a daemon at home needs no
+  channel says to itself. Discord is turned on for a bot in Plugins and
+  connected in the bot's own settings. The owner chooses how each bot acts,
+  for every server or one: answer mentions and see only them, answer
+  mentions and read along, join in as an active member, or answer everyone.
+  The first mention of a bot, or the first message where it listens, makes
+  the channel a room; the bot replies in Discord as itself; the owner reads
+  along, since Discord is where people reply. Each channel stays its own
+  conversation, so the cached prefix holds; a bot that reads along reaches
+  the rest of its server with a read tool instead of one giant prompt. The
+  people there are not the owner: the room stays Manual with no main bot,
+  and its bots get notes, the web and their server only, without memory or
+  About you. One Gateway connection per bot, outbound, so a daemon at home needs no
   open port (`docs/rooms.md`, Discord rooms).
 
 ### Bots talking to bots

@@ -7006,6 +7006,8 @@ fn a_discord_room_session_gets_only_notes_and_the_web() {
         .filter_map(|t| t["name"].as_str())
         .collect();
     assert!(names.contains(&"memory"), "{names:?}");
+    // It reads the rest of its server, and nothing of the owner's.
+    assert!(names.contains(&crate::discord::TOOL), "{names:?}");
     assert!(
         names.iter().all(|n| crate::discord::TOOLS.contains(n)),
         "{names:?}"

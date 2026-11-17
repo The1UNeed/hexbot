@@ -256,6 +256,26 @@ fn team_shape(connection: &Connection) -> Vec<(String, Vec<Column>)> {
         "discord_closed".into(),
         vec![key("channel_id"), real("closed_at", true)],
     ));
+    expected.push((
+        "discord_plugin".into(),
+        vec![
+            key("bot"),
+            text("owner_id", true),
+            ("mode".into(), "TEXT".into(), true, Some("'reads'".into()), 0),
+            real("enabled_at", true),
+        ],
+    ));
+    expected.push((
+        "discord_guilds".into(),
+        vec![
+            ("bot".into(), "TEXT".into(), true, None, 1),
+            ("guild_id".into(), "TEXT".into(), true, None, 2),
+            text("name", false),
+            text("mode", false),
+            int("present", true, Some("1")),
+            real("joined_at", false),
+        ],
+    ));
     expected.sort_by(|a, b| a.0.cmp(&b.0));
     expected
 }

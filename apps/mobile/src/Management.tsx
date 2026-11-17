@@ -33,6 +33,7 @@ import { SubscriptionSignIn } from './screens/SubscriptionSignIn'
 import {
   type Bot,
   type Connector,
+  type DiscordMode,
   type Device,
   type PasswordLogin,
   type Plugin,
@@ -51,12 +52,15 @@ import {
   accountSiblings,
   canGive,
   CONNECTOR_SHELVES,
+  discordBotText,
   isConnected,
+  isDiscord,
   pluginRows,
   shelfOf,
   shownBots,
   withWaiting
 } from '../../web/src/lib/plugin-rows'
+import { DISCORD_MODES, discordModeLabel, discordModeListens } from '../../web/src/lib/discord-modes'
 import { BrandSignInButton } from './ui/BrandSignInButton'
 import { PluginIcon } from './ui/PluginIcon'
 import { botStatusOf, isOpenRoom } from './core/routes'
@@ -658,9 +662,12 @@ export function Management({
         break
       case 'discord':
         try {
-          detail =
-            (await rpc<{ discord: RowData | null }>('hexbot.discord.get', { bot: bot?.name }))
-              .discord ?? {}
+          const got = await rpc<{ discord: RowData | null; enabled?: boolean }>(
+            'hexbot.discord.get',
+            { bot: bot?.name }
+          )
+          // Discord is turned on for a bot in Plugins; an older daemon says nothing.
+          detail = { ...(got.discord ?? {}), off: got.enabled === false }
         } catch (e) {
           // A daemon from before Discord has no such method.
           if (!/unknown method/i.test(e instanceof Error ? e.message : String(e))) throw e
@@ -791,9 +798,11 @@ export function Management({
       newer = true
     }
   }, [mobile.heartbeats])
-  // A bot's Discord connection comes online, drops, or joins a room while its page is open.
+  // A bot's Discord connection comes online, drops, or joins a room while its
+  // page, or the Discord plugin's, is open.
   useEffect(() => {
-    if (kind !== 'discord' || panelLoading) return
+    const discordPlugin = kind === 'plugin' && panel?.data?.kind === 'connector' && panel?.data?.id === 'discord'
+    if ((kind !== 'discord' && !discordPlugin) || panelLoading) return
     const current = epoch.current
     void load(true).catch(e => {
       if (current === epoch.current) setError(e instanceof Error ? e.message : String(e))
@@ -1244,7 +1253,8 @@ export function Management({
                 {row('Tools', 'tools', `${bot.tools.length} on`)}
                 {row('Connectors', 'connectors')}
                 {row('Skills', 'skills', bot.skills.length ? `${bot.skills.length} on` : undefined)}
-                {row('Discord', 'discord')}
+                {/* Shown once Discord is on for the bot in Plugins. */}
+                {bot.discord !== false ? row('Discord', 'discord') : null}
               </Group>
               <Group title="What it remembers">
                 {toggle('dream_enabled', 'Dreaming')}
@@ -1456,7 +1466,7 @@ export function Management({
             title="Bots"
             footer={
               room?.discord
-                ? 'A bot joins when someone mentions it in Discord, and comes back the same way after you remove it.'
+                ? 'A bot joins when someone mentions it in Discord, or when anyone writes where it is an active member or answers everyone. One you remove comes back when someone mentions it.'
                 : undefined
             }
           >
@@ -1514,7 +1524,7 @@ export function Management({
                 <Group title="Approvals">
                   <Row
                     title="Manual"
-                    subtitle="People in Discord are not you, so bots there only search the web and keep notes."
+                    subtitle="People in Discord are not you, so bots there only search the web, read the server and keep notes."
                     testID="room-discord-approvals"
                   />
                   {action('Open in Discord', () => Linking.openURL(room.discord!.url))}
@@ -2268,35 +2278,109 @@ export function Management({
               ))}
             </Group>
           ) : null}
+          {/* Discord is connected in each bot's own settings: turning it on for
+              a bot opens them, and a connected bot is disconnected before it
+              is turned off, as on the web. */}
+          {isDiscord(p) ? (
+            <Group
+              title="Bots"
+              footer="Each bot joins Discord as its own app. Turn it on for a bot, then connect it and choose how it acts in that bot's settings."
+            >
+              {bots.map(b => {
+                const on = p.bots.includes(b.name)
+                const target = mobile.bots.find(item => item.name === b.name)
+                const state = p.discord?.[b.name]?.status
+                const open = () => target && onNavigate({ kind: 'discord', bot: target })
+                const turnOn = async () => {
+                  let done = false
+                  await run(async () => {
+                    await rpc('hexbot.plugins.set_bots', {
+                      kind: p.kind,
+                      id: p.id,
+                      bots: [...new Set([...p.bots, b.name])]
+                    })
+                    done = true
+                  })
+                  if (done) open()
+                }
+                // Disconnecting first is harmless when the bot isn't connected,
+                // and right when it was connected from another device since.
+                const turnOff = () =>
+                  void run(async () => {
+                    await rpc('hexbot.discord.disconnect', { bot: b.name })
+                    await rpc('hexbot.plugins.set_bots', {
+                      kind: p.kind,
+                      id: p.id,
+                      bots: p.bots.filter(name => name !== b.name)
+                    })
+                  })
+                return (
+                  <View key={b.name}>
+                    <SwitchRow
+                      title={b.display_name}
+                      subtitle={discordBotText(p, b.name)}
+                      testID={`plugin-bot-${b.name}`}
+                      value={on}
+                      disabled={busy || mobile.connection !== 'connected'}
+                      onValueChange={next => {
+                        if (next) void turnOn()
+                        else if (state && state !== 'not_connected')
+                          confirm(
+                            'Turn off',
+                            `${b.display_name} goes offline in Discord, the token is deleted and its Discord choices are reset. Its Discord rooms stay here.`,
+                            turnOff
+                          )
+                        else turnOff()
+                      }}
+                    />
+                    {on && target ? (
+                      <Row
+                        title={
+                          state === 'online'
+                            ? `Open ${b.display_name}'s Discord`
+                            : `Connect ${b.display_name}`
+                        }
+                        testID={`plugin-discord-open-${b.name}`}
+                        chevron
+                        onPress={open}
+                      />
+                    ) : null}
+                  </View>
+                )
+              })}
+            </Group>
+          ) : null}
           {/* Until it is set up, a plugin can be taken away from bots but not given,
               except to a bot whose own settings hold its key. */}
-          <Group
-            title="Bots"
-            footer={p.ready ? undefined : `Set up ${p.name} before giving it to a bot.`}
-          >
-            {bots.map(b => (
-              <SwitchRow
-                key={b.name}
-                title={b.display_name}
-                testID={`plugin-bot-${b.name}`}
-                value={shown.bots.includes(b.name)}
-                disabled={
-                  busy ||
-                  mobile.connection !== 'connected' ||
-                  (!canGive(p, b.name) && !shown.bots.includes(b.name))
-                }
-                onValueChange={on =>
-                  choose(on ? [...shown.bots, b.name] : shown.bots.filter(name => name !== b.name))
-                }
-              />
-            ))}
-            {/* As on the web: off for every bot takes grants waiting for setup too. */}
-            {bots.length > 1 && shown.bots.length
-              ? action('Turn off for every bot', () =>
-                  rpc('hexbot.plugins.set_bots', { kind: p.kind, id: p.id, bots: [] })
-                )
-              : null}
-          </Group>
+          {isDiscord(p) ? null : (
+            <Group
+              title="Bots"
+              footer={p.ready ? undefined : `Set up ${p.name} before giving it to a bot.`}
+            >
+              {bots.map(b => (
+                <SwitchRow
+                  key={b.name}
+                  title={b.display_name}
+                  testID={`plugin-bot-${b.name}`}
+                  value={shown.bots.includes(b.name)}
+                  disabled={
+                    busy ||
+                    mobile.connection !== 'connected' ||
+                    (!canGive(p, b.name) && !shown.bots.includes(b.name))
+                  }
+                  onValueChange={on =>
+                    choose(on ? [...shown.bots, b.name] : shown.bots.filter(name => name !== b.name))
+                  }
+                />
+              ))}
+              {/* As on the web: off for every bot takes grants waiting for setup too. */}
+              {bots.length > 1 && shown.bots.length
+                ? action('Turn off for every bot', () =>
+                    rpc('hexbot.plugins.set_bots', { kind: p.kind, id: p.id, bots: [] })
+                  )
+                : null}
+            </Group>
+          )}
           {server ? (
             <Group
               title={valueKind === 'headers' ? 'Headers' : 'Environment'}
@@ -2357,7 +2441,7 @@ export function Management({
             </Group>
           ) : null}
           <Group>
-            {p.kind === 'connector' && p.connector
+            {p.kind === 'connector' && p.connector && !isDiscord(p)
               ? row(
                   // A Google or Microsoft connector signs in; others take keys.
                   p.connector.account
@@ -2385,7 +2469,7 @@ export function Management({
                   category: p.category
                 })
               : null}
-            {p.connector && (p.kind !== 'connector' || p.state !== 'not_set_up')
+            {p.connector && !isDiscord(p) && (p.kind !== 'connector' || p.state !== 'not_set_up')
               ? action('Test', async () => {
                   const result = await rpc('hexbot.connectors.test', { id: p.connector!.id })
                   setNotice(str(result.message))
@@ -2775,11 +2859,68 @@ export function Management({
         content = <Text tone="muted">Update the daemon to connect bots to Discord.</Text>
         break
       }
+      if (extra.off) {
+        content = (
+          <>
+            <Text tone="muted" variant="callout">
+              {`${name} can join Discord servers as its own Discord app and talk with people there.`}
+            </Text>
+            <Group footer="Turn it on in Settings, Plugins, then come back here to connect it.">
+              <Row title={`Discord is off for ${name}.`} testID="discord-off" />
+              <Row
+                title="Open Plugins"
+                testID="discord-open-plugins"
+                chevron
+                onPress={() => onNavigate({ kind: 'plugins' })}
+              />
+            </Group>
+          </>
+        )
+        break
+      }
+      const defaultMode = str(extra.mode) || 'reads'
+      const servers = (extra.servers as RowData[] | undefined) ?? []
+      // One server's own choice, pushed from the Servers list.
+      const server = panel?.data?.server ? str(panel.data.server) : null
+      if (server && extra.bot) {
+        const chosen = servers.find(item => item.id === server)
+        const current = chosen ? str(chosen.mode) : ''
+        const choose = (mode: string | null) =>
+          void run(() =>
+            rpc('hexbot.discord.set_mode', { bot: bot?.name, guild_id: server, mode })
+          )
+        content = (
+          <>
+            <Group
+              title={`How ${name} acts here`}
+              footer={`To keep ${name} out of a channel, change its permissions in Discord.`}
+            >
+              <ChoiceRow
+                title={`Same as default (${discordModeLabel(defaultMode as DiscordMode)})`}
+                selected={!current}
+                onPress={() => choose(null)}
+                testID="discord-server-default"
+              />
+              {DISCORD_MODES.map(mode => (
+                <ChoiceRow
+                  key={mode.value}
+                  title={mode.label}
+                  subtitle={mode.description}
+                  selected={current === mode.value}
+                  onPress={() => choose(mode.value)}
+                  testID={`discord-server-mode-${mode.value}`}
+                />
+              ))}
+            </Group>
+          </>
+        )
+        break
+      }
       if (!extra.bot) {
         content = (
           <>
             <Text tone="muted" variant="callout">
-              {`${name} joins Discord servers as its own Discord app. People there @mention it to talk to it, and each channel it is mentioned in becomes a room you can watch here.`}
+              {`${name} joins Discord servers as its own Discord app and talks with people there. Each channel it talks in becomes a room you can watch here.`}
             </Text>
             <Group title="Make a Discord app for this bot">
               <Row
@@ -2818,7 +2959,7 @@ export function Management({
       content = (
         <>
           <Group
-            footer={`In Discord, ${name} can only search the web and keep notes. It never sees About you, and it is told never to share what it knows about you.`}
+            footer={`In Discord, ${name} can only search the web, read the server and keep notes. It never sees About you, and it is told never to share what it knows about you.`}
           >
             <Row title={str(extra.username) || name} subtitle={state} testID="discord-state" />
             {action('Add to a server', () => Linking.openURL(str(extra.invite_url)))}
@@ -2829,12 +2970,68 @@ export function Management({
               {connect}
             </Group>
           ) : null}
+          {/* A daemon from before modes reads along everywhere and lists no servers. */}
+          {extra.mode ? (
+            <Group
+              title={`How ${name} acts in Discord`}
+              footer={
+                discordModeListens(defaultMode as DiscordMode) ||
+                servers.some(item => discordModeListens(item.mode as DiscordMode))
+                  ? `${name} spends tokens on messages that don't mention it. In a busy server, set a daily token budget for each bot; your primary bot can do it for you.`
+                  : servers.length
+                    ? 'Each server can have its own choice below.'
+                    : undefined
+              }
+            >
+              {DISCORD_MODES.map(mode => (
+                <ChoiceRow
+                  key={mode.value}
+                  title={mode.label}
+                  subtitle={mode.description}
+                  selected={defaultMode === mode.value}
+                  onPress={() =>
+                    void run(() =>
+                      rpc('hexbot.discord.set_mode', { bot: bot?.name, mode: mode.value })
+                    )
+                  }
+                  testID={`discord-mode-${mode.value}`}
+                />
+              ))}
+            </Group>
+          ) : null}
+          {extra.mode ? (
+            <Group
+              title="Servers"
+              footer={servers.length ? undefined : `Add ${name} to a server and it shows here.`}
+            >
+              {servers.map(item => (
+                <Row
+                  key={str(item.id)}
+                  title={str(item.name)}
+                  subtitle={
+                    item.mode ? discordModeLabel(item.mode as DiscordMode) : 'Same as default'
+                  }
+                  testID={`discord-server-${str(item.id)}`}
+                  chevron
+                  onPress={() =>
+                    onNavigate({
+                      kind: 'discord',
+                      bot,
+                      data: { server: item.id, name: item.name }
+                    })
+                  }
+                />
+              ))}
+            </Group>
+          ) : null}
           <Group
             title="Rooms in Discord"
             footer={
               discordRooms.length
                 ? undefined
-                : `Add ${name} to a server, then @mention it in a channel. That channel becomes a room here.`
+                : discordModeListens(defaultMode as DiscordMode)
+                  ? `Add ${name} to a server. Each channel where someone writes becomes a room here.`
+                  : `Add ${name} to a server, then @mention it in a channel. That channel becomes a room here.`
             }
           >
             {discordRooms.map(r => {
@@ -2858,6 +3055,12 @@ export function Management({
               true,
               `${name} goes offline in Discord and the token is deleted. Its Discord rooms stay here.`
             )}
+            <Row
+              title="Turn off in Plugins"
+              testID="discord-plugins"
+              chevron
+              onPress={() => onNavigate({ kind: 'plugins' })}
+            />
           </Group>
         </>
       )
@@ -3106,7 +3309,7 @@ export function Management({
     'skill-create': 'Create skill',
     dreams: 'Dreaming',
     heartbeat: 'Heartbeat',
-    discord: 'Discord',
+    discord: panel?.data?.server ? str(panel.data.name) : 'Discord',
     connect: 'Hex Connect',
     updates: 'Daemon updates',
     jobs: 'Scheduled jobs',

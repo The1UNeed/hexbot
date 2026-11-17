@@ -658,10 +658,14 @@ impl App {
                 result["bind_host"] = json!(self.address.ip().to_string());
             }
         }
-        // A deleted bot's Discord app goes offline and its token goes.
+        // A deleted bot's Discord app goes offline, its token goes, and so
+        // does its place in Plugins.
         if method == "hexbot.bots.delete"
             && let Some(bot) = p["name"].as_str()
-            && let Err(error) = self.discord.forget(bot)
+            && let Err(error) = self
+                .discord
+                .forget(bot)
+                .and_then(|()| crate::discord::forget_bot(&self.home, bot))
         {
             eprintln!("Could not disconnect {bot} from Discord: {}", error.message);
         }
