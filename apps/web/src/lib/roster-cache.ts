@@ -45,7 +45,7 @@ export function clearPersonalState(): void {
   useBots.getState().reset()
   useSections.getState().reset()
   useRooms.getState().reset()
-  useMe.setState({ me: null })
+  useMe.setState({ loaded: false, me: null })
   useTranscripts.getState().dropAll()
   useComputer.setState({ error: null, read: null, status: null })
   usePlugins.getState().reset()

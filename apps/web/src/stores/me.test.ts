@@ -129,3 +129,43 @@ it('preserves the current identity and propagates a failed rename', async () => 
   await expect(useMe.getState().rename('Refused')).rejects.toBe(error)
   expect(useMe.getState().me).toEqual(original)
 })
+
+describe('loaded', () => {
+  beforeEach(() => useMe.setState({ loaded: false, me: null }))
+
+  it('shows you before the usage check answers', async () => {
+    let usage: (value: unknown) => void = () => {}
+
+    setActiveRpc({
+      call: vi.fn((method: string) =>
+        method === 'hexbot.users.me'
+          ? Promise.resolve(original)
+          : new Promise(resolve => {
+              usage = resolve
+            })
+      )
+    } as never)
+    const refreshing = useMe.getState().refresh()
+
+    await vi.waitFor(() => expect(useMe.getState()).toMatchObject({ loaded: true, me: original }))
+    usage({})
+    await refreshing
+  })
+
+  it.each([
+    ['an older daemon', { code: -32601, message: 'unknown method' }],
+    ['any other failure', new Error('Daemon busy')]
+  ])('settles after %s, so the app never waits on you for good', async (_, failure) => {
+    setActiveRpc({ call: vi.fn(() => Promise.reject(failure)) } as never)
+    await useMe.getState().refresh()
+
+    expect(useMe.getState()).toMatchObject({ loaded: true, me: null })
+  })
+
+  it('starts over when personal state is cleared', () => {
+    useMe.setState({ loaded: true })
+    clearPersonalState()
+
+    expect(useMe.getState().loaded).toBe(false)
+  })
+})
