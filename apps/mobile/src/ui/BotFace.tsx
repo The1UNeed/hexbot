@@ -13,6 +13,8 @@ import {
   CAPSULE_EYE,
   resolveFace
 } from './faces'
+import { BRAND_ICONS } from '../../../web/src/lib/connector-icons'
+
 import { Text } from './Text'
 import { useTheme } from './theme'
 
@@ -339,23 +341,77 @@ export function LoadingFace({ face, name, size = 88, testID }: FaceSource & { si
   )
 }
 
+const DISCORD = BRAND_ICONS.discord!
+
 /**
  * A room's face: one bot's face for a single bot, two overlapping on a
- * diagonal, otherwise up to four faces in a 2x2 grid.
+ * diagonal, otherwise up to four faces in a 2x2 grid. A Discord room carries
+ * Discord's mark at its bottom left, clear of the status dot.
  */
 export function RoomFace({
-  members,
-  name,
-  size = 44,
-  status,
-  testID
-}: {
+  discord,
+  outline,
+  ...props
+}: RoomFaceProps & {
+  discord?: boolean
+  /** What the face sits on, behind the Discord mark's outline; the screen's background by default. */
+  outline?: string
+}) {
+  const theme = useTheme()
+
+  if (!discord) return <RoomFaces {...props} />
+
+  const size = props.size ?? 44
+  // The mark is 24 units wide; two more on each side hold its outline, so
+  // nothing is drawn outside the view and Android has nothing to clip.
+  const unit = Math.max(12, Math.round(size * 0.42)) / 24
+  const width = 28 * unit
+  const height = 23 * unit
+
+  // The mark alone, outlined in the colour behind the face so it stands off
+  // the bot: the outline is a stroked copy drawn underneath.
+  return (
+    <View style={{ height: size, width: size }}>
+      <RoomFaces {...props} />
+      <View
+        accessibilityLabel="Discord"
+        accessibilityRole="image"
+        accessible
+        style={[
+          styles.badge,
+          {
+            bottom: -Math.round(size * 0.08 + 2 * unit),
+            height,
+            left: -Math.round(size * 0.12 + 2 * unit),
+            width
+          }
+        ]}
+        testID="room-discord-badge"
+      >
+        <Svg height={height} viewBox="-2 0.5 28 23" width={width}>
+          <Path
+            d={DISCORD.path!}
+            fill={outline ?? theme.background}
+            stroke={outline ?? theme.background}
+            strokeLinejoin="round"
+            strokeWidth={4}
+          />
+          <Path d={DISCORD.path!} fill={DISCORD.color} />
+        </Svg>
+      </View>
+    </View>
+  )
+}
+
+interface RoomFaceProps {
   members: FaceSource[]
   name: string
   size?: number
   status?: BotStatus
   testID?: string
-}) {
+}
+
+function RoomFaces({ members, name, size = 44, status, testID }: RoomFaceProps) {
   const theme = useTheme()
   const dot = useStatusColor(status)
   const dotSize = Math.max(10, Math.round(size * 0.26))
@@ -469,6 +525,7 @@ export function PersonFace({
 }
 
 const styles = StyleSheet.create({
+  badge: { position: 'absolute' },
   dot: { bottom: -1, position: 'absolute', right: -1 },
   fill: { flex: 1 },
   grid: {

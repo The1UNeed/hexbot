@@ -135,6 +135,8 @@ export interface ChatScreenProps {
 
   archived?: boolean
   onUnarchive?: () => void
+  /** A room that is a Discord channel: its face carries Discord's mark. */
+  discord?: boolean
   /** Replies go somewhere else, such as a room that is a Discord channel: no composer. */
   elsewhere?: { text: string; actionLabel: string; onAction: () => void } | null
 
@@ -243,6 +245,7 @@ export function chatActions(props: ChatScreenProps): BarAction[] {
 export function ChatTitle(props: ChatScreenProps) {
   const { face, members, onOpenSettings, status, subtitle, title } = props
   const room = !!members
+  const theme = useTheme()
 
   return (
     <Pressable
@@ -256,9 +259,21 @@ export function ChatTitle(props: ChatScreenProps) {
       style={({ pressed }) => [styles.titleButton, { opacity: pressed ? 0.7 : 1 }]}
       testID="chat-title"
     >
-      <Glass interactive={!!onOpenSettings} radius={24} style={styles.titlePill}>
+      <Glass
+        interactive={!!onOpenSettings}
+        radius={24}
+        // The Discord mark hangs off the face's corner; room for it inside the capsule.
+        style={[styles.titlePill, room && props.discord && styles.titlePillDiscord]}
+      >
         {room ? (
-          <RoomFace members={members} name={title} size={30} status={status} />
+          <RoomFace
+            discord={props.discord}
+            members={members}
+            name={title}
+            outline={theme.chrome}
+            size={30}
+            status={status}
+          />
         ) : (
           <BotFace
             {...(face ?? { name: title })}
@@ -516,7 +531,7 @@ function ChatBody(props: ChatScreenProps) {
           testID="chat-empty"
         >
           {room ? (
-            <RoomFace members={members} name={title} size={88} />
+            <RoomFace discord={props.discord} members={members} name={title} size={88} />
           ) : (
             <BotFace {...(face ?? { name: title })} mood="happy" name={title} size={88} />
           )}
@@ -1411,6 +1426,7 @@ const styles = StyleSheet.create({
     paddingLeft: 7,
     paddingRight: 14
   },
+  titlePillDiscord: { paddingLeft: 12 },
   titleText: { flexShrink: 1 },
   flash: { borderRadius: 16 },
   transcript: { paddingBottom: 8, paddingHorizontal: 14, paddingTop: 12 },
