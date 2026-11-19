@@ -2,7 +2,10 @@ import { useParams } from '@tanstack/react-router'
 import { PanelLeft } from 'lucide-react'
 import { type CSSProperties, type ReactNode, useEffect, useState } from 'react'
 
+import { HexbotMark } from '../components/ui/wordmark'
 import { cn } from '../lib/cn'
+import { useBots } from '../stores/bots'
+import { useMe } from '../stores/me'
 import { searchActions, useSearch } from '../stores/search'
 import { useUi } from '../stores/ui'
 import { useVisuals, visualsActions } from '../stores/visuals'
@@ -21,7 +24,46 @@ const PANEL_MOTION = 240
 const COMPACT =
   '(max-width: 1100px), (device-posture: folded) and (orientation: landscape), (horizontal-viewport-segments: 2)'
 
+/**
+ * Bots and you have come over, from the daemon or from this device's copy.
+ * Until then every name and face would be a guess, so none is shown. A copy
+ * counts only when it has the bot being opened.
+ */
+function useRosterReady(): boolean {
+  const { bot } = useParams({ strict: false }) as { bot?: string }
+
+  const bots = useBots(
+    state => state.settled || (bot ? Boolean(state.byName[bot]) : state.order.length > 0)
+  )
+
+  const me = useMe(state => state.loaded || state.me !== null)
+
+  return bots && me
+}
+
 export function AppShell({ children }: { children?: ReactNode }) {
+  return useRosterReady() ? <Shell>{children}</Shell> : <ShellLoading />
+}
+
+function ShellLoading() {
+  return (
+    <main className="relative grid h-dvh place-items-center bg-canvas text-foreground">
+      <div aria-hidden className="hex-drag absolute inset-x-0 top-0 h-11" />
+      {/* Late enough that a quick start never shows it. Inline, since the
+          unlayered .hex-fade outranks a utility's delay. */}
+      <div
+        aria-label="Loading Hexbot"
+        className="hex-fade"
+        role="status"
+        style={{ animationDelay: '150ms' }}
+      >
+        <HexbotMark mood="loading" size={56} />
+      </div>
+    </main>
+  )
+}
+
+function Shell({ children }: { children?: ReactNode }) {
   const [panelWidth, setPanelWidth] = useState(320)
   // Visuals beside the chat get a wider panel of their own: room for a chart.
   const [visualsWidth, setVisualsWidth] = useState(600)

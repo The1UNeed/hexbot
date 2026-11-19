@@ -24,3 +24,19 @@ describe('deleting a bot', () => {
     expect(useBots.getState().order).toEqual([])
   })
 })
+
+describe('the first list', () => {
+  it('stays settled when a later list starts after a failure, until reset', async () => {
+    useBots.getState().reset()
+    setActiveRpc({ call: vi.fn(() => Promise.reject(new Error('Daemon busy'))) } as never)
+    await useBots.getState().refresh()
+    expect(useBots.getState()).toMatchObject({ error: 'Daemon busy', loaded: false, settled: true })
+
+    setActiveRpc({ call: vi.fn(() => new Promise(() => {})) } as never)
+    void useBots.getState().refresh()
+    expect(useBots.getState()).toMatchObject({ error: null, settled: true })
+
+    useBots.getState().reset()
+    expect(useBots.getState().settled).toBe(false)
+  })
+})

@@ -1,4 +1,7 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
+
+import { useBots } from '../stores/bots'
+import { useMe } from '../stores/me'
 
 import { AppShell } from './app-shell'
 
@@ -26,6 +29,8 @@ vi.mock('./slots', () => ({
 
 describe('AppShell', () => {
   beforeEach(() => {
+    useBots.setState({ settled: true })
+    useMe.setState({ loaded: true })
     vi.stubGlobal(
       'matchMedia',
       vi.fn(() => ({
@@ -48,5 +53,42 @@ describe('AppShell', () => {
     expect(roster).toHaveClass('max-[700px]:translate-x-0')
     fireEvent.click(screen.getByRole('button', { name: 'Hide roster' }))
     expect(show).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('shows no name or face until bots and you have come over', () => {
+    useBots.setState({ byName: {}, order: [], settled: false })
+    useMe.setState({ loaded: false, me: null })
+    render(<AppShell />)
+
+    expect(screen.getByRole('status', { name: 'Loading Hexbot' })).toBeInTheDocument()
+    expect(screen.queryByText('Roster')).toBeNull()
+    expect(screen.queryByText('Conversation')).toBeNull()
+
+    act(() => useBots.setState({ settled: true }))
+    expect(screen.queryByText('Roster')).toBeNull()
+
+    act(() => useMe.setState({ loaded: true }))
+    expect(screen.getByText('Roster')).toBeInTheDocument()
+    expect(screen.getByText('Conversation')).toBeInTheDocument()
+  })
+
+  it("opens at once with this device's copy when it has the bot being opened", () => {
+    useBots.setState({
+      byName: { scout: { name: 'scout' } as never },
+      order: ['scout'],
+      settled: false
+    })
+    useMe.setState({ loaded: false, me: { display_name: 'Alex' } as never })
+    render(<AppShell />)
+
+    expect(screen.getByText('Roster')).toBeInTheDocument()
+  })
+
+  it("waits for the daemon when this device's copy lacks the bot being opened", () => {
+    useBots.setState({ byName: { owl: { name: 'owl' } as never }, order: ['owl'], settled: false })
+    useMe.setState({ loaded: true })
+    render(<AppShell />)
+
+    expect(screen.getByRole('status', { name: 'Loading Hexbot' })).toBeInTheDocument()
   })
 })

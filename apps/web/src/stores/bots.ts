@@ -19,6 +19,8 @@ export interface BotsState {
   create: (input: BotCreateInput) => Promise<{ bot: Bot; section: Section }>
   error: null | string
   loaded: boolean
+  /** The first list came back, or failed. Stays set through later lists until reset. */
+  settled: boolean
   loading: boolean
   order: string[]
   reset: () => void
@@ -72,14 +74,24 @@ export const useBots = create<BotsState>((set, get) => {
       const listed = authority.list(ticket, result.bots ?? [], get().byName, bot => bot.name)
 
       if (listed) {
-        set({ ...indexBots(listed), answers: authority.outcomes(), loaded: true, loading: false })
+        set({
+          ...indexBots(listed),
+          answers: authority.outcomes(),
+          loaded: true,
+          loading: false,
+          settled: true
+        })
       }
     } catch (error) {
       if (!current()) {
         return
       }
 
-      set({ error: error instanceof Error ? error.message : String(error), loading: false })
+      set({
+        error: error instanceof Error ? error.message : String(error),
+        loading: false,
+        settled: true
+      })
     }
   }
 
@@ -90,11 +102,20 @@ export const useBots = create<BotsState>((set, get) => {
     loaded: false,
     loading: false,
     order: [],
+    settled: false,
 
     reset() {
       authority.reset()
       listing = following = null
-      set({ byName: {}, answers: {}, order: [], loaded: false, loading: false, error: null })
+      set({
+        byName: {},
+        answers: {},
+        order: [],
+        loaded: false,
+        loading: false,
+        error: null,
+        settled: false
+      })
     },
 
     refresh() {

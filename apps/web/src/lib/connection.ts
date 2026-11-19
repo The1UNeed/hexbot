@@ -642,7 +642,10 @@ export class ConnectionSupervisor {
       }
     )
 
-    const roster = info.then(async () => {
+    // The roster loads even when info fails, so the app never waits on it for good.
+    const answered = info.catch(() => undefined)
+
+    const roster = answered.then(async () => {
       if (!current()) {
         return
       }

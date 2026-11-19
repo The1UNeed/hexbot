@@ -17,6 +17,8 @@ export function unknownMethod(error: unknown): boolean {
 interface MeState {
   /** You, the person this daemon belongs to. */
   me: CurrentUser | null
+  /** The daemon answered, with you or without. */
+  loaded: boolean
   usageSupported: boolean | null
   refresh: () => Promise<void>
   rename: (displayName: string) => Promise<void>
@@ -24,12 +26,18 @@ interface MeState {
 
 export const useMe = create<MeState>(set => ({
   me: null,
+  loaded: false,
   usageSupported: null,
   async refresh() {
     const current = connectionRead()
 
     try {
       const me = await usersMe()
+
+      if (current()) {
+        set({ loaded: true, me })
+      }
+
       let usageSupported = true
 
       try {
@@ -39,7 +47,7 @@ export const useMe = create<MeState>(set => ({
       }
 
       if (current()) {
-        set({ me, usageSupported })
+        set({ usageSupported })
       }
     } catch (error) {
       if (!current()) {
@@ -47,7 +55,9 @@ export const useMe = create<MeState>(set => ({
       }
 
       if (unknownMethod(error)) {
-        set({ me: null, usageSupported: false })
+        set({ loaded: true, me: null, usageSupported: false })
+      } else {
+        set({ loaded: true })
       }
     }
   },
