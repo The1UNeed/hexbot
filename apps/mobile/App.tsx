@@ -869,6 +869,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
               id: r.id,
               name: r.name,
               members: membersOf(r),
+              discord: !!r.discord,
               status: urgent([...here.map(b => b.status), r.turns?.length ? 'working' : undefined]),
               activity: here.find(b => b.status === 'working')?.status_detail?.text,
               updatedAt: ms(r.last_activity_at),
@@ -1743,6 +1744,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
         return names.length ? `${names.join(', ')} and you` : null
       })()}
       members={membersOf(route.room)}
+      discord={!!route.room.discord}
       archived={!!route.room.archived_at}
       elsewhere={
         route.room.discord

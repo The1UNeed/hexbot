@@ -35,6 +35,8 @@ export interface ConversationSummary {
   /** The bot's face; a room draws `members` instead. */
   face?: FaceSource
   members?: FaceSource[]
+  /** A room that is a Discord channel: its face carries Discord's mark. */
+  discord?: boolean
   preview?: string | null
   /** What the bot is doing now, shown instead of the preview while it works. */
   activity?: string | null

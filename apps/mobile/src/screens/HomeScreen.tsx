@@ -450,7 +450,13 @@ function PinnedFaceBody({ conversation: c }: { conversation: ConversationSummary
   return (
     <>
       {c.kind === 'room' ? (
-        <RoomFace members={c.members ?? []} name={c.name} size={64} status={c.status} />
+        <RoomFace
+          discord={c.discord}
+          members={c.members ?? []}
+          name={c.name}
+          size={64}
+          status={c.status}
+        />
       ) : (
         <BotFace {...(c.face ?? { name: c.name })} size={64} status={c.status} />
       )}
@@ -808,12 +814,18 @@ function ConversationRow({
       ]}
       testID={`${c.kind === 'bot' ? 'bot' : c.kind}-row-${c.id}`}
     >
-      <RowBody conversation={c} />
+      <RowBody conversation={c} selected={selected} />
     </Pressable>
   )
 }
 
-function RowBody({ conversation: c }: { conversation: ConversationSummary }) {
+function RowBody({
+  conversation: c,
+  selected
+}: {
+  conversation: ConversationSummary
+  selected?: boolean
+}) {
   const theme = useTheme()
   const { color, text: line } = conversationLine(c, theme)
   const time = formatListTime(c.updatedAt)
@@ -821,7 +833,14 @@ function RowBody({ conversation: c }: { conversation: ConversationSummary }) {
   return (
     <>
       {c.kind === 'room' ? (
-        <RoomFace members={c.members ?? []} name={c.name} size={54} status={c.status} />
+        <RoomFace
+          discord={c.discord}
+          members={c.members ?? []}
+          name={c.name}
+          outline={selected ? theme.fill : undefined}
+          size={54}
+          status={c.status}
+        />
       ) : (
         <BotFace {...(c.face ?? { name: c.name })} size={54} status={c.status} />
       )}
