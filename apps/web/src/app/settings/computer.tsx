@@ -353,7 +353,8 @@ function ThisComputerShare() {
             <Switch
               aria-label="Let Computer Use reach this computer's screen"
               checked={share.desktop}
-              disabled={busy}
+              // It sits on Let bots work here; off, it can always be turned off.
+              disabled={busy || (!share.desktop && !share.terminal)}
               onCheckedChange={next => void change(() => computer.allow({ desktop: next }))}
             />
           ) : (
@@ -368,12 +369,14 @@ function ThisComputerShare() {
           )
         }
         description={
-          share.desktopReady
-            ? 'Bots with Computer Use see the screen, click and type in the apps you allow (in Bypass, without asking), never in terminals, editors or Hexbot.'
-            : share.desktop
-              ? `${share.desktopNote ?? "Cua isn't ready here."} Bots can't use it until it is; turn it off and choose Set up to set it up again.`
-              : (share.desktopNote ??
-                'Needs Cua. Your computer asks for Screen Recording and Accessibility.')
+          !share.terminal && !share.desktop
+            ? 'Turn on Let bots work here first: bots with Computer Use see the screen of a computer they work on.'
+            : share.desktopReady
+              ? 'Bots with Computer Use see the screen, click and type in the apps you allow (in Bypass, without asking), never in terminals, editors or Hexbot.'
+              : share.desktop
+                ? `${share.desktopNote ?? "Cua isn't ready here."} Bots can't use it until it is; turn it off and choose Set up to set it up again.`
+                : (share.desktopNote ??
+                  'Needs Cua. Your computer asks for Screen Recording and Accessibility.')
         }
         title="Computer Use here"
       />

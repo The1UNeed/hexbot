@@ -164,8 +164,9 @@ The first catalog, by group:
 | Channels (bot scope) | Telegram, Discord, Slack, WhatsApp, Signal, iMessage, Matrix, Mattermost, and the rest the core ships, each with its allowed-users list |
 | MCP servers | Any number, added by command or URL, with a tool count and a running state |
 
-The catalog that ships is smaller: Web search, the Google and Microsoft
-connectors, IMAP mail, Notion, GitHub, and X search (under Social). Image and video generation, Premium voice, Airtable, and
+The catalog that ships is smaller: Computer Use (under Computers), Web
+search, the Google and Microsoft connectors, IMAP mail, Notion, GitHub, and
+X search (under Social). Image and video generation, Premium voice, Airtable, and
 Home Assistant were removed; anything else connects as an MCP server.
 X search offers three providers: a SuperGrok or X Premium+ sign-in,
 shared with the xAI model provider, an xAI API key, or an X API bearer

@@ -502,7 +502,7 @@ export function ComputerSheet({
         {placeholder(
           `${bot?.display_name ?? 'This bot'} can work on your bots' computer: a Linux desktop you can watch and use alongside them.`,
           onEnable
-            ? { label: 'Turn on Computer use', onPress: () => onEnable(listed === 'older'), testID: 'computer-enable' }
+            ? { label: 'Turn on Computer Use', onPress: () => onEnable(listed === 'older'), testID: 'computer-enable' }
             : undefined
         )}
       </View>

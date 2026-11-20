@@ -44,7 +44,7 @@ export interface ComputersState {
   forget: (computer: string) => Promise<void>
   grant: (
     computer: string,
-    capability: 'desktop' | 'terminal',
+    capability: 'terminal',
     bot: string,
     on: boolean
   ) => Promise<void>

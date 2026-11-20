@@ -493,11 +493,11 @@ describe('ProfilePanel', () => {
     expect(
       await screen.findByText(/Your bots aren't using their computer\. Turn on Use the bots'/)
     ).toBeVisible()
-    expect(screen.queryByRole('button', { name: 'Turn on Computer use' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Turn on Computer Use' })).toBeNull()
 
     // On, without this bot: no screen, and Turn on grants its desktop there.
     act(() => useComputers.setState({ computers: [{ ...vm, on: true }] }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Turn on Computer use' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Turn on Computer Use' }))
     // The bots' computer as one of its environments, then Computer Use.
     await waitFor(() =>
       expect(api.connectorsSetForBot).toHaveBeenCalledWith('computer_use', 'scout', true)
@@ -532,7 +532,7 @@ describe('ProfilePanel', () => {
     // The status is in; the bot's place on the computer is not.
     await act(async () => {})
     expect(screen.queryByTitle("Your bots' screen")).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Turn on Computer use' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Turn on Computer Use' })).toBeNull()
     expect(api.computerView).not.toHaveBeenCalled()
 
     await act(async () =>
@@ -552,7 +552,7 @@ describe('ProfilePanel', () => {
     useBots.setState({ update })
     render(<ProfilePanel />)
     fireEvent.click(screen.getByRole('tab', { name: 'Computer' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Turn on Computer use' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Turn on Computer Use' }))
     await waitFor(() =>
       expect(update).toHaveBeenCalledWith('scout', { tools: [...bot.tools, 'computer_use'] })
     )
@@ -605,7 +605,7 @@ describe('ProfilePanel', () => {
     expect(api.computerView).toHaveBeenCalledTimes(views)
 
     await act(async () => answer({ computers: [vmComputer()] }))
-    expect(await screen.findByRole('button', { name: 'Turn on Computer use' })).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Turn on Computer Use' })).toBeVisible()
     expect(screen.queryByTitle("Your bots' screen")).toBeNull()
   })
 
@@ -704,7 +704,7 @@ describe('ProfilePanel', () => {
 
     api.computersList.mockResolvedValue({ computers: [vmComputer()] })
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
-    expect(await screen.findByRole('button', { name: 'Turn on Computer use' })).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Turn on Computer Use' })).toBeVisible()
     expect(screen.queryByRole('alert')).toBeNull()
   })
 
@@ -764,7 +764,7 @@ describe('ProfilePanel', () => {
         fail = reject
       })
     )
-    const change = useComputers.getState().grant('vm', 'desktop', 'scout', true)
+    const change = useComputers.getState().grant('vm', 'terminal', 'scout', true)
 
     // Switched to another daemon while it waited; that one starts clean.
     useConnection.setState({

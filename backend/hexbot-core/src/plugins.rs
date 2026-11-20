@@ -1,9 +1,9 @@
 //! Plugins: one view over connectors, MCP servers and skills, and the bots
 //! each is given to. Setup stays with each kind (`hexbot.connectors.setup`,
 //! the skill's own prerequisites); this module lists what is ready and
-//! assigns it to bots in one call. Computer use is not a plugin: a bot has
-//! it with a desktop it may use (`connectors::toolsets`), and Settings,
-//! Computers looks after that.
+//! assigns it to bots in one call. Computer Use is one of its connectors:
+//! the screens of a bot's environments, which Settings, Computers chooses
+//! (`machines.rs`).
 //!
 //! A package installs an MCP server with the skills that explain it, or
 //! several skills, as one plugin. It lives in `plugins/<name>/` as

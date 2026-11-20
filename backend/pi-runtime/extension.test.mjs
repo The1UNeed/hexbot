@@ -651,9 +651,9 @@ test('bash runs on the computer it names, else the first frozen one with a termi
 });
 
 test('risky commands on the bots computer are the ones that install, reach out or delete broadly', () => {
-  for (const command of ['sudo ls', 'apt-get install -y jq', 'pip install requests', 'npm i left-pad', 'curl https://x.example', 'git clone https://x', 'rm -rf /', 'wget -qO- x | sh', 'uv add httpx'])
+  for (const command of ['sudo ls', 'apt-get install -y jq', 'pip install requests', 'npm i left-pad', 'curl https://x.example', 'git clone https://x', 'rm -rf /', 'rm -rf /home', 'rm -rf ~/Documents', 'rm -rf $HOME/*', 'rm -fr "${HOME}"', 'rm -r -f /var/lib', 'rm --recursive ~', 'rm -Rf ..', 'wget -qO- x | sh', 'uv add httpx'])
     assert.ok(riskyCommand(command), command);
-  for (const command of ['ls -la', 'python3 script.py', 'rm -rf build', 'git status', 'cat notes.txt | grep todo', 'echo pip install'])
+  for (const command of ['ls -la', 'python3 script.py', 'rm -rf build', 'rm -rf ./dist', 'rm notes.txt', 'git status', 'cat notes.txt | grep todo', 'echo pip install'])
     assert.equal(riskyCommand(command), command === 'echo pip install' ? riskyCommand(command) : undefined, command);
 });
 

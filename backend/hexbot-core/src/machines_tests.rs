@@ -169,6 +169,45 @@ fn computer_use_puts_the_screens_of_a_bots_environments_in_reach() {
 }
 
 #[test]
+fn an_upgrade_without_cua_gives_no_bash_for_the_bots_computer() {
+    let home = setup();
+    let h = home.path();
+    common::update_config(h, |c| {
+        c["computer_use"]["command"] = json!("/nonexistent/cua");
+        Ok(())
+    })
+    .unwrap();
+    migrate(h).unwrap();
+    // fox had no terminal: the bots' computer it now works on can't run
+    // here, so it gets no bash, and its Terminal switch stays off.
+    assert!(has(h, "fox", VM, TERMINAL).unwrap());
+    assert!(!any(h, "fox", TERMINAL).unwrap());
+    let fox = crate::connectors::toolsets(h, "fox").unwrap();
+    assert!(!fox.contains(&"terminal".to_owned()), "{fox:?}");
+    // Turning it on gives this computer instead.
+    sync_tools(h, "fox", true, true).unwrap();
+    assert!(has(h, "fox", HOST, TERMINAL).unwrap());
+    sync_tools(h, "fox", false, true).unwrap();
+    // With Cua here, the bots' computer counts again.
+    set(h, VM, TERMINAL, "fox", true).unwrap();
+    let cua = h.join("cua");
+    std::fs::write(&cua, "#!/bin/sh\n").unwrap();
+    #[cfg(unix)]
+    std::fs::set_permissions(&cua, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    common::update_config(h, |c| {
+        c["computer_use"]["command"] = json!(cua.to_string_lossy());
+        Ok(())
+    })
+    .unwrap();
+    assert!(any(h, "fox", TERMINAL).unwrap());
+    assert!(
+        crate::connectors::toolsets(h, "fox")
+            .unwrap()
+            .contains(&"terminal".to_owned())
+    );
+}
+
+#[test]
 fn setup_decides_a_new_bots_computer_use() {
     let home = setup();
     let h = home.path();
@@ -536,7 +575,10 @@ async fn a_user_computer_attaches_answers_and_goes_offline() {
     .await
     .err()
     .unwrap();
-    assert!(err.message.contains("does not let bots use its desktop"));
+    assert!(
+        err.message
+            .contains("does not let Computer Use reach its screen")
+    );
     // Closing the connection fails what still waits and takes it offline.
     let home3 = h.to_owned();
     let waiting = tokio::spawn(async move {
@@ -1375,12 +1417,19 @@ async fn a_look_after_an_action_checks_the_grant_again() {
 #[test]
 fn a_chat_from_before_computers_compares_against_what_it_had() {
     let legacy = legacy_list(&json!(["file", "terminal", "computer_use"]));
-    // What the migration writes for that bot: no change, no rebuild.
+    // What the migration writes for that bot: the bots' computer is now one
+    // of its environments, so bash comes with it there and the chat rebuilds
+    // once, as an update that changes Hexbot's own tools may.
     let migrated = json!([
-        {"id":"vm","name":"The bots' computer","kind":"vm","os":"Linux","terminal":false,"desktop":true},
+        {"id":"vm","name":"The bots' computer","kind":"vm","os":"Linux","terminal":true,"desktop":true},
         {"id":"host","name":"studio","kind":"host","os":"macOS","terminal":true,"desktop":false}
     ]);
-    assert_eq!(grants_of(&legacy), grants_of(&migrated));
+    assert_ne!(grants_of(&legacy), grants_of(&migrated));
+    // Without Cua here the bots' computer drops out of the chat's computers
+    // (reachable_list), and the bot keeps what it had of this computer.
+    let without_cua = reachable_list(&migrated, true, true, false);
+    let had = reachable_list(&legacy, true, true, false);
+    assert_eq!(grants_of(&without_cua), grants_of(&had));
     // A computer added later is a change.
     let mut more = migrated.as_array().unwrap().clone();
     more.push(json!({"id":"device:mac","terminal":true,"desktop":false}));

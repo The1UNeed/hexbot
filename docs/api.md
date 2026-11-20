@@ -1023,8 +1023,9 @@ cursor there.
 ### Computers
 
 Every place a bot can act (`machines.rs`): the bots' computer `vm`, this
-computer `host`, and the user's computers `device:<device id>`. Each offers a
-terminal, a desktop or both; each is given to bots per capability.
+computer `host`, and the user's computers `device:<device id>`. Each is given
+to bots as one of their environments (`terminal`); its screen (`desktop`)
+comes with the Computer Use connector where it is shared.
 
 - `hexbot.computers.list {}` → `{computers: [{id, kind: "vm" | "host" |
   "device", name, os, online, on, available, terminal, desktop, apps}]}`.

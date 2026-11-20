@@ -315,7 +315,9 @@ pub fn toolsets(home: &Path, bot: &str) -> Result<Vec<String>> {
     // Before computers: the terminal toolset gives this computer's terminal
     // and every bot has the bots' computer's desktop.
     let (terminal, desktop) = match root.get("computers").filter(|c| c.is_object()) {
-        Some(computers) => crate::machines::capabilities_in(computers, bot),
+        Some(computers) => {
+            crate::machines::capabilities_in(computers, bot, crate::machines::vm_usable(home)?)
+        }
         None => (sets.iter().any(|s| s == "terminal"), true),
     };
     for (set, on) in [

@@ -2411,7 +2411,7 @@ fn update_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
         configure(home, name, p)?;
         ensure_face(home, caller, name)?;
     }
-    // The Terminal and Computer use switches give or take computers.
+    // The Terminal switch gives or takes environments.
     sync_computers(home, name, p, true)?;
     let mut conn = db::open(home)?;
     let tx = conn.transaction()?;

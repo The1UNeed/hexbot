@@ -515,7 +515,7 @@ function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
           alongside them.
         </p>
         <Button onClick={() => void turnOn()} size="sm" variant="primary">
-          Turn on Computer use
+          Turn on Computer Use
         </Button>
         {grantError ? (
           <p className="text-[length:var(--text-meta)] text-danger" role="alert">

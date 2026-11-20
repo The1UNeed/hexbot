@@ -613,7 +613,7 @@ export const computersList = () => rpcCall<{ computers: Computer[] }>('hexbot.co
 /** Give a bot, or take from it, one computer's terminal or desktop. */
 export const computersGrant = (
   computer: string,
-  capability: 'desktop' | 'terminal',
+  capability: 'terminal',
   bot: string,
   on: boolean
 ) => rpcCall<{ ok: true }>('hexbot.computers.grant', { bot, capability, computer, on })

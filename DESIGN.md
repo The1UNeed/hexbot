@@ -411,8 +411,8 @@ more freedom and more capability than a hosted product can offer.
     on in Settings, Computers; macOS then asks for Screen Recording and
     Accessibility.
   - The user's computers: a desktop app connected to a daemon on another
-    computer offers its own when the user turns on Let bots use its
-    terminal or its desktop there, which asks with a native dialog in the main process and
+    computer offers its own when the user turns on Let bots work here, and
+    its screen with Computer Use here, which asks with a native dialog in the main process and
     can't be turned on by the daemon or the page. The app attaches over its
     own WebSocket (`hexbot.computers.attach`), the daemon sends work as
     `hexbot.computers.request` events on that connection only, and the app

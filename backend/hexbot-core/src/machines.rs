@@ -117,6 +117,7 @@ fn names(value: &Value) -> Vec<String> {
 /// `terminal` toolset decides this computer's terminal.
 fn legacy(home: &Path, bot: &str, computer: &str, capability: &str) -> Result<bool> {
     Ok(match (computer, capability) {
+        (VM, TERMINAL) => false,
         (VM, _) => true,
         (HOST, TERMINAL) => crate::connectors::legacy_toolsets(home, bot)?
             .iter()
@@ -192,8 +193,10 @@ impl Grants {
     }
 }
 /// Whether `bot` may use some computer's terminal, and some computer's
-/// desktop, by the `computers` config alone.
-pub fn capabilities_in(computers: &Value, bot: &str) -> (bool, bool) {
+/// desktop, by the `computers` config alone. The bots' computer counts only
+/// while it can run (`vm_runs`): a bot whose only environment is a bots'
+/// computer with no Cua here has no bash to offer, as its prompt lists none.
+pub fn capabilities_in(computers: &Value, bot: &str, vm_runs: bool) -> (bool, bool) {
     let grants = Grants {
         config: Some(computers.clone()),
         bot: bot.to_owned(),
@@ -202,6 +205,7 @@ pub fn capabilities_in(computers: &Value, bot: &str) -> (bool, bool) {
     grants
         .computers()
         .iter()
+        .filter(|id| vm_runs || id.as_str() != VM)
         .fold((false, false), |(t, d), id| {
             (t || grants.has(id, TERMINAL), d || grants.has(id, DESKTOP))
         })
@@ -222,14 +226,19 @@ pub fn granted(home: &Path, bot: &str) -> Result<Vec<(String, bool, bool)>> {
 }
 /// Whether the bot has `capability` on any computer: its bash or
 /// computer_use tool is offered only then.
+/// The bots' computer counts only while it can run, as in its prompt.
 pub fn any(home: &Path, bot: &str, capability: &str) -> Result<bool> {
-    Ok(granted(home, bot)?.iter().any(|(_, terminal, desktop)| {
-        if capability == TERMINAL {
-            *terminal
-        } else {
-            *desktop
-        }
-    }))
+    let vm_runs = vm_usable(home)?;
+    Ok(granted(home, bot)?
+        .iter()
+        .filter(|(id, ..)| vm_runs || id != VM)
+        .any(|(_, terminal, desktop)| {
+            if capability == TERMINAL {
+                *terminal
+            } else {
+                *desktop
+            }
+        }))
 }
 fn bot_names(home: &Path) -> Result<Vec<String>> {
     let conn = db::open(home)?;
@@ -920,14 +929,15 @@ async fn device_call_until(
         if !allowed {
             return Err(Error::new(
                 4302,
-                format!(
-                    "{label} does not let bots use its {}. The user allows it in Hexbot on that computer.",
-                    if kind == TERMINAL {
-                        "terminal"
-                    } else {
-                        "desktop"
-                    }
-                ),
+                if kind == TERMINAL {
+                    format!(
+                        "{label} does not let bots work on it. The user turns on Let bots work here in Hexbot on that computer."
+                    )
+                } else {
+                    format!(
+                        "{label} does not let Computer Use reach its screen. The user turns on Computer Use here in Hexbot on that computer."
+                    )
+                },
             ));
         }
         payload["request_id"] = json!(id);
@@ -2693,7 +2703,11 @@ pub async fn list(home: &Path, owner: &str) -> Result<Value> {
             "on": true,
             "available": live.is_some(),
             "terminal": {"available": terminal, "bots": bots_for(&computer, TERMINAL)?},
-            "desktop": {"available": desktop, "bots": bots_for(&computer, DESKTOP)?},
+            // The bots that reach its screen now: only while its app shares it.
+            "desktop": {
+                "available": desktop,
+                "bots": if desktop { bots_for(&computer, DESKTOP)? } else { vec![] },
+            },
             "apps": apps(&computer),
         }));
     }

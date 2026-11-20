@@ -132,7 +132,9 @@ describe('this computer', () => {
   it('refuses whatever the user has not allowed here', () => {
     const off = { desktop: false, terminal: false }
     const on = { desktop: true, terminal: true }
-    expect(refusal({ command: 'ls', kind: 'terminal' }, off)).toMatch(/does not let bots work on it/)
+    expect(refusal({ command: 'ls', kind: 'terminal' }, off)).toMatch(
+      /does not let bots work on it/
+    )
     expect(refusal({ kind: 'desktop', tool: 'computer_click' }, off)).toMatch(/Computer Use/)
     expect(refusal({ command: 'ls', kind: 'terminal' }, on)).toBeNull()
     expect(refusal({ command: '  ', kind: 'terminal' }, on)).toMatch(/empty/)
@@ -216,8 +218,33 @@ describe('this computer', () => {
     await computer.allow({ terminal: true })
     await computer.stop()
     expect(computer.allowedNow).toEqual({ desktop: false, terminal: false })
-    await expect(computer.run({ command: 'echo hi', kind: 'terminal' })).rejects.toThrow(/work on it/)
+    await expect(computer.run({ command: 'echo hi', kind: 'terminal' })).rejects.toThrow(
+      /work on it/
+    )
     expect(changes.length).toBeGreaterThan(0)
+  })
+
+  it('lets Computer Use reach the screen only while bots may work here', async () => {
+    const asked: string[] = []
+    const computer = new ThisComputer(join(temp(), 'c.json'), {
+      acting: () => {},
+      changed: () => {},
+      confirm: async what => {
+        asked.push(what)
+        return true
+      }
+    })
+    // Not a computer bots work on: nothing to ask, nothing turned on.
+    await computer.allow({ desktop: true })
+    expect(asked).toEqual([])
+    expect(computer.allowedNow).toEqual({ desktop: false, terminal: false })
+    // Both in one go: bots may work here, then its screen.
+    await computer.allow({ desktop: true, terminal: true })
+    expect(asked).toEqual(['terminal', 'desktop'])
+    expect(computer.allowedNow).toEqual({ desktop: true, terminal: true })
+    // Taking the computer away takes its screen too.
+    await computer.allow({ terminal: false })
+    expect(computer.allowedNow).toEqual({ desktop: false, terminal: false })
   })
 
   it('ends running commands, and what they started, when the user stops bots here', async () => {
@@ -405,7 +432,7 @@ describe('this computer', () => {
     await expect(waiting).rejects.toThrow(/stopped/)
   })
 
-  it('keeps desktop work waiting here when the terminal is turned on or off, and ends it on Stop or when the desktop is turned off', async () => {
+  it('keeps desktop work waiting here when the terminal is turned on, and ends it on Stop, a release, or the terminal or desktop turned off', async () => {
     const make = () => {
       // Every lookup waits for one answer: the request's, and the offer's after a save.
       const waiting: ((value: { note: null; target: string }) => void)[] = []
@@ -452,7 +479,8 @@ describe('this computer', () => {
       // Past the switch, it reaches Cua: not stopped.
       expect(String(await waiting)).toMatch(/Cua reached/)
 
-      // Turning the terminal off leaves desktop work be too.
+      // Turning the terminal off takes the screen with it (Computer Use here
+      // sits on Let bots work here): desktop work waiting there ends.
       const terminalOff = make()
       ;(terminalOff.computer as unknown as { allowed: object; on: object }).allowed = {
         desktop: true,
@@ -469,7 +497,10 @@ describe('this computer', () => {
       await new Promise(resolve => setTimeout(resolve, 0))
       terminalOff.found()
       await turnedTerminalOff
-      expect(String(await stillWaiting)).toMatch(/Cua reached/)
+      expect(terminalOff.computer.allowedNow).toEqual({ desktop: false, terminal: false })
+      expect(String(await stillWaiting)).toMatch(
+        /stopped|does not let Computer Use reach its screen/
+      )
 
       // A release keeps the switch on: only the desktop's generation ends it.
       const released = make()
@@ -483,6 +514,15 @@ describe('this computer', () => {
 
       // Off and on again while it waits: the switch is on, the work still ends.
       const toggled = make()
+      // Bots may work here, so its screen can be turned back on.
+      ;(toggled.computer as unknown as { allowed: object; on: object }).allowed = {
+        desktop: true,
+        terminal: true
+      }
+      ;(toggled.computer as unknown as { allowed: object; on: object }).on = {
+        desktop: true,
+        terminal: true
+      }
       const toggledWork = toggled.computer
         .run({ args: {}, kind: 'desktop', request_id: 'd6', tool: 'computer_screenshot' })
         .catch((error: Error) => error)
@@ -504,7 +544,9 @@ describe('this computer', () => {
       await new Promise(resolve => setTimeout(resolve, 0))
       stopped.found()
       await stopping
-      expect(String(await stoppedWork)).toMatch(/stopped|does not let Computer Use reach its screen/)
+      expect(String(await stoppedWork)).toMatch(
+        /stopped|does not let Computer Use reach its screen/
+      )
 
       const ended = make()
       const refused = ended.computer

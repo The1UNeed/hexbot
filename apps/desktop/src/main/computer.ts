@@ -117,7 +117,7 @@ export function refusal(
     return null
   }
   if (request.kind === 'desktop') {
-    if (!allowed.desktop) return "This computer does not let Computer Use reach its screen."
+    if (!allowed.desktop) return 'This computer does not let Computer Use reach its screen.'
     if (typeof request.tool !== 'string' || !DESKTOP_TOOLS.has(request.tool))
       return 'That action is not allowed on this computer.'
     return null
@@ -711,12 +711,17 @@ export class ThisComputer {
     for (const what of ['terminal', 'desktop'] as const) {
       const next = change[what]
       if (typeof next !== 'boolean' || next === this.allowed[what]) continue
+      // Computer Use here sits on Let bots work here: a computer no bot can
+      // be given has no screen for a bot to reach.
+      if (what === 'desktop' && next && !this.allowed.terminal) continue
       if (next) {
         const asked = this.generations[what]
         if (!(await this.host.confirm(what)) || asked !== this.generations[what]) continue
       }
       this.allowed = { ...this.allowed, [what]: next }
     }
+    if (!this.allowed.terminal && this.allowed.desktop)
+      this.allowed = { ...this.allowed, desktop: false }
     return this.save()
   }
 
