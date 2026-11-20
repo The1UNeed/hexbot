@@ -20,7 +20,7 @@ export interface EditableRunsProps {
   /** One string per run, or one for all when the runs were merged while typing. */
   onCommit: (texts: string[]) => void
   /** Enter: the text before the caret by run, the rest, and the run the caret was in. */
-  onSplit?: (before: string[], after: string, run: number) => void
+  onSplit?: (texts: string[], run: number, offset: number) => void
   /**
    * Typing began: the text on screen is an edit now, before it goes back
    * into the file, so a new version of the file waits rather than replace it.
@@ -327,7 +327,14 @@ export function EditableRuns({
             return kept
           })
 
-          const after = texts.join('').slice(at.offset)
+          // The run the caret is in, and how far into it, from the text itself.
+          let run = 0
+          let into = at.offset
+
+          while (run < texts.length - 1 && into > texts[run]!.length) {
+            into -= texts[run]!.length
+            run += 1
+          }
 
           // The paragraph keeps only the text before the caret: when focus
           // moves to the new one, its blur finds nothing more to write.
@@ -341,7 +348,7 @@ export function EditableRuns({
             element.textContent = before.join('')
           }
 
-          onSplit(before, after, texts.length === count.current ? at.run : 0)
+          onSplit(texts, run, into)
         } else if (event.key === 'Backspace' && onJoin) {
           const at = caret(element)
           const selection = window.getSelection()

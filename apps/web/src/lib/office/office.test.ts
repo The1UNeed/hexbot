@@ -56,6 +56,44 @@ describe('a Word file', () => {
     expect(part(pkg, 'word/document.xml')).toMatch(/^<\?xml/)
   })
 
+  it('splits before a link, keeping it a link with its formatting', () => {
+    const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+    const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+
+    const pkg = pack({
+      'word/document.xml': `<w:document xmlns:w="${W}" xmlns:r="${R}"><w:body><w:p><w:r><w:t xml:space="preserve">Go to </w:t></w:r><w:hyperlink r:id="rId9"><w:r><w:rPr><w:b/></w:rPr><w:t>the site</w:t></w:r></w:hyperlink></w:p></w:body></w:document>`
+    })
+
+    const [block] = readDocx(pkg)!.blocks as DocxParagraph[]
+
+    splitParagraph(pkg, block!, ['Go to ', 'the site'], 0, 3)
+    const xml = part(pkg, 'word/document.xml')
+
+    expect(xml).toContain('<w:t xml:space="preserve">Go </w:t></w:r></w:p>')
+    expect(xml).toContain(
+      '<w:t xml:space="preserve">to </w:t></w:r><w:hyperlink r:id="rId9"><w:r><w:rPr><w:b/></w:rPr><w:t>the site</w:t></w:r></w:hyperlink></w:p>'
+    )
+  })
+
+  it('splits inside a link, both halves still links', () => {
+    const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+    const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+
+    const pkg = pack({
+      'word/document.xml': `<w:document xmlns:w="${W}" xmlns:r="${R}"><w:body><w:p><w:hyperlink r:id="rId9"><w:r><w:t>the site</w:t></w:r></w:hyperlink><w:r><w:t>!</w:t></w:r></w:p></w:body></w:document>`
+    })
+
+    const [block] = readDocx(pkg)!.blocks as DocxParagraph[]
+
+    splitParagraph(pkg, block!, ['the site', '!'], 0, 4)
+    const xml = part(pkg, 'word/document.xml')
+
+    expect(xml.match(/<w:hyperlink r:id="rId9">/g)).toHaveLength(2)
+    expect(xml).toContain(
+      '<w:t xml:space="preserve">site</w:t></w:r></w:hyperlink><w:r><w:t>!</w:t></w:r></w:p>'
+    )
+  })
+
   it('moves a section break to the second half of a split paragraph', () => {
     const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 
@@ -65,7 +103,7 @@ describe('a Word file', () => {
 
     const [block] = readDocx(pkg)!.blocks as DocxParagraph[]
 
-    splitParagraph(pkg, block!, ['End'], ' of part', 0)
+    splitParagraph(pkg, block!, ['End of part'], 0, 3)
     const xml = part(pkg, 'word/document.xml')
 
     expect(xml.match(/<w:sectPr\/>/g)).toHaveLength(2)
@@ -111,7 +149,7 @@ describe('a Word file', () => {
       throw new Error('expected a paragraph')
     }
 
-    splitParagraph(pkg, body, ['Bold ', 'and'], ' plain.', 1)
+    splitParagraph(pkg, body, ['Bold ', 'and plain.'], 1, 3)
     let blocks = readDocx(pkg)!.blocks
 
     const text = (index: number) =>
@@ -219,6 +257,16 @@ describe('an Excel file', () => {
 
     expect(readXlsx(reopen(pkg))!.sheets[0]!.rows).toEqual([['A', 'b']])
     expect(part(pkg, 'xl/worksheets/sheet1.xml').match(/<row/g)).toHaveLength(1)
+  })
+
+  it('edits a long number as stored, not as shown', () => {
+    const pkg = xlsx()
+    const sheet = readXlsx(pkg)!.sheets[0]!
+
+    setCells(pkg, sheet, [{ col: 0, row: 1, value: '1.23456789012345' }])
+
+    expect(sheet.rows[1]![0]).toBe('1.23456789012')
+    expect(cellSource(pkg, sheet, 1, 0)).toBe('1.23456789012345')
   })
 
   it('keeps what is typed into a Text cell as text', () => {

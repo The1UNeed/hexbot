@@ -3,7 +3,7 @@
 // splits a paragraph and Backspace at its start joins it to the one before,
 // moving the runs themselves so their formatting goes with them.
 
-import { attr, child, children, find, NS, type OfficePackage } from './package'
+import { attr, child, children, find, NS, type OfficePackage, setRunText } from './package'
 import { runText, type RunView, writeRuns } from './runs'
 
 const W = NS.w
@@ -270,18 +270,20 @@ export function setParagraphText(pkg: OfficePackage, block: DocxParagraph, texts
 }
 
 /**
- * Splits a paragraph where Enter was pressed: `before` stays, one string per
- * run, and `after` starts a new paragraph with the same style, in the look
- * of the run the caret was in. Returns the new paragraph's element.
+ * Splits a paragraph where Enter was pressed: `texts` is its text by run as
+ * typed, and the split falls `offset` characters into run `run`. That run is
+ * cut in two; it and everything after it (runs, links, bookmarks) move into
+ * a new paragraph with the same style, formatting and all. Returns the new
+ * paragraph's element.
  */
 export function splitParagraph(
   pkg: OfficePackage,
   block: DocxParagraph,
-  before: string[],
-  after: string,
-  caretRun: number
+  texts: string[],
+  run: number,
+  offset: number
 ): Element {
-  setParagraphText(pkg, block, before)
+  setParagraphText(pkg, block, texts)
 
   const doc = block.element.ownerDocument
   const next = doc.createElementNS(W, 'w:p')
@@ -298,11 +300,54 @@ export function splitParagraph(
     child(child(next, W, 'pPr'), W, 'pStyle')?.remove()
   }
 
-  const run = newRun(next, block.heading ? undefined : block.runs[caretRun])
-  next.append(run)
-  writeRuns([run], W, [after])
   block.element.after(next)
   pkg.touch(DOCUMENT)
+
+  // Runs read again: the text above may have merged them or made the first.
+  const runs = ownRuns(block.element)
+  const target = runs[Math.min(texts.length === runs.length ? run : 0, runs.length - 1)]
+
+  if (!target) {
+    next.append(newRun(next))
+
+    return next
+  }
+
+  const whole = runText(target, W)
+  const second = target.cloneNode(true) as Element
+
+  setRunText(target, W, whole.slice(0, offset))
+  setRunText(second, W, whole.slice(offset))
+
+  // What holds the run inside the paragraph (a link) is copied around the
+  // second half, then whatever followed at each level moves after it.
+  const holders: Element[] = []
+
+  for (let node = target.parentElement; node && node !== block.element; node = node.parentElement) {
+    holders.unshift(node)
+  }
+
+  let into: Element = next
+
+  for (const holder of holders) {
+    const copy = holder.cloneNode(false) as Element
+    into.append(copy)
+    into = copy
+  }
+
+  into.append(second)
+
+  for (
+    let node: Element | null = target;
+    node && node !== block.element;
+    node = node.parentElement
+  ) {
+    while (node.nextSibling) {
+      into.append(node.nextSibling)
+    }
+
+    into = into.parentElement ?? next
+  }
 
   return next
 }

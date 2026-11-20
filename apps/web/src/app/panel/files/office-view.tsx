@@ -266,12 +266,12 @@ export function DocxView(props: OfficeViewProps) {
                 : undefined
             }
             onSettled={save.settle}
-            onSplit={(before, after, run) => {
+            onSplit={(texts, run, offset) => {
               if (!pkg) {
                 return
               }
 
-              const next = splitParagraph(pkg, block, before, after, run)
+              const next = splitParagraph(pkg, block, texts, run, offset)
               setFocus({ element: next, offset: 0 })
               changed()
             }}
