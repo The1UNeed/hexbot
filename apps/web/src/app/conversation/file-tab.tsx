@@ -493,6 +493,11 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
       />
     ) : null
 
+  // Another view of the file opens once the edit on screen is saved; one that
+  // does not save stays, saying why.
+  const switchView = (show: () => void) =>
+    void (flush.current?.() ?? Promise.resolve(true)).then(ok => ok && show())
+
   let body: ReactNode
   // Content with its own bar fills the panel; the rest scrolls in a plain one.
   let own = true
@@ -514,7 +519,7 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
     if (DELIMITED.test(name)) {
       const switcher = (
         <ViewSwitch
-          onChange={setSheetMode}
+          onChange={mode => switchView(() => setSheetMode(mode))}
           options={[
             { label: 'Table', value: 'table' },
             { label: 'Text', value: 'text' }
@@ -543,7 +548,7 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
     } else if (PAGE.test(name)) {
       const switcher = (
         <ViewSwitch
-          onChange={setPageMode}
+          onChange={mode => switchView(() => setPageMode(mode))}
           options={[
             { label: 'Preview', value: 'preview' },
             { label: 'Source', value: 'source' }

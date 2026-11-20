@@ -21,6 +21,11 @@ export interface EditableRunsProps {
   onCommit: (texts: string[]) => void
   /** Enter: the text before the caret by run, the rest, and the run the caret was in. */
   onSplit?: (before: string[], after: string, run: number) => void
+  /**
+   * Typing began: the text on screen is an edit now, before it goes back
+   * into the file, so a new version of the file waits rather than replace it.
+   */
+  onTyping?: () => void
   /** Backspace at the very start. */
   onJoin?: () => void
   /** Puts the caret here, at this many characters in, once. */
@@ -140,6 +145,7 @@ export function EditableRuns({
   onCommit,
   onJoin,
   onSplit,
+  onTyping,
   pxPerPt,
   runs,
   style,
@@ -208,6 +214,7 @@ export function EditableRuns({
         }
       }}
       onInput={() => {
+        onTyping?.()
         window.clearTimeout(timer.current)
         timer.current = window.setTimeout(commit, COMMIT_DELAY)
       }}

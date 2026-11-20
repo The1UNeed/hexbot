@@ -72,13 +72,17 @@ const DATE_FORMATS = new Set([14, 15, 16, 17, 18, 19, 20, 21, 22, 45, 46, 47])
 interface Styles {
   /** By style index: how its numbers show. */
   kind: ('date' | 'number' | 'percent')[]
+  /** The workbook counts days from 1904, as some Mac workbooks do. */
+  date1904: boolean
 }
 
 function readStyles(pkg: OfficePackage): Styles {
   const doc = pkg.xml('xl/styles.xml')
+  const flag = attr(find(pkg.xml(WORKBOOK)?.documentElement, S, 'workbookPr'), 'date1904')
+  const date1904 = flag === '1' || flag === 'true'
 
   if (!doc) {
-    return { kind: [] }
+    return { date1904, kind: [] }
   }
 
   const custom = new Map<number, string>()
@@ -105,12 +109,15 @@ function readStyles(pkg: OfficePackage): Styles {
     return 'number' as const
   })
 
-  return { kind }
+  return { date1904, kind }
 }
 
+/** Day 0 of Unix time as Excel counts days: from 1900, or from 1904 in a workbook set to it. */
+const unixDay = (date1904: boolean) => (date1904 ? 24107 : 25569)
+
 /** Excel's day number as a date, `2024-03-01` or `2024-03-01 14:30`. */
-export function serialToDate(serial: number): string {
-  const ms = Math.round((serial - 25569) * 86400 * 1000)
+export function serialToDate(serial: number, date1904 = false): string {
+  const ms = Math.round((serial - unixDay(date1904)) * 86400 * 1000)
   const date = new Date(ms)
   const day = date.toISOString().slice(0, 10)
   const time = date.toISOString().slice(11, 16)
@@ -119,7 +126,7 @@ export function serialToDate(serial: number): string {
 }
 
 /** A date typed as `2024-03-01` (with an optional time) as Excel's day number. */
-export function dateToSerial(text: string): null | number {
+export function dateToSerial(text: string, date1904 = false): null | number {
   const match = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?$/.exec(text.trim())
 
   if (!match) {
@@ -134,7 +141,7 @@ export function dateToSerial(text: string): null | number {
     Number(match[5] ?? 0)
   )
 
-  return Number.isNaN(ms) ? null : ms / 86400000 + 25569
+  return Number.isNaN(ms) ? null : ms / 86400000 + unixDay(date1904)
 }
 
 const formatNumber = (value: number) =>
@@ -191,7 +198,7 @@ function shownValue(cell: Element, ctx: Context): string {
   const kind = ctx.styles.kind[Number(attr(cell, 's') ?? 0)]
 
   if (kind === 'date') {
-    return serialToDate(number)
+    return serialToDate(number, ctx.styles.date1904)
   }
 
   if (kind === 'percent') {
@@ -450,7 +457,7 @@ export function setCells(
     cell.removeAttribute('t')
     const text = value
     const kind = styles.kind[Number(attr(cell, 's') ?? 0)]
-    const date = kind === 'date' ? dateToSerial(text) : null
+    const date = kind === 'date' ? dateToSerial(text, styles.date1904) : null
 
     // A percent cell shows 25% for 0.25, and takes 30% back the same way.
     const percent =

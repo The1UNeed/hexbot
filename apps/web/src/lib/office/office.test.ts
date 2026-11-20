@@ -123,6 +123,9 @@ describe('an Excel file', () => {
     expect(serialToDate(45352.5)).toBe('2024-03-01 12:00')
     expect(dateToSerial('2024-03-01')).toBe(45352)
     expect(dateToSerial('March')).toBeNull()
+    // A workbook that counts from 1904 is 1,462 days behind.
+    expect(serialToDate(43890, true)).toBe('2024-03-01')
+    expect(dateToSerial('2024-03-01', true)).toBe(43890)
   })
 })
 
