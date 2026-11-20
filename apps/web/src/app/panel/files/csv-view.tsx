@@ -133,6 +133,7 @@ export function CsvView({
             update(rows.map(row => row.filter((_, index) => index < from || index > to)))
           }
           onDeleteRows={(from, to) => update(rows.filter((_, index) => index < from || index > to))}
+          onDraft={save.mark}
           onInsertColumn={at =>
             update(
               rows.map(row =>

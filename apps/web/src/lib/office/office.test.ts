@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { joinParagraph, readDocx, setParagraphText, splitParagraph } from './docx'
 import { bytesOfDataUrl, dataUrlOf, OfficePackage, resolvePath } from './package'
 import { readPptx, setSlideText } from './pptx'
+import { writeRuns } from './runs'
 import { docx, pptx, xlsx } from './test-fixtures'
 import { cellLocked, cellSource, dateToSerial, readXlsx, serialToDate, setCells } from './xlsx'
 
@@ -135,7 +136,7 @@ describe('a PowerPoint file', () => {
 
     expect([deck.width, deck.height]).toEqual([9144000, 5143500])
     const slide = deck.slides[0]!
-    const [title, ellipse] = slide.shapes
+    const [title, second, ellipse] = slide.shapes
 
     expect(slide.background).toBe('#FAFAFA')
     expect(title).toMatchObject({ h: 400, kind: 'text', w: 3000, x: 100, y: 200 })
@@ -144,13 +145,15 @@ describe('a PowerPoint file', () => {
       { text: '\n' },
       expect.objectContaining({ text: 'review' })
     ])
+    // Two layout placeholders of one type: the slide's takes the one with its index.
+    expect(second).toMatchObject({ h: 500, w: 500, x: 2000, y: 2000 })
     expect(ellipse).toMatchObject({ anchor: 'middle', fill: '#FF0000', round: 'ellipse' })
   })
 
   it('edits text around a line break and into an empty paragraph', () => {
     const pkg = pptx()
     const slide = readPptx(pkg)!.slides[0]!
-    const [title, ellipse] = slide.shapes
+    const [title, , ellipse] = slide.shapes
 
     setSlideText(pkg, slide, title!.paragraphs![0]!, ['Yearly', '\n', 'review'])
     setSlideText(pkg, slide, ellipse!.paragraphs![0]!, ['Note'])
@@ -161,9 +164,26 @@ describe('a PowerPoint file', () => {
       '\n',
       'review'
     ])
-    expect(again.shapes[1]!.paragraphs![0]!.views).toEqual([
+    expect(again.shapes[2]!.paragraphs![0]!.views).toEqual([
       expect.objectContaining({ size: 12, text: 'Note' })
     ])
+  })
+})
+
+const A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+
+describe('runs', () => {
+  it('put merged text in a text run, keeping a PowerPoint line break', () => {
+    const doc = new DOMParser().parseFromString(
+      `<a:p xmlns:a="${A}"><a:br/><a:r><a:t>old</a:t></a:r></a:p>`,
+      'application/xml'
+    )
+
+    const runs = Array.from(doc.documentElement.children)
+
+    writeRuns(runs, A, ['\nnew'])
+
+    expect(new XMLSerializer().serializeToString(doc)).toContain('<a:br/><a:r><a:t>new</a:t></a:r>')
   })
 })
 

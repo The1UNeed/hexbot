@@ -390,6 +390,7 @@ export function XlsxView(props: OfficeViewProps) {
                 changed()
               }}
               onComment={props.onComment}
+              onDraft={props.editable ? save.mark : undefined}
               place={book.sheets.length > 1 ? `on ${sheet.name}` : undefined}
               rows={sheet.rows}
               sourceOf={cell => cellSource(pkg, sheet, cell.row, cell.col)}

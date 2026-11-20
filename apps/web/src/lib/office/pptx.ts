@@ -178,13 +178,18 @@ function inherited(
   for (const part of parts) {
     const tree = find(pkg.xml(part)?.documentElement, P, 'spTree')
 
-    for (const shape of tree ? children(tree, P, 'sp') : []) {
-      const other = placeholder(shape)
+    const shapes = tree ? children(tree, P, 'sp') : []
 
-      if (!other || !samePlaceholder(ph, other)) {
-        continue
-      }
+    // The placeholder with the same index, else the first of the same type.
+    const match =
+      (ph.idx !== null ? shapes.find(shape => placeholder(shape)?.idx === ph.idx) : undefined) ??
+      shapes.find(shape => {
+        const other = placeholder(shape)
 
+        return other !== null && samePlaceholder(ph, other)
+      })
+
+    for (const shape of match ? [match] : []) {
       found.box ??= boxOf(find(child(shape, P, 'spPr'), A, 'xfrm')) ?? undefined
       const size = attr(find(find(child(shape, P, 'txBody'), A, 'lvl1pPr'), A, 'defRPr'), 'sz')
 
