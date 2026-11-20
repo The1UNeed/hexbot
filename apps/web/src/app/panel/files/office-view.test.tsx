@@ -4,10 +4,11 @@ import { describe, expect, it, vi } from 'vitest'
 import { readDocx } from '../../../lib/office/docx'
 import { dataUrlOf, OfficePackage } from '../../../lib/office/package'
 import { readPptx } from '../../../lib/office/pptx'
-import { docx, pptx } from '../../../lib/office/test-fixtures'
+import { docx, pptx, xlsx } from '../../../lib/office/test-fixtures'
+import { readXlsx, setCells } from '../../../lib/office/xlsx'
 import { holdCopy } from '../../../stores/page-copies'
 
-import { DocxView, POWERPOINT, PptxView, WORD } from './office-view'
+import { DocxView, EXCEL, POWERPOINT, PptxView, WORD, XlsxView } from './office-view'
 
 function props(dataUrl: string) {
   const saves: string[] = []
@@ -153,6 +154,34 @@ describe('a Word file only this page holds', () => {
     render(<DocxView {...view} flushRef={flushRef} />)
 
     expect(await screen.findByText('Bold')).toBeInTheDocument()
+  })
+})
+
+describe('an Excel cell an array formula owns', () => {
+  it('refuses the edit and lets a new version of the file in', async () => {
+    const { flushRef, props: view } = props(dataUrlOf(xlsx().save(), EXCEL))
+    const shown = render(<XlsxView {...view} flushRef={flushRef} />)
+
+    fireEvent.doubleClick(await screen.findByText('10'))
+    fireEvent.change(screen.getByLabelText('Edit C4'), { target: { value: '11' } })
+    fireEvent.keyDown(screen.getByLabelText('Edit C4'), { key: 'Enter' })
+
+    expect(await screen.findByText(/part of an array formula/)).toBeInTheDocument()
+
+    // The bot's version arrives: with nothing left to save, it shows.
+    const next = xlsx()
+    const sheet = readXlsx(next)!.sheets[0]!
+
+    setCells(next, sheet, [{ col: 0, row: 0, value: 'Part' }])
+    shown.rerender(
+      <XlsxView
+        {...view}
+        file={{ ...view.file, data_url: dataUrlOf(next.save(), EXCEL), version: 'v9' }}
+        flushRef={flushRef}
+      />
+    )
+
+    expect(await screen.findByText('Part')).toBeInTheDocument()
   })
 })
 
