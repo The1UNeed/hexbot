@@ -387,6 +387,15 @@ async fn only_the_user_sends_a_draft_and_sends_what_they_left() {
         "Stop cancelled a tool handing Pi an email that went"
     );
     assert!(s.state.lock().unwrap().finishing.is_empty());
+    // The stopped run settles before the next card is answered, as above.
+    let mut ended = s.run_ended.subscribe();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while s.state.lock().unwrap().interrupted {
+            ended.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("the stopped run settles");
 
     // Agreed on a sign-in card (or a plugin card): its tool now finishes the
     // work, and Stop waits for it as for an email going out.
