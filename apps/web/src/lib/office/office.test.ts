@@ -72,6 +72,21 @@ describe('a Word file', () => {
     expect(xml.indexOf('<w:sectPr/>')).toBeGreaterThan(xml.indexOf('>End<'))
   })
 
+  it('keeps a section break when its paragraph joins the one before', () => {
+    const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+
+    const pkg = pack({
+      'word/document.xml': `<w:document xmlns:w="${W}"><w:body><w:p><w:r><w:t>Start</w:t></w:r></w:p><w:p><w:pPr><w:sectPr/></w:pPr><w:r><w:t> end</w:t></w:r></w:p><w:sectPr/></w:body></w:document>`
+    })
+
+    const [first, second] = readDocx(pkg)!.blocks as DocxParagraph[]
+
+    joinParagraph(pkg, first!, second!)
+
+    expect(part(pkg, 'word/document.xml')).toContain('<w:p><w:pPr><w:sectPr/></w:pPr>')
+    expect(part(pkg, 'word/document.xml').match(/<w:sectPr\/>/g)).toHaveLength(2)
+  })
+
   it('splits a paragraph at the caret and joins it back', () => {
     const pkg = docx()
     const body = readDocx(pkg)!.blocks[1]!
