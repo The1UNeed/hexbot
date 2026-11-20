@@ -265,33 +265,54 @@ export function attr(node: Element | null | undefined, name: string, ns?: string
 }
 
 /**
- * Sets the text of a run: its text elements become one holding all of it
- * (`w:t` in Word, `a:t` in PowerPoint), and tabs and breaks inside the run go.
+ * Sets the text of a run (`w:t` in Word, `a:t` in PowerPoint). In Word a tab
+ * or line break in the text is written as its own `w:tab` or `w:br`.
  */
 export function setRunText(run: Element, ns: string, text: string) {
-  const texts = children(run, ns, 't')
+  const doc = run.ownerDocument
+  const prefix = run.prefix ? `${run.prefix}:` : ''
 
-  const keep =
-    texts[0] ?? run.ownerDocument.createElementNS(ns, run.prefix ? `${run.prefix}:t` : 't')
+  // In PowerPoint a line break sits between runs: only the text element is the run's.
+  if (ns === NS.a) {
+    const keep = children(run, ns, 't')[0] ?? doc.createElementNS(ns, `${prefix}t`)
 
-  for (const node of Array.from(run.children)) {
-    if (
-      node !== keep &&
-      node.namespaceURI === ns &&
-      ['t', 'tab', 'br', 'cr'].includes(node.localName) &&
-      !(ns === NS.a && node.localName !== 't')
-    ) {
-      node.remove()
+    for (const extra of children(run, ns, 't').slice(1)) {
+      extra.remove()
+    }
+
+    if (!keep.parentNode) {
+      run.append(keep)
+    }
+
+    keep.textContent = text
+
+    return
+  }
+
+  // In Word, tabs and line breaks are elements of their own inside the run.
+  for (const node of children(run, ns, 't').concat(
+    children(run, ns, 'tab'),
+    children(run, ns, 'br'),
+    children(run, ns, 'cr')
+  )) {
+    node.remove()
+  }
+
+  for (const part of text.split(/(\t|\n)/)) {
+    if (part === '\t') {
+      run.append(doc.createElementNS(ns, `${prefix}tab`))
+    } else if (part === '\n') {
+      run.append(doc.createElementNS(ns, `${prefix}br`))
+    } else if (part) {
+      const t = doc.createElementNS(ns, `${prefix}t`)
+      t.setAttributeNS('http://www.w3.org/XML/1998/namespace', 'xml:space', 'preserve')
+      t.textContent = part
+      run.append(t)
     }
   }
 
-  if (!keep.parentNode) {
-    run.append(keep)
-  }
-
-  keep.textContent = text
-
-  if (ns === NS.w) {
-    keep.setAttributeNS('http://www.w3.org/XML/1998/namespace', 'xml:space', 'preserve')
+  // An emptied run keeps one text element, as Word writes it.
+  if (!text) {
+    run.append(doc.createElementNS(ns, `${prefix}t`))
   }
 }

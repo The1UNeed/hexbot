@@ -24,6 +24,10 @@ describe('CSV and TSV', () => {
     expect(parseDelimited('a\n""', ',')).toEqual([['a'], ['']])
   })
 
+  it('keeps blank lines as empty rows when asked, as pasted cells need', () => {
+    expect(parseDelimited('first\r\n\r\nthird', '\t', true)).toEqual([['first'], [''], ['third']])
+  })
+
   it('keeps the file’s line endings, byte-order mark and final line break', () => {
     expect(serializeDelimited([['a', 'b']], ',', '\ufeffx,y\r\n')).toBe('\ufeffa,b\r\n')
     expect(serializeDelimited([['a', 'b']], ',', 'x,y')).toBe('a,b')

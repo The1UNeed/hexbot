@@ -344,8 +344,12 @@ function ensureCell(doc: XMLDocument, data: Element, row: number, col: number): 
   return cell
 }
 
-/** Formulas changed: Excel recalculates on open, and its calculation order is rebuilt. */
-function formulasChanged(pkg: OfficePackage) {
+/**
+ * Cells changed: Excel recalculates on open, so formulas that read them show
+ * new results. When formulas themselves changed, its calculation order goes
+ * too, and Excel rebuilds it.
+ */
+function cellsChanged(pkg: OfficePackage, formulas: boolean) {
   const workbook = pkg.xml(WORKBOOK)
 
   if (workbook) {
@@ -378,7 +382,7 @@ function formulasChanged(pkg: OfficePackage) {
 
   const chain = 'xl/calcChain.xml'
 
-  if (pkg.has(chain)) {
+  if (formulas && pkg.has(chain)) {
     pkg.remove(chain)
     const types = pkg.xml('[Content_Types].xml')
 
@@ -512,9 +516,7 @@ export function setCells(
 
   pkg.touch(sheet.path)
 
-  if (formulas) {
-    formulasChanged(pkg)
-  }
+  cellsChanged(pkg, formulas)
 
   Object.assign(sheet, readSheet(pkg, sheet.path, context(pkg)))
 }

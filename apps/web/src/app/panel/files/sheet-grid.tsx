@@ -327,7 +327,8 @@ export function SheetGrid({
       const changes: { cell: Cell; value: string }[] = []
 
       // A paste may widen the sheet, up to the columns it can show.
-      parseDelimited(text, '\t').forEach((line, r) =>
+      // Empty rows stay rows; only the line break after the last one goes.
+      parseDelimited(text.replace(/\r?\n$/, ''), '\t', true).forEach((line, r) =>
         line.forEach((value, c) => {
           const cell = { col: left + c, row: top + r }
 

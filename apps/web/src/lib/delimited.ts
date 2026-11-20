@@ -3,9 +3,10 @@
 /**
  * Rows of a CSV or TSV file, as RFC 4180 reads them: a quoted field may hold
  * the delimiter, line breaks and doubled quotes. Blank lines are skipped;
- * a line holding only `""` is a record with one empty field.
+ * a line holding only `""` is a record with one empty field. `keepBlank`
+ * keeps blank lines as empty rows, as pasted cells need.
  */
-export function parseDelimited(text: string, delimiter: string): string[][] {
+export function parseDelimited(text: string, delimiter: string, keepBlank = false): string[][] {
   const rows: string[][] = []
   let row: string[] = []
   let field = ''
@@ -17,7 +18,7 @@ export function parseDelimited(text: string, delimiter: string): string[][] {
   const endRow = () => {
     row.push(field)
 
-    if (row.length > 1 || row[0] !== '' || wasQuoted) {
+    if (keepBlank || row.length > 1 || row[0] !== '' || wasQuoted) {
       rows.push(row)
     }
 
