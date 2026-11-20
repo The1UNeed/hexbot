@@ -742,6 +742,41 @@ describe('a file beside the chat', () => {
     )
   })
 
+  it('keeps typing in the bar above the cells', async () => {
+    api.filesRead.mockResolvedValue({
+      mime: 'text/csv',
+      modified: 3,
+      name: 'pins.csv',
+      path: '/work/pins.csv',
+      size: 7,
+      text: 'pin,use\nGPIO2,ADC\n',
+      version: 'v3'
+    })
+    act(() =>
+      visualsActions().open(
+        fileTab('pins.csv', { mime: 'text/csv', path: '/work/pins.csv', sessionId: 's' })
+      )
+    )
+    render(<VisualPanel />)
+
+    fireEvent.pointerDown(await screen.findByText('ADC'), { button: 0 })
+    const bar = screen.getByLabelText('Cell contents')
+
+    bar.focus()
+    fireEvent.change(bar, { target: { value: 'J' } })
+    expect(document.activeElement).toBe(bar)
+    fireEvent.change(bar, { target: { value: 'JTAG' } })
+    fireEvent.keyDown(bar, { key: 'Enter' })
+
+    expect(await flushOpenFiles()).toBe(true)
+    expect(api.filesWrite).toHaveBeenLastCalledWith(
+      's',
+      '/work/pins.csv',
+      'pin,use\nGPIO2,JTAG\n',
+      'v3'
+    )
+  })
+
   it('keeps the edit when the version to load cannot be read', async () => {
     const field = await openPins()
     api.filesWrite.mockRejectedValue(
