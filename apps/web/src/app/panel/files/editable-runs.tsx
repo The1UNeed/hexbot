@@ -26,6 +26,8 @@ export interface EditableRunsProps {
    * into the file, so a new version of the file waits rather than replace it.
    */
   onTyping?: () => void
+  /** Shift+Enter adds a line break inside the paragraph, as Word allows. */
+  breaks?: boolean
   /** Backspace at the very start. */
   onJoin?: () => void
   /** Puts the caret here, at this many characters in, once. */
@@ -139,6 +141,7 @@ function placeCaret(node: HTMLElement, offset: number) {
  */
 export function EditableRuns({
   baseSize,
+  breaks = false,
   className,
   editable,
   focusAt = null,
@@ -222,6 +225,45 @@ export function EditableRuns({
         const element = node.current
 
         if (!element) {
+          return
+        }
+
+        // A line break inside the paragraph: typed as a newline character the
+        // text reads back (Word writes it as a break), or none where the file
+        // keeps breaks between runs (PowerPoint).
+        if (event.key === 'Enter' && event.shiftKey) {
+          event.preventDefault()
+
+          const selection = window.getSelection()
+
+          if (breaks && selection?.rangeCount) {
+            // A newline character in the run's own text, not a <br> the
+            // browser would add: the text read back keeps it.
+            const range = selection.getRangeAt(0)
+            const newline = document.createTextNode('\n')
+
+            range.deleteContents()
+            range.insertNode(newline)
+
+            // A newline ending the paragraph shows only with something after
+            // it; a <br> there (not part of the text) holds the new line.
+            const after = document.createRange()
+            after.setStartAfter(newline)
+            after.setEnd(element, element.childNodes.length)
+
+            if (!after.toString() && element.lastChild?.nodeName !== 'BR') {
+              element.append(document.createElement('br'))
+            }
+
+            range.setStartAfter(newline)
+            range.collapse(true)
+            selection.removeAllRanges()
+            selection.addRange(range)
+            onTyping?.()
+            window.clearTimeout(timer.current)
+            timer.current = window.setTimeout(commit, COMMIT_DELAY)
+          }
+
           return
         }
 
