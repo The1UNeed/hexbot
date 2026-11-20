@@ -94,6 +94,22 @@ describe('a Word file', () => {
     )
   })
 
+  it('splits a run holding a picture without copying the picture', () => {
+    const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+
+    const pkg = pack({
+      'word/document.xml': `<w:document xmlns:w="${W}"><w:body><w:p><w:r><w:rPr><w:i/></w:rPr><w:drawing/><w:t>caption text</w:t></w:r></w:p></w:body></w:document>`
+    })
+
+    const [block] = readDocx(pkg)!.blocks as DocxParagraph[]
+
+    splitParagraph(pkg, block!, ['caption text'], 0, 7)
+    const xml = part(pkg, 'word/document.xml')
+
+    expect(xml.match(/<w:drawing\/>/g)).toHaveLength(1)
+    expect(xml).toContain('<w:r><w:rPr><w:i/></w:rPr><w:t xml:space="preserve"> text</w:t></w:r>')
+  })
+
   it('moves a section break to the second half of a split paragraph', () => {
     const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 

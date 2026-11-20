@@ -420,6 +420,11 @@ export function SheetGrid({
             draft(focus, event.target.value, true)
           }}
           onKeyDown={event => {
+            // Enter that ends an IME composition (Chinese, Japanese, Korean) is not a command.
+            if (event.nativeEvent.isComposing) {
+              return
+            }
+
             if (event.key === 'Enter') {
               event.preventDefault()
               commit({ col: focus.col, row: focus.row + 1 })
@@ -606,6 +611,11 @@ export function SheetGrid({
                           onBlur={() => commit()}
                           onChange={event => draft({ col, row }, event.target.value)}
                           onKeyDown={event => {
+                            // Enter that ends an IME composition (Chinese, Japanese, Korean) is not a command.
+                            if (event.nativeEvent.isComposing) {
+                              return
+                            }
+
                             if (event.key === 'Enter') {
                               event.preventDefault()
                               commit({ col, row: row + 1 })

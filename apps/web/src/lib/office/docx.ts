@@ -314,7 +314,13 @@ export function splitParagraph(
   }
 
   const whole = runText(target, W)
-  const second = target.cloneNode(true) as Element
+  // The second half takes the run's look, not what else it holds (a picture).
+  const second = doc.createElementNS(W, target.tagName)
+  const look = child(target, W, 'rPr')
+
+  if (look) {
+    second.append(look.cloneNode(true))
+  }
 
   setRunText(target, W, whole.slice(0, offset))
   setRunText(second, W, whole.slice(offset))
