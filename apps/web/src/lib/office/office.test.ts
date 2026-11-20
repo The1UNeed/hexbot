@@ -8,7 +8,7 @@ import {
   setParagraphText,
   splitParagraph
 } from './docx'
-import { bytesOfDataUrl, dataUrlOf, OfficePackage, resolvePath } from './package'
+import { bytesOfDataUrl, dataUrlOf, OfficePackage, resolvePath, setRunText } from './package'
 import { readPptx, setSlideText } from './pptx'
 import { writeRuns } from './runs'
 import { docx, pack, pptx, xlsx } from './test-fixtures'
@@ -146,6 +146,16 @@ describe('an Excel file', () => {
     expect(part(pkg, 'xl/_rels/workbook.xml.rels')).not.toContain('calcChain')
   })
 
+  it('asks Excel to recalculate after a value changes, keeping its calculation order', () => {
+    const pkg = xlsx()
+    const sheet = readXlsx(pkg)!.sheets[0]!
+
+    setCells(pkg, sheet, [{ col: 1, row: 1, value: '2000' }])
+
+    expect(part(pkg, 'xl/workbook.xml')).toContain('fullCalcOnLoad="1"')
+    expect(unzipSync(pkg.save())['xl/calcChain.xml']).toBeDefined()
+  })
+
   it('converts dates both ways', () => {
     expect(serialToDate(45352)).toBe('2024-03-01')
     expect(serialToDate(45352.5)).toBe('2024-03-01 12:00')
@@ -211,6 +221,25 @@ describe('runs', () => {
     writeRuns(runs, A, ['\nnew'])
 
     expect(new XMLSerializer().serializeToString(doc)).toContain('<a:br/><a:r><a:t>new</a:t></a:r>')
+  })
+})
+
+describe('a Word run', () => {
+  it('writes tabs and line breaks as their own elements', () => {
+    const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+
+    const doc = new DOMParser().parseFromString(
+      `<w:r xmlns:w="${W}"><w:rPr><w:b/></w:rPr><w:t>old</w:t><w:tab/><w:t>x</w:t></w:r>`,
+      'application/xml'
+    )
+
+    setRunText(doc.documentElement, W, 'Name\tValue\nnext')
+
+    expect(
+      Array.from(doc.documentElement.children).map(
+        node => node.localName + (node.textContent ? `:${node.textContent}` : '')
+      )
+    ).toEqual(['rPr', 't:Name', 'tab', 't:Value', 'br', 't:next'])
   })
 })
 
