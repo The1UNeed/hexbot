@@ -2938,6 +2938,20 @@ function BotConversation() {
     }
   }
 
+  // An answer on a question card the bot stopped waiting on. Right after a
+  // daemon restart the chat has no live session for a moment, so the answer
+  // waits for it, as the composer's message does.
+  const [cardReply, setCardReply] = useState<string | null>(null)
+  const sendRef = useRef(send)
+  sendRef.current = send
+
+  useEffect(() => {
+    if (cardReply !== null && liveId) {
+      setCardReply(null)
+      sendRef.current(cardReply)
+    }
+  }, [cardReply, liveId])
+
   // The bot was deleted, here or on another device: no face, prompts, or composer for it.
   if (missingBot) {
     return (
@@ -3086,7 +3100,7 @@ function BotConversation() {
                     <ClarifyCard
                       bot={bot}
                       clarify={item.clarify}
-                      onReply={ownerInput && !answeredBelow ? send : undefined}
+                      onReply={ownerInput && !answeredBelow ? setCardReply : undefined}
                     />
                   </CardRow>
                 )
