@@ -296,12 +296,17 @@ export function setRunText(run: Element, ns: string, text: string) {
   )
 
   const fresh: Element[] = []
+  // The run's breaks, reused in order: a page or column break keeps its type.
+  const breaks = old.filter(node => node.localName === 'br' || node.localName === 'cr')
 
   for (const part of text.split(/(\t|\n)/)) {
     if (part === '\t') {
       fresh.push(doc.createElementNS(ns, `${prefix}tab`))
     } else if (part === '\n') {
-      fresh.push(doc.createElementNS(ns, `${prefix}br`))
+      fresh.push(
+        (breaks.shift()?.cloneNode(true) as Element | undefined) ??
+          doc.createElementNS(ns, `${prefix}br`)
+      )
     } else if (part) {
       const t = doc.createElementNS(ns, `${prefix}t`)
       t.setAttributeNS('http://www.w3.org/XML/1998/namespace', 'xml:space', 'preserve')
