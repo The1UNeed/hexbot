@@ -26,6 +26,8 @@ export interface EditableRunsProps {
    * into the file, so a new version of the file waits rather than replace it.
    */
   onTyping?: () => void
+  /** Typing ended with the text as it was: nothing goes back into the file. */
+  onSettled?: () => void
   /** Shift+Enter adds a line break inside the paragraph, as Word allows. */
   breaks?: boolean
   /** Backspace at the very start. */
@@ -147,6 +149,7 @@ export function EditableRuns({
   focusAt = null,
   onCommit,
   onJoin,
+  onSettled,
   onSplit,
   onTyping,
   pxPerPt,
@@ -160,6 +163,8 @@ export function EditableRuns({
   const shown = useRef('')
   const commitRef = useRef(onCommit)
   commitRef.current = onCommit
+  const settledRef = useRef(onSettled)
+  settledRef.current = onSettled
   const count = useRef(runs.length)
   count.current = runs.length
   const key = JSON.stringify([runs, pxPerPt])
@@ -196,6 +201,8 @@ export function EditableRuns({
 
     if (texts.join('') !== runs.map(run => run.text).join('') || texts.length !== runs.length) {
       commitRef.current(texts)
+    } else {
+      settledRef.current?.()
     }
   }
 
