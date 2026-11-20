@@ -398,7 +398,9 @@ export function XlsxView(props: OfficeViewProps) {
                   .find(Boolean)
 
                 if (blocked) {
+                  // Refused: nothing is written, so the typing guard goes too.
                   setLocked(blocked)
+                  save.settle()
 
                   return
                 }
