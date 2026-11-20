@@ -47,10 +47,13 @@ export function writeRuns(runs: Element[], ns: typeof NS.a | typeof NS.w, texts:
     return
   }
 
-  // Runs merged while typing: the first text run takes all of it. A
-  // PowerPoint line break between runs stays, so its newline is not text.
+  // Runs merged while typing: the first text run takes all of it. In
+  // PowerPoint a line break sits between runs, so the breaks are laid out
+  // again from the text: a run for each line, a break between them.
   const textRuns = ns === NS.a ? runs.filter(run => run.localName !== 'br') : runs
-  const merged = ns === NS.a ? texts.join('').replace(/\n/g, '') : texts.join('')
+  const breaks = ns === NS.a ? runs.filter(run => run.localName === 'br') : []
+  const lines = ns === NS.a ? texts.join('').split('\n') : [texts.join('')]
+  const merged = lines[0]!
   let first = textRuns[0]
 
   if (!first) {
@@ -65,6 +68,35 @@ export function writeRuns(runs: Element[], ns: typeof NS.a | typeof NS.w, texts:
 
   for (const run of textRuns.slice(1)) {
     set(run, '')
+  }
+
+  if (ns !== NS.a) {
+    return
+  }
+
+  const template = breaks[0]?.cloneNode(true) as Element | undefined
+
+  for (const old of breaks) {
+    old.remove()
+  }
+
+  for (const run of textRuns.slice(1)) {
+    run.remove()
+  }
+
+  let last = first
+
+  for (const line of lines.slice(1)) {
+    const br =
+      (template?.cloneNode(true) as Element | undefined) ??
+      first.ownerDocument.createElementNS(ns, `${first.prefix ? `${first.prefix}:` : ''}br`)
+
+    const next = first.cloneNode(true) as Element
+
+    setRunText(next, ns, line)
+    last.after(br)
+    br.after(next)
+    last = next
   }
 }
 

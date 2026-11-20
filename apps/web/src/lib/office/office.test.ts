@@ -374,7 +374,21 @@ describe('runs', () => {
 
     writeRuns(runs, A, ['\nnew'])
 
-    expect(new XMLSerializer().serializeToString(doc)).toContain('<a:br/><a:r><a:t>new</a:t></a:r>')
+    expect(new XMLSerializer().serializeToString(doc)).toContain(
+      '<a:r><a:t/></a:r><a:br/><a:r><a:t>new</a:t></a:r></a:p>'
+    )
+  })
+
+  it('lay PowerPoint breaks out again from merged text', () => {
+    const doc = new DOMParser().parseFromString(
+      `<a:p xmlns:a="${A}"><a:r><a:t>Quarterly</a:t></a:r><a:br/><a:r><a:t>review</a:t></a:r></a:p>`,
+      'application/xml'
+    )
+
+    writeRuns(Array.from(doc.documentElement.children), A, ['Replacement'])
+
+    expect(new XMLSerializer().serializeToString(doc)).not.toContain('a:br')
+    expect(doc.documentElement.textContent).toBe('Replacement')
   })
 })
 
