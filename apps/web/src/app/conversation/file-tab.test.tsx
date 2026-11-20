@@ -809,6 +809,29 @@ describe('a file beside the chat', () => {
     )
   })
 
+  it('keeps the selection on the sheet after its last row goes', async () => {
+    api.filesRead.mockResolvedValue({
+      mime: 'text/csv',
+      modified: 3,
+      name: 'pins.csv',
+      path: '/work/pins.csv',
+      size: 7,
+      text: 'pin,use\nGPIO2,ADC\n',
+      version: 'v3'
+    })
+    act(() =>
+      visualsActions().open(
+        fileTab('pins.csv', { mime: 'text/csv', path: '/work/pins.csv', sessionId: 's' })
+      )
+    )
+    render(<VisualPanel />)
+
+    fireEvent.pointerDown(await screen.findByText('ADC'), { button: 0 })
+    fireEvent.click(screen.getByRole('button', { name: 'Delete row' }))
+
+    expect(await screen.findByText('B1')).toBeInTheDocument()
+  })
+
   it('keeps the edit when the version to load cannot be read', async () => {
     const field = await openPins()
     api.filesWrite.mockRejectedValue(
