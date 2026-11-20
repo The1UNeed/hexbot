@@ -71,6 +71,35 @@ describe('a Word file beside the chat', () => {
   })
 })
 
+describe('a Word paragraph split over selected words', () => {
+  it('drops the selected words', async () => {
+    const { flushRef, props: view, saves } = props(dataUrlOf(docx().save(), WORD))
+
+    render(<DocxView {...view} flushRef={flushRef} />)
+    const paragraph = (await screen.findByText('Bold')).closest('[data-where]') as HTMLElement
+    paragraph.focus()
+    const text = paragraph.querySelectorAll('span')[1]!.firstChild!
+    const range = document.createRange()
+
+    // "and " in "and plain."
+    range.setStart(text, 0)
+    range.setEnd(text, 4)
+    window.getSelection()!.removeAllRanges()
+    window.getSelection()!.addRange(range)
+    fireEvent.keyDown(paragraph, { key: 'Enter' })
+    fireEvent.blur(paragraph)
+    await act(async () => {
+      expect(await flushRef.current!()).toBe(true)
+    })
+
+    const texts = readDocx(OfficePackage.fromDataUrl(saves.at(-1)!))!.blocks.map(block =>
+      block.kind === 'paragraph' ? block.views.map(item => item.text).join('') : 'table'
+    )
+
+    expect(texts.slice(1, 3)).toEqual(['Bold ', 'plain.'])
+  })
+})
+
 describe('a PowerPoint file beside the chat', () => {
   it('keeps the box being typed in when its text goes back into the file', async () => {
     const { flushRef, props: view, saves } = props(dataUrlOf(pptx().save(), POWERPOINT))

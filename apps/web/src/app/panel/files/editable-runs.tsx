@@ -270,6 +270,20 @@ export function EditableRuns({
         if (event.key === 'Enter' && !event.shiftKey) {
           event.preventDefault()
           window.clearTimeout(timer.current)
+          // Enter over selected words replaces them, as in Word.
+          const selected = window.getSelection()
+
+          if (
+            onSplit &&
+            selected?.rangeCount &&
+            !selected.isCollapsed &&
+            element.contains(selected.anchorNode) &&
+            element.contains(selected.focusNode)
+          ) {
+            selected.getRangeAt(0).deleteContents()
+            selected.collapseToStart()
+          }
+
           const at = caret(element)
 
           if (!onSplit || !at) {
