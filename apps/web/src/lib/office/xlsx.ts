@@ -466,6 +466,24 @@ export function setCells(
     return
   }
 
+  // Rows and cells the file numbers by position get their reference written,
+  // the way the reader counts them, so an edit finds them.
+  let rowAt = 0
+
+  for (const rowNode of children(data, S, 'row')) {
+    const index = attr(rowNode, 'r') ? Number(attr(rowNode, 'r')) - 1 : rowAt
+    rowNode.setAttribute('r', String(index + 1))
+    rowAt = index + 1
+    let colAt = 0
+
+    for (const cell of children(rowNode, S, 'c')) {
+      const ref = parseRef(attr(cell, 'r') ?? '')
+      const col = ref ? ref.col : colAt
+      cell.setAttribute('r', cellRef(index, col))
+      colAt = col + 1
+    }
+  }
+
   const styles = readStyles(pkg)
   let formulas = false
 

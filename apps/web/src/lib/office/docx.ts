@@ -319,20 +319,11 @@ export function joinParagraph(
 ): number {
   const length = previous.views.reduce((sum, view) => sum + view.text.length, 0)
 
-  // Each run moves with what holds it inside the paragraph, such as a link.
-  const moved = new Set<Element>()
-
-  // Read from the paragraph itself: a run made for text typed a moment ago is there too.
-  for (const run of ownRuns(block.element)) {
-    let top: Element = run
-
-    while (top.parentElement && top.parentElement !== block.element) {
-      top = top.parentElement
-    }
-
-    if (!moved.has(top)) {
-      moved.add(top)
-      previous.element.append(top)
+  // Everything in the paragraph but its properties moves over in order: runs,
+  // links, bookmarks and comment anchors, and a run typed a moment ago.
+  for (const node of Array.from(block.element.children)) {
+    if (!(node.namespaceURI === W && node.localName === 'pPr')) {
+      previous.element.append(node)
     }
   }
 
