@@ -103,6 +103,16 @@ fn the_tool_switches_give_and_take_computers() {
     let home = setup();
     let h = home.path();
     migrate(h).unwrap();
+    // Cua is there, whatever the machine running the test has.
+    let cua = h.join("cua");
+    std::fs::write(&cua, "#!/bin/sh\n").unwrap();
+    #[cfg(unix)]
+    std::fs::set_permissions(&cua, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    common::update_config(h, |c| {
+        c["computer_use"]["command"] = json!(cua.to_string_lossy());
+        Ok(())
+    })
+    .unwrap();
     sync_tools(h, "owl", false, false, true).unwrap();
     assert!(granted(h, "owl").unwrap().is_empty());
     // On again: the default computer for each, the bots' computer first.

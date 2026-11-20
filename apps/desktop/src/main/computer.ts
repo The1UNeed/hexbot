@@ -835,9 +835,13 @@ export class ThisComputer {
           still()
           await this.closing
           still()
-          const cua = findCua()
-          if (!target || !cua) throw new Error("This computer's desktop is not set up for bots.")
-          this.client ??= new DesktopClient(cua, target)
+          if (!target) throw new Error("This computer's desktop is not set up for bots.")
+          // Only a new connection needs Cua's program; one already up keeps going.
+          if (!this.client) {
+            const cua = findCua()
+            if (!cua) throw new Error("This computer's desktop is not set up for bots.")
+            this.client = new DesktopClient(cua, target)
+          }
         }
         const client = this.client
         const args = desktopArgs(request.tool!, request.args)

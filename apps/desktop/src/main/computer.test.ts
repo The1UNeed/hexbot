@@ -449,8 +449,8 @@ describe('this computer', () => {
       await new Promise(resolve => setTimeout(resolve, 0))
       kept.found()
       await turnedOn
-      // Past the switch (Cua, or this test's computer having none set up), not stopped.
-      expect(String(await waiting)).toMatch(/Cua reached|not set up/)
+      // Past the switch, it reaches Cua: not stopped.
+      expect(String(await waiting)).toMatch(/Cua reached/)
 
       // Turning the terminal off leaves desktop work be too.
       const terminalOff = make()
@@ -469,7 +469,7 @@ describe('this computer', () => {
       await new Promise(resolve => setTimeout(resolve, 0))
       terminalOff.found()
       await turnedTerminalOff
-      expect(String(await stillWaiting)).toMatch(/Cua reached|not set up/)
+      expect(String(await stillWaiting)).toMatch(/Cua reached/)
 
       // A release keeps the switch on: only the desktop's generation ends it.
       const released = make()
