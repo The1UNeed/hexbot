@@ -61,6 +61,27 @@ describe('this computer as one of the user computers', () => {
     })
   })
 
+  it('answers only on the connection that asked, never on the daemon it switched to', async () => {
+    const first = vi.fn().mockResolvedValue({ ok: true })
+    const second = vi.fn().mockResolvedValue({ ok: true })
+    setActiveRpc({ call: first } as never)
+
+    let finish: (value: unknown) => void = () => {}
+    const run = vi.fn(() => new Promise(resolve => (finish = resolve)))
+    bridge({ run })
+    useConnection.setState({
+      target: { deviceToken: 't', host: 'studio', kind: 'remote', port: 9119, tls: false }
+    })
+    const handling = handleComputerRequest({ command: 'ls', kind: 'terminal', request_id: 'r1' })
+    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce())
+    // The app switches to another daemon while the command runs.
+    setActiveRpc({ call: second } as never)
+    finish({ exit_code: 0, output: 'secret' })
+    await handling
+    expect(first).not.toHaveBeenCalled()
+    expect(second).not.toHaveBeenCalled()
+  })
+
   it('ends one stopped request in the main process and answers nothing', async () => {
     const call = vi.fn().mockResolvedValue({ ok: true })
     setActiveRpc({ call } as never)

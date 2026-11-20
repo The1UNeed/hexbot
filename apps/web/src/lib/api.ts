@@ -10,7 +10,7 @@ import { JsonRpcGatewayError } from '@hermes/shared'
 import { useConnection } from '../stores/connection'
 
 import { splitAttached } from './media'
-import { rpcCall } from './rpc'
+import { type HexbotRpcClient, rpcCall } from './rpc'
 import { settledCard } from './settled-cards'
 import { toMillis } from './time'
 import type {
@@ -636,9 +636,12 @@ export const computersAttach = (offer: {
   os: string
   terminal: boolean
 }) => rpcCall<{ attached: boolean; computer: string }>('hexbot.computers.attach', offer)
-/** This app's answer to one request from the daemon. */
-export const computersReply = (requestId: string, answer: { error?: string; result?: unknown }) =>
-  rpcCall<{ ok: true }>('hexbot.computers.reply', { request_id: requestId, ...answer })
+/** This app's answer to one request from the daemon, on the connection that asked. */
+export const computersReply = (
+  client: HexbotRpcClient,
+  requestId: string,
+  answer: { error?: string; result?: unknown }
+) => client.call<{ ok: true }>('hexbot.computers.reply', { request_id: requestId, ...answer })
 
 /** The bot's own Discord app, or null when it has none; `enabled`: Discord is on for it in Plugins. */
 export const discordGet = (bot: string) =>

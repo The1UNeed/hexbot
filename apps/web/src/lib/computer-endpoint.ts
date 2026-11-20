@@ -13,6 +13,7 @@ import { useConnection } from '../stores/connection'
 
 import { computersAttach, computersReply } from './api'
 import { getBridge as bridge, type ComputerShare } from './bridge'
+import { activeRpc } from './rpc'
 import type { ComputerRequest } from './types'
 
 /** Whether this app can offer its computer at all: the desktop app, on another computer than the daemon. */
@@ -92,9 +93,18 @@ export function watchThisComputer(): void {
 export async function handleComputerRequest(payload: Record<string, unknown>): Promise<void> {
   const id = typeof payload.request_id === 'string' ? payload.request_id : null
   const computer = bridge()?.computer
+  // Answers go back only on the connection that asked: after a switch to
+  // another daemon, or a reconnect, they are dropped, never sent elsewhere.
+  const asked = activeRpc()
 
   if (!id) {
     return
+  }
+
+  const answer = async (body: { error?: string; result?: unknown }): Promise<void> => {
+    if (asked && activeRpc() === asked) {
+      await computersReply(asked, id, body)
+    }
   }
 
   // What bots started here ends: the user forgot this computer on the daemon
@@ -108,9 +118,9 @@ export async function handleComputerRequest(payload: Record<string, unknown>): P
 
     try {
       await computer?.release?.()
-      await computersReply(id, { result: { released: Boolean(computer?.release) } })
+      await answer({ result: { released: Boolean(computer?.release) } })
     } catch (error) {
-      await computersReply(id, {
+      await answer({
         error: error instanceof Error ? error.message : String(error)
       }).catch(() => {})
     }
@@ -128,16 +138,16 @@ export async function handleComputerRequest(payload: Record<string, unknown>): P
   }
 
   if (!computer || !canOfferComputer()) {
-    await computersReply(id, { error: 'This computer does not let bots use it.' }).catch(() => {})
+    await answer({ error: 'This computer does not let bots use it.' }).catch(() => {})
 
     return
   }
 
   try {
     const result = await computer.run(payload as unknown as ComputerRequest)
-    await computersReply(id, { result })
+    await answer({ result })
   } catch (error) {
-    await computersReply(id, {
+    await answer({
       error: error instanceof Error ? error.message : String(error)
     }).catch(() => {})
   }
