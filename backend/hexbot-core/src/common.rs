@@ -170,6 +170,35 @@ pub fn read_config_cached(home: &Path) -> Result<Value> {
         .insert(path, (stamp, value.clone()));
     Ok(value)
 }
+#[cfg(all(test, unix))]
+mod config_cache_tests {
+    use super::*;
+    #[test]
+    fn a_daemon_write_always_shows_even_with_the_same_size_and_time() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        write_config(h, &json!({"computers":{"vm":{"desktop":["owl"]}}})).unwrap();
+        let path = h.join("config.yaml");
+        let then = fs::metadata(&path).unwrap().modified().unwrap();
+        assert_eq!(
+            read_config_cached(h).unwrap()["computers"]["vm"]["desktop"][0],
+            "owl"
+        );
+        // A same-length write, its time set back to the first one's, as a
+        // coarse clock would leave it.
+        write_config(h, &json!({"computers":{"vm":{"desktop":["fox"]}}})).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(then)
+            .unwrap();
+        assert_eq!(
+            read_config_cached(h).unwrap()["computers"]["vm"]["desktop"][0],
+            "fox"
+        );
+    }
+}
 // All daemon config mutations hold this lock from read through write. Never
 // hold it across an await. If both locks are needed, acquire skills first.
 static CONFIG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -1226,35 +1255,5 @@ mod tool_safety_tests {
             assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
         }
         server.abort();
-    }
-}
-
-#[cfg(all(test, unix))]
-mod config_cache_tests {
-    use super::*;
-    #[test]
-    fn a_daemon_write_always_shows_even_with_the_same_size_and_time() {
-        let home = tempfile::tempdir().unwrap();
-        let h = home.path();
-        write_config(h, &json!({"computers":{"vm":{"desktop":["owl"]}}})).unwrap();
-        let path = h.join("config.yaml");
-        let then = fs::metadata(&path).unwrap().modified().unwrap();
-        assert_eq!(
-            read_config_cached(h).unwrap()["computers"]["vm"]["desktop"][0],
-            "owl"
-        );
-        // A same-length write, its time set back to the first one's, as a
-        // coarse clock would leave it.
-        write_config(h, &json!({"computers":{"vm":{"desktop":["fox"]}}})).unwrap();
-        fs::File::options()
-            .write(true)
-            .open(&path)
-            .unwrap()
-            .set_modified(then)
-            .unwrap();
-        assert_eq!(
-            read_config_cached(h).unwrap()["computers"]["vm"]["desktop"][0],
-            "fox"
-        );
     }
 }
