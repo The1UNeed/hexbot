@@ -174,7 +174,7 @@ when multiple preserved owner conversations make its source uncertain.
 | `tool.start` / `tool.complete` | add or resolve a tool call in the current assistant message; the running one, with its arguments, gives the live status its words and the face its mood (`lib/work-label.ts`) |
 | `approval.request` | push an approval card (session scoped) and notify; one with a `form` is the sign-in card, answered with the username and password, or the plugin card (`kind: "plugin"`), answered with `values` and `provider` |
 | `approval.resolved` / `approval.expire` | show that card's answer / drop it while unanswered |
-| `clarify.request` / `clarify.resolved` / `clarify.expire` | push a question card / show its answers / freeze it |
+| `clarify.request` / `clarify.resolved` / `clarify.expire` | push a question card / show its answers / stop it asking the daemon: until you write after it, its answer goes as your next message |
 | `status.update` | header status line; `checking` replaces the live status with "Checking this step" until an empty `checking` line |
 | `session.info` | update section's model and provider chips |
 | `session.usage` | usage badge |

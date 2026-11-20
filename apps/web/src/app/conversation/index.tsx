@@ -2938,6 +2938,23 @@ function BotConversation() {
     }
   }
 
+  // An answer on a question card the bot stopped waiting on. Right after a
+  // daemon restart the chat has no live session for a moment, so the answer
+  // waits for it, as the composer's message does.
+  // It belongs to its chat: switching chats meanwhile drops it.
+  const [cardReply, setCardReply] = useState<{ section?: string; text: string } | null>(null)
+  const sendRef = useRef(send)
+  sendRef.current = send
+
+  useEffect(() => {
+    if (cardReply && cardReply.section !== params.section) {
+      setCardReply(null)
+    } else if (cardReply && liveId) {
+      setCardReply(null)
+      sendRef.current(cardReply.text)
+    }
+  }, [cardReply, liveId, params.section])
+
   // The bot was deleted, here or on another device: no face, prompts, or composer for it.
   if (missingBot) {
     return (
@@ -3074,9 +3091,24 @@ function BotConversation() {
             ) : null}
             {timeline.map((item, position) => {
               if (item.kind === 'clarify') {
+                // A question the bot stopped waiting on, say across a daemon
+                // restart, still takes your answer as a message until you
+                // write something after it.
+                const answeredBelow = timeline
+                  .slice(position + 1)
+                  .some(later => later.kind === 'message' && later.message.role === 'user')
+
                 return (
                   <CardRow joined={botBefore(timeline, position)} key={item.clarify.requestId}>
-                    <ClarifyCard bot={bot} clarify={item.clarify} />
+                    <ClarifyCard
+                      bot={bot}
+                      clarify={item.clarify}
+                      onReply={
+                        ownerInput && !answeredBelow
+                          ? text => setCardReply({ section: params.section, text })
+                          : undefined
+                      }
+                    />
                   </CardRow>
                 )
               }
