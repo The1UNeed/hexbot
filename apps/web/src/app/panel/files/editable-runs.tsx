@@ -1,0 +1,268 @@
+import { type CSSProperties, useEffect, useLayoutEffect, useRef } from 'react'
+
+import type { RunView } from '../../../lib/office/runs'
+
+/** How long typing pauses before a paragraph's text goes back into the file. */
+const COMMIT_DELAY = 500
+
+export interface EditableRunsProps {
+  runs: RunView[]
+  editable: boolean
+  /** CSS px per point, for run sizes. */
+  pxPerPt: number
+  /** Points, for a paragraph whose runs give none. */
+  baseSize?: number
+  className?: string
+  style?: CSSProperties
+  /** "paragraph 4", for a comment on text selected here. */
+  where?: string
+  tag?: 'div' | 'h1' | 'h2' | 'h3' | 'li' | 'p'
+  /** One string per run, or one for all when the runs were merged while typing. */
+  onCommit: (texts: string[]) => void
+  /** Enter: the text before the caret by run, the rest, and the run the caret was in. */
+  onSplit?: (before: string[], after: string, run: number) => void
+  /** Backspace at the very start. */
+  onJoin?: () => void
+  /** Puts the caret here, at this many characters in, once. */
+  focusAt?: null | number
+}
+
+function spanStyle(run: RunView, pxPerPt: number): Partial<CSSStyleDeclaration> {
+  const decoration = [
+    run.underline || run.href ? 'underline' : '',
+    run.strike ? 'line-through' : ''
+  ]
+    .filter(Boolean)
+    .join(' ')
+
+  return {
+    color: run.color ?? (run.href ? '#0563c1' : ''),
+    fontSize: run.size ? `${run.size * pxPerPt}px` : '',
+    fontStyle: run.italic ? 'italic' : '',
+    fontWeight: run.bold ? '700' : '',
+    textDecoration: decoration
+  }
+}
+
+/** Draws the runs as spans; React leaves the editable node's children alone. */
+function draw(node: HTMLElement, runs: RunView[], pxPerPt: number) {
+  node.replaceChildren(
+    ...runs.map((run, index) => {
+      const span = document.createElement('span')
+      span.dataset.run = String(index)
+      Object.assign(span.style, spanStyle(run, pxPerPt))
+      span.textContent = run.text
+
+      return span
+    })
+  )
+
+  if (!runs.some(run => run.text)) {
+    node.append(document.createElement('br'))
+  }
+}
+
+/** The texts typed, one per run while every run's span is still there. */
+export function readTexts(node: HTMLElement, count: number): string[] {
+  const spans = Array.from(node.querySelectorAll<HTMLElement>('span[data-run]'))
+  const texts = spans.map(span => span.textContent ?? '')
+  const all = node.textContent ?? ''
+
+  // Text typed outside the spans, or a span lost, merges the runs.
+  return spans.length === count && texts.join('') === all ? texts : [all]
+}
+
+/** Characters before the caret, and the run it is in. */
+function caret(node: HTMLElement): null | { offset: number; run: number } {
+  const selection = window.getSelection()
+
+  if (!selection?.rangeCount || !node.contains(selection.focusNode)) {
+    return null
+  }
+
+  const range = document.createRange()
+  range.setStart(node, 0)
+  range.setEnd(selection.focusNode!, selection.focusOffset)
+  const offset = range.toString().length
+
+  const element =
+    selection.focusNode instanceof Element
+      ? selection.focusNode
+      : selection.focusNode?.parentElement
+
+  const run = Number(element?.closest<HTMLElement>('span[data-run]')?.dataset.run ?? 0)
+
+  return { offset, run }
+}
+
+/** Puts the caret `offset` characters into `node`. */
+function placeCaret(node: HTMLElement, offset: number) {
+  const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT)
+  let left = offset
+  let text = walker.nextNode()
+  const range = document.createRange()
+
+  while (text) {
+    const length = text.textContent?.length ?? 0
+
+    if (left <= length) {
+      range.setStart(text, left)
+      range.collapse(true)
+
+      break
+    }
+
+    left -= length
+    text = walker.nextNode()
+  }
+
+  if (!text) {
+    range.selectNodeContents(node)
+    range.collapse(false)
+  }
+
+  node.focus({ preventScroll: false })
+  const selection = window.getSelection()
+  selection?.removeAllRanges()
+  selection?.addRange(range)
+}
+
+/**
+ * A paragraph of a Word or PowerPoint file, edited in place. Each run is a
+ * span with its own look; typing changes their text, and the text goes back
+ * into the same runs a moment after typing stops and when focus leaves.
+ */
+export function EditableRuns({
+  baseSize,
+  className,
+  editable,
+  focusAt = null,
+  onCommit,
+  onJoin,
+  onSplit,
+  pxPerPt,
+  runs,
+  style,
+  tag = 'p',
+  where
+}: EditableRunsProps) {
+  const node = useRef<HTMLElement>(null)
+  const timer = useRef<number>(undefined)
+  const shown = useRef('')
+  const commitRef = useRef(onCommit)
+  commitRef.current = onCommit
+  const count = useRef(runs.length)
+  count.current = runs.length
+  const key = JSON.stringify([runs, pxPerPt])
+
+  // Redrawn when the file's text changes, unless it is being typed in.
+  useLayoutEffect(() => {
+    const element = node.current
+
+    if (!element || (document.activeElement === element && shown.current)) {
+      return
+    }
+
+    draw(element, runs, pxPerPt)
+    shown.current = key
+    // `key` stands for `runs` and `pxPerPt`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key])
+
+  useEffect(() => {
+    if (focusAt !== null && node.current) {
+      placeCaret(node.current, focusAt)
+    }
+  }, [focusAt])
+
+  const commit = () => {
+    window.clearTimeout(timer.current)
+    const element = node.current
+
+    if (!element) {
+      return
+    }
+
+    const texts = readTexts(element, count.current)
+
+    if (texts.join('') !== runs.map(run => run.text).join('') || texts.length !== runs.length) {
+      commitRef.current(texts)
+    }
+  }
+
+  // Leaving the panel commits what was typed.
+  useEffect(() => () => window.clearTimeout(timer.current), [])
+
+  const Tag = tag
+
+  return (
+    <Tag
+      className={className}
+      contentEditable={editable ? 'plaintext-only' : undefined}
+      data-where={where}
+      onBlur={() => {
+        commit()
+
+        if (node.current) {
+          draw(node.current, runs, pxPerPt)
+        }
+      }}
+      onInput={() => {
+        window.clearTimeout(timer.current)
+        timer.current = window.setTimeout(commit, COMMIT_DELAY)
+      }}
+      onKeyDown={event => {
+        const element = node.current
+
+        if (!element) {
+          return
+        }
+
+        if (event.key === 'Enter' && !event.shiftKey) {
+          event.preventDefault()
+          window.clearTimeout(timer.current)
+          const at = caret(element)
+
+          if (!onSplit || !at) {
+            commit()
+            element.blur()
+
+            return
+          }
+
+          const texts = readTexts(element, count.current)
+          let left = at.offset
+
+          const before = texts.map(text => {
+            const kept = text.slice(0, Math.max(0, left))
+            left -= text.length
+
+            return kept
+          })
+
+          const after = texts.join('').slice(at.offset)
+
+          onSplit(before, after, texts.length === count.current ? at.run : 0)
+        } else if (event.key === 'Backspace' && onJoin) {
+          const at = caret(element)
+          const selection = window.getSelection()
+
+          if (at?.offset === 0 && selection?.isCollapsed) {
+            event.preventDefault()
+            commit()
+            onJoin()
+          }
+        } else if (event.key === 'Escape') {
+          element.blur()
+        }
+      }}
+      ref={node as never}
+      spellCheck={editable}
+      style={{
+        ...style,
+        fontSize: style?.fontSize ?? (baseSize ? `${baseSize * pxPerPt}px` : undefined)
+      }}
+      suppressContentEditableWarning
+    />
+  )
+}

@@ -1130,6 +1130,24 @@ export function filesWrite(
   })
 }
 
+/**
+ * Saves a picture or Office file the panel edited, whole, as a data URL;
+ * refused with 4209 when the file is no longer at `version`.
+ */
+export function filesWriteBytes(
+  sessionId: string,
+  path: string,
+  dataUrl: string,
+  version?: string
+): Promise<{ modified: number; path: string; size: number; version: string }> {
+  return rpcCall('hexbot.files.write', {
+    data_url: dataUrl,
+    path,
+    session_id: sessionId,
+    ...(version ? { version } : {})
+  })
+}
+
 /** `data:<mime>;base64,<payload>` for the whole file. */
 export function readFileAsDataUrl(file: Blob): Promise<string> {
   return new Promise((resolve, reject) => {

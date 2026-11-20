@@ -425,6 +425,9 @@ importers:
       clsx:
         specifier: 2.1.1
         version: 2.1.1
+      fflate:
+        specifier: 0.8.2
+        version: 0.8.2
       katex:
         specifier: 0.18.2
         version: 0.18.2
@@ -5609,6 +5612,9 @@ packages:
 
   fflate@0.4.9:
     resolution: {integrity: sha512-zdxgIEddhfsyCaWpJ2SdXEP8ZMrKJ6+5jl4OupODcywU0IhRk6gdXuVGcPICyfx2H97hVK7xmJtRLPjkxAX8Vw==}
+
+  fflate@0.8.2:
+    resolution: {integrity: sha512-cPJU47OaAoCbg0pBvzsgpTPhmhqI5eJjh/JIu8tPj5q+T7iLvW/JAYUqmE7KOB4R1ZyEhzBaIQpQpardBF5z8A==}
 
   figures@3.2.0:
     resolution: {integrity: sha512-yaduQFRKLXYOGgEn6AZau90j3ggSOyiqXU0F9JZfeXYhNa+Jk4X+s45A2zg5jns87GAFa34BBm2kXw4XpNcbdg==}
@@ -14974,6 +14980,8 @@ snapshots:
   fetch-retry@4.1.1: {}
 
   fflate@0.4.9: {}
+
+  fflate@0.8.2: {}
 
   figures@3.2.0:
     dependencies:
