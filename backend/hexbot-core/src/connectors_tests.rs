@@ -49,6 +49,19 @@ async fn testing_computer_use_says_which_screens_bots_reach_and_never_marks_it_b
             .unwrap()
             .contains("No screen here yet")
     );
+    // Switched off, it says so instead of asking for Cua.
+    common::update_config(h, |c| {
+        c["computers"]["vm"]["off"] = json!(true);
+        Ok(())
+    })
+    .unwrap();
+    let test = rpc(h, "hexbot.connectors.test", json!({"id":"computer_use"})).await;
+    let message = test["message"].as_str().unwrap();
+    assert!(
+        message.contains("is off; turn it on in Settings, Computers"),
+        "{message}"
+    );
+    assert!(!message.contains("uv tool install"), "{message}");
     // The result is not kept: the connector stays ready.
     let list = rpc(h, "hexbot.connectors.list", json!({})).await;
     let row = list["connectors"]

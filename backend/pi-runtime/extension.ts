@@ -789,17 +789,39 @@ const RISKY_COMMANDS: [RegExp, string][] = [
   [/(^|[\s;&|(])(mkfs|dd\s+if=|shutdown|reboot|:\(\)\s*\{)/, 'delete broadly or stop the computer'],
   [/\|\s*(sh|bash|zsh|python3?)\b/, 'run downloaded code'],
 ];
-// A recursive rm, its options in any order and any of its paths under / or a
-// home folder, a wildcard or a parent folder; a relative path (rm -rf build)
-// is routine.
-const WRAPPERS = new Set(['sudo', 'doas', 'xargs', 'nice', 'nohup', 'time', 'command', 'exec', 'env', 'builtin']);
+// Words that come before a command without being it: shell keywords and
+// grouping, and commands that run another (sudo, xargs, nice…), whose own
+// options and their numbers (nice -n 5, timeout 5) come before it too.
+const KEYWORDS = new Set(['then', 'do', 'else', 'elif', 'if', 'while', 'until', '{', '}', '!', 'time']);
+const WRAPPERS = new Set(['sudo', 'doas', 'xargs', 'nice', 'nohup', 'time', 'timeout', 'command', 'exec', 'env', 'builtin', 'stdbuf', 'ionice']);
+// A path that reaches past the folder it runs in: under / or a home folder,
+// a wildcard of the whole folder, or a parent folder anywhere in it, a
+// leading ./ aside (./* and ./../data are both broad; build/* is not).
+function broadPath(path: string): boolean {
+  const bare = path.replace(/^(\.\/)+/, '');
+  return /^(\/|~|\$\{?HOME\b|\*)/.test(bare) || bare.split('/').includes('..');
+}
+// A recursive rm, its options in any order and any of its paths broad; a
+// relative path inside the folder (rm -rf build) is routine.
 function broadDelete(command: string): boolean {
   return command.split(/[;&|\n()]+/).some(part => {
     const words = part.trim().split(/\s+/);
-    // rm as the command, not an argument (echo rm -rf /): past assignments
-    // and the commands that run another (sudo, xargs, nice…).
+    // rm as the command, not an argument (echo rm -rf /).
     let at = 0;
-    while (at < words.length && (/^[A-Za-z_]\w*=/.test(words[at]) || WRAPPERS.has(words[at]))) at++;
+    let wrapped = false;
+    while (at < words.length) {
+      const word = words[at];
+      if (KEYWORDS.has(word) || /^[A-Za-z_]\w*=/.test(word)) {
+        at++;
+      } else if (WRAPPERS.has(word)) {
+        wrapped = true;
+        at++;
+      } else if (wrapped && (word.startsWith('-') || /^\d+[a-z]?$/.test(word))) {
+        at++;
+      } else {
+        break;
+      }
+    }
     if (!(words[at] === 'rm' || words[at]?.endsWith('/rm'))) return false;
     let recursive = false;
     const paths: string[] = [];
@@ -808,9 +830,9 @@ function broadDelete(command: string): boolean {
       if (!optionsDone && word === '--') optionsDone = true;
       else if (!optionsDone && word.startsWith('--')) recursive ||= word === '--recursive';
       else if (!optionsDone && word.startsWith('-') && word.length > 1) recursive ||= /[rR]/.test(word);
-      else paths.push(word.replace(/^["']+|["']+$/g, ''));
+      else paths.push(word.replace(/^["']+|["';}]+$/g, ''));
     }
-    return recursive && paths.some(path => /^(\/|~|\$\{?HOME\b|\*|\.\.)/.test(path));
+    return recursive && paths.some(broadPath);
   });
 }
 export function riskyCommand(command: string): string | undefined {

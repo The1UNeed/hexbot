@@ -542,8 +542,9 @@ others (`DESIGN.md`, "The primary bot"). There is at most one per owner.
   every computer the bot works on. While the bots' computer is switched off,
   or can't run here (no Cua), its environment doesn't count: it gives no bash
   and isn't in the bot's computers, and a list without `terminal` leaves what
-  was saved there, so installing Cua brings it back; `hexbot.computers.grant` sets each computer exactly. Computer
-  Use is the `computer_use` connector (`hexbot.connectors.set_for_bot`), which
+  was saved there, so installing Cua brings it back;
+  `hexbot.computers.grant` sets each computer exactly. Computer Use is the
+  `computer_use` connector (`hexbot.connectors.set_for_bot`), which
   a tool list never changes. Combined model and tool edits use the new provider
   when checking availability.
 - `hexbot.bots.pin {name, pinned?}` → `{bot: Bot}`. Pins the bot's chat in

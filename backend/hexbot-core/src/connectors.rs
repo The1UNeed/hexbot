@@ -1086,18 +1086,25 @@ async fn probe(home: &Path, id: &str, bot: Option<&str>) -> Result<Value> {
     // here, without saving it, so a missing Cua never marks it broken (a
     // user's computer runs its own).
     if id == crate::machines::COMPUTER_USE {
-        let vm = crate::machines::vm_usable(home)?;
+        let off = !crate::machines::vm_on(home)?;
+        let vm = !off && crate::machines::vm_usable(home)?;
         let host = crate::machines::host_desktop_on(home)?;
+        // What to do about the bots' computer: turn it on, or set it up.
+        let vm_note = if off {
+            "The bots' computer is off; turn it on in Settings, Computers."
+        } else {
+            "The bots' computer needs Cua (uv tool install cua) and Docker here."
+        };
         return Ok(match (vm, host) {
             (true, true) => {
                 json!({"ok":true,"message":"The bots' computer can run here, and this computer's screen is shared."})
             }
             (true, false) => json!({"ok":true,"message":"The bots' computer can run here."}),
             (false, true) => {
-                json!({"ok":true,"message":"This computer's screen is shared. The bots' computer needs Cua and Docker here."})
+                json!({"ok":true,"message":format!("This computer's screen is shared. {vm_note}")})
             }
             (false, false) => {
-                json!({"ok":false,"message":"No screen here yet: install Cua (uv tool install cua) and Docker for the bots' computer, or share a screen in Settings, Computers. Your own computers can share theirs from Hexbot there."})
+                json!({"ok":false,"message":format!("No screen here yet. {vm_note} Or share this computer's screen in Settings, Computers; your own computers share theirs from Hexbot there.")})
             }
         });
     }
