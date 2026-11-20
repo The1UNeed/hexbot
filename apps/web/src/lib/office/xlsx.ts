@@ -313,6 +313,18 @@ export function cellSource(pkg: OfficePackage, sheet: XlsxSheet, row: number, co
     return `=${formula.textContent}`
   }
 
+  // A plain number edits as stored, every digit, not as shown.
+  const stored = child(cell, S, 'v')?.textContent
+
+  if (
+    cell &&
+    stored &&
+    !attr(cell, 't') &&
+    readStyles(pkg).kind[Number(attr(cell, 's') ?? 0)] === 'number'
+  ) {
+    return stored
+  }
+
   return sheet.rows[row]?.[col] ?? ''
 }
 
