@@ -8,7 +8,8 @@ fn setup() -> tempfile::TempDir {
     home
 }
 /// Points Computer use at `command`, so a test doesn't depend on whether
-/// this machine has Cua: every bot has Computer use where it is set up.
+/// this machine has Cua: on a daemon from before computers (this config has
+/// no `computers`) every bot has Computer use where it is set up.
 fn computer(home: &Path, command: &Path) {
     hexbot_core::common::write_config(home, &json!({"computer_use":{"command":command}})).unwrap();
 }

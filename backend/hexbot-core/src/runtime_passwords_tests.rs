@@ -8,7 +8,8 @@ async fn a_bot_signs_in_with_a_password_it_never_sees() {
         .unwrap()
         .execute_batch("INSERT INTO bots(name,owner_id) VALUES('fox','alice');")
         .unwrap();
-    // Every bot has Computer use; any program stands in for Cua here.
+    // On a daemon from before computers every bot has Computer use; any
+    // program stands in for Cua here.
     fs::write(
         h.join("profiles/owl/config.yaml"),
         "model:\n  provider: openai\n  default: fixture\ntools:\n  enabled_toolsets: []\ncomputer_use:\n  command: /bin/sh\n",

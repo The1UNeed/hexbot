@@ -1329,12 +1329,25 @@ fn a_stop_ends_a_running_command_and_what_it_started_under_dash_too() {
         assert!(!done.success(), "{shell}: the command was killed");
         assert!(started.elapsed() < Duration::from_secs(10), "{shell}");
         assert!(!after.exists(), "{shell}");
-        // Nothing of its group is left, background job included.
-        std::thread::sleep(Duration::from_millis(200));
-        assert!(
-            unsafe { libc::kill(-group, 0) } != 0,
-            "{shell}: group still alive"
-        );
+        // Nothing of its group is left running, background job included. A
+        // killed process an init that doesn't reap leaves behind is a
+        // zombie, not running, so the check reads states instead of kill(0).
+        let alive = || {
+            let out = std::process::Command::new("ps")
+                .args(["-A", "-o", "pgid=,stat="])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).lines().any(|l| {
+                let mut f = l.split_whitespace();
+                f.next().and_then(|g| g.parse::<i32>().ok()) == Some(group)
+                    && !f.next().unwrap_or("").starts_with('Z')
+            })
+        };
+        let waited = std::time::Instant::now();
+        while alive() && waited.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!alive(), "{shell}: group still alive");
         let _ = std::fs::remove_file(format!("/tmp/hexbot-stop-{run}"));
     }
 }
@@ -1570,14 +1583,19 @@ async fn turning_this_desktop_off_wins_over_a_setup_still_running() {
     let home = setup();
     let h = home.path();
     migrate(h).unwrap();
-    // A Cua whose setup is slow and whose target appears once setup ends.
+    // A Cua whose setup says it started, then waits until the test releases
+    // it; its target appears once setup ends.
     let marker = h.join("setup-done");
+    let started = h.join("setup-started");
+    let release = h.join("setup-release");
     let cua = h.join("fake-cua");
     fs::write(
         &cua,
         format!(
-            "#!/bin/sh\ncase \"$1 $2\" in\n\"sb ls\") if [ -e {m} ]; then echo '[{{\"id\":\"direct:127.0.0.1:3211\",\"location\":\"direct\",\"state\":\"running\"}}]'; else echo '[]'; fi ;;\n\"host setup\") sleep 1; touch {m} ;;\nesac\n",
-            m = marker.display()
+            "#!/bin/sh\ncase \"$1 $2\" in\n\"sb ls\") if [ -e {m} ]; then echo '[{{\"id\":\"direct:127.0.0.1:3211\",\"location\":\"direct\",\"state\":\"running\"}}]'; else echo '[]'; fi ;;\n\"host setup\") touch {s}; while [ ! -e {r} ]; do sleep 0.05; done; touch {m} ;;\nesac\n",
+            m = marker.display(),
+            s = started.display(),
+            r = release.display()
         ),
     )
     .unwrap();
@@ -1599,7 +1617,14 @@ async fn turning_this_desktop_off_wins_over_a_setup_still_running() {
         .await
         .unwrap()
     });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Setup is running: turn the desktop off, then let setup finish.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !started.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("setup started");
     call(
         h,
         "alice",
@@ -1609,6 +1634,7 @@ async fn turning_this_desktop_off_wins_over_a_setup_still_running() {
     .await
     .unwrap()
     .unwrap();
+    fs::write(&release, "").unwrap();
     let err = enabling.await.unwrap().err().unwrap();
     assert!(
         err.message.contains("stays as you set it last"),

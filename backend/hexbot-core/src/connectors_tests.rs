@@ -379,7 +379,8 @@ async fn toggles_preserve_other_toolsets_and_shared_credentials() {
     .await;
     assert_eq!(
         connectors::toolsets(home.path(), "owl").unwrap(),
-        // Every bot has Computer use, whatever was saved.
+        // On a daemon from before computers every bot has Computer use,
+        // whatever was saved.
         vec!["computer_use", "file"]
     );
     rpc(

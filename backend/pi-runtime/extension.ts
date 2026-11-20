@@ -827,8 +827,8 @@ function broadDelete(command: string): boolean {
       }
     }
     const name = words[at]?.replace(/^["']+/, '').split('/').pop();
-    // sh -c "…": the command it runs.
-    if (name && SHELLS.has(name) && words[at + 1] === '-c') {
+    // sh -c "…" (or -lc, -ec): the command it runs.
+    if (name && SHELLS.has(name) && /^-[a-z]*c$/.test(words[at + 1] ?? '')) {
       return broadDelete(words.slice(at + 2).join(' ').replace(/["']/g, ''));
     }
     if (name === 'find') {
@@ -854,8 +854,9 @@ function broadDelete(command: string): boolean {
 export function riskyCommand(command: string): string | undefined {
   if (broadDelete(command)) return 'delete broadly or stop the computer';
   // A program named by its path through a bin folder (/usr/bin/curl,
-  // ./node_modules/.bin/npm, | /bin/sh) is checked by its name.
-  const named = command.replace(/(^|[\s;&|(])[^\s;&|()]*\bs?bin\//g, '$1');
+  // ./node_modules/.bin/npm, | /bin/sh) is checked by its name, and one
+  // in quotes (sh -c "curl …") as if they weren't there.
+  const named = command.replace(/["']/g, ' ').replace(/(^|[\s;&|(])[^\s;&|()]*\bs?bin\//g, '$1');
   return RISKY_COMMANDS.find(([pattern]) => pattern.test(named))?.[1];
 }
 // The actions of each Google and Microsoft tool that only read; the gate

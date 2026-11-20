@@ -1216,7 +1216,8 @@ async fn idle_restart_preserves_live_id_prompt_tools_and_client_watermarks() {
     let after = processes(home.path());
     // The chat restarts once, with its bot's new tools; it keeps its model.
     assert_eq!(after.len(), 2);
-    // Every bot has Computer use, whatever its saved toolsets say.
+    // On a daemon from before computers every bot has Computer use,
+    // whatever its saved toolsets say.
     assert_eq!(
         after[1]["config"]["enabledToolsets"],
         json!(["terminal", "computer_use"])
