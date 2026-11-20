@@ -263,6 +263,7 @@ describe('a Word run', () => {
 
   it('keeps a page break a page break', () => {
     const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+
     const doc = new DOMParser().parseFromString(
       `<w:r xmlns:w="${W}"><w:t>Part one</w:t><w:br w:type="page"/><w:t>Part two</w:t></w:r>`,
       'application/xml'
