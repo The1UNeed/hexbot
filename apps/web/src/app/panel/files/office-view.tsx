@@ -216,6 +216,7 @@ export function DocxView(props: OfficeViewProps) {
         {block.pictures.length && !text ? null : (
           <EditableRuns
             baseSize={block.title ? 26 : block.heading ? HEADING_SIZES[block.heading] : 11}
+            breaks
             className={cn(
               'min-h-[1.4em] leading-[1.45] whitespace-pre-wrap outline-none focus:bg-[#0563c1]/[0.04]',
               block.heading ? 'mt-4 mb-1 font-semibold text-[#1f3864]' : 'my-1.5',
