@@ -108,9 +108,12 @@ Tabs, in order:
    bot's Memory tab, which reads as if each bot had its own.
 5. **Tools.** Switches grouped as Workspace (terminal, files, and the
    working directory), Senses (vision, built-in voice), and Working with
-   others (message other bots, delegate, scheduling). Computer use is not
-   here: every bot has it, and Settings, Manuals, Computer use holds the
-   computer's size and controls. Code execution and the browser are what
+   others (message other bots, delegate, scheduling). The Terminal switch
+   gives the default computer as an environment or takes every one.
+   Computer Use is a connector (Settings, Plugins), never a tool switch;
+   `computer_use` sent in a tool list is ignored. Settings, Computers
+   chooses which computers exactly, and holds the bots' computer's size
+   and controls. Code execution and the browser are what
    bots do on that computer, not tools of their own. A tool with a missing prerequisite
    shows what to install instead of a switch.
 6. **Connectors.** See below.
@@ -161,8 +164,9 @@ The first catalog, by group:
 | Channels (bot scope) | Telegram, Discord, Slack, WhatsApp, Signal, iMessage, Matrix, Mattermost, and the rest the core ships, each with its allowed-users list |
 | MCP servers | Any number, added by command or URL, with a tool count and a running state |
 
-The catalog that ships is smaller: Web search, Notion, and X search
-(under Social). Image and video generation, Premium voice, Airtable, and
+The catalog that ships is smaller: Computer Use (under Computers), Web
+search, the Google and Microsoft connectors, IMAP mail, Notion, GitHub, and
+X search (under Social). Image and video generation, Premium voice, Airtable, and
 Home Assistant were removed; anything else connects as an MCP server.
 X search offers three providers: a SuperGrok or X Premium+ sign-in,
 shared with the xAI model provider, an xAI API key, or an X API bearer

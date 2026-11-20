@@ -545,6 +545,50 @@ async fn provider_key_changes_refresh_tool_availability() {
 }
 
 #[tokio::test]
+async fn bot_changes_refresh_open_computer_lists() {
+    let fixture = Fixture::new(false).await;
+    let mut admin = fixture.socket(&fixture.token).await;
+    // Creating a bot gives it computers, a tools change can move them, and
+    // deleting it takes them: each tells open Settings, Computers to read again.
+    for (id, method, params) in [
+        (
+            "create",
+            "hexbot.bots.create",
+            json!({"name":"scout","tools":[]}),
+        ),
+        (
+            "update",
+            "hexbot.bots.update",
+            json!({"name":"scout","tools":["terminal"]}),
+        ),
+        ("delete", "hexbot.bots.delete", json!({"name":"scout"})),
+    ] {
+        admin
+            .send(Message::Text(
+                json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        let mut saw_event = false;
+        let mut saw_response = false;
+        while !saw_event || !saw_response {
+            let event = frame(&mut admin).await;
+            if event["id"] == id {
+                assert!(event.get("error").is_none(), "{event}");
+                saw_response = true;
+            }
+            if event["params"]["type"] == "hexbot.computers.changed" {
+                saw_event = true;
+            }
+        }
+    }
+    admin.close(None).await.unwrap();
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_new_default_limit_refreshes_every_open_bot_list() {
     let fixture = Fixture::new(false).await;
     let mut admin = fixture.socket(&fixture.token).await;
@@ -1328,19 +1372,79 @@ async fn bundle_is_compressed_and_hashed_assets_stay_cached() {
 #[tokio::test]
 async fn pages_only_frame_the_daemon_itself() {
     let fixture = Fixture::new(false).await;
+    let dist = fixture.app.web_dist.clone().unwrap();
+    fs::write(
+        dist.join("favicon.svg"),
+        "<svg xmlns='http://www.w3.org/2000/svg'/>",
+    )
+    .unwrap();
+    fs::write(
+        dist.join("visual-frame.html"),
+        "<!doctype html><title>v</title>",
+    )
+    .unwrap();
     let client = reqwest::Client::new();
-    for path in ["/", "/app.js", "/b/owl/s/first"] {
+    let policy = |response: &reqwest::Response| {
+        response
+            .headers()
+            .get_all("content-security-policy")
+            .iter()
+            .map(|v| v.to_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    // The app's own pages: the daemon's origin, framed by no other site.
+    for path in ["/", "/login", "/b/owl/s/first"] {
         let response = client
             .get(format!("{}{path}", fixture.base))
             .send()
             .await
             .unwrap();
         assert_eq!(
-            response.headers()["content-security-policy"],
-            "frame-src 'self' blob:",
+            policy(&response),
+            ["frame-src 'self' blob:", "frame-ancestors 'self'"],
             "{path}"
         );
     }
+    // Anything else opened as a page has no origin: its console can't use
+    // the owner's session.
+    for path in ["/favicon.svg", "/app.js", "/api/connect/identity"] {
+        let response = client
+            .get(format!("{}{path}", fixture.base))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            policy(&response),
+            ["frame-src 'self' blob:", "sandbox"],
+            "{path}"
+        );
+    }
+    let visual = client
+        .get(format!("{}/visual-frame.html", fixture.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        policy(&visual),
+        ["frame-src 'self' blob:", "sandbox allow-scripts"]
+    );
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_page_without_a_web_bundle_is_titled_hexbot() {
+    // A page with the daemon's origin must say Hexbot in its title, so a bot
+    // driving a browser can't use it (machines.rs reads window titles).
+    let fixture = Fixture::new(false).await;
+    let dist = fixture.app.web_dist.clone().unwrap();
+    let _ = fs::remove_file(dist.join("index.html"));
+    let body = reqwest::get(&fixture.base)
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(body.contains("<title>Hexbot</title>"), "{body}");
     fixture.shutdown().await;
 }
 

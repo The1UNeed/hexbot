@@ -1056,12 +1056,14 @@ export function VisualCard({
 }
 
 const CHOICE_LABELS: Record<ApprovalChoice, string> = {
+  always: 'Always allow',
   deny: 'Deny',
   once: 'Allow once',
   session: 'Allow for now'
 }
 
 const DECISION_LABELS: Record<ApprovalChoice, string> = {
+  always: 'Always allowed',
   deny: 'Denied',
   once: 'Allowed once',
   session: 'Allowed for now'

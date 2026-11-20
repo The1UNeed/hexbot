@@ -1,6 +1,6 @@
-//! `hexbot_connector_read` and `hexbot_connector_write`: Notion works
-//! through a skill that describes its API and a key the user saves in
-//! Settings, Plugins. A bot's shell never has connector keys
+//! `hexbot_connector_read` and `hexbot_connector_write`: Notion and GitHub
+//! work through a skill that describes their API and a key the user saves
+//! in Settings, Plugins. A bot's shell never has connector keys
 //! (`shellEnvironment` in the extension) and Auto's sandbox has no network,
 //! so the daemon sends the request with the bot's key, which the model never
 //! sees. Reads run in every mode and in heartbeats. Changes pass the
@@ -21,25 +21,53 @@ struct Api {
     reads_by_post: &'static [&'static str],
     prefix: &'static str,
 }
-const APIS: &[Api] = &[Api {
-    id: "notion",
-    name: "Notion",
-    base: "https://api.notion.com",
-    key: "NOTION_API_KEY",
-    headers: &[("Notion-Version", "2025-09-03")],
-    reads_by_post: &[
-        "/v1/search",
-        "/v1/databases/*/query",
-        "/v1/data_sources/*/query",
-    ],
-    prefix: "/v1/",
-}];
+const APIS: &[Api] = &[
+    Api {
+        id: "notion",
+        name: "Notion",
+        base: "https://api.notion.com",
+        key: "NOTION_API_KEY",
+        headers: &[("Notion-Version", "2025-09-03")],
+        reads_by_post: &[
+            "/v1/search",
+            "/v1/databases/*/query",
+            "/v1/data_sources/*/query",
+        ],
+        prefix: "/v1/",
+    },
+    // GitHub reads with GET only; a GraphQL POST could change anything, so
+    // it counts as a change.
+    Api {
+        id: "github",
+        name: "GitHub",
+        base: "https://api.github.com",
+        // Its own name: GITHUB_TOKEN is the GitHub Copilot provider's, and
+        // sharing it would connect (or disconnect) one with the other.
+        key: "HEXBOT_GITHUB_TOKEN",
+        headers: &[
+            ("Accept", "application/vnd.github+json"),
+            ("X-GitHub-Api-Version", "2022-11-28"),
+            ("User-Agent", "Hexbot"),
+        ],
+        reads_by_post: &[],
+        prefix: "/",
+    },
+];
+/// The connectors these tools reach, as their names read in a sentence.
+fn api_names() -> String {
+    APIS.iter()
+        .map(|api| api.name)
+        .collect::<Vec<_>>()
+        .join(" or ")
+}
 const CAP: usize = 200_000;
 
-/// Whether the bot has Notion on; a heartbeat reads either way.
+/// Whether the bot has Notion or GitHub on. Each connector is a bundled
+/// skill of its name, on unless switched off; a missing key is the tools'
+/// answer, which tells the bot where the user adds it.
 pub(super) fn offered(home: &Path, bot: &str) -> Result<bool> {
     for api in APIS {
-        if crate::connectors::enabled(home, bot, api.id)? {
+        if crate::skills::bundled_on(home, bot, api.id)? {
             return Ok(true);
         }
     }
@@ -52,7 +80,7 @@ fn parameters(methods: &[&str]) -> Value {
         "properties": {
             "connector": { "type": "string", "enum": APIS.iter().map(|api| api.id).collect::<Vec<_>>() },
             "method": { "type": "string", "enum": methods },
-            "path": { "type": "string", "description": "Like /v1/search or /v1/pages/PAGE_ID" },
+            "path": { "type": "string", "description": "Like /v1/search or /repos/OWNER/REPO/issues" },
             "body": { "type": "object", "description": "JSON body, for a POST, PATCH or PUT" }
         },
         "required": ["connector", "method", "path"]
@@ -63,7 +91,7 @@ pub(super) fn read_descriptor() -> Value {
     json!({
         "name": READ,
         "label": "Read a connector",
-        "description": "Read Notion with the key the user saved in Settings, Plugins. Your shell never has that key, so do not use curl, ntn or a browser sign-in for them, and never ask the user for a password or key. Send the API request the connector's skill describes (skill_view shows it), with the path only: Hexbot adds the host and the key. Only reads: GET, plus Notion's POST search and database or data source queries. A 401 means the key is wrong; a 404 on something that exists means the user has not shared it with their integration (in Notion: the page's ... menu, Connections).",
+        "description": format!("Read {} with the key the user saved in Settings, Plugins. Your shell never has that key, so do not use curl, ntn, gh or a browser sign-in for them, and never ask the user for a password or key. Send the API request the connector's skill describes (skill_view shows it), with the path only: Hexbot adds the host and the key. Only reads: GET, plus Notion's POST search and database or data source queries. A 401 means the key is wrong; a 404 on something that exists means the key can't see it (in Notion: share the page with the integration from its ... menu, Connections).", api_names()),
         "parameters": parameters(&["GET", "POST"])
     })
 }
@@ -72,7 +100,7 @@ pub(super) fn write_descriptor() -> Value {
     json!({
         "name": WRITE,
         "label": "Change a connector",
-        "description": "Create, update or delete in Notion: pages, blocks, database rows. Send the API request the connector's skill describes, with the path only: Hexbot adds the host and the key the user saved. The user's approval mode decides whether it runs at once or asks first. Use hexbot_connector_read to read.",
+        "description": format!("Create, update or delete in {}: Notion pages, blocks and database rows; GitHub issues, comments and pull requests. Send the API request the connector's skill describes, with the path only: Hexbot adds the host and the key the user saved. The user's approval mode decides whether it runs at once or asks first. Use hexbot_connector_read to read.", api_names()),
         "parameters": parameters(&["POST", "PATCH", "PUT", "DELETE"])
     })
 }
@@ -81,6 +109,8 @@ pub(super) fn write_descriptor() -> Value {
 /// name another host.
 fn clean(api: &Api, path: &str) -> bool {
     path.split('?').next().unwrap_or("").starts_with(api.prefix)
+        // Never a second host, however the URL is later put together.
+        && !path.starts_with("//")
         && !path.contains("..")
         && !path.contains("://")
         && !path.contains('@')
@@ -88,6 +118,12 @@ fn clean(api: &Api, path: &str) -> bool {
         && path
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"/_-.?=&%:,+[]".contains(&b))
+}
+
+/// The request's URL: always on the API's own host, since `path` is only
+/// ever appended to it (and `clean` refuses anything that names another).
+fn url_for(api: &Api, path: &str) -> String {
+    format!("{}{path}", api.base)
 }
 
 /// Whether `path` is one of the API's read requests.
@@ -121,10 +157,15 @@ fn body(method: &str, args: &Value) -> Option<Value> {
 /// extension's gate approved; it refuses reads so they never wait on a review.
 pub(super) async fn request(home: &Path, bot: &str, args: &Value, write: bool) -> Result<Value> {
     let id = common::required(args, "connector")?;
-    let api = APIS
-        .iter()
-        .find(|api| api.id == id)
-        .ok_or_else(|| Error::new(4202, "connector must be notion"))?;
+    let api = APIS.iter().find(|api| api.id == id).ok_or_else(|| {
+        Error::new(
+            4202,
+            format!(
+                "connector must be one of: {}",
+                APIS.iter().map(|api| api.id).collect::<Vec<_>>().join(", ")
+            ),
+        )
+    })?;
     let method = common::required(args, "method")?;
     let path = common::required(args, "path")?;
     if !clean(api, path) {
@@ -171,7 +212,7 @@ pub(super) async fn request(home: &Path, bot: &str, args: &Value, write: bool) -
             )
         })?;
     let client = crate::http::client(20, 0).map_err(|e| Error::new(5240, e.to_string()))?;
-    let url = format!("{}{path}", api.base);
+    let url = url_for(api, path);
     let verb = reqwest::Method::from_bytes(method.as_bytes())
         .map_err(|_| Error::new(4202, "unknown method"))?;
     let mut request = client.request(verb, &url).bearer_auth(key);
@@ -219,6 +260,35 @@ mod tests {
         assert!(!readable(notion, "GET", "/v1/../oauth"));
         assert!(!readable(notion, "GET", "//evil.example/v1/x"));
         assert!(!readable(notion, "GET", "/v1/x@evil.example"));
+    }
+
+    #[test]
+    fn the_github_token_only_ever_goes_to_api_github_com() {
+        let github = APIS.iter().find(|api| api.id == "github").unwrap();
+        assert_eq!(github.key, "HEXBOT_GITHUB_TOKEN");
+        for path in [
+            "//evil.example/x",
+            "/\\evil",
+            "/x@evil.example",
+            "/x#y",
+            "/../x",
+            "https://evil.example/x",
+        ] {
+            assert!(!clean(github, path), "{path}");
+        }
+        // Whatever passes, the host stays GitHub's.
+        for path in [
+            "/user/repos",
+            "/.evil.example",
+            "/repos/o/r/issues?state=open",
+            "/x:evil.example",
+        ] {
+            assert!(clean(github, path), "{path}");
+            let url = reqwest::Url::parse(&url_for(github, path)).unwrap();
+            assert_eq!(url.host_str(), Some("api.github.com"), "{path}");
+        }
+        assert!(readable(github, "GET", "/user/repos"));
+        assert!(!readable(github, "POST", "/graphql"));
     }
 
     #[test]

@@ -43,6 +43,12 @@ export const CONNECTOR_SHELVES: { description?: string; id: string; title: strin
     id: 'microsoft',
     title: 'Microsoft'
   },
+  {
+    description:
+      "Computer Use sees and uses the screens of each bot's computers, set in Settings, Computers.",
+    id: 'computer',
+    title: 'Computers'
+  },
   { id: 'search', title: 'Search and browsing' },
   { id: 'work', title: 'Notes and work' },
   { id: 'social_home', title: 'Social' }

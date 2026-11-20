@@ -28,6 +28,7 @@ import type { GatewayEvent } from '@hermes/shared'
 
 import { useBots } from '../stores/bots'
 import { useComputer } from '../stores/computer'
+import { useComputers } from '../stores/computers'
 import { useConnectors } from '../stores/connectors'
 import { useDiscord } from '../stores/discord'
 import { useHeartbeat } from '../stores/heartbeat'
@@ -46,6 +47,7 @@ import type {
 import { holdHeartbeatMessage, transcriptNotify, useTranscripts } from '../stores/transcripts'
 import { useUi } from '../stores/ui'
 
+import { handleComputerRequest } from './computer-endpoint'
 import { forgetUnsentDraft } from './draft-card'
 import type { HexbotRpcClient } from './rpc'
 import type {
@@ -211,6 +213,17 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
 
     case 'hexbot.computer.changed':
       useComputer.getState().apply(payload as Partial<ComputerStatus>)
+
+      return
+
+    case 'hexbot.computers.changed':
+      void useComputers.getState().refreshLoaded()
+
+      return
+
+    // Work for this app's own computer, sent on this connection only.
+    case 'hexbot.computers.request':
+      void handleComputerRequest(payload)
 
       return
 

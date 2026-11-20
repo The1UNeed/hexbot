@@ -232,6 +232,11 @@ fn signed_in(home: &Path, bot: Option<&str>, grant: &str) -> Result<bool> {
 /// no key, as the free web searches do, its sign-in is saved, or every key
 /// it needs is.
 fn set_up_for(home: &Path, bot: Option<&str>, spec: &Value) -> Result<bool> {
+    // Computer Use needs no key: it reaches whichever of a bot's computers
+    // has its screen shared (machines.rs), and says so on each call.
+    if spec["id"] == crate::machines::COMPUTER_USE {
+        return Ok(true);
+    }
     // A Google or Microsoft connector is set up once the user signs in to
     // it (accounts.rs).
     if spec["account"].is_string() {
@@ -281,8 +286,13 @@ const RETIRED_TOOLSETS: &[&str] = &[
     "video_gen",
     "homeassistant",
 ];
-/// Every bot has Computer use; it works once the computer is set up.
-const BUILT_IN_TOOLSET: &str = "computer_use";
+/// Terminal and Computer use follow the bot's computers (`machines.rs`): a
+/// bot has bash while it may use some computer's terminal, and computer_use
+/// while it may use some computer's desktop.
+const COMPUTER_TOOLSETS: [(&str, &str); 2] = [
+    ("terminal", crate::machines::TERMINAL),
+    ("computer_use", crate::machines::DESKTOP),
+];
 
 /// Google Workspace and Microsoft 365 each covered a whole account and did
 /// mail alone; a bot that had one has Gmail or Outlook.
@@ -290,7 +300,10 @@ const RENAMED_TOOLSETS: &[(&str, &str)] =
     &[("google_workspace", "gmail"), ("microsoft_365", "outlook")];
 
 pub fn toolsets(home: &Path, bot: &str) -> Result<Vec<String>> {
-    let mut sets = configured_toolsets(home, bot)?;
+    // Read the daemon's config once: it holds the default toolsets and the
+    // bots' computers, and this runs for every connector a list shows.
+    let root = common::read_config_cached(home)?;
+    let mut sets = toolsets_from(home, bot, Some(&root))?;
     sets.retain(|set| !RETIRED_TOOLSETS.contains(&set.as_str()));
     for set in &mut sets {
         if let Some((_, new)) = RENAMED_TOOLSETS.iter().find(|(old, _)| old == set) {
@@ -299,13 +312,53 @@ pub fn toolsets(home: &Path, bot: &str) -> Result<Vec<String>> {
     }
     let mut seen = BTreeSet::new();
     sets.retain(|set| seen.insert(set.clone()));
-    if !sets.iter().any(|set| set == BUILT_IN_TOOLSET) {
-        sets.push(BUILT_IN_TOOLSET.to_owned());
+    // Before computers: the terminal toolset gives this computer's terminal
+    // and every bot has the bots' computer's desktop.
+    let (terminal, desktop) = match root.get("computers").filter(|c| c.is_object()) {
+        Some(computers) => {
+            // Whether the bots' computer can run matters only to a bot working
+            // on it; asked only then, as lists ask for every connector.
+            let on_vm = computers[crate::machines::VM][crate::machines::TERMINAL]
+                .as_array()
+                .is_some_and(|bots| bots.iter().any(|b| b == bot));
+            let vm_runs = on_vm && crate::machines::vm_usable(home)?;
+            crate::machines::capabilities_in(computers, bot, vm_runs)
+        }
+        None => (sets.iter().any(|s| s == "terminal"), true),
+    };
+    for (set, on) in [
+        (COMPUTER_TOOLSETS[0].0, terminal),
+        (COMPUTER_TOOLSETS[1].0, desktop),
+    ] {
+        let has = sets.iter().any(|s| s == set);
+        if on && !has {
+            sets.push(set.to_owned());
+        } else if !on && has {
+            sets.retain(|s| s != set);
+        }
     }
     Ok(sets)
 }
-fn configured_toolsets(home: &Path, bot: &str) -> Result<Vec<String>> {
-    let config = read_config(&profile(home, bot)?)?;
+/// The bot's own toolsets, else the daemon's, else the defaults. `root` is
+/// the daemon's config when the caller already read it.
+fn toolsets_from(home: &Path, bot: &str, root: Option<&Value>) -> Result<Vec<String>> {
+    toolsets_in(home, &profile(home, bot)?, root)
+}
+/// What a bot from before computers had of this computer's terminal, read
+/// on every tool call: the profile folder and cached configs only, no
+/// database. A bot without a profile gets the daemon's toolsets.
+pub(crate) fn legacy_toolsets(home: &Path, bot: &str) -> Result<Vec<String>> {
+    identifier(bot)?;
+    let root = common::read_config_cached(home)?;
+    toolsets_in(home, &home.join("profiles").join(bot), Some(&root))
+}
+/// The daemon's toolsets for a bot with none of its own.
+pub(crate) fn daemon_toolsets(home: &Path) -> Result<Vec<String>> {
+    let root = common::read_config_cached(home)?;
+    toolsets_in(home, &home.join("profiles").join(".none"), Some(&root))
+}
+fn toolsets_in(home: &Path, profile: &Path, root: Option<&Value>) -> Result<Vec<String>> {
+    let config = common::read_config_cached(profile)?;
     for v in [
         &config["tools"]["enabled_toolsets"],
         &config["platform_toolsets"]["cli"],
@@ -314,7 +367,14 @@ fn configured_toolsets(home: &Path, bot: &str) -> Result<Vec<String>> {
             return Ok(strings(v));
         }
     }
-    let root = read_config(home)?;
+    let read;
+    let root = match root {
+        Some(root) => root,
+        None => {
+            read = common::read_config_cached(home)?;
+            &read
+        }
+    };
     for v in [
         &root["tools"]["enabled_toolsets"],
         &root["platform_toolsets"]["cli"],
@@ -543,6 +603,11 @@ pub(crate) fn enabled(home: &Path, bot: &str, id: &str) -> Result<bool> {
     if let Some(server) = id.strip_prefix("mcp:") {
         return Ok(mcp_servers(home, bot)?.get(server).is_some());
     }
+    // Computer Use is the bot's place in `computers` (machines.rs): it puts
+    // the screens of the bot's environments in reach.
+    if id == crate::machines::COMPUTER_USE {
+        return crate::machines::computer_use_on(home, bot);
+    }
     let s = spec(id)?;
     if let Some(skill) = s["skill"].as_str() {
         return Ok(crate::skills::resolve(home, Some(bot))?
@@ -596,6 +661,10 @@ pub(crate) fn set_enabled(home: &Path, bot: &str, id: &str, on: bool) -> Result<
             crate::skills::find_unlocked(home, Some(bot), skill)?;
             return crate::skills::set_enabled(home, Some(bot), skill, on);
         }
+    }
+    if id == crate::machines::COMPUTER_USE {
+        crate::machines::set_computer_use(home, bot, on)?;
+        return crate::machines::computer_use_changed(home, bot);
     }
     if let Some(server) = id.strip_prefix("mcp:") {
         return change_mcp_bots(home, server, |bots| {
@@ -1013,6 +1082,35 @@ async fn probe(home: &Path, id: &str, bot: Option<&str>) -> Result<Value> {
         save_test(home, id, &result, true)?;
         return Ok(result);
     }
+    // Computer Use has no key to test: say which screens bots can reach from
+    // here, without saving it, so a missing Cua never marks it broken (a
+    // user's computer runs its own).
+    if id == crate::machines::COMPUTER_USE {
+        let on = crate::machines::vm_on(home)?;
+        let cua = crate::machines::cua_here(home)?;
+        let vm = on && cua;
+        let host = crate::machines::host_desktop_on(home)?;
+        // What to do about the bots' computer: set it up, then turn it on.
+        let vm_note = match (on, cua) {
+            (false, true) => "The bots' computer is off; turn it on in Settings, Computers.",
+            (false, false) => {
+                "The bots' computer is off and needs Cua (uv tool install cua) and Docker here; then turn it on in Settings, Computers."
+            }
+            _ => "The bots' computer needs Cua (uv tool install cua) and Docker here.",
+        };
+        return Ok(match (vm, host) {
+            (true, true) => {
+                json!({"ok":true,"message":"The bots' computer can run here, and this computer's screen is shared."})
+            }
+            (true, false) => json!({"ok":true,"message":"The bots' computer can run here."}),
+            (false, true) => {
+                json!({"ok":true,"message":format!("This computer's screen is shared. {vm_note}")})
+            }
+            (false, false) => {
+                json!({"ok":false,"message":format!("No screen here yet. {vm_note} Or share this computer's screen in Settings, Computers; your own computers share theirs from Hexbot there.")})
+            }
+        });
+    }
     let s = spec(id)?;
     if s["account"].is_string() {
         let result = crate::accounts::probe(home, id).await?;
@@ -1072,6 +1170,24 @@ async fn probe(home: &Path, id: &str, bot: Option<&str>) -> Result<Value> {
                 Some((
                     "authorization",
                     format!("Bearer {}", key("NOTION_API_KEY")?),
+                )),
+            )
+        }
+        "github" => {
+            headers.insert(
+                "Accept",
+                reqwest::header::HeaderValue::from_static("application/vnd.github+json"),
+            );
+            headers.insert(
+                "User-Agent",
+                reqwest::header::HeaderValue::from_static("Hexbot"),
+            );
+            (
+                "GitHub",
+                "https://api.github.com/user".to_string(),
+                Some((
+                    "authorization",
+                    format!("Bearer {}", key("HEXBOT_GITHUB_TOKEN")?),
                 )),
             )
         }
@@ -2079,6 +2195,25 @@ async fn session(home: &Path, bot: &str, server: &str) -> Result<Arc<Mutex<McpSe
 fn session_key(home: &Path, bot: &str, server: &str) -> String {
     format!("{}\0{bot}\0{server}", home.display())
 }
+/// Whether the session `entry` would use is up now: the one cached for this
+/// bot and server, with this config and the bot's current credentials.
+pub(crate) async fn config_session_ready(
+    home: &Path,
+    bot: &str,
+    server: &str,
+    entry: &Value,
+) -> Result<bool> {
+    let env = credentials(home, bot)?;
+    let fingerprint = format!(
+        "{entry}{}",
+        serde_json::to_string(&env).map_err(transport_error)?
+    );
+    Ok(sessions()
+        .lock()
+        .await
+        .get(&session_key(home, bot, server))
+        .is_some_and(|(previous, _)| previous == &fingerprint))
+}
 async fn configured_session(
     home: &Path,
     bot: &str,
@@ -2127,6 +2262,57 @@ pub async fn mcp_call_config(
 ) -> Result<Value> {
     let session = configured_session(home, bot, server, config).await?;
     call_on(home, bot, server, session, tool, args).await
+}
+/// One tool call where `check` runs once the session that sends it is up
+/// and held, right before the request is written: nothing it checked can
+/// change while a connection starts in between.
+/// With `expect_ready`, the session must be the one already up (this
+/// config, these credentials): one that would have to connect first fails
+/// instead, so nothing waits between the caller's last check and the send.
+#[allow(clippy::too_many_arguments)]
+pub async fn mcp_call_config_checked(
+    home: &Path,
+    bot: &str,
+    server: &str,
+    config: &Value,
+    tool: &str,
+    args: Value,
+    expect_ready: bool,
+    check: impl FnOnce() -> Result<()>,
+) -> Result<Value> {
+    let session = if expect_ready {
+        // The session already up for exactly this config and these
+        // credentials, taken in one step; never a new connection.
+        let env = credentials(home, bot)?;
+        let fingerprint = format!(
+            "{config}{}",
+            serde_json::to_string(&env).map_err(transport_error)?
+        );
+        sessions()
+            .lock()
+            .await
+            .get(&session_key(home, bot, server))
+            .filter(|(previous, _)| previous == &fingerprint)
+            .map(|(_, session)| session.clone())
+            .ok_or_else(|| {
+                Error::new(
+                    4209,
+                    "The connection to that computer changed before this ran. Take a screenshot and try again.",
+                )
+            })?
+    } else {
+        configured_session(home, bot, server, config).await?
+    };
+    let mut held = session.lock().await;
+    check()?;
+    let result = held
+        .request("tools/call", json!({"name":tool,"arguments":args}))
+        .await;
+    drop(held);
+    if result.is_err() {
+        close_config(home, bot, server).await;
+    }
+    result
 }
 async fn call_on(
     home: &Path,

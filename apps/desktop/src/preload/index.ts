@@ -39,6 +39,16 @@ function validUpdateState(value: unknown): boolean {
 }
 const hexbot = Object.freeze({
   ...metadata,
+  // This computer as one of the user's computers (src/main/computer.ts).
+  computer: Object.freeze({
+    state: () => ipcRenderer.invoke('hexbot:computer:state'),
+    allow: (change: { desktop?: boolean; terminal?: boolean }) => ipcRenderer.invoke('hexbot:computer:allow', change),
+    setupDesktop: () => ipcRenderer.invoke('hexbot:computer:setup-desktop'),
+    run: (request: unknown) => ipcRenderer.invoke('hexbot:computer:run', request),
+    release: () => ipcRenderer.invoke('hexbot:computer:release'),
+    cancel: (requestId: string) => ipcRenderer.invoke('hexbot:computer:cancel', requestId),
+    onState: (callback: (value: unknown) => void) => listen('hexbot:computer:state', callback)
+  }),
   daemon: Object.freeze({
     status: () => ipcRenderer.invoke('hexbot:daemon:status'),
     start: () => ipcRenderer.invoke('hexbot:daemon:start'),

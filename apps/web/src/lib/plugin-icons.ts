@@ -18,6 +18,7 @@ const SKILL_ICONS: Record<string, string> = {
   'computer-use': 'glyph:monitor',
   docx: 'microsoftword',
   email: 'glyph:inbox',
+  github: 'github',
   'google-workspace': 'google',
   mcp: 'glyph:server',
   'microsoft-365': 'microsoft',

@@ -406,3 +406,35 @@ fn startup_sign_in_code_preserves_outstanding_pairing_codes() {
         );
     }
 }
+#[test]
+fn a_revoked_computer_leaves_every_bot() {
+    use hexbot_core::machines;
+    let home = tempfile::tempdir().unwrap();
+    let h = home.path();
+    let code = auth::new_code(h, "local").unwrap();
+    let device = auth::redeem_code_from(
+        h,
+        code["code"].as_str().unwrap(),
+        "Laptop",
+        "desktop",
+        "local",
+        None,
+    )
+    .unwrap();
+    let computer = format!("device:{}", device["device_id"].as_str().unwrap());
+    machines::migrate(h).unwrap();
+    machines::set(h, &computer, "terminal", "owl", true).unwrap();
+    machines::set_computer_use(h, "owl", true).unwrap();
+    assert!(machines::has(h, "owl", &computer, "terminal").unwrap());
+    assert!(machines::has(h, "owl", &computer, "desktop").unwrap());
+    rpc(
+        h,
+        "local",
+        "hexbot.devices.revoke",
+        json!({"id":device["device_id"]}),
+    )
+    .unwrap();
+    // No bot keeps a terminal or desktop on a computer nobody can see.
+    assert!(!machines::has(h, "owl", &computer, "terminal").unwrap());
+    assert!(!machines::has(h, "owl", &computer, "desktop").unwrap());
+}

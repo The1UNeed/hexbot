@@ -1,6 +1,7 @@
 /** The authorized daemon's roster and recent room logs. Never restored before auth. */
 import { botCacheRead, selectBotList, useBots } from '../stores/bots'
 import { useComputer } from '../stores/computer'
+import { useComputers } from '../stores/computers'
 import { useMe } from '../stores/me'
 import { usePasswords } from '../stores/passwords'
 import { usePlugins } from '../stores/plugins'
@@ -48,6 +49,14 @@ export function clearPersonalState(): void {
   useMe.setState({ loaded: false, me: null })
   useTranscripts.getState().dropAll()
   useComputer.setState({ error: null, read: null, status: null })
+  useComputers.setState({
+    answered: null,
+    computers: null,
+    error: null,
+    listFailed: null,
+    notices: [],
+    older: false
+  })
   usePlugins.getState().reset()
   usePasswords.getState().reset()
   useReactions.getState().reset()

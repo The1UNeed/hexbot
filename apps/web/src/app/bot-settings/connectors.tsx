@@ -19,6 +19,7 @@ import { errorText, fieldLabel, formatTimestamp, Group, Heading } from './shared
 const GROUPS: { id: string; title: string }[] = [
   { id: 'google', title: 'Google' },
   { id: 'microsoft', title: 'Microsoft' },
+  { id: 'computer', title: 'Computers' },
   { id: 'search', title: 'Search and browsing' },
   { id: 'work', title: 'Notes and work' },
   { id: 'social_home', title: 'Social' },

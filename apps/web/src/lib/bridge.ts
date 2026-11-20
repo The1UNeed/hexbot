@@ -6,6 +6,8 @@
 
 import type { PairingReply } from '@hermes/shared'
 
+import type { ComputerRequest } from './types'
+
 export interface DaemonProgress {
   message: string
   /** 0..100 within the stage, sent only while it downloads something. */
@@ -34,7 +36,37 @@ export interface BridgeHttpResponse {
   text: string
 }
 
+/**
+ * What this computer lets bots use (apps/desktop/src/main/computer.ts). The
+ * main process owns it: turning on asks natively, and it runs every request.
+ */
+export interface ComputerShare {
+  desktop: boolean
+  /** Cua is installed and this computer's desktop is set up for it. */
+  desktopReady: boolean
+  /** Why the desktop can't be shared yet, when it can't. */
+  desktopNote?: null | string
+  name: string
+  os: string
+  terminal: boolean
+}
+
 export interface HexbotBridge {
+  /** This computer as one of the user's computers; apps from before computers leave it out. */
+  computer?: {
+    /** Turn the terminal or desktop on (asks first) or off. */
+    allow(change: { desktop?: boolean; terminal?: boolean }): Promise<ComputerShare>
+    onState?(callback: (share: ComputerShare) => void): () => void
+    /** The connection ended: stop what bots started here; the switch stays. */
+    release?(): Promise<void>
+    /** The daemon stopped one request: end its command. */
+    cancel?(requestId: string): Promise<void>
+    /** Run one request from the daemon; refused unless allowed here. */
+    run(request: ComputerRequest): Promise<unknown>
+    /** Set up Cua so bots can use this computer's desktop. */
+    setupDesktop(): Promise<ComputerShare>
+    state(): Promise<ComputerShare>
+  }
   daemon: {
     localToken(): Promise<null | string>
     onProgress(callback: (progress: DaemonProgress) => void): () => void

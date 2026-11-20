@@ -1,4 +1,4 @@
-import type { ComputerQuality } from './types'
+import type { Bot, Computer, ComputerQuality } from './types'
 
 /** What a bot is doing on the computer, by `computer_use` action: "clicking". */
 const COMPUTER: Record<string, string> = {
@@ -46,4 +46,70 @@ export function screenPlays(origin: string) {
     ['127.0.0.1', '[::1]', 'localhost'].includes(hostname) ||
     hostname.endsWith('.localhost')
   )
+}
+
+/** What the list of computers said, as the Computer card read it. */
+export type ComputersListed = 'loading' | 'listed' | 'older' | { error: string }
+
+/**
+ * What a bot's Computer card shows of the bots' computer. A bot's Computer
+ * use may be a desktop elsewhere, so the card waits for the list to say
+ * whether it works here; only a daemon from before computers (`older`) goes
+ * by the bot's tools.
+ */
+export function computerAccess(
+  bot: Bot | undefined,
+  list: ComputersListed,
+  vm: Computer | undefined
+): 'loading' | 'off' | 'enable' | 'screen' | { error: string } {
+  if (!bot) return 'screen'
+  if (list === 'older') return (bot.tools ?? []).includes('computer_use') ? 'screen' : 'enable'
+  if (list === 'loading' || typeof list === 'object') return list
+  if (!vm?.on) return 'off'
+  return vm.desktop.bots.includes(bot.name) ? 'screen' : 'enable'
+}
+
+/**
+ * The computers to show in Settings, Computers: only a list this connection
+ * read, since grants may have changed while the phone was away.
+ */
+export function currentComputers(listed: ComputersListed, computers: Computer[] | null) {
+  return listed === 'listed' ? computers : null
+}
+
+/**
+ * Numbers reads of one thing so only the latest one's answer counts: `start`
+ * returns whether that read is still the latest, and `drop` makes every read
+ * on its way stale, as a reconnect or a daemon switch does.
+ */
+export function latestReads() {
+  let count = 0
+  return {
+    drop() {
+      count++
+    },
+    start() {
+      const mine = ++count
+      return () => mine === count
+    }
+  }
+}
+
+/**
+ * A notice an action left, such as stopping bots on a computer that didn't
+ * confirm, added to the unread ones: oldest first, each kept until its own
+ * OK, so a later one never replaces or clears another.
+ */
+export function addNotice(notices: string[], note: string | null | undefined): string[] {
+  return !note || notices.includes(note) ? notices : [...notices, note]
+}
+
+/**
+ * Whether a bot's chat offers the bots' computer card, as the web app always
+ * offers its Computer tab: on a daemon with computers Computer Use is a
+ * plugin, never in the bot's tools, and the card itself says what is missing.
+ * A daemon from before computers offers it only to a bot with the tool.
+ */
+export function offersComputer(listed: ComputersListed, bot: Pick<Bot, 'available_tools' | 'tools'>) {
+  return listed !== 'older' || (bot.available_tools ?? bot.tools ?? []).includes('computer_use')
 }

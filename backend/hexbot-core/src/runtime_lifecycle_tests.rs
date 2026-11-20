@@ -1216,7 +1216,8 @@ async fn idle_restart_preserves_live_id_prompt_tools_and_client_watermarks() {
     let after = processes(home.path());
     // The chat restarts once, with its bot's new tools; it keeps its model.
     assert_eq!(after.len(), 2);
-    // Every bot has Computer use, whatever its saved toolsets say.
+    // On a daemon from before computers every bot has Computer use,
+    // whatever its saved toolsets say.
     assert_eq!(
         after[1]["config"]["enabledToolsets"],
         json!(["terminal", "computer_use"])
@@ -2500,7 +2501,8 @@ const fs=require('node:fs')"#,
     let sent = reviewed("pi-after-approval").await;
     assert_eq!(
         sent["user_approved_steps"],
-        json!([{"tool":"bash","command":"medium"}])
+        // The computer it ran on goes with it.
+        json!([{"tool":"bash","command":"medium","computer":"host"}])
     );
     // ...and the next turn starts without it.
     s.state.lock().unwrap().end_turn();
@@ -6828,6 +6830,7 @@ async fn a_bot_with_notion_on_gets_the_connector_tools() {
             .collect::<Vec<_>>()
     };
     crate::connectors::set_enabled(home.path(), "owl", "notion", false).unwrap();
+    crate::connectors::set_enabled(home.path(), "owl", "github", false).unwrap();
     assert!(names(None).is_empty());
     runtime.open_session("alice", "owl", "first").await.unwrap();
     assert!(!runtime.tools_stale("alice", "owl", "first").unwrap());
@@ -7159,4 +7162,36 @@ async fn a_discord_room_session_files_notes_as_proposals() {
         )
         .unwrap();
     assert_eq!(counts, (20, 1));
+}
+
+#[tokio::test]
+async fn without_cua_a_chat_lists_only_the_computers_it_can_reach() {
+    let (home, runtime, _) = setup();
+    let h = home.path();
+    // An upgraded daemon without Cua: the migration gave owl the bots'
+    // computer's desktop, which nothing here can run.
+    crate::machines::migrate(h).unwrap();
+    common::update_config(h, |c| {
+        c["computer_use"]["command"] = json!("/nonexistent/cua");
+        Ok(())
+    })
+    .unwrap();
+    assert!(crate::machines::has(h, "owl", crate::machines::VM, crate::machines::DESKTOP).unwrap());
+    open(&runtime).await;
+    let prompt = processes(h)[0]["config"]["prompt"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(!prompt.contains("# Computers"), "{prompt}");
+    let saved: String = store::open(h)
+        .unwrap()
+        .query_row(
+            "SELECT options FROM native_sessions WHERE stored_id='first'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let saved: Value = serde_json::from_str(&saved).unwrap();
+    assert_eq!(saved["computers"], json!([]));
+    runtime.shutdown().await;
 }

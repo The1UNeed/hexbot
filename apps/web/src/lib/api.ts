@@ -10,7 +10,7 @@ import { JsonRpcGatewayError } from '@hermes/shared'
 import { useConnection } from '../stores/connection'
 
 import { splitAttached } from './media'
-import { rpcCall } from './rpc'
+import { type HexbotRpcClient, rpcCall } from './rpc'
 import { settledCard } from './settled-cards'
 import { toMillis } from './time'
 import type {
@@ -23,6 +23,7 @@ import type {
   ClarifyQuestion,
   ClarifyRequest,
   ClarifyRequestPayload,
+  Computer,
   ComputerQuality,
   ComputerSize,
   ComputerStatus,
@@ -607,6 +608,41 @@ export const computerView = (control: boolean, quality: ComputerQuality = 'auto'
 export const computerConfigure = (size: ComputerSize) =>
   rpcCall<ComputerStatus>('hexbot.computer.configure', { size })
 
+/** Every computer bots can use, with the bots on each (`machines.rs`). */
+export const computersList = () => rpcCall<{ computers: Computer[] }>('hexbot.computers.list')
+/** Give a bot one computer as an environment, or take it; its screen comes with Computer Use. */
+export const computersGrant = (
+  computer: string,
+  capability: 'terminal',
+  bot: string,
+  on: boolean
+) => rpcCall<{ ok: true }>('hexbot.computers.grant', { bot, capability, computer, on })
+/** The bots' computer in use or not; this computer's desktop shared (set up first) or not. */
+export const computersSet = (computer: 'host' | 'vm', change: { desktop?: boolean; on?: boolean }) =>
+  rpcCall<{ computers: Computer[] }>('hexbot.computers.set', { computer, ...change })
+/** Setup's choice for every bot made from now on: this computer's terminal and desktop. */
+export const computersDefaults = (defaults: { computer_use?: boolean; host_terminal?: boolean }) =>
+  rpcCall<Record<string, boolean>>('hexbot.computers.defaults', defaults)
+/** Take an app off a bot's Always allow list on one computer. */
+export const computersRemoveApp = (computer: string, bot: string, app: string) =>
+  rpcCall<{ ok: true }>('hexbot.computers.remove_app', { app, bot, computer })
+/** Forget one of the user's computers: its bots and apps go. */
+export const computersForget = (computer: string) =>
+  rpcCall<{ note?: string; ok: true; released?: boolean }>('hexbot.computers.forget', { computer })
+/** This app offers its own computer, or withdraws it with neither. */
+export const computersAttach = (offer: {
+  desktop: boolean
+  name: string
+  os: string
+  terminal: boolean
+}) => rpcCall<{ attached: boolean; computer: string }>('hexbot.computers.attach', offer)
+/** This app's answer to one request from the daemon, on the connection that asked. */
+export const computersReply = (
+  client: HexbotRpcClient,
+  requestId: string,
+  answer: { error?: string; result?: unknown }
+) => client.call<{ ok: true }>('hexbot.computers.reply', { request_id: requestId, ...answer })
+
 /** The bot's own Discord app, or null when it has none; `enabled`: Discord is on for it in Plugins. */
 export const discordGet = (bot: string) =>
   rpcCall<{ discord: DiscordStatus | null; enabled?: boolean }>('hexbot.discord.get', { bot })
@@ -1176,8 +1212,8 @@ export function forgetWholeOnly() {
   wholeOnly.clear()
 }
 
-/** A daemon from before part uploads. */
-function unknownMethod(error: unknown): boolean {
+/** A daemon from before a method, such as part uploads or computers. */
+export function unknownMethod(error: unknown): boolean {
   return (
     error instanceof JsonRpcGatewayError &&
     (error.code === -32601 || /unknown (runtime )?method|method not found/i.test(error.message))
