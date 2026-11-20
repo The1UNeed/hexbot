@@ -11,10 +11,12 @@ import { useConnection } from '../stores/connection'
 
 import { splitAttached } from './media'
 import { rpcCall } from './rpc'
+import { settledCard } from './settled-cards'
 import { toMillis } from './time'
 import type {
   AccountSignIn,
   ApprovalChoice,
+  ApprovalRequest,
   Bot,
   BotCreateInput,
   BotUpdatePatch,
@@ -1418,6 +1420,34 @@ function clarifyFromHistory(
   return clarifyAnswered(clarify) ? clarify : { ...clarify, expired: true }
 }
 
+/**
+ * The answered card a tool showed (a draft, sign-in or plugin card), rebuilt
+ * from its call and stored result, so it stays in the chat after a reload.
+ */
+function approvalFromHistory(
+  call: { args: unknown; messageId?: string; name: string; status: 'error' | 'ok'; toolId: string },
+  row: HistoryRow
+): ApprovalRequest | null {
+  const card = settledCard({ ...call, result: row.text ?? null })
+
+  return card
+    ? {
+        choices: ['once', 'deny'],
+        decision: card.decision,
+        ...(card.failed && { failed: true }),
+        form: card.form,
+        messageId: call.messageId,
+        ...(card.outcome && { outcome: card.outcome }),
+        receivedAt: 0,
+        requestId: call.toolId,
+        // Settled: the card never answers, so it needs no live session.
+        sessionId: '',
+        toolName: call.name,
+        turnId: typeof row.turn_id === 'string' ? row.turn_id : undefined
+      }
+    : null
+}
+
 /** Every question has its answer; questions sharing an id share one. */
 export const clarifyAnswered = (clarify: ClarifyRequest) =>
   clarify.questions.every(item =>
@@ -1553,6 +1583,8 @@ export function messagesFromHistory(
         clarify.turnId = typeof row.turn_id === 'string' ? row.turn_id : undefined
       }
 
+      const card = approvalFromHistory(call, row)
+
       const calls = [
         call,
         ...(row.nested_calls?.calls ?? []).map(nested => ({
@@ -1574,8 +1606,13 @@ export function messagesFromHistory(
         if (clarify) {
           target.clarifies = [...(target.clarifies ?? []), clarify]
         }
+
+        if (card) {
+          target.approvals = [...(target.approvals ?? []), card]
+        }
       } else {
         messages.push({
+          approvals: card ? [card] : undefined,
           attachments: [],
           clarifies: clarify ? [clarify] : undefined,
           createdAt: 0,
@@ -1600,7 +1637,7 @@ export function messagesFromHistory(
 
     // Hexbot stores one turn as assistant(tool calls) → tool rows → assistant(text).
     // That is one turn with one work line; each message is its own bubble.
-    // A question ends the message, as it does live, so its card sits between.
+    // A question or a card ends the message, as it does live, so it sits between.
     if (
       role === 'assistant' &&
       row.dream !== true &&
@@ -1609,7 +1646,8 @@ export function messagesFromHistory(
       !reports.has(previous.id) &&
       previous.turnId === (typeof row.turn_id === 'string' ? row.turn_id : undefined) &&
       previous.toolCalls.length &&
-      !previous.clarifies?.length
+      !previous.clarifies?.length &&
+      !previous.approvals?.length
     ) {
       if (previous.text.trim()) {
         previous.parts = [...(previous.parts ?? []), previous.text]

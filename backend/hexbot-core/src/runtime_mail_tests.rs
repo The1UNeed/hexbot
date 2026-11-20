@@ -275,8 +275,7 @@ async fn only_the_user_sends_a_draft_and_sends_what_they_left() {
         .unwrap();
     gate.release.notify_one();
     going.await.unwrap().unwrap();
-    // A tool still waiting hears it went, never that the user closed it. In
-    // a real turn Stop has ended the tool by then, and only the apps hear.
+    // A tool still waiting hears it went, never that the user closed it.
     assert_eq!(asked.await.unwrap().unwrap()["sent"], true);
     assert_eq!(got.lock().unwrap().len(), 3);
     let settled = loop {
@@ -299,6 +298,123 @@ async fn only_the_user_sends_a_draft_and_sends_what_they_left() {
         ended.changed().await.unwrap();
     }
 
+    // Stop while a card from the bot's own call goes: Stop waits for the
+    // mailbox and the tool, which hands Pi what went, so the chat's history
+    // and the bot keep the email that went.
+    let waiting = card(&hub);
+    let call = json!({
+        "name": "hexbot_mail",
+        "args": {"action":"draft","to":["ana@example.com"],"subject":"Slow","body":"z"},
+        "id": "call-going",
+    });
+    runtime
+        .event(
+            &s,
+            json!({"type":"extension_ui_request","id":"probe:going","method":"input","title":format!("__HEXBOT_TOOL__{call}")}),
+        )
+        .unwrap();
+    let shown = waiting.await;
+    assert_eq!(shown["tool_id"], "call-going");
+    let slow = json!({"mail_action":"send","draft":{"to":["ana@example.com"],"subject":"Slow","body":"z"}});
+    let going = tokio::spawn(respond(
+        runtime.clone(),
+        shown["request_id"].clone(),
+        "once",
+        slow,
+    ));
+    gate.arrived.notified().await;
+    let stop = {
+        let runtime = runtime.clone();
+        let id = id.clone();
+        tokio::spawn(async move {
+            runtime
+                .call("alice", "session.interrupt", &json!({"session_id":id}))
+                .await
+        })
+    };
+    // Stop waits for the tool while the mailbox holds the email.
+    tokio::time::timeout(Duration::from_secs(5), s.stop_waiting.notified())
+        .await
+        .expect("Stop waits for the tool finishing the email");
+    assert!(s.state.lock().unwrap().finishing.contains("probe:going"));
+    gate.release.notify_one();
+    going.await.unwrap().unwrap();
+    stop.await.unwrap().unwrap().unwrap();
+    let replies = fs::read_to_string(h.join("dialogs.jsonl")).unwrap();
+    let reply = replies
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .find(|reply| reply["id"] == "probe:going")
+        .expect("the tool replied to Pi before the turn stopped");
+    let value: Value = serde_json::from_str(reply["value"].as_str().unwrap()).unwrap();
+    assert_eq!(value["result"]["sent"], true, "{value}");
+    assert_eq!(got.lock().unwrap().len(), 4);
+    let mut ended = s.run_ended.subscribe();
+    while s.state.lock().unwrap().interrupted {
+        ended.changed().await.unwrap();
+    }
+
+    // Stop after the mailbox took it, while the tool is still handing Pi what
+    // went: Stop waits for that reply too, and never cancels the tool.
+    {
+        let mut state = s.state.lock().unwrap();
+        state.tool_dialogs.insert("probe:replying".into());
+        state.finishing.insert("probe:replying".into());
+    }
+    let stop = {
+        let runtime = runtime.clone();
+        let id = id.clone();
+        tokio::spawn(async move {
+            runtime
+                .call("alice", "session.interrupt", &json!({"session_id":id}))
+                .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(5), s.stop_waiting.notified())
+        .await
+        .expect("Stop waits for the tool finishing the email");
+    {
+        let mut state = s.state.lock().unwrap();
+        state.tool_dialogs.remove("probe:replying");
+        state.finishing.remove("probe:replying");
+    }
+    s.tool_replied.notify_waiters();
+    stop.await.unwrap().unwrap().unwrap();
+    assert!(
+        !fs::read_to_string(h.join("dialogs.jsonl"))
+            .unwrap()
+            .contains("probe:replying"),
+        "Stop cancelled a tool handing Pi an email that went"
+    );
+    assert!(s.state.lock().unwrap().finishing.is_empty());
+
+    // Agreed on a sign-in card (or a plugin card): its tool now finishes the
+    // work, and Stop waits for it as for an email going out.
+    let (waiter, answered) = tokio::sync::oneshot::channel();
+    {
+        let mut state = s.state.lock().unwrap();
+        state.native_approvals.insert("signin".into(), waiter);
+        state.pending.insert(
+            "signin".into(),
+            json!({"kind":"approval","method":"native","dialog":"probe:signin","approval_payload":{"choices":["once","deny"],"form":{"kind":"sign_in","title":"Example","site":"example.com"}}}),
+        );
+    }
+    runtime
+        .call(
+            "alice",
+            "approval.respond",
+            &json!({"session_id":id,"request_id":"signin","choice":"once","username":"alex","password":"x"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(answered.await.unwrap().contains("alex"));
+    assert!(s.state.lock().unwrap().finishing.remove("probe:signin"));
+    let mut ended = s.run_ended.subscribe();
+    while s.state.lock().unwrap().interrupted {
+        ended.changed().await.unwrap();
+    }
+
     // Saved to Drafts, not sent.
     let waiting = card(&hub);
     let asked = draft(runtime.clone(), s.clone());
@@ -308,7 +424,7 @@ async fn only_the_user_sends_a_draft_and_sends_what_they_left() {
         .await
         .unwrap();
     assert_eq!(asked.await.unwrap().unwrap()["saved_to_drafts"], true);
-    assert_eq!(got.lock().unwrap()[3].0, "draft");
+    assert_eq!(got.lock().unwrap()[4].0, "draft");
 
     // A reply to a message that isn't there goes back to the bot, with no
     // card the user couldn't send.
@@ -383,7 +499,7 @@ async fn only_the_user_sends_a_draft_and_sends_what_they_left() {
     let error = asked.await.unwrap().unwrap_err();
     assert_eq!(error.code, 4302);
     assert!(error.message.contains("without sending"));
-    assert_eq!(got.lock().unwrap().len(), 4);
+    assert_eq!(got.lock().unwrap().len(), 5);
 }
 
 /// IMAP mail works as Gmail does: the bot searches and drafts, the user
@@ -576,4 +692,44 @@ async fn mail_stays_in_the_bots_own_chat_and_jobs() {
             .0,
     );
     assert!(!own.iter().any(|n| n == "hexbot_mail"));
+}
+
+/// The apps show a closed or failed card again from history by the words its
+/// tool returned (`apps/web/src/lib/settled-cards.ts`). Rewording them here
+/// without there would quietly drop those cards on every reload.
+#[test]
+fn the_apps_know_the_words_a_closed_or_failed_card_returns() {
+    let apps = include_str!("../../../apps/web/src/lib/settled-cards.ts");
+    for (daemon, words) in [
+        (
+            include_str!("runtime_mail.rs"),
+            "The user closed the draft without sending it.",
+        ),
+        (
+            include_str!("runtime_passwords.rs"),
+            "The user closed the sign-in card.",
+        ),
+        (include_str!("runtime_plugins.rs"), "The user said no."),
+        (
+            include_str!("runtime.rs"),
+            "The user agreed on the card, but it didn't work:",
+        ),
+    ] {
+        assert!(
+            daemon.contains(&format!("\"{words} ")),
+            "the daemon no longer says {words:?}"
+        );
+        assert!(
+            apps.contains(&format!("'{words}'")) || apps.contains(&format!("\"{words}\"")),
+            "the apps don't match {words:?}"
+        );
+    }
+    // The plugin card's "no" (`ask_card`) and the one for turning off or
+    // removing (`ask_plugin`) share their words; both must keep them.
+    assert_eq!(
+        include_str!("runtime_plugins.rs")
+            .matches("\"The user said no. ")
+            .count(),
+        2
+    );
 }

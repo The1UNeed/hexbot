@@ -1911,7 +1911,7 @@ function Composer({
 }
 
 type TimelineItem =
-  | { approval: ApprovalRequest; at: number; kind: 'approval' }
+  | { approval: ApprovalRequest; at: number; key?: string; kind: 'approval' }
   | { at: number; clarify: ClarifyRequest; kind: 'clarify' }
   | { at: number; index: number; kind: 'message'; message: TranscriptMessage }
 
@@ -2434,8 +2434,8 @@ function BotConversation() {
   const shown = messages.slice(-visible)
 
   // Messages, question cards and approval cards in the order they happened.
-  // Restored history (createdAt 0) stays first, each question it
-  // asked right under the message that asked it.
+  // Restored history (createdAt 0) stays first, each question it asked and
+  // each card it showed right under the message that did.
   const timeline = useMemo(() => {
     // The store's message order is authoritative after hydration. Cards with
     // a source fragment follow that fragment, even across queued user inputs.
@@ -2444,7 +2444,14 @@ function BotConversation() {
 
       return [
         { at, index, kind: 'message' as const, message },
-        ...(message.clarifies ?? []).map(clarify => ({ at, clarify, kind: 'clarify' as const }))
+        ...(message.clarifies ?? []).map(clarify => ({ at, clarify, kind: 'clarify' as const })),
+        // A tool's id can repeat across turns; its message's can't.
+        ...(message.approvals ?? []).map(approval => ({
+          at,
+          approval,
+          key: `${message.id}:${approval.requestId}`,
+          kind: 'approval' as const
+        }))
       ]
     })
 
@@ -3115,7 +3122,10 @@ function BotConversation() {
 
               if (item.kind === 'approval') {
                 return (
-                  <CardRow joined={botBefore(timeline, position)} key={item.approval.requestId}>
+                  <CardRow
+                    joined={botBefore(timeline, position)}
+                    key={item.key ?? item.approval.requestId}
+                  >
                     <ApprovalCard approval={item.approval} />
                   </CardRow>
                 )

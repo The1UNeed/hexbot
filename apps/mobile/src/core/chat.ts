@@ -1,12 +1,14 @@
 import type { GatewayEvent } from '@hermes/shared'
 import { splitAttached } from '../../../web/src/lib/media'
-import type { PluginForm } from '../../../web/src/lib/types'
+import { agreedThenFailed } from '../../../web/src/lib/settled-cards'
+import type { EmailDraft, EmailDraftAnswer, PluginForm } from '../../../web/src/lib/types'
 
 import type {
   ChatMessage,
   ChatState,
   ChatTool,
   EmailDraftForm,
+  PendingApproval,
   SignInForm,
   TurnState
 } from './types'
@@ -83,6 +85,23 @@ const isEmailDraft = (value: unknown): value is EmailDraftForm =>
   Array.isArray((value as EmailDraftForm).to) &&
   typeof (value as EmailDraftForm).body === 'string'
 
+/** A card with its answer: the choice and, for a draft card, the email as it went. */
+export function answeredApproval(
+  approval: PendingApproval,
+  answer: { choice?: unknown; draft?: unknown; mail_action?: unknown }
+): PendingApproval {
+  const decision =
+    answer.choice === 'deny' || answer.choice === 'once' || answer.choice === 'session'
+      ? answer.choice
+      : 'once'
+  const action = answer.mail_action
+  const mail: EmailDraftAnswer | undefined =
+    (action === 'send' || action === 'save') && answer.draft && typeof answer.draft === 'object'
+      ? { draft: answer.draft as EmailDraft, mail_action: action }
+      : undefined
+  return { ...approval, decision, ...(mail && { outcome: mail }) }
+}
+
 const detailOf = (value: unknown) =>
   typeof value === 'string' ? value : value == null ? '' : JSON.stringify(value, null, 2)
 /**
@@ -149,6 +168,44 @@ export function historyMessages(raw: unknown[], sender?: string | null): ChatMes
   }
   return messages
 }
+type TurnPart = { row?: string; text: string; tools: ChatTool[] }
+/**
+ * A finished turn's messages, each with the tools it called, as history
+ * keeps them: the bot's words before a tool, then the tool, so a card it
+ * showed sits under those words and above the reply. A tool called without
+ * words gets an empty message of its own in its place.
+ */
+function turnParts(state: TurnState, final: { row?: string; text: string }): TurnPart[] {
+  const said: TurnPart[] = state.interim.map((text, index) => ({
+    row: state.interimIds?.[index],
+    text,
+    tools: []
+  }))
+  const last: TurnPart = { ...final, tools: [] }
+  // Empty messages for tools called without words, by the words they follow.
+  const quiet = new Map<number, TurnPart[]>()
+  for (const tool of state.tools) {
+    const after = tool.after
+    const before = after ? said[after - 1] : undefined
+    if (after === undefined || after > said.length) last.tools.push(tool)
+    else if (before && (!tool.row || !before.row || tool.row === before.row)) before.tools.push(tool)
+    else {
+      const group = quiet.get(after) ?? []
+      let part = group.find(item => item.row === tool.row)
+      if (!part) {
+        part = { row: tool.row, text: '', tools: [] }
+        group.push(part)
+        quiet.set(after, group)
+      }
+      part.tools.push(tool)
+    }
+  }
+  return [
+    ...said.flatMap((part, index) => [...(quiet.get(index) ?? []), part]),
+    ...(quiet.get(said.length) ?? []),
+    last
+  ].filter(part => part.text || part.tools.length)
+}
 /** A message the bot's heartbeat posted in the open chat, once by its history row id. */
 export function heartbeatMessage(state: ChatState, id: string, text: string): ChatState {
   if (state.messages.some(m => m.id === id)) return state
@@ -188,11 +245,7 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
         streaming: p.already_streamed ? '' : state.streaming
       }
     case 'message.complete': {
-      const parts = [
-        ...state.interim.map((part, index) => ({ row: state.interimIds?.[index], text: part })),
-        { row: row ?? state.streamId, text: text || state.streaming }
-      ].filter(part => part.text)
-      if (!parts.length && state.tools.length) parts.push({ row: undefined, text: '' })
+      const parts = turnParts(state, { row: row ?? state.streamId, text: text || state.streaming })
       const at = Math.min(state.turnAt ?? state.messages.length, state.messages.length)
       return {
         ...state,
@@ -204,7 +257,7 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
             role: 'assistant',
             text: part.text,
             createdAt: Date.now(),
-            tools: index === parts.length - 1 ? state.tools : undefined,
+            tools: part.tools.length ? part.tools : undefined,
             ...(part.row && { rowId: part.row })
           })),
           ...state.messages.slice(at)
@@ -245,6 +298,8 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
           {
             id: String(p.tool_id ?? `tool-${state.tools.length}`),
             name: String(p.name ?? p.tool_name ?? 'tool'),
+            after: state.interim.length,
+            ...(row && { row }),
             ...(typeof p.context === 'string' && { action: p.context }),
             args: parseArgs(p.args ?? p.args_text),
             detail: '',
@@ -260,20 +315,31 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
               : 'Working'),
         busy: true
       }
-    case 'tool.complete':
+    case 'tool.complete': {
+      const failed = Boolean(p.is_error || (p.result as Record<string, unknown>)?.error)
+      // The card it showed says so when the work the user agreed to failed.
+      const broke = agreedThenFailed({ result: p.result ?? p.result_text, status: failed ? 'error' : 'ok' })
       return {
         ...state,
+        approvals: broke
+          ? state.approvals.map(a =>
+              a.toolId === String(p.tool_id) && a.decision && a.decision !== 'deny'
+                ? { ...a, failed: true }
+                : a
+            )
+          : state.approvals,
         tools: state.tools.map(t =>
           t.id === String(p.tool_id)
             ? {
                 ...t,
-                status: p.is_error || (p.result as Record<string, unknown>)?.error ? 'error' : 'ok',
+                status: failed ? 'error' : 'ok',
                 detail: detailOf(p.result ?? p.result_text)
               }
             : t
         ),
         activity: state.checking
       }
+    }
     case 'error':
       return {
         ...state,
@@ -288,6 +354,7 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
         command: String(p.command ?? p.tool_name ?? 'Approve this action'),
         reason: typeof p.reason === 'string' ? p.reason : undefined,
         choices: Array.isArray(p.choices) ? (p.choices as string[]) : ['once', 'deny'],
+        ...(typeof p.tool_id === 'string' && { toolId: p.tool_id }),
         ...((isSignIn(p.form) || isPlugin(p.form) || isEmailDraft(p.form)) && { form: p.form })
       }
       return {
@@ -332,9 +399,21 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
     case 'clarify.expire':
     case 'clarify.resolved':
       return { ...state, questions: state.questions.filter(q => q.requestId !== p.request_id) }
-    case 'approval.expire':
+    // Answered here or on another app: the card stays with the answer until
+    // the turn ends, when the message's tools show it from then on.
     case 'approval.resolved':
-      return { ...state, approvals: state.approvals.filter(a => a.requestId !== p.request_id) }
+      return {
+        ...state,
+        approvals: state.approvals.map(a =>
+          a.requestId === p.request_id ? answeredApproval(a, p) : a
+        )
+      }
+    // The bot stopped waiting before anyone answered: that card goes.
+    case 'approval.expire':
+      return {
+        ...state,
+        approvals: state.approvals.filter(a => a.requestId !== p.request_id || a.decision)
+      }
     default:
       return state
   }

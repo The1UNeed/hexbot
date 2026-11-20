@@ -14,7 +14,14 @@ import {
 import { pair } from './transport'
 import { registerPush } from './push'
 import { parsePairing, normalizeOrigin } from './links'
-import { emptyChat, heartbeatMessage, historyMessages, reduceChat, replayChat } from './chat'
+import {
+  answeredApproval,
+  emptyChat,
+  heartbeatMessage,
+  historyMessages,
+  reduceChat,
+  replayChat
+} from './chat'
 import {
   afterRead,
   cursorFor,
@@ -58,6 +65,7 @@ import type {
   RoomEvent,
   CurrentUser,
   DaemonInfo,
+  PendingApproval,
   Settings,
   SavedDaemon,
   Rpc
@@ -760,6 +768,7 @@ export function useMobile() {
   useEffect(() => {
     const visible = new Set<string>()
     for (const pending of chat.approvals) {
+      if (pending.decision) continue
       const key = `${active?.id}:${connection}:${pending.sessionId}:${pending.requestId}`
       visible.add(key)
       if (acknowledgedApprovals.current.has(key)) continue
@@ -1163,7 +1172,7 @@ export function useMobile() {
     answer?: EmailDraftAnswer | PluginAnswer | { username: string; password: string }
   ) => {
     const pending = chat.approvals.find(a => a.requestId === requestId)
-    if (!pending) return
+    if (!pending || pending.decision) return
     await rpc('approval.respond', {
       session_id: pending.sessionId,
       request_id: requestId,
@@ -1174,18 +1183,17 @@ export function useMobile() {
       if (!answer || !('mail_action' in answer) || pending.form?.kind !== 'email_draft') throw e
       throw new Error(draftAnswerError(errorText(e), answer.mail_action, pending.form.service_name))
     })
+    // The card stays with its answer, as the daemon's approval.resolved says too.
+    const answered = (a: PendingApproval) =>
+      a.requestId === requestId ? answeredApproval(a, { choice, ...answer }) : a
     setChat(c => {
-      if (!c.turns[pending.sessionId])
-        return { ...c, approvals: c.approvals.filter(a => a.requestId !== requestId) }
+      if (!c.turns[pending.sessionId]) return { ...c, approvals: c.approvals.map(answered) }
       const turn = c.turns[pending.sessionId]
       return roomChat({
         ...c,
         turns: {
           ...c.turns,
-          [pending.sessionId]: {
-            ...turn,
-            approvals: turn.approvals.filter(a => a.requestId !== requestId)
-          }
+          [pending.sessionId]: { ...turn, approvals: turn.approvals.map(answered) }
         }
       })
     })

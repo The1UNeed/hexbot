@@ -112,8 +112,10 @@ export function PluginCard({
       status={
         decided ? (
           <CardStatus
-            done={decided !== 'deny'}
-            label={decided === 'deny' ? 'Not now' : DONE[form.action]}
+            done={decided !== 'deny' && !request.failed}
+            label={
+              decided === 'deny' ? 'Not now' : request.failed ? "Didn't work" : DONE[form.action]
+            }
           />
         ) : null
       }

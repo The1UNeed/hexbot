@@ -67,6 +67,24 @@ function fixture(t, mode = 'manual', enabledToolsets = [], extra = {}) {
   return {home, handlers, tools, settings, ctx, requests, choices, models, registrations, notices, activeTools, sent, gate, run, swap};
 }
 
+test('a native tool names its Pi call, so a card it shows names the call too', async t => {
+  const f = fixture(t, 'smart', ['hexbot'], {tools:[{name:'hexbot_mail', parameters:{type:'object', properties:{}}}]});
+  await f.tools.hexbot_mail.execute('call-42', {action:'draft'}, undefined, undefined, f.ctx);
+  assert.deepEqual(f.requests.find(request => request.name === 'hexbot_mail'), {name:'hexbot_mail', args:{action:'draft'}, id:'call-42'});
+});
+test('a card comes only from the bot\'s own call, never from code', async t => {
+  const f = fixture(t, 'off', ['hexbot']);
+  const nested = (toolName, input) => f.handlers.tool_call({toolName, input, toolCallId: 'inner', parentToolCallId: 'code'}, f.ctx);
+  for (const [tool, input] of [['clarify', {question: 'Why?'}], ['hexbot_mail', {action: 'draft'}], ['hexbot_passwords', {action: 'ask'}], ['hexbot_plugins', {action: 'enable', id: 'connector:notion'}]]) {
+    const denial = await nested(tool, input);
+    assert.equal(denial?.block, true, tool);
+    assert.match(denial.reason, /not from code/);
+  }
+  // Reading stays open to code, and the bot's own call shows its card.
+  assert.equal(await nested('hexbot_mail', {action: 'search'}), undefined);
+  assert.equal(await nested('hexbot_plugins', {action: 'list'}), undefined);
+  assert.equal(await f.handlers.tool_call({toolName: 'hexbot_mail', input: {action: 'draft'}, toolCallId: 'own'}, f.ctx), undefined);
+});
 test('case cannot disguise credential or host configuration paths on case-insensitive file systems', {skip: process.platform !== 'darwin'}, async t => {
   const f = fixture(t, 'manual', ['file']);
   mkdirSync(join(f.home, 'profiles/owl'), {recursive:true});

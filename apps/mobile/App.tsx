@@ -104,6 +104,7 @@ import {
 import { previewLine } from '../web/src/lib/preview'
 import { mediaKind, mediaOf, mimeOf } from '../web/src/lib/media'
 import { asksOf, askWords } from '../web/src/lib/asks'
+import { settledCard } from '../web/src/lib/settled-cards'
 import { namedPlugin, pluginRows } from '../web/src/lib/plugin-rows'
 import { mediaUri, type ReadMedia } from './src/core/media'
 import type { OpenedFile } from './src/core/files'
@@ -1057,6 +1058,27 @@ function MobileApp({ children }: { children?: ReactNode }) {
                 mine: reaction.by === 'user'
               }))
             },
+            // The draft, sign-in and plugin cards its tools showed, under its words, as
+            // the user answered them. A live card leaves when its turn ends; this one stays.
+            ...(m.tools ?? []).flatMap((t): ChatItem[] => {
+              if (t.status === 'running') return []
+              const card = settledCard({ ...t, result: t.detail })
+              if (!card) return []
+              return [
+                {
+                  kind: 'approval',
+                  id: `card-${m.id}-${t.id}`,
+                  request: {
+                    requestId: t.id,
+                    choices: [],
+                    decision: card.decision,
+                    ...(card.failed && { failed: true }),
+                    form: card.form,
+                    ...(card.outcome && { outcome: card.outcome })
+                  }
+                }
+              ]
+            }),
             // The bots it messaged in this step, each marked with its tag.
             ...(m.role === 'assistant' && chatBot
               ? asksOf(

@@ -193,7 +193,7 @@ impl Runtime {
         let key = format!("{}/{id}", s.id);
         // Read and reserved in one step, so two answers can't both send.
         let (request, guard) = {
-            let state = s.state.lock().unwrap();
+            let mut state = s.state.lock().unwrap();
             let Some(request) = state.pending.get(id).cloned() else {
                 return Ok(None);
             };
@@ -207,6 +207,10 @@ impl Runtime {
             if !sending().lock().unwrap().insert(key.clone()) {
                 return Err(Error::new(4204, "This email is already on its way."));
             }
+            // Its tool now finishes: Stop waits for it to hand Pi what went.
+            if let Some(dialog) = request["dialog"].as_str() {
+                state.finishing.insert(dialog.to_owned());
+            }
             (request, Sending(key))
         };
         match self.mail_send(s, &request, p).await {
@@ -218,6 +222,10 @@ impl Runtime {
                 // may expire it twice; every app ignores the second.
                 let gone = {
                     let mut state = s.state.lock().unwrap();
+                    // Nothing went, so its tool delivers nothing.
+                    if let Some(dialog) = request["dialog"].as_str() {
+                        state.finishing.remove(dialog);
+                    }
                     let gone = !state.pending.contains_key(id);
                     if gone {
                         // The waiter Stop left for it hears nothing went.
@@ -226,6 +234,8 @@ impl Runtime {
                     drop(guard);
                     gone
                 };
+                // A Stop waiting for this card goes on.
+                s.tool_replied.notify_waiters();
                 if gone {
                     self.emit(s, "approval.expire", json!({"request_id": id}));
                 }
@@ -459,6 +469,7 @@ impl Runtime {
         if !thread.is_null() {
             request["form"]["thread"] = thread;
         }
+        // The apps show the closed card again from these first words (settled-cards.ts in apps/web).
         let Some(answer) = self.ask_native(s, request, true).await? else {
             return Err(Error::new(
                 4302,

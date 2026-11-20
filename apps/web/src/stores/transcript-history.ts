@@ -91,6 +91,16 @@ export function hydrateHistory(
         message.clarifies = message.clarifies?.filter(card => card.requestId !== tool.toolId)
       }
 
+      const answered = message.approvals?.filter(card => card.requestId === tool.toolId) ?? []
+
+      if (answered.length) {
+        owners[0]!.approvals = [
+          ...(owners[0]!.approvals ?? []),
+          ...answered.map(card => ({ ...card, messageId: source }))
+        ]
+        message.approvals = message.approvals?.filter(card => card.requestId !== tool.toolId)
+      }
+
       return false
     })
 
@@ -99,7 +109,8 @@ export function hydrateHistory(
       !message.toolCalls.length &&
       !message.fragmentIds?.length &&
       !message.text &&
-      !message.clarifies?.length
+      !message.clarifies?.length &&
+      !message.approvals?.length
     ) {
       emptied.add(message)
     }
@@ -298,12 +309,18 @@ export function hydrateHistory(
       )
     })
 
+    // Cards history rebuilt for these fragments stay with them.
+    const selectedCards = region
+      .flatMap(message => message.approvals ?? [])
+      .filter(card => card.messageId && selected.has(card.messageId))
+
     const merged: TranscriptMessage = {
       ...live,
       ...(live.parts || closed.length ? { parts: closed.map(part => part.text) } : {}),
       ...(live.partIds || closed.length ? { partIds: closed.map(part => part.id) } : {}),
       text: live.textId ? (storedParts.get(live.textId) ?? live.text) : live.text,
-      toolCalls: [...selectedTools, ...liveTools]
+      toolCalls: [...selectedTools, ...liveTools],
+      ...(selectedCards.length && { approvals: selectedCards })
     }
 
     if (!selected.size) {
@@ -425,6 +442,7 @@ function splitLive(
       ...reasoningFor({ ...message, fragmentIds: ids }, message, at === current),
       toolCalls: message.toolCalls.filter(tool => group(tool.messageId) === at),
       clarifies: message.clarifies?.filter(card => group(card.messageId) === at),
+      approvals: message.approvals?.filter(card => group(card.messageId) === at),
       streaming: at === current && message.streaming,
       usage: at === current ? message.usage : undefined,
       error: at === current ? message.error : undefined,
@@ -476,6 +494,7 @@ function subset(message: Message, ids: Set<string>): Message[] {
       textId: parts.at(-1)?.id,
       ...reasoningFor({ ...message, fragmentIds: [...ids] }, message),
       clarifies: message.clarifies?.filter(card => card.messageId && ids.has(card.messageId)),
+      approvals: message.approvals?.filter(card => card.messageId && ids.has(card.messageId)),
       toolCalls: message.toolCalls.filter(tool => tool.messageId && ids.has(tool.messageId))
     }
   ]

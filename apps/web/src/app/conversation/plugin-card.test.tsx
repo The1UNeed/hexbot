@@ -200,6 +200,14 @@ describe('plugin card', () => {
     )
   })
 
+  it('says when what the user agreed to did not work', () => {
+    render(<ApprovalCard approval={{ ...cardFor(notion), decision: 'once', failed: true }} />)
+
+    expect(screen.getByText("Didn't work")).toBeVisible()
+    expect(screen.queryByText('Saved')).toBeNull()
+    expect(screen.queryByLabelText('Notion API key')).toBeNull()
+  })
+
   it('declines without sending anything typed', async () => {
     render(<ApprovalCard approval={cardFor(notion)} />)
     fireEvent.click(screen.getByRole('button', { name: 'Connect' }))

@@ -57,6 +57,10 @@ export interface ChatTool {
   args: unknown
   detail: string
   status: 'running' | 'ok' | 'error'
+  /** Live: how many of the turn's messages came before it, so it stays under its words. */
+  after?: number
+  /** Live: the history row of the message that called it. */
+  row?: string
 }
 export interface ChatMessage {
   id: string
@@ -88,6 +92,14 @@ export interface PendingApproval {
   command: string
   reason?: string
   choices: string[]
+  /** Set once answered, here or on another app; the card stays until the turn ends. */
+  decision?: 'deny' | 'once' | 'session'
+  /** The tool call that showed the card, when the daemon names it. */
+  toolId?: string
+  /** The user agreed, but what the card was for didn't work. */
+  failed?: boolean
+  /** What a draft card did once the mailbox took it, and the email as it went. */
+  outcome?: import('../../../web/src/lib/types').EmailDraftAnswer
   /** The sign-in card a bot shows to save a password, a plugin card, or a draft card. */
   form?:
     | import('../../../web/src/lib/types').EmailDraftForm

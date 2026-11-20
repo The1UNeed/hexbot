@@ -403,6 +403,12 @@ async fn a_bot_asking_for_an_unconnected_connector_is_sent_to_settings() {
             .await
             .unwrap_err();
         assert_eq!(error.code, 4209, "{action}");
+        // No card showed, so nothing says the user agreed.
+        assert!(
+            !error.message.starts_with("The user agreed"),
+            "{}",
+            error.message
+        );
         assert!(
             error
                 .message

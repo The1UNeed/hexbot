@@ -64,7 +64,38 @@ mod pi_files;
 #[path = "runtime_lifecycle_tests.rs"]
 mod lifecycle_tests;
 
+/// The Pi tool call a native tool runs for, while it runs: the call's id,
+/// when Pi sent it, and the extension request that carries the call.
+#[derive(Clone)]
+struct ToolCall {
+    id: Option<String>,
+    dialog: String,
+}
+tokio::task_local! {
+    static TOOL_CALL: ToolCall;
+}
+
+/// A failure after the user agreed on a plugin or sign-in card says so first.
+/// The apps show the card again from history by these words
+/// (settled-cards.ts in apps/web), as one that didn't work.
+pub(crate) fn after_agreeing(e: Error) -> Error {
+    Error {
+        message: format!(
+            "The user agreed on the card, but it didn't work: {}",
+            e.message
+        ),
+        ..e
+    }
+}
+
 const DEADLINE: Duration = Duration::from_secs(30);
+/// How long Stop waits at most for a tool finishing what the user agreed to,
+/// such as an email going out. A safety net, not a budget: every step has its
+/// own limit, and the longest real ones end well inside this (an Outlook
+/// reply, a token refresh then three requests of up to 60 s each; an SMTP
+/// send of up to 120 s, then filing in Sent, up to 115 s). Only work stuck
+/// past all of its limits lets Stop end its tool.
+const FINISH_DEADLINE: Duration = Duration::from_secs(600);
 /// How long a hidden turn may run: room turns, deliveries and background runs.
 const HIDDEN_TURN_DEADLINE: Duration = Duration::from_secs(1800);
 /// Under launchd's and systemd's default stop budgets, with room for the server.
@@ -92,6 +123,10 @@ struct State {
     error: Option<String>,
     pending: HashMap<String, Value>,
     tool_dialogs: std::collections::HashSet<String>,
+    /// Tool dialogs finishing what the user agreed to on their card: an email
+    /// going out, keys being saved and tested, a login being saved. From the
+    /// moment the user agrees until the tool hands Pi the outcome. Stop waits.
+    finishing: std::collections::HashSet<String>,
     native_approvals: HashMap<String, tokio::sync::oneshot::Sender<String>>,
     /// Steps the owner approved on a reviewed Auto card this turn, which
     /// later reviews read; see `review::remember`.
@@ -357,6 +392,13 @@ struct Live {
     /// Reviews running or waiting their turn; "Checking this step" shows
     /// while this is above zero.
     reviewing: Mutex<usize>,
+    /// Told when a tool replies to Pi or an email stops going out; Stop waits
+    /// on it while a tool finishes what the user agreed to (`State::finishing`).
+    tool_replied: tokio::sync::Notify,
+    /// Told when Stop starts waiting for a tool finishing what the user agreed
+    /// to, so a test acts while it waits.
+    #[cfg(test)]
+    stop_waiting: tokio::sync::Notify,
     /// Told when input starts on its way in, so a test acts while it is.
     #[cfg(test)]
     landed: tokio::sync::Notify,
@@ -1397,6 +1439,7 @@ impl Runtime {
                 error: None,
                 pending: HashMap::new(),
                 tool_dialogs: std::collections::HashSet::new(),
+                finishing: std::collections::HashSet::new(),
                 native_approvals: HashMap::new(),
                 approved: Vec::new(),
                 display: VecDeque::new(),
@@ -1427,6 +1470,9 @@ impl Runtime {
             proposal: Mutex::new(None),
             reviews: tokio::sync::Semaphore::new(review::REVIEWS),
             reviewing: Mutex::new(0),
+            tool_replied: tokio::sync::Notify::new(),
+            #[cfg(test)]
+            stop_waiting: tokio::sync::Notify::new(),
             #[cfg(test)]
             landed: tokio::sync::Notify::new(),
         });
@@ -2598,6 +2644,14 @@ impl Runtime {
         };
 
         let write = if request["method"] == "native" {
+            // The user agreed on a card: its tool now finishes the work, and
+            // Stop waits for it to hand Pi the outcome.
+            if settled["choice"] != "deny"
+                && request["approval_payload"]["form"].is_object()
+                && let Some(dialog) = request["dialog"].as_str()
+            {
+                state.finishing.insert(dialog.to_owned());
+            }
             if let Some(sender) = state.native_approvals.remove(id) {
                 let _ = sender.send(answer["value"].as_str().unwrap_or("deny").to_owned());
             }
@@ -2664,7 +2718,7 @@ impl Runtime {
     }
     /// Cancels the session's dialogs; returns the cards that were waiting.
     async fn cancel_dialogs(s: &Live) -> HashMap<String, Value> {
-        let (mut tasks, owned, mut cards) = {
+        let (mut tasks, owned, mut cards, going) = {
             let _gate = s.event_gate.lock().unwrap();
             let mut state = s.state.lock().unwrap();
             state.interrupted = true;
@@ -2691,13 +2745,40 @@ impl Runtime {
                 .chain(state.tool_dialogs.iter())
                 .cloned()
                 .collect::<std::collections::HashSet<_>>();
+            // The tools finishing what the user agreed to on their card.
+            let going = state.finishing.iter().cloned().collect::<Vec<_>>();
             drop(state);
             (
                 std::mem::take(&mut *s.requests.lock().unwrap()),
                 owned,
                 cards,
+                going,
             )
         };
+        // A tool finishing what the user agreed to goes on until it hands Pi
+        // the outcome, so the chat's history and the bot keep it: an email
+        // that went, keys saved, a login saved. A refused send reopens its
+        // card, and Stop goes on. Every step gives up long before this.
+        let deadline = tokio::time::Instant::now() + FINISH_DEADLINE;
+        loop {
+            let replied = s.tool_replied.notified();
+            tokio::pin!(replied);
+            replied.as_mut().enable();
+            let waiting = {
+                let state = s.state.lock().unwrap();
+                going.iter().any(|dialog| {
+                    state.finishing.contains(dialog) && state.tool_dialogs.contains(dialog)
+                })
+            };
+            if !waiting {
+                break;
+            }
+            #[cfg(test)]
+            s.stop_waiting.notify_one();
+            if tokio::time::timeout_at(deadline, replied).await.is_err() {
+                break;
+            }
+        }
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}
         let pending = {
@@ -2718,6 +2799,9 @@ impl Runtime {
                         .or_insert_with(|| json!({"method":"input"}));
                 }
             }
+            // A tool Stop ended delivers nothing more.
+            let open = state.tool_dialogs.clone();
+            state.finishing.retain(|dialog| open.contains(dialog));
             pending
         };
         for (id, request) in pending {
@@ -3931,6 +4015,12 @@ impl Runtime {
         }
         payload["request_id"] = json!(id);
         payload["choices"] = json!(["once", "deny"]);
+        // The tool call that asked, so the apps tell this card from the one
+        // they rebuild from history, even when two name the same thing.
+        let call = TOOL_CALL.try_with(Clone::clone).ok();
+        if let Some(id) = call.as_ref().and_then(|call| call.id.as_ref()) {
+            payload["tool_id"] = json!(id);
+        }
         {
             let _gate = s.event_gate.lock().unwrap();
             let mut state = s.state.lock().unwrap();
@@ -3940,10 +4030,13 @@ impl Runtime {
             // The card sits under the message whose tool asked, live and in history.
             payload = with_fields(payload, &state.identity.fragment_fields());
             state.native_approvals.insert(id.clone(), sender);
-            state.pending.insert(
-                id.clone(),
-                json!({"kind":"approval","method":"native","approval_payload":payload}),
-            );
+            let mut pending =
+                json!({"kind":"approval","method":"native","approval_payload":payload});
+            // Its tool's dialog, which finishes the work once the user agrees.
+            if let Some(call) = &call {
+                pending["dialog"] = json!(call.dialog);
+            }
+            state.pending.insert(id.clone(), pending);
             drop(state);
             self.emit(s, "approval.request", payload);
             self.events
@@ -5556,11 +5649,18 @@ impl Runtime {
                         let result = if let Some(file_event) = file_event {
                             runtime.pi_file(&source, &file_event, &request["args"])
                         } else {
-                            runtime
-                                .tool(
-                                    &source,
-                                    request["name"].as_str().unwrap_or(""),
-                                    &request["args"],
+                            // A card the tool shows names its call, as history does.
+                            TOOL_CALL
+                                .scope(
+                                    ToolCall {
+                                        id: request["id"].as_str().map(str::to_owned),
+                                        dialog: id.clone(),
+                                    },
+                                    runtime.tool(
+                                        &source,
+                                        request["name"].as_str().unwrap_or(""),
+                                        &request["args"],
+                                    ),
                                 )
                                 .await
                         };
@@ -5575,7 +5675,12 @@ impl Runtime {
                         {
                             eprintln!("Tool reply failed for {}: {error}", source.stored);
                         }
-                        source.state.lock().unwrap().tool_dialogs.remove(&id);
+                        {
+                            let mut state = source.state.lock().unwrap();
+                            state.tool_dialogs.remove(&id);
+                            state.finishing.remove(&id);
+                        }
+                        source.tool_replied.notify_waiters();
                     });
                 } else if let Some(payload) = title.strip_prefix("__HEXBOT_CLARIFY__") {
                     let mut payload: Value = serde_json::from_str(payload)

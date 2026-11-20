@@ -384,6 +384,11 @@ pub(crate) async fn smtp_server(seen: Arc<Mutex<Seen>>) -> String {
                         if data.contains("Subject: Vanish\r\n") {
                             return;
                         }
+                        // "Stall" is taken, then never answered, the connection open.
+                        if data.contains("Subject: Stall\r\n") {
+                            let _open = &write;
+                            std::future::pending::<()>().await;
+                        }
                         seen.lock()
                             .unwrap()
                             .sent
@@ -543,6 +548,21 @@ async fn a_send_left_unanswered_says_where_to_look() {
     let draft =
         mail::draft(&json!({"to": ["bo@example.net"], "subject": "Vanish", "body": "x"})).unwrap();
     let e = deliver(&cfg, &draft, true, None).await.unwrap_err();
+    assert_eq!(e.code, UNCERTAIN, "{}", e.message);
+    assert!(e.message.contains("look in Sent"), "{}", e.message);
+}
+
+/// A server that stops answering once it has the email ends the send in
+/// time, saying where to look: Stop and the card never wait on it for good.
+#[tokio::test]
+async fn a_send_the_server_never_answers_ends_in_time() {
+    let (_home, cfg, _seen) = mailbox("secret").await;
+    let draft =
+        mail::draft(&json!({"to": ["bo@example.net"], "subject": "Stall", "body": "x"})).unwrap();
+    let e = tokio::time::timeout(Duration::from_secs(5), deliver(&cfg, &draft, true, None))
+        .await
+        .expect("the send ends on its own limit")
+        .unwrap_err();
     assert_eq!(e.code, UNCERTAIN, "{}", e.message);
     assert!(e.message.contains("look in Sent"), "{}", e.message);
 }

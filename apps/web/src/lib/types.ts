@@ -216,6 +216,8 @@ export interface ApprovalRequest {
   choices: ApprovalChoice[]
   /** Present once the user answered; the card stays in the transcript. */
   decision?: ApprovalChoice
+  /** The user agreed, but what the card was for didn't work. */
+  failed?: boolean
   /** The command or action, rendered in monospace. */
   command?: string
   form?: EmailDraftForm | PluginForm | SignInForm
@@ -225,6 +227,8 @@ export interface ApprovalRequest {
   receivedAt: number
   requestId: string
   sessionId: string
+  /** The tool call that showed the card, when the daemon names it. */
+  toolId?: string
   toolName?: string
 }
 
@@ -714,6 +718,12 @@ export interface Message {
    * a `checking` status line); an empty `checking` line clears it.
    */
   checking?: string
+  /**
+   * Cards this message's tools showed, restored from history and already
+   * answered: a draft card, sign-in card or plugin card. Live cards are on
+   * the transcript instead.
+   */
+  approvals?: ApprovalRequest[]
   /**
    * Questions this message asked, restored from history and already settled.
    * Live questions are cards on the transcript instead.

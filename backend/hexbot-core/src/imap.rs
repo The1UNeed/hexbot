@@ -72,6 +72,16 @@ const LOGOUT: Duration = if cfg!(test) {
     Duration::from_secs(5)
 };
 
+/// How long a send may take, connecting included. lettre's own timeout
+/// bounds connecting only, so a server that stops answering mid-send would
+/// hold the card, and Stop, for good. Past it, the email may have gone
+/// (`UNCERTAIN`).
+const SEND: Duration = if cfg!(test) {
+    Duration::from_millis(500)
+} else {
+    Duration::from_secs(120)
+};
+
 /// A service whose servers Hexbot knows, by the domains of its addresses.
 struct Known {
     name: &'static str,
@@ -1292,9 +1302,14 @@ pub(crate) async fn deliver(
     let envelope = lettre::address::Envelope::new(Some(parse(&cfg.address)?), to)
         .map_err(|e| Error::new(4202, e.to_string()))?;
     use lettre::AsyncTransport;
-    smtp(cfg)?
-        .send_raw(&envelope, outgoing.as_bytes())
+    tokio::time::timeout(SEND, smtp(cfg)?.send_raw(&envelope, outgoing.as_bytes()))
         .await
+        .map_err(|_| {
+            maybe(Error::new(
+                UNCERTAIN,
+                format!("{} stopped answering.", cfg.name),
+            ))
+        })?
         .map_err(|e| maybe(smtp_error(cfg, e)))?;
     // It went. Filing it in Sent is a courtesy: a failure there leaves the
     // email sent, and says it wasn't filed.

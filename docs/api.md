@@ -167,7 +167,17 @@ data model. The native transport and event projection live in
   In every such case the card keeps waiting, and any other answer while one
   is going out, Discard included, returns 4204. `approval.resolved`
   for this card also carries `mail_action` and `draft`, the email as it
-  went. Questions arrive as `clarify.request` and
+  went. An SMTP send that gets no answer within 120 seconds ends as 5244 too.
+  A card a tool shows carries `tool_id`, the Pi tool call that showed it,
+  when the call came from Pi. Answered cards are kept nowhere else: clients
+  draw them again from the history row of that call, its arguments and
+  result. A closed card's tool returns "The user closed the draft without
+  sending it.", "The user closed the sign-in card." or "The user said no.",
+  and a failure after the user agreed on a sign-in or plugin card starts
+  "The user agreed on the card, but it didn't work:"; clients rely on these
+  words. Plugin results name the plugin (`name`). A card-showing call made
+  from code (clarify, a draft, a sign-in, installing, turning on or setting
+  up a plugin) is refused; the bot makes it itself. Questions arrive as `clarify.request` and
   `pending_clarify` on section open; use `clarify.respond` to answer.
   Every card that stops waiting is settled once, to every client of the
   owner, by its `request_id`. An answer sends `approval.resolved
@@ -205,7 +215,11 @@ data model. The native transport and event projection live in
   questions arriving while the turn is stopping are cancelled before Pi's abort
   finishes, without publishing new cards. A client answer that Stop has already
   claimed returns 4204. An answer committed to Pi before Stop can finish;
-  duplicate answers cannot commit again. Partial clarification answers remain
+  duplicate answers cannot commit again. Once the user agreed on a draft,
+  sign-in or plugin card, Stop waits for its tool to finish (the email to
+  go, the keys or login to be saved) and hand Pi the outcome, so the chat
+  keeps it; a refused send reopens the card and Stop goes on. Every step
+  has its own limit, under a 10-minute ceiling. Partial clarification answers remain
   waiting, and a failed final enqueue leaves the last question retryable.
   Queued input arriving during Stop waits until Stop finishes and the stopped
   run or command completes, then starts or joins a fresh run. Input already
