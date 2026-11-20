@@ -3,7 +3,7 @@
 // It is a preview, not PowerPoint: charts, effects and animations show as a
 // plain box or not at all. Text edits change the runs in place.
 
-import { attr, child, children, find, NS, type OfficePackage } from './package'
+import { attr, child, children, find, keyOf, NS, type OfficePackage } from './package'
 import { runText, type RunView, writeRuns } from './runs'
 
 const A = NS.a
@@ -291,8 +291,6 @@ function paragraphsOf(
   })
 }
 
-let shapeIds = 0
-
 function readSlide(pkg: OfficePackage, path: string, index: number): PptxSlide {
   const rels = pkg.rels(path)
   const layout = [...rels.values()].find(rel => rel.type.endsWith('/slideLayout'))?.target
@@ -307,7 +305,8 @@ function readSlide(pkg: OfficePackage, path: string, index: number): PptxSlide {
 
   const walk = (tree: Element, place: (box: Box) => Box) => {
     for (const node of Array.from(tree.children)) {
-      const id = `shape-${++shapeIds}`
+      // The same shape keeps its key while its text is edited, and its editor its focus.
+      const id = keyOf(node)
 
       if (node.namespaceURI !== P) {
         continue

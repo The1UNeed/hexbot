@@ -116,8 +116,9 @@ data model. The native transport and event projection live in
   keeps its permissions, one write at a time; it refuses binary files (4202).
   A write with a base64 `data_url` replaces a PNG, JPEG or WebP picture or a
   Word, Excel or PowerPoint file the panel edited, up to 45 MiB, the same
-  way; it refuses any other format, and bytes that are not the format the
-  file's name says (4202). Either write, when `version` (from the last read or write) no longer matches the
+  way; it must name `version` (4200 without), refuses any other format and
+  bytes that are not the format the file's name says (4202), and answers
+  4209 for a file grown past 45 MiB. Either write, when `version` (from the last read or write) no longer matches the
   file, answers 4209 and changes nothing. In Auto and Manual a bot's `edit`
   takes the same turn and is refused the same way when the file changed
   after the bot read it, so it cannot undo a save made in between; the bot

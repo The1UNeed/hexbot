@@ -16,6 +16,13 @@ describe('CSV and TSV', () => {
     expect(parseDelimited(text, ',')).toEqual(rows)
   })
 
+  it('keeps a record of one empty field in a one-column file', () => {
+    const rows = parseDelimited('before\n""\nafter\n', ',')
+
+    expect(rows).toEqual([['before'], [''], ['after']])
+    expect(serializeDelimited(rows, ',', 'x\n')).toBe('before\n""\nafter\n')
+  })
+
   it('keeps the file’s line endings, byte-order mark and final line break', () => {
     expect(serializeDelimited([['a', 'b']], ',', '\ufeffx,y\r\n')).toBe('\ufeffa,b\r\n')
     expect(serializeDelimited([['a', 'b']], ',', 'x,y')).toBe('a,b')

@@ -2,24 +2,28 @@
 
 /**
  * Rows of a CSV or TSV file, as RFC 4180 reads them: a quoted field may hold
- * the delimiter, line breaks and doubled quotes. Blank lines are skipped.
+ * the delimiter, line breaks and doubled quotes. Blank lines are skipped;
+ * a line holding only `""` is a record with one empty field.
  */
 export function parseDelimited(text: string, delimiter: string): string[][] {
   const rows: string[][] = []
   let row: string[] = []
   let field = ''
   let quoted = false
+  // The row had a quoted field, so even one empty field is a record.
+  let wasQuoted = false
   const body = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
 
   const endRow = () => {
     row.push(field)
 
-    if (row.length > 1 || row[0] !== '') {
+    if (row.length > 1 || row[0] !== '' || wasQuoted) {
       rows.push(row)
     }
 
     row = []
     field = ''
+    wasQuoted = false
   }
 
   for (let i = 0; i < body.length; i++) {
@@ -36,6 +40,7 @@ export function parseDelimited(text: string, delimiter: string): string[][] {
       }
     } else if (char === '"' && field === '') {
       quoted = true
+      wasQuoted = true
     } else if (char === delimiter) {
       row.push(field)
       field = ''
@@ -65,7 +70,11 @@ export function serializeDelimited(rows: string[][], delimiter: string, like = '
   const quote = (field: string) =>
     field.includes(delimiter) || /["\r\n]/.test(field) ? `"${field.replace(/"/g, '""')}"` : field
 
-  const body = rows.map(row => row.map(quote).join(delimiter)).join(eol)
+  // A record of one empty field is written `""`, or it would read as a blank line.
+  const body = rows
+    .map(row => (row.length === 1 && row[0] === '' ? '""' : row.map(quote).join(delimiter)))
+    .join(eol)
+
   const trailing = like === '' || /\r?\n$/.test(like) ? eol : ''
 
   return bom + body + (rows.length ? trailing : '')

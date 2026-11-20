@@ -348,9 +348,7 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
   const plain = !DOCUMENT.test(name)
   const mime = file?.mime ?? tab.file.mime
 
-  const fileComments = useChatComments(chat).filter(
-    comment => (comment.path ?? comment.name) === (path ?? name)
-  )
+  const fileComments = useChatComments(chat).filter(comment => comment.tab === tab.toolId)
 
   const openComment = (next: CommentTarget, open: boolean, area: Area | null = null) => {
     setCommentArea(area)
@@ -407,10 +405,18 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
     throw cause
   }
 
+  // The editor this render shows. One the user replaced with the bot's
+  // version saves nothing, not even the edit it held when it went.
+  const mine = edition
+
+  /** An editor took on the file as it is now, at this version (or the latest read). */
+  const follow = (version?: string) => {
+    base.current = version ?? latest.current?.version ?? base.current
+  }
+
   /** Saves the text on screen, against the version it started from. */
   const saveText = async (next: string) => {
-    // An editor the user replaced with the bot's version saves nothing.
-    if (!path || !file) {
+    if (!path || !file || mine !== editionRef.current) {
       return
     }
 
@@ -434,6 +440,10 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
   const saveBytes = async (dataUrl: string): Promise<string> => {
     if (!path || !file) {
       throw new Error('This file cannot be saved here.')
+    }
+
+    if (mine !== editionRef.current) {
+      return base.current ?? file.version
     }
 
     try {
@@ -475,16 +485,8 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
         key={`${path}:${edition}`}
         label={label}
         onClose={() => undefined}
-        onFollow={() => {
-          base.current = latest.current?.version ?? base.current
-        }}
-        onSave={async next => {
-          if (edition !== editionRef.current) {
-            return
-          }
-
-          await saveText(next)
-        }}
+        onFollow={() => follow()}
+        onSave={saveText}
         plain={plain}
         title={name}
         value={text}
@@ -530,6 +532,7 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
             key={`${path}:${edition}`}
             name={name}
             onComment={comment}
+            onFollow={() => follow()}
             onMode={setSheetMode}
             onSave={saveText}
             text={text}
@@ -576,6 +579,7 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
       flushRef: flush,
       name,
       onComment: comment,
+      onFollow: follow,
       onSave: saveBytes
     }
 
@@ -587,7 +591,7 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
       ) : (
         <PptxView key={`${path}:${edition}`} {...props} />
       )
-  } else if (mime.startsWith('image/') && mime !== 'image/svg+xml' && objectUrl) {
+  } else if (mime.startsWith('image/') && mime !== 'image/svg+xml' && file.data_url) {
     body = (
       <ImageEditor
         botName={botName}
@@ -599,8 +603,10 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
         name={name}
         onAttach={askable && chat ? next => fileCommentsActions().attach(chat, next) : undefined}
         onComment={askable ? (next, area) => openComment(next, true, area) : undefined}
+        onFollow={follow}
         onSave={saveBytes}
-        src={objectUrl}
+        // The picture and its version come together, from the same read.
+        src={file.data_url}
         version={file.version}
       />
     )
@@ -684,8 +690,10 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
               area: commentArea ?? undefined,
               name,
               note,
-              path,
+              // As the daemon resolved it, so the message's file tag opens it.
+              path: file?.path || path,
               quote: target?.quote,
+              tab: tab.toolId,
               where: target?.where
             })
             closeComment()

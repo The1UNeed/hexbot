@@ -224,6 +224,21 @@ export function resolvePath(dir: string, target: string): string {
   return resolved.join('/')
 }
 
+const keys = new WeakMap<Element, string>()
+let keyed = 0
+
+/** A key for a part of a file that stays the same while the file is edited, for React lists. */
+export function keyOf(node: Element): string {
+  let key = keys.get(node)
+
+  if (!key) {
+    key = `k${++keyed}`
+    keys.set(node, key)
+  }
+
+  return key
+}
+
 /** Child elements of `node` with the local name `name` in namespace `ns`. */
 export function children(node: Element, ns: string, name: string): Element[] {
   return Array.from(node.children).filter(

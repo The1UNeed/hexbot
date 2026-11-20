@@ -11,7 +11,7 @@ import {
   setParagraphText,
   splitParagraph
 } from '../../../lib/office/docx'
-import { dataUrlOf, OfficePackage } from '../../../lib/office/package'
+import { dataUrlOf, keyOf, OfficePackage } from '../../../lib/office/package'
 import {
   type PptxParagraph,
   type PptxShape,
@@ -61,6 +61,8 @@ export interface OfficeViewProps {
   onSave: (dataUrl: string) => Promise<string>
   flushRef: { current: (() => Promise<boolean>) | null }
   onComment?: (target: CommentTarget, open: boolean) => void
+  /** The view took on this version of the file: its saves start from it. */
+  onFollow: (version: string) => void
 }
 
 /**
@@ -68,7 +70,10 @@ export interface OfficeViewProps {
  * A new version of the file (the bot's edit) replaces it, unless an edit is
  * still waiting to save; that save is then refused and the panel says so.
  */
-function useOfficePackage({ editable, file, flushRef, onSave }: OfficeViewProps, mime: string) {
+function useOfficePackage(
+  { editable, file, flushRef, onFollow, onSave }: OfficeViewProps,
+  mime: string
+) {
   const base = useRef(file.version)
   const [pkg, setPkg] = useState<null | OfficePackage>(null)
   const [failed, setFailed] = useState(false)
@@ -99,6 +104,7 @@ function useOfficePackage({ editable, file, flushRef, onSave }: OfficeViewProps,
 
     base.current = file.version
     open(file.data_url)
+    onFollow(file.version)
     // Only a new version reopens the file.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file.version])
@@ -173,13 +179,18 @@ export function DocxView(props: OfficeViewProps) {
   useEffect(() => {
     const node = area.current
 
-    if (!node || typeof ResizeObserver === 'undefined') {
+    if (!node) {
+      return
+    }
+
+    setWidth(node.clientWidth)
+
+    if (typeof ResizeObserver === 'undefined') {
       return
     }
 
     const observer = new ResizeObserver(() => setWidth(node.clientWidth))
     observer.observe(node)
-    setWidth(node.clientWidth)
 
     return () => observer.disconnect()
   }, [opened])
@@ -192,13 +203,13 @@ export function DocxView(props: OfficeViewProps) {
   // The page keeps its proportions and shrinks to the panel.
   const zoom = width ? Math.min(1, (width - 24) / page.width) : 1
 
-  const paragraph = (block: DocxParagraph, siblings: DocxParagraph[], key: number | string) => {
+  const paragraph = (block: DocxParagraph, siblings: DocxParagraph[]) => {
     const index = siblings.indexOf(block)
     const text = block.views.map(view => view.text).join('')
     const tag = block.heading ? (`h${block.heading}` as 'h1') : block.list ? 'li' : 'p'
 
     return (
-      <div className="flex flex-col" key={key}>
+      <div className="flex flex-col" key={keyOf(block.element)}>
         {block.pictures.map(src => (
           <img alt="" className="my-2 max-w-full" key={src} src={src} />
         ))}
@@ -264,17 +275,16 @@ export function DocxView(props: OfficeViewProps) {
           block,
           list[index - 1]?.kind === 'paragraph'
             ? [list[index - 1] as DocxParagraph, block]
-            : [block],
-          index
+            : [block]
         )
       ) : (
-        <table className="my-3 w-full border-collapse text-[14px]" key={index}>
+        <table className="my-3 w-full border-collapse text-[14px]" key={keyOf(block.element)}>
           <tbody>
             {block.rows.map((row, r) => (
               <tr key={r}>
                 {row.map((cell, c) => (
                   <td className="border border-[#bfbfbf] px-2 py-1 align-top" key={c}>
-                    {cell.map((item, p) => paragraph(item, cell, p))}
+                    {cell.map(item => paragraph(item, cell))}
                   </td>
                 ))}
               </tr>
@@ -436,7 +446,7 @@ function ShapeText({
 }) {
   return (
     <>
-      {paragraphs.map((paragraph, index) => (
+      {paragraphs.map(paragraph => (
         <EditableRuns
           baseSize={paragraph.size}
           className={cn(
@@ -444,7 +454,7 @@ function ShapeText({
             paragraph.bullet && 'list-item list-disc'
           )}
           editable={editable}
-          key={index}
+          key={keyOf(paragraph.element)}
           onCommit={texts => onCommit(paragraph, texts)}
           pxPerPt={pxPerPt}
           runs={paragraph.views}
@@ -620,13 +630,18 @@ export function PptxView(props: OfficeViewProps) {
   useEffect(() => {
     const node = area.current
 
-    if (!node || typeof ResizeObserver === 'undefined') {
+    if (!node) {
+      return
+    }
+
+    setWidth(node.clientWidth)
+
+    if (typeof ResizeObserver === 'undefined') {
       return
     }
 
     const observer = new ResizeObserver(() => setWidth(node.clientWidth))
     observer.observe(node)
-    setWidth(node.clientWidth)
 
     return () => observer.disconnect()
   }, [opened])

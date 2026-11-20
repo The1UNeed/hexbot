@@ -256,7 +256,7 @@ describe('MessageRow files', () => {
     expect(onImage).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByAltText('board.png'))
-    expect(onImage).toHaveBeenCalledWith('data:image/png;base64,AA==')
+    expect(onImage).toHaveBeenCalledWith('data:image/png;base64,AA==', 'board.png')
   })
 
   it('keeps Recall on a message of files alone, with nothing to copy', () => {

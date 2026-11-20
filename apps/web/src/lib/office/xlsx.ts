@@ -449,7 +449,11 @@ export function setCells(
 
     cell.removeAttribute('t')
     const text = value
-    const date = styles.kind[Number(attr(cell, 's') ?? 0)] === 'date' ? dateToSerial(text) : null
+    const kind = styles.kind[Number(attr(cell, 's') ?? 0)]
+    const date = kind === 'date' ? dateToSerial(text) : null
+
+    // A percent cell shows 25% for 0.25, and takes 30% back the same way.
+    const percent = kind === 'percent' ? /^\s*(-?(?:\d+\.?\d*|\.\d+))\s*%\s*$/.exec(text) : null
 
     if (text === '') {
       continue
@@ -460,9 +464,11 @@ export function setCells(
       formula.textContent = text.slice(1)
       cell.append(formula)
       formulas = true
-    } else if (date !== null || /^-?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i.test(text.trim())) {
+    } else if (date !== null || percent || /^-?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i.test(text.trim())) {
       const number = doc.createElementNS(S, `${prefix}v`)
-      number.textContent = String(date ?? Number(text.trim()))
+      number.textContent = String(
+        date ?? (percent ? Number(percent[1]) / 100 : Number(text.trim()))
+      )
       cell.append(number)
     } else {
       cell.setAttribute('t', 'inlineStr')

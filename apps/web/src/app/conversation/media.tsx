@@ -75,7 +75,7 @@ export function MediaView({
   fallback: ReactNode
   kind: AttachmentKind
   name: string
-  onImage: (source: string) => void
+  onImage: (source: string, name?: string) => void
   path?: string
   sessionId?: string
   url?: string
@@ -106,7 +106,7 @@ export function MediaView({
       <button
         aria-label={`Open ${name}`}
         className="hex-focus rounded-panel"
-        onClick={() => onImage(src)}
+        onClick={() => onImage(src, name)}
         type="button"
       >
         <img alt={name} className="max-h-64 rounded-panel object-contain" src={src} />

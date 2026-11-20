@@ -1138,14 +1138,9 @@ export function filesWriteBytes(
   sessionId: string,
   path: string,
   dataUrl: string,
-  version?: string
+  version: string
 ): Promise<{ modified: number; path: string; size: number; version: string }> {
-  return rpcCall('hexbot.files.write', {
-    data_url: dataUrl,
-    path,
-    session_id: sessionId,
-    ...(version ? { version } : {})
-  })
+  return rpcCall('hexbot.files.write', { data_url: dataUrl, path, session_id: sessionId, version })
 }
 
 /** `data:<mime>;base64,<payload>` for the whole file. */
