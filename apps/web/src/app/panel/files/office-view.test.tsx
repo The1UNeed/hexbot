@@ -100,6 +100,27 @@ describe('a Word paragraph split over selected words', () => {
   })
 })
 
+describe('a Word paragraph left before its text went back into the file', () => {
+  it('saves what was typed when the view goes', async () => {
+    const { flushRef, props: view, saves } = props(dataUrlOf(docx().save(), WORD))
+    const shown = render(<DocxView {...view} flushRef={flushRef} />)
+    const paragraph = (await screen.findByText('Bold')).closest('[data-where]') as HTMLElement
+
+    paragraph.querySelectorAll('span')[1]!.textContent = 'and typed.'
+    fireEvent.input(paragraph)
+    // Leaving the chat closes the tab at once: no blur, no pause.
+    shown.unmount()
+    await act(async () => {})
+
+    const saved = readDocx(OfficePackage.fromDataUrl(saves.at(-1)!))!
+    const second = saved.blocks[1]!
+
+    expect(second.kind === 'paragraph' && second.views.map(item => item.text).join('')).toBe(
+      'Bold and typed.'
+    )
+  })
+})
+
 describe('a PowerPoint file beside the chat', () => {
   it('keeps the box being typed in when its text goes back into the file', async () => {
     const { flushRef, props: view, saves } = props(dataUrlOf(pptx().save(), POWERPOINT))

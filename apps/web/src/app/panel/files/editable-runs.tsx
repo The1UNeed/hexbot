@@ -184,9 +184,9 @@ export function EditableRuns({
     }
   }, [focusAt])
 
-  const commit = () => {
+  const commit = (element: HTMLElement | null = node.current) => {
     window.clearTimeout(timer.current)
-    const element = node.current
+    typed.current = false
 
     if (!element) {
       return
@@ -199,8 +199,23 @@ export function EditableRuns({
     }
   }
 
-  // Leaving the panel commits what was typed.
-  useEffect(() => () => window.clearTimeout(timer.current), [])
+  // Leaving (another chat, Back) commits what was typed, even with no blur:
+  // the paragraph's node still holds the text as it goes.
+  const typed = useRef(false)
+  const commitLatest = useRef(commit)
+  commitLatest.current = commit
+
+  useLayoutEffect(() => {
+    const element = node.current
+
+    return () => {
+      window.clearTimeout(timer.current)
+
+      if (typed.current) {
+        commitLatest.current(element)
+      }
+    }
+  }, [])
 
   const Tag = tag
 
@@ -217,6 +232,7 @@ export function EditableRuns({
         }
       }}
       onInput={() => {
+        typed.current = true
         onTyping?.()
         window.clearTimeout(timer.current)
         timer.current = window.setTimeout(commit, COMMIT_DELAY)
@@ -259,6 +275,7 @@ export function EditableRuns({
             range.collapse(true)
             selection.removeAllRanges()
             selection.addRange(range)
+            typed.current = true
             onTyping?.()
             window.clearTimeout(timer.current)
             timer.current = window.setTimeout(commit, COMMIT_DELAY)

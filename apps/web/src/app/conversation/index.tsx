@@ -1730,6 +1730,12 @@ function Composer({
           uploads
         }))
       ) {
+        // An older daemon keeps the draft in the composer to send again; its
+        // comments come back with it.
+        if (!identified && chat) {
+          fileCommentsActions().restore(chat, sentComments)
+        }
+
         return
       }
 
