@@ -1,11 +1,17 @@
 import { strFromU8, unzipSync } from 'fflate'
 import { describe, expect, it } from 'vitest'
 
-import { joinParagraph, readDocx, setParagraphText, splitParagraph } from './docx'
+import {
+  type DocxParagraph,
+  joinParagraph,
+  readDocx,
+  setParagraphText,
+  splitParagraph
+} from './docx'
 import { bytesOfDataUrl, dataUrlOf, OfficePackage, resolvePath } from './package'
 import { readPptx, setSlideText } from './pptx'
 import { writeRuns } from './runs'
-import { docx, pptx, xlsx } from './test-fixtures'
+import { docx, pack, pptx, xlsx } from './test-fixtures'
 import { cellLocked, cellSource, dateToSerial, readXlsx, serialToDate, setCells } from './xlsx'
 
 /** A saved package opened again, as the next read would. */
@@ -70,6 +76,27 @@ describe('a Word file', () => {
     blocks = readDocx(reopen(pkg))!.blocks
     expect(text(1)).toBe('Bold and plain.')
     expect((blocks[1] as typeof body).views[0]!.bold).toBe(true)
+  })
+})
+
+describe('a Word paragraph typed into while empty', () => {
+  it('joins the paragraph before it with the text just typed', () => {
+    const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+
+    const pkg = pack({
+      'word/document.xml': `<w:document xmlns:w="${W}"><w:body><w:p><w:r><w:t>Start</w:t></w:r></w:p><w:p/></w:body></w:document>`
+    })
+
+    const [first, empty] = readDocx(pkg)!.blocks as DocxParagraph[]
+
+    setParagraphText(pkg, empty!, [' and more'])
+    // The join reads the paragraph as it is, not the runs it was read with.
+    joinParagraph(pkg, first!, empty!)
+
+    const blocks = readDocx(reopen(pkg))!.blocks as DocxParagraph[]
+
+    expect(blocks).toHaveLength(1)
+    expect(blocks[0]!.views.map(view => view.text).join('')).toBe('Start and more')
   })
 })
 

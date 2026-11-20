@@ -114,7 +114,11 @@ export function SheetGrid({
     focus: { col: 0, row: 0 }
   })
 
-  const [editing, setEditing] = useState<null | { cell: Cell; value: string }>(null)
+  // `inBar`: typed in the bar above the grid, which keeps focus while it is.
+  const [editing, setEditing] = useState<null | { cell: Cell; inBar?: boolean; value: string }>(
+    null
+  )
+
   const [shownRows, setShownRows] = useState(ROW_STEP)
   const dragging = useRef(false)
   const grid = useRef<HTMLDivElement>(null)
@@ -161,8 +165,8 @@ export function SheetGrid({
   }
 
   /** A cell's text changed while editing: the sheet holds an edit not saved yet. */
-  const draft = (cell: Cell, value: string) => {
-    setEditing({ cell, value })
+  const draft = (cell: Cell, value: string, inBar = false) => {
+    setEditing({ cell, inBar, value })
     onDraft?.()
   }
 
@@ -394,7 +398,7 @@ export function SheetGrid({
           onBlur={() => editing && commit()}
           onChange={event => {
             cancelled.current = false
-            draft(focus, event.target.value)
+            draft(focus, event.target.value, true)
           }}
           onKeyDown={event => {
             if (event.key === 'Enter') {
@@ -531,7 +535,10 @@ export function SheetGrid({
                 {header.map((_, col) => {
                   const inside = row >= top && row <= bottom && col >= left && col <= right
                   const focused = row === focus.row && col === focus.col
-                  const isEditing = editing?.cell.row === row && editing.cell.col === col
+
+                  const isEditing =
+                    editing?.cell.row === row && editing.cell.col === col && !editing.inBar
+
                   const value = valueAt({ col, row })
                   const numeric = value !== '' && !Number.isNaN(Number(value))
 

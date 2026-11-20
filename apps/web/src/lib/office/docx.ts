@@ -320,7 +320,8 @@ export function joinParagraph(
   // Each run moves with what holds it inside the paragraph, such as a link.
   const moved = new Set<Element>()
 
-  for (const run of block.runs) {
+  // Read from the paragraph itself: a run made for text typed a moment ago is there too.
+  for (const run of ownRuns(block.element)) {
     let top: Element = run
 
     while (top.parentElement && top.parentElement !== block.element) {
