@@ -190,6 +190,21 @@ describe('an Excel file', () => {
     expect(unzipSync(pkg.save())['xl/calcChain.xml']).toBeDefined()
   })
 
+  it('keeps what is typed into a Text cell as text', () => {
+    const pkg = pack({
+      'xl/_rels/workbook.xml.rels': `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Target="worksheets/sheet1.xml" Type="ws"/></Relationships>`,
+      'xl/styles.xml': `<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><cellXfs><xf numFmtId="0"/><xf numFmtId="49"/></cellXfs></styleSheet>`,
+      'xl/workbook.xml': `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Ids" r:id="rId1"/></sheets></workbook>`,
+      'xl/worksheets/sheet1.xml': `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" s="1"/></row></sheetData></worksheet>`
+    })
+
+    const sheet = readXlsx(pkg)!.sheets[0]!
+
+    setCells(pkg, sheet, [{ col: 0, row: 0, value: '001234' }])
+
+    expect(readXlsx(reopen(pkg))!.sheets[0]!.rows[0]![0]).toBe('001234')
+  })
+
   it('converts dates both ways', () => {
     expect(serialToDate(45352)).toBe('2024-03-01')
     expect(serialToDate(45352.5)).toBe('2024-03-01 12:00')

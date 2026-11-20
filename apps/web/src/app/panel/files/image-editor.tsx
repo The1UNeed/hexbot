@@ -509,7 +509,8 @@ export function ImageEditor({
 
         onComment(
           {
-            where: `the marked area at ${round(commentBox.x)}, ${round(commentBox.y)} (${round(commentBox.w)}×${round(commentBox.h)} px)`,
+            // In the picture as it is saved: a crop moves its corner.
+            where: `the marked area at ${round(commentBox.x - (markup.crop?.x ?? 0))}, ${round(commentBox.y - (markup.crop?.y ?? 0))} (${round(commentBox.w)}×${round(commentBox.h)} px)`,
             x: Math.max(
               8,
               Math.min((screen?.left ?? 0) + frame.left - panel.left, panel.width - 296)
