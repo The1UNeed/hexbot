@@ -131,7 +131,7 @@ describe('clarify card', () => {
     render(<ClarifyCard clarify={clarify({ expired: true })} />)
     expect(screen.getByRole('option', { name: /Tech digging/ })).toBeDisabled()
     expect(screen.getByLabelText('Your own answer')).toBeDisabled()
-    expect(screen.getByText('The bot stopped waiting.')).toBeInTheDocument()
+    expect(screen.getByText(/Reply in the message field instead/)).toBeInTheDocument()
   })
 
   // A daemon restart for an update cancels every waiting question.
@@ -156,6 +156,20 @@ describe('clarify card', () => {
     fireEvent.change(field, { target: { value: 'Robotics club' } })
     fireEvent.click(screen.getByRole('button', { name: 'Done' }))
     expect(onReply).toHaveBeenCalledWith('Robotics club')
+    // Locked on the card while the message goes out.
+    expect(screen.queryByLabelText('Your own answer')).not.toBeInTheDocument()
+    expect(screen.getByText('Robotics club')).toBeInTheDocument()
+  })
+
+  it('keeps a typed single answer that looks like a list as typed', () => {
+    const onReply = vi.fn()
+    render(<ClarifyCard clarify={clarify({ expired: true })} onReply={onReply} />)
+
+    fireEvent.change(screen.getByLabelText('Your own answer'), {
+      target: { value: '["./config.json"]' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }))
+    expect(onReply).toHaveBeenCalledWith('["./config.json"]')
   })
 
   it('sends a stopped batch as one message once every question is answered', () => {
@@ -179,5 +193,7 @@ describe('clarify card', () => {
     fireEvent.click(screen.getByRole('button', { name: /Discord/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Done' }))
     expect(onReply).toHaveBeenCalledWith('First?\nServer\n\nSecond?\nDrive, Discord')
+    expect(onReply).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('option')).not.toBeInTheDocument()
   })
 })

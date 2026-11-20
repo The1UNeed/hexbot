@@ -156,7 +156,11 @@ function Question({
 }
 
 /** An answer as a person writes it: a chosen list reads as words, not JSON. */
-function spoken(answer: string): string {
+function spoken(question: ClarifyQuestion, answer: string): string {
+  if (!question.multiSelect) {
+    return answer
+  }
+
   try {
     const parsed: unknown = JSON.parse(answer)
 
@@ -164,7 +168,7 @@ function spoken(answer: string): string {
       return parsed.map(String).join(', ')
     }
   } catch {
-    // A plain answer is not JSON.
+    // Not a chosen list.
   }
 
   return answer
@@ -178,11 +182,13 @@ export function replyText(clarify: ClarifyRequest, answers: Record<string, strin
   const keyOf = (question: ClarifyQuestion) => question.questionId ?? clarify.requestId
 
   if (clarify.questions.length === 1) {
-    return spoken(answers[keyOf(clarify.questions[0]!)] ?? '')
+    const question = clarify.questions[0]!
+
+    return spoken(question, answers[keyOf(question)] ?? '')
   }
 
   return clarify.questions
-    .map(question => `${question.question}\n${spoken(answers[keyOf(question)] ?? '')}`)
+    .map(question => `${question.question}\n${spoken(question, answers[keyOf(question)] ?? '')}`)
     .join('\n\n')
 }
 
@@ -206,7 +212,8 @@ export function ClarifyCard({
 }) {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  // Answers to a batch the bot stopped waiting on, held until all are in.
+  // Answers given after the bot stopped waiting. They stay locked on the
+  // card while the message goes out.
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const color = useFaceColor(bot, bot ? bot.display_name : null)
   const stopped = Boolean(clarify.expired) && !clarifyAnswered(clarify)
@@ -221,13 +228,11 @@ export function ClarifyCard({
     const key = question.questionId ?? clarify.requestId
 
     if (replying) {
-      const next = { ...drafts, [key]: value }
+      const next = { ...clarify.answers, ...drafts, [key]: value }
+      setDrafts(next)
 
-      if (clarifyAnswered({ ...clarify, answers: { ...clarify.answers, ...next } })) {
-        setDrafts({})
-        onReply!(replyText(clarify, { ...clarify.answers, ...next }))
-      } else {
-        setDrafts(next)
+      if (clarifyAnswered({ ...clarify, answers: next })) {
+        onReply!(replyText(clarify, next))
       }
 
       return
@@ -268,7 +273,7 @@ export function ClarifyCard({
         <p className="text-[length:var(--text-secondary)] text-muted">
           {replying
             ? 'The bot stopped waiting. Your answer goes as a new message.'
-            : 'The bot stopped waiting.'}
+            : 'The bot stopped waiting. Reply in the message field instead.'}
         </p>
       ) : null}
       {error ? (
