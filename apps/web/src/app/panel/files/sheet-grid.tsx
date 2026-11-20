@@ -3,6 +3,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState
@@ -157,6 +158,16 @@ export function SheetGrid({
 
   // Escape drops the edit; the blur that moving focus causes must not save it.
   const cancelled = useRef(false)
+
+  // Leaving (another chat, Back) keeps a cell being typed in, as Enter would.
+  const leaving = useRef(() => {})
+  leaving.current = () => {
+    if (editing && !cancelled.current && editing.value !== source(editing.cell)) {
+      onChange([{ cell: editing.cell, value: editing.value }])
+    }
+  }
+
+  useLayoutEffect(() => () => leaving.current(), [])
 
   const cancel = () => {
     cancelled.current = true
