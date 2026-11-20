@@ -441,13 +441,16 @@ more freedom and more capability than a hosted product can offer.
   nothing is saved. Reviewed Auto cards, incomplete file scans and requests
   the daemon raises itself (code runs, browser scripts, cron) offer Approve
   and Deny only. Native notifications for approvals and mentions.
-- New bots get files and web search, plus the computers setup chose:
-  the bots' own computer (its terminal and desktop) when Cua can run it,
-  and this computer's terminal or desktop as setup chose (without a
-  choice, this computer's terminal when Cua can't run; an install with
-  bots from before computers keeps giving it, as its first start wrote
-  down). Settings, Computers holds every
-  computer and its bots, and the bots' computer's size and controls;
+- New bots get files and web search, plus the computers setup chose as
+  their environments: the bots' own computer when Cua can run it, and this
+  computer as setup chose (without a choice, this computer when Cua can't
+  run; an install with bots from before computers keeps giving it, as its
+  first start wrote down). A bot's terminal runs in every environment it
+  has. Computer Use is a connector, as setup chose for new bots: with it a
+  bot sees and uses the screens of its environments where they are
+  shared, so a desktop is never granted apart from a computer. Settings,
+  Computers holds every computer and its bots, each computer's Computer
+  Use here switch, and the bots' computer's size and controls;
   Settings, Plugins shows connectors, MCP servers and skills on three tabs. Self-authored skills are on,
   with a transcript notice. A bot gets only the skills it needs, since every
   one it has is a line in its prompt. Hexbot bundles few: the ones for its

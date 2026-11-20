@@ -14,12 +14,16 @@
 //!   the app decides whether it takes part, so nothing on the daemon can turn
 //!   a laptop into a computer.
 //!
-//! Each computer offers a terminal, a desktop, or both. Grants live in
-//! config.yaml under `computers`, one list of bots per computer and
-//! capability, like a plugin's `bots`. A daemon without that key predates
+//! A computer given to a bot is one of its environments: config.yaml keeps,
+//! under `computers`, each computer's bots in its `terminal` list, like a
+//! plugin's `bots`, and the bot's bash runs in every one. Its desktop on a
+//! computer is never a grant of its own: the Computer Use connector
+//! (`computers.computer_use`, a list of bots) puts its environments' screens
+//! in reach where each is shared. A daemon without that key predates
 //! computers: every bot then has the bots' computer's desktop, and the bots
 //! with the `terminal` toolset have this computer's terminal, as before;
-//! `migrate` writes that down once.
+//! `migrate` writes that down once, giving every bot the bots' computer and
+//! Computer Use.
 //!
 //! A section freezes the bot's computers with its tools (`session_list`), so
 //! a computer coming online or going away never changes its prompt; the tools
@@ -62,11 +66,25 @@ pub fn device_computer(device: &str) -> String {
 
 // ---------------------------------------------------------------- grants
 
+// A bot's **environments** are the computers it works on: `terminal` in each
+// computer's config keeps its bots, and bash runs in every one. Its desktop on
+// a computer is not a grant of its own: the Computer Use connector
+// (`computer_use`, a list of bots) puts the bot's environments' screens in
+// reach, each where that computer's screen is shared (the bots' computer
+// always; this computer once its desktop is shared; a user's computer while
+// its app shares it, checked on every call).
+
+/// The Computer Use connector's key in `computers`.
+pub const COMPUTER_USE: &str = "computer_use";
+
 fn capability(name: &str) -> Result<&'static str> {
     match name {
         TERMINAL => Ok(TERMINAL),
-        DESKTOP => Ok(DESKTOP),
-        _ => Err(Error::new(4202, "capability must be terminal or desktop")),
+        DESKTOP => Err(Error::new(
+            4202,
+            "A desktop comes with Computer Use, a plugin: give the bot the computer, then turn Computer Use on for it in Settings, Plugins (hexbot plugins assign connector computer_use BOT).",
+        )),
+        _ => Err(Error::new(4202, "capability must be terminal")),
     }
 }
 fn valid_computer(computer: &str) -> Result<()> {
@@ -95,11 +113,11 @@ fn names(value: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 /// The bots of a daemon from before computers: every bot has the bots'
-/// computer's desktop, and its own `terminal` toolset decides this
-/// computer's terminal.
+/// computer and Computer Use (it had Computer use there), and its own
+/// `terminal` toolset decides this computer's terminal.
 fn legacy(home: &Path, bot: &str, computer: &str, capability: &str) -> Result<bool> {
     Ok(match (computer, capability) {
-        (VM, DESKTOP) => true,
+        (VM, _) => true,
         (HOST, TERMINAL) => crate::connectors::legacy_toolsets(home, bot)?
             .iter()
             .any(|t| t == TERMINAL),
@@ -138,11 +156,20 @@ impl Grants {
     fn has(&self, computer: &str, capability: &str) -> bool {
         match &self.config {
             Some(c) => {
-                !(computer == VM && c[VM]["off"] == true)
-                    && names(&c[computer][capability]).contains(&self.bot)
+                let here = !(computer == VM && c[VM]["off"] == true)
+                    && names(&c[computer][TERMINAL]).contains(&self.bot);
+                match capability {
+                    TERMINAL => here,
+                    // Its screen, through Computer Use, where it is shared.
+                    _ => {
+                        here && names(&c[COMPUTER_USE]).contains(&self.bot)
+                            && (computer != HOST || c[HOST]["desktop_on"] == true)
+                    }
+                }
             }
             None => match (computer, capability) {
-                (VM, DESKTOP) => true,
+                (VM, TERMINAL) => false,
+                (VM, _) => true,
                 (HOST, TERMINAL) => self.legacy_terminal,
                 _ => false,
             },
@@ -240,9 +267,12 @@ pub fn migrate(home: &Path) -> Result<()> {
         if config.get("computers").is_some_and(Value::is_object) {
             return Ok(());
         }
+        // Every bot had Computer use on the bots' computer: it keeps the bots'
+        // computer as an environment and Computer Use.
         config["computers"] = json!({
-            VM: {TERMINAL: [], DESKTOP: bots},
-            HOST: {TERMINAL: terminal, DESKTOP: []},
+            VM: {TERMINAL: bots},
+            HOST: {TERMINAL: terminal},
+            COMPUTER_USE: bots,
             "defaults": defaults,
         });
         Ok(())
@@ -276,6 +306,43 @@ pub fn set(home: &Path, computer: &str, capability: &str, bot: &str, on: bool) -
         }
     })
 }
+/// Whether `bot` has the Computer Use connector.
+pub fn computer_use_on(home: &Path, bot: &str) -> Result<bool> {
+    Ok(match configured(home)? {
+        Some(c) => names(&c[COMPUTER_USE]).iter().any(|b| b == bot),
+        // Before computers every bot had Computer use.
+        None => true,
+    })
+}
+/// The Computer Use connector's switch for one bot.
+pub fn set_computer_use(home: &Path, bot: &str, on: bool) -> Result<()> {
+    migrate(home)?;
+    common::update_config(home, |config| {
+        let list = &mut config["computers"][COMPUTER_USE];
+        let mut bots = names(list);
+        bots.retain(|b| b != bot);
+        if on {
+            bots.push(bot.to_owned());
+        }
+        bots.sort();
+        *list = json!(bots);
+        Ok(())
+    })
+}
+/// The Computer Use connector switched for `bot`, however (the Plugins page,
+/// a bot's settings, the primary bot): which screens it reaches changed, so
+/// open Computers pages read them again. A bot being made says so itself.
+pub fn computer_use_changed(home: &Path, bot: &str) -> Result<()> {
+    let owner: Option<String> = db::open(home)?
+        .query_row("SELECT owner_id FROM bots WHERE name=?", [bot], |r| {
+            r.get(0)
+        })
+        .ok();
+    if let Some(owner) = owner {
+        changed(home, &owner);
+    }
+    Ok(())
+}
 /// Whether the bots' computer can run: in use, and Cua on this computer.
 pub fn vm_usable(home: &Path) -> Result<bool> {
     // Read on every section build and staleness check: the cached config.
@@ -298,7 +365,6 @@ pub fn new_bot(home: &Path, bot: &str) -> Result<()> {
     let vm = vm_usable(home)?;
     if vm {
         set(home, VM, TERMINAL, bot, true)?;
-        set(home, VM, DESKTOP, bot, true)?;
     }
     // Setup's choice wins, a no included; without one, a bot that can't have
     // the bots' computer gets this computer's terminal, as bots always did.
@@ -306,8 +372,13 @@ pub fn new_bot(home: &Path, bot: &str) -> Result<()> {
     if host_terminal {
         set(home, HOST, TERMINAL, bot, true)?;
     }
-    if defaults["host_desktop"] == true && host_desktop_on(home)? {
-        set(home, HOST, DESKTOP, bot, true)?;
+    // Computer Use as setup chose; without a choice, wherever a screen is in
+    // reach (the bots' computer, or this one's shared desktop).
+    let computer_use = defaults[COMPUTER_USE]
+        .as_bool()
+        .unwrap_or(vm || host_terminal && host_desktop_on(home)?);
+    if computer_use {
+        set_computer_use(home, bot, true)?;
     }
     Ok(())
 }
@@ -331,12 +402,16 @@ pub fn forget_bot(home: &Path, bot: &str) -> Result<()> {
                     }
                     continue;
                 }
-                for cap in [TERMINAL, DESKTOP] {
-                    if entry[cap].is_array() {
-                        let mut bots = names(&entry[cap]);
-                        bots.retain(|b| b != bot);
-                        entry[cap] = json!(bots);
-                    }
+                if id == COMPUTER_USE {
+                    let mut bots = names(entry);
+                    bots.retain(|b| b != bot);
+                    *entry = json!(bots);
+                    continue;
+                }
+                if entry[TERMINAL].is_array() {
+                    let mut bots = names(&entry[TERMINAL]);
+                    bots.retain(|b| b != bot);
+                    entry[TERMINAL] = json!(bots);
                 }
             }
         }
@@ -348,32 +423,23 @@ pub fn forget_bot(home: &Path, bot: &str) -> Result<()> {
         .retain(|(_, b, _, _), _| b != bot);
     Ok(())
 }
-/// The bot settings' Terminal and Computer use switches: on gives the bot
-/// the default computer for it when it has none; off takes it from every
-/// computer.
+/// The bot settings' Terminal switch: on gives the bot the default
+/// environment when it has none; off takes every one.
 /// `give` false only takes away: a new bot's tool list never adds a
 /// computer setup said no to.
-pub fn sync_tools(home: &Path, bot: &str, terminal: bool, desktop: bool, give: bool) -> Result<()> {
+pub fn sync_tools(home: &Path, bot: &str, terminal: bool, give: bool) -> Result<()> {
     migrate(home)?;
-    for (capability, on) in [(TERMINAL, terminal), (DESKTOP, desktop)] {
-        let have = any(home, bot, capability)?;
-        if on && !have && give {
-            let computer = if vm_usable(home)? {
-                VM
-            } else if capability == TERMINAL {
-                HOST
-            } else {
-                continue;
-            };
-            set(home, computer, capability, bot, true)?;
-        } else if !on && have {
-            // Only a switch that really goes off: a computer switched off
-            // leaves the list as if off, and an unrelated save must keep its
-            // grants. Then every saved grant goes, a switched-off computer's
-            // included, so turning it back on can't bring back what was taken.
-            for computer in saved_grants(home, bot, capability)? {
-                set(home, &computer, capability, bot, false)?;
-            }
+    let have = any(home, bot, TERMINAL)?;
+    if terminal && !have && give {
+        let computer = if vm_usable(home)? { VM } else { HOST };
+        set(home, computer, TERMINAL, bot, true)?;
+    } else if !terminal && have {
+        // Only a switch that really goes off: a computer switched off leaves
+        // the list as if off, and an unrelated save must keep its
+        // environments. Then every saved one goes, a switched-off computer's
+        // included, so turning it back on can't bring back what was taken.
+        for computer in saved_grants(home, bot, TERMINAL)? {
+            set(home, &computer, TERMINAL, bot, false)?;
         }
     }
     Ok(())
@@ -1134,10 +1200,15 @@ fn command_result(mut output: String, code: i32, timed_out: bool, seconds: u64) 
     json!({"output":output,"exit_code":code,"timed_out":timed_out})
 }
 fn not_granted(computer: &str, what: &str) -> Error {
+    let where_ = if what == DESKTOP {
+        "Settings, Computers (the computer) and Settings, Plugins (Computer Use)"
+    } else {
+        "Settings, Computers"
+    };
     Error::new(
         4302,
         format!(
-            "You can't use the {what} of {computer}. Your Computers list says what you may use; the user changes it in Settings, Computers."
+            "You can't use the {what} of {computer}. Your Computers list says what you may use; the user changes it in {where_}."
         ),
     )
 }
@@ -2217,11 +2288,12 @@ pub fn may_use_desktop(home: &Path, bot: &str, computer: &str) -> Result<()> {
 }
 /// The grant and this computer's desktop switch, as they are now.
 fn allowed_here(home: &Path, bot: &str, computer: &str) -> Result<()> {
-    if !has(home, bot, computer, DESKTOP)? {
-        return Err(not_granted(computer, "desktop"));
-    }
+    // This computer's screen first: with it unshared, no bot has it.
     if computer == HOST && !host_desktop_on(home)? {
         return Err(host_not_set_up());
+    }
+    if !has(home, bot, computer, DESKTOP)? {
+        return Err(not_granted(computer, "desktop"));
     }
     Ok(())
 }
@@ -2594,7 +2666,7 @@ pub async fn list(home: &Path, owner: &str) -> Result<Value> {
     for (device, name) in devices {
         let computer = device_computer(&device);
         let live = online(home, &device);
-        // Granted: a bot on its terminal or desktop, or an app allowed there
+        // Granted: a bot working on it, or an app allowed there
         // (its saved OS alone doesn't keep it listed).
         let granted = config.as_ref().is_some_and(|c| {
             [TERMINAL, DESKTOP]
@@ -2661,7 +2733,9 @@ pub async fn call(home: &Path, owner: &str, method: &str, p: &Value) -> Option<R
         "hexbot.computers.defaults" => (|| {
             migrate(home)?;
             common::update_config(home, |config| {
-                for key in ["host_terminal", "host_desktop"] {
+                // This computer as an environment, and Computer Use, for
+                // every bot made from now on.
+                for key in ["host_terminal", COMPUTER_USE] {
                     if let Some(on) = p[key].as_bool() {
                         config["computers"]["defaults"][key] = json!(on);
                     }

@@ -36,7 +36,7 @@ Bots' shell commands and file tools can't read the vault or its key in Auto or M
 
 ## Where bots can use them
 
-- **Computer use**: Hexbot can't see which site the bots' computer shows, so it asks you before typing unless the bot uses Bypass. Look at the computer before you allow it.
+- **Computer Use**: Hexbot can't see which site the bots' computer shows, so it asks you before typing unless the bot uses Bypass. Look at the computer before you allow it.
 - Passwords work in a bot's own chat and in its scheduled jobs. A scheduled job can use a saved password but can't show the Sign in card. Rooms and conversations between bots can't use passwords.
 
 A page's own scripts can read a field after it is filled, and a bot set on finding a password could still get it. Give each password only to bots that need it.

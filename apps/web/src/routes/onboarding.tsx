@@ -1198,7 +1198,7 @@ export function AccountSuites() {
   // The open sheet's plugin by id, read from the current list, so a sign-in
   // that refreshes the list shows its new status.
   const [openId, setOpenId] = useState<null | string>(null)
-  const open = openId ? (plugins ?? []).find(plugin => plugin.id === openId) ?? null : null
+  const open = openId ? ((plugins ?? []).find(plugin => plugin.id === openId) ?? null) : null
 
   useEffect(() => {
     void refresh()
@@ -1374,15 +1374,20 @@ export function ComputersStep({
   const [vm, setVm] = useState(false)
   const [terminal, setTerminal] = useState(false)
   const [desktop, setDesktop] = useState(false)
+  // The Computer Use plugin for every bot made from now on, HexBot first.
+  const [computerUse, setComputerUse] = useState(false)
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
     computersList()
       .then(({ computers }) => {
         setComputers(computers)
-        // The bots' computer is suggested when it can run; this computer is
-        // never chosen for the user.
-        setVm(Boolean(computers.find(computer => computer.kind === 'vm')?.available))
+        // The bots' computer, and Computer Use on it, are suggested when it
+        // can run; this computer is never chosen for the user.
+        const runs = Boolean(computers.find(computer => computer.kind === 'vm')?.available)
+
+        setVm(runs)
+        setComputerUse(runs)
       })
       .catch(reason => {
         // A daemon from before computers: nothing to choose here.
@@ -1407,11 +1412,15 @@ export function ComputersStep({
         await computersSet('vm', { on: vm })
       }
 
-      if (desktop) {
+      // This computer's screen is shared only for Computer Use, and only
+      // when bots work on it.
+      const share = desktop && computerUse && terminal
+
+      if (share) {
         await computersSet('host', { desktop: true })
       }
 
-      await computersDefaults({ host_desktop: desktop, host_terminal: terminal })
+      await computersDefaults({ computer_use: computerUse, host_terminal: terminal })
       onContinue()
     } catch (reason) {
       onError(String(reason))
@@ -1466,34 +1475,47 @@ export function ComputersStep({
           !own.available
         )}
       </div>
-      <p className="px-1 pt-2 text-secondary font-medium text-muted">{host.name}, where Hexbot runs</p>
       <div className="divide-y divide-foreground/[0.07] rounded-2xl bg-foreground/[0.04]">
         {option(
           'onboarding-computer-terminal',
-          `Terminal on ${host.name}`,
-          'Terminal',
+          `${host.name}, where Hexbot runs`,
+          `${host.name}, where Hexbot runs`,
           host.terminal.sandboxed
             ? `Bots run commands on ${host.name}, in a sandbox in Auto and Manual.`
             : `Bots run commands on ${host.name}. Hexbot has no sandbox on Windows yet, so this works only in Bypass.`,
           terminal,
           setTerminal
         )}
+      </div>
+      <div className="divide-y divide-foreground/[0.07] rounded-2xl bg-foreground/[0.04]">
         {option(
-          'onboarding-computer-desktop',
-          `Desktop on ${host.name}`,
-          'Desktop',
-          host.desktop.available
-            ? `Bots see ${host.name}'s screen, click and type in the apps you allow (in Bypass, without asking), never in terminals, editors or Hexbot.`
-            : (host.desktop.note ?? 'Not available on this computer.'),
-          desktop,
-          setDesktop,
-          !host.desktop.available
+          'onboarding-computer-use',
+          'Computer Use',
+          <>
+            Computer Use <Chip tone="accent">Suggested</Chip>
+          </>,
+          'Bots see and use the screens of the computers they work on: click, type and open apps. A plugin, in Settings, Plugins.',
+          computerUse,
+          setComputerUse
         )}
+        {computerUse && terminal
+          ? option(
+              'onboarding-computer-desktop',
+              `Computer Use on ${host.name}`,
+              `Computer Use on ${host.name}`,
+              host.desktop.available
+                ? `Bots see ${host.name}'s screen, click and type in the apps you allow (in Bypass, without asking), never in terminals, editors or Hexbot.`
+                : (host.desktop.note ?? 'Not available on this computer.'),
+              desktop,
+              setDesktop,
+              !host.desktop.available
+            )
+          : null}
       </div>
       <p className="text-center text-secondary text-muted">
-        {!vm && !terminal && !desktop
+        {!vm && !terminal
           ? 'Without a computer, bots chat and use your connected accounts only.'
-          : 'Change this for each bot in Settings, Computers. Your other computers show up there once you let bots use them.'}
+          : 'Change this for each bot in Settings, Computers and Settings, Plugins. Your other computers show up in Settings, Computers once you let bots work on them.'}
       </p>
       <SetupActions>
         <Button
@@ -1782,7 +1804,10 @@ function OnboardingPage() {
         'The model new bots start with, and where to go when it fails.'
       ],
       providers: ['Connect a provider', 'Sign in with a subscription or paste an API key.'],
-      computers: ['Where can your bots work?', "The bots' computer, the one Hexbot runs on, or both."],
+      computers: [
+        'Where can your bots work?',
+        "The bots' computer, the one Hexbot runs on, or both."
+      ],
       tools: [
         'Connect your accounts',
         'Suggested: Microsoft or Google, GitHub and X, so your bots can help with them.'
@@ -1824,9 +1849,7 @@ function OnboardingPage() {
         <ToolsStep onContinue={() => setStep('computers')} onError={onError} />
       ) : null}
 
-      {step === 'computers' ? (
-        <ComputersStep onContinue={toUsage} onError={onError} />
-      ) : null}
+      {step === 'computers' ? <ComputersStep onContinue={toUsage} onError={onError} /> : null}
 
       {error ? (
         <p className="pb-10 text-center text-secondary text-danger" role="alert">

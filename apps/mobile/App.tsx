@@ -2135,14 +2135,20 @@ function MobileApp({ children }: { children?: ReactNode }) {
                   ? (older: boolean) =>
                       act(async () => {
                         const bot = botByName(route.bot.name) ?? route.bot
-                        // Its desktop on the bots' computer; an older daemon
-                        // has no computers and takes Computer use as that.
+                        // The bots' computer as one of its environments, then
+                        // Computer Use for its screen; an older daemon has no
+                        // computers and takes Computer use as a tool.
                         if (!older) {
-                          await mobile.computersCall('hexbot.computers.grant', {
+                          await mobile.rpc('hexbot.computers.grant', {
                             bot: bot.name,
-                            capability: 'desktop',
+                            capability: 'terminal',
                             computer: 'vm',
                             on: true
+                          })
+                          await mobile.computersCall('hexbot.connectors.set_for_bot', {
+                            bot: bot.name,
+                            enabled: true,
+                            id: 'computer_use'
                           })
                         } else {
                           await mobile.rpc('hexbot.bots.update', {

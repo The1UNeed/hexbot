@@ -183,19 +183,18 @@ function VmControls(): React.JSX.Element {
   )
 }
 
-const CAPS = [
-  { key: 'terminal', label: 'Terminal' },
-  { key: 'desktop', label: 'Desktop' }
-] as const
-
-/** One row per bot, a switch for the terminal and one for the desktop. */
+/**
+ * One row per bot, one switch: this computer is one of the bot's
+ * environments, where its terminal works. Its screen comes with the
+ * Computer Use plugin, where the computer shares it.
+ */
 function BotGrid({ computer }: { computer: Computer }) {
   const byName = useBots(state => state.byName)
   const order = useBots(state => state.order)
   const grant = useComputers(state => state.grant)
-  const caps = CAPS.filter(cap => computer[cap.key].available || computer[cap.key].bots.length)
+  const available = computer.terminal.available
 
-  if (!order.length || !caps.length) {
+  if (!order.length || (!available && !computer.terminal.bots.length)) {
     return null
   }
 
@@ -209,11 +208,7 @@ function BotGrid({ computer }: { computer: Computer }) {
         <span className="flex-1">
           {computer.kind === 'device' ? `Bots on ${computer.name}` : 'Bots'}
         </span>
-        {caps.map(cap => (
-          <span className="w-[64px] text-center" key={cap.key}>
-            {cap.label}
-          </span>
-        ))}
+        <span className="w-[88px] text-center">Works here</span>
       </div>
       {order.map(name => {
         const bot = byName[name]
@@ -222,6 +217,9 @@ function BotGrid({ computer }: { computer: Computer }) {
           return null
         }
 
+        const on = computer.terminal.bots.includes(name)
+        const screen = computer.desktop.bots.includes(name)
+
         return (
           <div className="flex min-h-[48px] items-center gap-3 px-4 py-2" key={name}>
             <span aria-hidden className="inline-flex">
@@ -229,21 +227,20 @@ function BotGrid({ computer }: { computer: Computer }) {
             </span>
             <span className="min-w-0 flex-1 truncate text-[length:var(--text-body)]">
               {bot.display_name}
-            </span>
-            {caps.map(cap => {
-              const on = computer[cap.key].bots.includes(name)
-
-              return (
-                <span className="flex w-[64px] justify-center" key={cap.key}>
-                  <Switch
-                    aria-label={`${cap.label} on ${computer.name} for ${bot.display_name}`}
-                    checked={on}
-                    disabled={!on && !computer[cap.key].available}
-                    onCheckedChange={next => void grant(computer.id, cap.key, name, next)}
-                  />
+              {screen ? (
+                <span className="ml-2 text-[length:var(--text-meta)] text-muted">
+                  · Computer Use
                 </span>
-              )
-            })}
+              ) : null}
+            </span>
+            <span className="flex w-[88px] justify-center">
+              <Switch
+                aria-label={`${bot.display_name} works on ${computer.name}`}
+                checked={on}
+                disabled={!on && !available}
+                onCheckedChange={next => void grant(computer.id, 'terminal', name, next)}
+              />
+            </span>
           </div>
         )
       })}
@@ -340,21 +337,21 @@ function ThisComputerShare() {
       <Row
         control={
           <Switch
-            aria-label="Let bots use this computer's terminal"
+            aria-label="Let bots work on this computer"
             checked={share.terminal}
             disabled={busy}
             onCheckedChange={next => void change(() => computer.allow({ terminal: next }))}
           />
         }
-        description="Bots run commands here, outside any sandbox."
-        title="Let bots use its terminal"
+        description="It becomes an environment you can give bots on the daemon's Settings, Computers. They run commands here, outside any sandbox."
+        title="Let bots work here"
       />
       <Row
         control={
           // Kept while it is on, so it can always be turned off here.
           share.desktopReady || share.desktop ? (
             <Switch
-              aria-label="Let bots use this computer's desktop"
+              aria-label="Let Computer Use reach this computer's screen"
               checked={share.desktop}
               disabled={busy}
               onCheckedChange={next => void change(() => computer.allow({ desktop: next }))}
@@ -372,13 +369,13 @@ function ThisComputerShare() {
         }
         description={
           share.desktopReady
-            ? 'Bots see the screen, click and type in the apps you allow (in Bypass, without asking), never in terminals, editors or Hexbot.'
+            ? 'Bots with Computer Use see the screen, click and type in the apps you allow (in Bypass, without asking), never in terminals, editors or Hexbot.'
             : share.desktop
               ? `${share.desktopNote ?? "Cua isn't ready here."} Bots can't use it until it is; turn it off and choose Set up to set it up again.`
               : (share.desktopNote ??
                 'Needs Cua. Your computer asks for Screen Recording and Accessibility.')
         }
-        title="Let bots use its desktop"
+        title="Computer Use here"
       />
     </Group>
   )
@@ -412,7 +409,7 @@ function HostDesktop({ computer }: { computer: Computer }) {
     <Row
       control={
         <Switch
-          aria-label={`Share ${computer.name}'s desktop with bots`}
+          aria-label={`Let Computer Use reach ${computer.name}'s screen`}
           checked={Boolean(desktop.on)}
           disabled={busy || (!desktop.on && !desktop.available)}
           onCheckedChange={next => {
@@ -425,9 +422,9 @@ function HostDesktop({ computer }: { computer: Computer }) {
         desktop.note ??
         (desktop.on && !desktop.ready
           ? `Waiting for Cua. Allow Screen Recording and Accessibility on ${computer.name} if it asks.`
-          : `Bots see its screen, click and type in the apps you allow (in Bypass, without asking), never in terminals, editors or Hexbot. Turning it on sets up Cua on ${computer.name}.`)
+          : `Bots with Computer Use see its screen, click and type in the apps you allow (in Bypass, without asking), never in terminals, editors or Hexbot. Turning it on sets up Cua on ${computer.name}.`)
       }
-      title="Share its desktop"
+      title="Computer Use here"
     />
   )
 }
@@ -460,7 +457,7 @@ export function ComputerSettings(): React.JSX.Element {
 
   return (
     <>
-      <Heading description="Where your bots can work. Choose which bots use each computer's terminal and desktop.">
+      <Heading description="Where your bots work. Each computer you give a bot is one of its environments, where it runs commands; with the Computer Use plugin it also sees and uses that computer's screen.">
         Computers
       </Heading>
       {notices.map(notice => (
@@ -536,7 +533,7 @@ export function ComputerSettings(): React.JSX.Element {
           ) : null}
           <section className="space-y-4">
             <Group
-              description="Your other computers, online while Hexbot is open there. Each one is added when you let bots use it in Hexbot on that computer."
+              description="Your other computers, online while Hexbot is open there. Each one is added when you turn on Let bots work here in Hexbot on that computer."
               title="Your computers"
             >
               {devices.length ? (
@@ -567,7 +564,7 @@ export function ComputerSettings(): React.JSX.Element {
                 ))
               ) : (
                 <Row
-                  description="Open Hexbot on another computer, connect it to this daemon, then turn on Let bots use its terminal or its desktop in its Settings, Computers."
+                  description="Open Hexbot on another computer, connect it to this daemon, then turn on Let bots work here in its Settings, Computers."
                   title="None yet"
                 />
               )}

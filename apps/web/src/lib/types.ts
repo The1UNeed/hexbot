@@ -472,7 +472,7 @@ export type BotUpdatePatch = Partial<Omit<BotCreateInput, 'avatar' | 'name'>> & 
   memory_char_limit?: null | number
 }
 
-export type ConnectorGroup = 'mcp' | 'search' | 'social_home' | 'work'
+export type ConnectorGroup = 'computer' | 'mcp' | 'search' | 'social_home' | 'work'
 
 export type ConnectorState = 'error' | 'not_set_up' | 'ready'
 

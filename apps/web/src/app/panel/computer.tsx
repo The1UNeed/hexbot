@@ -7,7 +7,7 @@ import { Button } from '../../components/ui/button'
 import { confirm } from '../../components/ui/confirm'
 import { Dialog } from '../../components/ui/dialog'
 import { Menu, MenuCheckIcon } from '../../components/ui/menu'
-import { computersGrant } from '../../lib/api'
+import { computersGrant, connectorsSetForBot } from '../../lib/api'
 import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 import { targetOrigin } from '../../lib/connection'
@@ -463,7 +463,10 @@ function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
     }
 
     try {
-      await computersGrant('vm', 'desktop', bot.name, true)
+      // The bots' computer as one of its environments, and Computer Use for
+      // its screen.
+      await computersGrant('vm', 'terminal', bot.name, true)
+      await connectorsSetForBot('computer_use', bot.name, true)
       await refreshComputers()
     } catch (error) {
       setGrantError(error instanceof Error ? error.message : String(error))

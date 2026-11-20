@@ -1,6 +1,15 @@
 use super::*;
 use std::fs;
 
+/// A desktop on a computer is the computer as an environment plus Computer
+/// Use; taking it back here turns Computer Use off.
+fn desk(h: &Path, computer: &str, bot: &str, on: bool) -> Result<()> {
+    if on {
+        set(h, computer, TERMINAL, bot, true)?;
+    }
+    set_computer_use(h, bot, on)
+}
+
 fn setup() -> tempfile::TempDir {
     let home = tempfile::tempdir().unwrap();
     db::migrate(home.path()).unwrap();
@@ -41,16 +50,23 @@ fn a_daemon_from_before_computers_keeps_what_its_bots_had() {
     assert!(owl.contains(&"terminal".to_owned()) && owl.contains(&"computer_use".to_owned()));
     let fox = crate::connectors::toolsets(h, "fox").unwrap();
     assert!(!fox.contains(&"terminal".to_owned()) && fox.contains(&"computer_use".to_owned()));
-    // Writing it down changes nothing a bot has.
+    // Writing it down keeps every bot's Computer use on the bots' computer,
+    // which now makes it one of the bot's environments: bash comes with it.
     migrate(h).unwrap();
     assert_eq!(
         common::read_config(h).unwrap()["computers"],
         // New bots keep what the daemon gave them: its default toolsets
         // include the terminal.
-        json!({"vm":{"terminal":[],"desktop":["fox","owl"]},"host":{"terminal":["owl"],"desktop":[]},"defaults":{"host_terminal":true}})
+        json!({"vm":{"terminal":["fox","owl"]},"host":{"terminal":["owl"]},"computer_use":["fox","owl"],"defaults":{"host_terminal":true}})
+    );
+    assert!(has(h, "owl", VM, DESKTOP).unwrap() && has(h, "fox", VM, DESKTOP).unwrap());
+    assert!(has(h, "owl", HOST, TERMINAL).unwrap() && !has(h, "fox", HOST, TERMINAL).unwrap());
+    assert!(
+        crate::connectors::toolsets(h, "fox")
+            .unwrap()
+            .contains(&"terminal".to_owned())
     );
     assert_eq!(crate::connectors::toolsets(h, "owl").unwrap(), owl);
-    assert_eq!(crate::connectors::toolsets(h, "fox").unwrap(), fox);
     // Running it again keeps later changes.
     set(h, VM, TERMINAL, "fox", true).unwrap();
     migrate(h).unwrap();
@@ -62,7 +78,7 @@ fn grants_decide_the_terminal_and_computer_use_tools_both_ways() {
     let home = setup();
     let h = home.path();
     migrate(h).unwrap();
-    set(h, VM, DESKTOP, "fox", false).unwrap();
+    desk(h, VM, "fox", false).unwrap();
     assert!(
         !crate::connectors::toolsets(h, "fox")
             .unwrap()
@@ -99,6 +115,88 @@ fn grants_decide_the_terminal_and_computer_use_tools_both_ways() {
 }
 
 #[test]
+fn computer_use_puts_the_screens_of_a_bots_environments_in_reach() {
+    let home = setup();
+    let h = home.path();
+    migrate(h).unwrap();
+    let screens = |bot: &str| {
+        [VM, HOST, "device:mac"]
+            .into_iter()
+            .filter(|c| has(h, bot, c, DESKTOP).unwrap())
+            .collect::<Vec<_>>()
+    };
+    // fox works on every computer, with Computer Use off: no screen at all.
+    for computer in [VM, HOST, "device:mac"] {
+        set(h, computer, TERMINAL, "fox", true).unwrap();
+    }
+    crate::connectors::set_enabled(h, "fox", COMPUTER_USE, false).unwrap();
+    assert!(screens("fox").is_empty());
+    assert!(!crate::connectors::enabled(h, "fox", COMPUTER_USE).unwrap());
+    // On: the bots' computer's and a user's computer's screens; this
+    // computer's only once its desktop is shared.
+    crate::connectors::set_enabled(h, "fox", COMPUTER_USE, true).unwrap();
+    assert!(crate::connectors::enabled(h, "fox", COMPUTER_USE).unwrap());
+    assert_eq!(screens("fox"), [VM, "device:mac"]);
+    common::update_config(h, |c| {
+        c["computers"][HOST]["desktop_on"] = json!(true);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(screens("fox"), [VM, HOST, "device:mac"]);
+    // A computer that isn't one of its environments has no screen for it.
+    set(h, "device:mac", TERMINAL, "fox", false).unwrap();
+    assert_eq!(screens("fox"), [VM, HOST]);
+    // A desktop is never granted on its own.
+    let err = set(h, VM, DESKTOP, "fox", true).err().unwrap();
+    assert!(err.message.contains("Computer Use"), "{}", err.message);
+    // The connector lists it, ready, with fox on.
+    let list = crate::connectors::list(h, None).unwrap();
+    let row = list["connectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == COMPUTER_USE)
+        .unwrap()
+        .clone();
+    assert_eq!(row["name"], "Computer Use");
+    assert_eq!(row["ready"], true);
+    assert!(
+        row["enabled_bots"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("fox"))
+    );
+}
+
+#[test]
+fn setup_decides_a_new_bots_computer_use() {
+    let home = setup();
+    let h = home.path();
+    migrate(h).unwrap();
+    common::update_config(h, |c| {
+        c["computers"]["defaults"] = json!({"host_terminal": true, "computer_use": false});
+        Ok(())
+    })
+    .unwrap();
+    // fox stands for a bot made now: the upgrade gave the existing ones
+    // Computer Use.
+    set_computer_use(h, "fox", false).unwrap();
+    new_bot(h, "fox").unwrap();
+    assert!(has(h, "fox", HOST, TERMINAL).unwrap());
+    assert!(!computer_use_on(h, "fox").unwrap());
+    common::update_config(h, |c| {
+        c["computers"]["defaults"]["computer_use"] = json!(true);
+        Ok(())
+    })
+    .unwrap();
+    new_bot(h, "fox").unwrap();
+    assert!(computer_use_on(h, "fox").unwrap());
+    // A deleted bot leaves the connector too.
+    forget_bot(h, "fox").unwrap();
+    assert!(!computer_use_on(h, "fox").unwrap());
+}
+
+#[test]
 fn the_tool_switches_give_and_take_computers() {
     let home = setup();
     let h = home.path();
@@ -113,16 +211,16 @@ fn the_tool_switches_give_and_take_computers() {
         Ok(())
     })
     .unwrap();
-    sync_tools(h, "owl", false, false, true).unwrap();
+    sync_tools(h, "owl", false, true).unwrap();
     assert!(granted(h, "owl").unwrap().is_empty());
     // On again: the default computer for each, the bots' computer first.
-    sync_tools(h, "owl", true, true, true).unwrap();
+    sync_tools(h, "owl", true, true).unwrap();
     assert!(has(h, "owl", VM, TERMINAL).unwrap());
     assert!(has(h, "owl", VM, DESKTOP).unwrap());
     // Already on: nothing moves.
     set(h, HOST, TERMINAL, "owl", true).unwrap();
     set(h, VM, TERMINAL, "owl", false).unwrap();
-    sync_tools(h, "owl", true, true, true).unwrap();
+    sync_tools(h, "owl", true, true).unwrap();
     assert!(has(h, "owl", HOST, TERMINAL).unwrap());
     assert!(!has(h, "owl", VM, TERMINAL).unwrap());
 }
@@ -132,7 +230,7 @@ fn a_deleted_bot_leaves_every_computer_and_its_apps() {
     let home = setup();
     let h = home.path();
     migrate(h).unwrap();
-    set(h, "device:mac", DESKTOP, "owl", true).unwrap();
+    desk(h, "device:mac", "owl", true).unwrap();
     allow_app(h, "device:mac", "owl", "s1", "Safari", true).unwrap();
     allow_app(h, "device:mac", "owl", "s1", "Notes", false).unwrap();
     forget_bot(h, "owl").unwrap();
@@ -147,9 +245,9 @@ fn sections_freeze_their_computers_and_the_prompt_names_them() {
     let h = home.path();
     migrate(h).unwrap();
     set(h, VM, TERMINAL, "owl", true).unwrap();
-    set(h, "device:mac", DESKTOP, "owl", true).unwrap();
+    desk(h, "device:mac", "owl", true).unwrap();
     // A revoked or unknown device is left out.
-    set(h, "device:gone", DESKTOP, "owl", true).unwrap();
+    desk(h, "device:gone", "owl", true).unwrap();
     let list = session_list(h, "alice", "owl").unwrap();
     let ids = list
         .as_array()
@@ -258,21 +356,31 @@ async fn desktop_checks_refuse_what_is_not_granted_or_set_up() {
             .unwrap(),
         Needs::Nothing
     ));
-    // Not granted.
+    // Not one of the bot's environments.
+    let err = check_desktop(h, "alice", "owl", "s1", "device:mac", "smart", &click)
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        err.message.contains("can't use the desktop of device:mac"),
+        "{}",
+        err.message
+    );
+    // An environment with Computer Use, but this computer's desktop is not
+    // shared: no bot has it, and the bot is told why.
+    desk(h, HOST, "owl", true).unwrap();
+    assert!(!has(h, "owl", HOST, DESKTOP).unwrap());
     let err = check_desktop(h, "alice", "owl", "s1", HOST, "smart", &click)
         .await
         .err()
         .unwrap();
-    assert!(err.message.contains("can't use the desktop of host"));
-    // Granted, but this computer's desktop is not shared.
-    set(h, HOST, DESKTOP, "owl", true).unwrap();
-    let err = check_desktop(h, "alice", "owl", "s1", HOST, "smart", &click)
-        .await
-        .err()
-        .unwrap();
-    assert!(err.message.contains("not set up for bots"));
+    assert!(
+        err.message.contains("not set up for bots"),
+        "{}",
+        err.message
+    );
     // shell is refused on a user's computer, before anything reaches it.
-    set(h, "device:mac", DESKTOP, "owl", true).unwrap();
+    desk(h, "device:mac", "owl", true).unwrap();
     let shell = json!({"action":"shell","command":"ls"});
     let err = check_desktop(h, "alice", "owl", "s1", "device:mac", "off", &shell)
         .await
@@ -415,7 +523,7 @@ async fn a_user_computer_attaches_answers_and_goes_offline() {
     let result = run.await.unwrap().unwrap();
     assert_eq!(result["output"], "Documents\n");
     // The desktop was not allowed on that computer.
-    set(h, "device:mac", DESKTOP, "owl", true).unwrap();
+    desk(h, "device:mac", "owl", true).unwrap();
     let err = act(
         h,
         "alice",
@@ -590,7 +698,7 @@ async fn typing_goes_to_the_focused_app_whatever_point_the_bot_names() {
     let home = setup();
     let h = home.path();
     migrate(h).unwrap();
-    set(h, "device:mac", DESKTOP, "owl", true).unwrap();
+    desk(h, "device:mac", "owl", true).unwrap();
     let windows = std::sync::Arc::new(Mutex::new(json!([
         window("Terminal", true, 0.),
         window("Notes", false, 500.)
@@ -770,7 +878,7 @@ async fn an_action_rechecks_its_target_and_grant_right_before_it_runs() {
     let home = setup();
     let h = home.path();
     migrate(h).unwrap();
-    set(h, "device:mac", DESKTOP, "owl", true).unwrap();
+    desk(h, "device:mac", "owl", true).unwrap();
     let windows = std::sync::Arc::new(Mutex::new(json!([window("Notes", true, 0.)])));
     let (connection, done) = fake_mac(h, windows.clone());
     allow_app(h, "device:mac", "owl", "s1", "Notes", false).unwrap();
@@ -823,7 +931,7 @@ async fn an_action_rechecks_its_target_and_grant_right_before_it_runs() {
     assert!(err.message.contains("Terminal apps"));
     // The grant taken away while a card waited.
     *windows.lock().unwrap() = json!([window("Notes", true, 0.)]);
-    set(h, "device:mac", DESKTOP, "owl", false).unwrap();
+    desk(h, "device:mac", "owl", false).unwrap();
     let err = act(
         h,
         "alice",
@@ -1063,9 +1171,9 @@ fn turning_terminal_back_on_without_cua_gives_this_computer() {
         Ok(())
     })
     .unwrap();
-    sync_tools(h, "owl", false, true, true).unwrap();
+    sync_tools(h, "owl", false, true).unwrap();
     assert!(!any(h, "owl", TERMINAL).unwrap());
-    sync_tools(h, "owl", true, true, true).unwrap();
+    sync_tools(h, "owl", true, true).unwrap();
     assert!(has(h, "owl", HOST, TERMINAL).unwrap());
     assert!(!has(h, "owl", VM, TERMINAL).unwrap());
 }
@@ -1168,12 +1276,12 @@ fn a_bots_computer_desktop_taken_away_stops_its_next_action() {
     let home = setup();
     let h = home.path();
     migrate(h).unwrap();
-    set(h, VM, DESKTOP, "owl", false).unwrap();
+    desk(h, VM, "owl", false).unwrap();
     let err = crate::computers::still_granted_for_tests(h, "owl")
         .err()
         .unwrap();
     assert!(err.message.contains("any more"));
-    set(h, VM, DESKTOP, "owl", true).unwrap();
+    desk(h, VM, "owl", true).unwrap();
     assert!(crate::computers::still_granted_for_tests(h, "owl").is_ok());
 }
 
@@ -1197,7 +1305,7 @@ async fn a_command_whose_mode_changed_while_it_waited_is_refused() {
     .unwrap();
     assert!(err.message.contains("approval mode changed"));
     // A card answered after the computer was taken away records nothing.
-    set(h, "device:mac", DESKTOP, "owl", false).unwrap();
+    desk(h, "device:mac", "owl", false).unwrap();
     assert!(may_use_desktop(h, "owl", "device:mac").is_err());
     detach(h, "mac", connection);
 }
@@ -1207,7 +1315,7 @@ async fn forgetting_a_computer_forgets_its_apps_for_this_conversation_too() {
     let home = setup();
     let h = home.path();
     migrate(h).unwrap();
-    set(h, "device:mac", DESKTOP, "owl", true).unwrap();
+    desk(h, "device:mac", "owl", true).unwrap();
     allow_app(h, "device:mac", "owl", "s1", "Safari", false).unwrap();
     assert!(app_allowed(h, "device:mac", "owl", "s1", "Safari").unwrap());
     call(
@@ -1219,7 +1327,7 @@ async fn forgetting_a_computer_forgets_its_apps_for_this_conversation_too() {
     .await
     .unwrap()
     .unwrap();
-    set(h, "device:mac", DESKTOP, "owl", true).unwrap();
+    desk(h, "device:mac", "owl", true).unwrap();
     assert!(!app_allowed(h, "device:mac", "owl", "s1", "Safari").unwrap());
 }
 
@@ -1228,7 +1336,7 @@ async fn a_look_after_an_action_checks_the_grant_again() {
     let home = setup();
     let h = home.path();
     migrate(h).unwrap();
-    set(h, "device:mac", DESKTOP, "owl", true).unwrap();
+    desk(h, "device:mac", "owl", true).unwrap();
     let windows = std::sync::Arc::new(Mutex::new(json!([window("Notes", true, 0.)])));
     let (connection, done) = fake_mac(h, windows);
     allow_app(h, "device:mac", "owl", "s1", "Notes", true).unwrap();
@@ -1249,7 +1357,7 @@ async fn a_look_after_an_action_checks_the_grant_again() {
     while done.lock().unwrap().is_empty() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    set(h, "device:mac", DESKTOP, "owl", false).unwrap();
+    desk(h, "device:mac", "owl", false).unwrap();
     let err = acting.await.unwrap().err().unwrap();
     assert!(
         err.message.contains("can't use the desktop"),
@@ -1437,7 +1545,7 @@ async fn a_stopped_desktop_action_is_cancelled_on_the_computer() {
     let home = setup();
     let h = home.path();
     migrate(h).unwrap();
-    set(h, "device:mac", DESKTOP, "owl", true).unwrap();
+    desk(h, "device:mac", "owl", true).unwrap();
     allow_app(h, "device:mac", "owl", "s1", "Notes", true).unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
     attach(
@@ -1512,7 +1620,7 @@ async fn an_action_stopped_or_revoked_before_it_is_queued_is_never_sent() {
     let home = setup();
     let h = home.path();
     migrate(h).unwrap();
-    set(h, "device:mac", DESKTOP, "owl", true).unwrap();
+    desk(h, "device:mac", "owl", true).unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
     attach(
         h,
@@ -1540,7 +1648,7 @@ async fn an_action_stopped_or_revoked_before_it_is_queued_is_never_sent() {
     .unwrap();
     assert!(err.message.contains("stopped"));
     drop(stop_tx);
-    set(h, "device:mac", DESKTOP, "owl", false).unwrap();
+    desk(h, "device:mac", "owl", false).unwrap();
     let err = desktop_send_until(
         h,
         "alice",
@@ -1569,8 +1677,8 @@ fn another_tool_switch_keeps_a_desktop_on_a_users_computer_without_cua_here() {
         Ok(())
     })
     .unwrap();
-    set(h, VM, DESKTOP, "owl", false).unwrap();
-    set(h, "device:mac", DESKTOP, "owl", true).unwrap();
+    desk(h, VM, "owl", false).unwrap();
+    desk(h, "device:mac", "owl", true).unwrap();
     // Bot settings list Computer use, and saving another tool keeps it.
     assert!(
         !crate::native_tools::not_set_up(h, "owl")
@@ -1613,7 +1721,7 @@ async fn a_stopped_action_never_reaches_this_computers_desktop() {
         Ok(())
     })
     .unwrap();
-    set(h, HOST, DESKTOP, "owl", true).unwrap();
+    desk(h, HOST, "owl", true).unwrap();
     let target = Some("direct:127.0.0.1:3211");
     // The warm-up starts the session the final send must find up.
     desktop_send(
@@ -1676,7 +1784,7 @@ fn a_tool_save_without_cua_keeps_the_bots_computers_desktop() {
     let h = home.path();
     // An upgraded install: every bot has the bots' computer's desktop.
     migrate(h).unwrap();
-    set(h, VM, DESKTOP, "owl", true).unwrap();
+    desk(h, VM, "owl", true).unwrap();
     common::update_config(h, |c| {
         c["computer_use"]["command"] = json!("/nonexistent/cua");
         Ok(())
@@ -1687,25 +1795,28 @@ fn a_tool_save_without_cua_keeps_the_bots_computers_desktop() {
             .expect("recognized method")
             .unwrap()
     };
-    // Bot settings hides the switch, yet the bot's tools still list it.
+    // Computer Use is a connector, not one of the bot's tool switches.
     let bot = call("hexbot.bots.get", json!({"name":"owl"}))["bot"].clone();
-    assert!(
-        !bot["available_tools"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("computer_use"))
-    );
+    for key in ["available_tools", "tools"] {
+        assert!(
+            !bot[key]
+                .as_array()
+                .unwrap()
+                .contains(&json!("computer_use"))
+        );
+    }
     let mut tools = bot["tools"].as_array().unwrap().clone();
-    assert!(tools.contains(&json!("computer_use")));
     // The apps save another switch with the list as they got it: kept.
     tools.push(json!("vision"));
     call("hexbot.bots.update", json!({"name":"owl","tools":tools}));
     assert!(has(h, "owl", VM, DESKTOP).unwrap());
-    // A list without it, as the API or the primary bot sends: taken.
+    // A tool list never takes it: Computer Use is the connector's switch.
     call(
         "hexbot.bots.update",
         json!({"name":"owl","tools":["files","terminal","vision"]}),
     );
+    assert!(has(h, "owl", VM, DESKTOP).unwrap());
+    crate::connectors::set_enabled(h, "owl", COMPUTER_USE, false).unwrap();
     assert!(!has(h, "owl", VM, DESKTOP).unwrap());
 }
 
@@ -1909,7 +2020,7 @@ async fn cmd_is_the_windows_or_super_key_outside_macos() {
     let home = setup();
     let h = home.path();
     migrate(h).unwrap();
-    set(h, "device:mac", DESKTOP, "owl", true).unwrap();
+    desk(h, "device:mac", "owl", true).unwrap();
     let windows = std::sync::Arc::new(Mutex::new(json!([window("Notes", true, 0.)])));
     let (connection, _) = fake_mac(h, windows);
     let key = |keys: &str| json!({"action":"key","keys":keys});
@@ -1939,7 +2050,7 @@ async fn a_click_is_checked_where_it_lands_on_a_hidpi_screen_or_refused() {
     let home = setup();
     let h = home.path();
     migrate(h).unwrap();
-    set(h, "device:mac", DESKTOP, "owl", true).unwrap();
+    desk(h, "device:mac", "owl", true).unwrap();
     // Notes at points 0-400, Terminal at 500-900; the screen is 1200 points.
     let windows = std::sync::Arc::new(Mutex::new(json!([
         window("Notes", true, 0.),
@@ -2162,7 +2273,7 @@ async fn typed_text_with_a_line_break_is_refused_on_real_computers() {
     let home = setup();
     let h = home.path();
     migrate(h).unwrap();
-    set(h, "device:mac", DESKTOP, "owl", true).unwrap();
+    desk(h, "device:mac", "owl", true).unwrap();
     let err = check_desktop(
         h,
         "alice",
@@ -2203,7 +2314,7 @@ fn a_new_bot_with_a_deleted_bots_name_gets_none_of_its_computers() {
     let h = home.path();
     migrate(h).unwrap();
     set(h, "device:mac", TERMINAL, "owl", true).unwrap();
-    set(h, "device:mac", DESKTOP, "owl", true).unwrap();
+    desk(h, "device:mac", "owl", true).unwrap();
     allow_app(h, "device:mac", "owl", "s1", "Safari", true).unwrap();
     let call = |method: &str, p: Value| {
         crate::catalog::call(h, "alice", method, &p)
@@ -2224,7 +2335,7 @@ async fn an_app_id_or_path_is_refused_for_launch_on_real_computers() {
     let home = setup();
     let h = home.path();
     migrate(h).unwrap();
-    set(h, "device:mac", DESKTOP, "owl", true).unwrap();
+    desk(h, "device:mac", "owl", true).unwrap();
     for app in [
         "com.microsoft.VSCode",
         "code.desktop",
@@ -2521,7 +2632,7 @@ fn another_tool_saved_while_the_bots_computer_is_off_keeps_its_grants() {
     migrate(h).unwrap();
     // owl's only computer is the bots' computer, which is then switched off.
     set(h, VM, TERMINAL, "owl", true).unwrap();
-    set(h, VM, DESKTOP, "owl", true).unwrap();
+    desk(h, VM, "owl", true).unwrap();
     set(h, HOST, TERMINAL, "owl", false).unwrap();
     common::update_config(h, |c| {
         c["computers"]["vm"]["off"] = json!(true);
@@ -2605,7 +2716,7 @@ async fn real_app_names_with_parentheses_launch() {
     let home = setup();
     let h = home.path();
     migrate(h).unwrap();
-    set(h, "device:mac", DESKTOP, "owl", true).unwrap();
+    desk(h, "device:mac", "owl", true).unwrap();
     for app in [
         "Outlook (new)",
         "Microsoft Teams (work or school)",

@@ -132,8 +132,8 @@ describe('this computer', () => {
   it('refuses whatever the user has not allowed here', () => {
     const off = { desktop: false, terminal: false }
     const on = { desktop: true, terminal: true }
-    expect(refusal({ command: 'ls', kind: 'terminal' }, off)).toMatch(/terminal/)
-    expect(refusal({ kind: 'desktop', tool: 'computer_click' }, off)).toMatch(/desktop/)
+    expect(refusal({ command: 'ls', kind: 'terminal' }, off)).toMatch(/does not let bots work on it/)
+    expect(refusal({ kind: 'desktop', tool: 'computer_click' }, off)).toMatch(/Computer Use/)
     expect(refusal({ command: 'ls', kind: 'terminal' }, on)).toBeNull()
     expect(refusal({ command: '  ', kind: 'terminal' }, on)).toMatch(/empty/)
     // Shell, files and the clipboard never run through the desktop.
@@ -198,7 +198,7 @@ describe('this computer', () => {
     expect(share.terminal).toBe(true)
     expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ desktop: false, terminal: true })
     await expect(computer.run({ kind: 'desktop', tool: 'computer_click' })).rejects.toThrow(
-      /desktop/
+      /Computer Use/
     )
     const result = (await computer.run({
       command: 'echo hello',
@@ -216,7 +216,7 @@ describe('this computer', () => {
     await computer.allow({ terminal: true })
     await computer.stop()
     expect(computer.allowedNow).toEqual({ desktop: false, terminal: false })
-    await expect(computer.run({ command: 'echo hi', kind: 'terminal' })).rejects.toThrow(/terminal/)
+    await expect(computer.run({ command: 'echo hi', kind: 'terminal' })).rejects.toThrow(/work on it/)
     expect(changes.length).toBeGreaterThan(0)
   })
 
@@ -504,7 +504,7 @@ describe('this computer', () => {
       await new Promise(resolve => setTimeout(resolve, 0))
       stopped.found()
       await stopping
-      expect(String(await stoppedWork)).toMatch(/stopped|does not let bots use its desktop/)
+      expect(String(await stoppedWork)).toMatch(/stopped|does not let Computer Use reach its screen/)
 
       const ended = make()
       const refused = ended.computer
@@ -514,7 +514,7 @@ describe('this computer', () => {
       await new Promise(resolve => setTimeout(resolve, 0))
       ended.found()
       await turnedOff
-      expect(String(await refused)).toMatch(/stopped|does not let bots use its desktop/)
+      expect(String(await refused)).toMatch(/stopped|does not let Computer Use reach its screen/)
     }
   })
 
@@ -828,7 +828,7 @@ describe('this computer', () => {
     const waiting = computer.run({ args: {}, kind: 'desktop', tool: 'computer_screenshot' })
     await computer.stop()
     found({ note: null, target: 'direct:127.0.0.1:3211' })
-    await expect(waiting).rejects.toThrow(/does not let bots use its desktop|stopped/)
+    await expect(waiting).rejects.toThrow(/does not let Computer Use reach its screen|stopped/)
   })
 
   it('stops a command at its timeout', async () => {

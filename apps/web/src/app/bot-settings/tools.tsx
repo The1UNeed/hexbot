@@ -18,7 +18,8 @@ export const TOOL_GROUPS: { rows: ToolRow[]; title: string }[] = [
   {
     rows: [
       {
-        description: 'Run commands on the computers it may use. On the computer Hexbot runs on they run in a sandbox, and leaving it is checked first, except in Bypass. If Hexbot runs on Windows, commands on that computer run only in Bypass.',
+        description:
+          'Run commands in each of its environments. On the computer Hexbot runs on they run in a sandbox, and leaving it is checked first, except in Bypass. If Hexbot runs on Windows, commands on that computer run only in Bypass.',
         key: 'terminal',
         label: 'Terminal'
       },
@@ -74,7 +75,7 @@ export function ToolsTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
 
   return (
     <div>
-      <Heading description="What this bot can do here and with your other bots. Which computers it uses is in Settings, Computers.">
+      <Heading description="What this bot can do here and with your other bots. The computers it works on are in Settings, Computers; Computer Use is a plugin, in Settings, Plugins.">
         Tools
       </Heading>
       <div className="space-y-8">

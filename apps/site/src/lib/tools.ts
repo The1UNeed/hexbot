@@ -12,7 +12,7 @@ export const toolGroups: ToolGroup[] = [
     tools: [
       { name: 'Terminal', does: 'Run shell commands and long-running processes.', note: 'Risky commands ask first in Manual mode' },
       { name: 'Files', does: 'Read, write, edit, and search files.' },
-      { name: 'Computer use', does: "Work on the bots' own Linux computer, or on yours: run code, browse, click and type in apps. Watch it live and use it with them.", note: "The bots' computer needs Cua and Docker; yours asks per app, except in Bypass" },
+      { name: 'Computer Use', does: "See and use the screens of each bot's computers, the bots' own Linux computer or yours: browse, click and type in apps. Watch it live and use it with them.", note: "A plugin you turn on for each bot. The bots' computer needs Cua and Docker; yours asks per app, except in Bypass" },
       { name: 'Vision', does: 'Look at images and screenshots you attach.', note: 'Needs a model that can see' },
       { name: 'Voice', does: 'Speak replies aloud with the built-in voice.' },
     ],

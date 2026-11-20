@@ -109,10 +109,11 @@ Tabs, in order:
 5. **Tools.** Switches grouped as Workspace (terminal, files, and the
    working directory), Senses (vision, built-in voice), and Working with
    others (message other bots, delegate, scheduling). The Terminal switch
-   gives the default computer's terminal or takes every one; Computer use
-   has no switch here (`computer_use` in the API and from the primary bot
-   behaves the same). Settings, Computers chooses which computers exactly, and holds the bots'
-   computer's size and controls. Code execution and the browser are what
+   gives the default computer as an environment or takes every one.
+   Computer Use is a connector (Settings, Plugins), never a tool switch;
+   `computer_use` sent in a tool list is ignored. Settings, Computers
+   chooses which computers exactly, and holds the bots' computer's size
+   and controls. Code execution and the browser are what
    bots do on that computer, not tools of their own. A tool with a missing prerequisite
    shows what to install instead of a switch.
 6. **Connectors.** See below.

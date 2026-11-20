@@ -232,6 +232,11 @@ fn signed_in(home: &Path, bot: Option<&str>, grant: &str) -> Result<bool> {
 /// no key, as the free web searches do, its sign-in is saved, or every key
 /// it needs is.
 fn set_up_for(home: &Path, bot: Option<&str>, spec: &Value) -> Result<bool> {
+    // Computer Use needs no key: it reaches whichever of a bot's computers
+    // has its screen shared (machines.rs), and says so on each call.
+    if spec["id"] == crate::machines::COMPUTER_USE {
+        return Ok(true);
+    }
     // A Google or Microsoft connector is set up once the user signs in to
     // it (accounts.rs).
     if spec["account"].is_string() {
@@ -590,6 +595,11 @@ pub(crate) fn enabled(home: &Path, bot: &str, id: &str) -> Result<bool> {
     if let Some(server) = id.strip_prefix("mcp:") {
         return Ok(mcp_servers(home, bot)?.get(server).is_some());
     }
+    // Computer Use is the bot's place in `computers` (machines.rs): it puts
+    // the screens of the bot's environments in reach.
+    if id == crate::machines::COMPUTER_USE {
+        return crate::machines::computer_use_on(home, bot);
+    }
     let s = spec(id)?;
     if let Some(skill) = s["skill"].as_str() {
         return Ok(crate::skills::resolve(home, Some(bot))?
@@ -643,6 +653,10 @@ pub(crate) fn set_enabled(home: &Path, bot: &str, id: &str, on: bool) -> Result<
             crate::skills::find_unlocked(home, Some(bot), skill)?;
             return crate::skills::set_enabled(home, Some(bot), skill, on);
         }
+    }
+    if id == crate::machines::COMPUTER_USE {
+        crate::machines::set_computer_use(home, bot, on)?;
+        return crate::machines::computer_use_changed(home, bot);
     }
     if let Some(server) = id.strip_prefix("mcp:") {
         return change_mcp_bots(home, server, |bots| {

@@ -6,10 +6,11 @@ author: Hexbot
 license: MIT
 ---
 
-# Computer use
+# Computer Use
 
-With Computer use on, you have a `computer_use` tool. The Computers block in
-your prompt lists the computers you may use and which has a desktop; name one
+With Computer Use on, you have a `computer_use` tool. The Computers block in
+your prompt lists the computers you work on and which has a desktop you may
+use; name one
 in `computer`, or leave it out for the first. Most often it is `vm`, the
 computer your bots share: a Linux desktop (Ubuntu with Xfce, Firefox and a
 terminal) in a [Cua](https://cua.ai) sandbox. It is not the user's computer

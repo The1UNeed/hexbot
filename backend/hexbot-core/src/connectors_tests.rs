@@ -41,6 +41,7 @@ async fn catalog_shapes_and_errors_match_clients() {
             .map(|r| r["id"].as_str().unwrap())
             .collect::<Vec<_>>(),
         [
+            "computer_use",
             "web_search",
             "gmail",
             "google_calendar",
@@ -62,7 +63,8 @@ async fn catalog_shapes_and_errors_match_clients() {
             "x_search"
         ]
     );
-    let providers = rows[0]["providers"].as_array().unwrap();
+    let web = rows.iter().find(|r| r["id"] == "web_search").unwrap();
+    let providers = web["providers"].as_array().unwrap();
     assert_eq!(
         providers
             .iter()
@@ -90,7 +92,7 @@ async fn catalog_shapes_and_errors_match_clients() {
             .unwrap()
             .contains("Docker")
     );
-    let fields = rows[0]["fields"].as_array().unwrap();
+    let fields = web["fields"].as_array().unwrap();
     assert_eq!(
         fields.iter().find(|f| f["key"] == "EXA_API_KEY").unwrap(),
         &json!({"key":"EXA_API_KEY","provider":"exa","label":"Exa API key","help":"Exa API key for AI-native web search and contents","url":"https://exa.ai/","secret":true,"advanced":false,"set":false,"hint":null})
@@ -111,6 +113,10 @@ async fn catalog_shapes_and_errors_match_clients() {
             assert_eq!(row["provider"], "searxng");
             assert_eq!(row["state_text"], "Ready · SearXNG (needs Docker)");
             assert_eq!(row["enabled_for_bot"], true);
+        } else if row["id"] == "computer_use" {
+            // Needs no key: it reaches the screens of the bot's computers.
+            assert_eq!(row["state"], "ready");
+            assert_eq!(row["group"], "computer");
         } else {
             assert_eq!(row["state"], "not_set_up");
         }

@@ -126,14 +126,15 @@ The checklist is also a plain file, `profiles/BOT/HEARTBEAT.md` in the daemon's 
 
 ```sh
 hexbot computers                           # every computer, what each offers, and its bots
-hexbot computers give vm terminal owl      # owl runs commands on the bots' computer
-hexbot computers take host desktop owl     # owl no longer uses this computer's desktop
+hexbot computers give vm owl               # owl works on the bots' computer
+hexbot computers take host owl             # owl no longer works on this computer
 hexbot computers vm off                    # stop using the bots' computer
-hexbot computers host desktop on           # share this computer's desktop (sets up Cua first)
+hexbot computers host desktop on           # Computer Use here: share this screen (sets up Cua first)
 hexbot computers forget device:ID          # one of your computers: take it from every bot
+hexbot plugins assign connector computer_use owl fox   # owl and fox see and use their computers' screens
 ```
 
-A computer is `vm` (the bots' computer), `host` (this computer, where the daemon runs) or `device:ID` (one of your computers). `hexbot computers` lists the IDs. One of your computers shows up once Hexbot there has **Let bots use its terminal** or **its desktop** on, and only that app can turn those on. `forget` works only on one of your computers. Taking back an always allowed app is in the app, under Settings, Computers.
+A computer is `vm` (the bots' computer), `host` (this computer, where the daemon runs) or `device:ID` (one of your computers). `hexbot computers` lists the IDs. A computer you give a bot is one of its environments: its terminal runs there. **Computer Use** is a plugin: with it, a bot also sees and uses the screens of its environments where they are shared. One of your computers shows up once Hexbot there has **Let bots work here** on, and only that app can turn it, or **Computer Use here**, on. `forget` works only on one of your computers. Taking back an always allowed app is in the app, under Settings, Computers.
 
 ## Send a message and list rooms
 

@@ -39,6 +39,7 @@ const api = vi.hoisted(() => ({
   computerStatus: vi.fn(),
   computerView: vi.fn(),
   computersGrant: vi.fn(),
+  connectorsSetForBot: vi.fn(),
   computersList: vi.fn()
 }))
 
@@ -478,6 +479,8 @@ describe('ProfilePanel', () => {
     api.computerView.mockReset()
     api.computersGrant.mockReset()
     api.computersGrant.mockResolvedValue({ ok: true })
+    api.connectorsSetForBot.mockReset()
+    api.connectorsSetForBot.mockResolvedValue({ connector: {} })
     useComputer.setState({ error: null, status: null })
     useConnection.setState({ target: { kind: 'local', origin: 'http://127.0.0.1:9119' } })
     seed([], false)
@@ -495,8 +498,13 @@ describe('ProfilePanel', () => {
     // On, without this bot: no screen, and Turn on grants its desktop there.
     act(() => useComputers.setState({ computers: [{ ...vm, on: true }] }))
     fireEvent.click(await screen.findByRole('button', { name: 'Turn on Computer use' }))
+    // The bots' computer as one of its environments, then Computer Use.
     await waitFor(() =>
-      expect(api.computersGrant).toHaveBeenCalledWith('vm', 'desktop', 'scout', true)
+      expect(api.connectorsSetForBot).toHaveBeenCalledWith('computer_use', 'scout', true)
+    )
+    expect(api.computersGrant).toHaveBeenCalledWith('vm', 'terminal', 'scout', true)
+    await waitFor(() =>
+      expect(api.connectorsSetForBot).toHaveBeenCalledWith('computer_use', 'scout', true)
     )
     expect(screen.queryByTitle("Your bots' screen")).toBeNull()
     expect(api.computerView).not.toHaveBeenCalled()

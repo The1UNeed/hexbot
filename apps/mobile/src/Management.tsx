@@ -397,28 +397,32 @@ function Computers({ mobile }: { mobile: ReturnType<typeof useMobile> }) {
   const host = list.find(c => c.kind === 'host')
   const devices = list.filter(c => c.kind === 'device')
   const label = (c: Computer) => (c.kind === 'vm' ? "The bots' computer" : c.name)
+  // One switch per bot: the computer as one of its environments, where its
+  // terminal works. Its screen comes with the Computer Use plugin.
   const bots = (c: Computer) =>
-    (['terminal', 'desktop'] as const)
-      .filter(cap => c[cap].available || c[cap].bots.length)
-      .map(cap => (
-        <Group key={cap} title={`${label(c)} · ${cap === 'terminal' ? 'Terminal' : 'Desktop'}`}>
-          {mobile.bots.map(b => {
-            const on = c[cap].bots.includes(b.name)
-            return (
-              <SwitchRow
-                disabled={offline || (!on && !c[cap].available)}
-                key={b.name}
-                onValueChange={next =>
-                  call('hexbot.computers.grant', { computer: c.id, capability: cap, bot: b.name, on: next })
-                }
-                testID={`computers-${c.id}-${cap}-${b.name}`}
-                title={b.display_name}
-                value={on}
-              />
-            )
-          })}
-        </Group>
-      ))
+    c.terminal.available || c.terminal.bots.length ? (
+      <Group
+        footer="With the Computer Use plugin, a bot also sees and uses this computer's screen where it is shared."
+        title={`${label(c)} · Works here`}
+      >
+        {mobile.bots.map(b => {
+          const on = c.terminal.bots.includes(b.name)
+          return (
+            <SwitchRow
+              disabled={offline || (!on && !c.terminal.available)}
+              key={b.name}
+              onValueChange={next =>
+                call('hexbot.computers.grant', { computer: c.id, capability: 'terminal', bot: b.name, on: next })
+              }
+              subtitle={c.desktop.bots.includes(b.name) ? 'Computer Use' : undefined}
+              testID={`computers-${c.id}-terminal-${b.name}`}
+              title={b.display_name}
+              value={on}
+            />
+          )
+        })}
+      </Group>
+    ) : null
   const apps = (c: Computer) => {
     const rows = Object.entries(c.apps).flatMap(([bot, names]) =>
       names.map(app => ({ app, bot }))
@@ -490,10 +494,10 @@ function Computers({ mobile }: { mobile: ReturnType<typeof useMobile> }) {
               onValueChange={next => call('hexbot.computers.set', { computer: 'host', desktop: next })}
               subtitle={
                 host.desktop.note ??
-                'Bots see its screen, click and type in the apps you allow (in Bypass, without asking), never in terminals, editors or Hexbot.'
+                'Bots with Computer Use see its screen, click and type in the apps you allow (in Bypass, without asking), never in terminals, editors or Hexbot.'
               }
               testID="computers-host-desktop"
-              title="Share its desktop"
+              title="Computer Use here"
               value={!!host.desktop.on}
             />
           </Group>

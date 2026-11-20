@@ -148,13 +148,16 @@ and never a room, a thread, a job or a delegate already running.
   user has paused the bots there, new commands are refused too; one
   already running finishes.
 - **This computer's** terminal is the sandboxed bash described above. Its
-  desktop, once shared, gives the same reach as Bypass for the apps a bot
-  is allowed: the OS sandbox limits processes, not clicks. Each app asks
+  desktop, once shared (Computer Use here) and reached by a bot that has it
+  as an environment and the Computer Use connector, gives the same reach as
+  Bypass for the apps a bot is allowed: the OS sandbox limits processes, not clicks. Each app asks
   the first time (Allow for now or Always allow), except in Bypass;
   terminal apps and Hexbot never take input in any mode, and computer_use's
   shell is refused there.
 - **The user's computers** take part only while the desktop app there has
-  Let bots use its terminal or Let bots use its desktop on. Only that app's
+  Let bots work here (commands) or Computer Use here (its screen) on, and
+  only for bots given that computer, its screen only for bots with the
+  Computer Use connector. Only that app's
   main process can turn them on, with a native dialog; the daemon, a page, or a prompt-injected bot
   can't. Its main process checks the switch again for every request and
   runs only commands and the allowed desktop tools (no Cua shell, files or

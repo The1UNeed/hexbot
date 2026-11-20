@@ -103,7 +103,7 @@ Full asks where Hexbot should run:
 
 Client opens straight on the connect screen.
 
-Setup then asks about you (your name, your work, and how bots should speak to you), then for a model provider and your default models. Next it suggests accounts for your bots to help with: Microsoft or Google, which you sign in to, then GitHub, X, and web search, followed by the other connectors. Connect any of them or skip; add them later in Settings, Plugins. Then it asks where bots can work: the bots' computer (suggested, when it can run here), this computer, or both. Change it later in Settings, Computers.
+Setup then asks about you (your name, your work, and how bots should speak to you), then for a model provider and your default models. Next it suggests accounts for your bots to help with: Microsoft or Google, which you sign in to, then GitHub, X, and web search, followed by the other connectors. Connect any of them or skip; add them later in Settings, Plugins. Then it asks where bots can work: the bots' computer (suggested, when it can run here), this computer, or both, and whether they get Computer Use, to see and use those computers' screens. Change them later in Settings, Computers and Settings, Plugins.
 
 Setup finishes by creating HexBot, your primary bot, and opening your chat with it. [Quick start](/docs/quick-start/) walks through each step. Model providers and optional tool services bill your own accounts.
 

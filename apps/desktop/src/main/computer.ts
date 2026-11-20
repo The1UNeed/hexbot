@@ -111,13 +111,13 @@ export function refusal(
   allowed: { desktop: boolean; terminal: boolean }
 ): null | string {
   if (request.kind === 'terminal') {
-    if (!allowed.terminal) return 'This computer does not let bots use its terminal.'
+    if (!allowed.terminal) return 'This computer does not let bots work on it.'
     if (typeof request.command !== 'string' || !request.command.trim())
       return 'The command is empty.'
     return null
   }
   if (request.kind === 'desktop') {
-    if (!allowed.desktop) return 'This computer does not let bots use its desktop.'
+    if (!allowed.desktop) return "This computer does not let Computer Use reach its screen."
     if (typeof request.tool !== 'string' || !DESKTOP_TOOLS.has(request.tool))
       return 'That action is not allowed on this computer.'
     return null

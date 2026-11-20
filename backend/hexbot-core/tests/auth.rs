@@ -424,8 +424,9 @@ fn a_revoked_computer_leaves_every_bot() {
     let computer = format!("device:{}", device["device_id"].as_str().unwrap());
     machines::migrate(h).unwrap();
     machines::set(h, &computer, "terminal", "owl", true).unwrap();
-    machines::set(h, &computer, "desktop", "owl", true).unwrap();
+    machines::set_computer_use(h, "owl", true).unwrap();
     assert!(machines::has(h, "owl", &computer, "terminal").unwrap());
+    assert!(machines::has(h, "owl", &computer, "desktop").unwrap());
     rpc(
         h,
         "local",

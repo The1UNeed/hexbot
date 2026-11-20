@@ -621,7 +621,7 @@ export const computersGrant = (
 export const computersSet = (computer: 'host' | 'vm', change: { desktop?: boolean; on?: boolean }) =>
   rpcCall<{ computers: Computer[] }>('hexbot.computers.set', { computer, ...change })
 /** Setup's choice for every bot made from now on: this computer's terminal and desktop. */
-export const computersDefaults = (defaults: { host_desktop?: boolean; host_terminal?: boolean }) =>
+export const computersDefaults = (defaults: { computer_use?: boolean; host_terminal?: boolean }) =>
   rpcCall<Record<string, boolean>>('hexbot.computers.defaults', defaults)
 /** Take an app off a bot's Always allow list on one computer. */
 export const computersRemoveApp = (computer: string, bot: string, app: string) =>

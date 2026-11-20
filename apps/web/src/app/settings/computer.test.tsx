@@ -124,24 +124,30 @@ describe('Settings, Computers', () => {
     expect(await screen.findByTestId('computer-state')).toHaveTextContent('Off')
     fireEvent.click(screen.getByRole('button', { name: 'Turn on' }))
     await waitFor(() => expect(computerStep).toHaveBeenCalledWith('start'))
-    expect(
-      screen.getByRole('switch', { name: "Terminal on The bots' computer for Owl" })
-    ).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('switch', { name: "Owl works on The bots' computer" })).toHaveAttribute(
+      'aria-checked',
+      'true'
+    )
   })
 
   it('gives and takes a computer from a bot', async () => {
     render(<ComputerSettings />)
-    fireEvent.click(await screen.findByRole('switch', { name: 'Terminal on studio for Owl' }))
+    fireEvent.click(await screen.findByRole('switch', { name: 'Owl works on studio' }))
     await waitFor(() =>
       expect(computersGrant).toHaveBeenCalledWith('host', 'terminal', 'owl', true)
     )
-    fireEvent.click(screen.getByRole('switch', { name: "Desktop on The bots' computer for Owl" }))
-    await waitFor(() => expect(computersGrant).toHaveBeenCalledWith('vm', 'desktop', 'owl', false))
+    // One switch per bot: the computer as one of its environments. Its
+    // screen comes with the Computer Use plugin, never a switch here.
+    expect(screen.queryByRole('switch', { name: /Desktop on/ })).toBeNull()
+    fireEvent.click(screen.getByRole('switch', { name: "Owl works on The bots' computer" }))
+    await waitFor(() => expect(computersGrant).toHaveBeenCalledWith('vm', 'terminal', 'owl', false))
   })
 
   it('shares this desktop, takes back an always allowed app, and forgets a computer', async () => {
     render(<ComputerSettings />)
-    fireEvent.click(await screen.findByRole('switch', { name: "Share studio's desktop with bots" }))
+    fireEvent.click(
+      await screen.findByRole('switch', { name: "Let Computer Use reach studio's screen" })
+    )
     await waitFor(() => expect(computersSet).toHaveBeenCalledWith('host', { desktop: true }))
     fireEvent.click(screen.getByRole('button', { name: 'Stop always allowing Safari' }))
     await waitFor(() => expect(computersRemoveApp).toHaveBeenCalledWith('host', 'owl', 'Safari'))
@@ -189,7 +195,7 @@ describe('Settings, Computers', () => {
       render(<ComputerSettings />)
 
       const desktop = await screen.findByRole('switch', {
-        name: "Let bots use this computer's desktop"
+        name: "Let Computer Use reach this computer's screen"
       })
 
       expect(desktop).toHaveAttribute('aria-checked', 'true')
@@ -230,9 +236,7 @@ describe('Settings, Computers', () => {
 
   it("shows no switch from before a reconnect until this connection's list answers", async () => {
     render(<ComputerSettings />)
-    expect(
-      await screen.findByRole('switch', { name: 'Terminal on studio for Owl' })
-    ).toBeInTheDocument()
+    expect(await screen.findByRole('switch', { name: 'Owl works on studio' })).toBeInTheDocument()
 
     // Back after a while away: the grants may have changed meanwhile.
     let answer: (value: { computers: Computer[] }) => void = () => {}
@@ -244,31 +248,25 @@ describe('Settings, Computers', () => {
     )
     act(() => useConnection.setState(state => ({ connects: state.connects + 1 })))
     await waitFor(() =>
-      expect(screen.queryByRole('switch', { name: 'Terminal on studio for Owl' })).toBeNull()
+      expect(screen.queryByRole('switch', { name: 'Owl works on studio' })).toBeNull()
     )
     expect(screen.getByLabelText('Loading computers')).toBeInTheDocument()
 
     await act(async () => answer({ computers: computers() }))
-    expect(
-      await screen.findByRole('switch', { name: 'Terminal on studio for Owl' })
-    ).toBeInTheDocument()
+    expect(await screen.findByRole('switch', { name: 'Owl works on studio' })).toBeInTheDocument()
   })
 
   it("says why when a reconnect's list fails, and reads it again on Try again", async () => {
     render(<ComputerSettings />)
-    expect(
-      await screen.findByRole('switch', { name: 'Terminal on studio for Owl' })
-    ).toBeInTheDocument()
+    expect(await screen.findByRole('switch', { name: 'Owl works on studio' })).toBeInTheDocument()
 
     vi.mocked(computersList).mockRejectedValueOnce(new Error('The daemon is busy'))
     act(() => useConnection.setState(state => ({ connects: state.connects + 1 })))
     expect(await screen.findByRole('alert')).toHaveTextContent('The daemon is busy')
-    expect(screen.queryByRole('switch', { name: 'Terminal on studio for Owl' })).toBeNull()
+    expect(screen.queryByRole('switch', { name: 'Owl works on studio' })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
-    expect(
-      await screen.findByRole('switch', { name: 'Terminal on studio for Owl' })
-    ).toBeInTheDocument()
+    expect(await screen.findByRole('switch', { name: 'Owl works on studio' })).toBeInTheDocument()
   })
 
   it("keeps the bots' computer controls on a daemon from before computers", async () => {

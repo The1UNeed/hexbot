@@ -79,9 +79,9 @@ const thisComputer = new ThisComputer(join(app.getPath('userData'), 'computer.js
       defaultId: 1,
       detail:
         what === 'terminal'
-          ? 'Bots can run commands here as you, outside any sandbox. In Auto, each command is checked first; in Manual, each one asks; in Bypass, they run without asking. Turn it off here or from the Hexbot icon at any time.'
-          : 'Bots can see this screen, click and type. In Auto and Manual they ask before each app the first time in each conversation (Always allow keeps it); in Bypass they skip that. They never type into terminals, editors or Hexbot. Turn it off here or from the Hexbot icon at any time.',
-      message: what === 'terminal' ? "Let bots use this computer's terminal?" : "Let bots use this computer's desktop?",
+          ? 'It becomes an environment you can give bots, and they can run commands here as you, outside any sandbox. In Auto, each command is checked first; in Manual, each one asks; in Bypass, they run without asking. Turn it off here or from the Hexbot icon at any time.'
+          : 'Bots with Computer Use can see this screen, click and type. In Auto and Manual they ask before each app the first time in each conversation (Always allow keeps it); in Bypass they skip that. They never type into terminals, editors or Hexbot. Turn it off here or from the Hexbot icon at any time.',
+      message: what === 'terminal' ? 'Let bots work on this computer?' : "Let Computer Use reach this computer's screen?",
       type: 'warning' as const
     }
     const answer = mainWindow && !mainWindow.isDestroyed() ? await dialog.showMessageBox(mainWindow, options) : await dialog.showMessageBox(options)

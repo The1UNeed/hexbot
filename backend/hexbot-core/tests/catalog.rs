@@ -1172,16 +1172,20 @@ fn every_bot_has_computer_use_once_it_is_set_up_and_never_the_daemons_code_or_br
         "hexbot.bots.create",
         json!({"name":"no-tools","tools":[]}),
     );
-    assert_eq!(created["bot"]["tools"], json!(["computer_use"]));
-    // Older clients still send the tools Computer use replaced; they are dropped.
+    // Computer Use is a connector now, not one of the bot's tool switches.
+    assert_eq!(created["bot"]["tools"], json!([]));
+    assert!(hexbot_core::machines::computer_use_on(home.path(), "no-tools").unwrap());
+    // Older clients still send the tools Computer Use replaced, and Computer
+    // use itself; they are dropped.
     let bot = call(
         home.path(),
         "alice",
         "hexbot.bots.update",
-        json!({"name":"no-tools","tools":["files","code_execution","browser"]}),
+        json!({"name":"no-tools","tools":["files","code_execution","browser","computer_use"]}),
     )["bot"]
         .clone();
-    assert_eq!(bot["tools"], json!(["files", "computer_use"]));
+    assert_eq!(bot["tools"], json!(["files"]));
+    assert!(hexbot_core::machines::computer_use_on(home.path(), "no-tools").unwrap());
     let available = bot["available_tools"].as_array().unwrap();
     assert!(!available.contains(&json!("code_execution")));
     assert!(!available.contains(&json!("browser")));

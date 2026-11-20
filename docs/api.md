@@ -384,15 +384,15 @@ config's value, else the bot's own, else the setting. A new bot starts
 with neither of its own.
 
 `available_tools` lists the `tools` keys whose program or service exists:
-computer use needs Cua on the daemon computer, or a desktop the bot may use
-on one of the user's computers; vision needs a key or endpoint for its
-vision provider, and voice edge-tts or its provider's key. The others are
-always available. `terminal` and `computer_use` follow the bot's computers
-(`hexbot.computers.*`): a bot has them while it may use some computer's
-terminal or desktop. `tools` reports available tools, plus `computer_use`
-while the bot has a desktop even when it isn't available here (no Cua), so a
-client that sends the list back keeps the bot's desktops. `code_execution`
-and `browser` ran on the daemon's computer and are never offered. A tool
+vision needs a key or endpoint for its vision provider, and voice edge-tts
+or its provider's key. The others are always available. `terminal` follows
+the bot's computers (`hexbot.computers.*`): a bot has bash while it works on
+some computer. Computer Use is the `computer_use` connector
+(`hexbot.connectors.set_for_bot`), not a tool switch: with it the bot has
+`computer_use` on the screens of its computers that are shared.
+`code_execution`, `browser` and `computer_use` sent in `tools` by older
+clients are accepted and ignored; `code_execution` and `browser` ran on the
+daemon's computer and are never offered. A tool
 that isn't available is never offered to a model; a frozen section that
 still lists one gets an error when calling it.
 Provider key changes and finished sign-ins broadcast `hexbot.bots.changed` to
@@ -1027,26 +1027,32 @@ terminal, a desktop or both; each is given to bots per capability.
 
 - `hexbot.computers.list {}` → `{computers: [{id, kind: "vm" | "host" |
   "device", name, os, online, on, available, terminal, desktop, apps}]}`.
-  `terminal` and `desktop` are `{available, bots}`; this computer's terminal
+  `terminal` and `desktop` are `{available, bots}`: `terminal.bots` are the
+  bots it is an environment of, `desktop.bots` those of them with the
+  Computer Use connector where its screen is shared; this computer's terminal
   adds `sandboxed` (false on Windows) and its desktop `on`, `ready` and a
   `note` when it can't be shared. `apps` is `{bot: [app, ...]}`: what each
   bot may always use there. A user's computer is listed while it is online
   or has grants.
-- `hexbot.computers.grant {computer, capability: "terminal" | "desktop", bot,
-  on}` gives the bot that computer's terminal or desktop, or takes it. A
-  user's computer must be one of the owner's paired devices.
+- `hexbot.computers.grant {computer, capability: "terminal", bot, on}` makes
+  the computer one of the bot's environments, or takes it. `"desktop"` is
+  refused: a desktop comes with the Computer Use connector. A user's
+  computer must be one of the owner's paired devices.
 - `hexbot.computers.set {computer: "vm", on}` uses the bots' computer or
   stops using it (turning it off stops it). `{computer: "host", desktop}`
   shares this computer's desktop, setting Cua up first (`cua host setup
   --direct 127.0.0.1:3211 --no-provide-spaces`), or stops sharing it.
   Returns the list.
-- `hexbot.computers.defaults {host_terminal?, host_desktop?}`: what bots made
-  from now on get of this computer, as setup chose. A new bot always gets the
+- `hexbot.computers.defaults {host_terminal?, computer_use?}`: whether bots
+  made from now on get this computer, and Computer Use, as setup chose. A new bot always gets the
   bots' computer when Cua can run it. When `host_terminal` is unset, it gets
   this computer's terminal only if the bots' computer can't run; an explicit
   `false` gives it no terminal here, even then. A daemon that already had
   bots when computers arrived records `host_terminal` from its default
-  toolsets, so new bots keep this computer's terminal as before.
+  toolsets, so new bots keep this computer's terminal as before. When
+  `computer_use` is unset, a new bot gets Computer Use where a screen is in
+  reach: the bots' computer can run, or it gets this computer and its
+  desktop is shared.
 - `hexbot.computers.remove_app {computer, bot, app}` takes an app off a bot's
   Always allow list.
 - `hexbot.computers.forget {computer}` forgets a user's computer: its grants

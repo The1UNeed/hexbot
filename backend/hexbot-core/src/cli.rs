@@ -29,7 +29,7 @@ pub const USAGE: &str = concat!(
     "hexbot bots primary [NAME]\n",
     "hexbot heartbeat on | off | status BOT | now BOT | set BOT TEXT\n",
     "hexbot computer [on | off | restart | reset | pause | resume | size small|medium|large]\n",
-    "hexbot computers [list] | give|take COMPUTER terminal|desktop BOT | vm on|off | host desktop on|off | forget COMPUTER\n",
+    "hexbot computers [list] | give|take COMPUTER BOT | vm on|off | host desktop on|off | forget COMPUTER\n",
     "hexbot rooms list\n",
     "hexbot plugins [list [--bot NAME]] | assign connector|skill|package ID [BOT ...]\n",
     "hexbot devices list | revoke ID\n",
@@ -82,15 +82,11 @@ fn command(args: &[String]) -> Result<(&'static str, Value)> {
         }
         ["computer", "size", size] => Ok(("hexbot.computer.configure", json!({"size":size}))),
         ["computers"] | ["computers", "list"] => Ok(("hexbot.computers.list", json!({}))),
-        [
-            "computers",
-            verb @ ("give" | "take"),
-            computer,
-            capability @ ("terminal" | "desktop"),
-            bot,
-        ] => Ok((
+        // A computer is one of the bot's environments; its screen comes with
+        // the Computer Use plugin (hexbot plugins assign connector computer_use).
+        ["computers", verb @ ("give" | "take"), computer, bot] => Ok((
             "hexbot.computers.grant",
-            json!({"computer":computer,"capability":capability,"bot":bot,"on":*verb == "give"}),
+            json!({"computer":computer,"capability":"terminal","bot":bot,"on":*verb == "give"}),
         )),
         ["computers", "vm", toggle @ ("on" | "off")] => Ok((
             "hexbot.computers.set",
@@ -687,24 +683,17 @@ mod usage_data_tests {
             ("hexbot.computers.list", json!({}))
         );
         assert_eq!(
-            command(&args(&["computers", "give", "vm", "terminal", "owl"])).unwrap(),
+            command(&args(&["computers", "give", "vm", "owl"])).unwrap(),
             (
                 "hexbot.computers.grant",
                 json!({"computer":"vm","capability":"terminal","bot":"owl","on":true})
             )
         );
         assert_eq!(
-            command(&args(&[
-                "computers",
-                "take",
-                "device:mac",
-                "desktop",
-                "owl"
-            ]))
-            .unwrap(),
+            command(&args(&["computers", "take", "device:mac", "owl"])).unwrap(),
             (
                 "hexbot.computers.grant",
-                json!({"computer":"device:mac","capability":"desktop","bot":"owl","on":false})
+                json!({"computer":"device:mac","capability":"terminal","bot":"owl","on":false})
             )
         );
         assert_eq!(
@@ -718,7 +707,8 @@ mod usage_data_tests {
             command(&args(&["computers", "vm", "off"])).unwrap(),
             ("hexbot.computers.set", json!({"computer":"vm","on":false}))
         );
-        assert!(command(&args(&["computers", "give", "vm", "printer", "owl"])).is_err());
+        // The old form named a capability; a desktop is the Computer Use plugin's.
+        assert!(command(&args(&["computers", "give", "vm", "desktop", "owl"])).is_err());
         assert_eq!(command(&args(&["computer", "resume"])).unwrap(), resume);
         // The name from before sharing still resumes them.
         assert_eq!(command(&args(&["computer", "give-back"])).unwrap(), resume);
