@@ -43,7 +43,8 @@ export function xlsx() {
     'xl/worksheets/sheet1.xml': `<worksheet xmlns="${S}"><dimension ref="A1:C3"/><sheetData>
       <row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row>
       <row r="2"><c r="A2"><v>2.5</v></c><c r="B2" s="1"><v>45352</v></c><c r="C2" s="2"><v>0.25</v></c></row>
-      <row r="3"><c r="A3"><f>A2*2</f><v>5</v></c><c r="B3"><f t="shared" ref="B3:B4" si="0">A3+1</f><v>6</v></c></row>
+      <row r="3"><c r="A3"><f>A2*2</f><v>5</v></c><c r="B3"><f t="shared" ref="B3:B4" si="0">A3+1</f><v>6</v></c><c r="C3"><f t="array" ref="C3:C4">A2:A3*2</f><v>5</v></c></row>
+      <row r="4"><c r="C4"><v>10</v></c></row>
     </sheetData></worksheet>`
   })
 }

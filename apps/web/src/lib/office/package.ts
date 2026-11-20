@@ -290,29 +290,38 @@ export function setRunText(run: Element, ns: string, text: string) {
   }
 
   // In Word, tabs and line breaks are elements of their own inside the run.
-  for (const node of children(run, ns, 't').concat(
-    children(run, ns, 'tab'),
-    children(run, ns, 'br'),
-    children(run, ns, 'cr')
-  )) {
-    node.remove()
-  }
+  // The new text goes where the old text was, so a picture after it stays after it.
+  const old = Array.from(run.children).filter(
+    node => node.namespaceURI === ns && ['br', 'cr', 'tab', 't'].includes(node.localName)
+  )
+
+  const fresh: Element[] = []
 
   for (const part of text.split(/(\t|\n)/)) {
     if (part === '\t') {
-      run.append(doc.createElementNS(ns, `${prefix}tab`))
+      fresh.push(doc.createElementNS(ns, `${prefix}tab`))
     } else if (part === '\n') {
-      run.append(doc.createElementNS(ns, `${prefix}br`))
+      fresh.push(doc.createElementNS(ns, `${prefix}br`))
     } else if (part) {
       const t = doc.createElementNS(ns, `${prefix}t`)
       t.setAttributeNS('http://www.w3.org/XML/1998/namespace', 'xml:space', 'preserve')
       t.textContent = part
-      run.append(t)
+      fresh.push(t)
     }
   }
 
   // An emptied run keeps one text element, as Word writes it.
-  if (!text) {
-    run.append(doc.createElementNS(ns, `${prefix}t`))
+  if (!fresh.length) {
+    fresh.push(doc.createElementNS(ns, `${prefix}t`))
+  }
+
+  if (old[0]) {
+    old[0].before(...fresh)
+  } else {
+    run.append(...fresh)
+  }
+
+  for (const node of old) {
+    node.remove()
   }
 }

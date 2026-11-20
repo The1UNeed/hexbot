@@ -417,6 +417,26 @@ export function cellLocked(
     return 'Other cells share this formula. Ask the bot to change it.'
   }
 
+  // An array formula owns every cell of its range, not only the first.
+  const arrays = Array.from(pkg.xml(sheet.path)?.getElementsByTagNameNS(S, 'f') ?? []).filter(
+    node => attr(node, 't') === 'array' && attr(node, 'ref')
+  )
+
+  for (const array of arrays) {
+    const [from, to = from] = (attr(array, 'ref') ?? '').split(':').map(parseRef)
+
+    if (
+      from &&
+      to &&
+      row >= Math.min(from.row, to.row) &&
+      row <= Math.max(from.row, to.row) &&
+      col >= Math.min(from.col, to.col) &&
+      col <= Math.max(from.col, to.col)
+    ) {
+      return 'This cell is part of an array formula. Ask the bot to change it.'
+    }
+  }
+
   if (formula && attr(formula, 't') === 'array') {
     return 'This cell holds an array formula. Ask the bot to change it.'
   }

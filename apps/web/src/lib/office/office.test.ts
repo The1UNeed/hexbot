@@ -109,10 +109,13 @@ describe('an Excel file', () => {
     expect(sheet.rows).toEqual([
       ['Pin', 'Use'],
       ['2.5', '2024-03-01', '25%'],
-      ['5', '6']
+      ['5', '6', '5'],
+      ['', '', '10']
     ])
     expect(cellSource(pkg, sheet, 2, 0)).toBe('=A2*2')
     expect(cellLocked(pkg, sheet, 2, 1)).toMatch(/share this formula/)
+    expect(cellLocked(pkg, sheet, 3, 2)).toMatch(/part of an array formula/)
+    expect(cellLocked(pkg, sheet, 1, 0)).toBeNull()
   })
 
   it('sets text, numbers, dates and formulas, keeping styles, and recalculates on open', () => {
@@ -240,6 +243,22 @@ describe('a Word run', () => {
         node => node.localName + (node.textContent ? `:${node.textContent}` : '')
       )
     ).toEqual(['rPr', 't:Name', 'tab', 't:Value', 'br', 't:next'])
+  })
+
+  it('keeps its text before a picture that follows it', () => {
+    const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+
+    const doc = new DOMParser().parseFromString(
+      `<w:r xmlns:w="${W}"><w:t>caption</w:t><w:drawing/></w:r>`,
+      'application/xml'
+    )
+
+    setRunText(doc.documentElement, W, 'new caption')
+
+    expect(Array.from(doc.documentElement.children).map(node => node.localName)).toEqual([
+      't',
+      'drawing'
+    ])
   })
 })
 
