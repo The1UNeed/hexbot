@@ -70,6 +70,11 @@ export interface SheetGridProps {
   sourceOf?: (cell: Cell) => string
   /** Several cells change at once: an edit, a paste or a clear. */
   onChange: (changes: { cell: Cell; value: string }[]) => void
+  /**
+   * A cell holds typed text not committed yet: the sheet has an edit, so a
+   * new version of the file waits and the edit saves against the one it began on.
+   */
+  onDraft?: () => void
   onInsertRow?: (at: number) => void
   onDeleteRows?: (from: number, to: number) => void
   onInsertColumn?: (at: number) => void
@@ -97,6 +102,7 @@ export function SheetGrid({
   onComment,
   onDeleteColumns,
   onDeleteRows,
+  onDraft,
   onInsertColumn,
   onInsertRow,
   place,
@@ -145,7 +151,29 @@ export function SheetGrid({
     node?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
   }, [focus.col, focus.row])
 
+  // Escape drops the edit; the blur that moving focus causes must not save it.
+  const cancelled = useRef(false)
+
+  const cancel = () => {
+    cancelled.current = true
+    setEditing(null)
+    grid.current?.focus({ preventScroll: true })
+  }
+
+  /** A cell's text changed while editing: the sheet holds an edit not saved yet. */
+  const draft = (cell: Cell, value: string) => {
+    setEditing({ cell, value })
+    onDraft?.()
+  }
+
   const commit = (move?: Cell) => {
+    if (cancelled.current) {
+      cancelled.current = false
+      setEditing(null)
+
+      return
+    }
+
     if (editing && editing.value !== source(editing.cell)) {
       onChange([{ cell: editing.cell, value: editing.value }])
     }
@@ -164,7 +192,13 @@ export function SheetGrid({
       return
     }
 
+    cancelled.current = false
     setEditing({ cell, value: initial ?? source(cell) })
+
+    // Typing over a cell is an edit already.
+    if (initial !== undefined && initial !== source(cell)) {
+      onDraft?.()
+    }
   }
 
   // Tab-separated, quoted where a cell holds a tab, a line break or a quote,
@@ -358,14 +392,16 @@ export function SheetGrid({
           data-comment="off"
           disabled={!editable}
           onBlur={() => editing && commit()}
-          onChange={event => setEditing({ cell: focus, value: event.target.value })}
+          onChange={event => {
+            cancelled.current = false
+            draft(focus, event.target.value)
+          }}
           onKeyDown={event => {
             if (event.key === 'Enter') {
               event.preventDefault()
               commit({ col: focus.col, row: focus.row + 1 })
             } else if (event.key === 'Escape') {
-              setEditing(null)
-              grid.current?.focus()
+              cancel()
             }
           }}
           value={barValue}
@@ -542,9 +578,7 @@ export function SheetGrid({
                           className="absolute inset-0 w-full min-w-[120px] bg-background px-2 text-foreground outline-2 -outline-offset-2 outline-accent"
                           data-comment="off"
                           onBlur={() => commit()}
-                          onChange={event =>
-                            setEditing({ cell: { col, row }, value: event.target.value })
-                          }
+                          onChange={event => draft({ col, row }, event.target.value)}
                           onKeyDown={event => {
                             if (event.key === 'Enter') {
                               event.preventDefault()
@@ -554,8 +588,7 @@ export function SheetGrid({
                               commit({ col: col + (event.shiftKey ? -1 : 1), row })
                             } else if (event.key === 'Escape') {
                               event.preventDefault()
-                              setEditing(null)
-                              grid.current?.focus({ preventScroll: true })
+                              cancel()
                             }
                           }}
                           value={editing.value}

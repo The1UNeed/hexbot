@@ -47,9 +47,23 @@ export function writeRuns(runs: Element[], ns: typeof NS.a | typeof NS.w, texts:
     return
   }
 
-  set(runs[0]!, texts.join(''))
+  // Runs merged while typing: the first text run takes all of it. A
+  // PowerPoint line break between runs stays, so its newline is not text.
+  const textRuns = ns === NS.a ? runs.filter(run => run.localName !== 'br') : runs
+  const merged = ns === NS.a ? texts.join('').replace(/\n/g, '') : texts.join('')
+  let first = textRuns[0]
 
-  for (const run of runs.slice(1)) {
+  if (!first) {
+    const paragraph = runs[0]!.parentElement!
+    const prefix = runs[0]!.prefix ? `${runs[0]!.prefix}:` : ''
+
+    first = paragraph.ownerDocument.createElementNS(ns, `${prefix}r`)
+    runs[runs.length - 1]!.after(first)
+  }
+
+  set(first, merged)
+
+  for (const run of textRuns.slice(1)) {
     set(run, '')
   }
 }

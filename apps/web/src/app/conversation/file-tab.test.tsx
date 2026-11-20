@@ -711,6 +711,37 @@ describe('a file beside the chat', () => {
     expect(api.filesWrite).toHaveBeenCalledTimes(refused)
   })
 
+  it('drops a cell edit on Escape without saving it', async () => {
+    api.filesRead.mockResolvedValue({
+      mime: 'text/csv',
+      modified: 3,
+      name: 'pins.csv',
+      path: '/work/pins.csv',
+      size: 7,
+      text: 'pin,use\nGPIO2,ADC\n',
+      version: 'v3'
+    })
+    act(() =>
+      visualsActions().open(
+        fileTab('pins.csv', { mime: 'text/csv', path: '/work/pins.csv', sessionId: 's' })
+      )
+    )
+    render(<VisualPanel />)
+
+    fireEvent.doubleClick(await screen.findByText('ADC'))
+    fireEvent.change(screen.getByLabelText('Edit B2'), { target: { value: 'JTAG' } })
+    fireEvent.keyDown(screen.getByLabelText('Edit B2'), { key: 'Escape' })
+
+    expect(await screen.findByText('ADC')).toBeInTheDocument()
+    expect(await flushOpenFiles()).toBe(true)
+    expect(api.filesWrite).not.toHaveBeenCalledWith(
+      's',
+      '/work/pins.csv',
+      expect.stringContaining('JTAG'),
+      expect.anything()
+    )
+  })
+
   it('keeps the edit when the version to load cannot be read', async () => {
     const field = await openPins()
     api.filesWrite.mockRejectedValue(
