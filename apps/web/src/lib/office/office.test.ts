@@ -72,6 +72,22 @@ describe('a Word file', () => {
     expect(xml.indexOf('<w:sectPr/>')).toBeGreaterThan(xml.indexOf('>End<'))
   })
 
+  it('keeps bookmarks when a paragraph joins the one before', () => {
+    const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+
+    const pkg = pack({
+      'word/document.xml': `<w:document xmlns:w="${W}"><w:body><w:p><w:r><w:t>Start</w:t></w:r></w:p><w:p><w:bookmarkStart w:id="0" w:name="here"/><w:r><w:t> end</w:t></w:r><w:bookmarkEnd w:id="0"/></w:p></w:body></w:document>`
+    })
+
+    const [first, second] = readDocx(pkg)!.blocks as DocxParagraph[]
+
+    joinParagraph(pkg, first!, second!)
+
+    expect(part(pkg, 'word/document.xml')).toContain(
+      '<w:t>Start</w:t></w:r><w:bookmarkStart w:id="0" w:name="here"/><w:r><w:t> end</w:t></w:r><w:bookmarkEnd w:id="0"/></w:p>'
+    )
+  })
+
   it('keeps a section break when its paragraph joins the one before', () => {
     const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 
@@ -188,6 +204,21 @@ describe('an Excel file', () => {
 
     expect(part(pkg, 'xl/workbook.xml')).toContain('fullCalcOnLoad="1"')
     expect(unzipSync(pkg.save())['xl/calcChain.xml']).toBeDefined()
+  })
+
+  it('edits a sheet that numbers its rows and cells by position', () => {
+    const pkg = pack({
+      'xl/_rels/workbook.xml.rels': `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Target="worksheets/sheet1.xml" Type="ws"/></Relationships>`,
+      'xl/workbook.xml': `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="S" r:id="rId1"/></sheets></workbook>`,
+      'xl/worksheets/sheet1.xml': `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row><c t="inlineStr"><is><t>a</t></is></c><c t="inlineStr"><is><t>b</t></is></c></row></sheetData></worksheet>`
+    })
+
+    const sheet = readXlsx(pkg)!.sheets[0]!
+
+    setCells(pkg, sheet, [{ col: 0, row: 0, value: 'A' }])
+
+    expect(readXlsx(reopen(pkg))!.sheets[0]!.rows).toEqual([['A', 'b']])
+    expect(part(pkg, 'xl/worksheets/sheet1.xml').match(/<row/g)).toHaveLength(1)
   })
 
   it('keeps what is typed into a Text cell as text', () => {
