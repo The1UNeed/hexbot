@@ -99,7 +99,10 @@ export function osName(platform: NodeJS.Platform = process.platform): string {
 export function readAllowed(path: string): { desktop: boolean; terminal: boolean } {
   try {
     const saved = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
-    return { desktop: saved.desktop === true, terminal: saved.terminal === true }
+    const terminal = saved.terminal === true
+    // Computer Use here sits on Let bots work here; a file an earlier build
+    // saved with only the screen on loads with neither.
+    return { desktop: terminal && saved.desktop === true, terminal }
   } catch {
     return { desktop: false, terminal: false }
   }
@@ -602,7 +605,8 @@ export class ThisComputer {
   /**
    * Each moves on whenever bots lose that one (its switch off, Stop, the
    * connection ending), so work already waiting for it can't run after;
-   * turning the terminal off leaves desktop work be, and the reverse.
+   * turning the screen off leaves running commands be (turning the terminal
+   * off takes the screen with it, as Computer Use here sits on it).
    */
   private generations = { desktop: 0, terminal: 0 }
   private readyCache: { at: number; note: null | string; target: null | string } | null = null

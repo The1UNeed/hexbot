@@ -64,6 +64,12 @@ describe('this computer', () => {
     expect(readAllowed(join(dir, 'bad.json'))).toEqual({ desktop: false, terminal: false })
     writeFileSync(join(dir, 'odd.json'), JSON.stringify({ desktop: 'yes', terminal: 1 }))
     expect(readAllowed(join(dir, 'odd.json'))).toEqual({ desktop: false, terminal: false })
+    // Saved by an earlier build with only the screen on: Computer Use here
+    // sits on Let bots work here, so neither is on.
+    writeFileSync(join(dir, 'screen.json'), JSON.stringify({ desktop: true, terminal: false }))
+    expect(readAllowed(join(dir, 'screen.json'))).toEqual({ desktop: false, terminal: false })
+    writeFileSync(join(dir, 'both.json'), JSON.stringify({ desktop: true, terminal: true }))
+    expect(readAllowed(join(dir, 'both.json'))).toEqual({ desktop: true, terminal: true })
   })
 
   it('ends a command waiting for input at once instead of at its timeout', async () => {

@@ -540,8 +540,9 @@ others (`DESIGN.md`, "The primary bot"). There is at most one per owner.
   takes environments: turning it on gives the default computer (the bots'
   computer when it can run, otherwise this computer), and leaving it out takes
   every computer the bot works on. While the bots' computer is switched off,
-  its environment doesn't count, so a list without `terminal` leaves what was
-  saved there; `hexbot.computers.grant` sets each computer exactly. Computer
+  or can't run here (no Cua), its environment doesn't count: it gives no bash
+  and isn't in the bot's computers, and a list without `terminal` leaves what
+  was saved there, so installing Cua brings it back; `hexbot.computers.grant` sets each computer exactly. Computer
   Use is the `computer_use` connector (`hexbot.connectors.set_for_bot`), which
   a tool list never changes. Combined model and tool edits use the new provider
   when checking availability.

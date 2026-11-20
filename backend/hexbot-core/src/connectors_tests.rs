@@ -32,6 +32,44 @@ async fn rpc(home: &Path, method: &str, p: Value) -> Value {
 }
 
 #[tokio::test]
+async fn testing_computer_use_says_which_screens_bots_reach_and_never_marks_it_broken() {
+    let home = setup();
+    let h = home.path();
+    // No Cua and no shared screen here.
+    common::update_config(h, |c| {
+        c["computer_use"]["command"] = json!("/nonexistent/cua");
+        Ok(())
+    })
+    .unwrap();
+    let test = rpc(h, "hexbot.connectors.test", json!({"id":"computer_use"})).await;
+    assert_eq!(test["ok"], false);
+    assert!(
+        test["message"]
+            .as_str()
+            .unwrap()
+            .contains("No screen here yet")
+    );
+    // The result is not kept: the connector stays ready.
+    let list = rpc(h, "hexbot.connectors.list", json!({})).await;
+    let row = list["connectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == "computer_use")
+        .unwrap()
+        .clone();
+    assert_eq!(row["state"], "ready");
+    // This computer's screen shared: reachable.
+    common::update_config(h, |c| {
+        c["computers"]["host"]["desktop_on"] = json!(true);
+        Ok(())
+    })
+    .unwrap();
+    let test = rpc(h, "hexbot.connectors.test", json!({"id":"computer_use"})).await;
+    assert_eq!(test["ok"], true, "{test}");
+}
+
+#[tokio::test]
 async fn catalog_shapes_and_errors_match_clients() {
     let home = setup();
     let list = rpc(home.path(), "hexbot.connectors.list", json!({"bot":"owl"})).await;

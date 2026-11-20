@@ -316,7 +316,13 @@ pub fn toolsets(home: &Path, bot: &str) -> Result<Vec<String>> {
     // and every bot has the bots' computer's desktop.
     let (terminal, desktop) = match root.get("computers").filter(|c| c.is_object()) {
         Some(computers) => {
-            crate::machines::capabilities_in(computers, bot, crate::machines::vm_usable(home)?)
+            // Whether the bots' computer can run matters only to a bot working
+            // on it; asked only then, as lists ask for every connector.
+            let on_vm = computers[crate::machines::VM][crate::machines::TERMINAL]
+                .as_array()
+                .is_some_and(|bots| bots.iter().any(|b| b == bot));
+            let vm_runs = on_vm && crate::machines::vm_usable(home)?;
+            crate::machines::capabilities_in(computers, bot, vm_runs)
         }
         None => (sets.iter().any(|s| s == "terminal"), true),
     };
@@ -1075,6 +1081,25 @@ async fn probe(home: &Path, id: &str, bot: Option<&str>) -> Result<Value> {
         };
         save_test(home, id, &result, true)?;
         return Ok(result);
+    }
+    // Computer Use has no key to test: say which screens bots can reach from
+    // here, without saving it, so a missing Cua never marks it broken (a
+    // user's computer runs its own).
+    if id == crate::machines::COMPUTER_USE {
+        let vm = crate::machines::vm_usable(home)?;
+        let host = crate::machines::host_desktop_on(home)?;
+        return Ok(match (vm, host) {
+            (true, true) => {
+                json!({"ok":true,"message":"The bots' computer can run here, and this computer's screen is shared."})
+            }
+            (true, false) => json!({"ok":true,"message":"The bots' computer can run here."}),
+            (false, true) => {
+                json!({"ok":true,"message":"This computer's screen is shared. The bots' computer needs Cua and Docker here."})
+            }
+            (false, false) => {
+                json!({"ok":false,"message":"No screen here yet: install Cua (uv tool install cua) and Docker for the bots' computer, or share a screen in Settings, Computers. Your own computers can share theirs from Hexbot there."})
+            }
+        });
     }
     let s = spec(id)?;
     if s["account"].is_string() {

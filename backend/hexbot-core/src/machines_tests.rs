@@ -1,6 +1,19 @@
 use super::*;
 use std::fs;
 
+/// A Cua for the bots' computer, whatever the machine running the test has
+/// (CI has none), so it counts as able to run.
+fn fake_cua(h: &Path) {
+    let cua = h.join("cua");
+    std::fs::write(&cua, "#!/bin/sh\n").unwrap();
+    #[cfg(unix)]
+    std::fs::set_permissions(&cua, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    common::update_config(h, |c| {
+        c["computer_use"]["command"] = json!(cua.to_string_lossy());
+        Ok(())
+    })
+    .unwrap();
+}
 /// A desktop on a computer is the computer as an environment plus Computer
 /// Use; taking it back here turns Computer Use off.
 fn desk(h: &Path, computer: &str, bot: &str, on: bool) -> Result<()> {
@@ -39,6 +52,7 @@ fn setup() -> tempfile::TempDir {
 fn a_daemon_from_before_computers_keeps_what_its_bots_had() {
     let home = setup();
     let h = home.path();
+    fake_cua(h);
     // Every bot had the bots' computer's desktop; the terminal toolset gave
     // this computer's terminal.
     assert!(has(h, "owl", VM, DESKTOP).unwrap());
@@ -77,6 +91,7 @@ fn a_daemon_from_before_computers_keeps_what_its_bots_had() {
 fn grants_decide_the_terminal_and_computer_use_tools_both_ways() {
     let home = setup();
     let h = home.path();
+    fake_cua(h);
     migrate(h).unwrap();
     desk(h, VM, "fox", false).unwrap();
     assert!(
@@ -240,16 +255,7 @@ fn the_tool_switches_give_and_take_computers() {
     let home = setup();
     let h = home.path();
     migrate(h).unwrap();
-    // Cua is there, whatever the machine running the test has.
-    let cua = h.join("cua");
-    std::fs::write(&cua, "#!/bin/sh\n").unwrap();
-    #[cfg(unix)]
-    std::fs::set_permissions(&cua, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    common::update_config(h, |c| {
-        c["computer_use"]["command"] = json!(cua.to_string_lossy());
-        Ok(())
-    })
-    .unwrap();
+    fake_cua(h);
     sync_tools(h, "owl", false, true).unwrap();
     assert!(granted(h, "owl").unwrap().is_empty());
     // On again: the default computer for each, the bots' computer first.

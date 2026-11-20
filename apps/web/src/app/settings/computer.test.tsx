@@ -207,6 +207,47 @@ describe('Settings, Computers', () => {
     }
   })
 
+  it('offers Computer Use here only once bots may work on this computer', async () => {
+    const off = {
+      desktop: false,
+      desktopNote: null,
+      desktopReady: true,
+      name: 'mac',
+      os: 'macOS',
+      terminal: false
+    }
+
+    const allow = vi.fn(async () => ({ ...off, terminal: true }))
+
+    ;(window as unknown as { hexbot: unknown }).hexbot = {
+      computer: { allow, state: async () => off }
+    }
+    useConnection.setState({
+      target: { deviceToken: 't', host: 'studio', kind: 'remote', port: 9119, tls: false }
+    })
+
+    try {
+      render(<ComputerSettings />)
+
+      const screenSwitch = await screen.findByRole('switch', {
+        name: "Let Computer Use reach this computer's screen"
+      })
+
+      expect(screenSwitch).toBeDisabled()
+      expect(screen.getByText(/Turn on Let bots work here first/)).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('switch', { name: 'Let bots work on this computer' }))
+      await waitFor(() => expect(allow).toHaveBeenCalledWith({ terminal: true }))
+      await waitFor(() =>
+        expect(
+          screen.getByRole('switch', { name: "Let Computer Use reach this computer's screen" })
+        ).toBeEnabled()
+      )
+    } finally {
+      delete (window as unknown as { hexbot?: unknown }).hexbot
+      useConnection.setState({ target: null })
+    }
+  })
+
   it('turns the bots computer off', async () => {
     render(<ComputerSettings />)
     fireEvent.click(await screen.findByRole('switch', { name: "Use the bots' computer" }))

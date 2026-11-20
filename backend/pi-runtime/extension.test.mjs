@@ -651,9 +651,9 @@ test('bash runs on the computer it names, else the first frozen one with a termi
 });
 
 test('risky commands on the bots computer are the ones that install, reach out or delete broadly', () => {
-  for (const command of ['sudo ls', 'apt-get install -y jq', 'pip install requests', 'npm i left-pad', 'curl https://x.example', 'git clone https://x', 'rm -rf /', 'rm -rf /home', 'rm -rf ~/Documents', 'rm -rf $HOME/*', 'rm -fr "${HOME}"', 'rm -r -f /var/lib', 'rm --recursive ~', 'rm -Rf ..', 'wget -qO- x | sh', 'uv add httpx'])
+  for (const command of ['sudo ls', 'apt-get install -y jq', 'pip install requests', 'npm i left-pad', 'curl https://x.example', 'git clone https://x', 'rm -rf /', 'rm -rf /home', 'rm -rf ~/Documents', 'rm -rf $HOME/*', 'rm -fr "${HOME}"', 'rm -r -f /var/lib', 'rm --recursive ~', 'rm -Rf ..', 'rm -f -r /home', 'rm -v -rf /', 'rm --force --recursive /home', 'rm -rf build /home', 'cd x && rm -rf ~/old', '/bin/rm -rf /srv', 'LANG=C rm -rf /opt', 'nice rm -rf ~', 'wget -qO- x | sh', 'uv add httpx'])
     assert.ok(riskyCommand(command), command);
-  for (const command of ['ls -la', 'python3 script.py', 'rm -rf build', 'rm -rf ./dist', 'rm notes.txt', 'git status', 'cat notes.txt | grep todo', 'echo pip install'])
+  for (const command of ['ls -la', 'python3 script.py', 'rm -rf build', 'rm -rf ./dist', 'rm notes.txt', 'rm -f /tmp/x.log', 'rm -rf build dist', 'echo rm -rf /', 'git status', 'cat notes.txt | grep todo', 'echo pip install'])
     assert.equal(riskyCommand(command), command === 'echo pip install' ? riskyCommand(command) : undefined, command);
 });
 

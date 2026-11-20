@@ -786,13 +786,35 @@ const RISKY_COMMANDS: [RegExp, string][] = [
   [/(^|[\s;&|(])(cargo|go|gem)\s+install\b|(^|[\s;&|(])uv\s+(add|tool\s+install)\b/, 'install packages'],
   [/(^|[\s;&|(])(curl|wget|ssh|scp|sftp|rsync|nc|ncat|telnet|ftp)\s/, 'reach the network'],
   [/(^|[\s;&|(])git\s+(clone|push|pull|fetch|remote\s+add)\b/, 'reach the network'],
-  // A recursive delete of anything under / or a home folder, or of a
-  // wildcard or parent folder; a relative path (rm -rf build) is routine.
-  [/(^|[\s;&|(])rm\s+(-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)(\s+-\S+)*\s+["']?(\/|~|\$\{?HOME\}?|\*|\.\.)/, 'delete broadly or stop the computer'],
   [/(^|[\s;&|(])(mkfs|dd\s+if=|shutdown|reboot|:\(\)\s*\{)/, 'delete broadly or stop the computer'],
   [/\|\s*(sh|bash|zsh|python3?)\b/, 'run downloaded code'],
 ];
+// A recursive rm, its options in any order and any of its paths under / or a
+// home folder, a wildcard or a parent folder; a relative path (rm -rf build)
+// is routine.
+const WRAPPERS = new Set(['sudo', 'doas', 'xargs', 'nice', 'nohup', 'time', 'command', 'exec', 'env', 'builtin']);
+function broadDelete(command: string): boolean {
+  return command.split(/[;&|\n()]+/).some(part => {
+    const words = part.trim().split(/\s+/);
+    // rm as the command, not an argument (echo rm -rf /): past assignments
+    // and the commands that run another (sudo, xargs, nice…).
+    let at = 0;
+    while (at < words.length && (/^[A-Za-z_]\w*=/.test(words[at]) || WRAPPERS.has(words[at]))) at++;
+    if (!(words[at] === 'rm' || words[at]?.endsWith('/rm'))) return false;
+    let recursive = false;
+    const paths: string[] = [];
+    let optionsDone = false;
+    for (const word of words.slice(at + 1)) {
+      if (!optionsDone && word === '--') optionsDone = true;
+      else if (!optionsDone && word.startsWith('--')) recursive ||= word === '--recursive';
+      else if (!optionsDone && word.startsWith('-') && word.length > 1) recursive ||= /[rR]/.test(word);
+      else paths.push(word.replace(/^["']+|["']+$/g, ''));
+    }
+    return recursive && paths.some(path => /^(\/|~|\$\{?HOME\b|\*|\.\.)/.test(path));
+  });
+}
 export function riskyCommand(command: string): string | undefined {
+  if (broadDelete(command)) return 'delete broadly or stop the computer';
   return RISKY_COMMANDS.find(([pattern]) => pattern.test(command))?.[1];
 }
 // The actions of each Google and Microsoft tool that only read; the gate

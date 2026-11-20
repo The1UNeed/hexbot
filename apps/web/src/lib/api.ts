@@ -610,7 +610,7 @@ export const computerConfigure = (size: ComputerSize) =>
 
 /** Every computer bots can use, with the bots on each (`machines.rs`). */
 export const computersList = () => rpcCall<{ computers: Computer[] }>('hexbot.computers.list')
-/** Give a bot, or take from it, one computer's terminal or desktop. */
+/** Give a bot one computer as an environment, or take it; its screen comes with Computer Use. */
 export const computersGrant = (
   computer: string,
   capability: 'terminal',

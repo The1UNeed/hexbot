@@ -1,6 +1,7 @@
 /**
- * Settings, Computers: every place bots can act (`machines.rs`), and which
- * bots may use each one's terminal and desktop. The bots' own computer, one
+ * Settings, Computers: every place bots can work (`machines.rs`), and the
+ * bots each one is an environment of; its screen comes with the Computer Use
+ * plugin, where the computer shares it. The bots' own computer, one
  * Cua sandbox per daemon, is where they run code, browse and use apps first;
  * this computer and the user's own computers are there when the user wants
  * bots to work on them, with each app allowed the first time.

@@ -389,7 +389,8 @@ more freedom and more capability than a hosted product can offer.
   daemon's default toolsets. The Terminal switch in bot settings, and
   `terminal` in a bot's tools as the API and the primary bot set them, give
   the default computer or take every one (while the bots' computer is
-  switched off, a tools list leaves what was saved for it); Settings,
+  switched off or can't run here, it gives no bash and a tools list leaves
+  what was saved for it, so installing Cua brings it back); Settings,
   Computers sets each computer exactly, and a tool list never changes
   Computer Use.
   bash and computer_use take a `computer` argument with a fixed schema; the
