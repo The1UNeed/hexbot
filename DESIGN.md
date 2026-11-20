@@ -179,7 +179,9 @@ more freedom and more capability than a hosted product can offer.
   with the bot's key, which the model never sees: `hexbot_connector_read`
   for reads (GET, and Notion's search and queries) and, outside heartbeats,
   `hexbot_connector_write` for changes, which Auto reviews and Manual asks
-  about like a connected tool's.
+  about like a connected tool's. GitHub works the same way with the user's
+  fine-grained token; its reads are GET only, so every POST, GraphQL
+  included, is a change.
 - Google and Microsoft each have one connector per service, not one for
   the whole account: Gmail, Calendar, Drive, Docs, Sheets, Slides and Tasks;
   Outlook, Outlook Calendar, OneDrive, Word, Excel, PowerPoint and To Do.
@@ -373,19 +375,80 @@ more freedom and more capability than a hosted product can offer.
   name (each server's `bots` list); a new server reaches no bot until the
   user picks one, and a new bot starts with none. A server defined in one
   bot's profile stays private to it.
+- Computers (`machines.rs`): a bot acts on the bots' computer (`vm`), this
+  computer (`host`) or one of the user's computers (`device:<id>`), each
+  offering a terminal, a desktop or both, given to bots like a plugin (a
+  `bots` list per computer and capability in `config.yaml`, `computers`). A
+  daemon from before computers keeps what its bots had: the bots' computer's
+  desktop for every bot, this computer's terminal for bots with the terminal
+  toolset; the first start writes that down, including whether new bots
+  get this computer's terminal, from the daemon's default toolsets. The
+  Terminal switch in bot settings, and `terminal` or `computer_use` in a
+  bot's tools as the API and
+  the primary bot set them, give the default computer or take every one
+  (while the bots' computer is switched off, a tools list leaves what was
+  saved for it); Settings, Computers sets each computer exactly.
+  bash and computer_use take a `computer` argument with a fixed schema; the
+  bot's computers freeze with its tools (`computers` in the section options)
+  and the prompt's Computers block lists them; a delegate or other
+  restricted section keeps the ones its tools reach. A chat whose computers
+  change (which ones, or what each offers; never a name or an OS a computer
+  reports) is rebuilt at its next message, like a tools change; rooms,
+  threads, jobs and delegates keep theirs. Online or offline shows only in tool results,
+  and every call checks the live grant (`computersNow`).
+  - The bots' computer: commands run there through `cua sb exec`, without
+    the OS sandbox, since it is easy to reset. Bypass runs them; Manual asks
+    for each (Allow for now covers it); Auto sends only risky ones to the
+    reviewer: installs, network clients, root, broad deletes, piping into a
+    shell (`riskyCommand` in the extension). `full_access` is refused there.
+  - This computer: bash in the OS sandbox exactly as before. Its desktop is
+    shared through Cua's direct connection on loopback (`cua host setup
+    --direct 127.0.0.1:3211 --no-provide-spaces`, never the relay), turned
+    on in Settings, Computers; macOS then asks for Screen Recording and
+    Accessibility.
+  - The user's computers: a desktop app connected to a daemon on another
+    computer offers its own when the user turns on Let bots use its
+    terminal or its desktop there, which asks with a native dialog in the main process and
+    can't be turned on by the daemon or the page. The app attaches over its
+    own WebSocket (`hexbot.computers.attach`), the daemon sends work as
+    `hexbot.computers.request` events on that connection only, and the app
+    answers with `hexbot.computers.reply`; the main process checks its own
+    switch again and runs the command in the user's shell (PowerShell on
+    Windows) or one allowed Cua desktop tool. Commands there run with no
+    sandbox: Auto reviews every one, Manual asks for each (no Allow for
+    now), Bypass runs. The tray says while a bot acts and stops it, killing
+    running commands and what they started; the connection ending or the
+    app quitting does too, keeping the switch. The daemon's own app (the local device)
+    can't attach; this computer is `host`.
+  - Desktops on this computer and the user's computers follow Codex and
+    Claude: the first action in an app asks, Allow for now (this
+    conversation) or Always allow (saved per bot and computer, removable in
+    Settings, Computers); Bypass asks for no app. The app is where the
+    action lands: the focused window for typing and keys, every app with a
+    window under each point a click, scroll or drag must name, the app a
+    launch names. Editors, IDEs and script apps take no input, like
+    terminals, all known by name; system-wide shortcuts are refused.
+    Unknown targets and `open` are refused. Just before it runs, under one
+    lock per computer, the action is checked again (grant, apps, and the
+    mode, read again then).
+    Terminal apps and Hexbot itself never take input, and computer_use's
+    shell is refused there: commands go through bash and its approvals.
+    Browsers, file managers and system settings say more on the card.
+    Unattended runs can't ask, so they are refused there.
 - Approvals render inline in the transcript with Approve, Allow for now, and
   Deny when a grant is available. "Allow for now" quiets the same kind of
   Manual or unreviewed request until the bot's agent process restarts;
   nothing is saved. Reviewed Auto cards, incomplete file scans and requests
   the daemon raises itself (code runs, browser scripts, cron) offer Approve
   and Deny only. Native notifications for approvals and mentions.
-- New bots get files, web search and terminal (terminal gated by
-  approvals). Every bot has Computer use: the bots' own computer, a Cua
-  sandbox separate from the daemon's computer, where they run code, install
-  programs, browse and use apps. Nothing a bot runs there lands on the
-  daemon's computer. Settings, Manuals, Computer use holds its size and
-  controls; Settings, Plugins shows connectors, MCP servers and skills on
-  three tabs. Self-authored skills are on,
+- New bots get files and web search, plus the computers setup chose:
+  the bots' own computer (its terminal and desktop) when Cua can run it,
+  and this computer's terminal or desktop as setup chose (without a
+  choice, this computer's terminal when Cua can't run; an install with
+  bots from before computers keeps giving it, as its first start wrote
+  down). Settings, Computers holds every
+  computer and its bots, and the bots' computer's size and controls;
+  Settings, Plugins shows connectors, MCP servers and skills on three tabs. Self-authored skills are on,
   with a transcript notice. A bot gets only the skills it needs, since every
   one it has is a line in its prompt. Hexbot bundles few: the ones for its
   own tools (computer use, MCP servers, writing and installing skills) and
@@ -399,8 +462,9 @@ more freedom and more capability than a hosted product can offer.
   stays hidden from bots until it is set up; settings say what it needs. Bots write
   private skills; the owner can share a bot's skills into the library.
   A bot owner can edit its private skills and grants.
-- Tools run on the host in a shared workspace at `~/Hexbot`. Per-bot working
-  directories come with the roster milestone.
+- File tools run on the host in a shared workspace at `~/Hexbot`; commands
+  and desktop actions run on the computers each bot may use. Per-bot
+  working directories come with the roster milestone.
 
 ### Chats
 

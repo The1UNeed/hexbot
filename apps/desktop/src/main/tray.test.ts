@@ -27,4 +27,19 @@ describe('trayMenuTemplate', () => {
   it('shows the client-only app without daemon controls', () => {
     expect(labels({ state: 'external', port: 9119 }, false)).toEqual(['Open Hexbot', 'Client-only app', undefined, 'Quit'])
   })
+
+  it('says while bots may use this computer and stops them', () => {
+    const stopComputer = vi.fn()
+    const status: DaemonStatus = { state: 'running', port: 9119, pid: 42 }
+    const off = trayMenuTemplate(status, { ...actions, stopComputer }, { hasRuntime: true })
+    expect(off.map(item => item.label)).not.toContain('Stop bots on this computer')
+    const on = trayMenuTemplate(status, { ...actions, stopComputer }, {
+      hasRuntime: true,
+      computer: { active: true, allowed: true }
+    })
+    expect(on.map(item => item.label)).toContain('A bot is using this computer')
+    const stop = on.find(item => item.label === 'Stop bots on this computer')
+    ;(stop?.click as () => void)()
+    expect(stopComputer).toHaveBeenCalled()
+  })
 })

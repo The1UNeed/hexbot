@@ -1,9 +1,12 @@
+import { JsonRpcGatewayError } from '@hermes/shared'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { vi } from 'vitest'
 
-import type { Bot, Section, ToolCall } from '../../lib/types'
+import { clearPersonalState } from '../../lib/roster-cache'
+import type { Bot, Computer, Section, ToolCall } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useComputer } from '../../stores/computer'
+import { useComputers } from '../../stores/computers'
 import { useConnection } from '../../stores/connection'
 import { useEmotions } from '../../stores/emotions'
 import { useSections } from '../../stores/sections'
@@ -34,7 +37,9 @@ vi.hoisted(() => {
 const api = vi.hoisted(() => ({
   computerControl: vi.fn(),
   computerStatus: vi.fn(),
-  computerView: vi.fn()
+  computerView: vi.fn(),
+  computersGrant: vi.fn(),
+  computersList: vi.fn()
 }))
 
 vi.mock('../../lib/api', async importOriginal => ({
@@ -94,8 +99,36 @@ const call = (partial: Partial<ToolCall>): ToolCall => ({
   ...partial
 })
 
+const olderDaemon = () =>
+  new JsonRpcGatewayError('unknown method: hexbot.computers.list', { code: -32601 })
+
+const vmComputer = (change: Partial<Computer> = {}): Computer => ({
+  apps: {},
+  available: true,
+  desktop: { available: true, bots: [] },
+  id: 'vm',
+  kind: 'vm',
+  name: "Bots' computer",
+  on: true,
+  online: true,
+  os: 'linux',
+  terminal: { available: true, bots: [] },
+  ...change
+})
+
 function seed(calls: ToolCall[], streaming: boolean) {
   route.params = {}
+  // A daemon from before computers, as the screen tests assume: it has no
+  // list, and the tab goes by the bot's tools.
+  api.computersList.mockReset()
+  api.computersList.mockRejectedValue(olderDaemon())
+  useComputers.setState({
+    answered: null,
+    computers: null,
+    error: null,
+    listFailed: null,
+    older: false
+  })
   useEmotions.setState({ feelings: {} })
   useBots.setState({ byName: { scout: bot } })
   useUi.setState({
@@ -155,7 +188,9 @@ describe('ProfilePanel', () => {
 
   it('shows a bot clicked in the roster while its chat opens, then the chat it lands on', () => {
     seed([], false)
-    useBots.setState({ byName: { scout: bot, muse: { ...bot, display_name: 'Muse', name: 'muse' } } })
+    useBots.setState({
+      byName: { scout: bot, muse: { ...bot, display_name: 'Muse', name: 'muse' } }
+    })
     render(<ProfilePanel />)
     expect(screen.getByPlaceholderText('What Scout is for')).toBeVisible()
 
@@ -434,5 +469,302 @@ describe('ProfilePanel', () => {
     expect(await screen.findByTestId('computer-insecure')).toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: 'Resume bots' }))
     expect(api.computerControl).toHaveBeenCalledWith('bot')
+  })
+
+  it("goes by the bot's place on the bots' computer, not its desktop elsewhere", async () => {
+    const vm = vmComputer({ on: false })
+
+    api.computerStatus.mockResolvedValue(running)
+    api.computerView.mockReset()
+    api.computersGrant.mockReset()
+    api.computersGrant.mockResolvedValue({ ok: true })
+    useComputer.setState({ error: null, status: null })
+    useConnection.setState({ target: { kind: 'local', origin: 'http://127.0.0.1:9119' } })
+    seed([], false)
+    api.computersList.mockResolvedValue({ computers: [vm] })
+    // computer_use from this computer's desktop, not the bots' computer.
+    useBots.setState({ byName: { scout: { ...bot, tools: ['computer_use'] } } })
+    render(<ProfilePanel />)
+    fireEvent.click(screen.getByRole('tab', { name: 'Computer' }))
+    // Off: turning it on happens in Settings, Computers, not here.
+    expect(
+      await screen.findByText(/Your bots aren't using their computer\. Turn on Use the bots'/)
+    ).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Turn on Computer use' })).toBeNull()
+
+    // On, without this bot: no screen, and Turn on grants its desktop there.
+    act(() => useComputers.setState({ computers: [{ ...vm, on: true }] }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Turn on Computer use' }))
+    await waitFor(() =>
+      expect(api.computersGrant).toHaveBeenCalledWith('vm', 'desktop', 'scout', true)
+    )
+    expect(screen.queryByTitle("Your bots' screen")).toBeNull()
+    expect(api.computerView).not.toHaveBeenCalled()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('waits for the list of computers before it shows the screen', async () => {
+    let answer: (value: { computers: Computer[] }) => void = () => {}
+
+    api.computerStatus.mockResolvedValue(running)
+    api.computerView.mockReset()
+    api.computerView.mockResolvedValue({ control: false, expires_at: 0, path: '/v/#t' })
+    useComputer.setState({ error: null, status: null })
+    useConnection.setState({ target: { kind: 'local', origin: 'http://127.0.0.1:9119' } })
+    seed([], false)
+    api.computersList.mockReturnValue(
+      new Promise(resolve => {
+        answer = resolve
+      })
+    )
+    useBots.setState({ byName: { scout: { ...bot, tools: ['computer_use'] } } })
+    render(<ProfilePanel />)
+    fireEvent.click(screen.getByRole('tab', { name: 'Computer' }))
+    await waitFor(() => expect(useComputer.getState().status).not.toBeNull())
+    // The status is in; the bot's place on the computer is not.
+    await act(async () => {})
+    expect(screen.queryByTitle("Your bots' screen")).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Turn on Computer use' })).toBeNull()
+    expect(api.computerView).not.toHaveBeenCalled()
+
+    await act(async () =>
+      answer({ computers: [vmComputer({ desktop: { available: true, bots: ['scout'] } })] })
+    )
+    expect(await screen.findByTitle("Your bots' screen")).toBeVisible()
+  })
+
+  it("goes by the bot's tools on a daemon from before computers, and says nothing of it", async () => {
+    const update = vi.fn().mockResolvedValue(bot)
+
+    api.computerStatus.mockResolvedValue({ ...running, state: 'stopped' as const })
+    api.computersGrant.mockReset()
+    useComputer.setState({ error: null, status: null })
+    useConnection.setState({ target: { kind: 'local', origin: 'http://127.0.0.1:9119' } })
+    seed([], false)
+    useBots.setState({ update })
+    render(<ProfilePanel />)
+    fireEvent.click(screen.getByRole('tab', { name: 'Computer' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Turn on Computer use' }))
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledWith('scout', { tools: [...bot.tools, 'computer_use'] })
+    )
+    expect(api.computersGrant).not.toHaveBeenCalled()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('says why when the list of computers fails, and shows no screen', async () => {
+    api.computerStatus.mockResolvedValue(running)
+    api.computerView.mockReset()
+    useComputer.setState({ error: null, status: null })
+    useConnection.setState({ target: { kind: 'local', origin: 'http://127.0.0.1:9119' } })
+    seed([], false)
+    api.computersList.mockRejectedValue(new Error('The daemon is busy'))
+    useBots.setState({ byName: { scout: { ...bot, tools: ['computer_use'] } } })
+    render(<ProfilePanel />)
+    fireEvent.click(screen.getByRole('tab', { name: 'Computer' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('The daemon is busy')
+    expect(screen.queryByTitle("Your bots' screen")).toBeNull()
+    expect(api.computerView).not.toHaveBeenCalled()
+  })
+
+  it("waits for a reconnect's own list, not the grants it had before", async () => {
+    let answer: (value: { computers: Computer[] }) => void = () => {}
+    const granted = vmComputer({ desktop: { available: true, bots: ['scout'] } })
+
+    api.computerStatus.mockResolvedValue(running)
+    api.computerView.mockReset()
+    api.computerView.mockResolvedValue({ control: false, expires_at: 0, path: '/v/#t' })
+    useComputer.setState({ error: null, status: null })
+    useConnection.setState({ target: { kind: 'local', origin: 'http://127.0.0.1:9119' } })
+    seed([], false)
+    api.computersList.mockResolvedValue({ computers: [granted] })
+    useBots.setState({ byName: { scout: { ...bot, tools: ['computer_use'] } } })
+    render(<ProfilePanel />)
+    fireEvent.click(screen.getByRole('tab', { name: 'Computer' }))
+    expect(await screen.findByTitle("Your bots' screen")).toBeVisible()
+
+    // Back after a while away: the bot may have lost the computer meanwhile.
+    const views = api.computerView.mock.calls.length
+
+    api.computersList.mockReturnValue(
+      new Promise(resolve => {
+        answer = resolve
+      })
+    )
+    act(() => useConnection.setState(state => ({ connects: state.connects + 1 })))
+    await act(async () => {})
+    expect(screen.queryByTitle("Your bots' screen")).toBeNull()
+    expect(api.computerView).toHaveBeenCalledTimes(views)
+
+    await act(async () => answer({ computers: [vmComputer()] }))
+    expect(await screen.findByRole('button', { name: 'Turn on Computer use' })).toBeVisible()
+    expect(screen.queryByTitle("Your bots' screen")).toBeNull()
+  })
+
+  it("shows no screen from the grants it had when a reconnect's list fails", async () => {
+    api.computerStatus.mockResolvedValue(running)
+    api.computerView.mockReset()
+    api.computerView.mockResolvedValue({ control: false, expires_at: 0, path: '/v/#t' })
+    useComputer.setState({ error: null, status: null })
+    useConnection.setState({ target: { kind: 'local', origin: 'http://127.0.0.1:9119' } })
+    seed([], false)
+    api.computersList.mockResolvedValue({
+      computers: [vmComputer({ desktop: { available: true, bots: ['scout'] } })]
+    })
+    useBots.setState({ byName: { scout: { ...bot, tools: ['computer_use'] } } })
+    render(<ProfilePanel />)
+    fireEvent.click(screen.getByRole('tab', { name: 'Computer' }))
+    expect(await screen.findByTitle("Your bots' screen")).toBeVisible()
+
+    api.computersList.mockRejectedValue(new Error('The daemon is busy'))
+    act(() => useConnection.setState(state => ({ connects: state.connects + 1 })))
+    expect(await screen.findByRole('alert')).toHaveTextContent('The daemon is busy')
+    expect(screen.queryByTitle("Your bots' screen")).toBeNull()
+  })
+
+  it('forgets a daemon from before computers when the app leaves it', async () => {
+    useConnection.setState({ target: { kind: 'local', origin: 'http://127.0.0.1:9119' } })
+    seed([], false)
+    await useComputers.getState().refresh()
+    expect(useComputers.getState()).toMatchObject({ older: true })
+
+    clearPersonalState()
+    expect(useComputers.getState()).toMatchObject({ answered: null, computers: null, older: false })
+
+    // A later failure of another kind is not a daemon from before computers.
+    useComputers.setState({ older: true })
+    api.computersList.mockRejectedValue(new Error('The daemon is busy'))
+    await useComputers.getState().refresh()
+    expect(useComputers.getState()).toMatchObject({ answered: null, older: false })
+  })
+
+  it('keeps only the latest read of the computers, whichever answers last', async () => {
+    const answers: ((value: { computers: Computer[] }) => void)[] = []
+
+    useConnection.setState({ target: { kind: 'local', origin: 'http://127.0.0.1:9119' } })
+    seed([], false)
+    api.computersList.mockImplementation(
+      () =>
+        new Promise(resolve => {
+          answers.push(resolve)
+        })
+    )
+    // The first read still names the grant; the second, after it was taken back, doesn't.
+    const first = useComputers.getState().refresh()
+    const second = useComputers.getState().refresh()
+
+    answers[1]?.({ computers: [vmComputer()] })
+    await second
+    answers[0]?.({ computers: [vmComputer({ desktop: { available: true, bots: ['scout'] } })] })
+    await first
+    expect(useComputers.getState().computers?.[0]?.desktop.bots).toEqual([])
+  })
+
+  it("shows no earlier connection's error while this one's list is on its way", async () => {
+    api.computerStatus.mockResolvedValue(running)
+    useComputer.setState({ error: null, status: null })
+    useConnection.setState({ target: { kind: 'local', origin: 'http://127.0.0.1:9119' } })
+    seed([], false)
+    api.computersList.mockReturnValue(new Promise(() => {}))
+    useComputers.setState({
+      error: 'Could not forget the computer',
+      listFailed: { connects: useConnection.getState().connects - 1, message: 'The daemon is busy' }
+    })
+    useBots.setState({ byName: { scout: { ...bot, tools: ['computer_use'] } } })
+    render(<ProfilePanel />)
+    fireEvent.click(screen.getByRole('tab', { name: 'Computer' }))
+    await waitFor(() => expect(useComputer.getState().status).not.toBeNull())
+    await act(async () => {})
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByTitle("Your bots' screen")).toBeNull()
+  })
+
+  it('reads a failed list again when the computers change, or on Try again', async () => {
+    api.computerStatus.mockResolvedValue({ ...running, state: 'stopped' as const })
+    useComputer.setState({ error: null, status: null })
+    useConnection.setState({ target: { kind: 'local', origin: 'http://127.0.0.1:9119' } })
+    seed([], false)
+    api.computersList.mockRejectedValue(new Error('The daemon is busy'))
+    render(<ProfilePanel />)
+    fireEvent.click(screen.getByRole('tab', { name: 'Computer' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('The daemon is busy')
+
+    const reads = api.computersList.mock.calls.length
+
+    await useComputers.getState().refreshLoaded()
+    expect(api.computersList).toHaveBeenCalledTimes(reads + 1)
+
+    api.computersList.mockResolvedValue({ computers: [vmComputer()] })
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByRole('button', { name: 'Turn on Computer use' })).toBeVisible()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('reads again when the computers change during the first read', async () => {
+    const answers: ((value: { computers: Computer[] }) => void)[] = []
+
+    useConnection.setState({ target: { kind: 'local', origin: 'http://127.0.0.1:9119' } })
+    seed([], false)
+    api.computersList.mockImplementation(
+      () =>
+        new Promise(resolve => {
+          answers.push(resolve)
+        })
+    )
+    // The first read names the grant; it is taken back before that read answers.
+    const first = useComputers.getState().refresh()
+    const changed = useComputers.getState().refreshLoaded()
+
+    expect(api.computersList).toHaveBeenCalledTimes(2)
+    answers[0]?.({ computers: [vmComputer({ desktop: { available: true, bots: ['scout'] } })] })
+    await first
+    expect(useComputers.getState().computers).toBeNull()
+    answers[1]?.({ computers: [vmComputer()] })
+    await changed
+    expect(useComputers.getState().computers?.[0]?.desktop.bots).toEqual([])
+  })
+
+  it('drops the list it had when the daemon turns out to be from before computers', async () => {
+    api.computerStatus.mockResolvedValue(running)
+    api.computerView.mockReset()
+    api.computerView.mockResolvedValue({ control: false, expires_at: 0, path: '/v/#t' })
+    useComputer.setState({ error: null, status: null })
+    useConnection.setState({ target: { kind: 'local', origin: 'http://127.0.0.1:9119' } })
+    seed([], false)
+    // A current daemon with the bots' computer off.
+    api.computersList.mockResolvedValue({ computers: [vmComputer({ on: false })] })
+    useBots.setState({ byName: { scout: { ...bot, tools: ['computer_use'] } } })
+    render(<ProfilePanel />)
+    fireEvent.click(screen.getByRole('tab', { name: 'Computer' }))
+    expect(await screen.findByText(/Your bots aren't using their computer/)).toBeVisible()
+
+    // Rolled back: the same address now answers without computers.
+    api.computersList.mockRejectedValue(olderDaemon())
+    act(() => useConnection.setState(state => ({ connects: state.connects + 1 })))
+    expect(await screen.findByTitle("Your bots' screen")).toBeVisible()
+    expect(useComputers.getState().computers).toBeNull()
+  })
+
+  it('drops a failure from a daemon the app has since left', async () => {
+    let fail: (reason: Error) => void = () => {}
+
+    useConnection.setState({ target: { kind: 'local', origin: 'http://127.0.0.1:9119' } })
+    seed([], false)
+    api.computersGrant.mockReset()
+    api.computersGrant.mockReturnValue(
+      new Promise((_, reject) => {
+        fail = reject
+      })
+    )
+    const change = useComputers.getState().grant('vm', 'desktop', 'scout', true)
+
+    // Switched to another daemon while it waited; that one starts clean.
+    useConnection.setState({
+      target: { deviceToken: 't', host: '192.168.0.9', kind: 'remote', port: 9119, tls: true }
+    })
+    clearPersonalState()
+    fail(new Error('daemon A connection closed'))
+    await change
+    expect(useComputers.getState()).toMatchObject({ error: null, notices: [] })
   })
 })

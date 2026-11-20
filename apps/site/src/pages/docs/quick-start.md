@@ -24,7 +24,7 @@ Keep it practical. Your preferred language, units, and working hours are useful.
 
 Next, sign in to a subscription provider or paste an API key. Choose a default model for new bots and, optionally, a fallback for provider outages or rate limits. Add more providers later in Settings, Providers.
 
-Model credentials and tool credentials are separate. A model key does not configure web search or other connectors. Setup offers those tools next; skip any of them and add them later. See [Providers and billing](/docs/providers/).
+Model credentials and tool credentials are separate. A model key does not configure web search or other connectors. Setup suggests accounts next (Microsoft or Google, GitHub, X, and web search, then the other connectors), then asks where your bots can work: the bots' computer, this computer, or both. Skip any account and add it later in Settings, Plugins; change where bots work in Settings, Computers. See [Providers and billing](/docs/providers/).
 
 ## 4. Meet HexBot
 
@@ -34,9 +34,9 @@ Give it a small first task, such as "Make me a bot that reviews my writing." In 
 
 ## 5. Give it a workspace
 
-For file work, set **Working directory** in Bot settings, Tools to the project folder on the daemon computer. Enable the tools the task needs. Auto is the default [approval mode](/docs/approvals/). Commands run in a sandbox; requests for more access are checked by the bot's model, a judgment rather than a sandbox, and risky or unreviewable steps wait for your approval.
+For file work, set **Working directory** in Bot settings, Tools to the project folder on the daemon computer. Enable the tools the task needs. Auto is the default [approval mode](/docs/approvals/). Commands run on the [computers](/docs/tools-and-skills/#computers) a bot may use. On the bots' computer they run freely and only risky ones are checked first; on the daemon computer they run in a sandbox, and requests for more access are checked by the bot's model, a judgment rather than a sandbox; on one of your own computers each one is checked first. Risky or unreviewable steps wait for your approval.
 
-If you connect remotely, files and commands still belong to the daemon computer. Attach a file from your device when the bot needs to read it: drop it on the chat, paste it or pick it with +. It uploads straight away and shows how far it is; Send waits until every file is up, and clicking one previews it. Images can be up to 25 MiB; PDFs, videos, audio and other files can be up to 45 MiB each. A video or audio file you send plays in the chat, and so do the voice replies, clips and files your bots make or share.
+If you connect remotely, the bot's files still belong to the daemon computer, and its commands run on the computers it may use, never on yours unless you turn that on there. Attach a file from your device when the bot needs to read it: drop it on the chat, paste it or pick it with +. It uploads straight away and shows how far it is; Send waits until every file is up, and clicking one previews it. Images can be up to 25 MiB; PDFs, videos, audio and other files can be up to 45 MiB each. A video or audio file you send plays in the chat, and so do the voice replies, clips and files your bots make or share.
 
 ## Next tasks
 
@@ -47,5 +47,5 @@ If you connect remotely, files and commands still belong to the daemon computer.
 - Turn on Message other bots and give each teammate a description so bots can ask the right one for help.
 - Enable [Scheduling](/docs/scheduling/) when you want a job to run while you are away.
 - Choose which bots get web search, Notion, or an MCP server in Settings, [Plugins](/docs/tools-and-skills/#plugins).
-- Turn on Computer use to give your bots [a computer of their own](/docs/tools-and-skills/#your-bots-computer) you can watch.
+- Choose where your bots work in Settings, Computers: [a computer of their own](/docs/tools-and-skills/#computers) you can watch, this computer, or your other computers.
 - [Pair another device](/docs/pairing-and-lan/) or use [Hex Connect](/docs/connect/) to reach the same daemon.

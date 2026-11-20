@@ -45,6 +45,18 @@ Manual is for work you want to watch closely. Reads are free; every change asks.
 - Every file change asks. Every code run asks, then runs in the workspace sandbox.
 - Browser page scripts and absolute-path scheduled scripts ask.
 
+## Other computers
+
+The sandbox above is this computer's. On the bots' own computer and on your other computers ([Computers](/docs/tools-and-skills/#computers)), the mode works this way:
+
+| | Auto | Manual | Bypass |
+| --- | --- | --- | --- |
+| Commands on the bots' computer | Run without a sandbox; ones that install, reach the network or delete broadly are checked first | Each asks | Run |
+| Commands on your computers | Each is checked first | Each asks | Run |
+| A new app on this computer's desktop or yours | Asks the first time in each conversation: Allow for now, or Always allow | Asks the same way | Runs |
+
+Terminals (and apps with one of their own, such as Docker Desktop), editors, coding agents, script and launcher apps, remote desktops, a browser's developer tools and Hexbot itself never take a bot's input, in any mode (see [Computers](/docs/tools-and-skills/#computers)). Scheduled jobs and heartbeats cannot ask, so a step that would ask is refused.
+
 ## Bypass
 
 Bypass is plain Pi, the agent runtime: no prompts, no sandbox, no credential checks. Bots can read and change anything the daemon's user account can, including Hexbot's own credential files and provider keys. Scheduled jobs and their delegates run in Auto instead, including scheduled scripts. HexBot, your primary bot, still asks before it deletes a bot, room, or job, changes an approval mode or a working folder, or changes a setting, skill, or connector. Reserve it for a machine you can rebuild.

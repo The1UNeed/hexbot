@@ -1658,9 +1658,18 @@ fn shape_bot(
         .iter()
         .filter(|(_, v)| !missing.contains(v))
         .collect::<Vec<_>>();
-    let tools = available
+    // Computer use stays listed while the bot has a desktop, even where bot
+    // settings hides its switch (no Cua here): the apps send the list back
+    // as they got it, so saving another tool keeps the bot's desktops, and
+    // a list without it takes them. Only once computers are in config, the
+    // one case where a tool list changes desktops.
+    let managed = common::read_config_cached(home)?.get("computers").is_some();
+    let tools = TOOLS
         .iter()
-        .filter(|(_, v)| enabled.iter().any(|t| t == v))
+        .filter(|(_, v)| {
+            enabled.iter().any(|t| t == v)
+                && (!missing.contains(v) || *v == "computer_use" && managed)
+        })
         .map(|(k, _)| *k)
         .collect::<Vec<_>>();
     Ok(json!({
@@ -2317,7 +2326,24 @@ fn create(home: &Path, caller: &str, p: &Value, primary: bool) -> Result<Value> 
     };
     crate::settings::mirror(home, &profile(home, name)?)?;
     crate::plugins::scope_new_bot(home, name)?;
+    crate::machines::new_bot(home, name)?;
+    sync_computers(home, name, p, false)?;
     Ok(json!({"bot":bot(home,caller,name)?,"section":section(home,caller,&sid)?}))
+}
+/// A bot's Terminal and Computer use switches give it, or take from it, the
+/// computers those tools act on (`machines.rs`). Only on a daemon that keeps
+/// computers; before that the toolsets themselves decide.
+/// A new bot (`give` false) only loses what its tool list leaves out; the
+/// computers it starts with are setup's (`machines::new_bot`).
+fn sync_computers(home: &Path, name: &str, p: &Value, give: bool) -> Result<()> {
+    let Some(tools) = p["tools"].as_array() else {
+        return Ok(());
+    };
+    if common::read_config(home)?.get("computers").is_none() {
+        return Ok(());
+    }
+    let has = |key: &str| tools.iter().any(|t| t == key);
+    crate::machines::sync_tools(home, name, has("terminal"), has("computer_use"), give)
 }
 /// Create and update store every accepted column the same way.
 fn write_bot_columns(tx: &rusqlite::Transaction, name: &str, p: &Value) -> Result<()> {
@@ -2393,6 +2419,8 @@ fn update_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
         configure(home, name, p)?;
         ensure_face(home, caller, name)?;
     }
+    // The Terminal and Computer use switches give or take computers.
+    sync_computers(home, name, p, true)?;
     let mut conn = db::open(home)?;
     let tx = conn.transaction()?;
     write_bot_columns(&tx, name, p)?;
@@ -2668,6 +2696,7 @@ fn finish_bot_delete_locked(home: &Path, name: &str) -> Result<()> {
     crate::connectors::forget_bot(home, name)?;
     crate::plugins::forget_bot(home, name)?;
     crate::passwords::forget_bot(home, name)?;
+    crate::machines::forget_bot(home, name)?;
     let targets = journal["targets"]
         .as_array()
         .ok_or_else(|| Error::new(5200, "Invalid bot deletion journal"))?;

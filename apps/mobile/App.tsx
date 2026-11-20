@@ -767,6 +767,8 @@ function MobileApp({ children }: { children?: ReactNode }) {
     }
   })
   const botByName = (name: string) => mobile.bots.find(b => b.name === name)
+  // The bots' computer, once the Computer card or Settings, Computers read it.
+  const vmComputer = mobile.computers?.find(c => c.id === 'vm')
   // A tapped bot message opens its chat once the daemon's lists have it.
   const tapped = useTappedSection()
   const openedTap = useRef<string | null>(null)
@@ -949,10 +951,10 @@ function MobileApp({ children }: { children?: ReactNode }) {
               'Connectors, MCP servers, skills'
             ),
             area('passwords', 'Passwords', 'lock-closed-outline', 'Sign-ins your bots use'),
+            area('computer', 'Computers', 'desktop-outline', 'Where your bots work'),
             area('activity', 'Bot activity', 'pulse-outline')
           ]
         },
-        { title: 'Manuals', areas: [area('computer', 'Computer use', 'desktop-outline')] },
         {
           title: 'Devices',
           areas: [
@@ -2126,19 +2128,37 @@ function MobileApp({ children }: { children?: ReactNode }) {
               call={mobile.computerCall}
               connects={mobile.connects}
               faceOf={faceOf}
+              listed={mobile.computersListed}
+              loadComputers={mobile.loadComputers}
               onEnable={
                 route?.kind === 'section'
-                  ? () =>
+                  ? (older: boolean) =>
                       act(async () => {
                         const bot = botByName(route.bot.name) ?? route.bot
-                        await mobile.rpc('hexbot.bots.update', {
-                          name: bot.name,
-                          tools: [...(bot.tools ?? []), 'computer_use']
-                        })
+                        // Its desktop on the bots' computer; an older daemon
+                        // has no computers and takes Computer use as that.
+                        if (!older) {
+                          await mobile.computersCall('hexbot.computers.grant', {
+                            bot: bot.name,
+                            capability: 'desktop',
+                            computer: 'vm',
+                            on: true
+                          })
+                        } else {
+                          await mobile.rpc('hexbot.bots.update', {
+                            name: bot.name,
+                            tools: [...(bot.tools ?? []), 'computer_use']
+                          })
+                        }
                         await mobile.refresh()
                       })
                   : undefined
               }
+              onSettings={() => {
+                setComputerOpen(false)
+                setPanels([{ kind: 'computer' }])
+              }}
+              vm={vmComputer}
               origin={mobile.active?.origin ?? null}
               status={mobile.computer}
               view={mobile.computerView}

@@ -12,7 +12,7 @@ export const toolGroups: ToolGroup[] = [
     tools: [
       { name: 'Terminal', does: 'Run shell commands and long-running processes.', note: 'Risky commands ask first in Manual mode' },
       { name: 'Files', does: 'Read, write, edit, and search files.' },
-      { name: 'Computer use', does: "Work on the bots' own Linux computer: run code, browse in Chrome, click and type in its apps. Watch it live and use it with them.", note: 'Every bot has it. Needs Cua and Docker' },
+      { name: 'Computer use', does: "Work on the bots' own Linux computer, or on yours: run code, browse, click and type in apps. Watch it live and use it with them.", note: "The bots' computer needs Cua and Docker; yours asks per app, except in Bypass" },
       { name: 'Vision', does: 'Look at images and screenshots you attach.', note: 'Needs a model that can see' },
       { name: 'Voice', does: 'Speak replies aloud with the built-in voice.' },
     ],
@@ -54,6 +54,7 @@ export const toolGroups: ToolGroup[] = [
     tools: [
       { name: 'Web search', does: 'Search the web and read pages.', note: 'Free out of the box with SearXNG, which Hexbot runs for you, or Tavily, Wikipedia or Marginalia. Exa, Brave, Firecrawl, Parallel and Keenable with your key' },
       { name: 'Notion', does: 'Read and write pages and databases.' },
+      { name: 'GitHub', does: 'Read and work on repositories, issues and pull requests.', note: 'With a fine-grained token that limits what bots reach' },
       { name: 'X search', does: 'Search posts and profiles.', note: 'Sign in with SuperGrok or X Premium+, or use an xAI key or the X API' },
       { name: 'MCP servers', does: 'Connect any MCP server, local or remote. A bot can find one and ask you to install it.', note: 'Installing always asks, even in Bypass' },
       { name: 'Plugin packages', does: 'Install an MCP server with the skills that explain it, or a set of skills, as one.' },

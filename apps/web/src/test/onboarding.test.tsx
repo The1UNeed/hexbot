@@ -18,6 +18,7 @@ import {
   AboutStep,
   ChoiceStep,
   compileAboutYou,
+  ComputersStep,
   createHexBot,
   initialOnboardingStep,
   installPercent,
@@ -742,5 +743,72 @@ describe('onboarding', () => {
       })
     )
     expect(await screen.findByText('Connected · SuperGrok or X Premium+')).toBeVisible()
+  })
+})
+
+describe('ComputersStep', () => {
+  const list = (vmAvailable: boolean) => ({
+    computers: [
+      {
+        apps: {},
+        available: vmAvailable,
+        desktop: { available: vmAvailable, bots: [] },
+        id: 'vm',
+        kind: 'vm',
+        name: "The bots' computer",
+        on: true,
+        online: vmAvailable,
+        os: 'Linux',
+        terminal: { available: vmAvailable, bots: [] }
+      },
+      {
+        apps: {},
+        available: true,
+        desktop: { available: true, bots: [], on: false },
+        id: 'host',
+        kind: 'host',
+        name: 'studio',
+        on: true,
+        online: true,
+        os: 'macOS',
+        terminal: { available: true, bots: [], sandboxed: true }
+      }
+    ]
+  })
+
+  it('suggests their own computer and never chooses this one for the user', async () => {
+    const call = vi.fn((method: string) => Promise.resolve(method === 'hexbot.computers.list' ? list(true) : {}))
+    setActiveRpc({ call } as never)
+    const onContinue = vi.fn()
+    render(<ComputersStep onContinue={onContinue} onError={vi.fn()} />)
+    expect(await screen.findByText('Suggested')).toBeVisible()
+    expect(screen.getByRole('switch', { name: "The bots' computer" })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('switch', { name: 'Terminal on studio' })).toHaveAttribute('aria-checked', 'false')
+    expect(screen.getByRole('switch', { name: 'Desktop on studio' })).toHaveAttribute('aria-checked', 'false')
+    // The row's words flip its switch, and flip it back.
+    const terminal = screen.getByRole('switch', { name: 'Terminal on studio' })
+    fireEvent.click(screen.getByText(/Bots run commands on studio/))
+    expect(terminal).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(screen.getByText(/Bots run commands on studio/))
+    expect(terminal).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(screen.getByTestId('onboarding-computers-continue'))
+    await waitFor(() => expect(onContinue).toHaveBeenCalledOnce())
+    expect(call).toHaveBeenCalledWith('hexbot.computers.set', { computer: 'vm', on: true })
+    expect(call).toHaveBeenCalledWith('hexbot.computers.defaults', { host_desktop: false, host_terminal: false })
+  })
+
+  it('saves a no for this computer even when their own computer cannot run', async () => {
+    const call = vi.fn((method: string) => Promise.resolve(method === 'hexbot.computers.list' ? list(false) : {}))
+    setActiveRpc({ call } as never)
+    render(<ComputersStep onContinue={vi.fn()} onError={vi.fn()} />)
+    expect(await screen.findByText(/Needs Cua and Docker on studio/)).toBeVisible()
+    expect(screen.getByText(/bots chat and use your connected accounts only/)).toBeVisible()
+    fireEvent.click(screen.getByTestId('onboarding-computers-continue'))
+    await waitFor(() =>
+      expect(call).toHaveBeenCalledWith('hexbot.computers.defaults', { host_desktop: false, host_terminal: false })
+    )
+    // Without Cua there was no choice to save: the bots' computer is left
+    // as it was, ready once Cua is installed.
+    expect(call).not.toHaveBeenCalledWith('hexbot.computers.set', expect.objectContaining({ computer: 'vm' }))
   })
 })

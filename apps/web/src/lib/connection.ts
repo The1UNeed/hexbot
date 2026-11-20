@@ -32,6 +32,7 @@ import { settingsActions } from '../stores/settings'
 import { uiActions } from '../stores/ui'
 
 import { getBridge, type HexbotBridge } from './bridge'
+import { connectionClosed, offerThisComputer, watchThisComputer } from './computer-endpoint'
 import { DaemonIdentityError, DaemonUnreachableError } from './daemon-identity'
 import { authorizeCache, cacheScope, revokeCache, suspendCache } from './device-cache'
 import { proofHeaders } from './dpop'
@@ -435,6 +436,12 @@ export class ConnectionSupervisor {
 
     this.detach?.()
     this.detach = null
+
+    if (this.client) {
+      // Leaving this daemon ends what its bots started on this computer.
+      connectionClosed()
+    }
+
     this.client?.close()
     this.client = null
     setActiveRpc(null)
@@ -560,6 +567,12 @@ export class ConnectionSupervisor {
 
     client.onState(state => {
       if (state === 'closed' || state === 'error') {
+        // Only this connection's end stops what bots started here: a late
+        // close from an older one must not end work for the current daemon.
+        if (generation === this.generation && client === this.client) {
+          connectionClosed()
+        }
+
         this.handleDrop(generation)
       }
     })
@@ -571,6 +584,9 @@ export class ConnectionSupervisor {
     connectionActions().setStatus('connected', { attempt: 0, error: null })
 
     await this.hydrate()
+    // A desktop app on another computer offers it, if the user allowed it there.
+    watchThisComputer()
+    void offerThisComputer()
   }
 
   /**

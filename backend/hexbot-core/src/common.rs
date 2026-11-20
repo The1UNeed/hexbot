@@ -128,6 +128,48 @@ pub fn read_config(home: &Path) -> Result<Value> {
         Err(e) => Err(e.into()),
     }
 }
+/// Counts the daemon's own YAML writes, so a cached config never outlives one
+/// even within one tick of the file clock.
+static YAML_WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// `read_config` for the hot read-only paths (a bot's toolsets and
+/// computers, read for every tool and connector a list shows): the parsed
+/// file is kept until the daemon writes a config, or its size, modification
+/// time or inode changes (an edit from outside the daemon).
+pub fn read_config_cached(home: &Path) -> Result<Value> {
+    type Cache = std::sync::Mutex<
+        std::collections::HashMap<
+            std::path::PathBuf,
+            ((u64, std::time::SystemTime, u64, u64), Value),
+        >,
+    >;
+    static CACHE: std::sync::OnceLock<Cache> = std::sync::OnceLock::new();
+    let path = home.join("config.yaml");
+    // Read before the file, so a write landing in between is seen next time.
+    let writes = YAML_WRITES.load(std::sync::atomic::Ordering::Acquire);
+    let stamp = match fs::metadata(&path) {
+        Ok(meta) => {
+            #[cfg(unix)]
+            let inode = std::os::unix::fs::MetadataExt::ino(&meta);
+            #[cfg(not(unix))]
+            let inode = 0;
+            (meta.len(), meta.modified()?, inode, writes)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(json!({})),
+        Err(e) => return Err(e.into()),
+    };
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some((seen, value)) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&path)
+        && *seen == stamp
+    {
+        return Ok(value.clone());
+    }
+    let value = read_config(home)?;
+    cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(path, (stamp, value.clone()));
+    Ok(value)
+}
 // All daemon config mutations hold this lock from read through write. Never
 // hold it across an await. If both locks are needed, acquire skills first.
 static CONFIG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -161,6 +203,11 @@ pub fn write_config(home: &Path, value: &Value) -> Result<()> {
 /// Write a complete YAML value while retaining unchanged syntax and comments.
 /// Callers read and merge the existing mapping first; absent keys are deletions.
 pub fn write_yaml(path: &Path, value: &Value) -> Result<()> {
+    let written = write_yaml_inner(path, value);
+    YAML_WRITES.fetch_add(1, std::sync::atomic::Ordering::Release);
+    written
+}
+fn write_yaml_inner(path: &Path, value: &Value) -> Result<()> {
     use std::str::FromStr;
     let fresh = serde_yaml::to_string(value).map_err(|e| Error::new(5200, e.to_string()))?;
     let source = match fs::read_to_string(path) {
@@ -1179,5 +1226,35 @@ mod tool_safety_tests {
             assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
         }
         server.abort();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod config_cache_tests {
+    use super::*;
+    #[test]
+    fn a_daemon_write_always_shows_even_with_the_same_size_and_time() {
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        write_config(h, &json!({"computers":{"vm":{"desktop":["owl"]}}})).unwrap();
+        let path = h.join("config.yaml");
+        let then = fs::metadata(&path).unwrap().modified().unwrap();
+        assert_eq!(
+            read_config_cached(h).unwrap()["computers"]["vm"]["desktop"][0],
+            "owl"
+        );
+        // A same-length write, its time set back to the first one's, as a
+        // coarse clock would leave it.
+        write_config(h, &json!({"computers":{"vm":{"desktop":["fox"]}}})).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(then)
+            .unwrap();
+        assert_eq!(
+            read_config_cached(h).unwrap()["computers"]["vm"]["desktop"][0],
+            "fox"
+        );
     }
 }

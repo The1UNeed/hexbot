@@ -1,17 +1,49 @@
 ---
 name: computer-use
-description: "Work on the bots' shared computer: look, act, look again; hand over when stuck."
-version: 3.0.0
+description: "Work on a computer's desktop, the bots' shared one first: look, act, look again; hand over when stuck."
+version: 3.1.0
 author: Hexbot
 license: MIT
 ---
 
 # Computer use
 
-With Computer use on, you have a `computer_use` tool and a computer your bots
-share: a Linux desktop (Ubuntu with Xfce, Firefox and a terminal) in a
-[Cua](https://cua.ai) sandbox. It is not the user's computer and not your
-workspace. Files you make there stay there unless you move them.
+With Computer use on, you have a `computer_use` tool. The Computers block in
+your prompt lists the computers you may use and which has a desktop; name one
+in `computer`, or leave it out for the first. Most often it is `vm`, the
+computer your bots share: a Linux desktop (Ubuntu with Xfce, Firefox and a
+terminal) in a [Cua](https://cua.ai) sandbox. It is not the user's computer
+and not your workspace. Files you make there stay there unless you move them.
+
+On the user's own computers (`host`, or `device:…`) the screen is theirs:
+
+- The first time you act in an app, the user is asked to allow it, for the
+  conversation or always. Say what you are about to do before you start, and
+  stop if they don't allow it.
+- Terminal apps and Hexbot never take your input, and `shell` and `open`
+  are refused there. Run commands with bash and `computer` set to that
+  computer instead; launch an app by name rather than opening a file.
+- Clicks, scrolls and drags need a `coordinate`; typing and keys go to the
+  focused window and take none, so click the field first. Apps with a
+  terminal of their own such as Docker Desktop, editors and IDEs such as
+  VS Code, coding agents such as Claude or Codex, script and automation
+  apps such as Script Editor or Automator, launchers, remote desktops and
+  a browser's developer tools take no input: edit files and run commands
+  with bash.
+- System shortcuts are refused there: the Windows or Super key (which Cmd
+  is on a computer that isn't a Mac), Spotlight, run boxes and Task
+  Manager's keys. On Windows and Linux, copy and paste use Ctrl; open apps
+  with launch by name.
+- Take a screenshot of that computer before pointing at it, and again after
+  its screen changes.
+- Type text without line breaks, then press Return as its own key.
+- Never open Hexbot or Hex Connect, in any app or browser.
+- A user's computer is online only while Hexbot is open there. If the tool
+  says it is offline, tell the user rather than retrying.
+- Leave their windows as you found them, and never type a password you were
+  not given.
+
+Everything below about sharing and taking turns is about the bots' computer.
 
 Every bot shares it with the others and with the user, and it keeps
 whatever anyone left open: Firefox tabs, windows, selected text, a page

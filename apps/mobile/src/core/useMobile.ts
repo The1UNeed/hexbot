@@ -33,7 +33,8 @@ import {
   type HistoryRead
 } from './chat-cache'
 import { reduceRoom, restoreRoom, roomChat, roomMessage } from './room-chat'
-import { attachmentPrompt } from './chat-send'
+import { attachmentPrompt, unknownMethod } from './chat-send'
+import { addNotice, type ComputersListed, latestReads } from './computer'
 import {
   applyReactions,
   emptyReactions,
@@ -57,6 +58,7 @@ import type {
   ChatMessage,
   ChatState,
   ComputerQuality,
+  Computer,
   ComputerStatus,
   Reaction,
   ReactionsChanged,
@@ -98,6 +100,43 @@ export function useMobile() {
   const [settings, setSettings] = useState<Settings | null>(null)
   /** The bots' shared computer, once something shows it; events keep it current. */
   const [computer, setComputer] = useState<ComputerStatus | null>(null)
+  const [computers, setComputersState] = useState<Computer[] | null>(null)
+  // Whether something showed the computers, so a change reads them again.
+  const computersShown = useRef(false)
+  /**
+   * What the latest read of the computers said on this connection: the
+   * Computer card trusts `computers` only once it says 'listed'. A reconnect
+   * makes it 'loading' again, since grants may have changed meanwhile.
+   */
+  const [computersListed, setComputersListed] = useState<ComputersListed>('loading')
+  // Each read's number: an answer to any but the latest, from before a
+  // reconnect, or from a daemon the phone has since left may name a grant
+  // since taken back, so it's dropped.
+  const computersRead = useRef(latestReads()).current
+  /**
+   * What computer actions left the user to do (Forget on a computer that
+   * didn't confirm), kept for this daemon until each one's OK, wherever the
+   * user goes meanwhile; a daemon switch clears them.
+   */
+  const [computerNotices, setComputerNotices] = useState<string[]>([])
+  const readComputers = async (): Promise<Computer[]> => {
+    const current = session.current
+    const isLatest = computersRead.start()
+    const latest = () => session.current === current && isLatest()
+    // Shown even when it fails, so a change reads it again.
+    computersShown.current = true
+    try {
+      const result = await rpc<{ computers: Computer[] }>('hexbot.computers.list')
+      if (latest()) {
+        setComputersState(result.computers)
+        setComputersListed('listed')
+      }
+      return result.computers
+    } catch (e) {
+      if (latest()) setComputersListed(unknownMethod(e) ? 'older' : { error: errorText(e) })
+      throw e
+    }
+  }
   /** Counts connections, so what a daemon forgets on restart is asked for again. */
   const [connects, setConnects] = useState(0)
   /** Counts heartbeat changes, so an open heartbeat card reads its status again. */
@@ -620,6 +659,11 @@ export function useMobile() {
         typeof p.request_id === 'string'
       )
         forgetUnsentDraft(p.request_id)
+      // A computer came online, went away or changed bots: read them again if shown.
+      if (event.type === 'hexbot.computers.changed') {
+        if (computersShown.current) void readComputers().catch(() => {})
+        return
+      }
       // Sent on every bot action there; it changes nothing else.
       if (event.type === 'hexbot.computer.changed') {
         setComputer(current =>
@@ -792,6 +836,11 @@ export function useMobile() {
       setError(null)
       setActive(daemon)
       setComputer(null)
+      setComputersState(null)
+      setComputerNotices([])
+      computersRead.drop()
+      setComputersListed('loading')
+      computersShown.current = false
       setBots([])
       setRooms([])
       setSections([])
@@ -831,6 +880,9 @@ export function useMobile() {
         async () => {
           if (session.current !== next || !mounted.current) return
           setConnects(count => count + 1)
+          // Grants may have changed while away: the list waits for this connection's read.
+          computersRead.drop()
+          setComputersListed('loading')
           // A reconnect can reach an upgraded daemon at the same address.
           cancelNavigation()
           named.current.clear()
@@ -1270,6 +1322,29 @@ export function useMobile() {
     connects,
     heartbeats,
     discordChanges,
+    /** Every computer bots can use, once something showed it (`machines.rs`). */
+    computers,
+    /** What the latest read of the computers said on this connection. */
+    computersListed,
+    /** Reads the computers again; a daemon from before computers refuses it. */
+    loadComputers: () => readComputers(),
+    /** Run a `hexbot.computers.*` method, then read the list again. */
+    computersCall: async (method?: string, params: Record<string, unknown> = {}) => {
+      const current = session.current
+      const done = method ? await rpc<{ note?: string }>(method, params) : null
+      // What the action left the user to do joins the unread notices, for
+      // this daemon only.
+      if (done?.note && session.current === current)
+        setComputerNotices(notices => addNotice(notices, done.note))
+      // How the read went lands in `computersListed`, where an overtaken read
+      // can't reach; only the action's own failure is thrown.
+      return readComputers().catch(() => null)
+    },
+    /** Unread notices from computer actions, oldest first. */
+    computerNotices,
+    /** The user read one. */
+    dismissComputerNotice: (notice: string) =>
+      setComputerNotices(notices => notices.filter(other => other !== notice)),
     /** Read the computer's status, or run a `hexbot.computer.*` method and keep what it returns. */
     computerCall: async (
       method = 'hexbot.computer.status',

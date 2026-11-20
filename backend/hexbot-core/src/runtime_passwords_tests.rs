@@ -125,3 +125,48 @@ async fn a_bot_signs_in_with_a_password_it_never_sees() {
     );
     runtime.shutdown().await;
 }
+
+#[tokio::test]
+async fn filling_on_the_bots_computer_needs_it_in_the_conversations_computers() {
+    let (home, runtime, _hub) = setup();
+    let h = home.path();
+    fs::write(
+        h.join("profiles/owl/config.yaml"),
+        "model:\n  provider: openai\n  default: fixture\ntools:\n  enabled_toolsets: []\ncomputer_use:\n  command: /bin/sh\n",
+    )
+    .unwrap();
+    open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    assert!(s.tools.iter().any(|t| t["name"] == "hexbot_passwords"));
+    let login = crate::passwords::save(
+        h,
+        "alice",
+        &json!({"title":"Mail","url":"https://mail.example","username":"alex","password":"pw"}),
+    )
+    .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // The conversation started with this computer's desktop only; the bots'
+    // computer granted since doesn't count until its next message.
+    store::open(h)
+        .unwrap()
+        .execute(
+            "UPDATE native_sessions SET options=json_set(options,'$.computers',json('[{\"id\":\"host\",\"terminal\":false,\"desktop\":true}]')) WHERE stored_id='first'",
+            [],
+        )
+        .unwrap();
+    let err = runtime
+        .tool(
+            &s,
+            "hexbot_passwords",
+            &json!({"action":"fill","id":login,"fields":[{"field":"password","coordinate":[10,10]}]}),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        err.message.contains("can't use the bots' computer"),
+        "{}",
+        err.message
+    );
+}

@@ -98,8 +98,12 @@ impl App {
         if let Err(error) = catalog::keep_name_faces(&home) {
             eprintln!("Could not keep the bots' faces: {}", error.message);
         }
+        if let Err(error) = crate::machines::migrate(&home) {
+            eprintln!("Could not keep the bots' computers: {}", error.message);
+        }
         let events = EventHub::new();
         crate::computers::attach(&home, events.clone());
+        crate::machines::attach_events(&home, events.clone());
         let runtime = Runtime::new(home.clone(), events.clone(), pi)?;
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let runtime = runtime.clone();
@@ -529,6 +533,10 @@ impl App {
                     result
                 } else if let Some(result) = crate::computers::call(&self.home, method, p).await {
                     result
+                } else if let Some(result) =
+                    crate::machines::call(&self.home, owner, method, p).await
+                {
+                    result
                 } else if let Some(result) = connectors::call(&self.home, owner, method, p).await {
                     result
                 } else if let Some(result) = crate::plugins::call(&self.home, owner, method, p) {
@@ -703,6 +711,15 @@ impl App {
             self.bot_status(owner, &mut result["bot"]);
         }
         self.changed(owner, method, p, &result);
+        // Creating a bot gives it computers, a tools change can give or take
+        // them, and deleting one takes them: Settings, Computers reads again.
+        if matches!(
+            method,
+            "hexbot.bots.create" | "hexbot.bots.create_primary" | "hexbot.bots.delete"
+        ) || method == "hexbot.bots.update" && p.get("tools").is_some()
+        {
+            crate::machines::changed(&self.home, owner);
+        }
         for room in affected_rooms {
             self.events.emit(
                 room["owner_id"].as_str().unwrap_or(""),
@@ -1774,7 +1791,7 @@ async fn index(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
         .as_ref()
         .and_then(|p| std::fs::read_to_string(p.join("index.html")).ok())
         .unwrap_or_else(|| {
-            "<!doctype html><html><head></head><body>Hexbot daemon is running. Build apps/web to serve the browser app.</body></html>"
+            "<!doctype html><html><head><title>Hexbot</title></head><body>Hexbot daemon is running. Build apps/web to serve the browser app.</body></html>"
                 .into()
         });
     // Kept for older clients: the web bundle reads it only as a "served by
@@ -1873,8 +1890,20 @@ async fn connection(
     let mut verify = tokio::time::interval(Duration::from_secs(1));
     let mut tasks = tokio::task::JoinSet::new();
     let bytes = Arc::new(tokio::sync::Semaphore::new(WS_MESSAGE_LIMIT));
+    // Work for this app's own computer, once it attaches (machines.rs).
+    let (computer_tx, mut computer_rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+    let connection_id = crate::machines::connection_id();
     'connection: loop {
         tokio::select! {
+            Some(frame) = computer_rx.recv() => {
+                if socket
+                    .send(Message::Text(format!("{frame}\n").into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
             _ = stop.changed() => {
                 let _ = socket
                     .send(Message::Close(Some(CloseFrame {
@@ -1970,9 +1999,10 @@ async fn connection(
                         let owner = owner.clone();
                         let device_id = device_id.clone();
                         let token = token.clone();
+                        let computer = (computer_tx.clone(), connection_id);
                         tasks.spawn(async move {
                             let _permit = permit;
-                            handle_request(app, owner, device_id, token, request).await
+                            handle_request(app, owner, device_id, token, computer, request).await
                         });
                     }
                 }
@@ -1987,14 +2017,17 @@ async fn connection(
         }
     }
     // Runtime RPCs own their command tasks. One-shot requests still cancel
-    // with this connection and run their scoped cleanup.
-    tasks.abort_all();
+    // with this connection and run their scoped cleanup. Waited for, so an
+    // attach already running can't offer this computer after it detaches.
+    tasks.shutdown().await;
+    crate::machines::detach(&app.home, &device_id, connection_id);
 }
 async fn handle_request(
     app: Arc<App>,
     owner: String,
     device_id: String,
     token: String,
+    computer: (tokio::sync::mpsc::UnboundedSender<Value>, u64),
     request: std::result::Result<Value, serde_json::Error>,
 ) -> Option<Value> {
     let request = match request {
@@ -2022,6 +2055,13 @@ async fn handle_request(
         Err(Error::new(-32602, "params must be an object"))
     } else if method == "hexbot.devices.set_push" {
         set_push(&app.home, &owner, &device_id, &params)
+    } else if method == "hexbot.computers.attach" {
+        // Only this connection's app can offer its own computer.
+        crate::machines::attach(
+            &app.home, &owner, &device_id, computer.1, computer.0, &params,
+        )
+    } else if method == "hexbot.computers.reply" {
+        crate::machines::reply(&app.home, &device_id, &params)
     } else {
         app.call(&owner, method, &params).await
     };
@@ -2098,11 +2138,52 @@ async fn computer_view(
 /// page made itself (a PDF opened beside the chat). A bot's visual runs in a
 /// sandboxed frame (`/visual-frame.html`); this keeps its script from
 /// navigating that frame to another site with data in the URL.
-async fn frame_policy(mut response: Response) -> Response {
-    response
-        .headers_mut()
+///
+/// Only the app's own pages run with the daemon's origin, and no other site
+/// may frame them. Everything else the daemon serves (the icon, bundle
+/// files, JSON, files) is sandboxed: opened as a page, as a bot driving a
+/// browser could, it has no origin, so its console can't use the owner's
+/// session (its requests carry `Origin: null` and no cookie). The computer
+/// viewer, behind its own short-lived token and framed by the apps, and PDFs,
+/// which run no script with the page's origin, are left as they are.
+async fn frame_policy(request: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let path = request.uri().path().to_owned();
+    let mut response = next.run(request).await;
+    let html = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("text/html"));
+    let pdf = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("application/pdf"));
+    let last = path.rsplit('/').next().unwrap_or("");
+    let app_page = html
+        && (matches!(path.as_str(), "/" | "/login")
+            || path.starts_with("/auth/")
+            || path.starts_with("/oauth/")
+            || !path.starts_with("/api/") && !path.starts_with("/hexbot/") && !last.contains('.'));
+    let headers = response.headers_mut();
+    headers
         .entry(axum::http::header::CONTENT_SECURITY_POLICY)
         .or_insert(HeaderValue::from_static("frame-src 'self' blob:"));
+    let extra = if path == "/visual-frame.html" {
+        Some("sandbox allow-scripts")
+    } else if app_page {
+        Some("frame-ancestors 'self'")
+    } else if path.starts_with("/hexbot/computer/") || pdf {
+        None
+    } else {
+        Some("sandbox")
+    };
+    if let Some(extra) = extra {
+        headers.append(
+            axum::http::header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(extra),
+        );
+    }
     response
 }
 /// Vite names every file under `/assets/` by its content hash, so a browser
@@ -2159,7 +2240,7 @@ pub fn router(app: Arc<App>) -> Router {
     }
     router
         .layer(axum::middleware::from_fn(immutable_assets))
-        .layer(axum::middleware::map_response(frame_policy))
+        .layer(axum::middleware::from_fn(frame_policy))
         .layer(DefaultBodyLimit::max(16 * 1024 * 1024))
         .layer(axum::middleware::from_fn_with_state(
             app.clone(),

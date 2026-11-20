@@ -58,6 +58,7 @@ async fn catalog_shapes_and_errors_match_clients() {
             "microsoft_todo",
             "imap",
             "notion",
+            "github",
             "x_search"
         ]
     );
@@ -1634,4 +1635,66 @@ async fn an_xai_key_kept_in_the_credential_pool_sets_up_x_search() {
     assert_eq!(row["provider"], "xai");
     connectors::set_enabled(home.path(), "owl", "x_search", true).unwrap();
     assert!(connectors::tool_available(home.path(), "owl", "x_search").unwrap());
+}
+
+/// A connector's key is its own, never one a model provider reads: sharing
+/// one would connect, or on Disconnect delete, one with the other. xAI's key
+/// is shared on purpose and says so ("Also used if a bot runs on xAI models").
+#[test]
+fn connector_keys_are_never_a_model_providers() {
+    let providers: Value = serde_json::from_str(include_str!("providers.json")).unwrap();
+    let theirs: std::collections::BTreeSet<&str> = providers["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|p| p["env_vars"].as_array().into_iter().flatten())
+        .filter_map(Value::as_str)
+        .collect();
+    for connector in connectors::catalog() {
+        // Every place a connector names a key: its own, each provider's, each field's.
+        let keys = connector["keys"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .chain(
+                connector["providers"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .flat_map(|p| p["keys"].as_array().into_iter().flatten()),
+            )
+            .chain(
+                connector["fields"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|f| &f["key"]),
+            )
+            .filter_map(Value::as_str);
+        for key in keys {
+            assert!(
+                key == "XAI_API_KEY" || !theirs.contains(key),
+                "{} uses {key}, a model provider's key",
+                connector["id"]
+            );
+        }
+    }
+}
+
+#[test]
+fn disconnecting_copilot_keeps_the_github_connectors_token() {
+    let home = tempfile::tempdir().unwrap();
+    db::migrate(home.path()).unwrap();
+    std::fs::write(
+        home.path().join(".env"),
+        "HEXBOT_GITHUB_TOKEN=github_pat_connector\nGITHUB_TOKEN=gho_copilot\n",
+    )
+    .unwrap();
+    crate::providers::clear_key(home.path(), "copilot").unwrap();
+    let env = std::fs::read_to_string(home.path().join(".env")).unwrap();
+    assert!(
+        env.contains("HEXBOT_GITHUB_TOKEN=github_pat_connector"),
+        "{env}"
+    );
+    assert!(!env.contains("GITHUB_TOKEN=gho_copilot"), "{env}");
 }

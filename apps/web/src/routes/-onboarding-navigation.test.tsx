@@ -62,6 +62,35 @@ const reply = (method: string) =>
       'hexbot.models.list': { all: [{ id: 'local-model', label: 'Local model' }], curated: [] },
       'hexbot.settings.get': { default_model: 'lmstudio/local-model', usage_data: false },
       'hexbot.connectors.list': { connectors: [] },
+      'hexbot.plugins.list': { plugins: [] },
+      'hexbot.computers.list': {
+        computers: [
+          {
+            apps: {},
+            available: false,
+            desktop: { available: false, bots: [] },
+            id: 'vm',
+            kind: 'vm',
+            name: "The bots' computer",
+            on: true,
+            online: false,
+            os: 'Linux',
+            terminal: { available: false, bots: [] }
+          },
+          {
+            apps: {},
+            available: true,
+            desktop: { available: false, bots: [], note: 'No screen' },
+            id: 'host',
+            kind: 'host',
+            name: 'studio',
+            on: true,
+            online: true,
+            os: 'Linux',
+            terminal: { available: true, bots: [], sandboxed: true }
+          }
+        ]
+      },
       'hexbot.bots.create_primary': { bot, section: canonical }
     }[method] ?? {}
   )
@@ -293,6 +322,7 @@ async function firstBot() {
   await waitFor(() => expect(defaults).toBeEnabled())
   fireEvent.click(defaults)
   fireEvent.click(await screen.findByTestId('onboarding-tools-continue'))
+  fireEvent.click(await screen.findByTestId('onboarding-computers-continue'))
   await screen.findByTestId('onboarding-usage-continue')
 
   return view

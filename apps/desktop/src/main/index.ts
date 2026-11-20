@@ -32,7 +32,8 @@ import { askToNotify, notificationSettingsUrl, notify, reportShown, sendShown } 
 import { OAuthReturns } from './oauth-return'
 import { pair, pairingReply, pairWithGrant, type GrantPairOptions, type PairOptions } from './pair'
 import { installService, serviceStatus, uninstallService } from './service'
-import { createTray } from './tray'
+import { ThisComputer, type ComputerShare } from './computer'
+import { createTray, setComputerActivity } from './tray'
 import { crashReportsAvailable, setCrashReports, startCrashReports } from './crash-reports'
 import { readDesktopState, updateDesktopState } from './desktop-state'
 import { readUsageData, setUsageData, startUsageData, usageAvailable } from './usage-data'
@@ -68,6 +69,32 @@ let daemon: DaemonManager
 const lifecycle = new WindowLifecycle()
 let tray: Tray | undefined
 let creatingWindow: Promise<BrowserWindow> | undefined
+// This computer as one of the user's computers: off until the user allows it
+// here, with a native question this process asks itself (computer.ts).
+const thisComputer = new ThisComputer(join(app.getPath('userData'), 'computer.json'), {
+  async confirm(what) {
+    const options = {
+      buttons: ['Allow', 'Cancel'],
+      cancelId: 1,
+      defaultId: 1,
+      detail:
+        what === 'terminal'
+          ? 'Bots can run commands here as you, outside any sandbox. In Auto, each command is checked first; in Manual, each one asks; in Bypass, they run without asking. Turn it off here or from the Hexbot icon at any time.'
+          : 'Bots can see this screen, click and type. In Auto and Manual they ask before each app the first time in each conversation (Always allow keeps it); in Bypass they skip that. They never type into terminals, editors or Hexbot. Turn it off here or from the Hexbot icon at any time.',
+      message: what === 'terminal' ? "Let bots use this computer's terminal?" : "Let bots use this computer's desktop?",
+      type: 'warning' as const
+    }
+    const answer = mainWindow && !mainWindow.isDestroyed() ? await dialog.showMessageBox(mainWindow, options) : await dialog.showMessageBox(options)
+    return answer.response === 0
+  },
+  changed(share: ComputerShare) {
+    for (const window of BrowserWindow.getAllWindows()) window.webContents.send('hexbot:computer:state', share)
+    setComputerActivity({ allowed: share.terminal || share.desktop })
+  },
+  acting(active: boolean) {
+    setComputerActivity({ active })
+  }
+})
 // Google sign-ins come back to the app; the app comes forward to show them finish.
 const oauthReturns = new OAuthReturns(() => void showWindow())
 
@@ -154,6 +181,15 @@ async function buildWindow(): Promise<BrowserWindow> {
     window.on('page-title-updated', event => event.preventDefault())
   }
   mainWindow = window
+  // The page carries the daemon's requests: when it is lost or reloads,
+  // what bots started on this computer stops. The switch stays.
+  window.webContents.on('render-process-gone', () => void thisComputer.release())
+  // A page that stops responding can't carry the daemon's stops any more.
+  window.on('unresponsive', () => void thisComputer.release())
+  window.webContents.on('destroyed', () => void thisComputer.release())
+  window.webContents.on('did-start-navigation', details => {
+    if (details.isMainFrame && !details.isSameDocument) void thisComputer.release()
+  })
   reportShown(window)
   guardWindow(window.webContents, url => shell.openExternal(url), webDevUrl)
   window.once('ready-to-show', () => {
@@ -342,6 +378,17 @@ function registerIpc(): void {
     if (!url) throw new Error('This system has no notification settings to open')
     await shell.openExternal(url)
   })
+  handle('hexbot:computer:state', () => thisComputer.state())
+  handle('hexbot:computer:allow', (_event, value: unknown) =>
+    thisComputer.allow(value && typeof value === 'object' ? (value as Record<string, unknown>) : {})
+  )
+  handle('hexbot:computer:setup-desktop', () => thisComputer.setupDesktop())
+  handle('hexbot:computer:release', () => thisComputer.release())
+  handle('hexbot:computer:cancel', (_event, value: unknown) => thisComputer.cancel(value))
+  handle('hexbot:computer:run', (_event, value: unknown) => {
+    if (!value || typeof value !== 'object') throw new TypeError('Invalid request')
+    return thisComputer.run(value as Record<string, unknown>)
+  })
   handle('hexbot:open-external', (_event, value: unknown) => {
     const url = new URL(validString(value, 'URL', 2_048))
     if (!['https:', 'http:'].includes(url.protocol)) throw new TypeError('Unsupported URL')
@@ -438,7 +485,8 @@ else {
     )
     await createWindow()
     try {
-      tray = createTray(daemon, () => void showWindow())
+      tray = createTray(daemon, () => void showWindow(), () => void thisComputer.stop())
+      setComputerActivity({ allowed: thisComputer.allowedNow.terminal || thisComputer.allowedNow.desktop })
     } catch (error) {
       log.warn(`tray unavailable: ${errorMessage(error)}`)
     }
@@ -450,6 +498,9 @@ else {
 app.on('before-quit', () => {
   lifecycle.beginQuit()
   oauthReturns.closeAll()
+  // Nothing bots started on this computer outlives the app: Cua is killed
+  // at once, since the app may exit before a gentler stop would finish.
+  void thisComputer.release(true)
 })
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()

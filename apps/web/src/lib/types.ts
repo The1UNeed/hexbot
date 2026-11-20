@@ -9,7 +9,7 @@
  * docs/client-architecture.md.
  */
 
-/** `always` comes only from daemons before Always allow was removed. */
+/** `always`: an app card's Always allow, or an approval from a daemon before Always allow was removed. */
 export type ApprovalChoice = 'always' | 'deny' | 'once' | 'session'
 
 export type ApprovalMode = 'manual' | 'off' | 'smart'
@@ -363,6 +363,51 @@ export interface ComputerCursor {
   bot: string
   x: number
   y: number
+}
+
+/** Terminal or desktop on one computer: whether it can be used now, and the bots that may. */
+export interface ComputerCapability {
+  available: boolean
+  bots: string[]
+  /** This computer's desktop: shared with the bots, and set up for Cua. */
+  on?: boolean
+  ready?: boolean
+  /** Why it can't be offered, when it can't. */
+  note?: null | string
+  /** This computer's terminal runs in the OS sandbox (not on Windows). */
+  sandboxed?: boolean
+}
+
+/**
+ * One place bots can act (`machines.rs`): the bots' computer (`vm`), the
+ * daemon's own (`host`), or one of the user's computers (`device:<id>`),
+ * online while Hexbot is open there and allowed.
+ */
+export interface Computer {
+  /** Apps a bot may always use there, by bot. */
+  apps: Record<string, string[]>
+  available: boolean
+  desktop: ComputerCapability
+  id: string
+  kind: 'device' | 'host' | 'vm'
+  name: string
+  /** The bots' computer is in use; the others are always on. */
+  on: boolean
+  online: boolean
+  os: string
+  terminal: ComputerCapability
+}
+
+/** Work the daemon sends this app's own computer (`hexbot.computers.request`). */
+export interface ComputerRequest {
+  args?: Record<string, unknown>
+  command?: string
+  /** The action the daemon last checked: only an already running Cua may send it. */
+  final?: boolean
+  kind: 'desktop' | 'terminal'
+  request_id: string
+  timeout?: number
+  tool?: string
 }
 
 export interface ComputerStatus {

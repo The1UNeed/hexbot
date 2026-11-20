@@ -80,7 +80,7 @@ export interface DaemonOverview {
   detail?: string | null
 }
 
-export type ApprovalChoice = 'deny' | 'once' | 'session'
+export type ApprovalChoice = 'always' | 'deny' | 'once' | 'session'
 
 export interface ApprovalRequestView {
   requestId: string

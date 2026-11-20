@@ -35,9 +35,8 @@ phone and builds with the iOS 27 SDK, whose scene life cycle Expo SDK 58 sets
 up.
 
 Settings is the daemon and what bots are doing right now, then the desktop
-app's groups: Models (providers, usage), Bots (plugins, passwords, bot
-activity), Manuals (Computer use), Devices (network, paired devices, Hex
-Connect), You (About you, daemon settings) and App (updates, licenses); it
+app's groups: Models (providers, usage), Bots (plugins, passwords,
+computers, bot activity), Devices (network, paired devices, Hex Connect), You (About you, daemon settings) and App (updates, licenses); it
 also switches daemons. + in the Chats bar makes a new bot or room. Bots & jobs
 is every bot's profile, scheduled jobs, and all rooms, archived ones included.
 

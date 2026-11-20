@@ -383,15 +383,18 @@ name. `soul_cap` and `memory_cap` are the limits in effect: a managed
 config's value, else the bot's own, else the setting. A new bot starts
 with neither of its own.
 
-`available_tools` lists the `tools` keys whose program or service exists on
-the daemon computer: computer use needs the cua driver, vision a key or
-endpoint for its vision provider, and voice edge-tts or its provider's key.
-The others are always available. Every bot has `computer_use` while it is
-available, whatever its saved toolsets say; bots run code and browse there.
-`code_execution` and `browser` ran on the daemon's computer and are never
-offered. `tools` only reports available tools,
-and a tool that isn't available is never offered to a model; a frozen section
-that still lists one gets an error when calling it.
+`available_tools` lists the `tools` keys whose program or service exists:
+computer use needs Cua on the daemon computer, or a desktop the bot may use
+on one of the user's computers; vision needs a key or endpoint for its
+vision provider, and voice edge-tts or its provider's key. The others are
+always available. `terminal` and `computer_use` follow the bot's computers
+(`hexbot.computers.*`): a bot has them while it may use some computer's
+terminal or desktop. `tools` reports available tools, plus `computer_use`
+while the bot has a desktop even when it isn't available here (no Cua), so a
+client that sends the list back keeps the bot's desktops. `code_execution`
+and `browser` ran on the daemon's computer and are never offered. A tool
+that isn't available is never offered to a model; a frozen section that
+still lists one gets an error when calling it.
 Provider key changes and finished sign-ins broadcast `hexbot.bots.changed` to
 every user so paired clients refresh tool availability and
 `provider_connected`. Speech calls check the requested provider
@@ -532,8 +535,15 @@ others (`DESIGN.md`, "The primary bot"). There is at most one per owner.
   `vision`, `voice`, `message_bots`, `delegate`, and `scheduling`; older
   clients may still send `code_execution` and `browser`, which are dropped; toolsets owned by connectors (web, x_search, mcp-*) are left
   as they are. Both capability lists use replace semantics. A tool missing
-  from `available_tools` is dropped from `tools` on write. Combined model and
-  tool edits use the new provider when checking availability.
+  from `available_tools` is dropped from `tools` on write, except
+  `computer_use`, which follows the bot's desktops. `terminal` and
+  `computer_use` give or take computers: turning one on gives the default
+  computer (the bots' computer when it can run; otherwise this computer, for
+  a terminal), and leaving out one the bot has takes it from every computer.
+  While the bots' computer is switched off, its grants don't count, so a list
+  without them leaves what was saved there; `hexbot.computers.grant` sets
+  each computer exactly. Combined model and tool edits use the new provider
+  when checking availability.
 - `hexbot.bots.pin {name, pinned?}` → `{bot: Bot}`. Pins the bot's chat in
   the list, or unpins it with `pinned: false`. `pinned_at` keeps the time it
   was first pinned, so pinning again keeps its place. The primary bot starts
@@ -1009,6 +1019,75 @@ cursor there.
 - Changes broadcast `hexbot.computer.changed {state, control, actor,
   activity, cursors, error}`.
 
+### Computers
+
+Every place a bot can act (`machines.rs`): the bots' computer `vm`, this
+computer `host`, and the user's computers `device:<device id>`. Each offers a
+terminal, a desktop or both; each is given to bots per capability.
+
+- `hexbot.computers.list {}` → `{computers: [{id, kind: "vm" | "host" |
+  "device", name, os, online, on, available, terminal, desktop, apps}]}`.
+  `terminal` and `desktop` are `{available, bots}`; this computer's terminal
+  adds `sandboxed` (false on Windows) and its desktop `on`, `ready` and a
+  `note` when it can't be shared. `apps` is `{bot: [app, ...]}`: what each
+  bot may always use there. A user's computer is listed while it is online
+  or has grants.
+- `hexbot.computers.grant {computer, capability: "terminal" | "desktop", bot,
+  on}` gives the bot that computer's terminal or desktop, or takes it. A
+  user's computer must be one of the owner's paired devices.
+- `hexbot.computers.set {computer: "vm", on}` uses the bots' computer or
+  stops using it (turning it off stops it). `{computer: "host", desktop}`
+  shares this computer's desktop, setting Cua up first (`cua host setup
+  --direct 127.0.0.1:3211 --no-provide-spaces`), or stops sharing it.
+  Returns the list.
+- `hexbot.computers.defaults {host_terminal?, host_desktop?}`: what bots made
+  from now on get of this computer, as setup chose. A new bot always gets the
+  bots' computer when Cua can run it. When `host_terminal` is unset, it gets
+  this computer's terminal only if the bots' computer can't run; an explicit
+  `false` gives it no terminal here, even then. A daemon that already had
+  bots when computers arrived records `host_terminal` from its default
+  toolsets, so new bots keep this computer's terminal as before.
+- `hexbot.computers.remove_app {computer, bot, app}` takes an app off a bot's
+  Always allow list.
+- `hexbot.computers.forget {computer}` forgets a user's computer: its grants
+  and allowed apps. When it is online the daemon first sends it a `release`
+  request and waits up to 5 s; the result is `{ok, released}`, plus a `note`
+  telling the user to stop bots there when it didn't confirm. Revoking the
+  device forgets it the same way.
+- Changes broadcast `hexbot.computers.changed {}`; read the list again.
+
+A desktop app connected to a daemon on another computer offers its own
+computer on its own connection:
+
+- `hexbot.computers.attach {terminal, desktop, name, os}` says what the user
+  allowed in that app. Neither withdraws the offer; closing the connection
+  takes the computer offline. The daemon's own app (the local device) is
+  refused: its computer is `host`.
+- The daemon then sends `hexbot.computers.request {request_id, kind:
+  "terminal", command, timeout}` or `{request_id, kind: "desktop", tool,
+  args, final}` as an event on that connection only. `tool` is one of Cua's
+  computer tools (screenshot, click, double click, move, drag, scroll, type,
+  key, hotkey, launch, window list, screen size). Opening a file or link is
+  refused on the user's computers, since the app that handles it can't be
+  checked: a bot launches the app and uses it instead. `final: true` marks
+  the action itself, after the daemon's last check: run it only on the Cua
+  session already up, never starting one, and fail otherwise.
+- `{request_id, kind: "cancel", cancels}` stops request `cancels`: refuse it
+  if it hasn't started, end it (and Cua, for a desktop action) if it has,
+  and answer `cancels` with an error once it can no longer act. A cancel
+  needs no reply.
+- `{request_id, kind: "release"}` (Forget): stop everything bots started
+  there, then reply `{request_id, result: {released: true}}` once nothing
+  can still land. The same request with `reason: "replaced"` comes on a new
+  connection that replaced one with requests still waiting: stop and
+  confirm the same way, but keep offering the computer on the new
+  connection. The old requests fail once it confirms; until then they wait
+  for the old connection to close or time out.
+- The app answers with `hexbot.computers.reply {request_id, result}` or
+  `{request_id, error}`. A terminal result is `{output, exit_code,
+  timed_out}`; a desktop result is Cua's MCP tool result. Only the device
+  that was asked can answer.
+
 ### Scheduled jobs
 
 Paired apps manage the scheduler through the same owner checks and job storage
@@ -1399,8 +1478,8 @@ copy per path in its cache.
 
 ### Connectors and skills
 
-A connector is an outside service a bot can reach: web search, Notion,
-X search, or an MCP server. Credentials
+A connector is an outside service a bot can reach: web search, Google's and
+Microsoft's services, Notion, GitHub, X search, or an MCP server. Credentials
 are stored once for the daemon; each bot has its own on/off switch.
 Native tool configuration for a bot overrides matching fields in the daemon configuration.
 Nested objects merge recursively, preserving unspecified fields; lists and
@@ -1448,7 +1527,7 @@ last_error | null, mcp?: {name, transport, tool_count, test_failed, running}}`. 
 (`null` = common to all), so a client can show the right ones before a choice
 is saved. `optional` fields, such as a free provider's own key, may stay
 empty. `state_text` says "Connected" only after a probe answered (Notion,
-xAI and the X API make one small authenticated GET, X's to its free usage
+GitHub, xAI and the X API make one small authenticated GET, X's to its free usage
 summary; a web search that needs no key runs one search; a sign-in asks
 xAI's `/models` with a fresh token); connectors with only an offline check say "Key saved", a
 provider that needs no key says "Ready", and one signed in but not yet
@@ -1699,8 +1778,9 @@ settings mirroring.
 ### Plugins
 
 Plugins are connectors (MCP servers among them), skills and packages. Each is
-set up once for the daemon and given to bots. Computer use is not a plugin:
-every bot has it, and `hexbot.computer.*` looks after it.
+set up once for the daemon and given to bots. Computers are not plugins:
+`hexbot.computers.*` gives them to bots, and `hexbot.computer.*` looks after
+the bots' computer.
 
 A package installs an MCP server with the skills that explain it, or several
 skills, as one plugin. It lives in `<home>/plugins/<name>/` as `plugin.json`
