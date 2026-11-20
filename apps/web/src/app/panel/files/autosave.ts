@@ -55,9 +55,19 @@ export function useAutosave(
     }
   }, [])
 
+  // Saves until nothing is left, so an edit made while a save was on its way
+  // lands too before a flush says yes.
   const flush = useCallback(() => {
     window.clearTimeout(timer.current)
-    queue.current = queue.current.then(run)
+    queue.current = queue.current.then(async () => {
+      let ok = true
+
+      while (ok && pending.current) {
+        ok = await run()
+      }
+
+      return ok
+    })
 
     return queue.current
   }, [run])

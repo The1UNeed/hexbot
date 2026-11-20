@@ -13,9 +13,7 @@ export function CommentChips({ chat, comments }: { chat: string; comments: FileC
   return (
     <ul aria-label="Comments for the next message" className="mb-2 flex flex-col gap-1.5">
       {comments.map((comment, index) => {
-        const toolId = tabs.find(
-          tab => 'file' in tab && (tab.file.path ?? tab.title) === (comment.path ?? comment.name)
-        )?.toolId
+        const toolId = tabs.find(tab => tab.toolId === comment.tab)?.toolId
 
         const about = [comment.where, comment.quote ? `“${comment.quote}”` : '']
           .filter(Boolean)

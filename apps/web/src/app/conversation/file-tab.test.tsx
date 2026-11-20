@@ -663,6 +663,54 @@ describe('a file beside the chat', () => {
     await waitFor(() => expect(useVisuals.getState().tabs).toHaveLength(0))
   })
 
+  it("drops a refused table edit for the bot's version without writing it again", async () => {
+    api.filesRead.mockResolvedValue({
+      mime: 'text/csv',
+      modified: 3,
+      name: 'pins.csv',
+      path: '/work/pins.csv',
+      size: 7,
+      text: 'pin,use\nGPIO2,ADC\n',
+      version: 'v3'
+    })
+    api.filesWrite.mockRejectedValue(
+      new JsonRpcGatewayError('the file changed since it was opened', { code: 4209 })
+    )
+    act(() =>
+      visualsActions().open(
+        fileTab('pins.csv', { mime: 'text/csv', path: '/work/pins.csv', sessionId: 's' })
+      )
+    )
+    render(<VisualPanel />)
+
+    fireEvent.doubleClick(await screen.findByText('ADC'))
+    fireEvent.change(screen.getByLabelText('Edit B2'), { target: { value: 'JTAG' } })
+    fireEvent.keyDown(screen.getByLabelText('Edit B2'), { key: 'Enter' })
+
+    const load = await screen.findByRole(
+      'button',
+      { name: "Load Scout's version" },
+      { timeout: 3000 }
+    )
+
+    const refused = api.filesWrite.mock.calls.length
+
+    api.filesRead.mockResolvedValue({
+      mime: 'text/csv',
+      modified: 9,
+      name: 'pins.csv',
+      path: '/work/pins.csv',
+      size: 20,
+      text: "pin,use\nthe bot's row\n",
+      version: 'v9'
+    })
+    fireEvent.click(load)
+
+    expect(await screen.findByText("the bot's row")).toBeInTheDocument()
+    await act(async () => {})
+    expect(api.filesWrite).toHaveBeenCalledTimes(refused)
+  })
+
   it('keeps the edit when the version to load cannot be read', async () => {
     const field = await openPins()
     api.filesWrite.mockRejectedValue(

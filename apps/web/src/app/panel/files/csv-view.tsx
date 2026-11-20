@@ -20,6 +20,7 @@ export function CsvView({
   flushRef,
   name,
   onComment,
+  onFollow,
   onMode,
   onSave,
   text
@@ -29,6 +30,8 @@ export function CsvView({
   flushRef: { current: (() => Promise<boolean>) | null }
   name: string
   onComment?: (target: CommentTarget, open: boolean) => void
+  /** The table took on the file's text as it is now: its saves start from that version. */
+  onFollow: () => void
   onMode: (mode: SheetMode) => void
   onSave: (text: string) => Promise<void>
   /** The file's text; a new one (the bot's edit) is shown unless an edit waits to save. */
@@ -45,10 +48,16 @@ export function CsvView({
     written.current = next
   }, flushRef)
 
+  const followRef = useRef(onFollow)
+  followRef.current = onFollow
+
+  useEffect(() => followRef.current(), [])
+
   useEffect(() => {
     if (text !== written.current && !save.dirty()) {
       written.current = text
       setRows(parseDelimited(text, delimiter))
+      followRef.current()
     }
     // A new text from the file is the only reason to read it again.
     // eslint-disable-next-line react-hooks/exhaustive-deps

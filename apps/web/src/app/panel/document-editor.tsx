@@ -278,6 +278,9 @@ export function DocumentEditor({
   onSaveRef.current = onSave
   const onFollowRef = useRef(onFollow)
   onFollowRef.current = onFollow
+
+  // The text it opened on is the version its saves start from.
+  useEffect(() => onFollowRef.current?.(), [])
   const timer = useRef<number>(undefined)
 
   const editor = useEditor({

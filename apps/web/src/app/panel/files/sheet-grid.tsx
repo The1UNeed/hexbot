@@ -158,12 +158,12 @@ export function SheetGrid({
     grid.current?.focus({ preventScroll: true })
   }
 
-  const startEdit = (initial?: string) => {
+  const startEdit = (initial?: string, cell: Cell = focus) => {
     if (!editable) {
       return
     }
 
-    setEditing({ cell: focus, value: initial ?? source(focus) })
+    setEditing({ cell, value: initial ?? source(cell) })
   }
 
   const selectedText = () => {
@@ -510,7 +510,7 @@ export function SheetGrid({
                       key={col}
                       onDoubleClick={() => {
                         select({ col, row })
-                        startEdit(source({ col, row }))
+                        startEdit(source({ col, row }), { col, row })
                       }}
                       onPointerDown={event => {
                         if (event.button !== 0 || isEditing) {

@@ -424,7 +424,7 @@ function Attachments({
   attachments: Attachment[]
   mine: boolean
   onFile?: (file: FileTarget) => void
-  onImage: (source: string) => void
+  onImage: (source: string, name?: string) => void
   sessionId?: string
 }) {
   return (
@@ -436,7 +436,7 @@ function Attachments({
               aria-label={`Open ${item.name}`}
               className="hex-focus rounded-panel"
               key={item.id}
-              onClick={() => onImage(item.dataUrl!)}
+              onClick={() => onImage(item.dataUrl!, item.name)}
               type="button"
             >
               <img
@@ -756,7 +756,7 @@ export const MessageRow = memo(function MessageRow({
   /** Opens a file beside the chat; a bot's own chat only. */
   onFile?: (file: FileTarget) => void
   onFix?: (connector: string) => void
-  onImage: (source: string) => void
+  onImage: (source: string, name?: string) => void
   /** Your latest message, while the bot is on it or after its turn stopped. */
   onRecall?: (message: TranscriptMessage) => void
   /** Sends your message again when it is late or its outcome is unknown. */
@@ -1525,7 +1525,7 @@ function Composer({
   /** Opens an uploaded file beside the chat. */
   onFile: (file: FileTarget) => void
   /** Opens an uploaded picture over the chat. */
-  onImage: (source: string) => void
+  onImage: (source: string, name?: string) => void
   sectionId: string | null
   sessionId: string | null
   status?: BotStatus
@@ -1581,6 +1581,7 @@ function Composer({
   const [queued, setQueued] = useState(false)
   // The newest send owns `sending`: an earlier one ending never unlocks it.
   const sends = useRef(0)
+  const flushing = useRef(false)
   const picker = useRef<HTMLInputElement>(null)
 
   const send = async () => {
@@ -1596,8 +1597,19 @@ function Composer({
     }
 
     // The bot reads each open file as it is on screen: its edit saves first.
-    // One that cannot save is shown, saying why, and the message waits.
-    if (!(await flushOpenFiles())) {
+    // One that cannot save is shown, saying why, and the message waits. A
+    // second Send while the files save does nothing.
+    if (flushing.current) {
+      return
+    }
+
+    flushing.current = true
+
+    const saved = await flushOpenFiles().finally(() => {
+      flushing.current = false
+    })
+
+    if (!saved) {
       return
     }
 
@@ -1836,7 +1848,7 @@ function Composer({
                   const kind = sentKind(file)
 
                   if (kind === 'image' && preview) {
-                    onImage(preview)
+                    onImage(preview, file.name)
                   } else if (upload.state === 'ready' || upload.state === 'kept') {
                     // As the message will open it: a file the daemon keeps from
                     // there, a PDF, video or audio file, or one not sent yet,
@@ -2089,7 +2101,15 @@ function BotConversation() {
       void connectorsActions().load(params.bot)
     }
   }, [params.bot])
-  const [lightbox, setLightbox] = useState<string | null>(null)
+
+  // A picture shown over the chat, with its name for Mark up.
+  const [lightbox, setLightbox] = useState<null | { name?: string; src: string }>(null)
+
+  const showImage = useCallback(
+    (src: string, name?: string) => setLightbox({ name, src }),
+    []
+  )
+
   // Files dragged over the chat, on their way to the composer. Enters and
   // leaves are counted: every child the drag crosses sends both, and Safari
   // gives no `relatedTarget` to tell them apart.
@@ -3205,7 +3225,7 @@ function BotConversation() {
                     onDismiss={shownMessage.error ? dismiss : undefined}
                     onFile={liveId ? openBeside : undefined}
                     onFix={fixConnector}
-                    onImage={setLightbox}
+                    onImage={showImage}
                     onRecall={canRecall(shownMessage) ? recall : undefined}
                     onResend={shownMessage.role === 'user' && ownerInput ? resend : undefined}
                     onRetry={retryWith?.[0]}
@@ -3310,7 +3330,7 @@ function BotConversation() {
               draftVersion={draftVersion}
               key={params.section}
               onFile={openBeside}
-              onImage={setLightbox}
+              onImage={showImage}
               sectionId={params.section ?? null}
               sessionId={liveId}
               // A stopped turn is the Retry pill under it; the field stays calm.
@@ -3331,12 +3351,12 @@ function BotConversation() {
                 className="hex-glass hex-glass-press hex-focus flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3.5 text-[length:var(--text-secondary)] font-medium text-foreground"
                 onClick={() => {
                   // Marked up beside the chat, then added to the next message.
-                  const mime = /^data:([^;,]+)/.exec(lightbox)?.[1] ?? 'image/png'
+                  const mime = /^data:([^;,]+)/.exec(lightbox.src)?.[1] ?? 'image/png'
 
                   openBeside({
                     mime,
-                    name: `Picture.${mime.split('/')[1] ?? 'png'}`,
-                    url: lightbox
+                    name: lightbox.name ?? `Picture.${mime.split('/')[1] ?? 'png'}`,
+                    url: lightbox.src
                   })
                   setLightbox(null)
                 }}
@@ -3362,7 +3382,7 @@ function BotConversation() {
             <img
               alt="Attachment preview"
               className="max-h-[78dvh] max-w-full object-contain"
-              src={lightbox}
+              src={lightbox.src}
             />
           ) : null}
         </div>

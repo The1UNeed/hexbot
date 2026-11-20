@@ -99,6 +99,8 @@ export interface ImageEditorProps {
   onComment?: (target: CommentTarget, area: Area) => void
   /** Adds the picture, as marked up, to the chat's next message. */
   onAttach?: (file: File) => void
+  /** The editor took on this version of the picture: its saves start from it. */
+  onFollow: (version: string) => void
 }
 
 /** The picture as it is now, as a file of its own format (or PNG). */
@@ -122,6 +124,7 @@ export function ImageEditor({
   name,
   onAttach,
   onComment,
+  onFollow,
   onSave,
   src,
   version
@@ -179,22 +182,33 @@ export function ImageEditor({
       return
     }
 
-    base.current = version
+    // A newer version arriving while this one decodes replaces it.
+    let live = true
     const next = new Image()
 
     next.onload = () => {
+      if (!live) {
+        return
+      }
+
+      base.current = version
       setImage(next)
       setFailed(false)
       setMarkup(EMPTY)
       setPast([])
       setFuture([])
+      onFollow(version)
     }
 
-    next.onerror = () => setFailed(true)
+    next.onerror = () => live && setFailed(true)
     next.src = src
-    // Only a new version reopens it.
+
+    return () => {
+      live = false
+    }
+    // Only a new version reopens it; its `src` comes with it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [version, src])
+  }, [version])
 
   useEffect(() => {
     const node = wrap.current

@@ -242,6 +242,18 @@ export function EditableRuns({
 
           const after = texts.join('').slice(at.offset)
 
+          // The paragraph keeps only the text before the caret: when focus
+          // moves to the new one, its blur finds nothing more to write.
+          if (texts.length === count.current) {
+            draw(
+              element,
+              runs.map((run, index) => ({ ...run, text: before[index] ?? '' })),
+              pxPerPt
+            )
+          } else {
+            element.textContent = before.join('')
+          }
+
           onSplit(before, after, texts.length === count.current ? at.run : 0)
         } else if (event.key === 'Backspace' && onJoin) {
           const at = caret(element)

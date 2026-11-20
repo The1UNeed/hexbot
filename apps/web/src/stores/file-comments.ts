@@ -20,6 +20,8 @@ export interface FileComment {
   /** The words or values the comment is about, as the user selected them. */
   quote?: string
   note: string
+  /** The side tab it was left in, so a picture's marks show on that picture only. */
+  tab?: string
   /** The area of a picture it marks, in the picture's pixels, drawn on the picture while it waits. */
   area?: { x: number; y: number; w: number; h: number }
 }
@@ -113,7 +115,12 @@ export function withComments(text: string, comments: FileComment[]): string {
 
   const lines = comments.map((comment, index) => {
     // A file tag: the chat shows the name, which opens the file, and the bot reads the path.
-    const file = comment.path ? `[${comment.name}](<${comment.path}>)` : comment.name
+    const label = comment.name.replace(/[[\]\\]/g, '\\$&')
+
+    const file = comment.path
+      ? `[${label}](<${comment.path.replace(/[<>\\]/g, '\\$&')}>)`
+      : comment.name
+
     const where = comment.where ? `, ${comment.where}` : ''
 
     const quote = comment.quote

@@ -22,13 +22,14 @@ impl Runtime {
         let path = self.file_path(s, required(p, "path")?)?;
         let expected = p["version"].as_str().map(str::to_owned);
         // A picture or Office file the panel edited comes back whole, as a data URL.
+        // It always names the version it edited: a whole file has no merge.
         if let Some(data_url) = p["data_url"].as_str() {
+            let expected =
+                expected.ok_or_else(|| Error::new(4200, "missing parameter: version"))?;
             let bytes = decode_data_url(data_url)?;
-            return tokio::task::spawn_blocking(move || {
-                write_bytes(&path, &bytes, expected.as_deref())
-            })
-            .await
-            .map_err(|e| Error::new(5200, e.to_string()))?;
+            return tokio::task::spawn_blocking(move || write_bytes(&path, &bytes, &expected))
+                .await
+                .map_err(|e| Error::new(5200, e.to_string()))?;
         }
         let text = p["text"]
             .as_str()
@@ -298,7 +299,7 @@ fn editable_bytes(path: &Path, bytes: &[u8]) -> bool {
 /// Replaces a picture or Office file the panel edited, refused like a text
 /// save when the file changed since `expected`, and refused for any other
 /// format or for bytes that are not that format.
-pub(super) fn write_bytes(path: &Path, bytes: &[u8], expected: Option<&str>) -> Result<Value> {
+pub(super) fn write_bytes(path: &Path, bytes: &[u8], expected: &str) -> Result<Value> {
     let _save = SAVES
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -315,10 +316,8 @@ pub(super) fn write_bytes(path: &Path, bytes: &[u8], expected: Option<&str>) -> 
         ));
     }
     let meta = fs::metadata(path)?;
-    let current = fs::read(path)?;
-    if let Some(expected) = expected
-        && version_of(&current) != expected
-    {
+    // Larger than the panel can open, so not the version it edited.
+    if meta.len() > READ_LIMIT || version_of(&fs::read(path)?) != expected {
         return Err(Error::new(4209, "the file changed since it was opened"));
     }
     replace(path, bytes, &meta)?;
@@ -548,6 +547,7 @@ mod tests {
     fn a_picture_or_office_file_saves_whole_and_only_as_its_own_format() {
         let dir = tempfile::tempdir().unwrap();
         let dir = fs::canonicalize(dir.path()).unwrap();
+        let version = |path: &Path| version_of(&fs::read(path).unwrap());
         let png = dir.join("shot.png");
         fs::write(&png, b"\x89PNG\r\n\x1a\nfirst").unwrap();
         let opened = read_payload(&png).unwrap()["version"]
@@ -559,32 +559,58 @@ mod tests {
             "data:image/png;base64,{}",
             base64::engine::general_purpose::STANDARD.encode(b"\x89PNG\r\n\x1a\ndrawn on")
         );
-        let saved = write_bytes(&png, &decode_data_url(&url).unwrap(), Some(&opened)).unwrap();
+        let saved = write_bytes(&png, &decode_data_url(&url).unwrap(), &opened).unwrap();
         assert_eq!(fs::read(&png).unwrap(), b"\x89PNG\r\n\x1a\ndrawn on");
         assert_eq!(read_payload(&png).unwrap()["version"], saved["version"]);
         // Saved from the version opened first: the bot's change is not overwritten.
         assert_eq!(
-            write_bytes(&png, b"\x89PNG\r\n\x1a\nagain", Some(&opened))
+            write_bytes(&png, b"\x89PNG\r\n\x1a\nagain", &opened)
                 .unwrap_err()
                 .code,
             4209
         );
         // Bytes that are not a PNG never replace one.
-        assert_eq!(write_bytes(&png, b"GIF89a", None).unwrap_err().code, 4202);
+        assert_eq!(
+            write_bytes(&png, b"GIF89a", &version(&png))
+                .unwrap_err()
+                .code,
+            4202
+        );
 
         let docx = dir.join("report.docx");
         fs::write(&docx, b"PK\x03\x04old").unwrap();
-        assert!(write_bytes(&docx, b"PK\x03\x04new", None).is_ok());
+        assert!(write_bytes(&docx, b"PK\x03\x04new", &version(&docx)).is_ok());
         assert_eq!(
-            write_bytes(&docx, b"not a zip", None).unwrap_err().code,
+            write_bytes(&docx, b"not a zip", &version(&docx))
+                .unwrap_err()
+                .code,
             4202
         );
 
         // A format the panel does not edit is refused, whatever the bytes.
         let pdf = dir.join("doc.pdf");
         fs::write(&pdf, b"%PDF-1.4").unwrap();
-        assert_eq!(write_bytes(&pdf, b"%PDF-1.5", None).unwrap_err().code, 4202);
+        assert_eq!(
+            write_bytes(&pdf, b"%PDF-1.5", &version(&pdf))
+                .unwrap_err()
+                .code,
+            4202
+        );
         assert_eq!(fs::read(&pdf).unwrap(), b"%PDF-1.4");
+
+        // A file grown past what the panel opens is not the one it edited.
+        fs::File::options()
+            .write(true)
+            .open(&docx)
+            .unwrap()
+            .set_len(READ_LIMIT + 1)
+            .unwrap();
+        assert_eq!(
+            write_bytes(&docx, b"PK\x03\x04new", &opened)
+                .unwrap_err()
+                .code,
+            4209
+        );
 
         assert_eq!(decode_data_url("not a url").unwrap_err().code, 4200);
         assert_eq!(
