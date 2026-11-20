@@ -146,6 +146,12 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
       },
       {
         license: 'MIT',
+        name: 'fflate',
+        packages: ['fflate'],
+        repository: 'https://github.com/101arrowz/fflate'
+      },
+      {
+        license: 'MIT',
         name: 'ProseMirror',
         repository: 'https://github.com/ProseMirror/prosemirror'
       },

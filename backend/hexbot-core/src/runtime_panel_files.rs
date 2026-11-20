@@ -20,11 +20,20 @@ impl Runtime {
 
     pub(super) async fn write_file(&self, s: &Live, p: &Value) -> Result<Value> {
         let path = self.file_path(s, required(p, "path")?)?;
+        let expected = p["version"].as_str().map(str::to_owned);
+        // A picture or Office file the panel edited comes back whole, as a data URL.
+        if let Some(data_url) = p["data_url"].as_str() {
+            let bytes = decode_data_url(data_url)?;
+            return tokio::task::spawn_blocking(move || {
+                write_bytes(&path, &bytes, expected.as_deref())
+            })
+            .await
+            .map_err(|e| Error::new(5200, e.to_string()))?;
+        }
         let text = p["text"]
             .as_str()
             .ok_or_else(|| Error::new(4200, "missing parameter: text"))?
             .to_owned();
-        let expected = p["version"].as_str().map(str::to_owned);
         tokio::task::spawn_blocking(move || write_text(&path, &text, expected.as_deref()))
             .await
             .map_err(|e| Error::new(5200, e.to_string()))?
@@ -255,6 +264,73 @@ pub(super) fn write_text(path: &Path, text: &str, expected: Option<&str>) -> Res
     }))
 }
 
+/// The bytes of a `data:<mime>;base64,<payload>` URL.
+fn decode_data_url(value: &str) -> Result<Vec<u8>> {
+    let payload = value
+        .strip_prefix("data:")
+        .and_then(|rest| rest.split_once(";base64,"))
+        .map(|(_, payload)| payload)
+        .ok_or_else(|| Error::new(4200, "data_url must be a base64 data URL"))?;
+    // Base64 is 4/3 the size: refuse a payload too large before decoding it.
+    if payload.len() as u64 > READ_LIMIT / 3 * 4 + 4 {
+        return Err(Error::new(
+            4202,
+            format!("file exceeds {} MiB", READ_LIMIT / 1024 / 1024),
+        ));
+    }
+    base64::engine::general_purpose::STANDARD
+        .decode(payload)
+        .map_err(|_| Error::new(4200, "data_url is not valid base64"))
+}
+
+/// Whether `bytes` are a file of the format `path` names, for the binary
+/// formats the panel edits: a picture it draws on, or an Office file it changes.
+fn editable_bytes(path: &Path, bytes: &[u8]) -> bool {
+    match mime_of(path) {
+        "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg" => bytes.starts_with(&[0xff, 0xd8, 0xff]),
+        "image/webp" => bytes.len() > 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP",
+        mime if mime.contains("officedocument") => bytes.starts_with(b"PK\x03\x04"),
+        _ => false,
+    }
+}
+
+/// Replaces a picture or Office file the panel edited, refused like a text
+/// save when the file changed since `expected`, and refused for any other
+/// format or for bytes that are not that format.
+pub(super) fn write_bytes(path: &Path, bytes: &[u8], expected: Option<&str>) -> Result<Value> {
+    let _save = SAVES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if bytes.len() as u64 > READ_LIMIT {
+        return Err(Error::new(
+            4202,
+            format!("file exceeds {} MiB", READ_LIMIT / 1024 / 1024),
+        ));
+    }
+    if !editable_bytes(path, bytes) {
+        return Err(Error::new(
+            4202,
+            "only PNG, JPEG and WebP pictures and Word, Excel and PowerPoint files are saved here",
+        ));
+    }
+    let meta = fs::metadata(path)?;
+    let current = fs::read(path)?;
+    if let Some(expected) = expected
+        && version_of(&current) != expected
+    {
+        return Err(Error::new(4209, "the file changed since it was opened"));
+    }
+    replace(path, bytes, &meta)?;
+    let meta = fs::metadata(path)?;
+    Ok(json!({
+        "path": path,
+        "size": meta.len(),
+        "modified": modified_ms(&meta),
+        "version": version_of(bytes),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,6 +542,57 @@ mod tests {
             );
             assert_eq!(write_text(&path, "oops", None).unwrap_err().code, 4202);
         }
+    }
+
+    #[test]
+    fn a_picture_or_office_file_saves_whole_and_only_as_its_own_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = fs::canonicalize(dir.path()).unwrap();
+        let png = dir.join("shot.png");
+        fs::write(&png, b"\x89PNG\r\n\x1a\nfirst").unwrap();
+        let opened = read_payload(&png).unwrap()["version"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let url = format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(b"\x89PNG\r\n\x1a\ndrawn on")
+        );
+        let saved = write_bytes(&png, &decode_data_url(&url).unwrap(), Some(&opened)).unwrap();
+        assert_eq!(fs::read(&png).unwrap(), b"\x89PNG\r\n\x1a\ndrawn on");
+        assert_eq!(read_payload(&png).unwrap()["version"], saved["version"]);
+        // Saved from the version opened first: the bot's change is not overwritten.
+        assert_eq!(
+            write_bytes(&png, b"\x89PNG\r\n\x1a\nagain", Some(&opened))
+                .unwrap_err()
+                .code,
+            4209
+        );
+        // Bytes that are not a PNG never replace one.
+        assert_eq!(write_bytes(&png, b"GIF89a", None).unwrap_err().code, 4202);
+
+        let docx = dir.join("report.docx");
+        fs::write(&docx, b"PK\x03\x04old").unwrap();
+        assert!(write_bytes(&docx, b"PK\x03\x04new", None).is_ok());
+        assert_eq!(
+            write_bytes(&docx, b"not a zip", None).unwrap_err().code,
+            4202
+        );
+
+        // A format the panel does not edit is refused, whatever the bytes.
+        let pdf = dir.join("doc.pdf");
+        fs::write(&pdf, b"%PDF-1.4").unwrap();
+        assert_eq!(write_bytes(&pdf, b"%PDF-1.5", None).unwrap_err().code, 4202);
+        assert_eq!(fs::read(&pdf).unwrap(), b"%PDF-1.4");
+
+        assert_eq!(decode_data_url("not a url").unwrap_err().code, 4200);
+        assert_eq!(
+            decode_data_url("data:image/png;base64,***")
+                .unwrap_err()
+                .code,
+            4200
+        );
     }
 
     #[test]

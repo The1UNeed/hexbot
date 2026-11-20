@@ -1,21 +1,26 @@
 import { JsonRpcGatewayError } from '@hermes/shared'
-import { ArrowUp, Download, FileText } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Download, FileText } from 'lucide-react'
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 
 import { ScrollArea } from '../../components/ui/scroll-area'
-import { filesRead, filesWrite, type OpenedFile } from '../../lib/api'
+import { filesRead, filesWrite, filesWriteBytes, type OpenedFile } from '../../lib/api'
 import { cn } from '../../lib/cn'
 import { useBots } from '../../stores/bots'
+import { fileCommentsActions, useChatComments } from '../../stores/file-comments'
 import { useLiveSessionId } from '../../stores/sections'
 import { useTranscript } from '../../stores/transcripts'
 import { useUi } from '../../stores/ui'
 import { type FileTab, fileTab, visualsActions } from '../../stores/visuals'
 import { errorText } from '../bot-settings/shared'
 import { DocumentEditor } from '../panel/document-editor'
+import { CommentLayer, type CommentTarget, useTextSelection } from '../panel/files/comment-layer'
+import { CsvView, type SheetMode } from '../panel/files/csv-view'
+import { downloadBlob, downloadEntry, FileToolbar, ViewSwitch } from '../panel/files/file-toolbar'
+import { ImageEditor } from '../panel/files/image-editor'
+import type { Area } from '../panel/files/markup'
+import { DocxView, officeKind, PptxView, XlsxView } from '../panel/files/office-view'
 
 import type { FileTarget } from './shared-files'
-
-import { sendText } from './index'
 
 /** The bot's tools that change a file; when one finishes, an open file is read again. */
 export const FILE_TOOLS = new Set(['edit', 'patch', 'write', 'write_file'])
@@ -71,33 +76,25 @@ export async function closeTabs(toolIds: string[]) {
 
 /** Formatted as a document; any other text opens as plain text. */
 const DOCUMENT = /\.(md|markdown|txt)$/i
+/** Shown as a page, with its source a click away. */
+const PAGE = /\.(html?|svg)$/i
+/** Shown as a table. */
+const DELIMITED = /\.(csv|tsv)$/i
 
-interface Quick {
-  label: string
-  /** What the message asks, before the file is named. */
-  ask: string
-}
+/**
+ * Saves every open file's edit, as a message is about to go, so the bot reads
+ * what is on screen. A file whose edit does not save is shown, and false.
+ */
+export async function flushOpenFiles(): Promise<boolean> {
+  for (const [toolId, flush] of flushes) {
+    if (!(await flush())) {
+      visualsActions().activate(toolId)
 
-const DOCUMENT_TOOLS: Quick[] = [
-  { ask: 'Polish the writing in', label: 'Polish' },
-  { ask: 'Shorten', label: 'Shorten' },
-  { ask: 'Expand', label: 'Make longer' },
-  { ask: 'Fix the spelling and grammar in', label: 'Fix mistakes' }
-]
-
-const PLAIN_TOOLS: Quick[] = [
-  { ask: 'Fix the bugs in', label: 'Fix bugs' },
-  { ask: 'Add short, helpful comments to', label: 'Add comments' },
-  { ask: 'Tidy up the formatting of', label: 'Tidy up' }
-]
-
-/** The message a quick tool or the ask field sends, naming the file so the bot edits that one. */
-export function editRequest(ask: string, name: string, path?: string, editable = true): string {
-  if (!path) {
-    return `${ask}\n\nThis is about ${name}.`
+      return false
+    }
   }
 
-  return editable ? `${ask}\n\nEdit the file in place: \`${path}\`` : `${ask}\n\nFile: \`${path}\``
+  return true
 }
 
 function useOpenedFile(tab: FileTab, sessionId: string) {
@@ -209,7 +206,16 @@ function useOpenedFile(tab: FileTab, sessionId: string) {
     setFile(next)
   }
 
-  return { adopt, error, file, outgrown, saved, updated, working }
+  /** The user's own save of a picture or Office file, whole. */
+  const savedBytes = (dataUrl: string, version: string, modified: number, size: number) => {
+    saves.current += 1
+    shownVersion.current = version
+    setFile(current =>
+      current ? { ...current, data_url: dataUrl, modified, size, version } : current
+    )
+  }
+
+  return { adopt, error, file, outgrown, saved, savedBytes, updated, working }
 }
 
 /**
@@ -258,94 +264,42 @@ function useObjectUrl(dataUrl?: string): string | undefined {
   return url
 }
 
-function QuickTools({
-  botName,
-  disabled,
-  name,
-  onSend,
-  tools
-}: {
-  botName: string
-  disabled: boolean
-  /** The file, named in each quick tool's message. */
-  name: string
-  onSend: (ask: string) => Promise<void>
-  tools: Quick[]
-}) {
-  const [text, setText] = useState('')
-  const [sending, setSending] = useState(false)
-  const off = disabled || sending
+/** A web page or SVG file as it looks, in a frame that runs none of its scripts. */
+function PagePreview({ name, text }: { name: string; text: string }) {
+  const svg = /\.svg$/i.test(name)
 
-  const send = async (ask: string) => {
-    if (!ask.trim() || off) {
-      return
-    }
+  const url = useMemo(
+    () => URL.createObjectURL(new Blob([text], { type: svg ? 'image/svg+xml' : 'text/html' })),
+    [svg, text]
+  )
 
-    setSending(true)
+  useEffect(() => () => URL.revokeObjectURL(url), [url])
 
-    try {
-      await onSend(ask.trim())
-      setText('')
-    } catch {
-      // Not sent: the request stays in the field, and the editor shows why.
-    } finally {
-      setSending(false)
-    }
-  }
-
-  return (
-    <div className="relative px-3 pt-2.5 pb-3">
-      {tools.length ? (
-        <div aria-label="Quick tools" className="mb-2 flex flex-wrap gap-1.5" role="group">
-          {tools.map(tool => (
-            <button
-              className="hex-glass hex-glass-press hex-focus rounded-full px-2.5 py-1 text-[length:var(--text-meta)] font-medium text-foreground disabled:opacity-40"
-              disabled={off}
-              key={tool.label}
-              onClick={() => void send(`${tool.ask} ${name}.`)}
-              type="button"
-            >
-              {tool.label}
-            </button>
-          ))}
-        </div>
-      ) : null}
-      <form
-        className="hex-glass hex-glass-field flex items-center gap-1.5 rounded-full py-1 pr-1 pl-3.5"
-        onSubmit={event => {
-          event.preventDefault()
-          void send(text)
-        }}
-      >
-        <input
-          aria-label={`Ask ${botName} about this file`}
-          className="min-w-0 flex-1 bg-transparent text-[length:var(--text-secondary)] text-foreground outline-none placeholder:text-muted disabled:opacity-50"
-          disabled={off}
-          onChange={event => setText(event.target.value)}
-          placeholder={disabled ? `${botName} is working…` : `Ask ${botName} to change this`}
-          value={text}
-        />
-        <button
-          aria-label={`Ask ${botName}`}
-          className={cn(
-            'grid size-7 shrink-0 place-items-center rounded-full transition-colors',
-            text.trim() && !off ? 'bg-foreground text-background' : 'text-muted'
-          )}
-          disabled={!text.trim() || off}
-          type="submit"
-        >
-          <ArrowUp size={14} strokeWidth={2.5} />
-        </button>
-      </form>
-    </div>
+  return svg ? (
+    <img
+      alt={name}
+      className="mx-auto max-h-full max-w-full rounded-[12px] bg-white p-2"
+      src={url}
+    />
+  ) : (
+    <iframe
+      className="h-full min-h-[60vh] w-full rounded-[12px] bg-white"
+      sandbox=""
+      src={url}
+      title={name}
+    />
   )
 }
 
 /**
- * A file beside the chat. Text opens in the editor, saved as it is typed; the
- * quick tools ask the bot to change it, and each edit the bot makes shows as
- * it lands. A PDF opens in the viewer, a picture, video or audio file shows or
- * plays; anything else offers a download.
+ * A file beside the chat, shown and edited the way its kind wants: text in
+ * the editor; CSV and TSV as a table; web pages and SVG rendered with their
+ * source a click away; pictures marked up; Word, Excel and PowerPoint files
+ * as pages, sheets and slides with their text edited in place. Each edit
+ * saves a moment later, against the version it started from, so it never
+ * overwrites the bot's. Selecting text, cells or an area of a picture leaves
+ * a comment that goes with the next message. PDFs, video and audio show or
+ * play; anything else offers a download.
  */
 export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
   const selected = useUi(state => state.lastSection)
@@ -355,7 +309,7 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
   )
 
   const sessionId = useFileSession(tab)
-  const { adopt, error, file, outgrown, saved, updated, working } = useOpenedFile(tab, sessionId)
+  const { adopt, error, file, outgrown, saved, savedBytes, updated } = useOpenedFile(tab, sessionId)
   const objectUrl = useObjectUrl(file?.data_url)
   // The version the editor's text is based on. A refresh moves it only when the
   // editor takes the new text; while it holds an unsaved edit, a save names the
@@ -369,7 +323,7 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
     base.current = file.version
   }
 
-  // The editor's save: a request to the bot waits for the edit on screen to land first.
+  // The editor's save: a message to the bot waits for the edit on screen to land first.
   const flush = useRef<(() => Promise<boolean>) | null>(null)
   // Set when a save was refused because the bot changed the file. The edit stays
   // in the editor until the user chooses the bot's version, which mounts a fresh
@@ -378,6 +332,40 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
   const [loadError, setLoadError] = useState<null | string>(null)
   const [edition, setEdition] = useState(0)
   const editionRef = useRef(0)
+  const [sheetMode, setSheetMode] = useState<SheetMode>('table')
+  const [pageMode, setPageMode] = useState<'preview' | 'source'>('preview')
+
+  // Comments go to the chat the file was opened from.
+  const askable = tab.file.askable !== false
+  const chat = tab.file.sectionId ?? selected?.section ?? sessionId
+  const panel = useRef<HTMLDivElement>(null)
+  const [target, setTarget] = useTextSelection(panel, askable && shown)
+  const [commentOpen, setCommentOpen] = useState(false)
+  const [commentArea, setCommentArea] = useState<Area | null>(null)
+  const name = tab.title
+  const path = tab.file.path
+  const text = file?.text
+  const plain = !DOCUMENT.test(name)
+  const mime = file?.mime ?? tab.file.mime
+
+  const fileComments = useChatComments(chat).filter(
+    comment => (comment.path ?? comment.name) === (path ?? name)
+  )
+
+  const openComment = (next: CommentTarget, open: boolean, area: Area | null = null) => {
+    setCommentArea(area)
+    setCommentOpen(open)
+    setTarget(next)
+  }
+
+  const closeComment = () => {
+    setTarget(null)
+    setCommentArea(null)
+  }
+
+  const comment = askable
+    ? (next: CommentTarget, open: boolean) => openComment(next, open)
+    : undefined
 
   // Reads the file as it is now (the change may not have come from the bot's
   // steps), then shows it in a fresh editor. If the read fails, the edit stays.
@@ -407,39 +395,108 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
     }
   }, [tab.toolId])
 
-  const name = tab.title
-  const path = tab.file.path
-  const text = file?.text
-  const plain = !DOCUMENT.test(name)
-  const mime = file?.mime ?? tab.file.mime
+  const refused = (cause: unknown): never => {
+    if (cause instanceof JsonRpcGatewayError && cause.code === 4209) {
+      setConflict(true)
 
-  const ask = async (request: string) => {
-    if (flush.current && !(await flush.current())) {
-      // The editor says why the edit did not save; nothing is sent on stale text.
-      throw new Error('the edit on screen did not save')
+      throw new Error(
+        `${botName} changed this file while you edited it, so your edit was not saved.`
+      )
     }
 
-    await sendText(
-      sessionId,
-      tab.file.sectionId ?? selected?.section ?? null,
-      editRequest(request, name, path, text !== undefined)
-    )
+    throw cause
   }
 
-  const tools =
-    tab.file.askable === false ? null : (
-      <QuickTools
-        botName={botName}
-        disabled={working}
-        name={name}
-        onSend={ask}
-        tools={text === undefined ? [] : plain ? PLAIN_TOOLS : DOCUMENT_TOOLS}
-      />
-    )
+  /** Saves the text on screen, against the version it started from. */
+  const saveText = async (next: string) => {
+    // An editor the user replaced with the bot's version saves nothing.
+    if (!path || !file) {
+      return
+    }
 
-  let body: React.ReactNode
+    const own = editionRef.current
+
+    try {
+      const result = await filesWrite(sessionId, path, next, base.current ?? file.version)
+
+      if (own !== editionRef.current) {
+        return
+      }
+
+      base.current = result.version
+      saved(next, result.version, result.modified, result.size)
+    } catch (cause) {
+      refused(cause)
+    }
+  }
+
+  /** Saves a picture or Office file whole; answers its new version. */
+  const saveBytes = async (dataUrl: string): Promise<string> => {
+    if (!path || !file) {
+      throw new Error('This file cannot be saved here.')
+    }
+
+    try {
+      const result = await filesWriteBytes(sessionId, path, dataUrl, base.current ?? file.version)
+      base.current = result.version
+      savedBytes(dataUrl, result.version, result.modified, result.size)
+
+      return result.version
+    } catch (cause) {
+      return refused(cause)
+    }
+  }
+
+  const banner =
+    conflict || outgrown ? (
+      <div className="mx-3 mt-2 flex items-center gap-2 rounded-[12px] bg-foreground/[0.05] px-3 py-2 text-[length:var(--text-meta)]">
+        <span className="min-w-0 flex-1 text-muted">
+          {loadError ??
+            (outgrown
+              ? `${botName} changed this file, and it can no longer be edited here. Copy your edit if you want to keep it.`
+              : 'Copy your edit if you want to keep it.')}
+        </span>
+        <button
+          className="hex-focus shrink-0 rounded-full bg-foreground px-2.5 py-1 font-medium text-background"
+          onClick={() => void loadTheirs()}
+          type="button"
+        >
+          Load {botName}'s version
+        </button>
+      </div>
+    ) : null
+
+  const editor = (label?: ReactNode) =>
+    text !== undefined && path && file ? (
+      <DocumentEditor
+        fileName={name}
+        flushRef={flush}
+        inline
+        key={`${path}:${edition}`}
+        label={label}
+        onClose={() => undefined}
+        onFollow={() => {
+          base.current = latest.current?.version ?? base.current
+        }}
+        onSave={async next => {
+          if (edition !== editionRef.current) {
+            return
+          }
+
+          await saveText(next)
+        }}
+        plain={plain}
+        title={name}
+        value={text}
+      />
+    ) : null
+
+  let body: ReactNode
+  // Content with its own bar fills the panel; the rest scrolls in a plain one.
+  let own = true
 
   if (error && !file) {
+    own = false
     body = (
       <p
         className="m-4 rounded-[12px] bg-danger/10 px-3.5 py-2.5 text-[length:var(--text-secondary)] text-danger"
@@ -449,95 +506,109 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
       </p>
     )
   } else if (!file) {
+    own = false
     body = <p className="m-4 text-[length:var(--text-secondary)] text-muted">Opening {name}…</p>
   } else if (text !== undefined && path) {
-    return (
-      <div
-        aria-labelledby={`visual-tab-${tab.toolId}`}
-        className={cn('relative h-full min-h-0 flex-col', shown ? 'flex' : 'hidden')}
-        id={`visual-tabpanel-${tab.toolId}`}
-        role="tabpanel"
-      >
-        {error ? (
-          <p
-            className="mx-3 mt-2 rounded-[12px] bg-danger/10 px-3 py-2 text-[length:var(--text-meta)] text-danger"
-            role="alert"
-          >
-            {error}
-          </p>
-        ) : null}
-        {conflict || outgrown ? (
-          <div className="mx-3 mt-2 flex items-center gap-2 rounded-[12px] bg-foreground/[0.05] px-3 py-2 text-[length:var(--text-meta)]">
-            <span className="min-w-0 flex-1 text-muted">
-              {loadError ??
-                (outgrown
-                  ? `${botName} changed this file, and it can no longer be edited here. Copy your edit if you want to keep it.`
-                  : 'Copy your edit if you want to keep it.')}
-            </span>
-            <button
-              className="hex-focus shrink-0 rounded-full bg-foreground px-2.5 py-1 font-medium text-background"
-              onClick={() => void loadTheirs()}
-              type="button"
-            >
-              Load {botName}'s version
-            </button>
-          </div>
-        ) : null}
-        {updated ? (
-          <span className="hex-fade pointer-events-none absolute top-14 right-4 z-10 rounded-full bg-info/12 px-2.5 py-1 text-[length:var(--text-meta)] font-medium text-info">
-            Updated by {botName}
-          </span>
-        ) : null}
-        <DocumentEditor
-          fileName={name}
-          flushRef={flush}
-          footer={tools}
-          inline
-          key={`${path}:${edition}`}
-          onClose={() => undefined}
-          onFollow={() => {
-            base.current = latest.current?.version ?? base.current
-          }}
-          onSave={async next => {
-            // An editor the user replaced with the bot's version saves nothing.
-            if (edition !== editionRef.current) {
-              return
-            }
-
-            try {
-              const result = await filesWrite(sessionId, path, next, base.current ?? file.version)
-
-              base.current = result.version
-              saved(next, result.version, result.modified, result.size)
-            } catch (cause) {
-              if (cause instanceof JsonRpcGatewayError && cause.code === 4209) {
-                setConflict(true)
-
-                throw new Error(
-                  `${botName} changed this file while you typed, so your edit was not saved.`
-                )
-              }
-
-              throw cause
-            }
-          }}
-          plain={plain}
-          title={name}
-          value={text}
+    if (DELIMITED.test(name)) {
+      const switcher = (
+        <ViewSwitch
+          onChange={setSheetMode}
+          options={[
+            { label: 'Table', value: 'table' },
+            { label: 'Text', value: 'text' }
+          ]}
+          value={sheetMode}
         />
-      </div>
-    )
-  } else if (mime === 'application/pdf' && objectUrl) {
-    body = <iframe className="h-full w-full rounded-[12px] bg-white" src={objectUrl} title={name} />
-  } else if (mime.startsWith('image/') && objectUrl) {
+      )
+
+      body =
+        sheetMode === 'table' ? (
+          <CsvView
+            delimiter={/\.tsv$/i.test(name) ? '\t' : ','}
+            editable
+            flushRef={flush}
+            key={`${path}:${edition}`}
+            name={name}
+            onComment={comment}
+            onMode={setSheetMode}
+            onSave={saveText}
+            text={text}
+          />
+        ) : (
+          editor(switcher)
+        )
+    } else if (PAGE.test(name)) {
+      const switcher = (
+        <ViewSwitch
+          onChange={setPageMode}
+          options={[
+            { label: 'Preview', value: 'preview' },
+            { label: 'Source', value: 'source' }
+          ]}
+          value={pageMode}
+        />
+      )
+
+      body =
+        pageMode === 'preview' ? (
+          <div className="flex h-full min-h-0 flex-col">
+            <FileToolbar
+              menu={[downloadEntry(() => downloadBlob(name, new Blob([text], { type: mime })))]}
+            >
+              {switcher}
+            </FileToolbar>
+            <div className="min-h-0 flex-1 overflow-auto px-3 pb-3">
+              <PagePreview name={name} text={text} />
+            </div>
+          </div>
+        ) : (
+          editor(switcher)
+        )
+    } else {
+      body = editor()
+    }
+  } else if (file.data_url && officeKind(name, mime)) {
+    const kind = officeKind(name, mime)
+
+    const props = {
+      editable: Boolean(path),
+      file: { ...file, data_url: file.data_url },
+      flushRef: flush,
+      name,
+      onComment: comment,
+      onSave: saveBytes
+    }
+
+    body =
+      kind === 'docx' ? (
+        <DocxView key={`${path}:${edition}`} {...props} />
+      ) : kind === 'xlsx' ? (
+        <XlsxView key={`${path}:${edition}`} {...props} />
+      ) : (
+        <PptxView key={`${path}:${edition}`} {...props} />
+      )
+  } else if (mime.startsWith('image/') && mime !== 'image/svg+xml' && objectUrl) {
     body = (
-      <img
-        alt={name}
-        className="mx-auto max-h-full max-w-full rounded-[12px] object-contain"
+      <ImageEditor
+        botName={botName}
+        comments={fileComments}
+        editable={Boolean(path)}
+        flushRef={flush}
+        key={`${path ?? tab.toolId}:${edition}`}
+        mime={mime}
+        name={name}
+        onAttach={askable && chat ? next => fileCommentsActions().attach(chat, next) : undefined}
+        onComment={askable ? (next, area) => openComment(next, true, area) : undefined}
+        onSave={saveBytes}
         src={objectUrl}
+        version={file.version}
       />
     )
+  } else if (mime === 'application/pdf' && objectUrl) {
+    own = false
+    body = <iframe className="h-full w-full rounded-[12px] bg-white" src={objectUrl} title={name} />
   } else if (mime.startsWith('video/') && objectUrl) {
+    own = false
     body = (
       <video
         aria-label={name}
@@ -548,12 +619,14 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
       />
     )
   } else if (mime.startsWith('audio/') && objectUrl) {
+    own = false
     body = (
       <div className="grid h-full place-items-center p-4">
         <audio aria-label={name} className="w-full max-w-md" controls src={objectUrl} />
       </div>
     )
   } else {
+    own = false
     body = (
       <div className="m-4 grid place-items-center gap-3 rounded-[16px] bg-foreground/[0.04] px-5 py-10 text-center">
         <FileText className="text-muted" size={22} />
@@ -577,8 +650,9 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
   return (
     <div
       aria-labelledby={`visual-tab-${tab.toolId}`}
-      className={cn('h-full min-h-0 flex-col', shown ? 'flex' : 'hidden')}
+      className={cn('relative h-full min-h-0 flex-col', shown ? 'flex' : 'hidden')}
       id={`visual-tabpanel-${tab.toolId}`}
+      ref={panel}
       role="tabpanel"
     >
       {error && file ? (
@@ -589,14 +663,38 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
           {error}
         </p>
       ) : null}
-      {/* The preview runs under the floating ask field, as the editor's page does. */}
-      <ScrollArea
-        bottom={tools ?? undefined}
-        className="flex-1"
-        viewportClassName="overflow-auto p-1"
-      >
-        {body}
-      </ScrollArea>
+      {banner}
+      {updated ? (
+        <span className="hex-fade pointer-events-none absolute top-14 right-4 z-10 rounded-full bg-info/12 px-2.5 py-1 text-[length:var(--text-meta)] font-medium text-info">
+          Updated by {botName}
+        </span>
+      ) : null}
+      {own ? (
+        <div className="flex min-h-0 flex-1 flex-col">{body}</div>
+      ) : (
+        <ScrollArea className="flex-1" viewportClassName="overflow-auto p-1">
+          {body}
+        </ScrollArea>
+      )}
+      {askable && chat ? (
+        <CommentLayer
+          botName={botName}
+          onAdd={note => {
+            fileCommentsActions().add(chat, {
+              area: commentArea ?? undefined,
+              name,
+              note,
+              path,
+              quote: target?.quote,
+              where: target?.where
+            })
+            closeComment()
+          }}
+          onClose={closeComment}
+          open={commentOpen}
+          target={target}
+        />
+      ) : null}
     </div>
   )
 }

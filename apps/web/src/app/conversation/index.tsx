@@ -2,7 +2,7 @@ import 'katex/dist/katex.min.css'
 
 import { JsonRpcGatewayError } from '@hermes/shared'
 import { useNavigate, useParams, useRouter } from '@tanstack/react-router'
-import { ArrowDown, ChevronDown, Copy, PanelRight, Undo2, X } from 'lucide-react'
+import { ArrowDown, ChevronDown, Copy, PanelRight, Pencil, Undo2, X } from 'lucide-react'
 import {
   type CSSProperties,
   isValidElement,
@@ -67,6 +67,13 @@ import { useConnection } from '../../stores/connection'
 import { connectorsActions } from '../../stores/connectors'
 import { draftsActions } from '../../stores/drafts'
 import { useConversationFeelings, useEmotion } from '../../stores/emotions'
+import {
+  type FileComment,
+  fileCommentsActions,
+  useChatComments,
+  useFileComments,
+  withComments
+} from '../../stores/file-comments'
 import { holdCopy, stillHeld } from '../../stores/page-copies'
 import { useChatReactions } from '../../stores/reactions'
 import { useSearch } from '../../stores/search'
@@ -92,11 +99,12 @@ import { visualsActions } from '../../stores/visuals'
 
 import { AskingRow } from './asking-row'
 import { ClarifyCard } from './clarify-card'
+import { CommentChips } from './comment-chips'
 import { composerFieldClass, ComposerShell } from './composer'
 import { type DraftAttachment, DraftFiles, sentKind, useDraftFiles } from './draft-files'
 import { EmailDraftCard } from './email-draft-card'
 import { FileCard } from './file-card'
-import { filesOf, type FileTarget, mimeOf, openFile } from './file-tab'
+import { filesOf, type FileTarget, flushOpenFiles, mimeOf, openFile } from './file-tab'
 import { MediaView } from './media'
 import { NotificationsBanner } from './notifications-banner'
 import { PluginCard } from './plugin-card'
@@ -1454,32 +1462,6 @@ async function submitOrReopen(
 }
 
 /**
- * Sends a message to the chat from outside the composer, as the quick tools
- * beside an open file do: it shows as the user's message and goes through
- * the same submission and retry. It takes none of the composer's attached files.
- */
-export async function sendText(
-  sessionId: string,
-  sectionId: null | string,
-  text: string
-): Promise<boolean> {
-  const { target, epoch, daemon } = useConnection.getState()
-
-  const current = () =>
-    target === useConnection.getState().target &&
-    epoch === useConnection.getState().epoch &&
-    daemon?.install_id === useConnection.getState().daemon?.install_id
-
-  const pending = transcriptActions().appendUserMessage(sessionId, text, [])
-
-  if (sectionId) {
-    sectionsActions().markTouched(sectionId, text)
-  }
-
-  return submitOrReopen(sessionId, sectionId, text, { current, files: [], pending, uploads: [] })
-}
-
-/**
  * What the composer held for each message it sent, by input key. The field
  * clears when the bubble appears; a send that ends where neither its bubble
  * nor its card can retry it comes back to edit from here. The saved draft
@@ -1488,7 +1470,7 @@ export async function sendText(
  */
 const sentDrafts = new Map<
   string,
-  { files: DraftAttachment[]; section: null | string; text: string }
+  { comments: FileComment[]; files: DraftAttachment[]; section: null | string; text: string }
 >()
 
 /** The bot took it: its saved draft goes, unless something new was typed since. */
@@ -1570,6 +1552,20 @@ function Composer({
   // sends them again does so for that message.
   const draft = useDraftFiles(sending ? null : sessionId)
   const { files } = draft
+  // Comments left on files beside the chat go with the next message.
+  const chat = sectionId ?? sessionId
+  const comments = useChatComments(chat)
+  const outbox = useFileComments(state => (chat ? (state.outbox[chat]?.length ?? 0) : 0))
+
+  // A picture marked up beside the chat joins the composer's files.
+  useEffect(() => {
+    if (chat && outbox) {
+      draft.add(fileCommentsActions().takeFiles(chat))
+    }
+    // `draft.add` is new each render; each file is taken once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chat, outbox])
+
   // One page copy per file, so opening it again goes back to its tab.
   const copies = useRef(new Map<string, string>())
 
@@ -1589,13 +1585,19 @@ function Composer({
 
   const send = async () => {
     // A file still on its way, or one that did not get there, holds the message back.
-    if (sending || (!text.trim() && !files.length) || !draft.ready) {
+    if (sending || (!text.trim() && !files.length && !comments.length) || !draft.ready) {
       return
     }
 
     if (!sessionId) {
       setQueued(true)
 
+      return
+    }
+
+    // The bot reads each open file as it is on screen: its edit saves first.
+    // One that cannot save is shown, saying why, and the message waits.
+    if (!(await flushOpenFiles())) {
       return
     }
 
@@ -1665,8 +1667,10 @@ function Composer({
         }
       })
 
-      // Files sent without words say what the mobile app says for them.
-      const said = attachmentPrompt(text, files.length > 0)
+      // Files sent without words say what the mobile app says for them; the
+      // comments on files beside the chat follow the words.
+      const sentComments = chat ? fileCommentsActions().take(chat) : []
+      const said = withComments(attachmentPrompt(text, files.length > 0), sentComments)
       const pending = transcriptActions().appendUserMessage(sessionId, said, attachments)
 
       if (sectionId) {
@@ -1686,7 +1690,12 @@ function Composer({
       // with Retry if it does not, so the field clears at once. Older daemons
       // cannot say which send failed and keep the draft until one is taken.
       if (identified) {
-        sentDrafts.set(pending.inputId!, { files, section: sectionId, text })
+        sentDrafts.set(pending.inputId!, {
+          comments: sentComments,
+          files,
+          section: sectionId,
+          text
+        })
         setText('')
         draft.take()
         setSending(false)
@@ -1783,7 +1792,7 @@ function Composer({
     }
   }, [takenId])
 
-  const empty = !text.trim() && !files.length
+  const empty = !text.trim() && !files.length && !comments.length
 
   useEffect(() => {
     const held = strandedId ? sentDrafts.get(strandedId) : undefined
@@ -1795,6 +1804,10 @@ function Composer({
     sentDrafts.delete(strandedId)
     setText(held.text)
     draft.restore(held.files)
+
+    if (chat) {
+      fileCommentsActions().restore(chat, held.comments)
+    }
 
     if (sectionId) {
       draftsActions().set(sectionId, held.text)
@@ -1813,51 +1826,59 @@ function Composer({
   return (
     <ComposerShell
       above={
-        files.length ? (
-          <DraftFiles
-            files={files}
-            onOpen={({ file, id, preview, upload }) => {
-              const kind = sentKind(file)
+        files.length || comments.length ? (
+          <>
+            {chat && comments.length ? <CommentChips chat={chat} comments={comments} /> : null}
+            {files.length ? (
+              <DraftFiles
+                files={files}
+                onOpen={({ file, id, preview, upload }) => {
+                  const kind = sentKind(file)
 
-              if (kind === 'image' && preview) {
-                onImage(preview)
-              } else if (upload.state === 'ready' || upload.state === 'kept') {
-                // As the message will open it: a file the daemon keeps from
-                // there, a PDF, video or audio file, or one not sent yet,
-                // from this page's copy.
-                const local =
-                  upload.state === 'kept' || kind === 'pdf' || kind === 'video' || kind === 'audio'
+                  if (kind === 'image' && preview) {
+                    onImage(preview)
+                  } else if (upload.state === 'ready' || upload.state === 'kept') {
+                    // As the message will open it: a file the daemon keeps from
+                    // there, a PDF, video or audio file, or one not sent yet,
+                    // from this page's copy.
+                    const local =
+                      upload.state === 'kept' ||
+                      kind === 'pdf' ||
+                      kind === 'video' ||
+                      kind === 'audio'
 
-                onFile({
-                  mime: file.type || mimeOf(file.name),
-                  name: file.name,
-                  path: upload.state === 'ready' && !local ? upload.result.path : undefined,
-                  url: local ? copyOf(id, file) : undefined
-                })
-              }
-            }}
-            onRemove={id => {
-              // Its tab beside the chat goes with it: the daemon's copy is gone.
-              const item = files.find(file => file.id === id)
-              const copy = copies.current.get(id)
+                    onFile({
+                      mime: file.type || mimeOf(file.name),
+                      name: file.name,
+                      path: upload.state === 'ready' && !local ? upload.result.path : undefined,
+                      url: local ? copyOf(id, file) : undefined
+                    })
+                  }
+                }}
+                onRemove={id => {
+                  // Its tab beside the chat goes with it: the daemon's copy is gone.
+                  const item = files.find(file => file.id === id)
+                  const copy = copies.current.get(id)
 
-              if (item?.upload.state === 'ready' && item.upload.result.path) {
-                visualsActions().close(`file:${item.upload.result.path}`)
-              }
+                  if (item?.upload.state === 'ready' && item.upload.result.path) {
+                    visualsActions().close(`file:${item.upload.result.path}`)
+                  }
 
-              if (copy) {
-                visualsActions().close(`file:${copy}`)
-                copies.current.delete(id)
-              }
+                  if (copy) {
+                    visualsActions().close(`file:${copy}`)
+                    copies.current.delete(id)
+                  }
 
-              draft.remove(id)
-            }}
-            onRetry={draft.retry}
-          />
+                  draft.remove(id)
+                }}
+                onRetry={draft.retry}
+              />
+            ) : null}
+          </>
         ) : null
       }
       accessory={accessory}
-      canSend={(Boolean(text.trim()) || files.length > 0) && draft.ready}
+      canSend={(Boolean(text.trim()) || files.length > 0 || comments.length > 0) && draft.ready}
       onAttach={() => picker.current?.click()}
       onSend={() => void send()}
       sending={sending || queued}
@@ -2020,7 +2041,7 @@ function BotConversation() {
 
   // Stable, so a streaming reply re-renders only its own row.
   // A thread between bots is read-only for the user: its files open, but
-  // without quick tools that would post into it.
+  // without comments that would post into it.
   const openBeside = useCallback(
     (file: FileTarget) => {
       if (liveId) {
@@ -2827,7 +2848,7 @@ function BotConversation() {
       // Recall takes the stored copy away: the saved draft holds the message
       // until the bot takes it again, so a reload in between keeps it.
       if (!draftsActions().byId[sectionId]?.trim()) {
-        sentDrafts.set(key, { files: [], section: sectionId, text: input.text })
+        sentDrafts.set(key, { comments: [], files: [], section: sectionId, text: input.text })
         draftsActions().set(sectionId, input.text)
       }
       void (async () => {
@@ -3304,14 +3325,36 @@ function BotConversation() {
         onOpenChange={open => !open && setLightbox(null)}
         open={Boolean(lightbox)}
         toolbar={
-          <button
-            aria-label="Close image"
-            className="hex-glass hex-glass-press hex-focus grid size-9 shrink-0 place-items-center rounded-full text-foreground/70 hover:text-foreground"
-            onClick={() => setLightbox(null)}
-            type="button"
-          >
-            <X size={16} />
-          </button>
+          <>
+            {lightbox && liveId ? (
+              <button
+                className="hex-glass hex-glass-press hex-focus flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3.5 text-[length:var(--text-secondary)] font-medium text-foreground"
+                onClick={() => {
+                  // Marked up beside the chat, then added to the next message.
+                  const mime = /^data:([^;,]+)/.exec(lightbox)?.[1] ?? 'image/png'
+
+                  openBeside({
+                    mime,
+                    name: `Picture.${mime.split('/')[1] ?? 'png'}`,
+                    url: lightbox
+                  })
+                  setLightbox(null)
+                }}
+                type="button"
+              >
+                <Pencil size={14} />
+                Mark up
+              </button>
+            ) : null}
+            <button
+              aria-label="Close image"
+              className="hex-glass hex-glass-press hex-focus grid size-9 shrink-0 place-items-center rounded-full text-foreground/70 hover:text-foreground"
+              onClick={() => setLightbox(null)}
+              type="button"
+            >
+              <X size={16} />
+            </button>
+          </>
         }
       >
         <div className="grid max-h-[85dvh] place-items-center bg-black p-2">
