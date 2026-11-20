@@ -261,6 +261,18 @@ describe('a Word run', () => {
     ).toEqual(['rPr', 't:Name', 'tab', 't:Value', 'br', 't:next'])
   })
 
+  it('keeps a page break a page break', () => {
+    const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+    const doc = new DOMParser().parseFromString(
+      `<w:r xmlns:w="${W}"><w:t>Part one</w:t><w:br w:type="page"/><w:t>Part two</w:t></w:r>`,
+      'application/xml'
+    )
+
+    setRunText(doc.documentElement, W, 'Part 1\nPart 2')
+
+    expect(new XMLSerializer().serializeToString(doc)).toContain('<w:br w:type="page"/>')
+  })
+
   it('keeps its text before a picture that follows it', () => {
     const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 
