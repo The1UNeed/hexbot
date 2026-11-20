@@ -51,7 +51,7 @@ export function parseDelimited(text: string, delimiter: string): string[][] {
     }
   }
 
-  if (field !== '' || row.length) {
+  if (field !== '' || row.length || wasQuoted) {
     endRow()
   }
 

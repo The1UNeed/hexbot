@@ -1584,7 +1584,10 @@ function Composer({
   const flushing = useRef(false)
   const picker = useRef<HTMLInputElement>(null)
 
-  const send = async () => {
+  // The send that runs once open files are saved, with what the composer holds then.
+  const sendRef = useRef<() => Promise<void>>(async () => {})
+
+  const send = async (flushed = false) => {
     // A file still on its way, or one that did not get there, holds the message back.
     if (sending || (!text.trim() && !files.length && !comments.length) || !draft.ready) {
       return
@@ -1598,18 +1601,23 @@ function Composer({
 
     // The bot reads each open file as it is on screen: its edit saves first.
     // One that cannot save is shown, saying why, and the message waits. A
-    // second Send while the files save does nothing.
-    if (flushing.current) {
-      return
-    }
+    // second Send while the files save does nothing; the send itself then
+    // takes what the composer holds, typing done while it waited included.
+    if (!flushed) {
+      if (flushing.current) {
+        return
+      }
 
-    flushing.current = true
+      flushing.current = true
 
-    const saved = await flushOpenFiles().finally(() => {
-      flushing.current = false
-    })
+      const saved = await flushOpenFiles().finally(() => {
+        flushing.current = false
+      })
 
-    if (!saved) {
+      if (saved) {
+        await sendRef.current()
+      }
+
       return
     }
 
@@ -1746,6 +1754,8 @@ function Composer({
       }
     }
   }
+
+  sendRef.current = () => send(true)
 
   // A message sent while the chat opened goes once it is open and any file
   // added meanwhile is up.
@@ -3351,7 +3361,11 @@ function BotConversation() {
                 className="hex-glass hex-glass-press hex-focus flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3.5 text-[length:var(--text-secondary)] font-medium text-foreground"
                 onClick={() => {
                   // Marked up beside the chat, then added to the next message.
-                  const mime = /^data:([^;,]+)/.exec(lightbox.src)?.[1] ?? 'image/png'
+                  const named = lightbox.name ? mimeOf(lightbox.name) : ''
+
+                  const mime =
+                    /^data:([^;,]+)/.exec(lightbox.src)?.[1] ??
+                    (named.startsWith('image/') ? named : 'image/png')
 
                   openBeside({
                     mime,

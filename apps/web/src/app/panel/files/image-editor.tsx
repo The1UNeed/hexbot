@@ -187,7 +187,9 @@ export function ImageEditor({
     const next = new Image()
 
     next.onload = () => {
-      if (!live) {
+      // Marks drawn or saved while it decoded stay; their save meets the new
+      // version and the panel offers it instead of overwriting it.
+      if (!live || save.dirty()) {
         return
       }
 

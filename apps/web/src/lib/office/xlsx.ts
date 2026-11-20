@@ -453,7 +453,8 @@ export function setCells(
     const date = kind === 'date' ? dateToSerial(text) : null
 
     // A percent cell shows 25% for 0.25, and takes 30% back the same way.
-    const percent = kind === 'percent' ? /^\s*(-?(?:\d+\.?\d*|\.\d+))\s*%\s*$/.exec(text) : null
+    const percent =
+      kind === 'percent' ? /^\s*(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)\s*%\s*$/i.exec(text) : null
 
     if (text === '') {
       continue
