@@ -25,6 +25,9 @@ export function useAutosave(
   // Shown: an edit not saved yet, for a Save button.
   const [unsaved, setUnsaved] = useState(false)
   const pending = useRef(false)
+  // Text being typed in a cell or paragraph, not in the file yet: no save
+  // writes it, and none may make the file look saved while it is there.
+  const drafting = useRef(false)
   // A save on its way: what it wrote is not the file's version until it lands.
   const writing = useRef(false)
   const timer = useRef<number>(undefined)
@@ -78,23 +81,41 @@ export function useAutosave(
   }, [run])
 
   const schedule = useCallback(() => {
+    drafting.current = false
     pending.current = true
     setUnsaved(true)
     window.clearTimeout(timer.current)
     timer.current = window.setTimeout(() => void flush(), SAVE_DELAY)
   }, [flush])
 
-  /**
-   * An edit saved only by `flush`, as a picture is with Save, or one still
-   * being typed: an earlier save waiting on its timer waits for it too, so it
-   * cannot land first and leave the typing unguarded.
-   */
+  /** An edit saved only by `flush`, as a picture is with Save. */
   const mark = useCallback(() => {
-    window.clearTimeout(timer.current)
     pending.current = true
     setUnsaved(true)
     setStatus('idle')
   }, [])
+
+  /** Typing began: a save waiting on its timer waits for the typing to go into the file. */
+  const hold = useCallback(() => {
+    window.clearTimeout(timer.current)
+    drafting.current = true
+    setUnsaved(true)
+  }, [])
+
+  /** The typing ended with nothing to write: a save it held goes on. */
+  const settle = useCallback(() => {
+    if (!drafting.current) {
+      return
+    }
+
+    drafting.current = false
+
+    if (pending.current) {
+      timer.current = window.setTimeout(() => void flush(), SAVE_DELAY)
+    } else {
+      setUnsaved(false)
+    }
+  }, [flush])
 
   useEffect(() => {
     if (!flushRef) {
@@ -122,11 +143,13 @@ export function useAutosave(
 
   // An edit not saved yet, or one being saved: a new version of the file waits.
   return {
-    dirty: () => pending.current || writing.current,
+    dirty: () => pending.current || writing.current || drafting.current,
     error,
     flush,
+    hold,
     mark,
     schedule,
+    settle,
     status,
     unsaved
   }

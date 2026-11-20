@@ -76,6 +76,8 @@ export interface SheetGridProps {
    * new version of the file waits and the edit saves against the one it began on.
    */
   onDraft?: () => void
+  /** A cell edit ended with nothing to write: Escape, or the value as it was. */
+  onSettled?: () => void
   onInsertRow?: (at: number) => void
   onDeleteRows?: (from: number, to: number) => void
   onInsertColumn?: (at: number) => void
@@ -104,6 +106,7 @@ export function SheetGrid({
   onDeleteColumns,
   onDeleteRows,
   onDraft,
+  onSettled,
   onInsertColumn,
   onInsertRow,
   place,
@@ -173,6 +176,7 @@ export function SheetGrid({
   const cancel = () => {
     cancelled.current = true
     setEditing(null)
+    onSettled?.()
     grid.current?.focus({ preventScroll: true })
   }
 
@@ -192,6 +196,8 @@ export function SheetGrid({
 
     if (editing && editing.value !== source(editing.cell)) {
       onChange([{ cell: editing.cell, value: editing.value }])
+    } else {
+      onSettled?.()
     }
 
     setEditing(null)

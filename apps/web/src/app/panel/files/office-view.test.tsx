@@ -5,6 +5,7 @@ import { readDocx } from '../../../lib/office/docx'
 import { dataUrlOf, OfficePackage } from '../../../lib/office/package'
 import { readPptx } from '../../../lib/office/pptx'
 import { docx, pptx } from '../../../lib/office/test-fixtures'
+import { holdCopy } from '../../../stores/page-copies'
 
 import { DocxView, POWERPOINT, PptxView, WORD } from './office-view'
 
@@ -118,6 +119,20 @@ describe('a Word paragraph left before its text went back into the file', () => 
     expect(second.kind === 'paragraph' && second.views.map(item => item.text).join('')).toBe(
       'Bold and typed.'
     )
+  })
+})
+
+describe('a Word file only this page holds', () => {
+  it('opens from the page copy behind its object URL', async () => {
+    const created = vi.fn(() => 'blob:test-launch-plan')
+
+    Object.assign(URL, { createObjectURL: created, revokeObjectURL: vi.fn() })
+    const url = holdCopy(new Blob([docx().save() as BlobPart], { type: WORD }))
+    const { flushRef, props: view } = props(url)
+
+    render(<DocxView {...view} flushRef={flushRef} />)
+
+    expect(await screen.findByText('Bold')).toBeInTheDocument()
   })
 })
 

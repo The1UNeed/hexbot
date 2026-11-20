@@ -1,3 +1,4 @@
+import { Download } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { ScrollArea } from '../../../components/ui/scroll-area'
@@ -20,6 +21,7 @@ import {
   setSlideText
 } from '../../../lib/office/pptx'
 import { cellLocked, cellSource, readXlsx, setCells } from '../../../lib/office/xlsx'
+import { heldFile } from '../../../stores/page-copies'
 import { blobFromDataUrl } from '../../conversation/file-tab'
 
 import { statusText, useAutosave } from './autosave'
@@ -87,9 +89,17 @@ function useOfficePackage(
     base.current = await onSave(dataUrlOf(pkg.save(), mime))
   }, flushRef)
 
-  const open = useCallback((dataUrl: string) => {
+  // A file only this page holds (sent to a daemon from before part uploads)
+  // comes as an object URL; its bytes are read from the page's own copy.
+  const open = useCallback(async (url: string) => {
     try {
-      setPkg(OfficePackage.fromDataUrl(dataUrl))
+      const held = url.startsWith('blob:') ? heldFile(url) : undefined
+
+      setPkg(
+        held
+          ? new OfficePackage(new Uint8Array(await held.arrayBuffer()))
+          : OfficePackage.fromDataUrl(url)
+      )
       setFailed(false)
     } catch {
       setFailed(true)
@@ -103,7 +113,7 @@ function useOfficePackage(
     }
 
     base.current = file.version
-    open(file.data_url)
+    void open(file.data_url)
     onFollow(file.version)
     // Only a new version reopens the file.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -122,7 +132,7 @@ function useOfficePackage(
   const download = () => {
     const blob = pkg
       ? new Blob([pkg.save() as BlobPart], { type: mime })
-      : blobFromDataUrl(file.data_url)
+      : (heldFile(file.data_url) ?? blobFromDataUrl(file.data_url))
 
     if (blob) {
       downloadBlob(file.name, blob)
@@ -132,11 +142,21 @@ function useOfficePackage(
   return { changed, download, failed, pkg, revision, save }
 }
 
-function Unreadable({ name }: { name: string }) {
+function Unreadable({ name, onDownload }: { name: string; onDownload: () => void }) {
   return (
-    <p className="m-4 rounded-[12px] bg-foreground/[0.04] px-4 py-3 text-[length:var(--text-secondary)] text-muted">
-      {name} could not be opened here. Download it to open it in its own app.
-    </p>
+    <div className="m-4 flex items-center gap-3 rounded-[12px] bg-foreground/[0.04] px-4 py-3 text-[length:var(--text-secondary)] text-muted">
+      <span className="min-w-0 flex-1">
+        {name} could not be opened here. Download it to open it in its own app.
+      </span>
+      <button
+        className="hex-focus inline-flex shrink-0 items-center gap-1.5 rounded-full bg-foreground/[0.06] px-3 py-1.5 font-medium text-foreground hover:bg-foreground/[0.1]"
+        onClick={onDownload}
+        type="button"
+      >
+        <Download size={14} />
+        Download
+      </button>
+    </div>
   )
 }
 
@@ -196,7 +216,7 @@ export function DocxView(props: OfficeViewProps) {
   }, [opened])
 
   if (failed) {
-    return <Unreadable name={props.name} />
+    return <Unreadable name={props.name} onDownload={download} />
   }
 
   const page = doc?.page ?? { margin: 96, width: 816 }
@@ -245,6 +265,7 @@ export function DocxView(props: OfficeViewProps) {
                   }
                 : undefined
             }
+            onSettled={save.settle}
             onSplit={(before, after, run) => {
               if (!pkg) {
                 return
@@ -254,7 +275,7 @@ export function DocxView(props: OfficeViewProps) {
               setFocus({ element: next, offset: 0 })
               changed()
             }}
-            onTyping={save.mark}
+            onTyping={save.hold}
             pxPerPt={4 / 3}
             runs={block.views}
             style={{
@@ -324,7 +345,7 @@ export function DocxView(props: OfficeViewProps) {
             {blocks(doc.blocks)}
           </div>
         ) : pkg ? (
-          <Unreadable name={props.name} />
+          <Unreadable name={props.name} onDownload={download} />
         ) : (
           <p className="m-4 text-[length:var(--text-secondary)] text-muted">
             Opening {props.name}…
@@ -353,7 +374,7 @@ export function XlsxView(props: OfficeViewProps) {
   )
 
   if (failed) {
-    return <Unreadable name={props.name} />
+    return <Unreadable name={props.name} onDownload={download} />
   }
 
   const sheet = book?.sheets[Math.min(sheetIndex, (book?.sheets.length ?? 1) - 1)]
@@ -391,7 +412,8 @@ export function XlsxView(props: OfficeViewProps) {
                 changed()
               }}
               onComment={props.onComment}
-              onDraft={props.editable ? save.mark : undefined}
+              onDraft={props.editable ? save.hold : undefined}
+              onSettled={save.settle}
               place={book.sheets.length > 1 ? `on ${sheet.name}` : undefined}
               rows={sheet.rows}
               sourceOf={cell => cellSource(pkg, sheet, cell.row, cell.col)}
@@ -424,7 +446,7 @@ export function XlsxView(props: OfficeViewProps) {
           ) : null}
         </>
       ) : pkg ? (
-        <Unreadable name={props.name} />
+        <Unreadable name={props.name} onDownload={download} />
       ) : (
         <p className="m-4 text-[length:var(--text-secondary)] text-muted">Opening {props.name}…</p>
       )}
@@ -437,6 +459,7 @@ export function XlsxView(props: OfficeViewProps) {
 function ShapeText({
   editable,
   onCommit,
+  onSettled,
   onTyping,
   paragraphs,
   pxPerPt,
@@ -444,6 +467,7 @@ function ShapeText({
 }: {
   editable: boolean
   onCommit: (paragraph: PptxParagraph, texts: string[]) => void
+  onSettled: () => void
   onTyping: () => void
   paragraphs: PptxParagraph[]
   pxPerPt: number
@@ -461,6 +485,7 @@ function ShapeText({
           editable={editable}
           key={keyOf(paragraph.element)}
           onCommit={texts => onCommit(paragraph, texts)}
+          onSettled={onSettled}
           onTyping={onTyping}
           pxPerPt={pxPerPt}
           runs={paragraph.views}
@@ -481,6 +506,7 @@ function Slide({
   editable,
   height,
   onCommit,
+  onSettled,
   onTyping,
   slide,
   scale,
@@ -489,6 +515,7 @@ function Slide({
   editable: boolean
   height: number
   onCommit: (slide: PptxSlide, paragraph: PptxParagraph, texts: string[]) => void
+  onSettled: () => void
   onTyping: () => void
   slide: PptxSlide
   /** CSS px per EMU. */
@@ -546,6 +573,7 @@ function Slide({
                     <ShapeText
                       editable={editable}
                       onCommit={(paragraph, texts) => onCommit(slide, paragraph, texts)}
+                      onSettled={onSettled}
                       onTyping={onTyping}
                       paragraphs={cell}
                       pxPerPt={pxPerPt}
@@ -589,6 +617,7 @@ function Slide({
         <ShapeText
           editable={editable}
           onCommit={(paragraph, texts) => onCommit(slide, paragraph, texts)}
+          onSettled={onSettled}
           onTyping={onTyping}
           paragraphs={item.paragraphs ?? []}
           pxPerPt={pxPerPt}
@@ -657,7 +686,7 @@ export function PptxView(props: OfficeViewProps) {
   }, [opened])
 
   if (failed) {
-    return <Unreadable name={props.name} />
+    return <Unreadable name={props.name} onDownload={download} />
   }
 
   const scale = deck && width ? width / deck.width : 0
@@ -692,14 +721,15 @@ export function PptxView(props: OfficeViewProps) {
                   changed()
                 }
               }}
-              onTyping={save.mark}
+              onSettled={save.settle}
+              onTyping={save.hold}
               scale={scale}
               slide={slide}
               width={deck.width}
             />
           ))
         ) : pkg && !deck ? (
-          <Unreadable name={props.name} />
+          <Unreadable name={props.name} onDownload={download} />
         ) : (
           <p className="m-4 text-[length:var(--text-secondary)] text-muted">
             Opening {props.name}…
