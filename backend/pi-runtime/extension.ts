@@ -67,6 +67,15 @@ function fileOperations(ctx: any, callId: string, tool: string, target: string, 
   };
 }
 
+/** A call that shows the user a card in the chat: a question, a draft, a sign-in or a plugin. */
+function showsCard(tool: string, input: any): boolean {
+  const action = input?.action;
+  return tool === 'clarify'
+    || (tool === 'hexbot_mail' && action === 'draft')
+    || (tool === 'hexbot_passwords' && action === 'ask')
+    || (tool === 'hexbot_plugins' && ['install', 'enable', 'setup'].includes(action));
+}
+
 export default function hexbot(pi: any) {
   probeIsolation();
   const config = JSON.parse(readFileSync(process.env.HEXBOT_SESSION_CONFIG!, 'utf8'));
@@ -212,6 +221,11 @@ export default function hexbot(pi: any) {
   const wrapped = new Set<string>();
   const sessionAllowed = new Set<string>();
   const gate = async (event: any, ctx: any) => {
+    // A card the user answers in the chat comes from the bot's own call, never
+    // from code: only its own call keeps the answered card in the chat's history.
+    if (event.parentToolCallId && showsCard(event.toolName, event.input)) {
+      return {block: true, reason: `Call ${event.toolName} yourself, not from code: the user answers it on a card in the chat.`};
+    }
     const allowed: AllowedCall = {mode: live.approvalMode, cwd: live.cwd ?? config.cwd, level: levelFor(event.input)};
     const denial = await check(event, ctx, call => Object.assign(allowed, call));
     if (!denial && event.toolCallId && wrapped.has(event.toolName)) allowedCalls.set(event.toolCallId, allowed);
@@ -586,14 +600,15 @@ export default function hexbot(pi: any) {
       label: tool.label ?? tool.name,
       description: tool.description,
       parameters: tool.parameters ?? tool.inputSchema ?? { type: 'object', properties: {} },
-      async execute(_id: string, args: any, signal: AbortSignal | undefined, _update: any, ctx: any) {
+      async execute(id: string, args: any, signal: AbortSignal | undefined, _update: any, ctx: any) {
         if (signal?.aborted) throw new Error('Tool interrupted');
         if (tool.name === 'clarify') {
           if (!args.question && !args.questions?.length) throw new Error('A question is required');
           const answer = await ctx.ui.input('__HEXBOT_CLARIFY__' + JSON.stringify(args));
           return { content: [{ type: 'text', text: answer ?? 'The question was cancelled.' }], details: {} };
         }
-        const reply = await ctx.ui.input('__HEXBOT_TOOL__' + JSON.stringify({ name: tool.name, args }), undefined, { signal });
+        // The call's id goes along, so a card the tool shows names the call it belongs to.
+        const reply = await ctx.ui.input('__HEXBOT_TOOL__' + JSON.stringify({ name: tool.name, args, id }), undefined, { signal });
         if (reply === undefined) throw new Error('Tool interrupted');
         const result = JSON.parse(reply);
         if (result.error) throw new Error(result.error);

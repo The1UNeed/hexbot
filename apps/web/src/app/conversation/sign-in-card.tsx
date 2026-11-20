@@ -54,7 +54,12 @@ export function SignInCard({ approval, form }: { approval: ApprovalRequest; form
     <ConnectCard
       action={
         open ? null : (
-          <Button className="rounded-full" onClick={() => setOpen(true)} size="sm" variant="primary">
+          <Button
+            className="rounded-full"
+            onClick={() => setOpen(true)}
+            size="sm"
+            variant="primary"
+          >
             Sign in
           </Button>
         )
@@ -67,8 +72,8 @@ export function SignInCard({ approval, form }: { approval: ApprovalRequest; form
       label={`Sign in to ${form.title}`}
       status={
         approval.decision ? (
-          <CardStatus done={approval.decision !== 'deny'}>
-            {approval.decision === 'deny' ? 'Not now' : 'Saved'}
+          <CardStatus done={approval.decision !== 'deny' && !approval.failed}>
+            {approval.decision === 'deny' ? 'Not now' : approval.failed ? "Didn't work" : 'Saved'}
           </CardStatus>
         ) : null
       }

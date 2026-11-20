@@ -92,8 +92,12 @@ export function PluginCard({ approval, form }: { approval: ApprovalRequest; form
   }
 
   const status = approval.decision ? (
-    <CardStatus done={approval.decision !== 'deny'}>
-      {approval.decision === 'deny' ? 'Not now' : DONE[form.action]}
+    <CardStatus done={approval.decision !== 'deny' && !approval.failed}>
+      {approval.decision === 'deny'
+        ? 'Not now'
+        : approval.failed
+          ? "Didn't work"
+          : DONE[form.action]}
     </CardStatus>
   ) : null
 

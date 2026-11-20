@@ -674,6 +674,53 @@ async fn a_bot_asks_for_a_plugins_keys_on_a_card() {
         "echo-secret"
     );
 
+    // A failure after the user agreed says so, so the apps show the card
+    // again from history as one that didn't work.
+    let task = tool(json!({
+        "action": "install",
+        "name": "echo",
+        "mcp": {"command": "node", "args": ["echo.js"]},
+    }));
+    let shown = card(&mut events).await;
+    respond(&shown, json!({})).await.unwrap();
+    let failed = task.await.unwrap().unwrap_err();
+    assert_eq!(failed.code, 4208);
+    assert!(
+        failed
+            .message
+            .starts_with("The user agreed on the card, but it didn't work: "),
+        "{}",
+        failed.message
+    );
+
+    // A card names the Pi tool call that showed it, so the apps tell it from
+    // the card they rebuild from history. Called directly, a tool has none.
+    assert!(shown.get("tool_id").is_none());
+    let named = json!({
+        "name": "hexbot_plugins",
+        "args": {"action": "install", "name": "named", "mcp": {"command": "node", "args": ["echo.js"]}},
+        "id": "call-7",
+    });
+    runtime
+        .event(
+            &s,
+            json!({"type":"extension_ui_request","id":"probe:named","method":"input","title":format!("__HEXBOT_TOOL__{named}")}),
+        )
+        .unwrap();
+    let shown = card(&mut events).await;
+    assert_eq!(shown["tool_id"], "call-7");
+    // Said no to, the card leaves its tool nothing to finish for Stop to wait on.
+    runtime
+        .call(
+            "alice",
+            "approval.respond",
+            &json!({"session_id":s.id,"request_id":shown["request_id"],"choice":"deny"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(s.state.lock().unwrap().finishing.is_empty());
+
     // A server that quotes the token it refused: the test error the bot
     // reads, and the one saved for later, leave the token out.
     let script = home.path().join("refuser.js");

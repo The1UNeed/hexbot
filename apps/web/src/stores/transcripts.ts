@@ -20,6 +20,7 @@ import {
   sectionsTouch
 } from '../lib/api'
 import { type NotifyInput, notifyUser } from '../lib/notify'
+import { agreedThenFailed } from '../lib/settled-cards'
 import { toMillis } from '../lib/time'
 import type {
   ApprovalChoice,
@@ -104,6 +105,12 @@ export interface Transcript {
    * names one is older than that event and cannot bring the card back.
    */
   settled?: string[]
+  /**
+   * Cards history rebuilt that already stood in for a live copy, as
+   * `messageId:requestId`, so a later read never lets one stand in for
+   * another card. One per card replaced in this session, so it stays small.
+   */
+  replaced?: string[]
   status: null | StatusLine
   /** Id of the assistant message currently receiving deltas. */
   streamingMessageId: null | string
@@ -166,6 +173,8 @@ export interface ApprovalRequestPayload {
   reason?: string
   request_id?: string
   tool?: string
+  /** The tool call that showed the card, when the daemon knows it. */
+  tool_id?: string
 }
 
 /**
@@ -502,6 +511,79 @@ function settledCard(transcript: Transcript, requestId: string): Transcript {
 }
 
 /**
+ * History rebuilds an answered card under the message whose tool showed it.
+ * Once it has, the live copy goes, so the card shows once. A live card names
+ * the tool call that showed it, so it goes only for the card rebuilt from
+ * that call in the same message (or turn). From a daemon that doesn't name
+ * it, it goes only when one card of the same kind, answer and subject, from
+ * the same message (or turn), is on each side. Each rebuilt card stands in
+ * once, across reads. Anything else stays live: shown twice beats gone.
+ */
+function withoutRestoredCards(
+  transcript: Pick<Transcript, 'approvals' | 'replaced'>,
+  messages: Message[]
+): Pick<Transcript, 'approvals' | 'replaced'> {
+  const used = new Set(transcript.replaced)
+  const occurrence = (card: ApprovalRequest) => `${card.messageId ?? ''}:${card.requestId}`
+
+  const restored = messages
+    .flatMap(message => message.approvals ?? [])
+    .filter(card => !used.has(occurrence(card)))
+
+  const answered = transcript.approvals.filter(live => live.decision && live.form)
+
+  // From the same message, or the same turn when either doesn't know its message.
+  const sameSource = (card: ApprovalRequest, live: ApprovalRequest) =>
+    card.messageId && live.messageId
+      ? card.messageId === live.messageId
+      : Boolean(live.turnId) && card.turnId === live.turnId
+
+  const alike = (card: ApprovalRequest, live: ApprovalRequest) =>
+    !live.toolId &&
+    card.form?.kind === live.form?.kind &&
+    card.decision === (live.decision === 'deny' ? 'deny' : 'once') &&
+    names(card) === names(live) &&
+    sameSource(card, live)
+
+  const covered = new Set<ApprovalRequest>()
+
+  for (const live of answered) {
+    const exact = live.toolId
+      ? restored.filter(card => card.requestId === live.toolId && sameSource(card, live))
+      : restored.filter(card => alike(card, live))
+
+    const unique =
+      exact.length === 1 &&
+      (live.toolId || answered.filter(other => alike(exact[0]!, other)).length === 1)
+
+    if (unique && !used.has(occurrence(exact[0]!))) {
+      used.add(occurrence(exact[0]!))
+      covered.add(live)
+    }
+  }
+
+  return covered.size
+    ? {
+        approvals: transcript.approvals.filter(live => !covered.has(live)),
+        replaced: [...used]
+      }
+    : { approvals: transcript.approvals, replaced: transcript.replaced }
+}
+
+/** What a card is for: the plugin and change, the sign-in's site, or the email's subject as it went. */
+function names(card: ApprovalRequest) {
+  const form = card.form
+
+  return form?.kind === 'plugin'
+    ? `${form.id} ${form.action}`
+    : form?.kind === 'sign_in'
+      ? form.site || form.title
+      : form?.kind === 'email_draft'
+        ? (card.outcome?.draft.subject ?? form.subject)
+        : undefined
+}
+
+/**
  * A read settles what was shown before it began and missed its ending, such
  * as an answer from another app during a disconnect: a card the daemon no
  * longer waits on goes, and a turn it says is over ends. Answered cards stay,
@@ -757,6 +839,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
                 ...existing,
                 ...restored,
                 sectionId,
+                ...withoutRestoredCards(existing, restored.messages),
                 clarifies: existing.clarifies.filter(clarifyWaiting)
               })
             }
@@ -780,7 +863,10 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
             ...state.bySession,
             [sessionId]: {
               ...emptyTranscript(sessionId, sectionId),
-              approvals: existing?.approvals ?? [],
+              ...withoutRestoredCards(
+                { approvals: existing?.approvals ?? [], replaced: existing?.replaced },
+                messages
+              ),
               clarifies: (existing?.clarifies ?? []).filter(clarifyWaiting),
               settled: existing?.settled,
               context: existing?.context ?? null,
@@ -1012,6 +1098,30 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       const result = payload.result ?? payload.result_text ?? null
       const failed = typeof result === 'object' && result !== null && 'error' in result
 
+      // The card it showed says so when the work the user agreed to failed,
+      // as the card rebuilt from history will.
+      if (toolId && agreedThenFailed({ result, status: failed ? 'error' : 'ok' })) {
+        update(sessionId, transcript => {
+          // The card from this very call: a tool id can repeat in a later turn.
+          const source = transcript.identity?.messageId
+          const turn = transcript.identity?.turnId
+
+          return {
+            ...transcript,
+            approvals: transcript.approvals.map(card =>
+              card.toolId === toolId &&
+              card.decision &&
+              card.decision !== 'deny' &&
+              (card.messageId && source
+                ? card.messageId === source
+                : Boolean(turn) && card.turnId === turn)
+                ? { ...card, failed: true }
+                : card
+            )
+          }
+        })
+      }
+
       update(sessionId, transcript => {
         const source = transcript.identity?.messageId
         const turn = transcript.identity?.turnId
@@ -1237,6 +1347,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         receivedAt: Date.now(),
         requestId,
         sessionId,
+        ...(payload.tool_id && { toolId: payload.tool_id }),
         toolName: payload.tool
       }
 

@@ -58,7 +58,15 @@ export function EmailDraftCard({
     to: splitAddresses(to)
   }
   const nobody = draft.to.length + draft.cc.length + draft.bcc.length === 0
-  const decided = sent ?? (request.decision === 'deny' ? 'deny' : request.decision ? 'send' : null)
+  const decided =
+    sent ??
+    (request.decision === 'deny'
+      ? 'deny'
+      : request.decision
+        ? (request.outcome?.mail_action ?? 'send')
+        : null)
+  // Another app may have sent it with its own edits: show what went.
+  const went = request.outcome?.draft ?? draft
 
   // Settled only once the daemon took the answer; a failure keeps the draft.
   const answer = async (action: 'deny' | 'save' | 'send') => {
@@ -93,9 +101,9 @@ export function EmailDraftCard({
             }
           />
         }
-        subtitle={draft.to.length ? `To ${draft.to.join(', ')}` : undefined}
+        subtitle={went.to.length ? `To ${went.to.join(', ')}` : undefined}
         testID={`email-draft-${id}`}
-        title={subject || 'No subject'}
+        title={went.subject || 'No subject'}
       />
     )
   }

@@ -159,14 +159,16 @@ impl Runtime {
                         "update": existing.is_some(),
                     },
                 });
+                // The apps show the closed card again from these first words (settled-cards.ts in apps/web).
                 let Some(answer) = self.ask_native(s, request, true).await? else {
                     return Err(Error::new(
                         4302,
                         "The user closed the sign-in card. Ask what they would like to do instead.",
                     ));
                 };
-                let typed: Value = serde_json::from_str(&answer)
-                    .map_err(|_| Error::new(5201, "The sign-in card sent no login."))?;
+                let typed: Value = serde_json::from_str(&answer).map_err(|_| {
+                    after_agreeing(Error::new(5201, "The sign-in card sent no login."))
+                })?;
                 let mut fields = json!({
                     "title": title,
                     "url": url,
@@ -176,7 +178,8 @@ impl Runtime {
                 if let Some(login) = &existing {
                     fields["id"] = login["id"].clone();
                 }
-                let login = crate::passwords::save(&self.home, owner, &fields)?;
+                let login =
+                    crate::passwords::save(&self.home, owner, &fields).map_err(after_agreeing)?;
                 self.passwords_changed(owner);
                 Ok(json!({
                     "id": login["id"],

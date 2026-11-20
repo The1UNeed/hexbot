@@ -217,6 +217,58 @@ describe('history projection', () => {
     expect(theirs?.attachments).toEqual([])
   })
 
+  it('brings back a sent draft card under the message whose tool showed it', () => {
+    // The rows the daemon stores for "write the admissions email": the draft
+    // call, the user sending it from the card, then the bot's reply.
+    const messages = messagesFromHistory([
+      { role: 'user', row_id: 'u1', text: 'Write to admissions', turn_id: 't' },
+      {
+        role: 'assistant',
+        row_id: 'a1',
+        text: '',
+        tool_calls: [
+          {
+            function: {
+              arguments:
+                '{"action":"draft","subject":"Report cards","body":"Dear Admissions Team,"}',
+              name: 'hexbot_mail'
+            },
+            id: 'm1',
+            type: 'function'
+          }
+        ],
+        turn_id: 't'
+      },
+      {
+        name: 'hexbot_mail',
+        role: 'tool',
+        text: '{"account":"microsoft","body":"Dear Admissions Team,","cc":[],"sent":true,"subject":"Report cards","to":["admission@example.com"]}',
+        tool_call_id: 'm1',
+        tool_id: 'm1',
+        turn_id: 't'
+      },
+      { role: 'assistant', row_id: 'a2', text: 'Sent to the admissions team.', turn_id: 't' }
+    ] as Parameters<typeof messagesFromHistory>[0])
+
+    // The card ends its message, as it does live, so it sits before the reply.
+    expect(messages.map(message => message.text)).toEqual([
+      'Write to admissions',
+      '',
+      'Sent to the admissions team.'
+    ])
+    expect(messages[1]?.approvals).toMatchObject([
+      {
+        decision: 'once',
+        form: { kind: 'email_draft', service: 'microsoft', subject: 'Report cards' },
+        messageId: 'a1',
+        outcome: { draft: { to: ['admission@example.com'] }, mail_action: 'send' },
+        requestId: 'm1',
+        turnId: 't'
+      }
+    ])
+    expect(messages[2]?.approvals).toBeUndefined()
+  })
+
   it('brings back each answered question under the message that asked it', () => {
     const ask = (id: string, args: object) => ({
       role: 'assistant',

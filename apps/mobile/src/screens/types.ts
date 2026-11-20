@@ -91,6 +91,10 @@ export interface ApprovalRequestView {
   choices: ApprovalChoice[]
   /** Set once answered; the card stays and shows the answer. */
   decision?: ApprovalChoice | null
+  /** The user agreed, but what the card was for didn't work. */
+  failed?: boolean
+  /** What a draft card did once the mailbox took it, and the email as it went. */
+  outcome?: import('../../../web/src/lib/types').EmailDraftAnswer
   /** A sign-in or plugin card: the user types what the bot never sees. A draft card: an email only the user sends. */
   form?:
     | import('../../../web/src/lib/types').EmailDraftForm

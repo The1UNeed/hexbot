@@ -83,7 +83,25 @@ fn bots_of(row: &Value) -> Vec<String> {
 }
 
 impl Runtime {
+    /// The plugin tool. A failure after the user agreed on its card says so,
+    /// so the card shows again in the chat as one that didn't work.
     pub(super) async fn plugins_tool(&self, s: &Live, args: &Value) -> Result<Value> {
+        let agreed = std::sync::atomic::AtomicBool::new(false);
+        self.plugins_action(s, args, &agreed).await.map_err(|e| {
+            if agreed.load(std::sync::atomic::Ordering::Relaxed) {
+                after_agreeing(e)
+            } else {
+                e
+            }
+        })
+    }
+
+    async fn plugins_action(
+        &self,
+        s: &Live,
+        args: &Value,
+        agreed: &std::sync::atomic::AtomicBool,
+    ) -> Result<Value> {
         if !s.tools.iter().any(|t| t["name"] == NAME) {
             return Err(Error::new(4210, "This tool is disabled for this section."));
         }
@@ -142,6 +160,7 @@ impl Runtime {
                 let answer = self
                     .ask_card(
                         s,
+                        agreed,
                         format!(
                             "Install the plugin {} for {whom}: it {}",
                             package.name,
@@ -168,6 +187,7 @@ impl Runtime {
                 )?;
                 Ok(json!({
                     "plugin": full,
+                    "name": package.name,
                     "on": plugin["enabled_for_bot"],
                     "note": after_change(&plugin, &full, own, &package.skills.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>()),
                 }))
@@ -196,7 +216,7 @@ impl Runtime {
                 if on {
                     let mut form = self.plugin_form(owner, &target, &whom, full, "enable")?;
                     form["other"] = json!(!own);
-                    let answer = self.ask_card(s, title, form.clone()).await?;
+                    let answer = self.ask_card(s, agreed, title, form.clone()).await?;
                     self.save_keys(owner, &target, &form, &answer).await?;
                 } else if !own {
                     self.ask_plugin(s, title, args).await?;
@@ -223,6 +243,7 @@ impl Runtime {
                     .collect::<Vec<_>>();
                 Ok(json!({
                     "plugin": full,
+                    "name": plugin["name"].as_str().unwrap_or(id),
                     "on": on,
                     "note": if on { after_change(&plugin, full, own, &skills) } else { "Off from the next message.".into() },
                 }))
@@ -252,7 +273,7 @@ impl Runtime {
                     ));
                 }
                 let answer = self
-                    .ask_card(s, format!("Set up {name}"), form.clone())
+                    .ask_card(s, agreed, format!("Set up {name}"), form.clone())
                     .await?;
                 let test = self.save_keys(owner, &target, &form, &answer).await?;
                 self.plugins_changed(owner);
@@ -271,7 +292,7 @@ impl Runtime {
                     None => "Set up. Try it now.".into(),
                 };
                 Ok(
-                    json!({"plugin": full, "ready": test.is_none_or(|t| t["ok"] == true), "note": note}),
+                    json!({"plugin": full, "name": name, "ready": test.is_none_or(|t| t["ok"] == true), "note": note}),
                 )
             }
             "remove" => {
@@ -441,19 +462,27 @@ impl Runtime {
 
     /// Shows a plugin card and waits for the user: the keys they entered
     /// and the provider they chose, as `answer` checked them.
-    async fn ask_card(&self, s: &Live, title: String, form: Value) -> Result<Value> {
+    async fn ask_card(
+        &self,
+        s: &Live,
+        agreed: &std::sync::atomic::AtomicBool,
+        title: String,
+        form: Value,
+    ) -> Result<Value> {
         let request = json!({
             "tool": NAME,
             "toolCall": {"title": title},
             "reason": "Adding or changing a plugin always asks. Keys you enter here are saved for your bots; the bot never sees them.",
             "form": form,
         });
+        // The apps show the closed card again from these first words (settled-cards.ts in apps/web).
         let Some(answer) = self.ask_native(s, request, true).await? else {
             return Err(Error::new(
                 4302,
                 "The user said no. Leave it, and ask what they would like instead.",
             ));
         };
+        agreed.store(true, std::sync::atomic::Ordering::Relaxed);
         serde_json::from_str(&answer).map_err(|_| Error::new(5201, "The card sent no answer."))
     }
 

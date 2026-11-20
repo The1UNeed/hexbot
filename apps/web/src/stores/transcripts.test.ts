@@ -99,6 +99,56 @@ describe('transcript reducer', () => {
       useTranscripts.getState().bySession.s?.clarifies.map(clarify => clarify.requestId)
     ).toEqual(['c'])
   })
+  it('shows an answered card once when history brings it back', () => {
+    const actions = useTranscripts.getState()
+
+    const form = {
+      bcc: [],
+      body: 'Dear Admissions Team,',
+      cc: [],
+      from: 'alex@example.com',
+      kind: 'email_draft' as const,
+      service: 'microsoft' as const,
+      service_name: 'Outlook',
+      subject: 'Report cards',
+      to: []
+    }
+
+    actions.approvalRequest('s', { form, message_id: 'a1', request_id: 'live', turn_id: 't' })
+    actions.approvalRequest('s', { message_id: 'a3', request_id: 'waiting', turn_id: 't' })
+    actions.resolveApproval('s', 'live', 'once', {
+      draft: { ...form, to: ['admission@example.com'] },
+      mail_action: 'send'
+    })
+
+    const restored = {
+      choices: ['once' as const, 'deny' as const],
+      decision: 'once' as const,
+      form,
+      messageId: 'a1',
+      receivedAt: 0,
+      requestId: 'm1',
+      sessionId: ''
+    }
+
+    actions.open('s', 'sec', [
+      {
+        approvals: [restored],
+        attachments: [],
+        createdAt: 0,
+        fragmentIds: ['a1'],
+        id: 'a1',
+        role: 'assistant',
+        streaming: false,
+        text: '',
+        toolCalls: []
+      }
+    ])
+    const transcript = useTranscripts.getState().bySession.s
+    // The live copy goes; a card still waiting stays live.
+    expect(transcript?.approvals.map(card => card.requestId)).toEqual(['waiting'])
+    expect(transcript?.messages[0]?.approvals).toEqual([restored])
+  })
   it('opens on a delta and does not duplicate streamed interim text', () => {
     const actions = useTranscripts.getState()
     actions.messageDelta('s', 'hello')

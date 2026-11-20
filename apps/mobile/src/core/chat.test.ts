@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { mediaOf } from '../../../web/src/lib/media'
+import { settledCard } from '../../../web/src/lib/settled-cards'
 import {
   heartbeatMessage,
   emptyChat,
@@ -149,19 +150,144 @@ describe('chat event projection', () => {
     s = reduceChat(s, event('clarify.request', { request_id: 'batch', questions }))
     expect(shown(s)).toEqual([['q2']])
   })
-  it('drops exactly the card answered on another app or no longer waited on', () => {
+  it('keeps a card answered on another app with its answer, and drops one no longer waited on', () => {
     let s = emptyChat()
     for (const id of ['a1', 'a2']) s = reduceChat(s, event('approval.request', { request_id: id }))
     for (const id of ['q1', 'q2'])
       s = reduceChat(s, event('clarify.request', { request_id: id, question: 'Colour?' }))
     s = reduceChat(s, event('approval.resolved', { request_id: 'a1', choice: 'once' }))
     s = reduceChat(s, event('clarify.resolved', { request_id: 'q1', answers: { q1: 'red' } }))
-    expect(s.approvals.map(a => a.requestId)).toEqual(['a2'])
+    expect(s.approvals.map(a => [a.requestId, a.decision])).toEqual([
+      ['a1', 'once'],
+      ['a2', undefined]
+    ])
     expect(s.questions.map(q => q.requestId)).toEqual(['q2'])
     s = reduceChat(s, event('approval.expire', { request_id: 'a2' }))
-    expect(s.approvals).toEqual([])
+    // A late expire never takes an answered card.
+    s = reduceChat(s, event('approval.expire', { request_id: 'a1' }))
+    expect(s.approvals.map(a => a.requestId)).toEqual(['a1'])
     expect(s.questions.map(q => q.requestId)).toEqual(['q2'])
     expect(s.busy).toBe(true)
+  })
+  it('keeps a sent draft card with the email as it went until the turn ends', () => {
+    const form = {
+      kind: 'email_draft',
+      to: [],
+      cc: [],
+      bcc: [],
+      subject: 'Report cards',
+      body: 'Dear Admissions Team,',
+      from: 'alex@example.com',
+      service: 'microsoft',
+      service_name: 'Outlook'
+    }
+    let s = reduceChat(emptyChat(), event('message.start', {}))
+    s = reduceChat(s, event('approval.request', { request_id: 'd1', form }))
+    const draft = { ...form, to: ['admission@example.com'] }
+    s = reduceChat(
+      s,
+      event('approval.resolved', { request_id: 'd1', choice: 'once', mail_action: 'send', draft })
+    )
+    expect(s.approvals).toMatchObject([
+      { requestId: 'd1', decision: 'once', outcome: { draft, mail_action: 'send' } }
+    ])
+    // Its tool, now on the reply, shows the card from here on.
+    s = reduceChat(s, event('message.complete', { text: 'Sent.' }))
+    expect(s.approvals).toEqual([])
+  })
+  it('shows a sent draft card again from history and after a live turn', () => {
+    const args = { action: 'draft', subject: 'Report cards', body: 'Dear Admissions Team,' }
+    const sent = {
+      account: 'microsoft',
+      to: ['admission@example.com'],
+      cc: [],
+      subject: 'Report cards',
+      body: 'Dear Admissions Team,',
+      sent: true,
+      note: 'The user sent this, as shown, after any changes they made.'
+    }
+    const cards = (state: { tools?: { args: unknown; detail: string; name: string; status: 'error' | 'ok' | 'running' }[] }[]) =>
+      state.flatMap(m => m.tools ?? []).map(t => settledCard({ ...t, result: t.detail }))
+    const expected = {
+      decision: 'once',
+      form: { kind: 'email_draft', service: 'microsoft', subject: 'Report cards' },
+      outcome: { mail_action: 'send', draft: { to: ['admission@example.com'] } }
+    }
+    const history = historyMessages([
+      { role: 'user', content: 'Write to admissions' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ id: 't1', function: { name: 'hexbot_mail', arguments: JSON.stringify(args) } }]
+      },
+      { role: 'tool', tool_call_id: 't1', name: 'hexbot_mail', text: JSON.stringify(sent) },
+      { role: 'assistant', content: 'Sent to the admissions team.' }
+    ])
+    expect(cards(history)).toMatchObject([expected])
+    // Live, Pi's result carries the tool's JSON as details.
+    let s = reduceChat(emptyChat(), event('message.start'))
+    s = reduceChat(s, event('tool.start', { tool_id: 't1', name: 'hexbot_mail', args }))
+    s = reduceChat(
+      s,
+      event('tool.complete', {
+        tool_id: 't1',
+        result: { content: [{ type: 'text', text: JSON.stringify(sent) }], details: sent }
+      })
+    )
+    s = reduceChat(s, event('message.complete', { text: 'Sent to the admissions team.' }))
+    expect(cards(s.messages)).toMatchObject([expected])
+    // A draft the user closed shows as not sent; one that failed before a card showed, nothing.
+    s = reduceChat(emptyChat(), event('message.start'))
+    for (const [id, error] of [
+      ['t2', 'The user closed the draft without sending it. Ask what they would like to change, or leave it.'],
+      ['t3', 'Outlook is not connected.']
+    ]) {
+      s = reduceChat(s, event('tool.start', { tool_id: id, name: 'hexbot_mail', args }))
+      s = reduceChat(
+        s,
+        event('tool.complete', { tool_id: id, result: { content: [{ type: 'text', text: error }], error } })
+      )
+    }
+    s = reduceChat(s, event('message.complete', { text: 'Left it.' }))
+    expect(cards(s.messages)).toMatchObject([{ decision: 'deny', form: { subject: 'Report cards' } }, null])
+  })
+  it('shows a live card that the user agreed to as failed when its work does', () => {
+    const form = { kind: 'plugin', action: 'install', id: 'package:echo', name: 'echo', bot: 'owl', fields: [] }
+    let s = reduceChat(emptyChat(), event('message.start'))
+    s = reduceChat(s, event('approval.request', { request_id: 'r1', tool_id: 'p1', form }))
+    s = reduceChat(s, event('approval.resolved', { request_id: 'r1', choice: 'once' }))
+    const error = "The user agreed on the card, but it didn't work: echo is already installed."
+    s = reduceChat(s, event('tool.complete', { tool_id: 'p1', result: { content: [{ type: 'text', text: error }], error } }))
+    expect(s.approvals).toMatchObject([{ requestId: 'r1', decision: 'once', failed: true }])
+  })
+  it('keeps each tool under the words it came with, as history does', () => {
+    const shown = (state: ChatState) =>
+      state.messages.map(m => [m.text, (m.tools ?? []).map(t => t.id)])
+    // Words, then the draft from that message, then the reply.
+    let s = reduceChat(emptyChat(), event('message.start'))
+    s = reduceChat(s, event('message.interim', { text: 'I will draft it.', message_id: 'r1' }))
+    s = reduceChat(s, event('tool.start', { tool_id: 'd1', name: 'hexbot_mail', message_id: 'r1' }))
+    s = reduceChat(s, event('tool.complete', { tool_id: 'd1', result_text: '{}' }))
+    s = reduceChat(s, event('message.complete', { text: 'Sent.', message_id: 'r2' }))
+    expect(shown(s)).toEqual([
+      ['I will draft it.', ['d1']],
+      ['Sent.', []]
+    ])
+    // A tool called without words gets its own place before the reply, and
+    // a later step's tool never joins earlier words from another message.
+    s = reduceChat(emptyChat(), event('message.start'))
+    s = reduceChat(s, event('tool.start', { tool_id: 'd1', name: 'hexbot_mail', message_id: 'r1' }))
+    s = reduceChat(s, event('message.interim', { text: 'Looking.', message_id: 'r2' }))
+    s = reduceChat(s, event('tool.start', { tool_id: 's1', name: 'search', message_id: 'r2' }))
+    s = reduceChat(s, event('tool.start', { tool_id: 'd2', name: 'hexbot_mail', message_id: 'r3' }))
+    s = reduceChat(s, event('message.complete', { text: 'Done.', message_id: 'r4' }))
+    expect(shown(s)).toEqual([
+      ['', ['d1']],
+      ['Looking.', ['s1']],
+      ['', ['d2']],
+      ['Done.', []]
+    ])
+    expect(s.messages.map(m => m.rowId)).toEqual(['r1', 'r2', 'r3', 'r4'])
   })
   it('restores text content without exposing hidden system prompts or tool rows', () => {
     expect(

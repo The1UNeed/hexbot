@@ -19,7 +19,8 @@ export function roomChat(state: ChatState): ChatState {
       .map(t => t.activity)
       .filter(Boolean)
       .join(' · '),
-    approvals: turns.flatMap(t => t.approvals),
+    // A room shows a card only while it waits; an answered one leaves.
+    approvals: turns.flatMap(t => t.approvals).filter(a => !a.decision),
     questions: turns.flatMap(t => t.questions)
   }
 }
