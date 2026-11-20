@@ -45,8 +45,8 @@ export interface DocumentEditorProps {
   cap?: number
   /** The file name, for downloads and the PDF title. */
   fileName: string
-  /** Shown under the file, inside the side panel: the quick tools. */
-  footer?: ReactNode
+  /** In the side panel, what the bar shows for a plain file instead of "Plain text". */
+  label?: ReactNode
   /** In the side panel beside the chat, instead of over the whole window. */
   inline?: boolean
   onClose: () => void
@@ -256,8 +256,8 @@ export function DocumentEditor({
   cap,
   fileName,
   flushRef,
-  footer,
   inline = false,
+  label,
   onClose,
   onFollow,
   onSave,
@@ -278,6 +278,9 @@ export function DocumentEditor({
   onSaveRef.current = onSave
   const onFollowRef = useRef(onFollow)
   onFollowRef.current = onFollow
+
+  // The text it opened on is the version its saves start from.
+  useEffect(() => onFollowRef.current?.(), [])
   const timer = useRef<number>(undefined)
 
   const editor = useEditor({
@@ -618,18 +621,19 @@ export function DocumentEditor({
   if (inline) {
     return (
       <div className="flex h-full min-h-0 flex-col" data-testid="document-editor">
-        {/* The page runs under its floating toolbar and ask field. */}
+        {/* The page runs under its floating toolbar. */}
         <ScrollArea
-          bottom={footer ?? undefined}
           className="flex-1"
           drag={false}
           top={
             <div className="p-2">
               <div className="hex-glass flex h-10 items-center gap-1 rounded-full px-1.5">
                 {plain ? (
-                  <span className="truncate px-1.5 text-[length:var(--text-meta)] text-muted">
-                    Plain text
-                  </span>
+                  (label ?? (
+                    <span className="truncate px-1.5 text-[length:var(--text-meta)] text-muted">
+                      Plain text
+                    </span>
+                  ))
                 ) : (
                   <Toolbar disabled={source !== null} editor={editor} />
                 )}
