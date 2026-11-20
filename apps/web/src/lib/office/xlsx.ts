@@ -120,19 +120,20 @@ function readStyles(pkg: OfficePackage): Styles {
 /** Day 0 of Unix time as Excel counts days: from 1900, or from 1904 in a workbook set to it. */
 const unixDay = (date1904: boolean) => (date1904 ? 24107 : 25569)
 
-/** Excel's day number as a date, `2024-03-01` or `2024-03-01 14:30`. */
+/** Excel's day number as a date: `2024-03-01`, `2024-03-01 14:30` or `2024-03-01 14:30:15`. */
 export function serialToDate(serial: number, date1904 = false): string {
   const ms = Math.round((serial - unixDay(date1904)) * 86400 * 1000)
   const date = new Date(ms)
   const day = date.toISOString().slice(0, 10)
-  const time = date.toISOString().slice(11, 16)
+  // Seconds show only when there are some, so an edit keeps them.
+  const time = date.toISOString().slice(11, 19).replace(/:00$/, '')
 
   return serial % 1 === 0 || time === '00:00' ? day : `${day} ${time}`
 }
 
 /** A date typed as `2024-03-01` (with an optional time) as Excel's day number. */
 export function dateToSerial(text: string, date1904 = false): null | number {
-  const match = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?$/.exec(text.trim())
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(text.trim())
 
   if (!match) {
     return null
@@ -143,7 +144,8 @@ export function dateToSerial(text: string, date1904 = false): null | number {
     Number(match[2]) - 1,
     Number(match[3]),
     Number(match[4] ?? 0),
-    Number(match[5] ?? 0)
+    Number(match[5] ?? 0),
+    Number(match[6] ?? 0)
   )
 
   return Number.isNaN(ms) ? null : ms / 86400000 + unixDay(date1904)
