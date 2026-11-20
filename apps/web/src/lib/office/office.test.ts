@@ -56,6 +56,22 @@ describe('a Word file', () => {
     expect(part(pkg, 'word/document.xml')).toMatch(/^<\?xml/)
   })
 
+  it('moves a section break to the second half of a split paragraph', () => {
+    const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+
+    const pkg = pack({
+      'word/document.xml': `<w:document xmlns:w="${W}"><w:body><w:p><w:pPr><w:sectPr/></w:pPr><w:r><w:t>End of part</w:t></w:r></w:p><w:sectPr/></w:body></w:document>`
+    })
+
+    const [block] = readDocx(pkg)!.blocks as DocxParagraph[]
+
+    splitParagraph(pkg, block!, ['End'], ' of part', 0)
+    const xml = part(pkg, 'word/document.xml')
+
+    expect(xml.match(/<w:sectPr\/>/g)).toHaveLength(2)
+    expect(xml.indexOf('<w:sectPr/>')).toBeGreaterThan(xml.indexOf('>End<'))
+  })
+
   it('splits a paragraph at the caret and joins it back', () => {
     const pkg = docx()
     const body = readDocx(pkg)!.blocks[1]!
