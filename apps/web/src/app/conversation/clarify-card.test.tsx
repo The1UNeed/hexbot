@@ -161,6 +161,19 @@ describe('clarify card', () => {
     expect(screen.getByText('Robotics club')).toBeInTheDocument()
   })
 
+  it('opens again when the message it sent is taken back', () => {
+    const onReply = vi.fn()
+    const stopped = clarify({ expired: true })
+    const { rerender } = render(<ClarifyCard clarify={stopped} onReply={onReply} />)
+
+    fireEvent.click(screen.getByRole('option', { name: /Tech digging/ }))
+    expect(screen.queryByRole('option')).not.toBeInTheDocument()
+    // The message lands below the card, then Recall takes it back.
+    rerender(<ClarifyCard clarify={stopped} />)
+    rerender(<ClarifyCard clarify={stopped} onReply={onReply} />)
+    expect(screen.getByRole('option', { name: /Tech digging/ })).toBeEnabled()
+  })
+
   it('keeps a typed single answer that looks like a list as typed', () => {
     const onReply = vi.fn()
     render(<ClarifyCard clarify={clarify({ expired: true })} onReply={onReply} />)

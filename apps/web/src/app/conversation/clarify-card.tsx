@@ -215,6 +215,15 @@ export function ClarifyCard({
   // Answers given after the bot stopped waiting. They stay locked on the
   // card while the message goes out.
   const [drafts, setDrafts] = useState<Record<string, string>>({})
+  // Once the message lands below the card they go, so taking it back
+  // (Recall) opens the card again.
+  const [canReply, setCanReply] = useState(Boolean(onReply))
+
+  if (canReply !== Boolean(onReply)) {
+    setCanReply(Boolean(onReply))
+    setDrafts({})
+  }
+
   const color = useFaceColor(bot, bot ? bot.display_name : null)
   const stopped = Boolean(clarify.expired) && !clarifyAnswered(clarify)
   const replying = stopped && Boolean(onReply)
