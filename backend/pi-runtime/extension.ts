@@ -324,7 +324,7 @@ export default function hexbot(pi: any) {
         let remoteAsk: {key: string, command: string, reason: string, once?: boolean} | undefined;
         if (computer === 'vm') {
           const risky = riskyCommand(event.input.command ?? '');
-          if (live.approvalMode === 'manual') remoteAsk = {key: 'computer:vm', command: event.input.command, reason: "Manual mode asks before every command on the bots' computer."};
+          if (live.approvalMode === 'manual') remoteAsk = {key: 'computer:vm', command: event.input.command, reason: "Manual mode asks before commands on the bots' computer; Allow for now lets the rest of this conversation's run."};
           else if (risky) remoteAsk = {key: 'computer:vm:review', command: event.input.command, reason: `On the bots' computer, commands that ${risky} are checked first.`};
         } else {
           // The user's own computer has no sandbox: each command asks, and

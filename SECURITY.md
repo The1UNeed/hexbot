@@ -141,7 +141,8 @@ and never a room, a thread, a job or a delegate already running.
   that install, reach the network, run as root, delete broadly or pipe
   into a shell go to the reviewer first; the rest run. That detection is
   a pattern list, not containment: whatever a bot copies there, or you
-  attach, can leave. Manual asks before each command. The bots' computer's
+  attach, can leave. Manual asks before a command, and Allow for now lets
+  the rest of that conversation's commands there run. The bots' computer's
   desktop has its own terminal and no per-app checks, so a bot with that
   desktop can run any command there, `computer_use`'s shell included: the
   risky-command check slows bash down, it is not a boundary. While the

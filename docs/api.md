@@ -922,8 +922,8 @@ on or off for every bot through `hexbot.settings.set`.
 
 The daemon has one computer that its bots share: a Cua sandbox, a Linux
 desktop made from the `linux` image the first time a bot or the user turns
-it on. Every bot with Computer use (`computer_use` in its tools) works on
-it. The daemon drives it with the `cua` CLI on its own computer
+it on. A bot works on it once it is one of the bot's environments, and sees
+and uses its screen with the Computer Use connector. The daemon drives it with the `cua` CLI on its own computer
 (`computer_use.command` in config, `HEXBOT_CUA_CMD`, or `cua` on the path)
 and runs `cua mcp` for the bots' actions. It passes `CUA_TELEMETRY=0` unless
 `computer_use.telemetry` is true. The sandbox is named
