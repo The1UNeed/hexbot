@@ -96,7 +96,7 @@ pub(super) fn descriptors() -> Vec<Value> {
                     "model": { "type": "string", "description": "A model id of that provider" },
                     "reasoning_effort": { "type": "string", "description": "An empty string returns to the model's default" },
                     "fast": { "type": "boolean", "description": "Fast mode: the same model answers faster at a higher price. It applies only on models that offer it, such as Claude Opus 5.5, and never to scheduled jobs or heartbeats" },
-                    "tools": { "type": "array", "items": { "type": "string", "enum": ["terminal", "files", "computer_use", "vision", "voice", "message_bots", "delegate", "scheduling"] } },
+                    "tools": { "type": "array", "description": "terminal gives the bot its default computer or takes every one; the user chooses its computers exactly in Settings, Computers. Computer Use is a plugin (hexbot_plugins), not a tool here", "items": { "type": "string", "enum": ["terminal", "files", "vision", "voice", "message_bots", "delegate", "scheduling"] } },
                     "skills": strings,
                     "approval_mode": { "type": "string", "enum": ["inherit", "manual", "smart", "off"], "description": "inherit follows Settings; smart is Auto; off is Bypass" },
                     "workdir": { "type": "string", "description": "A folder on this computer; an empty string returns the bot to the Settings workspace" },
@@ -836,6 +836,19 @@ fn approval_label(mode: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn computer_use_is_a_plugin_not_a_bot_tool_the_primary_bot_sets() {
+        let bots = descriptors()
+            .into_iter()
+            .find(|d| d["name"] == "hexbot_bots")
+            .unwrap();
+        let tools = &bots["parameters"]["properties"]["tools"]["items"]["enum"];
+        assert!(tools.as_array().unwrap().contains(&json!("terminal")));
+        // The daemon ignores computer_use in a tool list, so the schema never
+        // offers a switch that would do nothing.
+        assert!(!tools.as_array().unwrap().contains(&json!("computer_use")));
+    }
 
     #[test]
     fn only_the_user_can_turn_on_usage_data() {

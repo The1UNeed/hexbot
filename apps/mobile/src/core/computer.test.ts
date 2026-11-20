@@ -6,6 +6,7 @@ import {
   computerActivity,
   currentComputers,
   latestReads,
+  offersComputer,
   screenPlays
 } from './computer'
 import type { Bot, Computer } from './types'
@@ -118,5 +119,20 @@ describe('addNotice', () => {
     expect(notices).toEqual([macbook, studio])
     // The same one again isn't shown twice.
     expect(addNotice(notices, macbook)).toEqual([macbook, studio])
+  })
+})
+
+describe('offersComputer', () => {
+  it("offers the card on a daemon with computers, whose bots' tools never list Computer Use", () => {
+    // A current daemon's bot: Computer Use is a plugin, not in its tools.
+    const bot = { available_tools: ['terminal', 'files'], tools: ['files'] } as Bot
+    expect(offersComputer('listed', bot)).toBe(true)
+    expect(offersComputer('loading', bot)).toBe(true)
+    expect(offersComputer({ error: 'busy' }, bot)).toBe(true)
+  })
+
+  it('offers it on a daemon from before computers only to a bot with the tool', () => {
+    expect(offersComputer('older', { available_tools: ['files'], tools: [] } as unknown as Bot)).toBe(false)
+    expect(offersComputer('older', { available_tools: ['computer_use'], tools: [] } as unknown as Bot)).toBe(true)
   })
 })

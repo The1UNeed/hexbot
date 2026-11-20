@@ -26,6 +26,7 @@ import * as ExpoLinking from 'expo-linking'
 import * as WebBrowser from 'expo-web-browser'
 import * as Crypto from 'expo-crypto'
 import { avatarSrc } from './src/core/avatar'
+import { offersComputer } from './src/core/computer'
 import { waitingStatus } from './src/core/status'
 import { reactionsOn } from './src/core/reactions'
 import {
@@ -1748,9 +1749,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
       }
       onAttach={source => act(() => attach(source))}
       onOpenComputer={
-        (route.bot.available_tools ?? route.bot.tools ?? []).includes('computer_use')
-          ? () => setComputerOpen(true)
-          : undefined
+        offersComputer(mobile.computersListed, route.bot) ? () => setComputerOpen(true) : undefined
       }
       computerLive={!!mobile.computer?.actor || mobile.computer?.control === 'user'}
       onOpenSettings={() => {

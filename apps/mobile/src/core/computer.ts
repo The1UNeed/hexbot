@@ -103,3 +103,13 @@ export function latestReads() {
 export function addNotice(notices: string[], note: string | null | undefined): string[] {
   return !note || notices.includes(note) ? notices : [...notices, note]
 }
+
+/**
+ * Whether a bot's chat offers the bots' computer card, as the web app always
+ * offers its Computer tab: on a daemon with computers Computer Use is a
+ * plugin, never in the bot's tools, and the card itself says what is missing.
+ * A daemon from before computers offers it only to a bot with the tool.
+ */
+export function offersComputer(listed: ComputersListed, bot: Pick<Bot, 'available_tools' | 'tools'>) {
+  return listed !== 'older' || (bot.available_tools ?? bot.tools ?? []).includes('computer_use')
+}

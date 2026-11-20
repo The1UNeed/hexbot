@@ -531,18 +531,19 @@ others (`DESIGN.md`, "The primary bot"). There is at most one per owner.
   memory_char_limit?}` →
   `{bot: Bot}`. A limit is a whole number from 500 to 20000, or null to
   follow Settings (4202 otherwise). A `persona` longer than the soul limit
-  this update leaves is refused with 4221 before anything is written. `tools` accepts `terminal`, `files`, `computer_use`,
+  this update leaves is refused with 4221 before anything is written. `tools` accepts `terminal`, `files`,
   `vision`, `voice`, `message_bots`, `delegate`, and `scheduling`; older
-  clients may still send `code_execution` and `browser`, which are dropped; toolsets owned by connectors (web, x_search, mcp-*) are left
+  clients may still send `code_execution`, `browser` and `computer_use`,
+  which are ignored; toolsets owned by connectors (web, x_search, mcp-*) are left
   as they are. Both capability lists use replace semantics. A tool missing
-  from `available_tools` is dropped from `tools` on write, except
-  `computer_use`, which follows the bot's desktops. `terminal` and
-  `computer_use` give or take computers: turning one on gives the default
-  computer (the bots' computer when it can run; otherwise this computer, for
-  a terminal), and leaving out one the bot has takes it from every computer.
-  While the bots' computer is switched off, its grants don't count, so a list
-  without them leaves what was saved there; `hexbot.computers.grant` sets
-  each computer exactly. Combined model and tool edits use the new provider
+  from `available_tools` is dropped from `tools` on write. `terminal` gives or
+  takes environments: turning it on gives the default computer (the bots'
+  computer when it can run, otherwise this computer), and leaving it out takes
+  every computer the bot works on. While the bots' computer is switched off,
+  its environment doesn't count, so a list without `terminal` leaves what was
+  saved there; `hexbot.computers.grant` sets each computer exactly. Computer
+  Use is the `computer_use` connector (`hexbot.connectors.set_for_bot`), which
+  a tool list never changes. Combined model and tool edits use the new provider
   when checking availability.
 - `hexbot.bots.pin {name, pinned?}` → `{bot: Bot}`. Pins the bot's chat in
   the list, or unpins it with `pinned: false`. `pinned_at` keeps the time it

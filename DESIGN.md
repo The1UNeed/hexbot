@@ -375,19 +375,23 @@ more freedom and more capability than a hosted product can offer.
   name (each server's `bots` list); a new server reaches no bot until the
   user picks one, and a new bot starts with none. A server defined in one
   bot's profile stays private to it.
-- Computers (`machines.rs`): a bot acts on the bots' computer (`vm`), this
+- Computers (`machines.rs`): a bot works on the bots' computer (`vm`), this
   computer (`host`) or one of the user's computers (`device:<id>`), each
-  offering a terminal, a desktop or both, given to bots like a plugin (a
-  `bots` list per computer and capability in `config.yaml`, `computers`). A
-  daemon from before computers keeps what its bots had: the bots' computer's
-  desktop for every bot, this computer's terminal for bots with the terminal
-  toolset; the first start writes that down, including whether new bots
-  get this computer's terminal, from the daemon's default toolsets. The
-  Terminal switch in bot settings, and `terminal` or `computer_use` in a
-  bot's tools as the API and
-  the primary bot set them, give the default computer or take every one
-  (while the bots' computer is switched off, a tools list leaves what was
-  saved for it); Settings, Computers sets each computer exactly.
+  given to bots as one of their environments like a plugin (each
+  computer's `terminal` list of bots in `config.yaml`, `computers`); bash
+  runs in every one. The Computer Use connector (`computers.computer_use`)
+  adds the screens of a bot's environments where each is shared; a desktop
+  is never granted on its own. A daemon from before computers keeps what
+  its bots had: the bots' computer's desktop for every bot (now the bots'
+  computer as an environment plus Computer Use), this computer's terminal
+  for bots with the terminal toolset; the first start writes that down,
+  including whether new bots get this computer's terminal, from the
+  daemon's default toolsets. The Terminal switch in bot settings, and
+  `terminal` in a bot's tools as the API and the primary bot set them, give
+  the default computer or take every one (while the bots' computer is
+  switched off, a tools list leaves what was saved for it); Settings,
+  Computers sets each computer exactly, and a tool list never changes
+  Computer Use.
   bash and computer_use take a `computer` argument with a fixed schema; the
   bot's computers freeze with its tools (`computers` in the section options)
   and the prompt's Computers block lists them; a delegate or other
