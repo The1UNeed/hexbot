@@ -366,7 +366,10 @@ export function SheetGrid({
 
       // A paste may widen the sheet, up to the columns it can show.
       // Empty rows stay rows; only the line break after the last one goes.
-      parseDelimited(text.replace(/\r?\n$/, ''), '\t', true).forEach((line, r) =>
+      // One empty cell copied is a lone line break: it clears where it lands.
+      const pasted = text.replace(/\r?\n$/, '')
+
+      ;(pasted ? parseDelimited(pasted, '\t', true) : [['']]).forEach((line, r) =>
         line.forEach((value, c) => {
           const cell = { col: left + c, row: top + r }
 

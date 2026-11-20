@@ -26,6 +26,8 @@ describe('CSV and TSV', () => {
 
   it('keeps blank lines as empty rows when asked, as pasted cells need', () => {
     expect(parseDelimited('first\r\n\r\nthird', '\t', true)).toEqual([['first'], [''], ['third']])
+    // `first`, then an empty cell, with the last line break already taken off.
+    expect(parseDelimited('first\r\n', '\t', true)).toEqual([['first'], ['']])
   })
 
   it('keeps the file’s line endings, byte-order mark and final line break', () => {

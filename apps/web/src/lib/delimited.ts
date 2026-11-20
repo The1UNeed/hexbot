@@ -52,7 +52,8 @@ export function parseDelimited(text: string, delimiter: string, keepBlank = fals
     }
   }
 
-  if (field !== '' || row.length || wasQuoted) {
+  // Pasted cells: a last line break left (one was taken off) ends an empty row.
+  if (field !== '' || row.length || wasQuoted || (keepBlank && /\n$/.test(body))) {
     endRow()
   }
 
