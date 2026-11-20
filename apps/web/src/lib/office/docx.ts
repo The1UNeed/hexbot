@@ -336,6 +336,21 @@ export function joinParagraph(
     }
   }
 
+  // A section that ended at the removed paragraph now ends at the joined one.
+  const section = child(child(block.element, W, 'pPr'), W, 'sectPr')
+
+  if (section) {
+    let props = child(previous.element, W, 'pPr')
+
+    if (!props) {
+      props = previous.element.ownerDocument.createElementNS(W, 'w:pPr')
+      previous.element.prepend(props)
+    }
+
+    child(props, W, 'sectPr')?.remove()
+    props.append(section)
+  }
+
   block.element.remove()
   pkg.touch(DOCUMENT)
 
