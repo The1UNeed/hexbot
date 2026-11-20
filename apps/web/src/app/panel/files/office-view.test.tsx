@@ -72,6 +72,26 @@ describe('a Word file beside the chat', () => {
   })
 })
 
+describe('a Word paragraph typed in with an input method', () => {
+  it('takes the Enter that ends a composition as text, not a split', async () => {
+    const { flushRef, props: view, saves } = props(dataUrlOf(docx().save(), WORD))
+
+    render(<DocxView {...view} flushRef={flushRef} />)
+    const paragraph = (await screen.findByText('Bold')).closest('[data-where]') as HTMLElement
+
+    paragraph.focus()
+    caretAt(paragraph, 4)
+    fireEvent.keyDown(paragraph, { isComposing: true, key: 'Enter' })
+    await act(async () => {
+      expect(await flushRef.current!()).toBe(true)
+    })
+
+    expect(saves).toHaveLength(0)
+    expect(paragraph.isConnected).toBe(true)
+    expect(screen.getAllByText(/plain\./)).toHaveLength(1)
+  })
+})
+
 describe('a Word paragraph split over selected words', () => {
   it('drops the selected words', async () => {
     const { flushRef, props: view, saves } = props(dataUrlOf(docx().save(), WORD))

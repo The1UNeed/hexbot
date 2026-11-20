@@ -245,6 +245,11 @@ export function EditableRuns({
         timer.current = window.setTimeout(commit, COMMIT_DELAY)
       }}
       onKeyDown={event => {
+        // Enter that ends an IME composition (Chinese, Japanese, Korean) is not a command.
+        if (event.nativeEvent.isComposing) {
+          return
+        }
+
         const element = node.current
 
         if (!element) {

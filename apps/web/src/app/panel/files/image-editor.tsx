@@ -962,6 +962,11 @@ export function ImageEditor({
             onBlur={finishTyping}
             onChange={event => setTyping({ ...typing, text: event.target.value })}
             onKeyDown={event => {
+              // Enter that ends an IME composition (Chinese, Japanese, Korean) is not a command.
+              if (event.nativeEvent.isComposing) {
+                return
+              }
+
               if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault()
                 finishTyping()
