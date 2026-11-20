@@ -777,6 +777,38 @@ describe('a file beside the chat', () => {
     )
   })
 
+  it('saves a cell being typed in when the chat is left', async () => {
+    api.filesRead.mockResolvedValue({
+      mime: 'text/csv',
+      modified: 3,
+      name: 'pins.csv',
+      path: '/work/pins.csv',
+      size: 7,
+      text: 'pin,use\nGPIO2,ADC\n',
+      version: 'v3'
+    })
+    act(() =>
+      visualsActions().open(
+        fileTab('pins.csv', { mime: 'text/csv', path: '/work/pins.csv', sessionId: 's' })
+      )
+    )
+    render(<VisualPanel />)
+
+    fireEvent.doubleClick(await screen.findByText('ADC'))
+    fireEvent.change(screen.getByLabelText('Edit B2'), { target: { value: 'JTAG' } })
+    // Leaving the chat closes its tabs at once: no Enter, no blur.
+    act(() => visualsActions().closeAll())
+
+    await waitFor(() =>
+      expect(api.filesWrite).toHaveBeenCalledWith(
+        's',
+        '/work/pins.csv',
+        'pin,use\nGPIO2,JTAG\n',
+        'v3'
+      )
+    )
+  })
+
   it('keeps the edit when the version to load cannot be read', async () => {
     const field = await openPins()
     api.filesWrite.mockRejectedValue(
