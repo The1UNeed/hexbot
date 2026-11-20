@@ -1614,7 +1614,8 @@ function Composer({
         flushing.current = false
       })
 
-      if (saved) {
+      // Only while this composer is still on screen: leaving the chat drops it.
+      if (saved && picker.current?.isConnected) {
         await sendRef.current()
       }
 

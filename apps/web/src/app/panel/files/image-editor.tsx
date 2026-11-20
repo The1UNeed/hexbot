@@ -578,19 +578,14 @@ export function ImageEditor({
   }
 
   const applyCrop = () => {
-    if (cropBox && cropBox.w > 8 && cropBox.h > 8 && image) {
-      const x = Math.max(0, cropBox.x)
-      const y = Math.max(0, cropBox.y)
+    // Both edges inside the picture, so a drag past one keeps only what was selected.
+    const x = Math.max(0, cropBox?.x ?? 0)
+    const y = Math.max(0, cropBox?.y ?? 0)
+    const right = Math.min(image?.naturalWidth ?? 0, (cropBox?.x ?? 0) + (cropBox?.w ?? 0))
+    const bottom = Math.min(image?.naturalHeight ?? 0, (cropBox?.y ?? 0) + (cropBox?.h ?? 0))
 
-      commit({
-        ...markup,
-        crop: {
-          h: Math.min(cropBox.h, image.naturalHeight - y),
-          w: Math.min(cropBox.w, image.naturalWidth - x),
-          x,
-          y
-        }
-      })
+    if (cropBox && image && right - x > 8 && bottom - y > 8) {
+      commit({ ...markup, crop: { h: bottom - y, w: right - x, x, y } })
     }
 
     setCropBox(null)

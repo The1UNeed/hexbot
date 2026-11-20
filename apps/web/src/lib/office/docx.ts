@@ -289,6 +289,8 @@ export function splitParagraph(
 
   if (props) {
     next.append(props.cloneNode(true))
+    // A section ends at the paragraph that carries its properties: now the new one.
+    child(props, W, 'sectPr')?.remove()
   }
 
   // After a heading, Word goes on in body text.
