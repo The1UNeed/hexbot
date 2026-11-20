@@ -22,6 +22,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 
 import { readFileAsDataUrl } from '../../../lib/api'
 import { cn } from '../../../lib/cn'
+import { mimeOf } from '../../../lib/media'
 import type { FileComment } from '../../../stores/file-comments'
 
 import { statusText, useAutosave } from './autosave'
@@ -45,6 +46,12 @@ import {
 
 /** Pictures saved back in their own format; others can be marked up and sent, not saved. */
 const SAVES = new Set(['image/jpeg', 'image/png', 'image/webp'])
+
+const EXTENSIONS: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp'
+}
 
 const COLORS = [
   { label: 'Red', value: '#ef4444' },
@@ -154,6 +161,8 @@ export function ImageEditor({
   const root = useRef<HTMLDivElement>(null)
   const pointer = useRef<null | { x: number; y: number; mark?: Mark; moving?: Mark }>(null)
   const base = useRef(version)
+  // A stroke, a text mark or a crop under way: a new version waits for it too.
+  const busy = useRef<() => boolean>(() => false)
   // Saved once since it opened: Restore puts the original back.
   const savedOnce = useRef(false)
   const saves = SAVES.has(mime) && editable
@@ -189,7 +198,7 @@ export function ImageEditor({
     next.onload = () => {
       // Marks drawn or saved while it decoded stay; their save meets the new
       // version and the panel offers it instead of overwriting it.
-      if (!live || save.dirty()) {
+      if (!live || save.dirty() || busy.current()) {
         return
       }
 
@@ -224,6 +233,8 @@ export function ImageEditor({
 
     return () => observer.disconnect()
   }, [])
+
+  busy.current = () => pointer.current !== null || typing !== null || cropBox !== null
 
   const unit = image
     ? Math.max(2, Math.round(Math.max(image.naturalWidth, image.naturalHeight) / 400))
@@ -661,7 +672,11 @@ export function ImageEditor({
     return exportBlob(node, mime)
   }
 
-  const fileName = SAVES.has(mime) ? name : name.replace(/\.[^.]+$/, '') + '.png'
+  /** The name for a picture exported as `blob`: its own, or its stem with the format written. */
+  const nameFor = (blob: Blob) =>
+    mimeOf(name) === blob.type
+      ? name
+      : `${name.replace(/\.[^.]+$/, '')}.${EXTENSIONS[blob.type] ?? 'png'}`
 
   const menu: MenuEntry[] = [
     {
@@ -687,7 +702,7 @@ export function ImageEditor({
           }
         })
     },
-    downloadEntry(() => void exportNow().then(blob => blob && downloadBlob(fileName, blob))),
+    downloadEntry(() => void exportNow().then(blob => blob && downloadBlob(nameFor(blob), blob))),
     {
       disabled: !markup.marks.length && !markup.crop && !savedOnce.current,
       icon: <RotateCcw size={14} />,
@@ -844,7 +859,7 @@ export function ImageEditor({
               disabled={!image}
               onClick={() =>
                 void exportNow().then(
-                  blob => blob && onAttach(new File([blob], fileName, { type: blob.type }))
+                  blob => blob && onAttach(new File([blob], nameFor(blob), { type: blob.type }))
                 )
               }
               title={`Add the picture, as marked up, to your message to ${botName}`}
