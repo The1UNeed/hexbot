@@ -71,7 +71,7 @@ const DATE_FORMATS = new Set([14, 15, 16, 17, 18, 19, 20, 21, 22, 45, 46, 47])
 
 interface Styles {
   /** By style index: how its numbers show. */
-  kind: ('date' | 'number' | 'percent')[]
+  kind: ('date' | 'number' | 'percent' | 'text')[]
   /** The workbook counts days from 1904, as some Mac workbooks do. */
   date1904: boolean
 }
@@ -100,6 +100,11 @@ function readStyles(pkg: OfficePackage): Styles {
 
     if (DATE_FORMATS.has(id) || (custom.has(id) && /[dmyhs]/i.test(code) && !/[#0]/.test(code))) {
       return 'date' as const
+    }
+
+    // Text format: what is typed stays text, leading zeros and all.
+    if (id === 49 || (custom.has(id) && code.trim() === '@')) {
+      return 'text' as const
     }
 
     if (id === 9 || id === 10 || code.includes('%')) {
@@ -491,12 +496,15 @@ export function setCells(
       continue
     }
 
-    if (text.startsWith('=') && text.length > 1) {
+    if (kind !== 'text' && text.startsWith('=') && text.length > 1) {
       const formula = doc.createElementNS(S, `${prefix}f`)
       formula.textContent = text.slice(1)
       cell.append(formula)
       formulas = true
-    } else if (date !== null || percent || /^-?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i.test(text.trim())) {
+    } else if (
+      kind !== 'text' &&
+      (date !== null || percent || /^-?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i.test(text.trim()))
+    ) {
       const number = doc.createElementNS(S, `${prefix}v`)
       number.textContent = String(
         date ?? (percent ? Number(percent[1]) / 100 : Number(text.trim()))

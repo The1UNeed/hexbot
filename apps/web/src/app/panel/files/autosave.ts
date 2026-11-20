@@ -84,8 +84,13 @@ export function useAutosave(
     timer.current = window.setTimeout(() => void flush(), SAVE_DELAY)
   }, [flush])
 
-  /** An edit saved only by `flush`, as a picture is with Save. */
+  /**
+   * An edit saved only by `flush`, as a picture is with Save, or one still
+   * being typed: an earlier save waiting on its timer waits for it too, so it
+   * cannot land first and leave the typing unguarded.
+   */
   const mark = useCallback(() => {
+    window.clearTimeout(timer.current)
     pending.current = true
     setUnsaved(true)
     setStatus('idle')
