@@ -21,6 +21,7 @@ describe('CSV and TSV', () => {
 
     expect(rows).toEqual([['before'], [''], ['after']])
     expect(serializeDelimited(rows, ',', 'x\n')).toBe('before\n""\nafter\n')
+    expect(parseDelimited('a\n""', ',')).toEqual([['a'], ['']])
   })
 
   it('keeps the file’s line endings, byte-order mark and final line break', () => {

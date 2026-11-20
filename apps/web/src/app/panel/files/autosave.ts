@@ -25,6 +25,8 @@ export function useAutosave(
   // Shown: an edit not saved yet, for a Save button.
   const [unsaved, setUnsaved] = useState(false)
   const pending = useRef(false)
+  // A save on its way: what it wrote is not the file's version until it lands.
+  const writing = useRef(false)
   const timer = useRef<number>(undefined)
   const queue = useRef(Promise.resolve(true))
   const writeRef = useRef(write)
@@ -36,6 +38,7 @@ export function useAutosave(
     }
 
     pending.current = false
+    writing.current = true
     setStatus('saving')
 
     try {
@@ -52,6 +55,8 @@ export function useAutosave(
       setStatus('error')
 
       return false
+    } finally {
+      writing.current = false
     }
   }, [])
 
@@ -110,5 +115,14 @@ export function useAutosave(
     [run]
   )
 
-  return { dirty: () => pending.current, error, flush, mark, schedule, status, unsaved }
+  // An edit not saved yet, or one being saved: a new version of the file waits.
+  return {
+    dirty: () => pending.current || writing.current,
+    error,
+    flush,
+    mark,
+    schedule,
+    status,
+    unsaved
+  }
 }
