@@ -155,15 +155,63 @@ function Question({
   )
 }
 
+/** An answer as a person writes it: a chosen list reads as words, not JSON. */
+function spoken(answer: string): string {
+  try {
+    const parsed: unknown = JSON.parse(answer)
+
+    if (Array.isArray(parsed)) {
+      return parsed.map(String).join(', ')
+    }
+  } catch {
+    // A plain answer is not JSON.
+  }
+
+  return answer
+}
+
+/**
+ * The message that answers a question the bot stopped waiting on: the answer
+ * alone, or each question of a batch with its answer.
+ */
+export function replyText(clarify: ClarifyRequest, answers: Record<string, string>): string {
+  const keyOf = (question: ClarifyQuestion) => question.questionId ?? clarify.requestId
+
+  if (clarify.questions.length === 1) {
+    return spoken(answers[keyOf(clarify.questions[0]!)] ?? '')
+  }
+
+  return clarify.questions
+    .map(question => `${question.question}\n${spoken(answers[keyOf(question)] ?? '')}`)
+    .join('\n\n')
+}
+
 /**
  * A question the bot is waiting on, drawn like its messages (washed with its
  * face colour) with options A/B/C… and a field for your own answer. Answered questions collapse to
  * the chosen line; a batch keeps asking until every question is locked.
+ *
+ * When the bot stopped waiting (Stop, or the daemon restarting for an
+ * update), `onReply` keeps the card usable: the answer goes as your next
+ * message, as if typed in the message field.
  */
-export function ClarifyCard({ bot, clarify }: { bot?: Bot; clarify: ClarifyRequest }) {
+export function ClarifyCard({
+  bot,
+  clarify,
+  onReply
+}: {
+  bot?: Bot
+  clarify: ClarifyRequest
+  onReply?: (text: string) => void
+}) {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // Answers to a batch the bot stopped waiting on, held until all are in.
+  const [drafts, setDrafts] = useState<Record<string, string>>({})
   const color = useFaceColor(bot, bot ? bot.display_name : null)
+  const stopped = Boolean(clarify.expired) && !clarifyAnswered(clarify)
+  const replying = stopped && Boolean(onReply)
+  const answers = replying ? { ...clarify.answers, ...drafts } : clarify.answers
 
   const answer = async (question: ClarifyQuestion, value: string) => {
     if (busy) {
@@ -171,6 +219,20 @@ export function ClarifyCard({ bot, clarify }: { bot?: Bot; clarify: ClarifyReque
     }
 
     const key = question.questionId ?? clarify.requestId
+
+    if (replying) {
+      const next = { ...drafts, [key]: value }
+
+      if (clarifyAnswered({ ...clarify, answers: { ...clarify.answers, ...next } })) {
+        setDrafts({})
+        onReply!(replyText(clarify, { ...clarify.answers, ...next }))
+      } else {
+        setDrafts(next)
+      }
+
+      return
+    }
+
     setBusy(true)
 
     try {
@@ -194,17 +256,19 @@ export function ClarifyCard({ bot, clarify }: { bot?: Bot; clarify: ClarifyReque
 
         return (
           <Question
-            answer={Object.hasOwn(clarify.answers, key) ? clarify.answers[key] : undefined}
-            frozen={Boolean(clarify.expired) || busy}
+            answer={Object.hasOwn(answers, key) ? answers[key] : undefined}
+            frozen={(stopped && !replying) || busy}
             key={question.questionId ?? question.question}
             onAnswer={value => void answer(question, value)}
             question={question}
           />
         )
       })}
-      {clarify.expired && !clarifyAnswered(clarify) ? (
+      {stopped ? (
         <p className="text-[length:var(--text-secondary)] text-muted">
-          The bot stopped waiting. Reply in the message field instead.
+          {replying
+            ? 'The bot stopped waiting. Your answer goes as a new message.'
+            : 'The bot stopped waiting.'}
         </p>
       ) : null}
       {error ? (

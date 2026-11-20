@@ -3074,9 +3074,20 @@ function BotConversation() {
             ) : null}
             {timeline.map((item, position) => {
               if (item.kind === 'clarify') {
+                // A question the bot stopped waiting on, say across a daemon
+                // restart, still takes your answer as a message until you
+                // write something after it.
+                const answeredBelow = timeline
+                  .slice(position + 1)
+                  .some(later => later.kind === 'message' && later.message.role === 'user')
+
                 return (
                   <CardRow joined={botBefore(timeline, position)} key={item.clarify.requestId}>
-                    <ClarifyCard bot={bot} clarify={item.clarify} />
+                    <ClarifyCard
+                      bot={bot}
+                      clarify={item.clarify}
+                      onReply={ownerInput && !answeredBelow ? send : undefined}
+                    />
                   </CardRow>
                 )
               }

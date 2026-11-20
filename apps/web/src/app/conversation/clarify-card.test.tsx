@@ -127,9 +127,57 @@ describe('clarify card', () => {
     )
   })
 
-  it('takes no input once the bot stopped waiting', () => {
+  it('takes no input once the bot stopped waiting and you wrote after it', () => {
     render(<ClarifyCard clarify={clarify({ expired: true })} />)
     expect(screen.getByRole('option', { name: /Tech digging/ })).toBeDisabled()
-    expect(screen.getByText(/stopped waiting/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Your own answer')).toBeDisabled()
+    expect(screen.getByText('The bot stopped waiting.')).toBeInTheDocument()
+  })
+
+  // A daemon restart for an update cancels every waiting question.
+  it('sends an answer as a message after the bot stopped waiting', () => {
+    const call = vi.fn()
+    const onReply = vi.fn()
+    setActiveRpc({ call } as never)
+    render(<ClarifyCard clarify={clarify({ expired: true })} onReply={onReply} />)
+
+    expect(screen.getByText(/Your answer goes as a new message/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('option', { name: /Tech digging/ }))
+    expect(onReply).toHaveBeenCalledWith('Tech digging')
+    expect(call).not.toHaveBeenCalled()
+  })
+
+  it('sends a typed answer as a message after the bot stopped waiting', () => {
+    const onReply = vi.fn()
+    render(<ClarifyCard clarify={clarify({ expired: true })} onReply={onReply} />)
+
+    const field = screen.getByLabelText('Your own answer')
+    expect(field).toBeEnabled()
+    fireEvent.change(field, { target: { value: 'Robotics club' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }))
+    expect(onReply).toHaveBeenCalledWith('Robotics club')
+  })
+
+  it('sends a stopped batch as one message once every question is answered', () => {
+    const onReply = vi.fn()
+    render(
+      <ClarifyCard
+        clarify={clarify({
+          expired: true,
+          questions: [
+            { choices: ['Hackathon', 'Server'], multiSelect: false, question: 'First?', questionId: 'q1' },
+            { choices: ['Drive', 'Discord'], multiSelect: true, question: 'Second?', questionId: 'q2' }
+          ]
+        })}
+        onReply={onReply}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('option', { name: /Server/ }))
+    expect(onReply).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: /Drive/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Discord/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }))
+    expect(onReply).toHaveBeenCalledWith('First?\nServer\n\nSecond?\nDrive, Discord')
   })
 })
