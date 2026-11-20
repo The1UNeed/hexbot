@@ -9,6 +9,7 @@ import {
 } from 'react'
 
 import { cn } from '../../../lib/cn'
+import { parseDelimited, serializeDelimited } from '../../../lib/delimited'
 
 import type { CommentTarget } from './comment-layer'
 import { pointUnder } from './comment-layer'
@@ -166,8 +167,10 @@ export function SheetGrid({
     setEditing({ cell, value: initial ?? source(cell) })
   }
 
+  // Tab-separated, quoted where a cell holds a tab, a line break or a quote,
+  // so a copy pastes back into the same cells.
   const selectedText = () => {
-    const lines: string[] = []
+    const rows: string[][] = []
 
     for (let row = top; row <= bottom; row++) {
       const cells: string[] = []
@@ -176,10 +179,10 @@ export function SheetGrid({
         cells.push(valueAt({ col, row }))
       }
 
-      lines.push(cells.join('\t'))
+      rows.push(cells)
     }
 
-    return lines.join('\n')
+    return serializeDelimited(rows, '\t').replace(/\n$/, '')
   }
 
   const comment = (open = true) => {
@@ -283,14 +286,14 @@ export function SheetGrid({
       }
 
       event.preventDefault()
-      const lines = text.replace(/\r?\n$/, '').split(/\r?\n/)
       const changes: { cell: Cell; value: string }[] = []
 
-      lines.forEach((line, r) =>
-        line.split('\t').forEach((value, c) => {
+      // A paste may widen the sheet, up to the columns it can show.
+      parseDelimited(text, '\t').forEach((line, r) =>
+        line.forEach((value, c) => {
           const cell = { col: left + c, row: top + r }
 
-          if (cell.col < shownColumns) {
+          if (cell.col < MAX_COLUMNS) {
             changes.push({ cell, value })
           }
         })

@@ -253,6 +253,7 @@ export function DocxView(props: OfficeViewProps) {
               setFocus({ element: next, offset: 0 })
               changed()
             }}
+            onTyping={save.mark}
             pxPerPt={4 / 3}
             runs={block.views}
             style={{
@@ -434,12 +435,14 @@ export function XlsxView(props: OfficeViewProps) {
 function ShapeText({
   editable,
   onCommit,
+  onTyping,
   paragraphs,
   pxPerPt,
   where
 }: {
   editable: boolean
   onCommit: (paragraph: PptxParagraph, texts: string[]) => void
+  onTyping: () => void
   paragraphs: PptxParagraph[]
   pxPerPt: number
   where: string
@@ -456,6 +459,7 @@ function ShapeText({
           editable={editable}
           key={keyOf(paragraph.element)}
           onCommit={texts => onCommit(paragraph, texts)}
+          onTyping={onTyping}
           pxPerPt={pxPerPt}
           runs={paragraph.views}
           style={{
@@ -475,6 +479,7 @@ function Slide({
   editable,
   height,
   onCommit,
+  onTyping,
   slide,
   scale,
   width
@@ -482,6 +487,7 @@ function Slide({
   editable: boolean
   height: number
   onCommit: (slide: PptxSlide, paragraph: PptxParagraph, texts: string[]) => void
+  onTyping: () => void
   slide: PptxSlide
   /** CSS px per EMU. */
   scale: number
@@ -538,6 +544,7 @@ function Slide({
                     <ShapeText
                       editable={editable}
                       onCommit={(paragraph, texts) => onCommit(slide, paragraph, texts)}
+                      onTyping={onTyping}
                       paragraphs={cell}
                       pxPerPt={pxPerPt}
                       where={where}
@@ -580,6 +587,7 @@ function Slide({
         <ShapeText
           editable={editable}
           onCommit={(paragraph, texts) => onCommit(slide, paragraph, texts)}
+          onTyping={onTyping}
           paragraphs={item.paragraphs ?? []}
           pxPerPt={pxPerPt}
           where={where}
@@ -682,6 +690,7 @@ export function PptxView(props: OfficeViewProps) {
                   changed()
                 }
               }}
+              onTyping={save.mark}
               scale={scale}
               slide={slide}
               width={deck.width}
