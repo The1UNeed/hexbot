@@ -540,6 +540,12 @@ export function setCells(
         date ?? (percent ? Number(percent[1]) / 100 : Number(text.trim()))
       )
       cell.append(number)
+    } else if (kind !== 'text' && /^(true|false)$/i.test(text.trim())) {
+      // TRUE and FALSE are Excel's Booleans, as typing them into Excel makes them.
+      cell.setAttribute('t', 'b')
+      const flag = doc.createElementNS(S, `${prefix}v`)
+      flag.textContent = /^true$/i.test(text.trim()) ? '1' : '0'
+      cell.append(flag)
     } else {
       cell.setAttribute('t', 'inlineStr')
       const inline = doc.createElementNS(S, `${prefix}is`)

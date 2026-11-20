@@ -153,6 +153,26 @@ export function SheetGrid({
     )
   }
 
+  // A sheet that lost rows or columns keeps the selection on cells it still has.
+  useEffect(() => {
+    const fit = (cell: Cell): Cell => ({
+      col: Math.min(cell.col, shownColumns - 1),
+      row: Math.min(cell.row, rowCount - 1)
+    })
+
+    setRange(current => {
+      const anchor = fit(current.anchor)
+      const focused = fit(current.focus)
+
+      return anchor.row === current.anchor.row &&
+        anchor.col === current.anchor.col &&
+        focused.row === current.focus.row &&
+        focused.col === current.focus.col
+        ? current
+        : { anchor, focus: focused }
+    })
+  }, [rowCount, shownColumns])
+
   // The focused cell stays in view as the keyboard moves it.
   useEffect(() => {
     const node = grid.current?.querySelector<HTMLElement>(`[data-cell="${focus.row}:${focus.col}"]`)

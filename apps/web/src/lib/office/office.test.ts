@@ -285,6 +285,16 @@ describe('an Excel file', () => {
     expect(cellSource(pkg, sheet, 1, 0)).toBe('1.23456789012345')
   })
 
+  it('writes TRUE and FALSE as Booleans', () => {
+    const pkg = xlsx()
+    const sheet = readXlsx(pkg)!.sheets[0]!
+
+    setCells(pkg, sheet, [{ col: 0, row: 4, value: 'false' }])
+
+    expect(part(pkg, 'xl/worksheets/sheet1.xml')).toContain('<c r="A5" t="b"><v>0</v></c>')
+    expect(sheet.rows[4]![0]).toBe('FALSE')
+  })
+
   it('keeps what is typed into a Text cell as text', () => {
     const pkg = pack({
       'xl/_rels/workbook.xml.rels': `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Target="worksheets/sheet1.xml" Type="ws"/></Relationships>`,
