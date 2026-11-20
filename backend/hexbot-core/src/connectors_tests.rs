@@ -49,9 +49,25 @@ async fn testing_computer_use_says_which_screens_bots_reach_and_never_marks_it_b
             .unwrap()
             .contains("No screen here yet")
     );
-    // Switched off, it says so instead of asking for Cua.
+    // Switched off without Cua: both, Cua first.
     common::update_config(h, |c| {
         c["computers"]["vm"]["off"] = json!(true);
+        Ok(())
+    })
+    .unwrap();
+    let test = rpc(h, "hexbot.connectors.test", json!({"id":"computer_use"})).await;
+    let message = test["message"].as_str().unwrap();
+    assert!(
+        message.contains("is off and needs Cua (uv tool install cua)"),
+        "{message}"
+    );
+    // Switched off with Cua set up: only turning it on is missing.
+    let cua = h.join("cua");
+    fs::write(&cua, "#!/bin/sh\n").unwrap();
+    #[cfg(unix)]
+    fs::set_permissions(&cua, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    common::update_config(h, |c| {
+        c["computer_use"]["command"] = json!(cua.to_string_lossy());
         Ok(())
     })
     .unwrap();

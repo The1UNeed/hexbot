@@ -355,9 +355,10 @@ pub fn computer_use_changed(home: &Path, bot: &str) -> Result<()> {
 /// Whether the bots' computer can run: in use, and Cua on this computer.
 pub fn vm_usable(home: &Path) -> Result<bool> {
     // Read on every section build and staleness check: the cached config.
-    if !vm_on(home)? {
-        return Ok(false);
-    }
+    Ok(vm_on(home)? && cua_here(home)?)
+}
+/// Whether Cua is set up here to run the bots' computer, on or off.
+pub fn cua_here(home: &Path) -> Result<bool> {
     let cfg = common::read_config_cached(home)?;
     let env = crate::connectors::profile_credentials(home, home)?;
     Ok(crate::computers::command(&cfg, &env).is_some())

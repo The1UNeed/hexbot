@@ -319,7 +319,7 @@ function ComputerUse({ mobile }: { mobile: ReturnType<typeof useMobile> }) {
 }
 /**
  * Settings, Computers, as on the web: every computer bots can use
- * (`machines.rs`) and the bots on each one's terminal and desktop. This
+ * (`machines.rs`) and the bots that work on each one. This
  * phone can't be one of them; a desktop app offers its own computer.
  */
 function Computers({ mobile }: { mobile: ReturnType<typeof useMobile> }) {

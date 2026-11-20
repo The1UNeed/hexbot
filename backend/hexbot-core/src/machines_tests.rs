@@ -692,6 +692,20 @@ fn fake_mac(
     h: &Path,
     windows: std::sync::Arc<Mutex<Value>>,
 ) -> (u64, std::sync::Arc<Mutex<Vec<String>>>) {
+    fake_mac_holding(h, windows, None)
+}
+/// A tool the fake computer holds its reply to: it says the request came
+/// (`.1`) and replies once released (`.2`).
+type Hold = (
+    &'static str,
+    std::sync::Arc<tokio::sync::Notify>,
+    std::sync::Arc<tokio::sync::Notify>,
+);
+fn fake_mac_holding(
+    h: &Path,
+    windows: std::sync::Arc<Mutex<Value>>,
+    hold: Option<Hold>,
+) -> (u64, std::sync::Arc<Mutex<Vec<String>>>) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
     let connection = connection_id();
     attach(
@@ -720,6 +734,12 @@ fn fake_mac(
                 seen.lock().unwrap().push(tool.clone());
                 json!({"content":[{"type":"text","text":"ok"}]})
             };
+            if let Some((held, came, release)) = &hold
+                && *held == tool
+            {
+                came.notify_one();
+                release.notified().await;
+            }
             reply(&home, "mac", &json!({"request_id":id,"result":result})).unwrap();
         }
     });
@@ -1386,7 +1406,10 @@ async fn a_look_after_an_action_checks_the_grant_again() {
     migrate(h).unwrap();
     desk(h, "device:mac", "owl", true).unwrap();
     let windows = std::sync::Arc::new(Mutex::new(json!([window("Notes", true, 0.)])));
-    let (connection, done) = fake_mac(h, windows);
+    let came = std::sync::Arc::new(tokio::sync::Notify::new());
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    let hold = ("computer_key", came.clone(), release.clone());
+    let (connection, done) = fake_mac_holding(h, windows, Some(hold));
     allow_app(h, "device:mac", "owl", "s1", "Notes", true).unwrap();
     let home2 = h.to_owned();
     let acting = tokio::spawn(async move {
@@ -1401,11 +1424,11 @@ async fn a_look_after_an_action_checks_the_grant_again() {
         )
         .await
     });
-    // The key goes out; the grant goes during the wait before the look.
-    while done.lock().unwrap().is_empty() {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    // The key reaches the computer, the grant goes, and only then does the
+    // computer answer, so the look that follows finds it gone.
+    came.notified().await;
     desk(h, "device:mac", "owl", false).unwrap();
+    release.notify_one();
     let err = acting.await.unwrap().err().unwrap();
     assert!(
         err.message.contains("can't use the desktop"),

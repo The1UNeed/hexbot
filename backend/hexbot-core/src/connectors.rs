@@ -1086,14 +1086,17 @@ async fn probe(home: &Path, id: &str, bot: Option<&str>) -> Result<Value> {
     // here, without saving it, so a missing Cua never marks it broken (a
     // user's computer runs its own).
     if id == crate::machines::COMPUTER_USE {
-        let off = !crate::machines::vm_on(home)?;
-        let vm = !off && crate::machines::vm_usable(home)?;
+        let on = crate::machines::vm_on(home)?;
+        let cua = crate::machines::cua_here(home)?;
+        let vm = on && cua;
         let host = crate::machines::host_desktop_on(home)?;
-        // What to do about the bots' computer: turn it on, or set it up.
-        let vm_note = if off {
-            "The bots' computer is off; turn it on in Settings, Computers."
-        } else {
-            "The bots' computer needs Cua (uv tool install cua) and Docker here."
+        // What to do about the bots' computer: set it up, then turn it on.
+        let vm_note = match (on, cua) {
+            (false, true) => "The bots' computer is off; turn it on in Settings, Computers.",
+            (false, false) => {
+                "The bots' computer is off and needs Cua (uv tool install cua) and Docker here; then turn it on in Settings, Computers."
+            }
+            _ => "The bots' computer needs Cua (uv tool install cua) and Docker here.",
         };
         return Ok(match (vm, host) {
             (true, true) => {

@@ -1573,7 +1573,10 @@ or a clear.
   bot already uses is refused (4202), so other bots never move.
 - `hexbot.connectors.test {id, bot?}` → `{ok, message, tool_count?}`. A successful
   connected-server probe counts all tool pages and saves `tool_count`. The connector
-  list reports the last probe count, or null when untested.
+  list reports the last probe count, or null when untested. For Computer Use
+  it says which screens bots can reach from here (the bots' computer, set up
+  and on, or this computer's shared screen) and what is missing, and saves
+  nothing, so the connector is never marked broken.
 - `hexbot.connectors.clear {id, bot?, bot_only?}` → `{connector}`. Clearing
   web search returns it to its free default, and it stays on for every bot.
 - `hexbot.connectors.set_for_bot {id, bot, enabled}` → `{connector}`. A
