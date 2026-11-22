@@ -268,7 +268,8 @@ with Viewport Segments place both poses on the exact halves.
   wrote or edited along the way, such as scripts and tests, do not show.
   A shared picture, video or audio file shows or plays there instead, and so
   do the voice replies, pictures and clips its media tools make. Select an audio or
-  video filename to load its player from the daemon. The composer shows pictures as
+  video filename to load its player. The daemon streams media over HTTP so the
+  chat connection stays available during playback and seeking. The composer shows pictures as
   thumbnails and other files as cards, each with a remove button. A file
   uploads the moment it is dropped on the chat, picked or pasted, one at a
   time, in parts: a picture dims under its percentage, a card says

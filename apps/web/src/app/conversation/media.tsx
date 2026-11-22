@@ -4,19 +4,21 @@ import { type ReactNode, useEffect, useState } from 'react'
 import { Button } from '../../components/ui/button'
 import { filesRead } from '../../lib/api'
 import type { AttachmentKind } from '../../lib/types'
+import { useConnection } from '../../stores/connection'
 
 import { blobFromDataUrl } from './file-tab'
 
 /**
- * Where a file plays from: this page's own copy, or the daemon's, read once
- * through the chat's session and held as an object URL while it shows. The
- * app's policy plays media only from the page or a blob, never a data URL.
+ * Use the daemon's HTTP stream for remote media. Older daemons return bytes
+ * inline, which the player can open through a temporary blob URL.
  */
 function useMediaUrl(
   url: string | undefined,
   path: string | undefined,
   sessionId: string | undefined
 ): { failed: boolean; src: string | undefined } {
+  const connects = useConnection(state => state.connects)
+
   const [read, setRead] = useState<{ failed: boolean; src: string | undefined }>({
     failed: false,
     src: undefined
@@ -32,6 +34,14 @@ function useMediaUrl(
 
     filesRead(sessionId, path)
       .then(file => {
+        if (file.mediaUrl) {
+          if (live) {
+            setRead({ failed: false, src: file.mediaUrl })
+          }
+
+          return
+        }
+
         const blob = file.data_url ? blobFromDataUrl(file.data_url) : null
 
         if (!blob) {
@@ -55,7 +65,7 @@ function useMediaUrl(
         URL.revokeObjectURL(made)
       }
     }
-  }, [path, sessionId, url])
+  }, [connects, path, sessionId, url])
 
   return url ? { failed: false, src: url } : read
 }
@@ -83,7 +93,6 @@ export function MediaView({
   url?: string
 }) {
   const [requested, setRequested] = useState(false)
-  // Each read carries the whole file over the chat connection.
   const deferred = !url && kind !== 'image'
   const { failed, src } = useMediaUrl(url, deferred && !requested ? undefined : path, sessionId)
 

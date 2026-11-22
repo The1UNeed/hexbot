@@ -130,16 +130,7 @@ impl FileAccess {
     }
     pub(super) fn pi_read(&self, limit: usize) -> Result<Vec<u8>> {
         self.pi_mode(true, false)?;
-        let file = opened(unsafe {
-            libc::openat(
-                self.directory.as_raw_fd(),
-                self.name.as_ptr(),
-                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
-            )
-        })?;
-        if !file.metadata()?.is_file() {
-            return Err(Error::new(4202, "path is not a regular file"));
-        }
+        let file = self.open_regular()?;
         let mut bytes = Vec::new();
         file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
         if bytes.len() > limit {
@@ -154,7 +145,7 @@ impl FileAccess {
         let mode = self.pi_mode(false, true)?;
         self.replace(bytes, mode)
     }
-    pub(super) fn read(&self) -> Result<String> {
+    pub(super) fn open_regular(&self) -> Result<File> {
         let file = opened(unsafe {
             libc::openat(
                 self.directory.as_raw_fd(),
@@ -165,6 +156,10 @@ impl FileAccess {
         if !file.metadata()?.is_file() {
             return Err(Error::new(4202, "path is not a regular file"));
         }
+        Ok(file)
+    }
+    pub(super) fn read(&self) -> Result<String> {
+        let file = self.open_regular()?;
         let mut bytes = Vec::new();
         file.take(256 * 1024 + 1).read_to_end(&mut bytes)?;
         if bytes.len() > 256 * 1024 {

@@ -6,6 +6,7 @@ import { ScrollArea } from '../../components/ui/scroll-area'
 import { filesRead, filesWrite, type OpenedFile } from '../../lib/api'
 import { cn } from '../../lib/cn'
 import { useBots } from '../../stores/bots'
+import { useConnection } from '../../stores/connection'
 import { useLiveSessionId } from '../../stores/sections'
 import { useTranscript } from '../../stores/transcripts'
 import { useUi } from '../../stores/ui'
@@ -101,6 +102,7 @@ export function editRequest(ask: string, name: string, path?: string, editable =
 }
 
 function useOpenedFile(tab: FileTab, sessionId: string) {
+  const connects = useConnection(state => state.connects)
   const { path, url } = tab.file
   const transcript = useTranscript(sessionId)
   const working = Boolean(transcript?.streamingMessageId)
@@ -181,7 +183,7 @@ function useOpenedFile(tab: FileTab, sessionId: string) {
     return () => {
       current = false
     }
-  }, [edits, path, sessionId, tab.file.mime, tab.title, url, working])
+  }, [connects, edits, path, sessionId, tab.file.mime, tab.title, url, working])
 
   useEffect(() => {
     if (!updated) {
@@ -356,7 +358,7 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
 
   const sessionId = useFileSession(tab)
   const { adopt, error, file, outgrown, saved, updated, working } = useOpenedFile(tab, sessionId)
-  const objectUrl = useObjectUrl(file?.data_url)
+  const objectUrl = useObjectUrl(file?.mediaUrl ?? file?.data_url)
   // The version the editor's text is based on. A refresh moves it only when the
   // editor takes the new text; while it holds an unsaved edit, a save names the
   // version that edit started from, so it cannot overwrite the bot's change.

@@ -207,6 +207,7 @@ function Media({
   useEffect(() => {
     let live = true
     // Keyed by contents too, so a file changed since it was last opened shows as it is now.
+    setFailed(false)
     mediaUri(`preview:${id}:${file.version ?? ''}`, async () => file).then(
       next => live && setUri(next),
       () => live && setFailed(true)

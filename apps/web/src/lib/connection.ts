@@ -34,13 +34,15 @@ import { uiActions } from '../stores/ui'
 import { getBridge, type HexbotBridge } from './bridge'
 import { connectionClosed, offerThisComputer, watchThisComputer } from './computer-endpoint'
 import { DaemonIdentityError, DaemonUnreachableError } from './daemon-identity'
+import { targetOrigin } from './daemon-origin'
 import { authorizeCache, cacheScope, revokeCache, suspendCache } from './device-cache'
 import { proofHeaders } from './dpop'
 import { attachEventRouting } from './events'
-import { DEFAULT_DAEMON_PORT } from './pair-link'
 import { clearPersonalState, keepRoster, restoreRoster, stopRosterWrites } from './roster-cache'
 import { HexbotRpcClient, setActiveRpc } from './rpc'
 import type { ConnectionTarget, DaemonInfo } from './types'
+
+export { setLocalDaemonPort, targetOrigin } from './daemon-origin'
 
 export const BACKOFF_MIN_MS = 1_000
 export const BACKOFF_MAX_MS = 16_000
@@ -112,39 +114,6 @@ function defaultFetch(deps: ConnectionDeps): typeof fetch {
       statusText: result.statusText
     })
   }
-}
-
-let localDaemonPort = DEFAULT_DAEMON_PORT
-
-/** Remember the port of the daemon the Electron main process started. */
-export function setLocalDaemonPort(port?: null | number): void {
-  if (port) {
-    localDaemonPort = port
-  }
-}
-
-/** HTTP origin for a target, e.g. `http://192.168.1.10:9119`. */
-export function targetOrigin(target: ConnectionTarget): string {
-  if (target.kind === 'remote') {
-    return `${target.tls ? 'https' : 'http'}://${target.host}${target.port === (target.tls ? 443 : 80) ? '' : `:${target.port}`}`
-  }
-
-  if (target.origin) {
-    return target.origin.replace(/\/+$/, '')
-  }
-
-  // A browser page came from the daemon itself, or from the Vite dev server
-  // proxying it (VITE_HEXBOT_ORIGIN). Inside Electron the page origin is
-  // hexbot-app:// or, in dev, the Vite server: never the daemon.
-  if (
-    typeof window !== 'undefined' &&
-    !getBridge() &&
-    window.location.protocol.startsWith('http')
-  ) {
-    return window.location.origin
-  }
-
-  return `http://127.0.0.1:${localDaemonPort}`
 }
 
 /**

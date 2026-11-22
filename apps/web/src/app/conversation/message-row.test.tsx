@@ -307,7 +307,10 @@ describe('MessageRow files', () => {
 
   it('plays what the bot made or shared from the daemon, under its reply', async () => {
     const read = vi.spyOn(api, 'filesRead').mockImplementation(async (_session, path) => ({
-      data_url: `data:${path.endsWith('.mp3') ? 'audio/mpeg' : 'video/mp4'};base64,AAAA`,
+      mediaUrl: path.endsWith('.mp3')
+        ? 'https://daemon.test/api/media/' + 'a'.repeat(32)
+        : undefined,
+      data_url: path.endsWith('.mp3') ? undefined : 'data:video/mp4;base64,AAAA',
       mime: path.endsWith('.mp3') ? 'audio/mpeg' : 'video/mp4',
       modified: 0,
       name: path.split('/').pop()!,
@@ -405,7 +408,7 @@ describe('MessageRow files', () => {
     const [audio, ...again] = await screen.findAllByLabelText('a1.mp3')
     expect(again).toEqual([])
     expect(audio!.tagName).toBe('AUDIO')
-    expect(audio).toHaveAttribute('src', 'blob:made')
+    expect(audio).toHaveAttribute('src', 'https://daemon.test/api/media/' + 'a'.repeat(32))
     expect((await screen.findByLabelText('clip.mp4')).tagName).toBe('VIDEO')
     expect((await screen.findByLabelText('lake.mp4')).tagName).toBe('VIDEO')
     // A shared document stays a card that opens beside the chat.
