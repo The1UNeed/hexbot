@@ -51,6 +51,7 @@ import type {
   Computer,
   Connector,
   ModelOption,
+  Plugin,
   Provider,
   Section
 } from '../lib/types'
@@ -1191,6 +1192,17 @@ export function connectedForPrimary(connectors: Connector[]): string[] {
     .map(item => item.id)
 }
 
+/** Whether a suite (Microsoft or Google) has at least one ready signed-in connector. */
+function suiteConnected(family: string, plugins: Plugin[]): boolean {
+  return plugins.some(
+    plugin =>
+      plugin.kind === 'connector' &&
+      plugin.connector?.family === family &&
+      Boolean(plugin.connector.account?.signed_in) &&
+      plugin.ready
+  )
+}
+
 /** Microsoft and Google: one card each, opening the connector's sheet to sign in. */
 export function AccountSuites() {
   const plugins = usePlugins(state => state.plugins)
@@ -1211,7 +1223,7 @@ export function AccountSuites() {
 
     return {
       ...suite,
-      connected: family.some(plugin => plugin.connector?.account?.signed_in && plugin.ready),
+      connected: suiteConnected(suite.family, plugins ?? []),
       plugin: family.find(plugin => plugin.id === suite.first) ?? family[0] ?? null
     }
   }).filter(suite => suite.plugin)
@@ -1264,15 +1276,27 @@ export function ToolsStep({
   onContinue,
   onError
 }: {
-  onContinue: () => void
+  onContinue: (computerUse?: boolean) => void
   onError: (message: string) => void
 }) {
+  const plugins = usePlugins(state => state.plugins)
   const [tools, setTools] = useState<Connector[] | null>(null)
   const [selected, setSelected] = useState<string | null>('web_search')
+  // The Computer Use plugin for every bot made from now on, HexBot first.
+  // Null until computersList answers, or on a daemon from before computers.
+  const [computerUse, setComputerUse] = useState<boolean | null>(null)
+  const [busy, setBusy] = useState(false)
+  const computersPending = useRef<Promise<boolean | null> | null>(null)
 
   useEffect(() => {
+    let active = true
+
     connectorsList()
       .then(result => {
+        if (!active) {
+          return
+        }
+
         const order = (id: string) => {
           const index = SUGGESTED_TOOLS.indexOf(id)
 
@@ -1285,15 +1309,113 @@ export function ToolsStep({
             .sort((a, b) => order(a.id) - order(b.id))
         )
       })
-      .catch(reason => onError(String(reason)))
+      .catch(reason => {
+        if (active) {
+          onError(String(reason))
+        }
+      })
+
+    // Computer Use is suggested on when the bots' computer can run here.
+    const pending = computersList()
+      .then(({ computers }) =>
+        Array.isArray(computers)
+          ? Boolean(computers.find(computer => computer.kind === 'vm')?.available)
+          : null
+      )
+      .catch(reason => {
+        if (active && !unknownMethod(reason)) {
+          onError(String(reason))
+        }
+
+        return null
+      })
+
+    computersPending.current = pending
+    void pending.then(value => {
+      if (active) {
+        computersPending.current = null
+        setComputerUse(value)
+      }
+    })
+
+    return () => {
+      active = false
+
+      if (computersPending.current === pending) {
+        computersPending.current = null
+      }
+    }
   }, [onError])
+
+  const save = async () => {
+    if (computerUse === null && !computersPending.current) {
+      onContinue(undefined)
+
+      return
+    }
+
+    setBusy(true)
+
+    try {
+      const chosen = computerUse ?? (await computersPending.current)
+
+      if (chosen !== null) {
+        await computersDefaults({ computer_use: chosen })
+      }
+
+      onContinue(chosen ?? undefined)
+    } catch (reason) {
+      // A daemon from before computers has no defaults method.
+      if (unknownMethod(reason)) {
+        onContinue(undefined)
+      } else {
+        onError(String(reason))
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const ready = (tools ?? []).filter(item => item.state === 'ready')
 
+  const connectedSuites = ACCOUNT_SUITES.filter(suite =>
+    suiteConnected(suite.family, plugins ?? [])
+  ).length
+
+  const readyCount = ready.length + connectedSuites + (computerUse ? 1 : 0)
+
   return (
     <div className="w-full space-y-4 py-8">
+      {computerUse !== null ? (
+        <div className="rounded-2xl bg-foreground/[0.04]">
+          <label
+            className={cn(
+              'flex items-center gap-3 px-4 py-3',
+              busy ? 'opacity-60' : 'cursor-pointer'
+            )}
+            data-testid="onboarding-computer-use"
+          >
+            <ConnectorIcon icon="glyph:monitor" />
+            <span className="min-w-0 flex-1">
+              <span className="flex items-center gap-2 font-medium">
+                Computer Use <Chip tone="accent">Suggested</Chip>
+              </span>
+              <span className="block text-secondary text-muted">
+                Bots see and use the screens of the computers they work on: click, type and open
+                apps.
+              </span>
+            </span>
+            <Switch
+              aria-label="Computer Use"
+              checked={computerUse}
+              disabled={busy}
+              onCheckedChange={setComputerUse}
+            />
+          </label>
+        </div>
+      ) : null}
       <AccountSuites />
-      <ScrollArea className="max-h-[44dvh] overflow-hidden rounded-2xl bg-foreground/[0.04]">
+      <ScrollArea className="max-h-[40dvh] overflow-hidden rounded-2xl bg-foreground/[0.04]">
         <ul className="divide-y divide-foreground/[0.07]">
           {(tools ?? []).map(item => {
             const open = selected === item.id
@@ -1335,23 +1457,25 @@ export function ToolsStep({
             )
           })}
           {tools === null ? (
-            <li className="px-4 py-6 text-center text-secondary text-muted">Loading tools</li>
+            <li className="px-4 py-6 text-center text-secondary text-muted">Loading plugins</li>
           ) : null}
         </ul>
       </ScrollArea>
       <p className="text-center text-secondary text-muted">
-        {ready.length === 0
-          ? 'Skip any you don’t use. You can connect more later in Settings, Plugins.'
-          : `${ready.length} set up. HexBot gets what you connect here; more in Settings, Plugins.`}
+        {readyCount === 0
+          ? 'Skip any you don’t use. You can add more later in Settings, Plugins.'
+          : `${readyCount} ready. HexBot gets what you turn on or connect here; more in Settings, Plugins.`}
       </p>
       <SetupActions>
         <Button
+          busy={busy}
           className={PILL}
           data-testid="onboarding-tools-continue"
-          onClick={onContinue}
-          variant={ready.length ? 'primary' : 'secondary'}
+          disabled={busy}
+          onClick={() => void save()}
+          variant={readyCount ? 'primary' : 'secondary'}
         >
-          {ready.length ? 'Continue' : 'Skip for now'}
+          {readyCount ? 'Continue' : 'Skip for now'}
         </Button>
       </SetupActions>
     </div>
@@ -1360,13 +1484,17 @@ export function ToolsStep({
 
 /**
  * Where bots work (`machines.rs`): their own computer, suggested, and the
- * daemon's computer, its terminal and desktop. Saved for every bot made from
- * now on, HexBot first; each bot changes in Settings, Computers.
+ * daemon's computer, its terminal and (when Computer Use is on) desktop.
+ * Saved for every bot made from now on, HexBot first; each bot changes in
+ * Settings, Computers.
  */
 export function ComputersStep({
+  computerUse,
   onContinue,
   onError
 }: {
+  /** Whether setup turned on Computer Use on the Suggested plugins step. */
+  computerUse?: boolean
   onContinue: () => void
   onError: (message: string) => void
 }) {
@@ -1374,20 +1502,15 @@ export function ComputersStep({
   const [vm, setVm] = useState(false)
   const [terminal, setTerminal] = useState(false)
   const [desktop, setDesktop] = useState(false)
-  // The Computer Use plugin for every bot made from now on, HexBot first.
-  const [computerUse, setComputerUse] = useState(false)
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
     computersList()
       .then(({ computers }) => {
         setComputers(computers)
-        // The bots' computer, and Computer Use on it, are suggested when it
-        // can run; this computer is never chosen for the user.
-        const runs = Boolean(computers.find(computer => computer.kind === 'vm')?.available)
-
-        setVm(runs)
-        setComputerUse(runs)
+        // The bots' computer is suggested when it can run; this computer is
+        // never chosen for the user.
+        setVm(Boolean(computers.find(computer => computer.kind === 'vm')?.available))
       })
       .catch(reason => {
         // A daemon from before computers: nothing to choose here.
@@ -1401,6 +1524,7 @@ export function ComputersStep({
 
   const own = computers?.find(computer => computer.kind === 'vm')
   const host = computers?.find(computer => computer.kind === 'host')
+  const useComputer = computerUse ?? Boolean(own?.available)
 
   const save = async () => {
     setBusy(true)
@@ -1414,13 +1538,13 @@ export function ComputersStep({
 
       // This computer's screen is shared only for Computer Use, and only
       // when bots work on it.
-      const share = desktop && computerUse && terminal
+      const share = desktop && useComputer && terminal && Boolean(host?.desktop.available)
 
       if (share) {
         await computersSet('host', { desktop: true })
       }
 
-      await computersDefaults({ computer_use: computerUse, host_terminal: terminal })
+      await computersDefaults({ host_terminal: terminal })
       onContinue()
     } catch (reason) {
       onError(String(reason))
@@ -1486,19 +1610,7 @@ export function ComputersStep({
           terminal,
           setTerminal
         )}
-      </div>
-      <div className="divide-y divide-foreground/[0.07] rounded-2xl bg-foreground/[0.04]">
-        {option(
-          'onboarding-computer-use',
-          'Computer Use',
-          <>
-            Computer Use <Chip tone="accent">Suggested</Chip>
-          </>,
-          'Bots see and use the screens of the computers they work on: click, type and open apps. A plugin, in Settings, Plugins.',
-          computerUse,
-          setComputerUse
-        )}
-        {computerUse && terminal
+        {useComputer && terminal
           ? option(
               'onboarding-computer-desktop',
               `Computer Use on ${host.name}`,
@@ -1514,8 +1626,8 @@ export function ComputersStep({
       </div>
       <p className="text-center text-secondary text-muted">
         {!vm && !terminal
-          ? 'Without a computer, bots chat and use your connected accounts only.'
-          : 'Change this for each bot in Settings, Computers and Settings, Plugins. Your other computers show up in Settings, Computers once you let bots work on them.'}
+          ? 'Without a computer, bots chat and use your plugins only.'
+          : 'Change this for each bot in Settings, Computers. Your other computers show up there once you let bots work on them.'}
       </p>
       <SetupActions>
         <Button
@@ -1543,6 +1655,7 @@ function OnboardingPage() {
   const [progress, setProgress] = useState<DaemonProgress[]>([])
   const [configured, setConfigured] = useState<Provider[]>([])
   const [defaultModel, setDefaultModel] = useState<string | null>(null)
+  const [computerUse, setComputerUse] = useState<boolean | undefined>(undefined)
   const [error, setError] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
   const creatingPrimary = useRef(false)
@@ -1809,8 +1922,8 @@ function OnboardingPage() {
         "The bots' computer, the one Hexbot runs on, or both."
       ],
       tools: [
-        'Connect your accounts',
-        'Suggested: Microsoft or Google, GitHub and X, so your bots can help with them.'
+        'Suggested plugins',
+        'Computer Use, Microsoft or Google, GitHub and X, so your bots can help with them.'
       ],
       usage: ['Help improve Hexbot', 'Nothing is sent unless you turn this on.']
     } as const
@@ -1846,10 +1959,18 @@ function OnboardingPage() {
       ) : null}
 
       {step === 'tools' ? (
-        <ToolsStep onContinue={() => setStep('computers')} onError={onError} />
+        <ToolsStep
+          onContinue={chosen => {
+            setComputerUse(chosen)
+            setStep('computers')
+          }}
+          onError={onError}
+        />
       ) : null}
 
-      {step === 'computers' ? <ComputersStep onContinue={toUsage} onError={onError} /> : null}
+      {step === 'computers' ? (
+        <ComputersStep computerUse={computerUse} onContinue={toUsage} onError={onError} />
+      ) : null}
 
       {error ? (
         <p className="pb-10 text-center text-secondary text-danger" role="alert">

@@ -677,6 +677,71 @@ it('a roster refresh during HexBot creation does not repeat the completed decisi
   expect(call.mock.calls.filter(([name]) => name === 'hexbot.bots.introduce')).toHaveLength(1)
 })
 
+it('Suggested plugins carries the Computer Use choice into Where can your bots work', async () => {
+  existing = false
+  useBots.setState({ byName: {}, order: [], loaded: true })
+  useUi.setState({ lastSection: null })
+  call.mockImplementation((method: string) =>
+    method === 'hexbot.computers.list'
+      ? Promise.resolve({
+          computers: [
+            {
+              apps: {},
+              available: true,
+              desktop: { available: true, bots: [] },
+              id: 'vm',
+              kind: 'vm',
+              name: "The bots' computer",
+              on: true,
+              online: true,
+              os: 'Linux',
+              terminal: { available: true, bots: [] }
+            },
+            {
+              apps: {},
+              available: true,
+              desktop: { available: true, bots: [], on: false },
+              id: 'host',
+              kind: 'host',
+              name: 'studio',
+              on: true,
+              online: true,
+              os: 'macOS',
+              terminal: { available: true, bots: [], sandboxed: true }
+            }
+          ]
+        })
+      : reply(method)
+  )
+
+  await mount()
+  fireEvent.click(await screen.findByRole('button', { name: /Get started/ }))
+  fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+  const providers = await screen.findByRole('button', { name: 'Continue' })
+  await waitFor(() => expect(providers).toBeEnabled())
+  fireEvent.click(providers)
+  const defaults = await screen.findByTestId('onboarding-defaults-continue')
+  await waitFor(() => expect(defaults).toBeEnabled())
+  fireEvent.click(defaults)
+
+  expect(await screen.findByRole('heading', { name: 'Suggested plugins' })).toBeVisible()
+  const computerUse = await screen.findByRole('switch', { name: 'Computer Use' })
+  expect(computerUse).toHaveAttribute('aria-checked', 'true')
+  fireEvent.click(computerUse)
+  expect(computerUse).toHaveAttribute('aria-checked', 'false')
+  fireEvent.click(screen.getByTestId('onboarding-tools-continue'))
+
+  expect(await screen.findByRole('heading', { name: 'Where can your bots work?' })).toBeVisible()
+  expect(screen.queryByRole('switch', { name: 'Computer Use' })).toBeNull()
+  fireEvent.click(await screen.findByRole('switch', { name: 'studio, where Hexbot runs' }))
+  expect(screen.queryByRole('switch', { name: 'Computer Use on studio' })).toBeNull()
+  fireEvent.click(screen.getByTestId('onboarding-computers-continue'))
+  await screen.findByTestId('onboarding-usage-continue')
+  expect(call).toHaveBeenCalledWith('hexbot.computers.defaults', { computer_use: false })
+  expect(call).toHaveBeenCalledWith('hexbot.computers.defaults', { host_terminal: true })
+})
+
 describe('usage data step', () => {
   const settings = (usage_data: boolean) =>
     call.mockImplementation((method: string) =>
