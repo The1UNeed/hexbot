@@ -1,5 +1,7 @@
+import { Download } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
 
+import { Button } from '../../components/ui/button'
 import { filesRead } from '../../lib/api'
 import type { AttachmentKind } from '../../lib/types'
 
@@ -80,7 +82,25 @@ export function MediaView({
   sessionId?: string
   url?: string
 }) {
-  const { failed, src } = useMediaUrl(url, path, sessionId)
+  const [requested, setRequested] = useState(false)
+  // Each read carries the whole file over the chat connection.
+  const deferred = !url && kind !== 'image'
+  const { failed, src } = useMediaUrl(url, deferred && !requested ? undefined : path, sessionId)
+
+  if (deferred && !src && !failed) {
+    return (
+      <Button
+        aria-label={`${requested ? 'Loading' : 'Load'} ${name}`}
+        busy={requested}
+        className="max-w-full"
+        icon={<Download size={16} />}
+        onClick={() => setRequested(true)}
+        variant="pill"
+      >
+        <span className="truncate">{name}</span>
+      </Button>
+    )
+  }
 
   if (failed) {
     return fallback

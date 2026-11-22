@@ -511,6 +511,20 @@ describe('ProfilePanel', () => {
     expect(screen.queryByRole('alert')).toBeNull()
   })
 
+  it('offers Retry when the first computer status request fails', async () => {
+    api.computerStatus
+      .mockRejectedValueOnce(new Error('Connection lost'))
+      .mockResolvedValue(running)
+    useComputer.setState({ error: null, status: null })
+    seed([], false)
+    api.computersList.mockResolvedValue({ computers: [vmComputer()] })
+    render(<ProfilePanel />)
+    fireEvent.click(screen.getByRole('tab', { name: 'Computer' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Connection lost')
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByRole('button', { name: 'Turn on Computer Use' })).toBeVisible()
+  })
+
   it('waits for the list of computers before it shows the screen', async () => {
     let answer: (value: { computers: Computer[] }) => void = () => {}
 
@@ -529,6 +543,7 @@ describe('ProfilePanel', () => {
     render(<ProfilePanel />)
     fireEvent.click(screen.getByRole('tab', { name: 'Computer' }))
     await waitFor(() => expect(useComputer.getState().status).not.toBeNull())
+    expect(screen.getByText('Loading computer…')).toBeVisible()
     // The status is in; the bot's place on the computer is not.
     await act(async () => {})
     expect(screen.queryByTitle("Your bots' screen")).toBeNull()

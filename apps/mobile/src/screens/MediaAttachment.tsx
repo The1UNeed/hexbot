@@ -3,7 +3,7 @@ import { useVideoPlayer, VideoView } from 'expo-video'
 import { type ReactNode, useEffect, useState } from 'react'
 import { Image, StyleSheet, View } from 'react-native'
 
-import { IconButton, Text, useTheme } from '../ui'
+import { Button, IconButton, Text, useTheme } from '../ui'
 import type { AttachmentView } from './types'
 
 /** "0:07", "12:30": a player's time. */
@@ -29,9 +29,11 @@ export function MediaAttachment({
   const theme = useTheme()
   const [read, setRead] = useState<{ uri?: string; failed?: boolean }>({})
   const uri = file.uri ?? read.uri
+  const [requested, setRequested] = useState(false)
+  const deferred = !file.uri && file.kind !== 'image'
 
   useEffect(() => {
-    if (file.uri || !file.path || !load) return
+    if (file.uri || !file.path || !load || (deferred && !requested)) return
     let live = true
     load(file.path, file.id).then(
       uri => live && setRead({ uri }),
@@ -40,9 +42,22 @@ export function MediaAttachment({
     return () => {
       live = false
     }
-  }, [file.id, file.path, file.uri, load])
+  }, [file.id, file.path, file.uri, load, deferred, requested])
 
   if (read.failed || (!uri && !(file.path && load))) return card
+  if (deferred && !uri)
+    return (
+      <Button
+        accessibilityLabel={`${requested ? 'Loading' : 'Load'} ${file.name}`}
+        busy={requested}
+        busyLabel={`Loading ${file.name}`}
+        icon="download-outline"
+        label={file.name}
+        onPress={() => setRequested(true)}
+        testID="chat-media-load"
+        variant="secondary"
+      />
+    )
   if (!uri)
     return (
       <View

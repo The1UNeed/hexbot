@@ -396,6 +396,12 @@ describe('MessageRow files', () => {
       />
     )
 
+    expect(read).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Load a1.mp3' }))
+    expect(read.mock.calls).toEqual([['live-1', voice]])
+    fireEvent.click(screen.getByRole('button', { name: 'Load clip.mp4' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Load lake.mp4' }))
+
     const [audio, ...again] = await screen.findAllByLabelText('a1.mp3')
     expect(again).toEqual([])
     expect(audio!.tagName).toBe('AUDIO')

@@ -469,7 +469,7 @@ function Attachments({
           return (
             <MediaView
               fallback={card}
-              key={item.id}
+              key={JSON.stringify([item.id, sessionId, item.path, item.url])}
               kind={item.kind}
               name={item.name}
               onImage={onImage}
@@ -1031,7 +1031,7 @@ export const MessageRow = memo(function MessageRow({
           {/* A refused send has its own Not sent line under this; a failed turn, its Stopped card. */}
           {delivery === 'failed' && resend && !lined ? (
             <NotSent
-              label="Not sent"
+              label="Delivery unconfirmed"
               onRetry={resend}
               reason={
                 source?.status === 'sending'
