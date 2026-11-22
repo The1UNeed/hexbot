@@ -393,7 +393,8 @@ function Placeholder({ children }: { children: React.ReactNode }) {
 
 /** The bots' computer: its live screen, each bot's cursor, and its controls. */
 function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
-  const status = useComputer(state => state.status)
+  const connects = useConnection(state => state.connects)
+  const status = useComputer(state => (state.read === connects ? state.status : null))
   const requestError = useComputer(state => state.error)
   const refresh = useComputer(state => state.refresh)
   const step = useComputer(state => state.step)
@@ -408,7 +409,6 @@ function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   const [grantError, setGrantError] = useState<null | string>(null)
   const navigate = useNavigate()
   const answered = useComputers(state => state.answered)
-  const connects = useConnection(state => state.connects)
   const vm = computers?.find(computer => computer.id === 'vm')
   // This connection's answer, not a list kept from before a reconnect.
   const known = answered === connects

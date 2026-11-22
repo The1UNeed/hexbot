@@ -35,25 +35,26 @@ export interface ComputerStoreState {
 }
 
 export const useComputer = create<ComputerStoreState>(set => {
-  const run = async (request: () => Promise<ComputerStatus>) => {
-    const target = useConnection.getState().target
+  const run = async (request: () => Promise<ComputerStatus>, reading = false) => {
+    const { connects, target } = useConnection.getState()
+
+    const current = () =>
+      useConnection.getState().target === target && useConnection.getState().connects === connects
 
     try {
       set({ error: null })
       const result = await request()
 
       // An answer from a daemon the app has since left describes another computer.
-      if (useConnection.getState().target !== target) {
-        return false
+      if (!current()) {
+        return
       }
 
-      set(state => ({ status: { ...state.status, ...result } }))
-
-      return true
+      set(state => ({ status: { ...state.status, ...result }, ...(reading && { read: connects }) }))
     } catch (error) {
-      set({ error: message(error) })
-
-      return false
+      if (current()) {
+        set({ error: message(error) })
+      }
     }
   }
 
@@ -70,11 +71,7 @@ export const useComputer = create<ComputerStoreState>(set => {
     error: null,
     read: null,
     async refresh() {
-      const connection = useConnection.getState().connects
-
-      if (await run(computerStatus)) {
-        set({ read: connection })
-      }
+      await run(computerStatus, true)
     },
     status: null,
     async step(step) {

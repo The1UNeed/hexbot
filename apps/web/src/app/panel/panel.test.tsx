@@ -624,6 +624,38 @@ describe('ProfilePanel', () => {
     expect(screen.queryByTitle("Your bots' screen")).toBeNull()
   })
 
+  it("waits for this connection's status and retries a failed read", async () => {
+    api.computerStatus.mockResolvedValue(running)
+    api.computerView.mockResolvedValue({ control: false, expires_at: 0, path: '/v/#t' })
+    useComputer.setState({ error: null, read: null, status: null })
+    useConnection.setState({ target: { kind: 'local', origin: 'http://127.0.0.1:9119' } })
+    seed([], false)
+    api.computersList.mockResolvedValue({
+      computers: [vmComputer({ desktop: { available: true, bots: ['scout'] } })]
+    })
+    render(<ProfilePanel />)
+    fireEvent.click(screen.getByRole('tab', { name: 'Computer' }))
+    expect(await screen.findByTitle("Your bots' screen")).toBeVisible()
+
+    let fail = (_: Error) => {}
+    api.computerStatus.mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          fail = reject
+        })
+    )
+    act(() => useConnection.setState(state => ({ connects: state.connects + 1 })))
+    await waitFor(() =>
+      expect(useComputers.getState().answered).toBe(useConnection.getState().connects)
+    )
+    expect(screen.getByText('Loading computer…')).toBeVisible()
+    expect(screen.queryByTestId('computer-screen')).toBeNull()
+    await act(async () => fail(new Error('Status timed out')))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Status timed out')
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByTitle("Your bots' screen")).toBeVisible()
+  })
+
   it("shows no screen from the grants it had when a reconnect's list fails", async () => {
     api.computerStatus.mockResolvedValue(running)
     api.computerView.mockReset()

@@ -1504,7 +1504,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
     onOpenSearch: () => setSearchOpen(true),
     focus,
     renderMessageText,
-    loadMedia: route?.kind === 'section' ? loadMedia : undefined,
+    loadMedia: route?.kind === 'section' && liveChat ? loadMedia : undefined,
     busy: mobile.chat.busy,
     // What the bot does right now, from the step it runs: "Opening Taobao".
     waiting:
@@ -1523,7 +1523,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
     onApprove: approve,
     rpc: mobile.rpc,
     onOpenVisual: openVisual,
-    onOpenFile: route?.kind === 'section' ? setFile : undefined,
+    onOpenFile: route?.kind === 'section' && liveChat ? setFile : undefined,
     onReact: mobile.react,
     onOpenThread: openThread,
     sendDisabledReason: uploading
