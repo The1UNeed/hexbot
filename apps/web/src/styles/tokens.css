@@ -1247,9 +1247,13 @@ html {
 .hex-dialog-in {
   animation: hex-dialog-in var(--hex-motion-panel) var(--hex-ease-out) both;
 }
+/* Let the column shrink to its container: an implicit `auto` column grows to
+   the longest unbreakable line, such as a path in a <pre>, instead of letting
+   it scroll. */
 .hex-unfold,
 .hex-fold {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
 }
 .hex-unfold > *,
 .hex-fold > * {
