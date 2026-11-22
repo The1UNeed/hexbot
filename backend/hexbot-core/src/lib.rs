@@ -25,6 +25,7 @@ pub mod http;
 mod imap;
 mod install_ownership;
 pub mod log_files;
+pub mod machines;
 pub mod mail;
 pub mod memory;
 pub mod native_external_tools;

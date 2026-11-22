@@ -455,6 +455,8 @@ async fn bots_share_one_computer_and_take_turns() {
     assert_eq!(
         tools,
         vec![
+            // The bot's Cua session starts once, before its first action is checked.
+            ("computer_get_screen_size", json!({})),
             ("computer_screenshot", json!({})),
             ("computer_click", json!({"x":10,"y":20,"button":"left"})),
             ("computer_hotkey", json!({"keys":"ctrl+l"})),

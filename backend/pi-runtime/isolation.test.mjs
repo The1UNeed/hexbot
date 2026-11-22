@@ -268,6 +268,41 @@ test('sandbox case policy covers uppercase secrets and permits uppercase public 
   assert.equal(execFileSync(process.execPath, ['--input-type=module','-e',script], {env:{...process.env,HOME:base},encoding:'utf8'}), 'public');
 });
 
+test('a moved Cua folder stays unreadable, and renaming a folder above it is refused', {skip: process.platform !== 'darwin'}, async t => {
+  const {execFileSync} = await import('node:child_process');
+  const base = mkdtempSync(join(tmpdir(), 'hexbot-cua-sandbox-'));
+  t.after(() => rmSync(base, {recursive:true, force:true}));
+  const home = join(base, 'home');
+  mkdirSync(home, {recursive:true});
+  const parent = join(base, 'cua-parent');
+  mkdirSync(join(parent, 'state/host'), {recursive:true});
+  writeFileSync(join(parent, 'state/host/env-token'), 'token');
+  // Even with the base layer alone (a command let out of the workspace), the
+  // token can't be read, and moving its parent can't carry it out.
+  const command = `cat '${parent}/state/host/env-token' >/dev/null 2>&1 && exit 10; mv '${parent}' '${parent}-moved' 2>/dev/null && { cat '${parent}-moved/state/host/env-token'; exit 11; }; echo safe`;
+  const script = `const {isolatedCommand}=await import(${JSON.stringify(new URL('./isolation.ts', import.meta.url).href)}); const {spawnSync}=await import('node:child_process'); const result=spawnSync('/bin/bash',['-c',isolatedCommand(${JSON.stringify(command)},${JSON.stringify(home)})],{encoding:'utf8'}); if(result.status!==0) throw Error(result.stdout+result.stderr+' status '+result.status); process.stdout.write(result.stdout);`;
+  assert.equal(execFileSync(process.execPath, ['--input-type=module','-e',script], {env:{...process.env,HOME:base,HEXBOT_CUA_HOME:join(parent, 'state')},encoding:'utf8'}).trim(), 'safe');
+});
+
+test('a symlinked ~/.cua keeps its target unreadable and pinned in both sandbox layers', {skip: process.platform !== 'darwin'}, async t => {
+  const {execFileSync} = await import('node:child_process');
+  const {realpathSync, symlinkSync} = await import('node:fs');
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'hexbot-cua-link-')));
+  t.after(() => rmSync(base, {recursive:true, force:true}));
+  const home = join(base, 'hexbot'), work = join(base, 'work');
+  mkdirSync(home, {recursive:true});
+  mkdirSync(join(work, 'holder/state/host'), {recursive:true});
+  writeFileSync(join(work, 'holder/state/host/env-token'), 'token');
+  symlinkSync(join(work, 'holder/state'), join(base, '.cua'));
+  const command = `cat "$HOME/.cua/host/env-token" >/dev/null 2>&1 && exit 10; mv '${work}/holder' '${work}/moved' 2>/dev/null && { cat '${work}/moved/state/host/env-token'; exit 11; }; echo safe`;
+  for (const workspace of [undefined, [work]]) {
+    const script = `const {isolatedCommand}=await import(${JSON.stringify(new URL('./isolation.ts', import.meta.url).href)}); const {spawnSync}=await import('node:child_process'); const result=spawnSync('/bin/bash',['-c',isolatedCommand(${JSON.stringify(command)},${JSON.stringify(home)},[],${JSON.stringify(workspace)})],{encoding:'utf8'}); if(result.status!==0) throw Error(result.stdout+result.stderr+' status '+result.status); process.stdout.write(result.stdout);`;
+    const env = {...process.env, HOME:base};
+    delete env.HEXBOT_CUA_HOME;
+    assert.equal(execFileSync(process.execPath, ['--input-type=module','-e',script], {env, encoding:'utf8'}).trim(), 'safe', workspace ? 'confined' : 'base');
+  }
+});
+
 // Codex's workspace sandbox: no network, writes only inside the workspace, and
 // shell profiles stay read-only even when the workspace holds them.
 test('the workspace sandbox confines writes and blocks the network', {skip:process.platform !== 'darwin'}, async t => {

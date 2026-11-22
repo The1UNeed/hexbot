@@ -350,6 +350,11 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
                     params![now(), id],
                 )?;
                 tx.commit()?;
+                // A revoked computer leaves every bot, as Forget does. The
+                // revoke stands either way; a failure here is only logged.
+                if let Err(error) = crate::machines::forget_device(home, caller, id) {
+                    eprintln!("Could not forget revoked computer {id}: {}", error.message);
+                }
                 Ok(json!({"revoked":true}))
             }
             "hexbot.pairing.code" => new_code(home, caller),

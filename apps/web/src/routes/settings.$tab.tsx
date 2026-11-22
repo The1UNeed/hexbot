@@ -40,7 +40,7 @@ const ITEMS: Record<SettingsTab, SettingsTabItem<SettingsTab>> = {
   about: { icon: Info, id: 'about', label: 'About' },
   appearance: { icon: SunMoon, id: 'appearance', label: 'Appearance' },
   approvals: { icon: ShieldCheck, id: 'approvals', label: 'Approvals' },
-  computer: { icon: Monitor, id: 'computer', label: 'Computer use' },
+  computer: { icon: Monitor, id: 'computer', label: 'Computers' },
   connect: { icon: Globe, id: 'connect', label: 'Hex Connect' },
   diagnostics: { icon: Activity, id: 'diagnostics', label: 'Diagnostics' },
   memory: { icon: Brain, id: 'memory', label: 'Memory' },
@@ -56,8 +56,7 @@ const ITEMS: Record<SettingsTab, SettingsTabItem<SettingsTab>> = {
 
 const GROUPS: { ids: SettingsTab[]; label: string }[] = [
   { ids: ['providers', 'usage'], label: 'Models' },
-  { ids: ['plugins', 'passwords'], label: 'Bots' },
-  { ids: ['computer'], label: 'Manuals' },
+  { ids: ['plugins', 'passwords', 'computer'], label: 'Bots' },
   { ids: ['network', 'connect'], label: 'Devices' },
   { ids: ['memory', 'approvals', 'notifications', 'appearance'], label: 'You' },
   { ids: ['updates', 'privacy', 'about'], label: 'App' },

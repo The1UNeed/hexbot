@@ -1,4 +1,3 @@
-import { Ionicons } from '@expo/vector-icons'
 import * as Clipboard from 'expo-clipboard'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { Linking, StyleSheet, View } from 'react-native'
@@ -13,7 +12,6 @@ import {
   Field,
   Form,
   Group,
-  type IconName,
   Layer,
   moodForStatus,
   PageLook,
@@ -32,6 +30,7 @@ import { ModelPill, useCurrentModel } from './screens/ModelMenu'
 import { SubscriptionSignIn } from './screens/SubscriptionSignIn'
 import {
   type Bot,
+  type Computer,
   type Connector,
   type DiscordMode,
   type Device,
@@ -44,6 +43,7 @@ import {
   type SkillRequirement
 } from './core/types'
 import { botPhoto, refusesFace } from './core/avatar'
+import { currentComputers, latestReads } from './core/computer'
 import { scheduleChange } from './core/jobs'
 import { requirementText } from './core/skills'
 import {
@@ -136,7 +136,7 @@ const TOOLS: { key: string; label: string; description: string }[] = [
   {
     key: 'terminal',
     label: 'Terminal',
-    description: 'Run commands in a sandbox. Leaving it is checked first, except in Bypass.'
+    description: 'Run commands on the computers it may use. On the computer Hexbot runs on they run in a sandbox, and leaving it is checked first, except in Bypass. If Hexbot runs on Windows, commands on that computer run only in Bypass.'
   },
   { key: 'files', label: 'Files', description: 'Read, write and search files in the workspace.' },
   { key: 'vision', label: 'Vision', description: 'Look at images you attach.' },
@@ -198,34 +198,19 @@ const COMPUTER_STATE: Record<string, string> = {
   stopping: 'Turning off…'
 }
 const COMPUTER_BUSY = ['repairing', 'resetting', 'restarting', 'starting', 'stopping']
-/** What bots do on their computer, as Settings, Computer use says on the web. */
-const COMPUTER_USES: { title: string; description: string; icon: IconName }[] = [
-  {
-    title: 'Code execution',
-    description: 'Run scripts and install the programs a job needs, in its terminal.',
-    icon: 'code-slash-outline'
-  },
-  {
-    title: 'Browser',
-    description: 'Open pages and work through them in Chrome.',
-    icon: 'globe-outline'
-  },
-  {
-    title: 'Desktop',
-    description: 'See the screen, click and type in its apps. You can watch and use it with them.',
-    icon: 'browsers-outline'
-  }
-]
-/** Settings, Manuals, Computer use: the bots' one shared computer, its size and its power. */
+/** The bots' one shared computer: its power, size and reset. */
 function ComputerUse({ mobile }: { mobile: ReturnType<typeof useMobile> }) {
-  const theme = useTheme()
   const status = mobile.computer
   const [error, setError] = useState<string | null>(null)
   const call = (method?: string, params?: Record<string, unknown>) => {
     setError(null)
     void mobile.computerCall(method, params).catch((e: unknown) => setError(String(e)))
   }
-  useEffect(() => call(), [])
+  // Read again on every (re)connection: an error or grants changed while
+  // offline don't stay on screen.
+  useEffect(() => {
+    if (mobile.connection === 'connected') call()
+  }, [mobile.connection, mobile.connects])
   const offline = mobile.connection !== 'connected'
   const busy = !!status && COMPUTER_BUSY.includes(status.state)
   const running = status?.state === 'running'
@@ -329,18 +314,237 @@ function ComputerUse({ mobile }: { mobile: ReturnType<typeof useMobile> }) {
           ))}
         </Group>
       ) : null}
-      <Group title="What your bots do there" separatorInset={48}>
-        {COMPUTER_USES.map(use => (
+    </>
+  )
+}
+/**
+ * Settings, Computers, as on the web: every computer bots can use
+ * (`machines.rs`) and the bots that work on each one. This
+ * phone can't be one of them; a desktop app offers its own computer.
+ */
+function Computers({ mobile }: { mobile: ReturnType<typeof useMobile> }) {
+  // What an action here failed with; how reading the list went is in
+  // `computersListed`, which an overtaken read never sets.
+  const [error, setError] = useState<string | null>(null)
+  // Only the latest action's failure shows: one overtaken by a newer action,
+  // or from before a reconnect, isn't about what's on screen now.
+  const actions = useRef(latestReads()).current
+  const call = (method?: string, params?: Record<string, unknown>) => {
+    setError(null)
+    const isLatest = actions.start()
+    void mobile
+      .computersCall(method, params)
+      .catch((e: unknown) => isLatest() && setError(e instanceof Error ? e.message : String(e)))
+  }
+  // Read again on every (re)connection: an error or grants changed while
+  // offline don't stay on screen.
+  useEffect(() => {
+    actions.drop()
+    if (mobile.connection === 'connected') call()
+  }, [mobile.connection, mobile.connects])
+  const offline = mobile.connection !== 'connected'
+  // Only this connection's list: grants may have changed while away, and a
+  // switch must not show (or change from) what was true before.
+  const listed = mobile.computersListed
+  const list = currentComputers(listed, mobile.computers)
+  // What actions left the user to do (Forget on a computer that didn't
+  // confirm): kept for this daemon until each one's OK, wherever the user
+  // went meanwhile.
+  const noticeBanner = mobile.computerNotices.map(notice => (
+    <Banner
+      actionLabel="OK"
+      key={notice}
+      message={notice}
+      onAction={() => mobile.dismissComputerNotice(notice)}
+      tone="warning"
+      testID="computers-notice"
+    />
+  ))
+  // A daemon from before computers: its bots' computer still answers, so its
+  // controls stay; choosing bots for each computer waits for an update there.
+  if (listed === 'older')
+    return (
+      <View style={styles.inset}>
+        {noticeBanner}
+        <Text tone="muted" variant="footnote">
+          Choosing bots for each computer needs a newer Hexbot on the daemon's computer.
+        </Text>
+        <ComputerUse mobile={mobile} />
+      </View>
+    )
+  if (!list) {
+    const failed = error ?? (typeof listed === 'object' ? listed.error : null)
+    return (
+      <>
+        {noticeBanner}
+        {failed ? (
+          <Banner
+            actionLabel="Try again"
+            message={failed}
+            onAction={() => call()}
+            tone="danger"
+            testID="computers-error"
+          />
+        ) : (
+          <Text tone="muted" testID="computers-loading" variant="footnote">
+            {offline ? 'Your computers show here once Hexbot reconnects.' : 'Loading computers…'}
+          </Text>
+        )}
+      </>
+    )
+  }
+  const vm = list.find(c => c.kind === 'vm')
+  const host = list.find(c => c.kind === 'host')
+  const devices = list.filter(c => c.kind === 'device')
+  const label = (c: Computer) => (c.kind === 'vm' ? "The bots' computer" : c.name)
+  // One switch per bot: the computer as one of its environments, where its
+  // terminal works. Its screen comes with the Computer Use plugin.
+  const bots = (c: Computer) =>
+    c.terminal.available || c.terminal.bots.length ? (
+      <Group
+        footer="With the Computer Use plugin, a bot also sees and uses this computer's screen where it is shared."
+        title={`${label(c)} · Works here`}
+      >
+        {mobile.bots.map(b => {
+          const on = c.terminal.bots.includes(b.name)
+          return (
+            <SwitchRow
+              disabled={offline || (!on && !c.terminal.available)}
+              key={b.name}
+              onValueChange={next =>
+                call('hexbot.computers.grant', { computer: c.id, capability: 'terminal', bot: b.name, on: next })
+              }
+              subtitle={c.desktop.bots.includes(b.name) ? 'Computer Use' : undefined}
+              testID={`computers-${c.id}-terminal-${b.name}`}
+              title={b.display_name}
+              value={on}
+            />
+          )
+        })}
+      </Group>
+    ) : null
+  const apps = (c: Computer) => {
+    const rows = Object.entries(c.apps).flatMap(([bot, names]) =>
+      names.map(app => ({ app, bot }))
+    )
+    return rows.length ? (
+      <Group
+        title={`Always allowed apps on ${label(c)}`}
+        footer="A bot asks before it uses any other app here, except in Bypass."
+      >
+        {rows.map(({ app, bot }) => (
           <Row
-            key={use.title}
-            leading={<Ionicons color={theme.muted} name={use.icon} size={20} />}
-            subtitle={use.description}
-            subtitleLines={3}
-            testID={`computer-use-${use.title.toLowerCase().replace(/ /g, '-')}`}
-            title={use.title}
+            key={`${bot}-${app}`}
+            subtitle={mobile.bots.find(b => b.name === bot)?.display_name ?? bot}
+            testID={`computers-app-${c.id}-${bot}-${app}`}
+            title={app}
+            trailing={
+              <Button
+                disabled={offline}
+                label="Remove"
+                onPress={() => call('hexbot.computers.remove_app', { computer: c.id, bot, app })}
+                size="small"
+                testID={`computers-app-remove-${c.id}-${bot}-${app}`}
+                variant="secondary"
+              />
+            }
           />
         ))}
       </Group>
+    ) : null
+  }
+  return (
+    <>
+      {noticeBanner}
+      {error ? <Banner message={error} tone="danger" testID="computers-error" /> : null}
+      {vm ? (
+        <>
+          <Group
+            title="The bots' computer"
+            footer="A Linux desktop of their own, separate from yours, that every bot shares. Suggested: easy to reset, so commands run there without a sandbox and Auto checks only risky ones."
+          >
+            <SwitchRow
+              disabled={offline}
+              onValueChange={next => call('hexbot.computers.set', { computer: 'vm', on: next })}
+              testID="computers-vm-on"
+              title="Use the bots' computer"
+              value={vm.on}
+            />
+          </Group>
+          {vm.on ? (
+            <>
+              <ComputerUse mobile={mobile} />
+              {bots(vm)}
+            </>
+          ) : null}
+        </>
+      ) : null}
+      {host ? (
+        <>
+          <Group
+            title={`${host.name}, where Hexbot runs`}
+            footer={
+              host.terminal.sandboxed
+                ? 'The computer Hexbot runs on. Commands run in the sandbox in Auto and Manual.'
+                : 'The computer Hexbot runs on. Hexbot has no sandbox on Windows yet, so its terminal works only in Bypass.'
+            }
+          >
+            <SwitchRow
+              disabled={offline || (!host.desktop.on && !host.desktop.available)}
+              onValueChange={next => call('hexbot.computers.set', { computer: 'host', desktop: next })}
+              subtitle={
+                host.desktop.note ??
+                'Bots with Computer Use see its screen, click and type in the apps you allow (in Bypass, without asking), never in terminals, editors or Hexbot.'
+              }
+              testID="computers-host-desktop"
+              title="Computer Use here"
+              value={!!host.desktop.on}
+            />
+          </Group>
+          {bots(host)}
+          {apps(host)}
+        </>
+      ) : null}
+      <Group
+        title="Your computers"
+        footer="Online while Hexbot is open there. A computer is added when you let bots use it in Hexbot on that computer; this phone can't be one."
+      >
+        {devices.length ? (
+          devices.map(d => (
+            <Row
+              key={d.id}
+              meta={d.online ? 'Online' : 'Offline'}
+              subtitle={d.os || undefined}
+              testID={`computers-device-${d.id}`}
+              title={d.name}
+              trailing={
+                <Button
+                  disabled={offline}
+                  label="Forget"
+                  onPress={() =>
+                    confirm(
+                      `Forget ${d.name}?`,
+                      'Bots lose it and its allowed apps, and what they are doing there stops. It shows again, with no bots, when Hexbot there connects.',
+                      () => call('hexbot.computers.forget', { computer: d.id })
+                    )
+                  }
+                  size="small"
+                  testID={`computers-forget-${d.id}`}
+                  variant="secondary"
+                />
+              }
+            />
+          ))
+        ) : (
+          <Row testID="computers-none" title="None yet" subtitle="Open Hexbot on another computer and let bots use it there." subtitleLines={3} />
+        )}
+      </Group>
+      {devices.map(d => (
+        <View key={d.id}>
+          {bots(d)}
+          {apps(d)}
+        </View>
+      ))}
     </>
   )
 }
@@ -1075,7 +1279,7 @@ export function Management({
       )
       break
     case 'computer':
-      content = <ComputerUse mobile={mobile} />
+      content = <Computers mobile={mobile} />
       break
     case 'bot-create':
     case 'bot':
@@ -1362,7 +1566,7 @@ export function Management({
       const available = bot?.available_tools as string[] | undefined
       content = (
         <Group
-          footer={`What ${bot?.display_name ?? 'this bot'} can do on this computer. Tools this computer isn't set up for don't appear. Changes apply from the next message.`}
+          footer={`What ${bot?.display_name ?? 'this bot'} can do. Which computers it uses is in Settings, Computers. Tools the daemon isn't set up for don't appear. Changes apply from the next message.`}
         >
           {TOOLS.filter(tool => !available || available.includes(tool.key)).map(tool => (
             <SwitchRow
@@ -3336,7 +3540,7 @@ export function Management({
   }
   const titles: Record<string, string> = {
     settings: 'Daemon settings',
-    computer: 'Computer use',
+    computer: 'Computers',
     'bot-create': 'New bot',
     bot: bot ? `Edit ${bot.display_name}` : 'Edit bot',
     memory: 'Memory',
@@ -3379,8 +3583,7 @@ export function Management({
   const descriptions: Record<string, string> = {
     about: 'About you goes to every bot you own. Each bot keeps its own memory in its profile.',
     activity: 'Messages your bots sent each other.',
-    computer:
-      'Your bots share one computer of their own: a Linux desktop, separate from yours. Every bot has it, and runs code, browses and uses apps there.',
+    computer: "Where your bots can work. Choose which bots use each computer's terminal and desktop.",
     connect:
       'Reach this daemon from outside your network. Chat traffic never passes through Connect.',
     devices: 'Phones, browsers and computers that can use this daemon.',

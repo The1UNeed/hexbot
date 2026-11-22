@@ -263,10 +263,21 @@ pub(crate) fn not_set_up_with_config(
     cfg: &Value,
 ) -> Result<Vec<&'static str>> {
     let env = connectors::profile_credentials(home, &crate::catalog::profile(home, bot)?)?;
+    // Computer use also works through a user's computer's own Cua.
+    let desktop_elsewhere = || {
+        crate::machines::granted(home, bot).is_ok_and(|granted| {
+            granted
+                .iter()
+                .any(|(id, _, desktop)| *desktop && crate::machines::device_id(id).is_some())
+        })
+    };
     Ok(
         ["code_execution", "browser", "computer_use", "vision", "tts"]
             .into_iter()
-            .filter(|toolset| !set_up(home, cfg, &env, toolset))
+            .filter(|toolset| {
+                !(set_up(home, cfg, &env, toolset)
+                    || *toolset == "computer_use" && desktop_elsewhere())
+            })
             .collect(),
     )
 }
@@ -351,6 +362,14 @@ pub fn descriptors(home: &Path, bot: &str) -> Result<Vec<Value>> {
         "web".to_owned(),
         connectors::tool_available(home, bot, "web_search")?,
     );
+    // computer_use acts on the bots' computer through this computer's Cua, or
+    // on a user's computer through Cua there: either is enough.
+    // Asked only without Cua here: tool lists are built often.
+    let computer_use = set_up(home, &cfg, &env, "computer_use")
+        || crate::machines::granted(home, bot)?
+            .iter()
+            .any(|(id, _, desktop)| *desktop && crate::machines::device_id(id).is_some());
+    ready.insert("computer_use".to_owned(), computer_use);
     let mut add = |family: &str, d: Value| {
         if enabled.iter().any(|v| v == family)
             && *ready
@@ -418,9 +437,7 @@ pub fn descriptors(home: &Path, bot: &str) -> Result<Vec<Value>> {
             ),
         );
     }
-    if crate::computers::command(&cfg, &env).is_some() {
-        add("computer_use", crate::computers::descriptor());
-    }
+    add("computer_use", crate::computers::descriptor());
     if !matches!(text(&cfg["browser"], "backend", ""), "browser-use" | "off") {
         for (name, description, properties, required) in [
             (

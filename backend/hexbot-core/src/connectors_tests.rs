@@ -32,6 +32,73 @@ async fn rpc(home: &Path, method: &str, p: Value) -> Value {
 }
 
 #[tokio::test]
+async fn testing_computer_use_says_which_screens_bots_reach_and_never_marks_it_broken() {
+    let home = setup();
+    let h = home.path();
+    // No Cua and no shared screen here.
+    common::update_config(h, |c| {
+        c["computer_use"]["command"] = json!("/nonexistent/cua");
+        Ok(())
+    })
+    .unwrap();
+    let test = rpc(h, "hexbot.connectors.test", json!({"id":"computer_use"})).await;
+    assert_eq!(test["ok"], false);
+    assert!(
+        test["message"]
+            .as_str()
+            .unwrap()
+            .contains("No screen here yet")
+    );
+    // Switched off without Cua: both, Cua first.
+    common::update_config(h, |c| {
+        c["computers"]["vm"]["off"] = json!(true);
+        Ok(())
+    })
+    .unwrap();
+    let test = rpc(h, "hexbot.connectors.test", json!({"id":"computer_use"})).await;
+    let message = test["message"].as_str().unwrap();
+    assert!(
+        message.contains("is off and needs Cua (uv tool install cua)"),
+        "{message}"
+    );
+    // Switched off with Cua set up: only turning it on is missing.
+    let cua = h.join("cua");
+    fs::write(&cua, "#!/bin/sh\n").unwrap();
+    #[cfg(unix)]
+    fs::set_permissions(&cua, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    common::update_config(h, |c| {
+        c["computer_use"]["command"] = json!(cua.to_string_lossy());
+        Ok(())
+    })
+    .unwrap();
+    let test = rpc(h, "hexbot.connectors.test", json!({"id":"computer_use"})).await;
+    let message = test["message"].as_str().unwrap();
+    assert!(
+        message.contains("is off; turn it on in Settings, Computers"),
+        "{message}"
+    );
+    assert!(!message.contains("uv tool install"), "{message}");
+    // The result is not kept: the connector stays ready.
+    let list = rpc(h, "hexbot.connectors.list", json!({})).await;
+    let row = list["connectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == "computer_use")
+        .unwrap()
+        .clone();
+    assert_eq!(row["state"], "ready");
+    // This computer's screen shared: reachable.
+    common::update_config(h, |c| {
+        c["computers"]["host"]["desktop_on"] = json!(true);
+        Ok(())
+    })
+    .unwrap();
+    let test = rpc(h, "hexbot.connectors.test", json!({"id":"computer_use"})).await;
+    assert_eq!(test["ok"], true, "{test}");
+}
+
+#[tokio::test]
 async fn catalog_shapes_and_errors_match_clients() {
     let home = setup();
     let list = rpc(home.path(), "hexbot.connectors.list", json!({"bot":"owl"})).await;
@@ -41,6 +108,7 @@ async fn catalog_shapes_and_errors_match_clients() {
             .map(|r| r["id"].as_str().unwrap())
             .collect::<Vec<_>>(),
         [
+            "computer_use",
             "web_search",
             "gmail",
             "google_calendar",
@@ -58,10 +126,12 @@ async fn catalog_shapes_and_errors_match_clients() {
             "microsoft_todo",
             "imap",
             "notion",
+            "github",
             "x_search"
         ]
     );
-    let providers = rows[0]["providers"].as_array().unwrap();
+    let web = rows.iter().find(|r| r["id"] == "web_search").unwrap();
+    let providers = web["providers"].as_array().unwrap();
     assert_eq!(
         providers
             .iter()
@@ -89,7 +159,7 @@ async fn catalog_shapes_and_errors_match_clients() {
             .unwrap()
             .contains("Docker")
     );
-    let fields = rows[0]["fields"].as_array().unwrap();
+    let fields = web["fields"].as_array().unwrap();
     assert_eq!(
         fields.iter().find(|f| f["key"] == "EXA_API_KEY").unwrap(),
         &json!({"key":"EXA_API_KEY","provider":"exa","label":"Exa API key","help":"Exa API key for AI-native web search and contents","url":"https://exa.ai/","secret":true,"advanced":false,"set":false,"hint":null})
@@ -110,6 +180,10 @@ async fn catalog_shapes_and_errors_match_clients() {
             assert_eq!(row["provider"], "searxng");
             assert_eq!(row["state_text"], "Ready · SearXNG (needs Docker)");
             assert_eq!(row["enabled_for_bot"], true);
+        } else if row["id"] == "computer_use" {
+            // Needs no key: it reaches the screens of the bot's computers.
+            assert_eq!(row["state"], "ready");
+            assert_eq!(row["group"], "computer");
         } else {
             assert_eq!(row["state"], "not_set_up");
         }
@@ -305,7 +379,8 @@ async fn toggles_preserve_other_toolsets_and_shared_credentials() {
     .await;
     assert_eq!(
         connectors::toolsets(home.path(), "owl").unwrap(),
-        // Every bot has Computer use, whatever was saved.
+        // On a daemon from before computers every bot has Computer use,
+        // whatever was saved.
         vec!["computer_use", "file"]
     );
     rpc(
@@ -1634,4 +1709,66 @@ async fn an_xai_key_kept_in_the_credential_pool_sets_up_x_search() {
     assert_eq!(row["provider"], "xai");
     connectors::set_enabled(home.path(), "owl", "x_search", true).unwrap();
     assert!(connectors::tool_available(home.path(), "owl", "x_search").unwrap());
+}
+
+/// A connector's key is its own, never one a model provider reads: sharing
+/// one would connect, or on Disconnect delete, one with the other. xAI's key
+/// is shared on purpose and says so ("Also used if a bot runs on xAI models").
+#[test]
+fn connector_keys_are_never_a_model_providers() {
+    let providers: Value = serde_json::from_str(include_str!("providers.json")).unwrap();
+    let theirs: std::collections::BTreeSet<&str> = providers["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|p| p["env_vars"].as_array().into_iter().flatten())
+        .filter_map(Value::as_str)
+        .collect();
+    for connector in connectors::catalog() {
+        // Every place a connector names a key: its own, each provider's, each field's.
+        let keys = connector["keys"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .chain(
+                connector["providers"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .flat_map(|p| p["keys"].as_array().into_iter().flatten()),
+            )
+            .chain(
+                connector["fields"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|f| &f["key"]),
+            )
+            .filter_map(Value::as_str);
+        for key in keys {
+            assert!(
+                key == "XAI_API_KEY" || !theirs.contains(key),
+                "{} uses {key}, a model provider's key",
+                connector["id"]
+            );
+        }
+    }
+}
+
+#[test]
+fn disconnecting_copilot_keeps_the_github_connectors_token() {
+    let home = tempfile::tempdir().unwrap();
+    db::migrate(home.path()).unwrap();
+    std::fs::write(
+        home.path().join(".env"),
+        "HEXBOT_GITHUB_TOKEN=github_pat_connector\nGITHUB_TOKEN=gho_copilot\n",
+    )
+    .unwrap();
+    crate::providers::clear_key(home.path(), "copilot").unwrap();
+    let env = std::fs::read_to_string(home.path().join(".env")).unwrap();
+    assert!(
+        env.contains("HEXBOT_GITHUB_TOKEN=github_pat_connector"),
+        "{env}"
+    );
+    assert!(!env.contains("GITHUB_TOKEN=gho_copilot"), "{env}");
 }

@@ -16,15 +16,16 @@ use std::{
 const TOOLS: &[(&str, &str)] = &[
     ("terminal", "terminal"),
     ("files", "file"),
-    ("computer_use", "computer_use"),
     ("vision", "vision"),
     ("voice", "tts"),
     ("message_bots", "hexbot"),
     ("delegate", "delegation"),
     ("scheduling", "cronjob"),
 ];
-/// Bot tools that ran on the daemon's computer; Computer use does their work.
-const RETIRED_TOOLS: &[&str] = &["code_execution", "browser"];
+/// Bot tools older clients still send: Code execution and Browser ran on the
+/// daemon's computer (Computer Use does their work), and Computer use is now
+/// the Computer Use connector, in Settings, Plugins. Accepted and ignored.
+const RETIRED_TOOLS: &[&str] = &["code_execution", "browser", "computer_use"];
 /// The primary bot's handle. Only the primary bot may take it.
 pub const PRIMARY_NAME: &str = "hexbot";
 const PRIMARY_DISPLAY_NAME: &str = "HexBot";
@@ -1658,9 +1659,9 @@ fn shape_bot(
         .iter()
         .filter(|(_, v)| !missing.contains(v))
         .collect::<Vec<_>>();
-    let tools = available
+    let tools = TOOLS
         .iter()
-        .filter(|(_, v)| enabled.iter().any(|t| t == v))
+        .filter(|(_, v)| enabled.iter().any(|t| t == v) && !missing.contains(v))
         .map(|(k, _)| *k)
         .collect::<Vec<_>>();
     Ok(json!({
@@ -1772,7 +1773,7 @@ fn validate_patch(home: &Path, p: &Value) -> Result<()> {
                     let item = item
                         .as_str()
                         .ok_or_else(|| Error::new(4202, format!("{key} must contain strings")))?;
-                    // Clients from before Computer use took them over still send these.
+                    // Clients from before still send these (RETIRED_TOOLS).
                     if key == "tools"
                         && !TOOLS.iter().any(|(k, _)| *k == item)
                         && !RETIRED_TOOLS.contains(&item)
@@ -2317,7 +2318,24 @@ fn create(home: &Path, caller: &str, p: &Value, primary: bool) -> Result<Value> 
     };
     crate::settings::mirror(home, &profile(home, name)?)?;
     crate::plugins::scope_new_bot(home, name)?;
+    crate::machines::new_bot(home, name)?;
+    sync_computers(home, name, p, false)?;
     Ok(json!({"bot":bot(home,caller,name)?,"section":section(home,caller,&sid)?}))
+}
+/// A bot's Terminal switch gives it, or takes from it, its environments
+/// (`machines.rs`); Computer Use is a connector, in Settings, Plugins. Only on a daemon that keeps
+/// computers; before that the toolsets themselves decide.
+/// A new bot (`give` false) only loses what its tool list leaves out; the
+/// computers it starts with are setup's (`machines::new_bot`).
+fn sync_computers(home: &Path, name: &str, p: &Value, give: bool) -> Result<()> {
+    let Some(tools) = p["tools"].as_array() else {
+        return Ok(());
+    };
+    if common::read_config(home)?.get("computers").is_none() {
+        return Ok(());
+    }
+    let has = |key: &str| tools.iter().any(|t| t == key);
+    crate::machines::sync_tools(home, name, has("terminal"), give)
 }
 /// Create and update store every accepted column the same way.
 fn write_bot_columns(tx: &rusqlite::Transaction, name: &str, p: &Value) -> Result<()> {
@@ -2393,6 +2411,8 @@ fn update_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
         configure(home, name, p)?;
         ensure_face(home, caller, name)?;
     }
+    // The Terminal switch gives or takes environments.
+    sync_computers(home, name, p, true)?;
     let mut conn = db::open(home)?;
     let tx = conn.transaction()?;
     write_bot_columns(&tx, name, p)?;
@@ -2668,6 +2688,7 @@ fn finish_bot_delete_locked(home: &Path, name: &str) -> Result<()> {
     crate::connectors::forget_bot(home, name)?;
     crate::plugins::forget_bot(home, name)?;
     crate::passwords::forget_bot(home, name)?;
+    crate::machines::forget_bot(home, name)?;
     let targets = journal["targets"]
         .as_array()
         .ok_or_else(|| Error::new(5200, "Invalid bot deletion journal"))?;

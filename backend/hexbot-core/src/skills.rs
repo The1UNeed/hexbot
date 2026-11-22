@@ -408,6 +408,15 @@ fn is_disabled(config: &Value, name: &str) -> bool {
         .any(|v| v.as_str().is_some_and(|v| v.eq_ignore_ascii_case(name)))
 }
 
+/// Whether a bundled skill is on for `bot`: neither the bot nor the daemon
+/// switched it off. What `resolve` decides for a bundled skill, without
+/// walking every skill folder, for paths that run on every tool list.
+pub(crate) fn bundled_on(home: &Path, bot: &str, name: &str) -> Result<bool> {
+    let profile = catalog::profile(home, bot)?;
+    Ok(!is_disabled(&common::read_config_cached(&profile)?, name)
+        && !is_disabled(&common::read_config_cached(home)?, name))
+}
+
 pub(crate) fn read_lock() -> Result<std::sync::RwLockReadGuard<'static, ()>> {
     LOCK.read()
         .map_err(|_| Error::new(5200, "skills lock unavailable"))
@@ -1061,8 +1070,11 @@ fn migrate_with(home: &Path, bundled: &Path) -> Result<()> {
     // seeded every bundled skill into the library, where an unchanged copy
     // hides each newer bundled version, so the library has its own pass.
     let (profiles_key, library_key) = ("migration:shared-skills-v1", "migration:library-skills-v1");
-    // Bundled names became reserved: a copy under one would be hidden.
-    let names_key = "migration:bundled-names-v1";
+    // Bundled names became reserved: a copy under one would be hidden. Bump
+    // the key when a release bundles a new name (v2: github), so a skill an
+    // install already has under it is renamed too; names renamed before are
+    // no longer bundled, so the pass is safe to run again.
+    let names_key = "migration:bundled-names-v2";
     let done = |key: &str| -> Result<bool> {
         Ok(conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM settings WHERE key=?)",
@@ -1239,7 +1251,9 @@ fn keep_under_own_names(
 }
 
 /// A renamed skill stays off wherever its old name was switched off, which
-/// stays for the bundled skill of that name.
+/// stays for the bundled skill of that name. For a connector's own skill
+/// (Notion's, GitHub's) that keeps the connector off where the user had
+/// switched the name off: the migration never turns anything on.
 fn keep_switched_off(home: &Path, dir: &Path, old: &str, own: &str) -> Result<()> {
     safe_path(home, &dir.join("config.yaml"))?;
     let writer = common::config_writer()?;
@@ -1534,7 +1548,7 @@ mod tests {
         db::open(home.path())
             .unwrap()
             .execute(
-                "DELETE FROM settings WHERE key IN ('migration:library-skills-v1','migration:bundled-names-v1')",
+                "DELETE FROM settings WHERE key IN ('migration:library-skills-v1','migration:bundled-names-v2')",
                 [],
             )
             .unwrap();
@@ -1600,13 +1614,61 @@ mod tests {
         );
     }
     #[test]
+    fn a_newly_bundled_name_renames_the_skill_an_install_already_has() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        // Upgraded from a release whose bundle had no github: v1 ran then.
+        let conn = db::open(home.path()).unwrap();
+        conn.execute(
+            "DELETE FROM settings WHERE key='migration:bundled-names-v2'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO settings(key,value) VALUES ('migration:bundled-names-v1','true')",
+            [],
+        )
+        .unwrap();
+        let bundled = tempfile::tempdir().unwrap();
+        put(bundled.path(), "connectors/github", "bundled");
+        let library = home.path().join("skills");
+        put(&library, "mine/github", "the user's own");
+        put(
+            &home.path().join("profiles/owl/skills"),
+            "mine/github",
+            "owl's own",
+        );
+        // Switched off before: the user's skill stays off under its new name.
+        set_enabled(home.path(), None, "github", false).unwrap();
+        migrate_with(home.path(), bundled.path()).unwrap();
+        assert!(library.join("mine/github-own/SKILL.md").is_file());
+        assert!(
+            home.path()
+                .join("profiles/owl/skills/mine/github-own/SKILL.md")
+                .is_file()
+        );
+        // Nothing is turned on: GitHub's skill is its connector's switch, and
+        // the user had the name switched off.
+        let config = common::read_config(home.path()).unwrap();
+        assert!(is_disabled(&config, "github-own") && is_disabled(&config, "github"));
+        let skills = resolve_with(home.path(), Some("owl"), bundled.path()).unwrap();
+        let source = |name: &str| {
+            skills
+                .iter()
+                .find(|s| s.name == name)
+                .map(|s| s.source.clone())
+        };
+        assert_eq!(source("github").as_deref(), Some("bundled"));
+        assert_eq!(source("github-own").as_deref(), Some("bot"));
+    }
+    #[test]
     fn renamed_copies_take_names_free_everywhere_and_keep_overriding() {
         let home = tempfile::tempdir().unwrap();
         db::migrate(home.path()).unwrap();
         db::open(home.path())
             .unwrap()
             .execute(
-                "DELETE FROM settings WHERE key='migration:bundled-names-v1'",
+                "DELETE FROM settings WHERE key='migration:bundled-names-v2'",
                 [],
             )
             .unwrap();

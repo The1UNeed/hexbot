@@ -193,13 +193,13 @@ pub fn command(cfg: &Value, env: &BTreeMap<String, String>) -> Option<PathBuf> {
     })
 }
 /// The daemon's settings and credentials; the computer belongs to no one bot.
-fn setup(home: &Path) -> Result<(Value, BTreeMap<String, String>)> {
+pub(crate) fn setup(home: &Path) -> Result<(Value, BTreeMap<String, String>)> {
     Ok((
         common::read_config(home)?,
         connectors::profile_credentials(home, home)?,
     ))
 }
-fn overrides(cfg: &Value) -> serde_json::Map<String, Value> {
+pub(crate) fn overrides(cfg: &Value) -> serde_json::Map<String, Value> {
     let mut env = serde_json::Map::new();
     for name in PASSED_ENV {
         if let Ok(value) = std::env::var(name) {
@@ -261,14 +261,14 @@ fn size(home: &Path) -> &'static str {
         .unwrap_or(DEFAULT_SIZE)
 }
 
-fn unavailable() -> Error {
+pub(crate) fn unavailable() -> Error {
     Error::new(
         4302,
         "The computer needs Cua on the daemon's computer. Install it with `uv tool install cua`, start Docker, then try again.",
     )
 }
 /// The last line `cua` printed to stderr, without its log lines and colours.
-fn failure(stderr: &str, fallback: &str) -> Error {
+pub(crate) fn failure(stderr: &str, fallback: &str) -> Error {
     static ANSI: OnceLock<regex::Regex> = OnceLock::new();
     let ansi = ANSI.get_or_init(|| regex::Regex::new(r"\x1b\[[0-9;]*m").unwrap());
     let clean = ansi.replace_all(stderr, "");
@@ -286,12 +286,12 @@ fn failure(stderr: &str, fallback: &str) -> Error {
             .collect::<String>(),
     )
 }
-struct Output {
-    code: i32,
-    stdout: String,
-    stderr: String,
+pub(crate) struct Output {
+    pub(crate) code: i32,
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
 }
-async fn cua(
+pub(crate) async fn cua(
     cfg: &Value,
     env: &BTreeMap<String, String>,
     args: &[&str],
@@ -581,7 +581,7 @@ async fn forget(home: &Path) {
 }
 
 /// Turn the computer on: create it the first time, wake it when it sleeps.
-async fn ensure(home: &Path, cfg: &Value, env: &BTreeMap<String, String>) -> Result<()> {
+pub(crate) async fn ensure(home: &Path, cfg: &Value, env: &BTreeMap<String, String>) -> Result<()> {
     let lock = lifecycle(home);
     let _guard = lock.lock().await;
     ensure_locked(home, cfg, env, false).await
@@ -1614,16 +1614,17 @@ impl Auto {
 
 // ---- The bots' side: the `computer_use` tool ----
 
-/// The tool a bot with Computer use gets. The computer is the bots' own:
-/// nothing done there touches the user's computer or a workspace.
+/// The tool a bot with Computer use gets: the desktop of any computer its
+/// Computers list names, the bots' own or one of the user's.
 pub fn descriptor() -> Value {
     let point = json!({"type":"array","items":{"type":"integer"},"minItems":2,"maxItems":2});
     json!({
         "name": "computer_use",
-        "description": "Use the computer your bots share: a Linux desktop with a browser and a terminal, separate from the user's computer and your workspace. Run code, install programs and browse the web there, not on the user's computer. Other bots and the user share it, so work in a new tab or window of your own and leave theirs as they are. Start with screenshot; coordinates are pixels in the latest screenshot. Read the computer-use skill before your first action in a conversation.",
+        "description": "Use a computer's desktop: screenshots, clicks, typing, apps and windows. Your Computers list in the prompt says which computers you may use; name one in computer, or leave it out for the first one listed with a desktop. The bots' own computer (vm) is a Linux desktop with a browser and a terminal that you share with the other bots and the user, separate from the user's computers: run code, install programs and browse the web there. Work in a new tab or window of your own and leave others' as they are. On the user's own computers, the user allows each app the first time you use it; terminals (and apps with one of their own, such as Docker Desktop), editors, coding agents, script and launcher apps, remote desktops, a browser's developer tools and Hexbot itself never take your input, and shell is refused there: use bash with that computer instead. Start with screenshot; coordinates are pixels in the latest screenshot of that computer. Read the computer-use skill before your first action in a conversation.",
         "parameters": {
             "type": "object",
             "properties": {
+                "computer": { "type": "string", "description": "Which computer, by its id in your Computers list, such as vm" },
                 "action": {
                     "type": "string",
                     "enum": ["screenshot", "click", "double_click", "right_click", "middle_click", "move", "drag", "scroll", "type", "key", "open", "launch", "windows", "shell", "wait"]
@@ -1723,13 +1724,10 @@ fn aim(home: &Path, bot: &str, action: &str, at: Option<(i64, i64)>) {
     });
 }
 
-pub async fn act(
-    home: &Path,
-    bot: &str,
-    cfg: &Value,
-    env: &BTreeMap<String, String>,
-    args: &Value,
-) -> Result<Value> {
+/// What a `computer_use` call asks Cua to do: the action as named (after
+/// the earlier tool's names), the Cua tool and its arguments. `wait` asks
+/// nothing of Cua; its tool is empty. Every computer takes the same calls.
+pub(crate) fn translate(args: &Value) -> Result<(&str, &'static str, Value)> {
     // Conversations that started with the earlier computer tool keep its names.
     let action = match common::required(args, "action")? {
         "capture" => "screenshot",
@@ -1741,8 +1739,7 @@ pub async fn act(
         if !(0. ..=30.).contains(&seconds) {
             return Err(Error::new(4202, "wait seconds must be between 0 and 30"));
         }
-        tokio::time::sleep(Duration::from_secs_f64(seconds)).await;
-        return Ok(json!({"ok":true,"action":"wait"}));
+        return Ok((action, "", json!({"seconds": seconds})));
     }
     let (tool, params) = match action {
         "screenshot" => ("computer_screenshot", json!({})),
@@ -1764,8 +1761,14 @@ pub async fn act(
             ("computer_move_cursor", json!({"x":x,"y":y}))
         }
         "drag" => {
-            let (start_x, start_y) =
-                point(args, "coordinate").or_else(|_| point(args, "from_coordinate"))?;
+            // `from_coordinate` only when `coordinate` is absent, as the
+            // daemon's check on the user's computers decides: a malformed
+            // `coordinate` is an error, never swapped for another point.
+            let (start_x, start_y) = if args.get("coordinate").is_some_and(|c| !c.is_null()) {
+                point(args, "coordinate")?
+            } else {
+                point(args, "from_coordinate")?
+            };
             let (end_x, end_y) = point(args, "to_coordinate")?;
             (
                 "computer_drag",
@@ -1811,6 +1814,24 @@ pub async fn act(
             ));
         }
     };
+    Ok((action, tool, params))
+}
+
+pub async fn act(
+    home: &Path,
+    bot: &str,
+    cfg: &Value,
+    env: &BTreeMap<String, String>,
+    args: &Value,
+) -> Result<Value> {
+    let (action, tool, params) = translate(args)?;
+    if action == "wait" {
+        tokio::time::sleep(Duration::from_secs_f64(
+            params["seconds"].as_f64().unwrap_or(1.),
+        ))
+        .await;
+        return Ok(json!({"ok":true,"action":"wait"}));
+    }
     if with(home, |c| c.paused) {
         return Err(paused_error());
     }
@@ -1825,6 +1846,13 @@ pub async fn act(
     if with(home, |c| c.paused) {
         return Err(paused_error());
     }
+    let turn = Arc::new(turn);
+    let server = mcp_server(home, bot, cfg, env)?;
+    // Cua's session starts here, then the grant is checked: starting the
+    // computer, its session or waiting for another bot can take a while,
+    // and a grant taken away meanwhile applies.
+    warm(home, bot, &server, &turn).await?;
+    still_granted(home, bot)?;
     let at = point(args, "coordinate").ok();
     aim(home, bot, action, at);
     with(home, |c| {
@@ -1833,12 +1861,10 @@ pub async fn act(
     });
     changed(home);
     let _acting = Acting { home };
-    let turn = Arc::new(turn);
-    let server = mcp_server(home, bot, cfg, env)?;
     if action == "scroll"
         && let Some((x, y)) = at
     {
-        request(
+        act_request(
             home,
             bot,
             &server,
@@ -1847,8 +1873,10 @@ pub async fn act(
             &turn,
         )
         .await?;
+        // The move took a moment: a grant taken away meanwhile applies.
+        still_granted(home, bot)?;
     }
-    let result = request(home, bot, &server, tool, params, &turn).await?;
+    let result = act_request(home, bot, &server, tool, params, &turn).await?;
     if action == "drag" {
         aim(home, bot, action, point(args, "to_coordinate").ok());
     }
@@ -1864,13 +1892,60 @@ pub async fn act(
     if args["capture_after"] == true {
         // Let the screen draw what the action did.
         tokio::time::sleep(Duration::from_millis(500)).await;
+        still_granted(home, bot)?;
         let capture =
-            look(request(home, bot, &server, "computer_screenshot", json!({}), &turn).await?)?;
+            look(act_request(home, bot, &server, "computer_screenshot", json!({}), &turn).await?)?;
         let mut content = result["content"].as_array().cloned().unwrap_or_default();
         content.extend(capture["content"].as_array().cloned().unwrap_or_default());
         return Ok(json!({"content":content,"screenshot_path":capture["screenshot_path"]}));
     }
     Ok(result)
+}
+/// Starts a bot's Cua session before its action is checked, unless the
+/// session that action would use (this config, the bot's credentials now) is
+/// already up, so sending the action waits on nothing else.
+async fn warm(
+    home: &Path,
+    bot: &str,
+    server: &Value,
+    turn: &Arc<tokio::sync::OwnedMutexGuard<()>>,
+) -> Result<()> {
+    if connectors::config_session_ready(home, bot, SERVER, server).await? {
+        return Ok(());
+    }
+    request(
+        home,
+        bot,
+        server,
+        "computer_get_screen_size",
+        json!({}),
+        turn,
+    )
+    .await
+    .map(|_| ())
+}
+#[cfg(test)]
+pub(crate) fn still_granted_for_tests(home: &Path, bot: &str) -> Result<()> {
+    still_granted(home, bot)
+}
+/// Whether `bot` may still use the bots' computer's desktop.
+fn still_granted(home: &Path, bot: &str) -> Result<()> {
+    if crate::machines::has(home, bot, crate::machines::VM, crate::machines::DESKTOP)? {
+        Ok(())
+    } else {
+        Err(Error::new(
+            4302,
+            "You can't use the bots' computer's desktop any more. The user changes it in Settings, Computers.",
+        ))
+    }
+}
+/// Refused while the user has paused the bots on their computer.
+pub(crate) fn refuse_if_paused(home: &Path) -> Result<()> {
+    if with(home, |c| c.paused) {
+        Err(paused_error())
+    } else {
+        Ok(())
+    }
 }
 fn paused_error() -> Error {
     Error::new(
@@ -1917,18 +1992,22 @@ pub async fn fill(
     if with(home, |c| c.paused) {
         return Err(paused_error());
     }
+    let turn = Arc::new(turn);
+    let server = mcp_server(home, bot, cfg, env)?;
+    warm(home, bot, &server, &turn).await?;
+    still_granted(home, bot)?;
     with(home, |c| {
         c.actor = Some(bot.to_owned());
         c.activity = Some("type".to_owned());
     });
     changed(home);
     let _acting = Acting { home };
-    let turn = Arc::new(turn);
-    let server = mcp_server(home, bot, cfg, env)?;
     for (point, secret) in fills {
+        // Before every step: a grant taken away mid-fill types nothing more.
+        still_granted(home, bot)?;
         if let Some((x, y)) = *point {
             aim(home, bot, "click", Some((x, y)));
-            request(
+            act_request(
                 home,
                 bot,
                 &server,
@@ -1938,7 +2017,8 @@ pub async fn fill(
             )
             .await?;
         }
-        request(
+        still_granted(home, bot)?;
+        act_request(
             home,
             bot,
             &server,
@@ -1957,6 +2037,18 @@ pub async fn fill(
     Ok(())
 }
 
+/// An action: like `request`, with the bot's grant checked once its session
+/// is up and held, right before the action is written to it.
+async fn act_request(
+    home: &Path,
+    bot: &str,
+    server: &Value,
+    tool: &str,
+    args: Value,
+    turn: &Arc<tokio::sync::OwnedMutexGuard<()>>,
+) -> Result<Value> {
+    request_with(home, bot, server, tool, args, turn, true).await
+}
 /// One call to the computer. It runs to its end even if the bot is stopped,
 /// and keeps the turn until then, so no other bot acts on the screen meanwhile.
 async fn request(
@@ -1967,6 +2059,17 @@ async fn request(
     args: Value,
     turn: &Arc<tokio::sync::OwnedMutexGuard<()>>,
 ) -> Result<Value> {
+    request_with(home, bot, server, tool, args, turn, false).await
+}
+async fn request_with(
+    home: &Path,
+    bot: &str,
+    server: &Value,
+    tool: &str,
+    args: Value,
+    turn: &Arc<tokio::sync::OwnedMutexGuard<()>>,
+    checked: bool,
+) -> Result<Value> {
     let (home, bot, server, name) = (
         home.to_owned(),
         bot.to_owned(),
@@ -1976,10 +2079,25 @@ async fn request(
     let held = turn.clone();
     let result = tokio::spawn(async move {
         let _held = held;
-        connectors::mcp_call_config(&home, &bot, SERVER, &server, &name, args).await
+        if checked {
+            connectors::mcp_call_config_checked(
+                &home,
+                &bot,
+                SERVER,
+                &server,
+                &name,
+                args,
+                true,
+                || still_granted(&home, &bot),
+            )
+            .await
+        } else {
+            connectors::mcp_call_config(&home, &bot, SERVER, &server, &name, args).await
+        }
     })
     .await
-    .map_err(|_| Error::new(4211, "The computer action stopped unexpectedly."))??;
+    .map_err(|_| Error::new(4211, "The computer action stopped unexpectedly."))
+    .and_then(|r| r)?;
     if result["isError"] == true {
         return Err(Error::new(
             4211,

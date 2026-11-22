@@ -1853,6 +1853,18 @@ impl Dreaming {
         // Refuse before resolving untrusted UNC/device paths or touching the
         // workspace, artifacts or database. Approval modes cannot override it.
         crate::credentials::require_supported_execution()?;
+        // A script runs on this computer, so the bot needs its terminal now.
+        if !crate::machines::has(
+            &self.home,
+            bot,
+            crate::machines::HOST,
+            crate::machines::TERMINAL,
+        )? {
+            return Err(Error::new(
+                4302,
+                "Scheduled scripts run on the computer Hexbot runs on, and this bot can't use its terminal. The user changes that in Settings, Computers.",
+            ));
+        }
         let supplied = PathBuf::from(script);
         if !supplied.is_absolute()
             && supplied
@@ -2264,6 +2276,7 @@ impl Dreaming {
                 });
                 copy_job_options(&mut job, p)?;
                 validate_job(&self.home, &job)?;
+                script_terminal(&self.home, bot, &job)?;
                 self.save_job(owner, bot, &job)?;
                 let delivery = if job["notify"] == true {
                     "Tell the user what you scheduled and when it first runs. Each run's result is posted in your chat with them and notifies their devices."
@@ -2324,6 +2337,7 @@ impl Dreaming {
                     job["next_run_at"] = json!(now_iso(next));
                 }
                 validate_job(&self.home, &job)?;
+                script_terminal(&self.home, bot, &job)?;
                 self.save_job(owner, bot, &job)?;
                 Ok(json!({"success":true,"job":job}))
             }
@@ -2401,6 +2415,22 @@ fn copy_job_options(job: &mut Value, p: &Value) -> Result<()> {
             Value::Null
         };
         job["monitor_state"] = Value::Null;
+    }
+    Ok(())
+}
+/// A script job runs on this computer: refused when it is scheduled, not on
+/// every run, while the bot can't use this computer's terminal.
+fn script_terminal(home: &Path, bot: &str, job: &Value) -> Result<()> {
+    let scripted = ["script", "monitor_script"]
+        .iter()
+        .any(|key| job[key].as_str().is_some_and(|value| !value.is_empty()));
+    if scripted
+        && !crate::machines::has(home, bot, crate::machines::HOST, crate::machines::TERMINAL)?
+    {
+        return Err(Error::new(
+            4302,
+            "Scheduled scripts run on the computer Hexbot runs on, and this bot can't use its terminal. The user changes that in Settings, Computers.",
+        ));
     }
     Ok(())
 }
@@ -2724,6 +2754,47 @@ mod interpreter_tests {
         assert_eq!(
             scheduler.script("owl", "job.py", None).await.unwrap(),
             "managed-interpreter"
+        );
+    }
+    #[tokio::test]
+    async fn scheduled_scripts_need_this_computers_terminal() {
+        let home = common::TestHome::new();
+        db::migrate(home.path()).unwrap();
+        db::open(home.path())
+            .unwrap()
+            .execute(
+                "INSERT INTO bots(name,owner_id,workdir,approval_mode) VALUES('owl','local',?,'off')",
+                [home.workspace().to_str().unwrap()],
+            )
+            .unwrap();
+        fs::create_dir_all(home.path().join("profiles/owl/scripts")).unwrap();
+        fs::write(home.path().join("profiles/owl/scripts/job.sh"), "echo ran").unwrap();
+        // Only the bots' computer: this computer's terminal was taken away.
+        crate::machines::migrate(home.path()).unwrap();
+        crate::machines::set(home.path(), "host", "terminal", "owl", false).unwrap();
+        let events = EventHub::new();
+        let runtime = Runtime::new(home.path().into(), events.clone(), "unused".into()).unwrap();
+        let scheduler = Dreaming::new(home.path().into(), runtime, events);
+        let err = scheduler.script("owl", "job.sh", None).await.err().unwrap();
+        assert!(
+            err.message.contains("can't use its terminal"),
+            "{}",
+            err.message
+        );
+        // Scheduling one is refused up front, not on every run.
+        let err = scheduler
+            .tool_call(
+                "local",
+                "owl",
+                &json!({"action":"create","schedule":"every 1h","script":"job.sh","prompt":""}),
+            )
+            .await
+            .err()
+            .unwrap();
+        assert!(
+            err.message.contains("can't use its terminal"),
+            "{}",
+            err.message
         );
     }
     #[tokio::test]

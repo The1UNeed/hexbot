@@ -246,6 +246,19 @@ impl Runtime {
                     )
                     .await?;
                 } else {
+                    // Only on a bots' computer this conversation started with,
+                    // as computer_use: a grant given mid-turn waits.
+                    let frozen = self.frozen_desktops(s)?;
+                    if !frozen.as_array().is_some_and(|list| {
+                        list.iter().any(|c| {
+                            c["id"] == crate::machines::VM && c[crate::machines::DESKTOP] == true
+                        })
+                    }) {
+                        return Err(Error::new(
+                            4302,
+                            "You can't use the bots' computer's desktop in this conversation. Your Computers list says what you may use.",
+                        ));
+                    }
                     let request = json!({
                         "tool": NAME,
                         "toolCall": {"title": format!("Type your {title} {typed} on the bots' computer")},

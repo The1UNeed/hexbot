@@ -265,7 +265,7 @@ describe('Settings, Plugins', () => {
     await show('Skills')
     expect(screen.getByText('Built into Hexbot')).toBeInTheDocument()
     expect(screen.getByText('pdf')).toBeInTheDocument()
-    // Built-in tools live in Settings, Manuals.
+    // Hexbot's own tools aren't plugins: they come with every bot.
     expect(screen.queryByText('Built-in tools')).not.toBeInTheDocument()
     // The primary bot comes first.
     const picker = screen.getByRole('tablist', { name: 'Show plugins for' })

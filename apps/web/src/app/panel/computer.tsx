@@ -1,3 +1,4 @@
+import { useNavigate } from '@tanstack/react-router'
 import { Ellipsis, Monitor } from 'lucide-react'
 import { type CSSProperties, useEffect, useRef, useState } from 'react'
 
@@ -6,12 +7,14 @@ import { Button } from '../../components/ui/button'
 import { confirm } from '../../components/ui/confirm'
 import { Dialog } from '../../components/ui/dialog'
 import { Menu, MenuCheckIcon } from '../../components/ui/menu'
+import { computersGrant, connectorsSetForBot } from '../../lib/api'
 import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 import { targetOrigin } from '../../lib/connection'
 import type { Bot, ComputerCursor, ComputerQuality, ComputerStatus } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useComputer } from '../../stores/computer'
+import { useComputers } from '../../stores/computers'
 import { useConnection } from '../../stores/connection'
 import { useUi } from '../../stores/ui'
 import type { SaveBot } from '../bot-settings/shared'
@@ -395,12 +398,31 @@ function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   const refresh = useComputer(state => state.refresh)
   const step = useComputer(state => state.step)
   const [open, setOpen] = useState(false)
-  const enabled = bot.tools.includes('computer_use')
+  // computer_use means a desktop on any computer; this tab is the bots'
+  // computer, so it waits for Settings, Computers to say whether this bot
+  // works there. Only a daemon from before computers goes by its tools.
+  const computers = useComputers(state => state.computers)
+  const older = useComputers(state => state.older)
+  const listFailed = useComputers(state => state.listFailed)
+  const refreshComputers = useComputers(state => state.refresh)
+  const [grantError, setGrantError] = useState<null | string>(null)
+  const navigate = useNavigate()
+  const answered = useComputers(state => state.answered)
+  const connects = useConnection(state => state.connects)
+  const vm = computers?.find(computer => computer.id === 'vm')
+  // This connection's answer, not a list kept from before a reconnect.
+  const known = answered === connects
+
+  const enabled =
+    known &&
+    (older
+      ? bot.tools.includes('computer_use')
+      : Boolean(vm?.on && vm.desktop.bots.includes(bot.name)))
+
   const running = status?.state === 'running'
   // It keeps playing while the window is open, so it is there when it closes.
   const src = useScreen(running && enabled, false)
   const actor = useActorName(status?.actor)
-  const connects = useConnection(state => state.connects)
   const target = useConnection(state => state.target)
   const plays = !target || screenPlays(targetOrigin(target))
   const quality = useUi(state => state.computerQuality)
@@ -408,11 +430,47 @@ function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
 
   useEffect(() => {
     void refresh()
-  }, [connects, refresh])
+    void refreshComputers()
+  }, [connects, refresh, refreshComputers])
 
   // Nothing until the daemon answers; an older daemon has no computer.
   if (!status) {
     return null
+  }
+
+  // This connection's failure only, never an earlier one's or a Settings action's.
+  if (!known) {
+    return listFailed?.connects === connects ? (
+      <Placeholder>
+        <Monitor className="text-muted" size={20} />
+        <p className="max-w-64 text-[length:var(--text-secondary)] text-danger" role="alert">
+          {listFailed.message}
+        </p>
+        <Button onClick={() => void refreshComputers()} size="sm" variant="secondary">
+          Try again
+        </Button>
+      </Placeholder>
+    ) : null
+  }
+
+  const turnOn = async () => {
+    setGrantError(null)
+
+    if (older) {
+      await onSave({ tools: [...bot.tools, 'computer_use'] })
+
+      return
+    }
+
+    try {
+      // The bots' computer as one of its environments, and Computer Use for
+      // its screen.
+      await computersGrant('vm', 'terminal', bot.name, true)
+      await connectorsSetForBot('computer_use', bot.name, true)
+      await refreshComputers()
+    } catch (error) {
+      setGrantError(error instanceof Error ? error.message : String(error))
+    }
   }
 
   if (!status.available) {
@@ -429,6 +487,25 @@ function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
     )
   }
 
+  if (vm && !vm.on) {
+    return (
+      <Placeholder>
+        <Monitor className="text-muted" size={20} />
+        <p className="max-w-64 text-[length:var(--text-secondary)] text-muted">
+          Your bots aren't using their computer. Turn on Use the bots' computer in Settings,
+          Computers.
+        </p>
+        <Button
+          onClick={() => void navigate({ params: { tab: 'computer' }, to: '/settings/$tab' })}
+          size="sm"
+          variant="secondary"
+        >
+          Open Computers
+        </Button>
+      </Placeholder>
+    )
+  }
+
   if (!enabled) {
     return (
       <Placeholder>
@@ -437,13 +514,14 @@ function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
           {bot.display_name} can work on your bots' computer: a Linux desktop you can watch and use
           alongside them.
         </p>
-        <Button
-          onClick={() => void onSave({ tools: [...bot.tools, 'computer_use'] })}
-          size="sm"
-          variant="primary"
-        >
-          Turn on Computer use
+        <Button onClick={() => void turnOn()} size="sm" variant="primary">
+          Turn on Computer Use
         </Button>
+        {grantError ? (
+          <p className="text-[length:var(--text-meta)] text-danger" role="alert">
+            {grantError}
+          </p>
+        ) : null}
       </Placeholder>
     )
   }

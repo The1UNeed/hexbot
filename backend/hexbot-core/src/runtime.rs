@@ -1291,6 +1291,12 @@ impl Runtime {
                     )
                 }),
         );
+        // Where Cua keeps its credentials, so the extension's gates and
+        // sandbox protect a moved Cua folder too.
+        if let Some(cua) = crate::credentials::cua_home() {
+            pi.env
+                .insert("HEXBOT_CUA_HOME".into(), cua.to_string_lossy().into_owned());
+        }
         pi.env.insert(
             "HEXBOT_SESSION_CONFIG".into(),
             dir.join("config.json").to_string_lossy().into_owned(),
@@ -1684,6 +1690,31 @@ impl Runtime {
         // The prompt describes the tools frozen with the section, so it is
         // built from them and tagged with their layout (`prompt_layout`).
         let (mut prompt, skills) = self.session_prompt(botrow, owner, bot, cwd, &tools, public)?;
+        // The bot's computers freeze with its tools; a computer coming online
+        // or going away never changes the prompt (machines.rs).
+        // A restricted section (a delegate, a Discord room) keeps the
+        // computers its tools can reach: bash for a terminal, computer_use
+        // for a desktop.
+        // Every section lists only what it can reach: a terminal with bash
+        // (never a heartbeat's), a desktop with computer_use, and the bots'
+        // computer only when it can run.
+        let heartbeat = overrides.is_some_and(|o| o["heartbeat"].is_string());
+        let terminal = match restricted {
+            None => {
+                !heartbeat
+                    && crate::connectors::toolsets(&self.home, bot)?
+                        .iter()
+                        .any(|t| t == "terminal")
+            }
+            Some(tools) => tools.contains(&"bash") || tools.contains(&"terminal"),
+        };
+        let computers = crate::machines::reachable_list(
+            &crate::machines::session_list(&self.home, owner, bot)?,
+            terminal,
+            tools.iter().any(|t| t["name"] == "computer_use"),
+            crate::machines::vm_usable(&self.home)?,
+        );
+        prompt.push_str(&crate::machines::prompt_block(&computers));
         prompt.push_str(&connected_tools_block(&mcp_names));
         let mut config = common::read_config(&self.home)?;
         let profile = self.home.join("profiles").join(bot);
@@ -1735,6 +1766,7 @@ impl Runtime {
                 .unwrap_or_else(|| config["model"]["default"].clone()),
             "provider": config["model"]["provider"],
             "enabledToolsets": crate::connectors::toolsets(&self.home, bot)?,
+            "computers": computers,
             "restricted": restricted,
             "public": public,
             "skills": skills,
@@ -1812,13 +1844,42 @@ impl Runtime {
         }
         let (tools, mcp_names) = self.fresh_tools(owner, bot, stored, None, None)?;
         let toolsets = crate::connectors::toolsets(&self.home, bot)?;
-        Ok(json!([prompt_layout(&tools), tools, mcp_names, toolsets])
-            != json!([
-                saved["prompt_layout"],
-                saved["tools"],
-                saved["mcpServers"],
+        // A chat frozen before computers has none saved: the ones it had then
+        // follow from its frozen toolsets, as the migration wrote them down.
+        // Both sides kept to what a chat can reach, as `fresh_options` does.
+        let terminal = toolsets.iter().any(|t| t == "terminal");
+        let computers = crate::machines::reachable_list(
+            &crate::machines::session_list(&self.home, owner, bot)?,
+            terminal,
+            tools.iter().any(|t| t["name"] == "computer_use"),
+            crate::machines::vm_usable(&self.home)?,
+        );
+        let saved_computers = if saved.get("computers").is_some() {
+            saved["computers"].clone()
+        } else {
+            crate::machines::restricted_list(
+                &crate::machines::legacy_list(&saved["enabledToolsets"]),
                 saved["enabledToolsets"]
-            ]))
+                    .as_array()
+                    .is_some_and(|t| t.iter().any(|t| t == "terminal")),
+                has_tool(&saved["tools"], "computer_use"),
+            )
+        };
+        // Only which computers and what each offers count: a name or the OS
+        // a computer reports when it attaches never costs the cache.
+        Ok(json!([
+            prompt_layout(&tools),
+            tools,
+            mcp_names,
+            toolsets,
+            crate::machines::grants_of(&computers)
+        ]) != json!([
+            saved["prompt_layout"],
+            saved["tools"],
+            saved["mcpServers"],
+            saved["enabledToolsets"],
+            crate::machines::grants_of(&saved_computers)
+        ]))
     }
     /// The section's prompt: its fixed lines and guidance around the bot's
     /// name, soul, memory and About you, then the team block and the skill
@@ -1934,6 +1995,7 @@ impl Runtime {
         let public = options["public"] == true;
         let (mut prompt, skills) =
             self.session_prompt(&botrow, &s.owner, &s.bot, &cwd, &tools, public)?;
+        prompt.push_str(&crate::machines::prompt_block(&options["computers"]));
         prompt.push_str(&connected_tools_block(
             options["mcpServers"].as_array().map_or(&[], Vec::as_slice),
         ));
@@ -2571,8 +2633,10 @@ impl Runtime {
                     .as_array()
                     .is_some_and(|choices| choices.iter().any(|c| c == choice))
             };
-            // Apps from before Always allow was removed still send it.
+            // Apps from before Always allow was removed still send it; an
+            // app card on a user's computer offers it again (machines.rs).
             let choice = match required(p, "choice")? {
+                "always" if offered("always") => "always",
                 "always" if offered("session") => "session",
                 "always" => "once",
                 choice => choice,
@@ -3937,6 +4001,8 @@ impl Runtime {
         );
         let cwd = common::resolve_workdir(&self.home, configured)?;
         saved["fileWorkdir"] = json!(configured);
+        // What the bot may use now: a grant taken away applies at once.
+        saved["computersNow"] = crate::machines::session_list(&self.home, &s.owner, &s.bot)?;
         saved["fileEpoch"] = json!(s.state.lock().unwrap().stop_epoch);
         saved["cwd"] = json!(cwd);
         saved["home"] = json!(self.home);
@@ -3979,6 +4045,133 @@ impl Runtime {
         Ok(saved)
     }
 
+    /// The computers a section froze, for its desktop tools; a section from
+    /// before computers had the bots' computer's desktop.
+    fn frozen_desktops(&self, s: &Live) -> Result<Value> {
+        let raw: String = store::open(&self.home)?.query_row(
+            "SELECT options FROM native_sessions WHERE stored_id=?",
+            [&s.stored],
+            |r| r.get(0),
+        )?;
+        let options: Value =
+            serde_json::from_str(&raw).map_err(|e| Error::new(5200, e.to_string()))?;
+        Ok(if options.get("computers").is_none() {
+            json!([{"id": crate::machines::VM, "desktop": true}])
+        } else {
+            options["computers"].clone()
+        })
+    }
+    /// `computer_use` on any computer: the bots' computer through its own
+    /// path (turns, viewer, pause), this computer and the user's computers
+    /// after the per-app check, like Codex and Claude: the user allows each
+    /// app the first time, for this conversation or always. Bypass asks for
+    /// no app; blocked apps stay blocked in every mode.
+    async fn computer_tool(&self, s: &Live, args: &Value) -> Result<Value> {
+        let settings = self.session_settings(s)?;
+        // Without a computer named, the first desktop of the computers the
+        // section froze, as its prompt says; the grant is checked next.
+        let frozen = self.frozen_desktops(s)?;
+        let computer = match args["computer"].as_str().filter(|c| !c.is_empty()) {
+            Some(computer) => computer.to_owned(),
+            None => crate::machines::default_for(&frozen, crate::machines::DESKTOP)
+                .ok_or_else(|| Error::new(4302, "You have no computer with a desktop."))?,
+        };
+        // One this section started with, and (checked next) one the bot has now.
+        if !frozen.as_array().is_some_and(|list| {
+            list.iter()
+                .any(|c| c["id"] == computer.as_str() && c[crate::machines::DESKTOP] == true)
+        }) {
+            return Err(Error::new(
+                4302,
+                format!(
+                    "You can't use the desktop of {computer} in this conversation. Your Computers list says what you may use."
+                ),
+            ));
+        }
+        let mode = settings["approvalMode"]
+            .as_str()
+            .unwrap_or("manual")
+            .to_owned();
+        let check = || {
+            crate::machines::check_desktop(
+                &self.home, &s.owner, &s.bot, &s.stored, &computer, &mode, args,
+            )
+        };
+        let mut needs = check().await?;
+        if computer == crate::machines::VM {
+            return crate::native_tools::call(
+                &self.home,
+                &s.owner,
+                &s.bot,
+                &s.stored,
+                "computer_use",
+                args,
+            )
+            .await;
+        }
+        // One card per app the action reaches that the user hasn't allowed;
+        // a drag between two apps may ask twice.
+        let mut asked = Vec::new();
+        while let crate::machines::Needs::App {
+            app,
+            command,
+            reason,
+        } = needs
+        {
+            if asked.contains(&app) || asked.len() >= 3 {
+                return Err(Error::new(
+                    4302,
+                    "The screen keeps changing under this action. Take a screenshot and try again.",
+                ));
+            }
+            let answer = self
+                .ask_native(
+                    s,
+                    json!({
+                        "tool": "computer_use",
+                        "toolCall": {"title": command},
+                        "reason": reason,
+                        "computer": computer,
+                        "app": app,
+                        "choices": ["session", "always", "deny"],
+                    }),
+                    true,
+                )
+                .await?;
+            let Some(answer) = answer else {
+                return Err(Error::new(4302, format!("The user did not allow {app}.")));
+            };
+            // The computer or the bot's grant may have gone while the card
+            // waited: then the answer records nothing.
+            crate::machines::may_use_desktop(&self.home, &s.bot, &computer)?;
+            crate::machines::allow_app(
+                &self.home,
+                &computer,
+                &s.bot,
+                &s.stored,
+                &app,
+                answer == "always",
+            )?;
+            if answer == "always" {
+                self.events
+                    .emit(&s.owner, None, "hexbot.computers.changed", json!({}));
+            }
+            asked.push(app);
+            needs = check().await?;
+        }
+        // The mode is read again once the computer is free: one changed while
+        // a card or another bot's action waited applies.
+        let mode = || {
+            Ok(self.session_settings(s)?["approvalMode"]
+                .as_str()
+                .unwrap_or("manual")
+                .to_owned())
+        };
+        crate::machines::act(
+            &self.home, &s.owner, &s.bot, &s.stored, &computer, mode, args,
+        )
+        .await
+    }
     /// Ask the section owner about a daemon tool action, unless the mode is Bypass.
     async fn native_approval(&self, s: &Live, params: Value) -> Result<bool> {
         self.ask_approval(s, params, false).await
@@ -4014,7 +4207,11 @@ impl Runtime {
             payload["args"] = json!({"tool": params["tool"]});
         }
         payload["request_id"] = json!(id);
-        payload["choices"] = json!(["once", "deny"]);
+        payload["choices"] = params
+            .get("choices")
+            .filter(|c| c.is_array())
+            .cloned()
+            .unwrap_or_else(|| json!(["once", "deny"]));
         // The tool call that asked, so the apps tell this card from the one
         // they rebuild from history, even when two name the same thing.
         let call = TOOL_CALL.try_with(Clone::clone).ok();
@@ -5093,6 +5290,69 @@ impl Runtime {
                 )?))
             }
             "hexbot_session_settings" => self.session_settings(s),
+            "hexbot_terminal" => {
+                let computer = common::required(args, "computer")?;
+                let command = common::required(args, "command")?;
+                // One this section started with, as the extension also checks;
+                // a section frozen before computers had this computer's only.
+                let raw: String = store::open(&self.home)?.query_row(
+                    "SELECT options FROM native_sessions WHERE stored_id=?",
+                    [&s.stored],
+                    |r| r.get(0),
+                )?;
+                let options: Value =
+                    serde_json::from_str(&raw).map_err(|e| Error::new(5200, e.to_string()))?;
+                let frozen = match options["computers"].as_array() {
+                    Some(list) => list
+                        .iter()
+                        .any(|c| c["id"] == computer && c[crate::machines::TERMINAL] == true),
+                    None => computer == crate::machines::HOST,
+                };
+                if !frozen {
+                    return Err(Error::new(
+                        4302,
+                        format!(
+                            "You can't use the terminal of {computer} in this conversation. Your Computers list says what you may use."
+                        ),
+                    ));
+                }
+                // Stop ends the command there too: dropping it tells the
+                // computer to end that one request.
+                let epoch = s.state.lock().unwrap().stop_epoch;
+                let stopped = async {
+                    loop {
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        let state = s.state.lock().unwrap();
+                        if state.stop_epoch != epoch || state.closed {
+                            break;
+                        }
+                    }
+                };
+                // The gate's mode, checked again right before the command goes.
+                let gated = args["mode"].as_str().map(str::to_owned);
+                let still = || match &gated {
+                    Some(mode) if self.session_settings(s)?["approvalMode"] != *mode => {
+                        Err(Error::new(
+                            4302,
+                            "The approval mode changed before this ran. Try again.",
+                        ))
+                    }
+                    _ => Ok(()),
+                };
+                tokio::select! {
+                    result = crate::machines::terminal(
+                        &self.home,
+                        &s.owner,
+                        &s.bot,
+                        computer,
+                        command,
+                        args["timeout"].as_f64().map(|t| t.max(1.) as u64),
+                        still,
+                    ) => result,
+                    _ = stopped => Err(Error::new(5201, "The command was stopped.")),
+                }
+            }
+            "computer_use" => self.computer_tool(s, args).await,
             // Threads started before chats replaced sections still offer it;
             // titles are no longer shown, so there is nothing to rename.
             "hexbot_rename_section" => Ok(json!({"ok":true})),
@@ -8393,4 +8653,11 @@ mod show_html_tests {
             assert!(show_html(home.path(), "first", &bad).is_err());
         }
     }
+}
+
+/// Whether frozen tool descriptors include `name`.
+fn has_tool(tools: &Value, name: &str) -> bool {
+    tools
+        .as_array()
+        .is_some_and(|tools| tools.iter().any(|t| t["name"] == name))
 }

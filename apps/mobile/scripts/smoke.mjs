@@ -643,8 +643,19 @@ try {
   assert.equal(await readFile(path.join(workspace, 'mobile-approval.txt'), 'utf8'), 'approved')
   await expect(page.locator('[data-testid^="chat-tool"]')).toHaveCount(0)
   await shot('chat-approved')
-  // With Computer use, the bot asks for a sign-in on a card. What is typed
-  // there is saved in Passwords and never reaches the model.
+  // With Computer Use, the bot asks for a sign-in on a card. What is typed
+  // there is saved in Passwords and never reaches the model. Computer Use is
+  // a plugin acting on a bot's environments: here the bots' computer, which
+  // runs once the daemon names a Cua command, given to owl as Settings,
+  // Computers would, with Computer Use on as Settings, Plugins would.
+  const daemonConfig = await readFile(path.join(home, 'config.yaml'), 'utf8')
+  if (!daemonConfig.includes('\ncomputer_use:'))
+    await writeFile(
+      path.join(home, 'config.yaml'),
+      `${daemonConfig.trimEnd()}\ncomputer_use:\n  command: ${process.execPath}\n`
+    )
+  await rpc('hexbot.computers.grant', { bot: 'owl', capability: 'terminal', computer: 'vm', on: true })
+  await rpc('hexbot.connectors.set_for_bot', { bot: 'owl', enabled: true, id: 'computer_use' })
   await writeFile(
     path.join(home, 'profiles/owl/config.yaml'),
     `model:\n  provider: lmstudio\n  default: mobile-test\n  base_url: ${modelBase}\n  api_key: test-key\ntools:\n  enabled_toolsets: [file]\ncomputer_use:\n  command: ${process.execPath}\napproval_mode: manual\n`

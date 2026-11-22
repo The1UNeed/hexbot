@@ -12,9 +12,15 @@ import {
 import Svg, { Path } from 'react-native-svg'
 
 import { ComputerFrame } from '../ComputerFrame'
-import { COMPUTER_QUALITIES, computerActivity, screenPlays } from '../core/computer'
+import {
+  COMPUTER_QUALITIES,
+  computerAccess,
+  computerActivity,
+  type ComputersListed,
+  screenPlays
+} from '../core/computer'
 import { loadComputerQuality, saveComputerQuality } from '../core/storage'
-import type { Bot, ComputerCursor, ComputerQuality, ComputerStatus } from '../core/types'
+import type { Bot, Computer, ComputerCursor, ComputerQuality, ComputerStatus } from '../core/types'
 import {
   BotFace,
   Button,
@@ -261,8 +267,26 @@ export interface ComputerSheetProps {
   call: (method?: string, params?: Record<string, unknown>) => Promise<ComputerStatus>
   /** A link to the screen; it is not a status, so it is never merged into one. */
   view: (control: boolean, quality: ComputerQuality) => Promise<{ path: string }>
-  /** Gives `bot` Computer use. */
-  onEnable?: () => void
+  /**
+   * Gives `bot` the bots' computer's desktop, or Computer use on a daemon
+   * from before computers (`older`).
+   */
+  onEnable?: (older: boolean) => void
+  /**
+   * The bots' computer as Settings, Computers lists it. A bot's Computer use
+   * may be a desktop elsewhere; this says whether it works here.
+   */
+  vm?: Computer
+  /** Reads the computers again, for this connection. */
+  loadComputers: () => Promise<unknown>
+  /**
+   * What the latest read of the computers said on this connection
+   * (`useMobile`): an older or overtaken read never sets it, and a reconnect
+   * makes it 'loading' again.
+   */
+  listed: ComputersListed
+  /** Opens Settings, Computers, where the bots' computer is turned on. */
+  onSettings?: () => void
   /** Moves on at every reconnect; a restarted daemon forgets the old link. */
   connects: number
 }
@@ -335,10 +359,14 @@ export function ComputerSheet({
   call,
   connects,
   faceOf,
+  listed,
+  loadComputers,
   onEnable,
+  onSettings,
   origin,
   status,
-  view
+  view,
+  vm
 }: ComputerSheetProps) {
   const theme = useTheme()
   const [src, setSrc] = useState<null | string>(null)
@@ -348,7 +376,9 @@ export function ComputerSheet({
   const [error, setError] = useState<null | string>(null)
   const running = status?.state === 'running'
   const paused = status?.control === 'user'
-  const enabled = !bot || (bot.tools ?? []).includes('computer_use')
+  // Nothing shows until this connection's list of computers answers.
+  const access = computerAccess(bot, listed, vm)
+  const enabled = access === 'screen'
   const plays = !origin || screenPlays(origin)
   // This phone's choice, read before the first link so it is made only once.
   const [quality, setQuality] = useState<ComputerQuality | null>(null)
@@ -369,8 +399,11 @@ export function ComputerSheet({
 
   // A new link waits for this connection's status.
   const [read, setRead] = useState(-1)
+  // What the read says lands in `listed`; its own failure shows there too.
+  const readList = () => void loadComputers().catch(() => {})
   useEffect(() => {
     setError(null)
+    readList()
     call('hexbot.computer.status')
       .then(() => setRead(connects))
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
@@ -436,13 +469,40 @@ export function ComputerSheet({
       </View>
     )
 
+  if (access === 'loading')
+    return (
+      <View style={styles.center}>
+        <ActivityIndicator />
+      </View>
+    )
+
+  if (typeof access === 'object')
+    return (
+      <View style={[styles.center, styles.retry]}>
+        <Text tone="danger">{access.error}</Text>
+        <Button label="Try again" onPress={readList} testID="computer-list-retry" />
+      </View>
+    )
+
+  if (access === 'off')
+    return (
+      <View style={styles.body}>
+        {placeholder(
+          "Your bots aren't using their computer. Turn on Use the bots' computer in Settings, Computers.",
+          onSettings
+            ? { label: 'Open Computers', onPress: onSettings, testID: 'computer-settings' }
+            : undefined
+        )}
+      </View>
+    )
+
   if (!enabled)
     return (
       <View style={styles.body}>
         {placeholder(
           `${bot?.display_name ?? 'This bot'} can work on your bots' computer: a Linux desktop you can watch and use alongside them.`,
           onEnable
-            ? { label: 'Turn on Computer use', onPress: onEnable, testID: 'computer-enable' }
+            ? { label: 'Turn on Computer Use', onPress: () => onEnable(listed === 'older'), testID: 'computer-enable' }
             : undefined
         )}
       </View>
@@ -553,6 +613,7 @@ const styles = StyleSheet.create({
   caption: { flex: 1 },
   captionLine: { alignItems: 'center', flexDirection: 'row', gap: 8, paddingHorizontal: 4 },
   center: { alignItems: 'center', padding: space.xl },
+  retry: { gap: space.md },
   cursor: { height: 0, left: 0, position: 'absolute', top: 0, width: 0 },
   dot: { borderRadius: 3, height: 6, width: 6 },
   face: {

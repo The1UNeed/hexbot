@@ -22,6 +22,7 @@ export type {
   SkillRequirement,
   NetworkInfo,
   UsageSummary,
+  Computer,
   ComputerCursor,
   ComputerQuality,
   ComputerSize,
