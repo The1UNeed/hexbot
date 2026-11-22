@@ -15,9 +15,15 @@ import {
 } from '../lib/api'
 import type { ComputerQuality, ComputerSize, ComputerStatus } from '../lib/types'
 
-import { useConnection } from './connection'
+import { type ConnectionState, useConnection } from './connection'
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
+
+function currentConnection({ connects, target }: ConnectionState): boolean {
+  const current = useConnection.getState()
+
+  return current.target === target && current.connects === connects
+}
 
 export interface ComputerStoreState {
   apply: (status: Partial<ComputerStatus>) => void
@@ -35,11 +41,13 @@ export interface ComputerStoreState {
 }
 
 export const useComputer = create<ComputerStoreState>(set => {
-  const run = async (request: () => Promise<ComputerStatus>, reading = false) => {
-    const { connects, target } = useConnection.getState()
+  let latestRead = 0
 
-    const current = () =>
-      useConnection.getState().target === target && useConnection.getState().connects === connects
+  const run = async (request: () => Promise<ComputerStatus>, reading = false) => {
+    const connection = useConnection.getState()
+    const read = reading ? ++latestRead : null
+
+    const current = () => currentConnection(connection) && (read === null || read === latestRead)
 
     try {
       set({ error: null })
@@ -50,7 +58,10 @@ export const useComputer = create<ComputerStoreState>(set => {
         return
       }
 
-      set(state => ({ status: { ...state.status, ...result }, ...(reading && { read: connects }) }))
+      set(state => ({
+        status: { ...state.status, ...result },
+        ...(reading && { read: connection.connects })
+      }))
     } catch (error) {
       if (current()) {
         set({ error: message(error) })
@@ -78,10 +89,16 @@ export const useComputer = create<ComputerStoreState>(set => {
       await run(() => computerStep(step))
     },
     async view(control, quality) {
+      const connection = useConnection.getState()
+
       try {
-        return (await computerView(control, quality)).path
+        const { path } = await computerView(control, quality)
+
+        return currentConnection(connection) ? path : null
       } catch (error) {
-        set({ error: message(error) })
+        if (currentConnection(connection)) {
+          set({ error: message(error) })
+        }
 
         return null
       }
