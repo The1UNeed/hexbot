@@ -1279,8 +1279,8 @@ function MobileApp({ children }: { children?: ReactNode }) {
     return { ...file, mediaUrl: mediaSource(mobile.active.origin, file.media_path) }
   }, [liveChat, mobile.active, mobile.connects])
   const loadMedia = useCallback((path: string, id: string) => {
-    const key = JSON.stringify([mobile.active?.id, mobile.connects, liveChat, id, path])
-    return mediaUri(key, () => readFile(path))
+    const key = JSON.stringify([mobile.active?.id, liveChat, id, path])
+    return mediaUri(key, () => readFile(path), mobile.connects)
   }, [liveChat, mobile.active?.id, mobile.connects, readFile])
   // The private conversation between two bots: the thread in which `peer`
   // asked `bot`, or the other way round when that is the one there is. With

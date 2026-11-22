@@ -102,6 +102,7 @@ export function editRequest(ask: string, name: string, path?: string, editable =
 }
 
 function useOpenedFile(tab: FileTab, sessionId: string) {
+  const [attempt, setAttempt] = useState(0)
   const connects = useConnection(state => state.connects)
   const { path, url } = tab.file
   const transcript = useTranscript(sessionId)
@@ -183,7 +184,7 @@ function useOpenedFile(tab: FileTab, sessionId: string) {
     return () => {
       current = false
     }
-  }, [connects, edits, path, sessionId, tab.file.mime, tab.title, url, working])
+  }, [attempt, connects, edits, path, sessionId, tab.file.mime, tab.title, url, working])
 
   useEffect(() => {
     if (!updated) {
@@ -211,7 +212,13 @@ function useOpenedFile(tab: FileTab, sessionId: string) {
     setFile(next)
   }
 
-  return { adopt, error, file, outgrown, saved, updated, working }
+  const reload = () => {
+    setFile(null)
+    setError(null)
+    setAttempt(n => n + 1)
+  }
+
+  return { adopt, error, file, outgrown, reload, saved, updated, working }
 }
 
 /**
@@ -357,8 +364,16 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
   )
 
   const sessionId = useFileSession(tab)
-  const { adopt, error, file, outgrown, saved, updated, working } = useOpenedFile(tab, sessionId)
-  const objectUrl = useObjectUrl(file?.mediaUrl ?? file?.data_url)
+  const [broken, setBroken] = useState<OpenedFile>()
+
+  const { adopt, error, file, outgrown, reload, saved, updated, working } = useOpenedFile(
+    tab,
+    sessionId
+  )
+
+  const localUrl = useObjectUrl(file?.data_url)
+  const objectUrl = file?.mediaUrl ?? localUrl
+  const mediaError = file?.mediaUrl ? () => setBroken(file) : undefined
   // The version the editor's text is based on. A refresh moves it only when the
   // editor takes the new text; while it holds an unsaved edit, a save names the
   // version that edit started from, so it cannot overwrite the bot's change.
@@ -441,7 +456,13 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
 
   let body: React.ReactNode
 
-  if (error && !file) {
+  if (broken && (broken === file || (error && !file))) {
+    body = (
+      <button className="hex-focus m-4" onClick={reload} type="button">
+        Reload {name}
+      </button>
+    )
+  } else if (error && !file) {
     body = (
       <p
         className="m-4 rounded-[12px] bg-danger/10 px-3.5 py-2.5 text-[length:var(--text-secondary)] text-danger"
@@ -536,6 +557,7 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
       <img
         alt={name}
         className="mx-auto max-h-full max-w-full rounded-[12px] object-contain"
+        onError={mediaError}
         src={objectUrl}
       />
     )
@@ -545,6 +567,7 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
         aria-label={name}
         className="mx-auto max-h-full max-w-full rounded-[12px] bg-black"
         controls
+        onError={mediaError}
         playsInline
         src={objectUrl}
       />
@@ -552,7 +575,13 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
   } else if (mime.startsWith('audio/') && objectUrl) {
     body = (
       <div className="grid h-full place-items-center p-4">
-        <audio aria-label={name} className="w-full max-w-md" controls src={objectUrl} />
+        <audio
+          aria-label={name}
+          className="w-full max-w-md"
+          controls
+          onError={mediaError}
+          src={objectUrl}
+        />
       </div>
     )
   } else {

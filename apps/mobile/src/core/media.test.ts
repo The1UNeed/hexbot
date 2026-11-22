@@ -42,7 +42,7 @@ it('keeps one copy of a daemon file on the phone and plays from it', async () =>
   expect(files.written).toEqual([
     { name: expect.stringMatching(/a_1\.mp3$/), content: 'SUQz', encoding: 'base64' }
   ])
-  expect(await mediaUri('d:/art/a1.mp3', read)).toBe(first)
+  expect(await mediaUri('d:/art/a1.mp3', read, 2)).toBe(first)
   expect(read).toHaveBeenCalledOnce()
 })
 

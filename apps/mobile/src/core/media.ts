@@ -10,7 +10,8 @@ export interface ReadMedia {
   name: string
 }
 
-const made = new Map<string, Promise<string>>()
+const made = new Map<string, string>()
+const pending = new Map<string, Promise<string>>()
 // Two files with one name, read in the same millisecond, get their own copies.
 let copies = 0
 
@@ -18,19 +19,27 @@ let copies = 0
  * The native player can stream a daemon URL directly. Keep local copies
  * from older daemons so scrolling back doesn't download their bytes again.
  */
-export function mediaUri(key: string, read: () => Promise<ReadMedia>): Promise<string> {
-  let uri = made.get(key)
-  if (!uri) {
-    uri = read().then(file => {
-      if (!file.mediaUrl) return save(file)
-      // A link belongs to the live connection. Only local copies outlive it.
-      made.delete(key)
-      return file.mediaUrl
+export function mediaUri(
+  key: string,
+  read: () => Promise<ReadMedia>,
+  connection = 0
+): Promise<string> {
+  const local = made.get(key)
+  if (local) return Promise.resolve(local)
+
+  const request = JSON.stringify([key, connection])
+  const reading = pending.get(request)
+  if (reading) return reading
+  const result = read()
+    .then(async file => {
+      if (file.mediaUrl) return file.mediaUrl
+      const uri = await save(file)
+      made.set(key, uri)
+      return uri
     })
-    uri.catch(() => made.delete(key))
-    made.set(key, uri)
-  }
-  return uri
+    .finally(() => pending.delete(request))
+  pending.set(request, result)
+  return result
 }
 
 async function save(file: ReadMedia): Promise<string> {

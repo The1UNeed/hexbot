@@ -15,11 +15,13 @@ import { blobFromDataUrl } from './file-tab'
 function useMediaUrl(
   url: string | undefined,
   path: string | undefined,
-  sessionId: string | undefined
+  sessionId: string | undefined,
+  attempt: number
 ): { failed: boolean; src: string | undefined } {
   const connects = useConnection(state => state.connects)
 
-  const [read, setRead] = useState<{ failed: boolean; src: string | undefined }>({
+  const [read, setRead] = useState<{ attempt: number; failed: boolean; src: string | undefined }>({
+    attempt,
     failed: false,
     src: undefined
   })
@@ -36,7 +38,7 @@ function useMediaUrl(
       .then(file => {
         if (file.mediaUrl) {
           if (live) {
-            setRead({ failed: false, src: file.mediaUrl })
+            setRead({ attempt, failed: false, src: file.mediaUrl })
           }
 
           return
@@ -51,12 +53,12 @@ function useMediaUrl(
         made = URL.createObjectURL(blob)
 
         if (live) {
-          setRead({ failed: false, src: made })
+          setRead({ attempt, failed: false, src: made })
         } else {
           URL.revokeObjectURL(made)
         }
       })
-      .catch(() => live && setRead({ failed: true, src: undefined }))
+      .catch(() => live && setRead({ attempt, failed: true, src: undefined }))
 
     return () => {
       live = false
@@ -65,9 +67,9 @@ function useMediaUrl(
         URL.revokeObjectURL(made)
       }
     }
-  }, [connects, path, sessionId, url])
+  }, [attempt, connects, path, sessionId, url])
 
-  return url ? { failed: false, src: url } : read
+  return url || read.attempt !== attempt ? { failed: false, src: url } : read
 }
 
 /**
@@ -92,21 +94,37 @@ export function MediaView({
   sessionId?: string
   url?: string
 }) {
-  const [requested, setRequested] = useState(false)
+  const [attempt, setAttempt] = useState(0)
+  const [broken, setBroken] = useState<string>()
   const deferred = !url && kind !== 'image'
-  const { failed, src } = useMediaUrl(url, deferred && !requested ? undefined : path, sessionId)
 
-  if (deferred && !src && !failed) {
+  const { failed, src } = useMediaUrl(
+    url,
+    deferred && !attempt ? undefined : path,
+    sessionId,
+    attempt
+  )
+
+  const retry = Boolean(path && !url && (failed || (src && broken === src)))
+  const onError = path && !url ? () => setBroken(src) : undefined
+
+  if (retry || (deferred && !src && !failed)) {
+    const busy = attempt > 0 && !retry
+    const label = retry ? `Reload ${name}` : name
+
     return (
       <Button
-        aria-label={`${requested ? 'Loading' : 'Load'} ${name}`}
-        busy={requested}
+        aria-label={retry ? label : `${busy ? 'Loading' : 'Load'} ${name}`}
+        busy={busy}
         className="max-w-full"
         icon={<Download size={16} />}
-        onClick={() => setRequested(true)}
+        onClick={() => {
+          setBroken(undefined)
+          setAttempt(value => value + 1)
+        }}
         variant="pill"
       >
-        <span className="truncate">{name}</span>
+        <span className="truncate">{label}</span>
       </Button>
     )
   }
@@ -138,14 +156,26 @@ export function MediaView({
         onClick={() => onImage(src)}
         type="button"
       >
-        <img alt={name} className="max-h-64 rounded-panel object-contain" src={src} />
+        <img
+          alt={name}
+          className="max-h-64 rounded-panel object-contain"
+          onError={onError}
+          src={src}
+        />
       </button>
     )
   }
 
   if (kind === 'audio') {
     return (
-      <audio aria-label={name} className="w-72 max-w-full" controls preload="metadata" src={src} />
+      <audio
+        aria-label={name}
+        className="w-72 max-w-full"
+        controls
+        onError={onError}
+        preload="metadata"
+        src={src}
+      />
     )
   }
 
@@ -154,6 +184,7 @@ export function MediaView({
       aria-label={name}
       className="max-h-64 max-w-full rounded-panel bg-black"
       controls
+      onError={onError}
       playsInline
       preload="metadata"
       src={src}

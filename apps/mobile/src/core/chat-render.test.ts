@@ -37,8 +37,12 @@ vi.mock('react-native', async () => {
 vi.mock('@expo/vector-icons', () => ({ Ionicons: () => null }))
 vi.mock('expo-clipboard', () => ({ setStringAsync: vi.fn() }))
 vi.mock('../ui/PluginIcon', () => ({ PluginIcon: () => null }))
+const audio = vi.hoisted(() => ({
+  currentStatus: { duration: 0, error: null },
+  addListener: vi.fn((_event: string, _listener: (status: { error: string | null }) => void) => ({ remove: vi.fn() }))
+}))
 vi.mock('expo-audio', () => ({
-  useAudioPlayer: () => ({}), useAudioPlayerStatus: () => ({ duration: 0 }),
+  useAudioPlayer: () => audio, useAudioPlayerStatus: () => audio.currentStatus,
   setAudioModeAsync: vi.fn()
 }))
 vi.mock('expo-video', () => ({ useVideoPlayer: () => ({}), VideoView: () => null }))
@@ -184,6 +188,29 @@ it('waits for the cached chat to open, then reads only the recording selected', 
     '.txt',
     'Text'
   ])
+})
+
+it('requests a fresh media link after the native player reports a failed stream', async () => {
+  const load = vi.fn(async () => 'https://daemon.test/api/media/' + 'b'.repeat(32))
+  const items: ChatItem[] = [{
+    kind: 'message', id: 'made', role: 'bot', text: '',
+    attachments: [{ id: 'a', kind: 'audio', name: 'voice.mp3', path: '/art/voice.mp3' }]
+  }]
+  render(createElement(ChatScreen, {
+    title: 'Owl', items, loadMedia: load, onSend: vi.fn(), onApprove: vi.fn()
+  }))
+  fireEvent.click(screen.getByRole('button', { name: 'Load voice.mp3' }))
+  await screen.findByTestId('chat-audio')
+  const [, report] = audio.addListener.mock.lastCall!
+  act(() => {
+    report({ error: 'HTTP 410' })
+    report({ error: null })
+  })
+  const retry = await screen.findByRole('button', { name: 'Reload voice.mp3' })
+  expect(load).toHaveBeenCalledTimes(1)
+  fireEvent.click(retry)
+  expect(await screen.findByTestId('chat-audio')).toBeDefined()
+  expect(load).toHaveBeenCalledTimes(2)
 })
 
 it('a long press on a message copies it whole or opens it to select any part', () => {

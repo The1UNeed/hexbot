@@ -423,6 +423,22 @@ describe('MessageRow files', () => {
       audio!.compareDocumentPosition(screen.getByText('Here it is.')) &
         Node.DOCUMENT_POSITION_PRECEDING
     ).toBeTruthy()
+    fireEvent.error(audio!)
+    read.mockResolvedValueOnce({
+      mime: 'audio/mpeg',
+      modified: 1,
+      name: 'a1.mp3',
+      path: voice,
+      size: 3,
+      version: 'new',
+      mediaUrl: 'https://daemon.test/api/media/' + 'b'.repeat(32)
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Reload a1.mp3' }))
+    expect(await screen.findByLabelText('a1.mp3')).toHaveAttribute(
+      'src',
+      'https://daemon.test/api/media/' + 'b'.repeat(32)
+    )
+    expect(read.mock.calls.at(-1)).toEqual(['live-1', voice])
     read.mockRestore()
   })
 
