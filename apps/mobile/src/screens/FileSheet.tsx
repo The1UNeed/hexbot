@@ -97,9 +97,12 @@ export function FileSheet({
   const version = useRef<string | undefined>(undefined)
   // What the last save wrote, so Share sends the file as it is now.
   const saved = useRef<SavedContents | null>(null)
+  // The editor holds an edit not written yet, as the closing save reads it.
+  const edited = useRef(false)
 
   useEffect(() => {
     setDirty(false)
+    edited.current = false
     setConflict(false)
     setSaveError('')
     setAsking(null)
@@ -167,7 +170,14 @@ export function FileSheet({
   // An edit is written back as the card closes; one that was refused keeps it open.
   const close = () => {
     if (!dirty || !writeFile) return onClose()
-    void save().then(ok => ok && onClose())
+    void (async () => {
+      // An edit made while the closing save wrote is saved too before the card goes;
+      // one that keeps coming, or a refused save, keeps it open.
+      for (let round = 0; round < 3; round++) {
+        if (!(await save())) return
+        if (!edited.current) return onClose()
+      }
+    })()
   }
 
   const discard = () =>
@@ -192,7 +202,10 @@ export function FileSheet({
     (ask: CommentAsk) => (onComment ? setAsking(ask) : undefined),
     [onComment]
   )
-  const onDirty = useCallback((next: boolean) => setDirty(next), [])
+  const onDirty = useCallback((next: boolean) => {
+    edited.current = next
+    setDirty(next)
+  }, [])
   const editorProps = {
     handle,
     onComment: onComment ? comment : undefined,

@@ -303,6 +303,21 @@ describe('an Excel file', () => {
     expect(cellSource(pkg, sheet, 1, 0)).toBe('1.23456789012345')
   })
 
+  it('edits a long number typed as a number as stored too', () => {
+    const pkg = xlsx()
+    const sheet = readXlsx(pkg)!.sheets[0]!
+
+    setCells(pkg, sheet, [{ col: 0, row: 1, value: '1.23456789012345' }])
+
+    const cell = Array.from(
+      pkg.xml('xl/worksheets/sheet1.xml')!.getElementsByTagNameNS('*', 'c')
+    ).find(node => node.getAttribute('r') === 'A2')!
+
+    cell.setAttribute('t', 'n')
+
+    expect(cellSource(pkg, sheet, 1, 0)).toBe('1.23456789012345')
+  })
+
   it('writes TRUE and FALSE as Booleans', () => {
     const pkg = xlsx()
     const sheet = readXlsx(pkg)!.sheets[0]!

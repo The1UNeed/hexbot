@@ -321,7 +321,8 @@ export function cellSource(pkg: OfficePackage, sheet: XlsxSheet, row: number, co
   if (
     cell &&
     stored &&
-    !attr(cell, 't') &&
+    // No type, or the explicit "n", is a number.
+    (attr(cell, 't') ?? 'n') === 'n' &&
     readStyles(pkg).kind[Number(attr(cell, 's') ?? 0)] === 'number'
   ) {
     return stored
