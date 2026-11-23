@@ -55,7 +55,7 @@ const APP_CSP = [
   "img-src 'self' data: blob: http: https:",
   "font-src 'self' data:",
   "connect-src 'self' http: https: ws: wss:",
-  "media-src 'self' blob:",
+  "media-src 'self' blob: http://*:*/api/media/ https://*:*/api/media/",
   // A bot's computer screen comes from its daemon, and a PDF beside the chat
   // from a blob the page made; frameNavigationAllowed narrows both.
   "frame-src 'self' blob: http: https:"

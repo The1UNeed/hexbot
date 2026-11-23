@@ -267,7 +267,10 @@ with Viewport Segments place both poses on the exact halves.
   card under its reply, with its kind in place of the size; files it only
   wrote or edited along the way, such as scripts and tests, do not show.
   A shared picture, video or audio file shows or plays there instead, and so
-  do the voice replies, pictures and clips its media tools make. The composer shows pictures as
+  do the voice replies, pictures and clips its media tools make. Select an audio or
+  video filename to load its player. The daemon streams media over HTTP so the
+  chat connection stays available during playback and seeking. If the file changes
+  during playback, Reload opens its current version. The composer shows pictures as
   thumbnails and other files as cards, each with a remove button. A file
   uploads the moment it is dropped on the chat, picked or pasted, one at a
   time, in parts: a picture dims under its percentage, a card says
@@ -339,14 +342,10 @@ with Viewport Segments place both poses on the exact halves.
   and answered cards come back from the section's history, each under the
   message that asked it.
 - Sending (web and desktop): the field clears at once and your bubble greys
-  with a small spinner beside it until the daemon takes it. After 15 s with
-  no answer, or when the send is refused or cannot reach the daemon, the
-  bubble gets a red ! beside it and "Not sent · Retry" under it, the reason
-  on hover; the ! retries too. Not sent means only that: a message the bot
-  got whose turn then failed (a provider error, a rate limit) stays as sent
-  and gets a Stopped card. An unknown outcome retries under the same
-  input key, so a copy that did arrive is never taken twice, and stays Not
-  sent until the stored row shows it. A turn that failed on your latest
+  with a small spinner beside it until the daemon takes it. After 15 s without confirmation, the
+  bubble shows "Delivery unconfirmed · Retry". A refusal shows "Not sent · Retry".
+  Hover for the reason. Retry uses the same input key when delivery is uncertain,
+  so the daemon can recognize a message it already received. A turn that failed on your latest
   message in a bot's chat retries in place: Recall takes the message and the
   failed turn back and the same bubble sends again, so one copy stays. Until
   the bot takes a message its saved draft keeps it, so a reload never loses

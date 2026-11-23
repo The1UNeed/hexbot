@@ -198,7 +198,7 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
       {
         license: 'MIT',
         name: 'Tokio',
-        packages: ['tokio'],
+        packages: ['tokio', 'tokio-util'],
         repository: 'https://github.com/tokio-rs/tokio'
       },
       {
@@ -212,6 +212,12 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
         name: 'tower-http',
         packages: ['tower-http'],
         repository: 'https://github.com/tower-rs/tower-http'
+      },
+      {
+        license: 'MIT',
+        name: 'http-range-header',
+        packages: ['http-range-header'],
+        repository: 'https://github.com/MarcusGrass/parse-range-headers'
       },
       {
         license: 'MIT',

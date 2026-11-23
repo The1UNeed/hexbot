@@ -28,6 +28,9 @@ use std::{
     time::Duration,
 };
 
+#[path = "server_media.rs"]
+mod media;
+
 pub(crate) const WS_MESSAGE_LIMIT: usize = 64 * 1024 * 1024;
 
 pub struct App {
@@ -39,6 +42,7 @@ pub struct App {
     pub discord: Arc<crate::discord::Discord>,
     memory: MemoryStore,
     tickets: Mutex<HashMap<String, (String, f64)>>,
+    media: media::Links,
     proofs: Arc<dpop::Proofs>,
     logins: Mutex<HashMap<String, BrowserLogin>>,
     auth_connection: Mutex<rusqlite::Connection>,
@@ -146,6 +150,7 @@ impl App {
             dreaming,
             discord,
             tickets: Mutex::new(HashMap::new()),
+            media: Default::default(),
             proofs: Arc::new(dpop::Proofs::default()),
             logins: Mutex::new(HashMap::new()),
             address,
@@ -172,6 +177,7 @@ impl App {
             dreaming: self.dreaming.clone(),
             discord: self.discord.clone(),
             tickets: Mutex::new(std::mem::take(&mut *self.tickets.lock().unwrap())),
+            media: Default::default(),
             proofs: self.proofs.clone(),
             logins: Mutex::new(std::mem::take(&mut *self.logins.lock().unwrap())),
             address,
@@ -1511,7 +1517,7 @@ async fn origin_guard(
             .append("vary", HeaderValue::from_static("Origin"));
         response.headers_mut().insert(
             "access-control-allow-headers",
-            HeaderValue::from_static("Content-Type, Authorization, DPoP"),
+            HeaderValue::from_static("Content-Type, Authorization, DPoP, Range"),
         );
         response.headers_mut().insert(
             "access-control-expose-headers",
@@ -1519,7 +1525,7 @@ async fn origin_guard(
         );
         response.headers_mut().insert(
             "access-control-allow-methods",
-            HeaderValue::from_static("GET, POST, OPTIONS"),
+            HeaderValue::from_static("GET, HEAD, POST, OPTIONS"),
         );
         response.headers_mut().insert(
             "access-control-allow-credentials",
@@ -2020,6 +2026,7 @@ async fn connection(
     // with this connection and run their scoped cleanup. Waited for, so an
     // attach already running can't offer this computer after it detaches.
     tasks.shutdown().await;
+    app.media.disconnect(connection_id);
     crate::machines::detach(&app.home, &device_id, connection_id);
 }
 async fn handle_request(
@@ -2064,6 +2071,20 @@ async fn handle_request(
         crate::machines::reply(&app.home, &device_id, &params)
     } else {
         app.call(&owner, method, &params).await
+    };
+    let result = if method == "hexbot.files.read" && params["stream_media"] == true {
+        result.and_then(|mut info| {
+            if info.get("text").is_none() && info.get("data_url").is_none() {
+                let session = common::required(&params, "session_id")?;
+                let path = common::required(&info, "path")?;
+                let version = common::required(&info, "version")?;
+                info["media_path"] =
+                    json!(app.media.link(computer.1, &token, session, path, version)?);
+            }
+            Ok(info)
+        })
+    } else {
+        result
     };
     request.get("id")?;
     Some(match result {
@@ -2226,6 +2247,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/auth/callback", get(browser_callback))
         .route("/oauth/google", get(google_return))
         .route("/api/ws", get(upgrade))
+        .route("/api/media/{key}", get(media::serve))
         .route("/auth/password-login", post(login))
         .route("/api/auth/ws-ticket", post(ticket))
         .route("/hexbot/pair", post(pair))

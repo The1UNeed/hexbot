@@ -13,6 +13,25 @@ export interface MediaFile {
   path: string
 }
 
+/** Resolve only the daemon's opaque media link, on the connection that issued it. */
+export function mediaSource(origin: string | undefined, path?: string): string | undefined {
+  if (!path) {
+    return undefined
+  }
+
+  if (!origin || !/^\/api\/media\/[0-9a-f]{32}$/.test(path)) {
+    throw new Error('Invalid media link.')
+  }
+
+  const url = new URL(path, origin)
+
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error('Invalid media origin.')
+  }
+
+  return url.href
+}
+
 const MIMES: Record<string, string> = {
   aac: 'audio/aac',
   csv: 'text/csv',

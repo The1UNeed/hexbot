@@ -105,7 +105,7 @@ import { type DraftAttachment, DraftFiles, sentKind, useDraftFiles } from './dra
 import { EmailDraftCard } from './email-draft-card'
 import { FileCard } from './file-card'
 import { filesOf, type FileTarget, flushOpenFiles, mimeOf, openFile } from './file-tab'
-import { MediaView } from './media'
+import { type ImageOpener, MediaView } from './media'
 import { NotificationsBanner } from './notifications-banner'
 import { PluginCard } from './plugin-card'
 import { providerGone, ProviderGoneCard } from './provider-gone-card'
@@ -424,7 +424,7 @@ function Attachments({
   attachments: Attachment[]
   mine: boolean
   onFile?: (file: FileTarget) => void
-  onImage: (source: string, name?: string) => void
+  onImage: ImageOpener
   sessionId?: string
 }) {
   return (
@@ -477,7 +477,7 @@ function Attachments({
           return (
             <MediaView
               fallback={card}
-              key={item.id}
+              key={JSON.stringify([item.id, sessionId, item.path, item.url])}
               kind={item.kind}
               name={item.name}
               onImage={onImage}
@@ -756,7 +756,7 @@ export const MessageRow = memo(function MessageRow({
   /** Opens a file beside the chat; a bot's own chat only. */
   onFile?: (file: FileTarget) => void
   onFix?: (connector: string) => void
-  onImage: (source: string, name?: string) => void
+  onImage: ImageOpener
   /** Your latest message, while the bot is on it or after its turn stopped. */
   onRecall?: (message: TranscriptMessage) => void
   /** Sends your message again when it is late or its outcome is unknown. */
@@ -1039,7 +1039,7 @@ export const MessageRow = memo(function MessageRow({
           {/* A refused send has its own Not sent line under this; a failed turn, its Stopped card. */}
           {delivery === 'failed' && resend && !lined ? (
             <NotSent
-              label="Not sent"
+              label="Delivery unconfirmed"
               onRetry={resend}
               reason={
                 source?.status === 'sending'
@@ -1525,7 +1525,7 @@ function Composer({
   /** Opens an uploaded file beside the chat. */
   onFile: (file: FileTarget) => void
   /** Opens an uploaded picture over the chat. */
-  onImage: (source: string, name?: string) => void
+  onImage: ImageOpener
   sectionId: string | null
   sessionId: string | null
   status?: BotStatus
@@ -2120,10 +2120,14 @@ function BotConversation() {
   }, [params.bot])
 
   // A picture shown over the chat, with its name for Mark up.
-  const [lightbox, setLightbox] = useState<null | { name?: string; src: string }>(null)
+  const [lightbox, setLightbox] = useState<null | {
+    name?: string
+    src: string
+    whole?: () => Promise<string | undefined>
+  }>(null)
 
-  const showImage = useCallback(
-    (src: string, name?: string) => setLightbox({ name, src }),
+  const showImage = useCallback<ImageOpener>(
+    (src, name, whole) => setLightbox({ name, src, whole }),
     []
   )
 
@@ -3366,21 +3370,30 @@ function BotConversation() {
             {lightbox && liveId ? (
               <button
                 className="hex-glass hex-glass-press hex-focus flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3.5 text-[length:var(--text-secondary)] font-medium text-foreground"
-                onClick={() => {
-                  // Marked up beside the chat, then added to the next message.
-                  const named = lightbox.name ? mimeOf(lightbox.name) : ''
+                onClick={() =>
+                  void (async () => {
+                    // Marked up beside the chat, then added to the next message. A
+                    // streamed picture is read whole first: the editor draws its bytes.
+                    const shown = lightbox
 
-                  const mime =
-                    /^data:([^;,]+)/.exec(lightbox.src)?.[1] ??
-                    (named.startsWith('image/') ? named : 'image/png')
+                    const src = /^(data|blob):/.test(shown.src)
+                      ? shown.src
+                      : ((await shown.whole?.().catch(() => undefined)) ?? shown.src)
 
-                  openBeside({
-                    mime,
-                    name: lightbox.name ?? `Picture.${mime.split('/')[1] ?? 'png'}`,
-                    url: lightbox.src
-                  })
-                  setLightbox(null)
-                }}
+                    const named = shown.name ? mimeOf(shown.name) : ''
+
+                    const mime =
+                      /^data:([^;,]+)/.exec(src)?.[1] ??
+                      (named.startsWith('image/') ? named : 'image/png')
+
+                    openBeside({
+                      mime,
+                      name: shown.name ?? `Picture.${mime.split('/')[1] ?? 'png'}`,
+                      url: src
+                    })
+                    setLightbox(null)
+                  })()
+                }
                 type="button"
               >
                 <Pencil size={14} />

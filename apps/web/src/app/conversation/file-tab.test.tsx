@@ -173,6 +173,53 @@ describe('a file beside the chat', () => {
     vi.clearAllMocks()
   })
 
+  it('opens a fresh stream when playback fails after the file changed', async () => {
+    const file = {
+      mime: 'audio/mp4',
+      name: 'chapter.m4a',
+      path: '/work/chapter.m4a',
+      modified: 1,
+      size: 20
+    }
+
+    const url = 'https://daemon.test/api/media/'
+    api.filesRead.mockResolvedValueOnce({ ...file, mediaUrl: url + 'a'.repeat(32), version: 'v1' })
+    api.filesRead.mockResolvedValueOnce({ ...file, mediaUrl: url + 'b'.repeat(32), version: 'v2' })
+    act(() =>
+      visualsActions().open(
+        fileTab(file.name, { mime: file.mime, path: file.path, sessionId: 's' })
+      )
+    )
+    render(<VisualPanel />)
+    fireEvent.error(await screen.findByLabelText(file.name, { selector: 'audio' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Reload chapter.m4a' }))
+    expect(await screen.findByLabelText(file.name, { selector: 'audio' })).toHaveAttribute(
+      'src',
+      url + 'b'.repeat(32)
+    )
+    expect(api.filesRead).toHaveBeenCalledWith('s', file.path, true)
+  })
+
+  it('reads a picture whole, so its editor can draw it and save against its hash', async () => {
+    api.filesRead.mockResolvedValue({
+      data_url: 'data:image/png;base64,iVBORw0KGgo=',
+      mime: 'image/png',
+      modified: 1,
+      name: 'shot.png',
+      path: '/work/shot.png',
+      size: 8,
+      version: 'sha'
+    })
+    act(() =>
+      visualsActions().open(
+        fileTab('shot.png', { mime: 'image/png', path: '/work/shot.png', sessionId: 's' })
+      )
+    )
+    render(<VisualPanel />)
+
+    await waitFor(() => expect(api.filesRead).toHaveBeenCalledWith('s', '/work/shot.png', false))
+  })
+
   it("opens in the panel with no field of its own, and follows the bot's edit", async () => {
     act(() =>
       visualsActions().open(
@@ -182,7 +229,7 @@ describe('a file beside the chat', () => {
     render(<VisualPanel />)
 
     expect(await screen.findByText('Ship the board Friday')).toBeInTheDocument()
-    expect(api.filesRead).toHaveBeenCalledWith('s', '/work/plan.md')
+    expect(api.filesRead).toHaveBeenCalledWith('s', '/work/plan.md', false)
     // The chat's own composer is the one place to write to the bot.
     expect(screen.queryByLabelText('Ask Scout about this file')).toBeNull()
     expect(screen.queryByRole('group', { name: 'Quick tools' })).toBeNull()
@@ -374,11 +421,13 @@ describe('a file beside the chat', () => {
     )
     render(<VisualPanel />)
     const field = await screen.findByLabelText('pins.conf source')
-    expect(api.filesRead).toHaveBeenLastCalledWith('gone', '/work/pins.conf')
+    expect(api.filesRead).toHaveBeenLastCalledWith('gone', '/work/pins.conf', false)
 
     // The daemon restarts and the chat reopens with a new live session.
     act(() => useSections.setState({ liveSessionId: { daily: 's' } }))
-    await waitFor(() => expect(api.filesRead).toHaveBeenLastCalledWith('s', '/work/pins.conf'))
+    await waitFor(() =>
+      expect(api.filesRead).toHaveBeenLastCalledWith('s', '/work/pins.conf', false)
+    )
 
     fireEvent.change(field, { target: { value: 'pin,use\nGPIO15,JTAG' } })
     await waitFor(

@@ -1,21 +1,27 @@
+import { Download } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
 
+import { Button } from '../../components/ui/button'
 import { filesRead } from '../../lib/api'
 import type { AttachmentKind } from '../../lib/types'
+import { useConnection } from '../../stores/connection'
 
 import { blobFromDataUrl } from './file-tab'
 
 /**
- * Where a file plays from: this page's own copy, or the daemon's, read once
- * through the chat's session and held as an object URL while it shows. The
- * app's policy plays media only from the page or a blob, never a data URL.
+ * Use the daemon's HTTP stream for remote media. Older daemons return bytes
+ * inline, which the player can open through a temporary blob URL.
  */
 function useMediaUrl(
   url: string | undefined,
   path: string | undefined,
-  sessionId: string | undefined
+  sessionId: string | undefined,
+  attempt: number
 ): { failed: boolean; src: string | undefined } {
-  const [read, setRead] = useState<{ failed: boolean; src: string | undefined }>({
+  const connects = useConnection(state => state.connects)
+
+  const [read, setRead] = useState<{ attempt: number; failed: boolean; src: string | undefined }>({
+    attempt,
     failed: false,
     src: undefined
   })
@@ -30,6 +36,14 @@ function useMediaUrl(
 
     filesRead(sessionId, path)
       .then(file => {
+        if (file.mediaUrl) {
+          if (live) {
+            setRead({ attempt, failed: false, src: file.mediaUrl })
+          }
+
+          return
+        }
+
         const blob = file.data_url ? blobFromDataUrl(file.data_url) : null
 
         if (!blob) {
@@ -39,12 +53,12 @@ function useMediaUrl(
         made = URL.createObjectURL(blob)
 
         if (live) {
-          setRead({ failed: false, src: made })
+          setRead({ attempt, failed: false, src: made })
         } else {
           URL.revokeObjectURL(made)
         }
       })
-      .catch(() => live && setRead({ failed: true, src: undefined }))
+      .catch(() => live && setRead({ attempt, failed: true, src: undefined }))
 
     return () => {
       live = false
@@ -53,9 +67,9 @@ function useMediaUrl(
         URL.revokeObjectURL(made)
       }
     }
-  }, [path, sessionId, url])
+  }, [attempt, connects, path, sessionId, url])
 
-  return url ? { failed: false, src: url } : read
+  return url || read.attempt !== attempt ? { failed: false, src: url } : read
 }
 
 /**
@@ -63,6 +77,16 @@ function useMediaUrl(
  * a video or audio file plays where it is. While the daemon's copy loads the
  * space it will take is held; a file that cannot be read is its card.
  */
+/**
+ * Shows a picture over the chat. `whole` reads it as bytes, for a picture
+ * shown from the daemon's stream that Mark up opens in the editor.
+ */
+export type ImageOpener = (
+  source: string,
+  name?: string,
+  whole?: () => Promise<string | undefined>
+) => void
+
 export function MediaView({
   fallback,
   kind,
@@ -75,12 +99,45 @@ export function MediaView({
   fallback: ReactNode
   kind: AttachmentKind
   name: string
-  onImage: (source: string, name?: string) => void
+  onImage: ImageOpener
   path?: string
   sessionId?: string
   url?: string
 }) {
-  const { failed, src } = useMediaUrl(url, path, sessionId)
+  const [attempt, setAttempt] = useState(0)
+  const [broken, setBroken] = useState<string>()
+  const deferred = !url && kind !== 'image'
+
+  const { failed, src } = useMediaUrl(
+    url,
+    deferred && !attempt ? undefined : path,
+    sessionId,
+    attempt
+  )
+
+  const retry = Boolean(path && !url && (failed || (src && broken === src)))
+  const onError = path && !url ? () => setBroken(src) : undefined
+
+  if (retry || (deferred && !src && !failed)) {
+    const busy = attempt > 0 && !retry
+    const label = retry ? `Reload ${name}` : name
+
+    return (
+      <Button
+        aria-label={retry ? label : `${busy ? 'Loading' : 'Load'} ${name}`}
+        busy={busy}
+        className="max-w-full"
+        icon={<Download size={16} />}
+        onClick={() => {
+          setBroken(undefined)
+          setAttempt(value => value + 1)
+        }}
+        variant="pill"
+      >
+        <span className="truncate">{label}</span>
+      </Button>
+    )
+  }
 
   if (failed) {
     return fallback
@@ -106,17 +163,37 @@ export function MediaView({
       <button
         aria-label={`Open ${name}`}
         className="hex-focus rounded-panel"
-        onClick={() => onImage(src, name)}
+        onClick={() =>
+          onImage(
+            src,
+            name,
+            path && sessionId && !url
+              ? () => filesRead(sessionId, path, false).then(file => file.data_url)
+              : undefined
+          )
+        }
         type="button"
       >
-        <img alt={name} className="max-h-64 rounded-panel object-contain" src={src} />
+        <img
+          alt={name}
+          className="max-h-64 rounded-panel object-contain"
+          onError={onError}
+          src={src}
+        />
       </button>
     )
   }
 
   if (kind === 'audio') {
     return (
-      <audio aria-label={name} className="w-72 max-w-full" controls preload="metadata" src={src} />
+      <audio
+        aria-label={name}
+        className="w-72 max-w-full"
+        controls
+        onError={onError}
+        preload="metadata"
+        src={src}
+      />
     )
   }
 
@@ -125,6 +202,7 @@ export function MediaView({
       aria-label={name}
       className="max-h-64 max-w-full rounded-panel bg-black"
       controls
+      onError={onError}
       playsInline
       preload="metadata"
       src={src}

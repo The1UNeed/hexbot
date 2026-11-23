@@ -65,7 +65,8 @@ export function FileSheet({
   /** The file to show; null closes the card. */
   file: AttachmentView | null
   onClose: () => void
-  read: (path: string) => Promise<OpenedFile>
+  /** `stream` asks for a link the player streams instead of the bytes. */
+  read: (path: string, stream?: boolean) => Promise<OpenedFile>
   /** Absent where files can't be saved, as in a room. */
   write?: WriteThrough
   /** Comments waiting above the composer; a picture's are outlined on it. */
@@ -82,6 +83,8 @@ export function FileSheet({
     if (file) setShown(file)
   }, [file])
   const [opened, setOpened] = useState<{ id: string; file?: OpenedFile; error?: string }>()
+  const [attempt, setAttempt] = useState(0)
+  const reload = () => setAttempt(n => n + 1)
   const [sharing, setSharing] = useState(false)
   // Bumped to read the file again, as "Load {bot}'s version" does.
   const [edition, setEdition] = useState(0)
@@ -106,7 +109,8 @@ export function FileSheet({
     if (!file?.path) return
     let live = true
     setOpened({ id: file.id })
-    read(file.path).then(
+    // Video and audio stream; a picture comes whole, to be marked up and saved.
+    read(file.path, file.kind === 'video' || file.kind === 'audio').then(
       next => {
         if (!live) return
         version.current = next.version
@@ -118,7 +122,7 @@ export function FileSheet({
     return () => {
       live = false
     }
-  }, [edition, file?.id, file?.local, file?.path, read])
+  }, [attempt, edition, file?.id, file?.kind, file?.local, file?.path, read])
 
   const current = opened?.id === shown?.id ? opened : undefined
   const preview = useMemo(() => (current?.file ? previewOf(current.file) : null), [current?.file])
@@ -242,6 +246,7 @@ export function FileSheet({
           <Text tone="danger" variant="callout">
             {current.error}
           </Text>
+          <Button testID="file-reload" label={`Reload ${shown.name}`} onPress={reload} variant="secondary" />
         </View>
       ) : !current?.file || !preview ? (
         <View style={styles.opening} testID="file-opening">
@@ -276,7 +281,7 @@ export function FileSheet({
           text={current.file.text}
         />
       ) : (
-        <PreviewBody botName={botName} file={current.file} id={shown.id} preview={preview} />
+        <PreviewBody botName={botName} file={current.file} id={shown.id} preview={preview} onReload={reload} />
       )}
       {asking && onComment && shown ? (
         <View style={styles.commentBar}>
@@ -306,8 +311,10 @@ function PreviewBody({
   botName,
   file,
   id,
-  preview
+  preview,
+  onReload
 }: {
+  onReload: () => void
   botName: string
   file: OpenedFile
   id: string
@@ -363,7 +370,7 @@ function PreviewBody({
       return preview.kind === 'pdf' && !SHOWS_PDF ? (
         <NoPreview botName={botName} />
       ) : (
-        <Media botName={botName} file={file} id={id} kind={preview.kind} />
+        <Media botName={botName} file={file} id={id} kind={preview.kind} onReload={onReload} />
       )
     case 'none':
       return <NoPreview botName={botName} />
@@ -375,8 +382,10 @@ function Media({
   botName,
   file,
   id,
-  kind
+  kind,
+  onReload
 }: {
+  onReload: () => void
   botName: string
   file: OpenedFile
   id: string
@@ -389,6 +398,7 @@ function Media({
   useEffect(() => {
     let live = true
     // Keyed by contents too, so a file changed since it was last opened shows as it is now.
+    setFailed(false)
     mediaUri(`preview:${id}:${file.version ?? ''}`, async () => file).then(
       next => live && setUri(next),
       () => live && setFailed(true)
@@ -397,7 +407,9 @@ function Media({
       live = false
     }
   }, [file, id])
-  if (failed) return <NoPreview botName={botName} />
+  if (failed) return file.mediaUrl
+    ? <Button testID="file-reload" label={`Reload ${file.name}`} onPress={onReload} variant="secondary" />
+    : <NoPreview botName={botName} />
   if (!uri) return <ActivityIndicator style={styles.opening} />
   if (kind === 'pdf')
     return (
@@ -409,6 +421,7 @@ function Media({
     return (
       <Image
         accessibilityLabel={file.name}
+        onError={() => setFailed(true)}
         onLoad={e => {
           const { width, height } = e.nativeEvent.source
           if (width && height) setRatio(width / height)
@@ -421,7 +434,8 @@ function Media({
     )
   return (
     <MediaAttachment
-      card={null}
+      card={<NoPreview botName={botName} />}
+      onReload={file.mediaUrl ? onReload : undefined}
       file={{ id, kind, name: file.name, uri }}
     />
   )

@@ -6,7 +6,9 @@ import { ScrollArea } from '../../components/ui/scroll-area'
 import { filesRead, filesWrite, filesWriteBytes, type OpenedFile } from '../../lib/api'
 import { cn } from '../../lib/cn'
 import type { Area } from '../../lib/markup'
+import { mediaKind, mimeOf } from '../../lib/media'
 import { useBots } from '../../stores/bots'
+import { useConnection } from '../../stores/connection'
 import { fileCommentsActions, useChatComments } from '../../stores/file-comments'
 import { useLiveSessionId } from '../../stores/sections'
 import { useTranscript } from '../../stores/transcripts'
@@ -97,7 +99,19 @@ export async function flushOpenFiles(): Promise<boolean> {
   return true
 }
 
+/**
+ * Video and audio play from the daemon's stream. Anything else comes whole:
+ * a picture's editor draws its bytes and saves them against their hash.
+ */
+function streams(name: string, mime?: string) {
+  const kind = mediaKind(mime || mimeOf(name), name)
+
+  return kind === 'video' || kind === 'audio'
+}
+
 function useOpenedFile(tab: FileTab, sessionId: string) {
+  const [attempt, setAttempt] = useState(0)
+  const connects = useConnection(state => state.connects)
   const { path, url } = tab.file
   const transcript = useTranscript(sessionId)
   const working = Boolean(transcript?.streamingMessageId)
@@ -152,7 +166,7 @@ function useOpenedFile(tab: FileTab, sessionId: string) {
     const started = saves.current
     const fresh = () => current && started === saves.current
 
-    filesRead(sessionId, path)
+    filesRead(sessionId, path, streams(tab.title, tab.file.mime))
       .then(next => {
         if (!fresh()) {
           return
@@ -178,7 +192,7 @@ function useOpenedFile(tab: FileTab, sessionId: string) {
     return () => {
       current = false
     }
-  }, [edits, path, sessionId, tab.file.mime, tab.title, url, working])
+  }, [attempt, connects, edits, path, sessionId, tab.file.mime, tab.title, url, working])
 
   useEffect(() => {
     if (!updated) {
@@ -215,7 +229,13 @@ function useOpenedFile(tab: FileTab, sessionId: string) {
     )
   }
 
-  return { adopt, error, file, outgrown, saved, savedBytes, updated, working }
+  const reload = () => {
+    setFile(null)
+    setError(null)
+    setAttempt(n => n + 1)
+  }
+
+  return { adopt, error, file, outgrown, reload, saved, savedBytes, updated, working }
 }
 
 /**
@@ -309,8 +329,16 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
   )
 
   const sessionId = useFileSession(tab)
-  const { adopt, error, file, outgrown, saved, savedBytes, updated } = useOpenedFile(tab, sessionId)
-  const objectUrl = useObjectUrl(file?.data_url)
+  const [broken, setBroken] = useState<OpenedFile>()
+
+  const { adopt, error, file, outgrown, reload, saved, savedBytes, updated } = useOpenedFile(
+    tab,
+    sessionId
+  )
+
+  const localUrl = useObjectUrl(file?.data_url)
+  const objectUrl = file?.mediaUrl ?? localUrl
+  const mediaError = file?.mediaUrl ? () => setBroken(file) : undefined
   // The version the editor's text is based on. A refresh moves it only when the
   // editor takes the new text; while it holds an unsaved edit, a save names the
   // version that edit started from, so it cannot overwrite the bot's change.
@@ -373,7 +401,7 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
     }
 
     try {
-      const current = await filesRead(sessionId, path)
+      const current = await filesRead(sessionId, path, streams(tab.title, tab.file.mime))
       editionRef.current += 1
       base.current = current.version
       adopt(current)
@@ -502,7 +530,14 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
   // Content with its own bar fills the panel; the rest scrolls in a plain one.
   let own = true
 
-  if (error && !file) {
+  if (broken && (broken === file || (error && !file))) {
+    own = false
+    body = (
+      <button className="hex-focus m-4" onClick={reload} type="button">
+        Reload {name}
+      </button>
+    )
+  } else if (error && !file) {
     own = false
     body = (
       <p
@@ -625,6 +660,7 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
         aria-label={name}
         className="mx-auto max-h-full max-w-full rounded-[12px] bg-black"
         controls
+        onError={mediaError}
         playsInline
         src={objectUrl}
       />
@@ -633,7 +669,13 @@ export function FileTabView({ shown, tab }: { shown: boolean; tab: FileTab }) {
     own = false
     body = (
       <div className="grid h-full place-items-center p-4">
-        <audio aria-label={name} className="w-full max-w-md" controls src={objectUrl} />
+        <audio
+          aria-label={name}
+          className="w-full max-w-md"
+          controls
+          onError={mediaError}
+          src={objectUrl}
+        />
       </div>
     )
   } else {

@@ -110,8 +110,17 @@ data model. The native transport and event projection live in
   is the user's home, as the bot's file tools read it. A read answers `text`
   for UTF-8 without NUL bytes up to 2 MiB, otherwise a `data_url`, up to
   45 MiB (4202 over); PDFs, images, video, audio and Office files are always
-  a `data_url`.
-  `version` is the SHA-256 of the contents. A write replaces a text file up
+  a `data_url` for clients using this form.
+  Clients can pass `stream_media: true` to receive a `media_path` for audio,
+  video and raster images. Resolve this opaque link against the daemon origin.
+  GET streams the file over HTTP and supports single byte ranges for seeking.
+  HEAD returns its size and MIME type. The link expires when the issuing
+  WebSocket closes. Each request checks device access and the chat's file
+  permissions. Treat the link as a credential. Older daemons return
+  `data_url` even when the client requests streaming.
+  An edit or replacement expires the old file revision. Read the file again
+  for a fresh link. The daemon identifies streamed revisions using filesystem metadata.
+  For other reads, `version` is the SHA-256 of the contents. A write replaces a text file up
   to 2 MiB in one step through a directory handle that refuses symlinks and
   keeps its permissions, one write at a time; it refuses binary files (4202).
   A write with a base64 `data_url` replaces a PNG, JPEG or WebP picture or a
