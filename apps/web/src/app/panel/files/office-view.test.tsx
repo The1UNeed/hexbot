@@ -185,6 +185,23 @@ describe('an Excel cell an array formula owns', () => {
   })
 })
 
+describe('an Excel number copied from the grid', () => {
+  it('copies every digit, not the rounded value shown', async () => {
+    const pkg = xlsx()
+
+    setCells(pkg, readXlsx(pkg)!.sheets[0]!, [{ col: 0, row: 1, value: '1.23456789012345' }])
+    const { flushRef, props: view } = props(dataUrlOf(pkg.save(), EXCEL))
+
+    render(<XlsxView {...view} flushRef={flushRef} />)
+    fireEvent.pointerDown(await screen.findByText('1.23456789012'), { button: 0 })
+    const setData = vi.fn()
+
+    fireEvent.copy(screen.getByRole('grid'), { clipboardData: { setData } })
+
+    expect(setData).toHaveBeenCalledWith('text/plain', '1.23456789012345')
+  })
+})
+
 describe('a PowerPoint file beside the chat', () => {
   it('keeps the box being typed in when its text goes back into the file', async () => {
     const { flushRef, props: view, saves } = props(dataUrlOf(pptx().save(), POWERPOINT))

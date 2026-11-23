@@ -322,6 +322,16 @@ export function splitParagraph(
     second.append(look.cloneNode(true))
   }
 
+  // Breaks after the caret go with the second half, page and column breaks as they were.
+  const breaks = Array.from(target.children).filter(
+    node => node.namespaceURI === W && (node.localName === 'br' || node.localName === 'cr')
+  )
+  const kept = (whole.slice(0, offset).match(/\n/g) ?? []).length
+
+  for (const old of breaks.slice(kept)) {
+    second.append(old.cloneNode(true))
+  }
+
   setRunText(target, W, whole.slice(0, offset))
   setRunText(second, W, whole.slice(offset))
 

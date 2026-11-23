@@ -252,7 +252,10 @@ export function SheetGrid({
       const cells: string[] = []
 
       for (let col = left; col <= right; col++) {
-        cells.push(valueAt({ col, row }))
+        // A number copies as stored, every digit; a formula as what it shows.
+        const stored = source({ col, row })
+
+        cells.push(stored.startsWith('=') ? valueAt({ col, row }) : stored)
       }
 
       rows.push(cells)
