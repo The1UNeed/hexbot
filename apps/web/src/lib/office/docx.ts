@@ -326,6 +326,7 @@ export function splitParagraph(
   const breaks = Array.from(target.children).filter(
     node => node.namespaceURI === W && (node.localName === 'br' || node.localName === 'cr')
   )
+
   const kept = (whole.slice(0, offset).match(/\n/g) ?? []).length
 
   for (const old of breaks.slice(kept)) {

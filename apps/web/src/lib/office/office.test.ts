@@ -96,9 +96,11 @@ describe('a Word file', () => {
 
   it('splits a run before a page break, keeping it a page break', () => {
     const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+
     const pkg = pack({
       'word/document.xml': `<w:document xmlns:w="${W}"><w:body><w:p><w:r><w:t>One</w:t><w:br w:type="page"/><w:t>Two</w:t></w:r></w:p></w:body></w:document>`
     })
+
     const [block] = readDocx(pkg)!.blocks as DocxParagraph[]
 
     splitParagraph(pkg, block!, ['One\nTwo'], 0, 2)
