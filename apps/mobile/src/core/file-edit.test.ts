@@ -5,6 +5,7 @@ import { withComments } from '../../../web/src/lib/file-comments'
 import type { Mark } from '../../../web/src/lib/markup'
 import {
   addRow,
+  asSaved,
   cropWithin,
   editorOf,
   freshSteps,
@@ -129,4 +130,13 @@ it('sends comments made on the phone the way the desktop sends them', () => {
   ).toBe(
     'Please work through my comments on these files.\n\nMy comments:\n1. [parts.csv](</w/parts.csv>), B2, on "2": Use two\n\nWhere a comment asks for a change, edit the file in place.'
   )
+})
+
+it('shares what the card saved, not the file as it was read', () => {
+  const read = { mime: 'image/png', name: 'a.png', data_url: 'data:image/png;base64,T1JJRw==' }
+  expect(asSaved(read, null)).toBe(read)
+  expect(asSaved(read, { data_url: 'data:image/png;base64,TUFSS0VE' }).data_url).toBe(
+    'data:image/png;base64,TUFSS0VE'
+  )
+  expect(asSaved({ mime: 'text/csv', name: 'p.csv', text: 'a' }, { text: 'b' }).text).toBe('b')
 })

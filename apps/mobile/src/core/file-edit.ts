@@ -146,3 +146,14 @@ export function saveFailure(e: unknown): { conflict: boolean; message: string } 
   if (code === 4209) return { conflict: true, message: '' }
   return { conflict: false, message: e instanceof Error ? e.message : String(e) }
 }
+
+/** What a save wrote: a text file's text, or a picture whole. */
+export type SavedContents = { text: string } | { data_url: string }
+
+/** The file as the card last saved it, for Share: what was written replaces what was read. */
+export function asSaved(file: OpenedFile, saved: SavedContents | null): OpenedFile {
+  if (!saved) return file
+  return 'text' in saved
+    ? { ...file, data_url: undefined, mediaUrl: undefined, text: saved.text }
+    : { ...file, data_url: saved.data_url, mediaUrl: undefined, text: undefined }
+}

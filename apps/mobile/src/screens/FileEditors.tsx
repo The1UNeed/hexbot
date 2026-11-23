@@ -257,7 +257,8 @@ export function TableEditor({
       }
       if (!write || !(await write({ text: next }))) return false
       written.current = next
-      onDirty(false)
+      // A cell typed or a row added while it saved still waits.
+      onDirty(tableText(withCell(), name, next) !== next)
       return true
     }
   }

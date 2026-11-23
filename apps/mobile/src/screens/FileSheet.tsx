@@ -11,7 +11,7 @@ import {
 } from 'react-native'
 
 import type { FileComment } from '../../../web/src/lib/file-comments'
-import { editorOf, saveFailure } from '../core/file-edit'
+import { asSaved, editorOf, saveFailure, type SavedContents } from '../core/file-edit'
 import { type OpenedFile, type Preview, previewOf, TABLE_COLUMNS } from '../core/files'
 import { fileCopy, mediaUri } from '../core/media'
 import { MarkdownText } from '../MarkdownText'
@@ -95,6 +95,8 @@ export function FileSheet({
   const [asking, setAsking] = useState<CommentAsk | null>(null)
   const handle = useRef<EditorHandle | null>(null)
   const version = useRef<string | undefined>(undefined)
+  // What the last save wrote, so Share sends the file as it is now.
+  const saved = useRef<SavedContents | null>(null)
 
   useEffect(() => {
     setDirty(false)
@@ -102,6 +104,7 @@ export function FileSheet({
     setSaveError('')
     setAsking(null)
     handle.current = null
+    saved.current = null
     if (file?.local) {
       setOpened({ id: file.id, file: file.local })
       return
@@ -139,6 +142,7 @@ export function FileSheet({
           try {
             const reply = await write(path, contents, version.current)
             version.current = reply.version
+            saved.current = contents
             setConflict(false)
             setSaveError('')
             return true
@@ -174,7 +178,8 @@ export function FileSheet({
     setSharing(true)
     try {
       // Under the name the card shows, not the daemon's stored name.
-      const copy = await fileCopy({ ...current.file, name: shown?.name ?? current.file.name })
+      const file = asSaved(current.file, saved.current)
+      const copy = await fileCopy({ ...file, name: shown?.name ?? file.name })
       await Share.share({ url: copy.uri })
     } catch {
       // Closing the share sheet, or a copy the phone cannot make, leaves the card as it was.
