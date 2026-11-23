@@ -393,7 +393,8 @@ function Placeholder({ children }: { children: React.ReactNode }) {
 
 /** The bots' computer: its live screen, each bot's cursor, and its controls. */
 function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
-  const status = useComputer(state => state.status)
+  const connects = useConnection(state => state.connects)
+  const status = useComputer(state => (state.read === connects ? state.status : null))
   const requestError = useComputer(state => state.error)
   const refresh = useComputer(state => state.refresh)
   const step = useComputer(state => state.step)
@@ -408,7 +409,6 @@ function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   const [grantError, setGrantError] = useState<null | string>(null)
   const navigate = useNavigate()
   const answered = useComputers(state => state.answered)
-  const connects = useConnection(state => state.connects)
   const vm = computers?.find(computer => computer.id === 'vm')
   // This connection's answer, not a list kept from before a reconnect.
   const known = answered === connects
@@ -433,24 +433,35 @@ function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
     void refreshComputers()
   }, [connects, refresh, refreshComputers])
 
-  // Nothing until the daemon answers; an older daemon has no computer.
-  if (!status) {
-    return null
-  }
+  if (!known || !status) {
+    const failure =
+      (!status && requestError) || (listFailed?.connects === connects && listFailed.message)
 
-  // This connection's failure only, never an earlier one's or a Settings action's.
-  if (!known) {
-    return listFailed?.connects === connects ? (
+    return (
       <Placeholder>
         <Monitor className="text-muted" size={20} />
-        <p className="max-w-64 text-[length:var(--text-secondary)] text-danger" role="alert">
-          {listFailed.message}
-        </p>
-        <Button onClick={() => void refreshComputers()} size="sm" variant="secondary">
-          Try again
-        </Button>
+        {failure ? (
+          <>
+            <p className="max-w-64 text-[length:var(--text-secondary)] text-danger" role="alert">
+              {failure}
+            </p>
+            <Button
+              onClick={() => {
+                void refresh()
+                void refreshComputers()
+              }}
+              size="sm"
+            >
+              Try again
+            </Button>
+          </>
+        ) : (
+          <p className="text-[length:var(--text-secondary)] text-muted" role="status">
+            Loading computer…
+          </p>
+        )}
       </Placeholder>
-    ) : null
+    )
   }
 
   const turnOn = async () => {

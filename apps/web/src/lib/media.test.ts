@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { mediaOf, splitAttached } from './media'
+import { mediaOf, mediaSource, splitAttached } from './media'
 
 describe('splitAttached', () => {
   const kept = (name: string) =>
@@ -57,4 +57,12 @@ describe('mediaOf', () => {
       ['video', '/a/lake.mp4']
     ])
   })
+})
+
+it('resolves a stream only on the issuing daemon and accepts older replies without a link', () => {
+  const origin = 'http://192.168.1.5:9119'
+  const path = '/api/media/' + 'a'.repeat(32)
+  expect(mediaSource(origin, path)).toBe(origin + path)
+  expect(mediaSource(origin, undefined)).toBeUndefined()
+  expect(() => mediaSource(origin, 'https://elsewhere.test' + path)).toThrow()
 })

@@ -57,6 +57,7 @@ use identity::with_fields;
 mod files;
 #[path = "runtime_panel_files.rs"]
 mod panel_files;
+pub(crate) use panel_files::open_media;
 #[path = "runtime_pi_files.rs"]
 mod pi_files;
 

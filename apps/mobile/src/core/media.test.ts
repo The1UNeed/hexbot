@@ -1,6 +1,7 @@
 import { beforeEach, expect, it, vi } from 'vitest'
 
 const files = vi.hoisted(() => ({
+  download: vi.fn(),
   written: [] as { name: string; content: string; encoding?: string }[]
 }))
 vi.mock('react-native', () => ({ Platform: { OS: 'ios' } }))
@@ -10,6 +11,7 @@ vi.mock('expo-file-system', () => ({
     create() {}
   },
   File: class {
+    static downloadFileAsync = files.download
     uri: string
     constructor(
       _folder: unknown,
@@ -23,7 +25,7 @@ vi.mock('expo-file-system', () => ({
   }
 }))
 
-import { mediaUri } from './media'
+import { fileCopy, mediaUri } from './media'
 
 beforeEach(() => {
   files.written = []
@@ -40,7 +42,7 @@ it('keeps one copy of a daemon file on the phone and plays from it', async () =>
   expect(files.written).toEqual([
     { name: expect.stringMatching(/a_1\.mp3$/), content: 'SUQz', encoding: 'base64' }
   ])
-  expect(await mediaUri('d:/art/a1.mp3', read)).toBe(first)
+  expect(await mediaUri('d:/art/a1.mp3', read, 2)).toBe(first)
   expect(read).toHaveBeenCalledOnce()
 })
 
@@ -63,4 +65,15 @@ it('gives two files with one name their own copies', async () => {
   ])
   expect(first).not.toBe(second)
   expect(files.written.map(file => file.content)).toEqual(['AAAA', 'BBBB'])
+})
+
+it('plays the HTTP stream directly and downloads a named copy only for sharing', async () => {
+  const mediaUrl = 'https://daemon.test/api/media/' + 'a'.repeat(32)
+  const file = { mime: 'audio/mp4', name: 'Chapter 20.m4a', mediaUrl }
+  expect(await mediaUri('recording', async () => file)).toBe(mediaUrl)
+  expect(files.download).not.toHaveBeenCalled()
+  expect(files.written).toEqual([])
+  const copy = await fileCopy(file)
+  expect(files.download).toHaveBeenCalledWith(mediaUrl, expect.objectContaining({ uri: copy.uri }))
+  expect(copy.uri).toMatch(/Chapter 20\.m4a$/)
 })

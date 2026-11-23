@@ -1,9 +1,9 @@
 import { setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus } from 'expo-audio'
 import { useVideoPlayer, VideoView } from 'expo-video'
-import { type ReactNode, useEffect, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useState } from 'react'
 import { Image, StyleSheet, View } from 'react-native'
 
-import { IconButton, Text, useTheme } from '../ui'
+import { Button, IconButton, Text, useTheme } from '../ui'
 import type { AttachmentView } from './types'
 
 /** "0:07", "12:30": a player's time. */
@@ -20,18 +20,23 @@ const clock = (seconds: number) => {
 export function MediaAttachment({
   card,
   file,
-  load
+  load,
+  onReload
 }: {
   card: ReactNode
+  onReload?: () => void
   file: AttachmentView
   load?: (path: string, id: string) => Promise<string>
 }) {
   const theme = useTheme()
   const [read, setRead] = useState<{ uri?: string; failed?: boolean }>({})
   const uri = file.uri ?? read.uri
+  const [attempt, setAttempt] = useState(0)
+  const failed = useCallback(() => setRead({ failed: true }), [])
+  const deferred = !file.uri && file.kind !== 'image'
 
   useEffect(() => {
-    if (file.uri || !file.path || !load) return
+    if (file.uri || !file.path || !load || (deferred && !attempt)) return
     let live = true
     load(file.path, file.id).then(
       uri => live && setRead({ uri }),
@@ -40,9 +45,30 @@ export function MediaAttachment({
     return () => {
       live = false
     }
-  }, [file.id, file.path, file.uri, load])
+  }, [file.id, file.path, file.uri, load, deferred, attempt])
 
-  if (read.failed || (!uri && !(file.path && load))) return card
+  const canLoad = Boolean(file.path && load)
+  if ((!uri && !canLoad) || (read.failed && !canLoad && !onReload)) return card
+  if (read.failed || (deferred && !uri)) {
+    const label = read.failed ? `Reload ${file.name}` : file.name
+    const busy = attempt > 0 && !read.failed
+    return (
+      <Button
+        accessibilityLabel={read.failed ? label : `Load ${file.name}`}
+        busy={busy}
+        busyLabel={`Loading ${file.name}`}
+        icon="download-outline"
+        label={label}
+        onPress={() => {
+          if (onReload) return onReload()
+          setRead({})
+          setAttempt(value => value + 1)
+        }}
+        testID="chat-media-load"
+        variant="secondary"
+      />
+    )
+  }
   if (!uri)
     return (
       <View
@@ -58,19 +84,29 @@ export function MediaAttachment({
     return (
       <Image
         accessibilityLabel={file.name}
+        onError={failed}
         source={{ uri }}
         style={[styles.image, { backgroundColor: theme.fill }]}
       />
     )
   return file.kind === 'audio' ? (
-    <AudioPlayer name={file.name} uri={uri} />
+    <AudioPlayer name={file.name} uri={uri} onError={failed} />
   ) : (
-    <VideoPlayer name={file.name} uri={uri} />
+    <VideoPlayer name={file.name} uri={uri} onError={failed} />
   )
 }
 
-function VideoPlayer({ name, uri }: { name: string; uri: string }) {
+type PlayerProps = { name: string; uri: string; onError: () => void }
+
+function VideoPlayer({ name, uri, onError }: PlayerProps) {
   const player = useVideoPlayer(uri)
+  useEffect(() => {
+    const subscription = player.addListener('statusChange', ({ status }) => {
+      if (status === 'error') onError()
+    })
+    if (player.status === 'error') onError()
+    return () => subscription.remove()
+  }, [player, onError])
   return (
     <View accessibilityLabel={name} style={styles.video} testID="chat-video">
       <VideoView contentFit="contain" nativeControls player={player} style={styles.fill} />
@@ -82,10 +118,19 @@ function VideoPlayer({ name, uri }: { name: string; uri: string }) {
 let audioMode: Promise<void> | undefined
 
 /** Hexbot's own small player: play or pause, how far it is, and how long. */
-function AudioPlayer({ name, uri }: { name: string; uri: string }) {
+function AudioPlayer({ name, uri, onError }: PlayerProps) {
   const theme = useTheme()
   const player = useAudioPlayer(uri)
   const status = useAudioPlayerStatus(player)
+  useEffect(() => {
+    // Android can emit an idle update immediately after its playback error.
+    const check = ({ error, playbackState }: typeof status) => {
+      if (error || playbackState === 'failed') onError()
+    }
+    const subscription = player.addListener('playbackStatusUpdate', check)
+    check(player.currentStatus)
+    return () => subscription.remove()
+  }, [player, onError])
   const done = status.duration > 0 ? Math.min(1, status.currentTime / status.duration) : 0
   const toggle = async () => {
     if (status.playing) return player.pause()

@@ -181,6 +181,32 @@ describe('a file beside the chat', () => {
     vi.clearAllMocks()
   })
 
+  it('opens a fresh stream when playback fails after the file changed', async () => {
+    const file = {
+      mime: 'audio/mp4',
+      name: 'chapter.m4a',
+      path: '/work/chapter.m4a',
+      modified: 1,
+      size: 20
+    }
+
+    const url = 'https://daemon.test/api/media/'
+    api.filesRead.mockResolvedValueOnce({ ...file, mediaUrl: url + 'a'.repeat(32), version: 'v1' })
+    api.filesRead.mockResolvedValueOnce({ ...file, mediaUrl: url + 'b'.repeat(32), version: 'v2' })
+    act(() =>
+      visualsActions().open(
+        fileTab(file.name, { mime: file.mime, path: file.path, sessionId: 's' })
+      )
+    )
+    render(<VisualPanel />)
+    fireEvent.error(await screen.findByLabelText(file.name, { selector: 'audio' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Reload chapter.m4a' }))
+    expect(await screen.findByLabelText(file.name, { selector: 'audio' })).toHaveAttribute(
+      'src',
+      url + 'b'.repeat(32)
+    )
+  })
+
   it('opens in the panel, asks the bot with a quick tool, and follows its edit', async () => {
     act(() =>
       visualsActions().open(

@@ -52,7 +52,7 @@ describe('a bubble before the daemon takes it', () => {
     vi.useFakeTimers()
     const onResend = row(sent('sending'))
     act(() => vi.advanceTimersByTime(SEND_TIMEOUT_MS))
-    expect(screen.getByText('Not sent')).toBeInTheDocument()
+    expect(screen.getByText('Delivery unconfirmed')).toBeInTheDocument()
     expect(screen.queryByRole('status', { name: 'Sending' })).toBeNull()
     expect(screen.getByText('hi').closest('.hex-pending')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))

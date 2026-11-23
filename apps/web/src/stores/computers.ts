@@ -113,6 +113,7 @@ export const useComputers = create<ComputersState>((set, get) => {
       const current = () => useConnection.getState().target === target && mine === latest
 
       reading++
+      set({ listFailed: null })
 
       try {
         const { computers } = await computersList()

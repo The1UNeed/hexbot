@@ -421,7 +421,7 @@ it('offers Retry on the bubble when acceptance is unknown, under the same key an
   answers = [new Error('connection closed')]
   const view = await mount()
   await send(view)
-  const line = await screen.findByText('Not sent')
+  const line = await screen.findByText('Delivery unconfirmed')
   expect(line).toHaveAttribute('title', 'connection closed')
   expect(cards()).toHaveLength(0)
   // The bubble holds the message now; the field cleared when it appeared.
@@ -434,7 +434,7 @@ it('offers Retry on the bubble when acceptance is unknown, under the same key an
     attachments: submits()[0]!.attachments
   })
   expect(delivered[0]).toMatchObject({ text: 'Read my plan', files: ['plan.txt'] })
-  await waitFor(() => expect(screen.queryByText('Not sent')).toBeNull())
+  await waitFor(() => expect(screen.queryByText('Delivery unconfirmed')).toBeNull())
   expect(userRows()).toHaveLength(1)
 })
 
@@ -651,7 +651,7 @@ it.each([
   })
   const view = await mount()
   await send(view)
-  expect(await screen.findByText('Not sent')).toBeVisible()
+  expect(await screen.findByText('Delivery unconfirmed')).toBeVisible()
   expect(cards()).toHaveLength(0)
   expect(delivered[0]!.files).toEqual(['plan.txt'])
   expect(staged.size).toBe(0)
@@ -668,7 +668,7 @@ it.each([
   await reload()
   expect(await screen.findByText('Reply 1')).toBeVisible()
   expect(userRows()).toHaveLength(1)
-  expect(screen.queryByText('Not sent')).toBeNull()
+  expect(screen.queryByText('Delivery unconfirmed')).toBeNull()
   expect(retries()).toHaveLength(0)
 })
 
@@ -679,7 +679,7 @@ it('keeps a same-key Retry refused as busy unconfirmed, under its first key', as
   ]
   const view = await mount()
   await send(view, [])
-  expect(await screen.findByText('Not sent')).toBeVisible()
+  expect(await screen.findByText('Delivery unconfirmed')).toBeVisible()
   const key = submits()[0]!.input_id
   // The first try may still be waiting for Pi: only this retry was refused.
   fireEvent.click(retries()[0]!)
@@ -711,7 +711,7 @@ it('keeps a delivered send unconfirmed when its same-key Retry finds the uploads
   })
   const view = await mount()
   await send(view)
-  expect(await screen.findByText('Not sent')).toBeVisible()
+  expect(await screen.findByText('Delivery unconfirmed')).toBeVisible()
   fireEvent.click(retries()[0]!)
   await waitFor(() => expect(submits()).toHaveLength(2))
   await waitFor(() => expect(userRows()[0]!.submission?.status).toBe('unknown'))
@@ -727,7 +727,7 @@ it('does not trust a code property on an arbitrary transport error', async () =>
   const view = await mount()
   await send(view)
   // Not a refusal: the outcome stays unknown, with no refusal card.
-  expect(await screen.findByText('Not sent')).toBeVisible()
+  expect(await screen.findByText('Delivery unconfirmed')).toBeVisible()
   expect(cards()).toHaveLength(0)
   expect(userRows()[0]!.submission?.status).toBe('unknown')
   expect(submits()).toHaveLength(1)

@@ -6,16 +6,88 @@ use super::*;
 
 /// Text the panel edits; the bot's own edit tool handles larger files.
 const TEXT_LIMIT: usize = 2 * 1024 * 1024;
-/// Anything shown read-only, as a data URL, matching the attachment limit.
+/// Read-only files, including streamed media, match the attachment limit.
 const READ_LIMIT: u64 = 45 * 1024 * 1024;
 use super::pi_files::{SAVES, version_of};
 
+/// Only formats that a native media player or raster image view can display.
+fn playable_mime(path: &Path) -> Option<&'static str> {
+    let mime = mime_of(path);
+    (mime.starts_with("audio/")
+        || mime.starts_with("video/")
+        || (mime.starts_with("image/") && mime != "image/svg+xml"))
+        .then_some(mime)
+}
+
+pub(crate) struct OpenMedia {
+    pub file: fs::File,
+    pub mime: &'static str,
+    pub size: u64,
+    pub modified: u64,
+    pub version: String,
+}
+
+#[cfg(unix)]
+pub(crate) fn open_media(path: &Path) -> Result<OpenMedia> {
+    use std::os::unix::fs::MetadataExt;
+    let mime = playable_mime(path).ok_or_else(|| Error::new(4202, "not playable media"))?;
+    let file = super::files::FileAccess::open(path, false)?.open_regular()?;
+    let meta = file.metadata()?;
+    if meta.len() > READ_LIMIT {
+        return Err(Error::new(
+            4202,
+            "media must be a regular file of at most 45 MiB",
+        ));
+    }
+    Ok(OpenMedia {
+        file,
+        mime,
+        size: meta.len(),
+        modified: modified_ms(&meta),
+        version: format!(
+            "{}:{}:{}:{}:{}",
+            meta.dev(),
+            meta.ino(),
+            meta.len(),
+            meta.ctime(),
+            meta.ctime_nsec()
+        ),
+    })
+}
+
+#[cfg(not(unix))]
+pub(crate) fn open_media(_path: &Path) -> Result<OpenMedia> {
+    Err(Error::new(
+        4202,
+        "Media streaming requires a macOS or Linux daemon.",
+    ))
+}
+
 impl Runtime {
+    pub(crate) async fn panel_path(
+        &self,
+        caller: &str,
+        session: &str,
+        name: &str,
+    ) -> Result<PathBuf> {
+        let (live, _) = self.live(caller, session, false).await?;
+        self.file_path(&live, name)
+    }
+
     pub(super) async fn read_file(&self, s: &Live, p: &Value) -> Result<Value> {
         let path = self.file_path(s, required(p, "path")?)?;
-        tokio::task::spawn_blocking(move || read_payload(&path))
-            .await
-            .map_err(|e| Error::new(5200, e.to_string()))?
+        let stream = p["stream_media"] == true;
+        tokio::task::spawn_blocking(move || {
+            if stream && playable_mime(&path).is_some() {
+                let media = open_media(&path)?;
+                return Ok(json!({
+                    "path":path, "name":path.file_name().and_then(|s| s.to_str()), "mime":media.mime,
+                    "size":media.size, "modified":media.modified, "version":media.version
+                }));
+            }
+            read_payload(&path)
+        })
+        .await.map_err(|e| Error::new(5200, e.to_string()))?
     }
 
     pub(super) async fn write_file(&self, s: &Live, p: &Value) -> Result<Value> {

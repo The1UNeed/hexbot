@@ -103,11 +103,11 @@ import {
   unreadOf as unreadOfBot
 } from './src/core/routes'
 import { previewLine } from '../web/src/lib/preview'
-import { mediaKind, mediaOf, mimeOf } from '../web/src/lib/media'
+import { mediaKind, mediaOf, mediaSource, mimeOf } from '../web/src/lib/media'
 import { asksOf, askWords } from '../web/src/lib/asks'
 import { settledCard } from '../web/src/lib/settled-cards'
 import { namedPlugin, pluginRows } from '../web/src/lib/plugin-rows'
-import { mediaUri, type ReadMedia } from './src/core/media'
+import { mediaUri } from './src/core/media'
 import type { OpenedFile } from './src/core/files'
 import { mixHex } from '../web/src/app/conversation/visual'
 import { CONNECT_ORIGIN, parseConnectCallback } from './src/core/links'
@@ -1271,24 +1271,17 @@ function MobileApp({ children }: { children?: ReactNode }) {
       }
     })
   }
-  // A file the daemon keeps plays from a copy read once through this chat.
-  const loadMedia = useCallback((path: string, id: string) => {
-    const current = mobileRef.current
-    const sessionId = current.liveSessionId()
-    if (!sessionId) return Promise.reject(new Error('Open this chat again.'))
-    // A shared file's path can be relative to the chat's folder, so the chat is in the
-    // key, and so is the message's file: a file shared again after a change is read again.
-    return mediaUri(`${current.active?.id}:${sessionId}:${id}:${path}`, () =>
-      current.rpc<ReadMedia>('hexbot.files.read', { session_id: sessionId, path })
+  const readFile = useCallback(async (path: string) => {
+    if (!liveChat || !mobile.active) throw new Error('Open this chat again.')
+    const file = await mobileRef.current.rpc<OpenedFile & { media_path?: string }>(
+      'hexbot.files.read', { session_id: liveChat, path, stream_media: true }
     )
-  }, [])
-  // A file's preview reads it through this chat, as the desktop's panel does.
-  const readFile = useCallback((path: string) => {
-    const current = mobileRef.current
-    const sessionId = current.liveSessionId()
-    if (!sessionId) return Promise.reject(new Error('Open this chat again.'))
-    return current.rpc<OpenedFile>('hexbot.files.read', { session_id: sessionId, path })
-  }, [])
+    return { ...file, mediaUrl: mediaSource(mobile.active.origin, file.media_path) }
+  }, [liveChat, mobile.active, mobile.connects])
+  const loadMedia = useCallback((path: string, id: string) => {
+    const key = JSON.stringify([mobile.active?.id, liveChat, id, path])
+    return mediaUri(key, () => readFile(path), mobile.connects)
+  }, [liveChat, mobile.active?.id, mobile.connects, readFile])
   // The private conversation between two bots: the thread in which `peer`
   // asked `bot`, or the other way round when that is the one there is. With
   // none yet, the bot's own chat.
@@ -1336,7 +1329,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
           }
           case 'file':
             // Only a bot's own chat reads its files.
-            return route?.kind === 'section' && !route.section.peer_bot
+            return liveChat && route?.kind === 'section' && !route.section.peer_bot
               ? {
                   onPress: () =>
                     setFile({
@@ -1389,7 +1382,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
             }
         }
       },
-    [act, mobile.bots, mobile.rooms, openThread, route, theme.text]
+    [act, liveChat, mobile.bots, mobile.rooms, openThread, route, theme.text]
   )
   const renderMessageText = useCallback<NonNullable<ChatScreenProps['renderMessageText']>>(
     item =>
@@ -1504,7 +1497,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
     onOpenSearch: () => setSearchOpen(true),
     focus,
     renderMessageText,
-    loadMedia: route?.kind === 'section' ? loadMedia : undefined,
+    loadMedia: route?.kind === 'section' && liveChat ? loadMedia : undefined,
     busy: mobile.chat.busy,
     // What the bot does right now, from the step it runs: "Opening Taobao".
     waiting:
@@ -1523,7 +1516,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
     onApprove: approve,
     rpc: mobile.rpc,
     onOpenVisual: openVisual,
-    onOpenFile: route?.kind === 'section' ? setFile : undefined,
+    onOpenFile: route?.kind === 'section' && liveChat ? setFile : undefined,
     onReact: mobile.react,
     onOpenThread: openThread,
     sendDisabledReason: uploading

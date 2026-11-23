@@ -546,7 +546,7 @@ it.each([4002, 5200])(
       expect(cards().find(card => card.textContent?.includes('Late request failed'))).toBeVisible()
     } else {
       // An unknown outcome is told on its bubble, not a card.
-      expect(screen.getByText('Not sent')).toHaveAttribute('title', 'Late request failed')
+      expect(screen.getByText('Delivery unconfirmed')).toHaveAttribute('title', 'Late request failed')
     }
   }
 )
@@ -908,7 +908,7 @@ it('keeps a newer stream after an actual accepted retry loses its title-save res
   expect(after.streamingMessageId).toBe(before.streamingMessageId)
   expect(after.turnActive).toBe(true)
   expectWorkingButton()
-  expect(screen.getByText('Not sent')).toBeVisible()
+  expect(screen.getByText('Delivery unconfirmed')).toBeVisible()
   // Retry under the same key is refused as reserved: nothing is taken twice,
   // the send stays unconfirmed until history shows it, and the newer stream
   // is left alone.

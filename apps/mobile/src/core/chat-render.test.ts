@@ -37,14 +37,15 @@ vi.mock('react-native', async () => {
 vi.mock('@expo/vector-icons', () => ({ Ionicons: () => null }))
 vi.mock('expo-clipboard', () => ({ setStringAsync: vi.fn() }))
 vi.mock('../ui/PluginIcon', () => ({ PluginIcon: () => null }))
-// The players are native views; this checks which file each message hands them.
-vi.mock('../screens/MediaAttachment', async () => {
-  const { createElement } = await import('react')
-  return {
-    MediaAttachment: ({ file, load }: { file: { kind: string; name: string }; load?: unknown }) =>
-      createElement('div', { 'data-testid': `media-${file.kind}` }, `${file.name}${load ? ' from the daemon' : ''}`)
-  }
-})
+const audio = vi.hoisted(() => ({
+  currentStatus: { duration: 0, error: null },
+  addListener: vi.fn((_event: string, _listener: (status: { error: string | null }) => void) => ({ remove: vi.fn() }))
+}))
+vi.mock('expo-audio', () => ({
+  useAudioPlayer: () => audio, useAudioPlayerStatus: () => audio.currentStatus,
+  setAudioModeAsync: vi.fn()
+}))
+vi.mock('expo-video', () => ({ useVideoPlayer: () => ({}), VideoView: () => null }))
 vi.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ bottom: 0 }) }))
 vi.mock('../ui', async () => {
   const { createElement } = await import('react')
@@ -55,7 +56,9 @@ vi.mock('../ui', async () => {
     ...format,
     Text: view, Screen: view, Glass: view, TopBar: () => null,
     BotFace: () => null, RoomFace: () => null, LoadingFace: () => null,
-    Button: () => null, IconButton: () => null, Banner: () => null,
+    Button: ({ accessibilityLabel, onPress, disabled, busy }: { accessibilityLabel?: string; onPress?: () => void; disabled?: boolean; busy?: boolean }) =>
+      createElement('button', { 'aria-label': accessibilityLabel, onClick: onPress, disabled: disabled || busy }),
+    IconButton: () => null, Banner: () => null,
     useKeyboardVisible: () => false, useTheme: () => ({}),
     bubbleFill: () => 'grey', faceColor: () => null, faceWash: () => 'grey', withAlpha: () => 'grey', radius: {}, mono: 'monospace',
     Field: () => null, HIT: 44, useCover: () => {},
@@ -154,8 +157,8 @@ it("puts a chat's bar buttons in reading order, with a profile or settings icon"
   ])
 })
 
-it('plays the pictures, videos and audio files a message carries, and shows any other file as its card', () => {
-  const load = vi.fn()
+it('waits for the cached chat to open, then reads only the recording selected', async () => {
+  const load = vi.fn().mockResolvedValue('file:///sample')
   const items: ChatItem[] = [
     {
       kind: 'message', id: 'sent', role: 'user', text: 'Watch this',
@@ -169,16 +172,45 @@ it('plays the pictures, videos and audio files a message carries, and shows any 
       attachments: [{ id: 'a', kind: 'audio', name: 'voice.mp3', path: '/art/voice.mp3' }]
     }
   ]
-  render(createElement(ChatScreen, { title: 'Owl', face: { name: 'Owl' }, items, onSend: vi.fn(), onApprove: vi.fn(), loadMedia: load }))
-  expect(screen.getByTestId('media-video').textContent).toBe('clip.mp4 from the daemon')
-  expect(screen.getByTestId('media-audio').textContent).toBe('voice.mp3 from the daemon')
-  expect(screen.queryByTestId('media-file')).toBeNull()
+  const props = { title: 'Owl', face: { name: 'Owl' }, items, onSend: vi.fn(), onApprove: vi.fn() }
+  const view = render(createElement(ChatScreen, props))
+  expect(screen.queryByRole('button', { name: 'Load voice.mp3' })).toBeNull()
+  expect(screen.getByTestId('chat-file-a')).toBeDefined()
+  view.rerender(createElement(ChatScreen, { ...props, loadMedia: load }))
+  expect(load).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('button', { name: 'Load voice.mp3' }))
+  expect(await screen.findByTestId('chat-audio')).toBeDefined()
+  expect(load.mock.calls).toEqual([['/art/voice.mp3', 'a']])
+  expect(screen.getByRole('button', { name: 'Load clip.mp4' })).toBeDefined()
   // The card cuts the name before its extension, so the extension always shows, and names the kind.
   expect(['notes', '.txt', 'Text'].map(text => screen.getByText(text).textContent)).toEqual([
     'notes',
     '.txt',
     'Text'
   ])
+})
+
+it('requests a fresh media link after the native player reports a failed stream', async () => {
+  const load = vi.fn(async () => 'https://daemon.test/api/media/' + 'b'.repeat(32))
+  const items: ChatItem[] = [{
+    kind: 'message', id: 'made', role: 'bot', text: '',
+    attachments: [{ id: 'a', kind: 'audio', name: 'voice.mp3', path: '/art/voice.mp3' }]
+  }]
+  render(createElement(ChatScreen, {
+    title: 'Owl', items, loadMedia: load, onSend: vi.fn(), onApprove: vi.fn()
+  }))
+  fireEvent.click(screen.getByRole('button', { name: 'Load voice.mp3' }))
+  await screen.findByTestId('chat-audio')
+  const [, report] = audio.addListener.mock.lastCall!
+  act(() => {
+    report({ error: 'HTTP 410' })
+    report({ error: null })
+  })
+  const retry = await screen.findByRole('button', { name: 'Reload voice.mp3' })
+  expect(load).toHaveBeenCalledTimes(1)
+  fireEvent.click(retry)
+  expect(await screen.findByTestId('chat-audio')).toBeDefined()
+  expect(load).toHaveBeenCalledTimes(2)
 })
 
 it('a long press on a message copies it whole or opens it to select any part', () => {

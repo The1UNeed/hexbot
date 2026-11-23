@@ -1599,7 +1599,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       update(sessionId, transcript => {
         // A prompt refusal says nothing about the operation currently
         // streaming. Its card belongs only to this request. An unknown outcome
-        // draws no card: the bubble itself says Not sent and offers Retry.
+        // draws no card: the bubble offers Retry under the same input key.
         const card = error && status !== 'unknown' ? requestCard(error, row) : undefined
 
         const messages = transcript.messages.map(message =>

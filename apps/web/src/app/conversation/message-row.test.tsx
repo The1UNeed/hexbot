@@ -307,7 +307,10 @@ describe('MessageRow files', () => {
 
   it('plays what the bot made or shared from the daemon, under its reply', async () => {
     const read = vi.spyOn(api, 'filesRead').mockImplementation(async (_session, path) => ({
-      data_url: `data:${path.endsWith('.mp3') ? 'audio/mpeg' : 'video/mp4'};base64,AAAA`,
+      mediaUrl: path.endsWith('.mp3')
+        ? 'https://daemon.test/api/media/' + 'a'.repeat(32)
+        : undefined,
+      data_url: path.endsWith('.mp3') ? undefined : 'data:video/mp4;base64,AAAA',
       mime: path.endsWith('.mp3') ? 'audio/mpeg' : 'video/mp4',
       modified: 0,
       name: path.split('/').pop()!,
@@ -396,10 +399,16 @@ describe('MessageRow files', () => {
       />
     )
 
+    expect(read).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Load a1.mp3' }))
+    expect(read.mock.calls).toEqual([['live-1', voice]])
+    fireEvent.click(screen.getByRole('button', { name: 'Load clip.mp4' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Load lake.mp4' }))
+
     const [audio, ...again] = await screen.findAllByLabelText('a1.mp3')
     expect(again).toEqual([])
     expect(audio!.tagName).toBe('AUDIO')
-    expect(audio).toHaveAttribute('src', 'blob:made')
+    expect(audio).toHaveAttribute('src', 'https://daemon.test/api/media/' + 'a'.repeat(32))
     expect((await screen.findByLabelText('clip.mp4')).tagName).toBe('VIDEO')
     expect((await screen.findByLabelText('lake.mp4')).tagName).toBe('VIDEO')
     // A shared document stays a card that opens beside the chat.
@@ -414,6 +423,22 @@ describe('MessageRow files', () => {
       audio!.compareDocumentPosition(screen.getByText('Here it is.')) &
         Node.DOCUMENT_POSITION_PRECEDING
     ).toBeTruthy()
+    fireEvent.error(audio!)
+    read.mockResolvedValueOnce({
+      mime: 'audio/mpeg',
+      modified: 1,
+      name: 'a1.mp3',
+      path: voice,
+      size: 3,
+      version: 'new',
+      mediaUrl: 'https://daemon.test/api/media/' + 'b'.repeat(32)
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Reload a1.mp3' }))
+    expect(await screen.findByLabelText('a1.mp3')).toHaveAttribute(
+      'src',
+      'https://daemon.test/api/media/' + 'b'.repeat(32)
+    )
+    expect(read.mock.calls.at(-1)).toEqual(['live-1', voice])
     read.mockRestore()
   })
 

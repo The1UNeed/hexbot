@@ -14,7 +14,7 @@ import { type OpenedFile, type Preview, previewOf, TABLE_COLUMNS } from '../core
 import { fileCopy, mediaUri } from '../core/media'
 import { MarkdownText } from '../MarkdownText'
 import { PdfFrame } from '../PdfFrame'
-import { Layer, mono, Text, useTheme, withAlpha } from '../ui'
+import { Button, Layer, mono, Text, useTheme, withAlpha } from '../ui'
 import { MediaAttachment } from './MediaAttachment'
 import type { AttachmentView } from './types'
 
@@ -48,6 +48,8 @@ export function FileSheet({
     if (file) setShown(file)
   }, [file])
   const [opened, setOpened] = useState<{ id: string; file?: OpenedFile; error?: string }>()
+  const [attempt, setAttempt] = useState(0)
+  const reload = () => setAttempt(n => n + 1)
   const [sharing, setSharing] = useState(false)
 
   useEffect(() => {
@@ -66,7 +68,7 @@ export function FileSheet({
     return () => {
       live = false
     }
-  }, [file?.id, file?.path, read])
+  }, [attempt, file?.id, file?.path, read])
 
   const current = opened?.id === shown?.id ? opened : undefined
   const preview = useMemo(() => (current?.file ? previewOf(current.file) : null), [current?.file])
@@ -105,6 +107,7 @@ export function FileSheet({
           <Text tone="danger" variant="callout">
             {current.error}
           </Text>
+          <Button testID="file-reload" label={`Reload ${shown.name}`} onPress={reload} variant="secondary" />
         </View>
       ) : !current?.file || !preview ? (
         <View style={styles.opening} testID="file-opening">
@@ -114,7 +117,7 @@ export function FileSheet({
           </Text>
         </View>
       ) : (
-        <PreviewBody botName={botName} file={current.file} id={shown.id} preview={preview} />
+        <PreviewBody botName={botName} file={current.file} id={shown.id} preview={preview} onReload={reload} />
       )}
     </Layer>
   )
@@ -124,8 +127,10 @@ function PreviewBody({
   botName,
   file,
   id,
-  preview
+  preview,
+  onReload
 }: {
+  onReload: () => void
   botName: string
   file: OpenedFile
   id: string
@@ -181,7 +186,7 @@ function PreviewBody({
       return preview.kind === 'pdf' && !SHOWS_PDF ? (
         <NoPreview botName={botName} />
       ) : (
-        <Media botName={botName} file={file} id={id} kind={preview.kind} />
+        <Media botName={botName} file={file} id={id} kind={preview.kind} onReload={onReload} />
       )
     case 'none':
       return <NoPreview botName={botName} />
@@ -193,8 +198,10 @@ function Media({
   botName,
   file,
   id,
-  kind
+  kind,
+  onReload
 }: {
+  onReload: () => void
   botName: string
   file: OpenedFile
   id: string
@@ -207,6 +214,7 @@ function Media({
   useEffect(() => {
     let live = true
     // Keyed by contents too, so a file changed since it was last opened shows as it is now.
+    setFailed(false)
     mediaUri(`preview:${id}:${file.version ?? ''}`, async () => file).then(
       next => live && setUri(next),
       () => live && setFailed(true)
@@ -215,7 +223,9 @@ function Media({
       live = false
     }
   }, [file, id])
-  if (failed) return <NoPreview botName={botName} />
+  if (failed) return file.mediaUrl
+    ? <Button testID="file-reload" label={`Reload ${file.name}`} onPress={onReload} variant="secondary" />
+    : <NoPreview botName={botName} />
   if (!uri) return <ActivityIndicator style={styles.opening} />
   if (kind === 'pdf')
     return (
@@ -227,6 +237,7 @@ function Media({
     return (
       <Image
         accessibilityLabel={file.name}
+        onError={() => setFailed(true)}
         onLoad={e => {
           const { width, height } = e.nativeEvent.source
           if (width && height) setRatio(width / height)
@@ -239,7 +250,8 @@ function Media({
     )
   return (
     <MediaAttachment
-      card={null}
+      card={<NoPreview botName={botName} />}
+      onReload={file.mediaUrl ? onReload : undefined}
       file={{ id, kind, name: file.name, uri }}
     />
   )

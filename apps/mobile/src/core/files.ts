@@ -1,13 +1,14 @@
 import { extensionOf } from '../../../web/src/lib/file-kinds'
 
-/** What `hexbot.files.read` answers: text for a text file, a data URL for anything else. */
+/** What `hexbot.files.read` answers: text, inline bytes, or a media stream. */
 export interface OpenedFile {
+  mediaUrl?: string
   data_url?: string
   mime: string
   name: string
   size?: number
   text?: string
-  /** A hash of the contents; a changed file has another. */
+  /** The daemon's file revision. */
   version?: string
 }
 
@@ -57,7 +58,7 @@ export function previewOf(file: OpenedFile): Preview {
       more: file.text.length > TEXT_CHARS
     }
   }
-  if (!file.data_url) return { kind: 'none' }
+  if (!file.data_url && !file.mediaUrl) return { kind: 'none' }
   if (file.mime === 'application/pdf' || ext === 'pdf') return { kind: 'pdf' }
   if (file.mime.startsWith('image/') && file.mime !== 'image/svg+xml') return { kind: 'image' }
   if (file.mime.startsWith('video/')) return { kind: 'video' }
