@@ -8,23 +8,9 @@
 
 import { create } from 'zustand'
 
-/** One comment on a file. */
-export interface FileComment {
-  id: string
-  /** The file's name, as its tab shows it. */
-  name: string
-  /** Where the daemon keeps it; absent for a file only this page holds. */
-  path?: string
-  /** Where in the file: "line 12", "B2:C4 on Sheet1", "slide 3", "the area at 40, 120". */
-  where?: string
-  /** The words or values the comment is about, as the user selected them. */
-  quote?: string
-  note: string
-  /** The side tab it was left in, so a picture's marks show on that picture only. */
-  tab?: string
-  /** The area of a picture it marks, in the picture's pixels, drawn on the picture while it waits. */
-  area?: { x: number; y: number; w: number; h: number }
-}
+import type { FileComment } from '../lib/file-comments'
+
+export { type FileComment, withComments } from '../lib/file-comments'
 
 interface FileCommentsState {
   /** By chat: the section, or the live session for a chat without one yet. */
@@ -99,38 +85,4 @@ export const fileCommentsActions = () => useFileComments.getState()
 /** A chat's comments, for a component. */
 export function useChatComments(chat: null | string): FileComment[] {
   return useFileComments(state => (chat ? (state.byChat[chat] ?? NONE) : NONE))
-}
-
-const clip = (text: string, most: number) =>
-  text.length > most ? `${text.slice(0, most - 1).trimEnd()}…` : text
-
-/**
- * The message the composer sends: what the user typed, then each comment with
- * the file it is on, so the bot finds the place and edits that file.
- */
-export function withComments(text: string, comments: FileComment[]): string {
-  if (!comments.length) {
-    return text
-  }
-
-  const lines = comments.map((comment, index) => {
-    // A file tag: the chat shows the name, which opens the file, and the bot reads the path.
-    const label = comment.name.replace(/[[\]\\]/g, '\\$&')
-
-    const file = comment.path
-      ? `[${label}](<${comment.path.replace(/[<>\\]/g, '\\$&')}>)`
-      : comment.name
-
-    const where = comment.where ? `, ${comment.where}` : ''
-
-    const quote = comment.quote
-      ? `, on "${clip(comment.quote.replace(/\s+/g, ' ').trim(), 400)}"`
-      : ''
-
-    return `${index + 1}. ${file}${where}${quote}: ${comment.note}`
-  })
-
-  const ask = text.trim() || 'Please work through my comments on these files.'
-
-  return `${ask}\n\nMy comments:\n${lines.join('\n')}\n\nWhere a comment asks for a change, edit the file in place.`
 }

@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Image,
@@ -10,11 +10,23 @@ import {
   View
 } from 'react-native'
 
+import type { FileComment } from '../../../web/src/lib/file-comments'
+import { editorOf, saveFailure } from '../core/file-edit'
 import { type OpenedFile, type Preview, previewOf, TABLE_COLUMNS } from '../core/files'
 import { fileCopy, mediaUri } from '../core/media'
 import { MarkdownText } from '../MarkdownText'
 import { PdfFrame } from '../PdfFrame'
-import { Layer, mono, Text, useTheme, withAlpha } from '../ui'
+import { Button, confirm, Layer, mono, Text, useTheme, withAlpha } from '../ui'
+import {
+  type CommentAsk,
+  CommentBar,
+  EDIT_CHARS,
+  type EditorHandle,
+  TableEditor,
+  TextEditor,
+  type WriteFile
+} from './FileEditors'
+import { ImageMarkup } from './ImageMarkup'
 import { MediaAttachment } from './MediaAttachment'
 import type { AttachmentView } from './types'
 
@@ -23,23 +35,45 @@ const SHARES_FILES = Platform.OS === 'ios'
 /** Android's WebView does not draw PDFs. */
 const SHOWS_PDF = Platform.OS !== 'android'
 
+/** Writes a file through the chat: `hexbot.files.write`, answering the file's new version. */
+export type WriteThrough = (
+  path: string,
+  contents: { text: string } | { data_url: string },
+  version: string | undefined
+) => Promise<{ version: string }>
+
 /**
- * A file from the chat on its own card, as the desktop opens it beside the
- * chat: a CSV or TSV as a table, Markdown formatted, other text as it is, a
- * picture, video, audio file or PDF shown or played. Anything else says it
- * has no preview. On iPhone, Share saves or sends the file.
+ * A file from the chat on its own card, in front of the chat, as the desktop
+ * opens it beside the chat. Text, Markdown, CSV and TSV are edited in place
+ * and pictures marked up; Save, or closing the card, writes the edit back.
+ * Selecting words, cells or an area of a picture offers Comment: the comment
+ * waits above the composer and goes with the next message. A PDF, video or
+ * audio file is shown or played, and Word, Excel and PowerPoint files say
+ * they have no preview. On iPhone, Share saves or sends the file.
  */
 export function FileSheet({
   botName,
+  comments = [],
   file,
+  onAddImage,
   onClose,
-  read
+  onComment,
+  read,
+  write
 }: {
   botName: string
   /** The file to show; null closes the card. */
   file: AttachmentView | null
   onClose: () => void
   read: (path: string) => Promise<OpenedFile>
+  /** Absent where files can't be saved, as in a room. */
+  write?: WriteThrough
+  /** Comments waiting above the composer; a picture's are outlined on it. */
+  comments?: FileComment[]
+  /** Absent where the chat takes no messages. */
+  onComment?: (comment: Omit<FileComment, 'id'>) => void
+  /** Adds a marked-up picture to the composer. */
+  onAddImage?: (dataUrl: string, name: string) => void
 }) {
   const theme = useTheme()
   // The card slides away showing the file it had.
@@ -49,8 +83,22 @@ export function FileSheet({
   }, [file])
   const [opened, setOpened] = useState<{ id: string; file?: OpenedFile; error?: string }>()
   const [sharing, setSharing] = useState(false)
+  // Bumped to read the file again, as "Load {bot}'s version" does.
+  const [edition, setEdition] = useState(0)
+  const [dirty, setDirty] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [conflict, setConflict] = useState(false)
+  const [saveError, setSaveError] = useState('')
+  const [asking, setAsking] = useState<CommentAsk | null>(null)
+  const handle = useRef<EditorHandle | null>(null)
+  const version = useRef<string | undefined>(undefined)
 
   useEffect(() => {
+    setDirty(false)
+    setConflict(false)
+    setSaveError('')
+    setAsking(null)
+    handle.current = null
     if (file?.local) {
       setOpened({ id: file.id, file: file.local })
       return
@@ -59,17 +107,64 @@ export function FileSheet({
     let live = true
     setOpened({ id: file.id })
     read(file.path).then(
-      next => live && setOpened({ id: file.id, file: next }),
+      next => {
+        if (!live) return
+        version.current = next.version
+        setOpened({ id: file.id, file: next })
+      },
       (e: unknown) =>
         live && setOpened({ id: file.id, error: e instanceof Error ? e.message : String(e) })
     )
     return () => {
       live = false
     }
-  }, [file?.id, file?.path, read])
+  }, [edition, file?.id, file?.local, file?.path, read])
 
   const current = opened?.id === shown?.id ? opened : undefined
   const preview = useMemo(() => (current?.file ? previewOf(current.file) : null), [current?.file])
+  const editor = useMemo(() => {
+    const kind = current?.file ? editorOf(current.file) : null
+    // A text longer than the phone edits shows its start, as before.
+    return kind && kind !== 'image' && (current?.file?.text?.length ?? 0) > EDIT_CHARS ? null : kind
+  }, [current?.file])
+  const path = shown?.local ? undefined : shown?.path
+
+  const writeFile: WriteFile | undefined =
+    write && path
+      ? async contents => {
+          try {
+            const reply = await write(path, contents, version.current)
+            version.current = reply.version
+            setConflict(false)
+            setSaveError('')
+            return true
+          } catch (e) {
+            const failure = saveFailure(e)
+            setConflict(failure.conflict)
+            setSaveError(failure.message)
+            return false
+          }
+        }
+      : undefined
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      return (await handle.current?.save()) ?? true
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // An edit is written back as the card closes; one that was refused keeps it open.
+  const close = () => {
+    if (!dirty || !writeFile) return onClose()
+    void save().then(ok => ok && onClose())
+  }
+
+  const discard = () =>
+    confirm('Discard edit', `Your change to ${shown?.name ?? 'this file'} is not saved.`, onClose)
+
   const share = async () => {
     if (!current?.file) return
     setSharing(true)
@@ -84,19 +179,61 @@ export function FileSheet({
     }
   }
 
+  const comment = useCallback(
+    (ask: CommentAsk) => (onComment ? setAsking(ask) : undefined),
+    [onComment]
+  )
+  const onDirty = useCallback((next: boolean) => setDirty(next), [])
+  const editorProps = {
+    handle,
+    onComment: onComment ? comment : undefined,
+    onDirty,
+    write: writeFile
+  }
+  const areas = comments
+    .filter(item => item.area && item.name === shown?.name && item.path === path)
+    .map(item => item.area!)
+
   return (
     <Layer
       action={
-        SHARES_FILES && current?.file
-          ? { busy: sharing, label: 'Share', onPress: () => void share() }
-          : undefined
+        dirty && writeFile
+          ? { busy: saving, busyLabel: 'Saving', label: 'Save', onPress: () => void save() }
+          : SHARES_FILES && current?.file
+            ? { busy: sharing, label: 'Share', onPress: () => void share() }
+            : undefined
       }
-      onClose={onClose}
-      scroll={preview?.kind !== 'pdf'}
+      onClose={close}
+      scroll={!editor && preview?.kind !== 'pdf'}
       testID="file-sheet"
       title={shown?.name ?? 'File'}
       visible={!!file}
     >
+      {conflict || saveError ? (
+        <View
+          accessibilityRole="alert"
+          style={[styles.banner, { backgroundColor: withAlpha(conflict ? theme.warning : theme.danger, 0.12) }]}
+          testID="file-save-problem"
+        >
+          <Text variant="footnote">
+            {conflict
+              ? `${botName} changed this file since it opened. Your edit is not saved.`
+              : `Not saved: ${saveError}`}
+          </Text>
+          <View style={styles.bannerActions}>
+            <Button label="Discard edit" onPress={discard} size="small" testID="file-discard" variant="plain" />
+            {conflict ? (
+              <Button
+                label={`Load ${botName}’s version`}
+                onPress={() => setEdition(n => n + 1)}
+                size="small"
+                testID="file-load-theirs"
+                variant="secondary"
+              />
+            ) : null}
+          </View>
+        </View>
+      ) : null}
       {!shown ? null : current?.error ? (
         <View
           accessibilityRole="alert"
@@ -113,9 +250,54 @@ export function FileSheet({
             Opening {shown.name}…
           </Text>
         </View>
+      ) : editor === 'image' && current.file.data_url ? (
+        <ImageMarkup
+          {...editorProps}
+          asking={!!asking}
+          botName={botName}
+          comments={areas}
+          file={{ ...current.file, data_url: current.file.data_url }}
+          key={`${shown.id}:${edition}`}
+          onAdd={onAddImage}
+          pictureKey={`${shown.id}:${current.file.version ?? ''}:${edition}`}
+        />
+      ) : editor === 'table' && current.file.text !== undefined ? (
+        <TableEditor
+          {...editorProps}
+          key={`${shown.id}:${edition}`}
+          name={shown.name}
+          text={current.file.text}
+        />
+      ) : (editor === 'text' || editor === 'markdown') && current.file.text !== undefined ? (
+        <TextEditor
+          {...editorProps}
+          key={`${shown.id}:${edition}`}
+          markdown={editor === 'markdown'}
+          text={current.file.text}
+        />
       ) : (
         <PreviewBody botName={botName} file={current.file} id={shown.id} preview={preview} />
       )}
+      {asking && onComment && shown ? (
+        <View style={styles.commentBar}>
+          <CommentBar
+            ask={asking}
+            botName={botName}
+            onAdd={note => {
+              onComment({
+                area: asking.area,
+                name: shown.name,
+                note,
+                path,
+                quote: asking.quote,
+                where: asking.where
+              })
+              setAsking(null)
+            }}
+            onCancel={() => setAsking(null)}
+          />
+        </View>
+      ) : null}
     </Layer>
   )
 }
@@ -302,7 +484,10 @@ function Table({ rows }: { rows: string[][] }) {
 }
 
 const styles = StyleSheet.create({
+  banner: { borderRadius: 14, gap: 6, marginBottom: 10, marginHorizontal: 12, padding: 12 },
+  bannerActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-end' },
   cell: { paddingHorizontal: 10, paddingVertical: 9 },
+  commentBar: { bottom: 0, left: 0, position: 'absolute', right: 0 },
   code: { fontFamily: mono, fontSize: 12, lineHeight: 18 },
   image: { borderRadius: 16, width: '100%' },
   message: { borderRadius: 14, padding: 14 },

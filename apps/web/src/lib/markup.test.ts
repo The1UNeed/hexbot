@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { linesOf } from './comment-layer'
+import { columnName, linesOf, rangeName } from './file-comments'
 import { areaOf, boundsOf, type Mark, markAt, moved, nextStep } from './markup'
-import { columnName, rangeName } from './sheet-grid'
 
 const arrow: Mark = {
   color: '#f00',

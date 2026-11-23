@@ -2,6 +2,7 @@ import { ArrowUp, MessageSquarePlus } from 'lucide-react'
 import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 
 import { cn } from '../../../lib/cn'
+import { linesOf } from '../../../lib/file-comments'
 
 /** What a comment is about, and where its popover opens inside the file's panel. */
 export interface CommentTarget {
@@ -13,14 +14,6 @@ export interface CommentTarget {
 }
 
 const POPOVER_WIDTH = 288
-
-/** "line 4" or "lines 4–9" of a text field's selection. */
-export function linesOf(text: string, start: number, end: number): string {
-  const first = text.slice(0, start).split('\n').length
-  const last = text.slice(0, Math.max(start, end - 1)).split('\n').length
-
-  return first === last ? `line ${first}` : `lines ${first}–${last}`
-}
 
 /** A point under `rect`, inside `box`, for the popover. */
 export function pointUnder(

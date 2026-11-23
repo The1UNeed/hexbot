@@ -11,6 +11,13 @@ import {
 
 import { cn } from '../../../lib/cn'
 import { parseDelimited, serializeDelimited } from '../../../lib/delimited'
+import {
+  type Cell,
+  columnName,
+  type Range,
+  rangeBounds,
+  rangeName
+} from '../../../lib/file-comments'
 
 import type { CommentTarget } from './comment-layer'
 import { pointUnder } from './comment-layer'
@@ -19,47 +26,6 @@ import { pointUnder } from './comment-layer'
 const ROW_STEP = 300
 /** Columns drawn at most. */
 export const MAX_COLUMNS = 60
-
-/** "A", "Z", "AA": a column's letters. */
-export function columnName(index: number): string {
-  let name = ''
-  let n = index + 1
-
-  while (n > 0) {
-    const rest = (n - 1) % 26
-    name = String.fromCharCode(65 + rest) + name
-    n = Math.floor((n - 1) / 26)
-  }
-
-  return name
-}
-
-export interface Cell {
-  col: number
-  row: number
-}
-
-export interface Range {
-  /** Where the selection started. */
-  anchor: Cell
-  /** Where it ends, and where the keyboard moves from. */
-  focus: Cell
-}
-
-const bounds = ({ anchor, focus }: Range) => ({
-  bottom: Math.max(anchor.row, focus.row),
-  left: Math.min(anchor.col, focus.col),
-  right: Math.max(anchor.col, focus.col),
-  top: Math.min(anchor.row, focus.row)
-})
-
-/** "B2" or "B2:C4". */
-export function rangeName(range: Range): string {
-  const { bottom, left, right, top } = bounds(range)
-  const first = `${columnName(left)}${top + 1}`
-
-  return left === right && top === bottom ? first : `${first}:${columnName(right)}${bottom + 1}`
-}
 
 export interface SheetGridProps {
   /** The values shown, row by row. */
@@ -138,7 +104,7 @@ export function SheetGrid({
     [sourceOf, valueAt]
   )
 
-  const { bottom, left, right, top } = bounds(range)
+  const { bottom, left, right, top } = rangeBounds(range)
   const focus = range.focus
 
   const clamp = (cell: Cell): Cell => ({

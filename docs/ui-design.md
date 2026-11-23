@@ -318,8 +318,18 @@ with Viewport Segments place both poses on the exact halves.
   the file as it is now. Sending a message saves every open file's edit
   first, and holds the message when one does not save; closing a tab or the
   panel saves first and keeps a file whose edit did not save. A PDF opens in
-  the viewer; any other file offers a download. Desktop and browser only:
-  the phone has no side panel, and its file card stays a viewer.
+  the viewer; any other file offers a download. The phone has no side
+  panel: a file opens on its card in front of the chat, where text and
+  Markdown (Formatted or Edit) are edited in a field, CSV and TSV as a table
+  whose picked cell the field under it edits (Add row adds one), and
+  pictures are marked up with the same tools, colours and sizes, drawn by
+  the desktop's renderer in a web view. Save, or closing the card, writes
+  the edit back; a save after the bot changed the file is refused with
+  "Load {bot}'s version". Selecting words, a cell (a long press picks the
+  range up to another) or an area of a picture offers Comment; the note is
+  written at the bottom of the card, and the comment waits above the
+  composer, numbered, and goes with the next message. Word, Excel and
+  PowerPoint files stay without a preview there.
 - Questions: when a bot asks through the clarify tool, a card with the
   question, the choices as rows A, B, C… (the first marked Recommended)
   and a field for the user's own answer. One click answers a single-choice

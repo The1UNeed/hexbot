@@ -218,11 +218,10 @@ function LayerCard({
       onMoveShouldSetPanResponder: (_, g) => g.dy > 6 && Math.abs(g.dy) > Math.abs(g.dx),
       onPanResponderMove: (_, g) => offset.setValue(Math.max(0, g.dy)),
       onPanResponderRelease: (_, g) => {
-        if (g.dy > 110 || g.vy > 1.2) {
-          close.current()
-        } else {
-          Animated.spring(offset, { toValue: 0, useNativeDriver: native }).start()
-        }
+        // A card that stays, such as one whose edit did not save, springs back;
+        // one that closes slides away from here instead.
+        if (g.dy > 110 || g.vy > 1.2) close.current()
+        Animated.spring(offset, { toValue: 0, useNativeDriver: native }).start()
       }
     })
   ).current
@@ -305,7 +304,14 @@ function LayerCard({
           </View>
           {header ? <View style={styles.pinned}>{header}</View> : null}
         </View>
-        <KeyboardAvoidingView behavior="padding" style={styles.fill}>
+        {/* The view measures itself inside the card, so on iOS the card's own top is
+            added back; otherwise the keyboard covers the bottom of a card that
+            doesn't scroll, such as a file being edited. Android resizes the window. */}
+        <KeyboardAvoidingView
+          behavior="padding"
+          keyboardVerticalOffset={Platform.OS === 'ios' ? top : 0}
+          style={styles.fill}
+        >
           {scroll ? (
             <ScrollView
               contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 32 }]}

@@ -22,12 +22,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 
 import { readFileAsDataUrl } from '../../../lib/api'
 import { cn } from '../../../lib/cn'
-import { mimeOf } from '../../../lib/media'
-import type { FileComment } from '../../../stores/file-comments'
-
-import { statusText, useAutosave } from './autosave'
-import type { CommentTarget } from './comment-layer'
-import { downloadBlob, downloadEntry, FileToolbar, type MenuEntry, toolClass } from './file-toolbar'
+import { areaWhere } from '../../../lib/file-comments'
 import {
   type Area,
   areaOf,
@@ -42,7 +37,13 @@ import {
   nextStep,
   render,
   type Tool
-} from './markup'
+} from '../../../lib/markup'
+import { mimeOf } from '../../../lib/media'
+import type { FileComment } from '../../../stores/file-comments'
+
+import { statusText, useAutosave } from './autosave'
+import type { CommentTarget } from './comment-layer'
+import { downloadBlob, downloadEntry, FileToolbar, type MenuEntry, toolClass } from './file-toolbar'
 
 /** Pictures saved back in their own format; others can be marked up and sent, not saved. */
 const SAVES = new Set(['image/jpeg', 'image/png', 'image/webp'])
@@ -505,12 +506,9 @@ export function ImageEditor({
         const screen = onScreen(commentBox)
         const frame = wrap.current.getBoundingClientRect()
         const panel = wrap.current.closest('[role="tabpanel"]')?.getBoundingClientRect() ?? frame
-        const round = (value: number) => Math.round(value)
-
         onComment(
           {
-            // In the picture as it is saved: a crop moves its corner.
-            where: `the marked area at ${round(commentBox.x - (markup.crop?.x ?? 0))}, ${round(commentBox.y - (markup.crop?.y ?? 0))} (${round(commentBox.w)}×${round(commentBox.h)} px)`,
+            where: areaWhere(commentBox, markup.crop),
             x: Math.max(
               8,
               Math.min((screen?.left ?? 0) + frame.left - panel.left, panel.width - 296)
