@@ -384,6 +384,18 @@ describe('runs', () => {
     )
   })
 
+  it('drop a PowerPoint break whose newline was typed over', () => {
+    const doc = new DOMParser().parseFromString(
+      `<a:p xmlns:a="${A}"><a:r><a:t>Quarterly</a:t></a:r><a:br/><a:r><a:t>review</a:t></a:r></a:p>`,
+      'application/xml'
+    )
+
+    writeRuns(Array.from(doc.documentElement.children), A, ['Quarterly', ' ', 'review'])
+
+    expect(new XMLSerializer().serializeToString(doc)).not.toContain('a:br')
+    expect(doc.documentElement.textContent).toBe('Quarterly review')
+  })
+
   it('lay PowerPoint breaks out again from merged text', () => {
     const doc = new DOMParser().parseFromString(
       `<a:p xmlns:a="${A}"><a:r><a:t>Quarterly</a:t></a:r><a:br/><a:r><a:t>review</a:t></a:r></a:p>`,

@@ -41,7 +41,11 @@ export function writeRuns(runs: Element[], ns: typeof NS.a | typeof NS.w, texts:
     }
   }
 
-  if (texts.length === runs.length) {
+  // A PowerPoint break whose newline was typed over is laid out again below.
+  const breakChanged =
+    ns === NS.a && runs.some((run, index) => run.localName === 'br' && texts[index] !== '\n')
+
+  if (texts.length === runs.length && !breakChanged) {
     runs.forEach((run, index) => set(run, texts[index]!))
 
     return
