@@ -108,17 +108,17 @@ export function FileSheet({
 
   // The file and read that opened the card; another read alone means the chat reconnected.
   const opening = useRef('')
-  // The last read failed, as one does while the chat is away.
-  const readFailed = useRef(false)
+  // The file on the card came from a read that finished; one that failed or was cut short did not.
+  const loaded = useRef(false)
 
   useEffect(() => {
     const key = JSON.stringify([attempt, edition, file?.id, file?.path])
     const reconnected = opening.current === key
     opening.current = key
-    // A reconnect reads again only for a fresh stream link (video, audio) or after a
-    // failed read; a file read whole stays as it is, with any edit or comment under way.
+    // A reconnect reads again only for a fresh stream link (video, audio) or when the
+    // file never loaded; a file read whole stays as it is, with any edit or comment under way.
     const streamed = file?.kind === 'video' || file?.kind === 'audio'
-    if (reconnected && (edited.current || (!streamed && !readFailed.current))) return
+    if (reconnected && (edited.current || (!streamed && loaded.current))) return
     setDirty(false)
     edited.current = false
     setConflict(false)
@@ -127,23 +127,24 @@ export function FileSheet({
     handle.current = null
     saved.current = null
     if (file?.local) {
+      loaded.current = true
       setOpened({ id: file.id, file: file.local })
       return
     }
     if (!file?.path) return
     let live = true
+    loaded.current = false
     setOpened({ id: file.id })
     // Video and audio stream; a picture comes whole, to be marked up and saved.
     read(file.path, file.kind === 'video' || file.kind === 'audio').then(
       next => {
         if (!live) return
-        readFailed.current = false
+        loaded.current = true
         version.current = next.version
         setOpened({ id: file.id, file: next })
       },
       (e: unknown) => {
         if (!live) return
-        readFailed.current = true
         setOpened({ id: file.id, error: e instanceof Error ? e.message : String(e) })
       }
     )
