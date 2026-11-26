@@ -19,6 +19,8 @@ import type {
   AccountSignIn,
   ApprovalChoice,
   ApprovalRequest,
+  ApprovalRule,
+  ApprovalRuleKind,
   Bot,
   BotCreateInput,
   BotUpdatePatch,
@@ -624,8 +626,10 @@ export const computersGrant = (
   on: boolean
 ) => rpcCall<{ ok: true }>('hexbot.computers.grant', { bot, capability, computer, on })
 /** The bots' computer in use or not; this computer's desktop shared (set up first) or not. */
-export const computersSet = (computer: 'host' | 'vm', change: { desktop?: boolean; on?: boolean }) =>
-  rpcCall<{ computers: Computer[] }>('hexbot.computers.set', { computer, ...change })
+export const computersSet = (
+  computer: 'host' | 'vm',
+  change: { desktop?: boolean; on?: boolean }
+) => rpcCall<{ computers: Computer[] }>('hexbot.computers.set', { computer, ...change })
 /** Setup's choice for every bot made from now on: this computer's terminal and desktop. */
 export const computersDefaults = (defaults: { computer_use?: boolean; host_terminal?: boolean }) =>
   rpcCall<Record<string, boolean>>('hexbot.computers.defaults', defaults)
@@ -1100,6 +1104,28 @@ export function approvalReceived(
     request_id: requestId,
     session_id: sessionId
   })
+}
+
+export function approvalRulesList(): Promise<{ rules: ApprovalRule[] }> {
+  return rpcCall<{ rules: ApprovalRule[] }>('hexbot.approvals.rules.list', {})
+}
+
+export function approvalRulesAdd(
+  kind: ApprovalRuleKind,
+  text: string
+): Promise<{ rule: ApprovalRule }> {
+  return rpcCall<{ rule: ApprovalRule }>('hexbot.approvals.rules.add', {
+    kind,
+    text
+  })
+}
+
+export function approvalRulesRemove(id: string): Promise<{ removed: boolean }> {
+  return rpcCall<{ removed: boolean }>('hexbot.approvals.rules.remove', { id })
+}
+
+export function approvalRulesClear(kind?: ApprovalRuleKind): Promise<{ removed: number }> {
+  return rpcCall<{ removed: number }>('hexbot.approvals.rules.clear', kind ? { kind } : {})
 }
 
 // ---------------------------------------------------------------------------

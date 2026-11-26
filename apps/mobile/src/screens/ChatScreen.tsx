@@ -1229,21 +1229,106 @@ export function ApprovalCard({
   onAnswer: (requestId: string, choice: ApprovalChoice) => void
 }) {
   const theme = useTheme()
+  const [open, setOpen] = useState(false)
+  const [showCommand, setShowCommand] = useState(false)
   const decided = request.decision
   const allow = request.choices.filter(choice => choice !== 'deny')
+  const hideCommandByDefault = Boolean(request.title && request.command)
+
+  // Once answered, fold down to the compact footprint of a normal bot message;
+  // tapping opens the reason, command, and saved rule in place.
+  if (decided) {
+    const denied = decided === 'deny'
+    const summary = request.title || request.command?.trim().split('\n')[0] || request.reason
+    const hasDetails = Boolean(
+      request.reason || request.command || (decided === 'always' && request.rule)
+    )
+
+    return (
+      <View
+        style={[
+          styles.approvalSettled,
+          open && styles.approvalSettledOpen,
+          joined && styles.joined,
+          { backgroundColor: theme.fill }
+        ]}
+        testID={`approval-${request.requestId}`}
+      >
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ expanded: open }}
+          onPress={() => hasDetails && setOpen(value => !value)}
+          style={styles.approvalSettledRow}
+        >
+          <Ionicons
+            color={denied ? theme.danger : theme.success}
+            name={denied ? 'close-circle' : 'checkmark-circle'}
+            size={16}
+          />
+          <Text variant="footnote">{DECISION_LABELS[decided]}</Text>
+          {summary ? (
+            <Text numberOfLines={1} style={styles.approvalSummary} tone="muted" variant="footnote">
+              {summary}
+            </Text>
+          ) : null}
+          {hasDetails ? (
+            <Ionicons
+              color={theme.muted}
+              name={open ? 'chevron-up' : 'chevron-down'}
+              size={14}
+            />
+          ) : null}
+        </Pressable>
+        {open && hasDetails ? (
+          <View style={[styles.approvalDetails, { borderTopColor: theme.hairline }]}>
+            {request.reason ? (
+              <Text tone="muted" variant="footnote">
+                {request.reason}
+              </Text>
+            ) : null}
+            {request.command ? (
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                style={[styles.command, { backgroundColor: theme.inset }]}
+              >
+                <Text selectable style={styles.commandText} variant="footnote">
+                  {request.command}
+                </Text>
+              </ScrollView>
+            ) : null}
+            {decided === 'always' && request.rule ? (
+              <Text tone="muted" variant="footnote">
+                Saved rule: {request.rule}
+              </Text>
+            ) : null}
+          </View>
+        ) : null}
+      </View>
+    )
+  }
 
   return (
     <View
-      accessibilityLabel={decided ? undefined : 'Approval needed'}
+      accessibilityLabel="Approval needed"
       style={[styles.approval, joined && styles.joined, { backgroundColor: theme.fill }]}
       testID={`approval-${request.requestId}`}
     >
       <View style={styles.approvalHead}>
-        <Ionicons color={decided ? theme.muted : theme.accent} name="hand-left-outline" size={18} />
-        <Text variant="subhead">{request.toolLabel || 'Wants to run a command'}</Text>
+        <Ionicons color={theme.accent} name="hand-left-outline" size={18} />
+        <Text variant="subhead">
+          {request.title || request.toolLabel || 'Wants to run a command'}
+        </Text>
       </View>
       {request.reason ? <Text variant="callout">{request.reason}</Text> : null}
-      {request.command ? (
+      {hideCommandByDefault ? (
+        <Pressable onPress={() => setShowCommand(value => !value)}>
+          <Text tone="muted" variant="footnote">
+            {showCommand ? 'Hide command' : 'Show command'}
+          </Text>
+        </Pressable>
+      ) : null}
+      {request.command && (!hideCommandByDefault || showCommand) ? (
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -1254,40 +1339,32 @@ export function ApprovalCard({
           </Text>
         </ScrollView>
       ) : null}
-      {decided ? (
-        <View style={styles.decision}>
-          <Ionicons
-            color={decided === 'deny' ? theme.danger : theme.success}
-            name={decided === 'deny' ? 'close-circle' : 'checkmark-circle'}
-            size={16}
+      {request.choices.includes('always') && request.rule ? (
+        <Text tone="muted" variant="footnote">
+          Always allow saves: {request.rule}
+        </Text>
+      ) : null}
+      <View style={styles.approvalActions}>
+        {allow.map((choice, index) => (
+          <Button
+            key={choice}
+            label={CHOICE_LABELS[choice]}
+            onPress={() => onAnswer(request.requestId, choice)}
+            style={[styles.approvalButton, index > 0 && { backgroundColor: theme.inset }]}
+            testID={`approval-${request.requestId}-${choice}`}
+            variant={index === 0 ? 'primary' : 'secondary'}
           />
-          <Text tone="muted" variant="footnote">
-            {DECISION_LABELS[decided]}
-          </Text>
-        </View>
-      ) : (
-        <View style={styles.approvalActions}>
-          {allow.map((choice, index) => (
-            <Button
-              key={choice}
-              label={CHOICE_LABELS[choice]}
-              onPress={() => onAnswer(request.requestId, choice)}
-              style={[styles.approvalButton, index > 0 && { backgroundColor: theme.inset }]}
-              testID={`approval-${request.requestId}-${choice}`}
-              variant={index === 0 ? 'primary' : 'secondary'}
-            />
-          ))}
-          {request.choices.includes('deny') ? (
-            <Button
-              label="Deny"
-              onPress={() => onAnswer(request.requestId, 'deny')}
-              style={[styles.approvalButton, { backgroundColor: theme.inset }]}
-              testID={`approval-${request.requestId}-deny`}
-              variant="secondary"
-            />
-          ) : null}
-        </View>
-      )}
+        ))}
+        {request.choices.includes('deny') ? (
+          <Button
+            label="Deny"
+            onPress={() => onAnswer(request.requestId, 'deny')}
+            style={[styles.approvalButton, { backgroundColor: theme.inset }]}
+            testID={`approval-${request.requestId}-deny`}
+            variant="secondary"
+          />
+        ) : null}
+      </View>
     </View>
   )
 }
@@ -1537,7 +1614,24 @@ const styles = StyleSheet.create({
   approval: { borderRadius: radius.bubble, gap: 10, marginTop: 14, maxWidth: '92%', padding: 14 },
   approvalActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   approvalButton: { minHeight: 44, paddingHorizontal: 18 },
+  approvalDetails: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    gap: 8,
+    marginTop: 8,
+    paddingTop: 8
+  },
   approvalHead: { alignItems: 'center', flexDirection: 'row', gap: 8 },
+  approvalSettled: {
+    alignSelf: 'flex-start',
+    borderRadius: radius.bubble,
+    marginTop: 14,
+    maxWidth: '82%',
+    paddingHorizontal: 14,
+    paddingVertical: 9
+  },
+  approvalSettledOpen: { width: '82%' },
+  approvalSettledRow: { alignItems: 'center', flexDirection: 'row', gap: 6 },
+  approvalSummary: { flexShrink: 1 },
   archived: { alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingTop: 12 },
   elsewhereActions: { flexDirection: 'row', gap: 8 },
   // In the middle of the column, like the time between messages.
@@ -1596,7 +1690,6 @@ const styles = StyleSheet.create({
   composer: { gap: 8, paddingHorizontal: 12, paddingTop: 6 },
   composerRow: { alignItems: 'flex-end', flexDirection: 'row', gap: 8 },
   day: { marginBottom: 2, marginTop: 18 },
-  decision: { alignItems: 'center', flexDirection: 'row', gap: 6 },
   earlier: { alignItems: 'center', paddingVertical: 8 },
   empty: {
     alignItems: 'center',

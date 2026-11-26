@@ -286,6 +286,31 @@ fn team_shape(connection: &Connection) -> Vec<(String, Vec<Column>)> {
             real("joined_at", false),
         ],
     ));
+    expected.push((
+        "approval_rules".into(),
+        vec![
+            key("id"),
+            (
+                "owner_id".into(),
+                "TEXT".into(),
+                true,
+                Some("'local'".into()),
+                0,
+            ),
+            text("kind", true),
+            text("text", true),
+            (
+                "source".into(),
+                "TEXT".into(),
+                true,
+                Some("'manual'".into()),
+                0,
+            ),
+            text("tool", false),
+            text("computer", false),
+            real("created_at", true),
+        ],
+    ));
     expected.sort_by(|a, b| a.0.cmp(&b.0));
     expected
 }

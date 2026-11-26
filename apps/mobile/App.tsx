@@ -1384,7 +1384,9 @@ function MobileApp({ children }: { children?: ReactNode }) {
       id: `approval-${a.requestId}`,
       request: {
         ...a,
-        choices: a.choices.filter(c => ['once', 'session', 'deny'].includes(c)) as ApprovalChoice[]
+        choices: a.choices.filter(c =>
+          ['once', 'always', 'session', 'deny'].includes(c)
+        ) as ApprovalChoice[]
       }
     })
   )

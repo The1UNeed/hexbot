@@ -5,6 +5,7 @@ compile_error!("The Hexbot daemon supports macOS and Linux only");
 
 pub mod accounts;
 mod admission;
+pub mod approval_rules;
 pub mod auth;
 pub mod catalog;
 pub mod cli;

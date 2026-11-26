@@ -132,6 +132,9 @@ struct State {
     /// Steps the owner approved on a reviewed Auto card this turn, which
     /// later reviews read; see `review::remember`.
     approved: Vec<Value>,
+    /// Steps the owner denied on a reviewed Auto card this turn, so retries
+    /// are not silently auto-allowed.
+    denied: Vec<Value>,
     display: VecDeque<String>,
     /// Uploads waiting for the next prompt, in the order they arrived.
     staged: Vec<Staged>,
@@ -319,8 +322,9 @@ impl State {
         self.announced_occurrences.clear();
         self.active_occurrences.clear();
         self.result_entries.clear();
-        // An approval covers the task the owner was watching, not the next one.
+        // Turn-local approval and denial memory resets when the turn ends.
         self.approved.clear();
+        self.denied.clear();
         std::mem::take(&mut self.reread)
     }
     fn dialogs_cancelled(&self) -> bool {
@@ -1671,6 +1675,7 @@ impl Runtime {
                 finishing: std::collections::HashSet::new(),
                 native_approvals: HashMap::new(),
                 approved: Vec::new(),
+                denied: Vec::new(),
                 display: VecDeque::new(),
                 staged: std::mem::take(&mut uploads.uploads),
                 landing: 0,
@@ -2898,6 +2903,10 @@ impl Runtime {
                     .filter(|v| !v.is_empty())
                     .ok_or_else(|| Error::new(4202, "Enter the password."))?;
                 json!({"value": json!({"username": typed("username").unwrap_or(""), "password": password}).to_string()})
+            } else if request["reviewed"] == true && choice == "always" {
+                // Persist the rule in the daemon and allow this step in Pi
+                // without granting a blanket session bypass in the extension.
+                json!({"value":"once"})
             } else {
                 json!({"value":choice})
             }
@@ -2937,6 +2946,48 @@ impl Runtime {
             }
         };
 
+        // Persist Always allow rules before replying to Pi or settling the card,
+        // so cap/validation errors (e.g. 40-rule limit) return cleanly without
+        // falsely marking the card "Always allowed". Release `state` while
+        // writing to SQLite; `_gate` still serializes all dialog answers/stops.
+        let mut rule_saved = false;
+        if request["reviewed"] == true && settled["choice"] == "always" {
+            let payload = &request["approval_payload"];
+            let tool = payload["tool"].as_str().unwrap_or("").to_owned();
+            let command = payload["command"].as_str().unwrap_or("").to_owned();
+            let computer = payload["computer"].as_str().map(str::to_owned);
+            let raw_rule = payload["rule"]
+                .as_str()
+                .map(str::trim)
+                .filter(|r| !r.is_empty())
+                .map(str::to_owned);
+            drop(state);
+            let label =
+                crate::approval_rules::computer_label(&self.home, &s.owner, computer.as_deref());
+            let rule_text = raw_rule
+                .map(|r| crate::approval_rules::scope_rule_to_computer(&r, label.as_deref()))
+                .unwrap_or_else(|| {
+                    crate::approval_rules::default_rule_for_step(&tool, &command, label.as_deref())
+                });
+            crate::approval_rules::add(
+                &self.home,
+                &s.owner,
+                "allow",
+                &rule_text,
+                "card",
+                (!tool.is_empty()).then_some(tool.as_str()),
+                computer.as_deref(),
+            )?;
+            rule_saved = true;
+            state = s.state.lock().unwrap();
+            if state.dialogs_cancelled() || !state.pending.contains_key(id) {
+                drop(state);
+                self.events
+                    .emit(&s.owner, None, "hexbot.approvals.changed", json!({}));
+                return Err(Error::new(4204, "request is no longer waiting"));
+            }
+        }
+
         let write = if request["method"] == "native" {
             // The user agreed on a card: its tool now finishes the work, and
             // Stop waits for it to hand Pi the outcome.
@@ -2958,10 +3009,22 @@ impl Runtime {
             )
         };
         state.pending.remove(id);
-        if request["reviewed"] == true && settled["choice"] == "once" {
-            review::remember(&mut state.approved, &request["approval_payload"]);
+        if request["reviewed"] == true {
+            match settled["choice"].as_str() {
+                Some("once" | "always") => {
+                    review::remember(&mut state.approved, &request["approval_payload"]);
+                }
+                Some("deny") => {
+                    review::remember(&mut state.denied, &request["approval_payload"]);
+                }
+                _ => {}
+            }
         }
         drop(state);
+        if rule_saved {
+            self.events
+                .emit(&s.owner, None, "hexbot.approvals.changed", json!({}));
+        }
         // Publish before Pi can settle, never after awaiting its write receipt.
         self.resolved(s, id, &request, settled);
         self.emit(

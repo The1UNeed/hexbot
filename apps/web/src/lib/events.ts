@@ -26,6 +26,7 @@
 
 import type { GatewayEvent } from '@hermes/shared'
 
+import { refreshApprovalRulesIfLoaded } from '../stores/approval-rules'
 import { useBots } from '../stores/bots'
 import { useComputer } from '../stores/computer'
 import { useComputers } from '../stores/computers'
@@ -289,6 +290,11 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
 
     case 'hexbot.passwords.changed':
       refreshPasswordsIfLoaded()
+
+      return
+
+    case 'hexbot.approvals.changed':
+      refreshApprovalRulesIfLoaded()
 
       return
 

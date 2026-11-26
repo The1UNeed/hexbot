@@ -183,6 +183,8 @@ export interface ApprovalRequestPayload {
   form?: EmailDraftForm | PluginForm | SignInForm
   reason?: string
   request_id?: string
+  rule?: string
+  title?: string
   tool?: string
   /** The tool call that showed the card, when the daemon knows it. */
   tool_id?: string
@@ -2154,7 +2156,9 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         reason: payload.reason,
         receivedAt: Date.now(),
         requestId,
+        ...(payload.rule && { rule: payload.rule }),
         sessionId,
+        ...(payload.title && { title: payload.title }),
         ...(payload.tool_id && { toolId: payload.tool_id }),
         toolName: payload.tool
       }
@@ -2183,7 +2187,8 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       }
 
       effects.notify({
-        body: payload.command ?? payload.reason ?? 'A bot is asking for permission.',
+        body:
+          payload.title ?? payload.command ?? payload.reason ?? 'A bot is asking for permission.',
         sectionId: transcript?.sectionId,
         title:
           payload.form?.kind === 'sign_in'

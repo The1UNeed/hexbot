@@ -132,6 +132,14 @@ CREATE TABLE IF NOT EXISTS discord_plugin(
 CREATE TABLE IF NOT EXISTS discord_guilds(
  bot TEXT NOT NULL, guild_id TEXT NOT NULL, name TEXT, mode TEXT,
  present INTEGER NOT NULL DEFAULT 1, joined_at REAL, PRIMARY KEY(bot,guild_id));
+-- Persistent Auto-mode approval rules (approval_rules.rs): rules the user
+-- saves via Always allow on a card or manages in Settings, Approvals.
+CREATE TABLE IF NOT EXISTS approval_rules(
+ id TEXT PRIMARY KEY, owner_id TEXT NOT NULL DEFAULT 'local',
+ kind TEXT NOT NULL CHECK(kind IN ('allow','ask')), text TEXT NOT NULL,
+ source TEXT NOT NULL DEFAULT 'manual' CHECK(source IN ('manual','card')),
+ tool TEXT, computer TEXT, created_at REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_approval_rules_owner ON approval_rules(owner_id,kind,created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_heartbeats_bot_started ON heartbeats(bot,started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_heartbeat_messages_section ON heartbeat_messages(section_id,context_at);
 CREATE INDEX IF NOT EXISTS idx_sections_bot ON sections(bot);

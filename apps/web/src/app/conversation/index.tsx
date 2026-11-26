@@ -2,7 +2,7 @@ import 'katex/dist/katex.min.css'
 
 import { JsonRpcGatewayError } from '@hermes/shared'
 import { useNavigate, useParams, useRouter } from '@tanstack/react-router'
-import { ArrowDown, ChevronDown, Copy, PanelRight, Pencil, Undo2, X } from 'lucide-react'
+import { ArrowDown, Check, ChevronDown, Copy, PanelRight, Pencil, Undo2, X } from 'lucide-react'
 import {
   type CSSProperties,
   isValidElement,
@@ -24,7 +24,6 @@ import remarkMath from 'remark-math'
 
 import { Avatar, useFaceColor } from '../../components/ui/avatar'
 import { Button } from '../../components/ui/button'
-import { Chip } from '../../components/ui/chip'
 import { Dialog } from '../../components/ui/dialog'
 import { fadeLengths } from '../../components/ui/scroll-area'
 import { StatusDot } from '../../components/ui/status-dot'
@@ -1115,14 +1114,14 @@ export function CardRow({
 const APPROVAL_BUTTONS: Record<ApprovalChoice, string> = {
   always: 'Always allow',
   deny: 'Deny',
-  once: 'Approve',
+  once: 'Allow once',
   session: 'Allow for now'
 }
 
 const APPROVAL_CHOICES: Record<ApprovalChoice, string> = {
   always: 'Always allowed',
   deny: 'Denied',
-  once: 'Approved',
+  once: 'Allowed once',
   session: 'Allowed for now'
 }
 
@@ -1144,80 +1143,173 @@ export function ApprovalCard({ approval }: { approval: ApprovalRequest }) {
 
 function ChoiceCard({ approval }: { approval: ApprovalRequest }) {
   const [open, setOpen] = useState(false)
+  const [showCommand, setShowCommand] = useState(false)
+  const [error, setError] = useState<null | string>(null)
 
   const choose = async (choice: ApprovalChoice) => {
-    await approvalRespond(approval.sessionId, approval.requestId, choice)
-    transcriptActions().resolveApproval(approval.sessionId, approval.requestId, choice)
+    setError(null)
+
+    try {
+      await approvalRespond(approval.sessionId, approval.requestId, choice)
+      transcriptActions().resolveApproval(approval.sessionId, approval.requestId, choice)
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught))
+    }
   }
 
-  const details = (
-    <>
-      {approval.command ? (
-        <pre className="my-2 overflow-auto rounded-[12px] bg-background/80 p-2.5 font-mono text-[length:var(--text-secondary)]">
-          {approval.command}
-        </pre>
-      ) : null}
-      {approval.reason ? (
-        <p className="mb-2 text-[length:var(--text-secondary)] text-muted">{approval.reason}</p>
-      ) : null}
-    </>
-  )
+  const commandBlock = approval.command ? (
+    <pre className="overflow-auto rounded-[12px] bg-background/75 px-3 py-2 font-mono text-[length:var(--text-meta)] leading-[1.5] text-foreground/90 ring-1 ring-inset ring-foreground/[0.06]">
+      {approval.command}
+    </pre>
+  ) : null
 
-  // Once answered, the card folds to one line; the command stays a click away.
+  // Once answered, collapse to the compact footprint of a normal bot message bubble.
+  // Clicking opens the details (reason, command, saved rule) in place.
   if (approval.decision) {
-    const summary = approval.command?.trim().split('\n')[0] || approval.reason
+    const denied = approval.decision === 'deny'
+    const summary = approval.title || approval.command?.trim().split('\n')[0] || approval.reason
+    const mono = !approval.title && Boolean(approval.command)
+
+    const hasDetails = Boolean(
+      approval.reason || approval.command || (approval.decision === 'always' && approval.rule)
+    )
 
     return (
-      <div className="hex-bubble min-w-0 max-w-[min(85%,40rem)] flex-1 rounded-[20px] bg-bubble px-2 py-1.5">
+      <div
+        className={cn(
+          'hex-bubble min-w-0 max-w-[min(85%,28rem)] rounded-[20px] bg-bubble transition-colors duration-[var(--hex-motion-fast)]',
+          open ? 'w-full ring-1 ring-inset ring-foreground/[0.07]' : 'w-fit hover:bg-surface-2'
+        )}
+      >
         <button
           aria-expanded={open}
-          className="group/approval hex-focus flex w-full items-center gap-2 rounded-[14px] px-2 py-1 text-left"
+          className="group/approval hex-focus flex w-full items-center gap-2 rounded-[20px] px-3.5 py-2 text-left leading-[1.4]"
           onClick={() => setOpen(!open)}
           type="button"
         >
-          <Chip className="shrink-0" tone={approval.decision === 'deny' ? 'danger' : 'success'}>
+          {denied ? (
+            <X aria-hidden className="shrink-0 text-danger" size={14} strokeWidth={2.25} />
+          ) : (
+            <Check aria-hidden className="shrink-0 text-success" size={14} strokeWidth={2.25} />
+          )}
+          <span
+            className={cn(
+              'shrink-0 text-[length:var(--text-secondary)] font-medium',
+              denied ? 'text-danger' : 'text-foreground'
+            )}
+          >
             {APPROVAL_CHOICES[approval.decision]}
-          </Chip>
+          </span>
           {summary ? (
             <span
               className={cn(
-                'min-w-0 flex-1 truncate text-[length:var(--text-meta)] text-muted',
-                approval.command && 'font-mono'
+                'min-w-0 truncate text-[length:var(--text-secondary)] text-muted',
+                open && 'flex-1',
+                mono && 'font-mono text-[length:var(--text-meta)]'
               )}
             >
               {summary}
             </span>
-          ) : (
+          ) : open ? (
             <span className="flex-1" />
-          )}
-          <ChevronDown
-            className={cn(
-              'shrink-0 text-muted opacity-0 transition-[opacity,transform] duration-[var(--hex-motion-fast)] group-hover/approval:opacity-100 group-focus-visible/approval:opacity-100',
-              open && 'rotate-180 opacity-100'
-            )}
-            size={12}
-          />
+          ) : null}
+          {hasDetails ? (
+            <ChevronDown
+              aria-hidden
+              className={cn(
+                'ml-0.5 shrink-0 text-muted/60 transition-[color,transform] duration-[var(--hex-motion-fast)] group-hover/approval:text-muted',
+                open && 'rotate-180 text-muted'
+              )}
+              size={13}
+            />
+          ) : null}
         </button>
-        {open ? (
-          <div className="hex-unfold px-2">
-            <div>{details}</div>
+        {open && hasDetails ? (
+          <div className="hex-unfold border-t border-foreground/[0.07] px-3.5 pt-2.5 pb-3">
+            <div className="space-y-2">
+              {approval.reason ? (
+                <p className="text-[length:var(--text-secondary)] leading-[1.45] text-muted">
+                  {approval.reason}
+                </p>
+              ) : null}
+              {commandBlock}
+              {approval.decision === 'always' && approval.rule ? (
+                <p className="border-t border-foreground/[0.06] pt-2 text-[length:var(--text-meta)] text-muted">
+                  Saved rule: {approval.rule}
+                </p>
+              ) : null}
+            </div>
           </div>
         ) : null}
       </div>
     )
   }
 
+  // When a plain-English title is provided (Auto mode), keep raw commands
+  // tucked behind a quiet disclosure so the user rarely has to read shell syntax.
+  const hideCommandByDefault = Boolean(approval.title && approval.command)
+
   return (
-    <div className="hex-bubble min-w-0 max-w-[min(85%,40rem)] flex-1 rounded-[20px] border border-warning/30 bg-bubble px-4 py-3">
-      <div className="font-semibold">Approval needed</div>
-      {details}
-      <div className="flex flex-wrap gap-2">
+    <div className="hex-bubble my-0.5 w-full min-w-0 max-w-[min(85%,28rem)] rounded-[20px] bg-bubble px-4 py-3.5 ring-1 ring-inset ring-foreground/[0.09]">
+      <div className="text-[length:var(--text-body)] font-semibold leading-[1.35] tracking-[-0.01em]">
+        {approval.title || 'Approval needed'}
+      </div>
+      {hideCommandByDefault ? (
+        <>
+          {approval.reason ? (
+            <p className="mt-1.5 text-[length:var(--text-secondary)] leading-[1.45] text-muted">
+              {approval.reason}
+            </p>
+          ) : null}
+          <button
+            aria-expanded={showCommand}
+            className="hex-focus mt-2.5 inline-flex items-center gap-1 rounded-md text-[length:var(--text-meta)] font-medium text-muted transition-colors duration-[var(--hex-motion-fast)] hover:text-foreground"
+            onClick={() => setShowCommand(!showCommand)}
+            type="button"
+          >
+            <span>{showCommand ? 'Hide command' : 'Show command'}</span>
+            <ChevronDown
+              aria-hidden
+              className={cn(
+                'transition-transform duration-[var(--hex-motion-fast)]',
+                showCommand && 'rotate-180'
+              )}
+              size={12}
+            />
+          </button>
+          {showCommand && commandBlock ? <div className="mt-2">{commandBlock}</div> : null}
+        </>
+      ) : (
+        <div className="mt-2.5 space-y-2">
+          {commandBlock}
+          {approval.reason ? (
+            <p className="text-[length:var(--text-secondary)] leading-[1.45] text-muted">
+              {approval.reason}
+            </p>
+          ) : null}
+        </div>
+      )}
+      {approval.choices.includes('always') && approval.rule ? (
+        <p className="mt-2.5 text-[length:var(--text-meta)] leading-[1.4] text-muted">
+          Always allow saves: {approval.rule}
+        </p>
+      ) : null}
+      {error ? (
+        <p className="mt-2 text-[length:var(--text-meta)] text-danger" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <div className="mt-3.5 flex flex-wrap items-center gap-2">
         {approval.choices.map(choice => (
           <Button
+            className={cn(
+              'h-[32px] rounded-full',
+              choice === 'deny' ? 'px-3 text-muted hover:bg-danger/10 hover:text-danger' : 'px-3.5'
+            )}
             key={choice}
             onClick={() => void choose(choice)}
             size="sm"
-            variant={choice === 'once' ? 'primary' : undefined}
+            variant={choice === 'once' ? 'primary' : choice === 'deny' ? 'ghost' : 'secondary'}
           >
             {APPROVAL_BUTTONS[choice]}
           </Button>

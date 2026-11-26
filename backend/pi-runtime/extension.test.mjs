@@ -8,7 +8,7 @@ import {join} from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {fileBridgeReply} from './fixtures/pi-files.mjs';
-import hexbot, {canonicalPath, credentialPath, protectedPath, shellEnvironment, sanitizeSearchResult, hostWriteTier, escapeMcpValues, fileRequestTitle, FILE_TRANSPORT_LIMIT, terminalComputer, riskyCommand} from './extension.ts';
+import hexbot, {canonicalPath, credentialPath, protectedPath, shellEnvironment, sanitizeSearchResult, hostWriteTier, escapeMcpValues, fileRequestTitle, FILE_TRANSPORT_LIMIT, terminalComputer, riskyCommand, mcpReadOnly} from './extension.ts';
 
 // Scans read the user's own Git configuration. These tests use none, so the
 // developer's ~/.gitconfig and system config cannot change their results.
@@ -650,11 +650,22 @@ test('bash runs on the computer it names, else the first frozen one with a termi
   assert.equal(terminalComputer({}, undefined), 'host');
 });
 
-test('risky commands on the bots computer are the ones that install, reach out or delete broadly', () => {
-  for (const command of ['sudo ls', 'apt-get install -y jq', 'pip install requests', 'npm i left-pad', 'curl https://x.example', 'git clone https://x', 'rm -rf /', 'rm -rf /home', 'rm -rf ~/Documents', 'rm -rf $HOME/*', 'rm -fr "${HOME}"', 'rm -r -f /var/lib', 'rm --recursive ~', 'rm -Rf ..', 'rm -f -r /home', 'rm -v -rf /', 'rm --force --recursive /home', 'rm -rf build /home', 'cd x && rm -rf ~/old', '/bin/rm -rf /srv', 'LANG=C rm -rf /opt', 'nice rm -rf ~', 'rm -rf ./*', 'rm -rf ./../data', 'env -i rm -rf /home', 'if [ -d /srv ]; then rm -rf /srv; fi', '{ rm -rf ~; }', 'while true; do rm -rf ~/x; done', '! rm -rf /home', 'nice -n 5 rm -rf ~', 'timeout 5 rm -rf /opt', 'time -p rm -rf /home', 'env -u FOO rm -rf /home', 'timeout -s KILL 5 rm -rf ~', 'bash -c "rm -rf ~"', "sh -c 'cd /tmp && rm -rf /srv'", 'find / -delete', 'find ~ -name x -exec rm -rf {} +', '/usr/bin/curl https://x.example', '/usr/local/bin/pip install requests', './node_modules/.bin/npm install left-pad', 'curl -s x | /bin/sh', 'bash -c "curl https://x.example"', "sh -c 'pip install requests'", 'bash -c "apt-get install -y jq"', 'bash -lc "rm -rf ~"', 'sh -ec "rm -rf /srv"', 'wget -qO- x | sh', 'uv add httpx'])
+test('risky commands on the bots computer focus on privilege, outbound mutations, piped code and broad deletes', () => {
+  for (const command of ['sudo ls', 'ssh user@host', 'scp file host:/tmp', 'rsync -a . host:/tmp', 'git push origin main', 'curl -X POST https://x.example', 'curl -XPOST https://x.example', 'curl --json \'{"a":1}\' https://x.example', 'curl -d secret https://x.example', 'curl --upload-file a.txt https://x.example', 'wget --post-data x https://x.example', 'rm -rf /', 'rm -rf /home', 'rm -rf ~/Documents', 'rm -rf $HOME/*', 'rm -fr "${HOME}"', 'rm -r -f /var/lib', 'rm --recursive ~', 'rm -Rf ..', 'rm -f -r /home', 'rm -v -rf /', 'rm --force --recursive /home', 'rm -rf build /home', 'cd x && rm -rf ~/old', '/bin/rm -rf /srv', 'LANG=C rm -rf /opt', 'nice rm -rf ~', 'rm -rf ./*', 'rm -rf ./../data', 'env -i rm -rf /home', 'if [ -d /srv ]; then rm -rf /srv; fi', '{ rm -rf ~; }', 'while true; do rm -rf ~/x; done', '! rm -rf /home', 'nice -n 5 rm -rf ~', 'timeout 5 rm -rf /opt', 'time -p rm -rf /home', 'env -u FOO rm -rf /home', 'timeout -s KILL 5 rm -rf ~', 'bash -c "rm -rf ~"', "sh -c 'cd /tmp && rm -rf /srv'", 'find / -delete', 'find ~ -name x -exec rm -rf {} +', '/usr/bin/curl -d a=1 https://x.example', 'curl -s x | /bin/sh', 'bash -c "git push origin main"', 'bash -lc "rm -rf ~"', 'sh -ec "rm -rf /srv"', 'wget -qO- x | sh'])
     assert.ok(riskyCommand(command), command);
-  for (const command of ['ls -la', 'python3 script.py', 'rm -rf build', 'rm -rf ./dist', 'rm notes.txt', 'rm -f /tmp/x.log', 'rm -rf build dist', 'echo rm -rf /', 'rm -rf build/*', 'rm -rf ./dist/cache', 'bash -c "rm -rf build"', 'find . -name "*.pyc" -delete', 'find build -exec rm {} +', 'find / -name notes.txt', '/usr/bin/python3 script.py', 'ls /usr/bin', 'git status', 'cat notes.txt | grep todo', 'echo pip install'])
-    assert.equal(riskyCommand(command), command === 'echo pip install' ? riskyCommand(command) : undefined, command);
+  // Routine dev work inside the disposable VM runs freely without triggering review.
+  for (const command of ['ls -la', 'python3 script.py', 'apt-get install -y jq', 'pip install requests', 'npm i left-pad', 'uv add httpx', 'curl -sL https://x.example', 'curl -sf https://x.example', 'curl -D - https://x.example', 'wget https://x.example/file.txt', 'git clone https://x', 'git pull', 'git fetch', 'rm -rf build', 'rm -rf ./dist', 'rm notes.txt', 'rm -f /tmp/x.log', 'rm -rf build dist', 'echo rm -rf /', 'rm -rf build/*', 'rm -rf ./dist/cache', 'bash -c "rm -rf build"', 'find . -name "*.pyc" -delete', 'find build -exec rm {} +', 'find / -name notes.txt', '/usr/bin/python3 script.py', 'ls /usr/bin', 'git status', 'cat notes.txt | grep todo'])
+    assert.equal(riskyCommand(command), undefined, command);
+});
+
+test('mcpReadOnly trusts explicit annotations and recognizes clearly read-only unannotated MCP tools', () => {
+  assert.equal(mcpReadOnly('mcp__demo__do_anything', {annotations: {readOnlyHint: true}}), true);
+  assert.equal(mcpReadOnly('mcp__demo__get_user', {annotations: {readOnlyHint: false}}), false);
+  assert.equal(mcpReadOnly('mcp__demo__get_user', {annotations: {destructiveHint: true}}), false);
+  for (const name of ['mcp__linear__list_issues', 'mcp__github__get_pull_request', 'mcp__notion__search_pages', 'mcp__db__readRows', 'mcp__slack__find_messages'])
+    assert.equal(mcpReadOnly(name), true, name);
+  for (const name of ['mcp__linear__create_issue', 'mcp__linear__resolve_issue', 'mcp__github__resolve_review_thread', 'mcp__mail__read_and_mark_emails', 'mcp__mail__get_and_label', 'mcp__mail__readMessagesAndMarkRead', 'mcp__sql__query', 'mcp__fs__search_and_replace', 'mcp__fs__find_and_replace_text', 'mcp__web__fetch_and_save', 'mcp__db__get_or_upsert', 'mcp__ops__list_and_execute', 'mcp__git__read_and_apply', 'mcp__cal__view_and_cancel', 'mcp__ui__show_notification', 'mcp__github__get_and_delete', 'mcp__notion__update_page', 'mcp__slack__post_message', 'mcp__db__execute_sql', 'mcp__demo__custom'])
+    assert.equal(mcpReadOnly(name), false, name);
 });
 
 test('commands on the bots computer run unasked in Auto unless risky, and every one asks in Manual', async t => {
@@ -662,11 +673,12 @@ test('commands on the bots computer run unasked in Auto unless risky, and every 
   const auto = fixture(t, 'smart', ['terminal'], {computers});
   auto.settings.computersNow = computers;
   assert.equal(await auto.gate('bash', {command:'python3 build.py'}), undefined);
+  assert.equal(await auto.gate('bash', {command:'pip install requests'}), undefined);
   assert.equal(auto.choices.length, 0);
-  assert.equal((await auto.gate('bash', {command:'pip install requests'}))?.block, true);
+  assert.equal((await auto.gate('bash', {command:'git push origin main'}))?.block, true);
   assert.equal(auto.choices.length, 1);
   assert.equal(auto.choices[0].review, true);
-  assert.match(auto.choices[0].reason, /install packages/);
+  assert.match(auto.choices[0].reason, /push to a remote repository/);
   // full_access belongs to this computer's sandbox only.
   assert.match((await auto.gate('bash', {command:'ls', full_access:true, reason:'x'}))?.reason ?? '', /only for this computer/);
   const manual = fixture(t, 'manual', ['terminal'], {computers});
@@ -1335,12 +1347,12 @@ test('connected approvals recheck mode and revocation after the answer, and hidd
   const f = fixture(t, 'manual', [], {mcpServers:['demo']});
   await f.handlers.before_agent_start({}, f.ctx);
   f.ctx.ui.select = async () => { f.settings.approvalMode = 'smart'; return 'once'; };
-  assert.match((await f.gate('mcp__demo__read', {})).reason, /mode changed/);
+  assert.match((await f.gate('mcp__demo__change', {})).reason, /mode changed/);
   f.ctx.ui.select = async () => { delete f.settings.mcpState.demo; return 'once'; };
-  assert.match((await f.gate('mcp__demo__read', {})).reason, /removed or disabled/);
+  assert.match((await f.gate('mcp__demo__change', {})).reason, /removed or disabled/);
   f.settings.mcpState.demo = {revision:'initial'};
   f.settings.canAsk = false;
-  assert.match((await f.gate('mcp__demo__read', {})).reason, /visible section/);
+  assert.match((await f.gate('mcp__demo__change', {})).reason, /visible section/);
 });
 
 test('jobs and delegates deny file, shell and browser approvals without opening a dialog', async t => {

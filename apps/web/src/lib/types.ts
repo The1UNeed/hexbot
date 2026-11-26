@@ -9,10 +9,23 @@
  * docs/client-architecture.md.
  */
 
-/** `always`: an app card's Always allow, or an approval from a daemon before Always allow was removed. */
+/** `always`: Always allow on Auto-reviewed cards and per-app desktop cards. */
 export type ApprovalChoice = 'always' | 'deny' | 'once' | 'session'
 
 export type ApprovalMode = 'manual' | 'off' | 'smart'
+
+export type ApprovalRuleKind = 'allow' | 'ask'
+
+/** One saved Auto-mode approval rule, created via Always allow or Settings, Approvals. */
+export interface ApprovalRule {
+  computer?: null | string
+  created_at: number
+  id: string
+  kind: ApprovalRuleKind
+  source: 'card' | 'manual'
+  text: string
+  tool?: null | string
+}
 
 /** One question a bot asks through the clarify tool. */
 export interface ClarifyQuestion {
@@ -226,7 +239,11 @@ export interface ApprovalRequest {
   reason?: string
   receivedAt: number
   requestId: string
+  /** Reusable rule text saved when the user clicks Always allow. */
+  rule?: string
   sessionId: string
+  /** Plain-English summary shown as the card heading instead of raw commands. */
+  title?: string
   /** The tool call that showed the card, when the daemon names it. */
   toolId?: string
   toolName?: string
@@ -694,6 +711,8 @@ export interface DaemonInfo {
   sandbox?: 'bubblewrap' | 'sandbox-exec' | null
   /** `sandbox` once the daemon has sandboxed approvals; absent on older daemons. */
   approvals?: 'sandbox'
+  /** True once `hexbot.approvals.rules.*` remembers Always allow and Ask first rules. */
+  approval_rules?: true
   /**
    * True once `hexbot.sections.create` returns the bot's one chat; an older
    * daemon makes a new section every time.
