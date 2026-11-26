@@ -140,9 +140,25 @@ struct State {
     landing: usize,
     /// The bot-to-bot chain this turn belongs to; a fresh turn starts a fresh one.
     chain: Chain,
-    tool_started: HashMap<String, (std::time::Instant, String)>,
+    tool_started: HashMap<(String, String), VecDeque<std::time::Instant>>,
     /// Argument previews by tool call id, kept until the tool result row is written.
     tool_context: HashMap<String, String>,
+    /// Live argument previews keyed by `(call_id, client_tool_name, parent_tool_call_id)`
+    /// so concurrent tools sharing a provider call ID keep distinct completion contexts.
+    /// `None` marks concurrent same-name calls with differing previews where FIFO cannot prove which ended.
+    live_tool_contexts: HashMap<(String, String, Option<String>), VecDeque<Option<String>>>,
+    /// `message_bot` calls seen during the active turn, so a cold client joining a
+    /// running room turn restores active asks and links immediately.
+    turn_asks: Vec<TurnAsk>,
+    /// Per-call stable occurrence IDs shared across assistant declarations, live
+    /// tool events, running room-turn snapshots, and persisted tool result rows.
+    /// `None` marks a `(call_id, tool_name)` pair declared multiple times in one
+    /// assistant message (parallel execution) where FIFO completion cannot prove identity.
+    announced_occurrences: HashMap<String, VecDeque<(String, Option<String>)>>,
+    active_occurrences: HashMap<(String, String), VecDeque<Option<String>>>,
+    /// Declaration-ordered tool metadata (tool name, occurrence ID, context preview)
+    /// per call ID for persisted tool rows.
+    result_entries: HashMap<String, VecDeque<QueuedResult>>,
     unsaved: VecDeque<(Value, Option<String>, Option<Value>)>,
     /// Something was added to the conversation outside the turn; clients
     /// read it again once the turn ends.
@@ -155,7 +171,139 @@ struct State {
     /// When this run first acted on the bots' computer. The user watches the
     /// computer, so the bot shows Working there even in a scheduled job.
     on_computer: Option<f64>,
+    /// Active `computer_use` tool calls per call ID, in start order.
+    computer_calls: HashMap<String, VecDeque<ComputerEntry>>,
+    next_computer_seq: u64,
 }
+#[derive(Clone)]
+struct ComputerEntry {
+    seq: u64,
+    targets_vm: bool,
+    claimed_by_bridge: bool,
+    settled_by_bridge: bool,
+}
+struct ComputerCallGuard<'a> {
+    live: &'a Live,
+    events: &'a EventHub,
+    claimed: Option<(String, u64)>,
+}
+impl<'a> ComputerCallGuard<'a> {
+    fn claim(
+        live: &'a Live,
+        events: &'a EventHub,
+        call_id: Option<&str>,
+        targets_vm: bool,
+    ) -> Self {
+        let claimed = {
+            let mut state = live.state.lock().unwrap();
+            if let Some(cid) = call_id {
+                state.computer_calls.get_mut(cid).and_then(|queue| {
+                    queue
+                        .iter_mut()
+                        .find(|e| e.targets_vm == targets_vm && !e.claimed_by_bridge)
+                        .map(|e| {
+                            e.claimed_by_bridge = true;
+                            (cid.to_owned(), e.seq)
+                        })
+                })
+            } else {
+                let mut candidate: Option<(String, u64)> = None;
+                let mut ambiguous = false;
+                for (cid, queue) in state.computer_calls.iter() {
+                    for e in queue {
+                        if e.targets_vm == targets_vm && !e.claimed_by_bridge {
+                            if candidate.is_some() {
+                                ambiguous = true;
+                                break;
+                            }
+                            candidate = Some((cid.clone(), e.seq));
+                        }
+                    }
+                    if ambiguous {
+                        break;
+                    }
+                }
+                if !ambiguous
+                    && let Some((cid, seq)) = candidate
+                    && let Some(queue) = state.computer_calls.get_mut(&cid)
+                    && let Some(e) = queue.iter_mut().find(|e| e.seq == seq)
+                {
+                    e.claimed_by_bridge = true;
+                    Some((cid, seq))
+                } else {
+                    None
+                }
+            }
+        };
+        Self {
+            live,
+            events,
+            claimed,
+        }
+    }
+}
+impl Drop for ComputerCallGuard<'_> {
+    fn drop(&mut self) {
+        let Some((cid, seq)) = self.claimed.take() else {
+            return;
+        };
+        let left_computer = {
+            let mut state = self.live.state.lock().unwrap();
+            let mut settled_vm = false;
+            if let Some(queue) = state.computer_calls.get_mut(&cid)
+                && let Some(entry) = queue.iter_mut().find(|e| e.seq == seq)
+            {
+                entry.settled_by_bridge = true;
+                settled_vm = entry.targets_vm;
+            }
+            // Only peer threads clear `on_computer` between actions; background
+            // runs (jobs, heartbeats, dreams, CLI, subagents) keep it until the
+            // run ends (`end_turn`).
+            self.live.peer_bot.is_some()
+                && settled_vm
+                && !state
+                    .computer_calls
+                    .values()
+                    .flatten()
+                    .any(|e| e.targets_vm && !e.settled_by_bridge)
+                && state.on_computer.take().is_some()
+        };
+        if left_computer {
+            self.events.emit(
+                &self.live.owner,
+                None,
+                "hexbot.bots.changed",
+                json!({"name": self.live.bot}),
+            );
+        }
+    }
+}
+#[derive(Clone)]
+struct QueuedResult {
+    tool_name: String,
+    occurrence_id: Option<String>,
+    context: String,
+}
+
+#[derive(Clone)]
+struct TurnAsk {
+    occurrence_id: Option<String>,
+    parent_occurrence_id: Option<String>,
+    tool_id: String,
+    parent_tool_call_id: Option<String>,
+    message_id: Option<String>,
+    turn_id: Option<String>,
+    args: Value,
+    context: String,
+    section_id: Option<String>,
+    delivery_id: Option<String>,
+    delivery_reply: Option<String>,
+    failed_error: Option<String>,
+    result: Option<Value>,
+    status: &'static str,
+    persisted: bool,
+}
+
 impl State {
     /// Ends the turn, however it ends: settled, compacted, refused or cut
     /// off. True when clients should read the section again for what was
@@ -165,6 +313,12 @@ impl State {
         self.owner_run = false;
         self.announced = false;
         self.on_computer = None;
+        self.computer_calls.clear();
+        self.turn_asks.clear();
+        self.live_tool_contexts.clear();
+        self.announced_occurrences.clear();
+        self.active_occurrences.clear();
+        self.result_entries.clear();
         // An approval covers the task the owner was watching, not the next one.
         self.approved.clear();
         std::mem::take(&mut self.reread)
@@ -350,6 +504,7 @@ struct Live {
     owner: String,
     bot: String,
     stored: String,
+    peer_bot: Option<String>,
     id: String,
     process: PiProcess,
     /// Only a configuration retirement may hand waiting input to its replacement.
@@ -872,6 +1027,66 @@ impl Runtime {
             .find(|s| s.id == live && s.owner == owner)
             .cloned()?;
         Some(Self::pending_cards(&s).2)
+    }
+    /// The active turn identifier of an owner's live session, when one is running.
+    pub fn active_turn_id(&self, owner: &str, live: &str) -> Option<String> {
+        let s = self
+            .sessions
+            .lock()
+            .unwrap()
+            .values()
+            .find(|s| s.id == live && s.owner == owner)
+            .cloned()?;
+        let state = s.state.lock().unwrap();
+        state.identity.turn_fields()["turn_id"]
+            .as_str()
+            .map(str::to_owned)
+    }
+    fn serialize_turn_asks(asks: &[TurnAsk]) -> Vec<Value> {
+        asks.iter()
+            .map(|ask| {
+                let mut entry = json!({
+                    "tool_id": ask.tool_id,
+                    "args": ask.args,
+                    "context": ask.context,
+                    "status": ask.status,
+                });
+                if let Some(occurrence_id) = &ask.occurrence_id {
+                    entry["occurrence_id"] = json!(occurrence_id);
+                }
+                if let Some(parent_occurrence_id) = &ask.parent_occurrence_id {
+                    entry["parent_occurrence_id"] = json!(parent_occurrence_id);
+                }
+                if let Some(parent_tool_call_id) = &ask.parent_tool_call_id {
+                    entry["parent_tool_call_id"] = json!(parent_tool_call_id);
+                }
+                if let Some(message_id) = &ask.message_id {
+                    entry["message_id"] = json!(message_id);
+                }
+                if let Some(turn_id) = &ask.turn_id {
+                    entry["turn_id"] = json!(turn_id);
+                }
+                if let Some(section_id) = &ask.section_id {
+                    entry["section_id"] = json!(section_id);
+                }
+                if let Some(result) = &ask.result {
+                    entry["result"] = result.clone();
+                }
+                entry
+            })
+            .collect()
+    }
+    /// The `message_bot` calls started during an owner's active live turn.
+    pub fn turn_asks(&self, owner: &str, live: &str) -> Option<Vec<Value>> {
+        let s = self
+            .sessions
+            .lock()
+            .unwrap()
+            .values()
+            .find(|s| s.id == live && s.owner == owner)
+            .cloned()?;
+        let state = s.state.lock().unwrap();
+        Some(Self::serialize_turn_asks(&state.turn_asks))
     }
     /// Replay open approval and question cards to the owner.
     pub fn replay_pending(&self, owner: &str, live: &str) {
@@ -1414,6 +1629,12 @@ impl Runtime {
             )
             .optional()?
             .unwrap_or_else(|| format!("live-{}", common::id()));
+        let peer_bot: Option<String> = db::open(&self.home)?
+            .query_row("SELECT peer_bot FROM sections WHERE id=?", [stored], |r| {
+                r.get::<_, Option<String>>(0)
+            })
+            .optional()?
+            .flatten();
         let (process, events) = PiProcess::spawn(pi).map_err(pi_error)?;
         crate::diagnostics::get().label_process(process.pid(), format!("Pi · {bot}"));
         let (settled, _) = watch::channel(0);
@@ -1421,6 +1642,7 @@ impl Runtime {
             owner: owner.into(),
             bot: bot.into(),
             stored: stored.into(),
+            peer_bot,
             id: live_id,
             process,
             replaced: AtomicBool::new(false),
@@ -1455,11 +1677,18 @@ impl Runtime {
                 chain: Chain::default(),
                 tool_started: HashMap::new(),
                 tool_context: HashMap::new(),
+                live_tool_contexts: HashMap::new(),
+                turn_asks: Vec::new(),
+                announced_occurrences: HashMap::new(),
+                active_occurrences: HashMap::new(),
+                result_entries: HashMap::new(),
                 unsaved: VecDeque::new(),
                 reread: false,
                 owner_run: false,
                 announced: false,
                 on_computer: None,
+                computer_calls: HashMap::new(),
+                next_computer_seq: 0,
             }),
             requests: Mutex::new(tokio::task::JoinSet::new()),
             event_gate: Mutex::new(()),
@@ -3306,6 +3535,12 @@ impl Runtime {
             let (approval, clarify, pending, busy) = Self::pending_cards(&s);
             result["busy"] = json!(busy);
             result["pending_requests"] = json!(pending);
+            if busy {
+                let asks = Self::serialize_turn_asks(&s.state.lock().unwrap().turn_asks);
+                if !asks.is_empty() {
+                    result["asks"] = json!(asks);
+                }
+            }
             if let Some(payload) = clarify {
                 result["pending_clarify"] = payload;
             }
@@ -3684,8 +3919,9 @@ impl Runtime {
             .collect()
     }
     /// A bot is working only where the user can see it: its chat, a room, or
-    /// the bots' computer. Heartbeats, jobs, dreams and delegates otherwise run
-    /// out of sight and stay quiet, unless one is waiting for the user.
+    /// the bots' computer. Heartbeats, jobs, dreams, delegates and threads
+    /// between bots otherwise run out of sight and stay quiet, unless one is
+    /// waiting for the user.
     pub fn status_for_bot(&self, owner: &str, bot: &str) -> Option<Value> {
         let sessions = self.sessions.lock().unwrap();
         let active = sessions
@@ -3725,19 +3961,21 @@ impl Runtime {
                         .ok()
                     })
                     .unwrap_or_default();
-                let seen = context.0.is_some() || context.1.is_some();
+                let is_thread = context.3.is_some();
+                let seen = (context.0.is_some() && !is_thread) || context.1.is_some();
                 (waiting || seen || on_computer.is_some())
                     .then_some((session, waiting, on_computer, context))
             })
             // Waiting first, then a conversation the user can open.
             .max_by_key(|(session, waiting, _, context)| {
+                let is_thread = context.3.is_some();
                 (
                     *waiting,
-                    context.0.is_some() || context.1.is_some(),
+                    (context.0.is_some() && !is_thread) || context.1.is_some(),
                     session.stored.clone(),
                 )
             })?;
-        let elsewhere = context.0.is_none() && context.1.is_none();
+        let elsewhere = (context.0.is_none() || context.3.is_some()) && context.1.is_none();
         Some(json!({
             "status": if waiting { "needs_you" } else { "working" },
             "status_detail": {
@@ -3819,7 +4057,13 @@ impl Runtime {
             self.events.emit(owner, None, "warning", json!({"section_id":stored,"message":"A background result could not be delivered", "error":error.message}));
         }
     }
-    fn record_delivery(&self, s: &Live, to: &str, text: &str) -> Result<(String, String)> {
+    fn record_delivery(
+        &self,
+        s: &Live,
+        to: &str,
+        text: &str,
+        waited: bool,
+    ) -> Result<(String, String)> {
         let _admission = self
             .admission
             .enter(crate::admission::Scope::Bot(to.into()))?;
@@ -3850,11 +4094,17 @@ impl Runtime {
             id
         };
         let message = common::id();
-        tx.execute("INSERT INTO bot_messages(id,from_bot,to_bot,section_id,source_section,created_at,text) VALUES(?,?,?,?,?,?,?)",params![message,s.bot,to,stored,s.stored,common::now(),text])?;
+        tx.execute("INSERT INTO bot_messages(id,from_bot,to_bot,section_id,source_section,created_at,text,waited) VALUES(?,?,?,?,?,?,?,?)",params![message,s.bot,to,stored,s.stored,common::now(),text,i64::from(waited)])?;
         tx.commit()?;
         Ok((stored, message))
     }
-    fn prepare_delivery(&self, s: &Live, to: &str, text: &str) -> Result<(String, String, Chain)> {
+    fn prepare_delivery(
+        &self,
+        s: &Live,
+        to: &str,
+        text: &str,
+        waited: bool,
+    ) -> Result<(String, String, Chain)> {
         if to == s.bot {
             return Err(Error::new(4202, "A bot cannot message itself."));
         }
@@ -3889,7 +4139,7 @@ impl Runtime {
                 format!("bot message hop limit ({MAX_HOPS}) reached"),
             ));
         }
-        let (stored, message) = self.record_delivery(s, to, text)?;
+        let (stored, message) = self.record_delivery(s, to, text, waited)?;
         self.events.emit(
             &s.owner,
             None,
@@ -4062,12 +4312,38 @@ impl Runtime {
             options["computers"].clone()
         })
     }
+    fn computer_targets_vm(&self, s: &Live, args: &Value) -> bool {
+        let requested = args["computer"].as_str().filter(|c| !c.is_empty());
+        match self.frozen_desktops(s) {
+            Ok(frozen) => {
+                let resolved = requested
+                    .map(str::to_owned)
+                    .or_else(|| crate::machines::default_for(&frozen, crate::machines::DESKTOP));
+                resolved.as_deref() == Some(crate::machines::VM)
+                    && frozen.as_array().is_some_and(|list| {
+                        list.iter().any(|c| {
+                            c["id"] == crate::machines::VM && c[crate::machines::DESKTOP] == true
+                        })
+                    })
+                    && crate::machines::may_use_desktop(&self.home, &s.bot, crate::machines::VM)
+                        .is_ok()
+            }
+            Err(_) => false,
+        }
+    }
     /// `computer_use` on any computer: the bots' computer through its own
     /// path (turns, viewer, pause), this computer and the user's computers
     /// after the per-app check, like Codex and Claude: the user allows each
     /// app the first time, for this conversation or always. Bypass asks for
     /// no app; blocked apps stay blocked in every mode.
     async fn computer_tool(&self, s: &Live, args: &Value) -> Result<Value> {
+        let call_id = TOOL_CALL.try_with(|c| c.id.clone()).ok().flatten();
+        let _computer_guard = ComputerCallGuard::claim(
+            s,
+            &self.events,
+            call_id.as_deref(),
+            self.computer_targets_vm(s, args),
+        );
         let settings = self.session_settings(s)?;
         // Without a computer named, the first desktop of the computers the
         // section froze, as its prompt says; the grant is checked next.
@@ -4618,8 +4894,8 @@ impl Runtime {
             let call = required(args, "callId")?;
             if !state
                 .tool_started
-                .get(call)
-                .is_some_and(|(_, tool)| tool == request.tool)
+                .get(&(call.to_owned(), request.tool.to_owned()))
+                .is_some_and(|queue| !queue.is_empty())
             {
                 return Err(Error::new(4302, "The file tool call is no longer running."));
             }
@@ -4990,60 +5266,166 @@ impl Runtime {
             "hexbot_session_prompt" => self.refresh_prompt(s, common::required(args, "current")?),
             "delegate_task" => self.delegate(s, args).await,
             "message_bot" => {
-                self.require_toolset(s, "hexbot", name)?;
-                // Delivery reuses the recipient's ordinary section. Do not let
-                // a job relay writes through a section without its restrictions.
-                if self.session_settings(s)?["job"].is_string() {
-                    return Err(Error::new(
-                        4302,
-                        "Scheduled jobs and their delegates cannot message other bots. Save the result locally and propose memory through the memory tool.",
-                    ));
-                }
-                let to = required(args, "to")?.to_owned();
-                let text = required(args, "text")?.to_owned();
-                let (stored, message_id, chain) = self.prepare_delivery(s, &to, &text)?;
-                if args["wait"] == false {
-                    let mut continuation = chain.clone();
-                    continuation.askers.pop();
-                    let runtime = self
-                        .weak
-                        .upgrade()
-                        .ok_or_else(|| Error::new(5201, "daemon is stopping"))?;
-                    let source = s.clone();
-                    let thread = stored.clone();
-                    let mut tasks = s.requests.lock().unwrap();
-                    while tasks.try_join_next().is_some() {}
-                    tasks.spawn(async move {
-                        let result = runtime
-                            .deliver_message(&source, &to, &text, &thread, chain)
-                            .await;
-                        let reply = match result {
-                            Ok(reply) => format!("[reply from {to}] {reply}"),
-                            Err(error) => format!("[delivery to {to} failed] {}", error.message),
-                        };
-                        // Delivery has finished using the old process. Submit its
-                        // reply outside requests, which configuration refresh drains.
-                        // Reserve the work before this request task can finish.
-                        let reservation = InputAdmission::start(&source);
-                        tokio::spawn(async move {
-                            let _reservation = reservation;
-                            runtime
-                                .return_result(
-                                    &source.owner,
-                                    &source.bot,
-                                    &source.stored,
-                                    &reply,
-                                    Some(continuation),
-                                )
+                let target_hint = args["to"].as_str().unwrap_or("").to_owned();
+                let mut delivered_section: Option<String> = None;
+                let mut delivered_id: Option<String> = None;
+                let outcome = async {
+                    self.require_toolset(s, "hexbot", name)?;
+                    // Delivery reuses the recipient's ordinary section. Do not let
+                    // a job relay writes through a section without its restrictions.
+                    if self.session_settings(s)?["job"].is_string() {
+                        return Err(Error::new(
+                            4302,
+                            "Scheduled jobs and their delegates cannot message other bots. Save the result locally and propose memory through the memory tool.",
+                        ));
+                    }
+                    let to = required(args, "to")?.to_owned();
+                    let text = required(args, "text")?.to_owned();
+                    let waited = args["wait"] != false;
+                    let (stored, message_id, chain) =
+                        self.prepare_delivery(s, &to, &text, waited)?;
+                    delivered_section = Some(stored.clone());
+                    delivered_id = Some(message_id.clone());
+                    let matched_ask = {
+                        let mut state = s.state.lock().unwrap();
+                        let matched = state
+                            .turn_asks
+                            .iter()
+                            .position(|ask| {
+                                ask.status == "running"
+                                    && ask.section_id.is_none()
+                                    && ask.delivery_id.is_none()
+                                    && ask.failed_error.is_none()
+                                    && ask.args == *args
+                            })
+                            .or_else(|| {
+                                state.turn_asks.iter().position(|ask| {
+                                    ask.status == "running"
+                                        && ask.section_id.is_none()
+                                        && ask.delivery_id.is_none()
+                                        && ask.failed_error.is_none()
+                                        && ask.context == to
+                                })
+                            });
+                        if let Some(idx) = matched {
+                            state.turn_asks[idx].section_id = Some(stored.clone());
+                            state.turn_asks[idx].delivery_id = Some(message_id.clone());
+                        }
+                        matched
+                    };
+                    if args["wait"] == false {
+                        let mut continuation = chain.clone();
+                        continuation.askers.pop();
+                        let runtime = self
+                            .weak
+                            .upgrade()
+                            .ok_or_else(|| Error::new(5201, "daemon is stopping"))?;
+                        let source = s.clone();
+                        let thread = stored.clone();
+                        let delivery_id = message_id.clone();
+                        let mut tasks = s.requests.lock().unwrap();
+                        while tasks.try_join_next().is_some() {}
+                        tasks.spawn(async move {
+                            let result = runtime
+                                .deliver_message(&source, &to, &text, &thread, chain)
                                 .await;
+                            let reply = match result {
+                                Ok(reply) => format!("[reply from {to}] {reply}"),
+                                Err(error) => {
+                                    let _ = db::open(&runtime.home).and_then(|conn| {
+                                        conn.execute(
+                                            "UPDATE bot_messages SET failed=1 WHERE id=?",
+                                            [&delivery_id],
+                                        )?;
+                                        Ok(())
+                                    });
+                                    format!("[delivery to {to} failed] {}", error.message)
+                                }
+                            };
+                            // Delivery has finished using the old process. Submit its
+                            // reply outside requests, which configuration refresh drains.
+                            // Reserve the work before this request task can finish.
+                            let reservation = InputAdmission::start(&source);
+                            tokio::spawn(async move {
+                                let _reservation = reservation;
+                                runtime
+                                    .return_result(
+                                        &source.owner,
+                                        &source.bot,
+                                        &source.stored,
+                                        &reply,
+                                        Some(continuation),
+                                    )
+                                    .await;
+                            });
                         });
-                    });
-                    Ok(json!({"status":"sent","message_id":message_id,"section_id":stored}))
-                } else {
-                    Ok(
-                        json!({"reply":self.deliver_message(s,&to,&text,&stored,chain).await?,"section_id":stored}),
-                    )
+                        Ok(json!({"status":"sent","message_id":message_id,"section_id":stored}))
+                    } else {
+                        match self.deliver_message(s, &to, &text, &stored, chain).await {
+                            Ok(reply) => {
+                                if let Some(idx) = matched_ask {
+                                    let mut state = s.state.lock().unwrap();
+                                    if let Some(ask) = state.turn_asks.get_mut(idx)
+                                        && ask.delivery_id.as_deref() == Some(message_id.as_str())
+                                    {
+                                        ask.delivery_reply = Some(reply.clone());
+                                    }
+                                }
+                                Ok(json!({"reply": reply, "section_id": stored}))
+                            }
+                            Err(error) => {
+                                let _ = db::open(&self.home).and_then(|conn| {
+                                    conn.execute(
+                                        "UPDATE bot_messages SET failed=1 WHERE id=?",
+                                        [&message_id],
+                                    )?;
+                                    Ok(())
+                                });
+                                Err(error)
+                            }
+                        }
+                    }
                 }
+                .await;
+                if let Err(error) = &outcome {
+                    let mut state = s.state.lock().unwrap();
+                    let matched = delivered_id
+                        .as_deref()
+                        .and_then(|del_id| {
+                            state.turn_asks.iter().position(|ask| {
+                                ask.status == "running"
+                                    && ask.failed_error.is_none()
+                                    && ask.delivery_id.as_deref() == Some(del_id)
+                            })
+                        })
+                        .or_else(|| {
+                            state.turn_asks.iter().position(|ask| {
+                                ask.status == "running"
+                                    && ask.failed_error.is_none()
+                                    && ask.args == *args
+                                    && ask.section_id == delivered_section
+                            })
+                        })
+                        .or_else(|| {
+                            state.turn_asks.iter().position(|ask| {
+                                ask.status == "running"
+                                    && ask.failed_error.is_none()
+                                    && ask.args == *args
+                            })
+                        })
+                        .or_else(|| {
+                            state.turn_asks.iter().position(|ask| {
+                                ask.status == "running"
+                                    && ask.failed_error.is_none()
+                                    && ask.section_id == delivered_section
+                                    && (target_hint.is_empty() || ask.context == target_hint)
+                            })
+                        });
+                    if let Some(idx) = matched {
+                        state.turn_asks[idx].failed_error = Some(error.message.clone());
+                    }
+                }
+                outcome
             }
             "cronjob_manage" => {
                 self.require_toolset(s, "cronjob", name)?;
@@ -5506,7 +5888,20 @@ impl Runtime {
                 );
                 break;
             }
+            let notify_peer_question = message["role"] == "user"
+                && display.as_deref() == Some("hidden")
+                && s.peer_bot.is_some();
             unsaved.pop_front();
+            // A peer question lands out-of-band after message.start; tell open
+            // viewers to reload once it is persisted (including after a retry).
+            if notify_peer_question {
+                self.events.emit(
+                    &s.owner,
+                    None,
+                    "hexbot.sections.changed",
+                    json!({"id": s.stored, "reload": true}),
+                );
+            }
         }
         s.state.lock().unwrap().unsaved = unsaved;
     }
@@ -5529,10 +5924,17 @@ impl Runtime {
             "agent_start" => {
                 let (owner_run, announced) = {
                     let mut state = s.state.lock().unwrap();
-                    (
-                        std::mem::take(&mut state.owner_run),
-                        std::mem::replace(&mut state.announced, true),
-                    )
+                    let announced = std::mem::replace(&mut state.announced, true);
+                    // A fallback continuation starts a new Pi turn_id before agent_settled
+                    // without ending the active run; preserve earlier turn asks for reconnects.
+                    if !announced {
+                        state.turn_asks.clear();
+                        state.live_tool_contexts.clear();
+                        state.announced_occurrences.clear();
+                        state.active_occurrences.clear();
+                        state.result_entries.clear();
+                    }
+                    (std::mem::take(&mut state.owner_run), announced)
                 };
                 // A message from the owner answers the last turn's failure;
                 // failing again records it again.
@@ -5618,7 +6020,70 @@ impl Runtime {
                         self.persist_message(s, message, Some(&display), Some(seed));
                     }
                     "assistant" => {
-                        self.persist_message(s, message, None, observed.seed.clone());
+                        let occurrences: Vec<Value> = {
+                            let mut state = s.state.lock().unwrap();
+                            let blocks: Vec<&Value> = message["content"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter(|block| block["type"] == "toolCall")
+                                .collect();
+                            let mut id_name_counts: HashMap<(&str, &str), usize> = HashMap::new();
+                            for block in &blocks {
+                                if let Some(call_id) =
+                                    block["id"].as_str().filter(|id| !id.is_empty())
+                                {
+                                    let tool_name = store::client_tool_name(
+                                        block["name"].as_str().unwrap_or(""),
+                                    );
+                                    *id_name_counts.entry((call_id, tool_name)).or_default() += 1;
+                                }
+                            }
+                            blocks
+                                .into_iter()
+                                .map(|block| {
+                                    let call_id = block["id"].as_str().filter(|id| !id.is_empty());
+                                    if let Some(call_id) = call_id {
+                                        let tool_name = store::client_tool_name(
+                                            block["name"].as_str().unwrap_or(""),
+                                        );
+                                        let preview = tool_context(tool_name, &block["arguments"]);
+                                        let ambiguous = tool_name != "message_bot"
+                                            && id_name_counts
+                                                .get(&(call_id, tool_name))
+                                                .copied()
+                                                .unwrap_or(0)
+                                                > 1;
+                                        let occ = (!ambiguous).then(common::id);
+                                        state
+                                            .announced_occurrences
+                                            .entry(call_id.to_owned())
+                                            .or_default()
+                                            .push_back((tool_name.to_owned(), occ.clone()));
+                                        state
+                                            .result_entries
+                                            .entry(call_id.to_owned())
+                                            .or_default()
+                                            .push_back(QueuedResult {
+                                                tool_name: tool_name.to_owned(),
+                                                occurrence_id: occ.clone(),
+                                                context: preview,
+                                            });
+                                        occ.map(|o| json!(o)).unwrap_or(Value::Null)
+                                    } else {
+                                        Value::Null
+                                    }
+                                })
+                                .collect()
+                        };
+                        let seed = if occurrences.iter().all(Value::is_null) {
+                            observed.seed.clone()
+                        } else {
+                            let mut seed = observed.seed.clone().unwrap_or_else(|| json!({}));
+                            seed["_tool_call_occurrences"] = json!(occurrences);
+                            Some(seed)
+                        };
+                        self.persist_message(s, message, None, seed);
                         {
                             let mut state = s.state.lock().unwrap();
                             state.output = body.clone();
@@ -5678,15 +6143,325 @@ impl Runtime {
                         }
                     }
                     "toolResult" => {
-                        let context = s
-                            .state
-                            .lock()
-                            .unwrap()
-                            .tool_context
-                            .remove(message["toolCallId"].as_str().unwrap_or(""));
+                        let (context, occurrence_id, persisted_section_id, enriched_nested) = {
+                            let mut state = s.state.lock().unwrap();
+                            let call_id = message["toolCallId"].as_str().unwrap_or("");
+                            let result_tool_name =
+                                store::client_tool_name(message["toolName"].as_str().unwrap_or(""));
+                            let picked_index =
+                                state.result_entries.get(call_id).and_then(|queue| {
+                                    if queue.is_empty() {
+                                        return None;
+                                    }
+                                    let matching_name: Vec<usize> = queue
+                                        .iter()
+                                        .enumerate()
+                                        .filter(|(_, entry)| {
+                                            result_tool_name.is_empty()
+                                                || entry.tool_name == result_tool_name
+                                        })
+                                        .map(|(idx, _)| idx)
+                                        .collect();
+                                    if matching_name.is_empty() {
+                                        return None;
+                                    }
+                                    if result_tool_name == "message_bot" && matching_name.len() > 1
+                                    {
+                                        let res_failed = message["isError"] == true;
+                                        let res_text = store::text(&message["content"]);
+                                        let parsed_body =
+                                            serde_json::from_str::<Value>(&res_text).ok();
+                                        let res_section = message["details"]["section_id"]
+                                            .as_str()
+                                            .or_else(|| message["section_id"].as_str())
+                                            .or_else(|| {
+                                                parsed_body.as_ref().and_then(|v| {
+                                                    v["details"]["section_id"].as_str()
+                                                })
+                                            })
+                                            .or_else(|| {
+                                                parsed_body
+                                                    .as_ref()
+                                                    .and_then(|v| v["section_id"].as_str())
+                                            });
+                                        let res_delivery_id = message["details"]["message_id"]
+                                            .as_str()
+                                            .or_else(|| message["message_id"].as_str())
+                                            .or_else(|| {
+                                                parsed_body.as_ref().and_then(|v| {
+                                                    v["details"]["message_id"].as_str()
+                                                })
+                                            })
+                                            .or_else(|| {
+                                                parsed_body
+                                                    .as_ref()
+                                                    .and_then(|v| v["message_id"].as_str())
+                                            });
+                                        let res_reply = message["details"]["reply"]
+                                            .as_str()
+                                            .or_else(|| message["reply"].as_str())
+                                            .or_else(|| {
+                                                parsed_body
+                                                    .as_ref()
+                                                    .and_then(|v| v["details"]["reply"].as_str())
+                                            })
+                                            .or_else(|| {
+                                                parsed_body
+                                                    .as_ref()
+                                                    .and_then(|v| v["reply"].as_str())
+                                            });
+                                        let res_sent = message["details"]["status"].as_str()
+                                            == Some("sent")
+                                            || message["status"].as_str() == Some("sent")
+                                            || parsed_body.as_ref().is_some_and(|v| {
+                                                v["details"]["status"].as_str() == Some("sent")
+                                                    || v["status"].as_str() == Some("sent")
+                                            });
+                                        let res_error = parsed_body
+                                            .as_ref()
+                                            .and_then(|v| v["error"].as_str())
+                                            .or_else(|| {
+                                                (!res_text.is_empty()).then_some(res_text.as_str())
+                                            });
+                                        let matches_settled = |occ: Option<&str>| -> bool {
+                                            let Some(occ) = occ else {
+                                                return false;
+                                            };
+                                            let Some(ask) = state.turn_asks.iter().find(|ask| {
+                                                ask.occurrence_id.as_deref() == Some(occ)
+                                            }) else {
+                                                return false;
+                                            };
+                                            if ask.status == "running" {
+                                                return false;
+                                            }
+                                            if res_failed {
+                                                if ask.status != "error" {
+                                                    return false;
+                                                }
+                                                if let (Some(err), Some(incoming_err)) = (
+                                                    ask.result
+                                                        .as_ref()
+                                                        .and_then(|r| r["error"].as_str()),
+                                                    res_error,
+                                                ) && err != incoming_err
+                                                {
+                                                    return false;
+                                                }
+                                                true
+                                            } else {
+                                                if ask.status != "ok" {
+                                                    return false;
+                                                }
+                                                if let (Some(a), Some(b)) =
+                                                    (res_delivery_id, ask.delivery_id.as_deref())
+                                                    && a != b
+                                                {
+                                                    return false;
+                                                }
+                                                if let (Some(a), Some(b)) =
+                                                    (res_section, ask.section_id.as_deref())
+                                                    && a != b
+                                                {
+                                                    return false;
+                                                }
+                                                let ask_reply =
+                                                    ask.delivery_reply.as_deref().or_else(|| {
+                                                        ask.result.as_ref().and_then(|r| {
+                                                            r["details"]["reply"]
+                                                                .as_str()
+                                                                .or_else(|| r["reply"].as_str())
+                                                        })
+                                                    });
+                                                if let (Some(a), Some(b)) = (res_reply, ask_reply)
+                                                    && a != b
+                                                {
+                                                    return false;
+                                                }
+                                                (ask.args["wait"] == false) == res_sent
+                                            }
+                                        };
+                                        let first_idx = matching_name[0];
+                                        if matches_settled(
+                                            queue[first_idx].occurrence_id.as_deref(),
+                                        ) {
+                                            return Some(first_idx);
+                                        }
+                                        if let Some(&idx) = matching_name.iter().find(|&&idx| {
+                                            matches_settled(queue[idx].occurrence_id.as_deref())
+                                        }) {
+                                            return Some(idx);
+                                        }
+                                    }
+                                    Some(matching_name[0])
+                                });
+                            let popped = picked_index.and_then(|idx| {
+                                state
+                                    .result_entries
+                                    .get_mut(call_id)
+                                    .and_then(|queue| queue.remove(idx))
+                            });
+                            let queue_empty = state
+                                .result_entries
+                                .get(call_id)
+                                .is_none_or(VecDeque::is_empty);
+                            let (queued_context, occ) = match popped {
+                                Some(entry) => (Some(entry.context), entry.occurrence_id),
+                                None => (None, None),
+                            };
+                            let context = if queue_empty {
+                                let removed = state.tool_context.remove(call_id);
+                                queued_context.or(removed)
+                            } else {
+                                queued_context.or_else(|| state.tool_context.get(call_id).cloned())
+                            };
+                            let persisted_section_id = if result_tool_name == "message_bot" {
+                                let ask_idx = occ
+                                    .as_deref()
+                                    .and_then(|target_occ| {
+                                        state.turn_asks.iter().position(|ask| {
+                                            !ask.persisted
+                                                && ask.parent_tool_call_id.is_none()
+                                                && ask.occurrence_id.as_deref() == Some(target_occ)
+                                        })
+                                    })
+                                    .or_else(|| {
+                                        let res_failed = message["isError"] == true;
+                                        state.turn_asks.iter().position(|ask| {
+                                            !ask.persisted
+                                                && ask.parent_tool_call_id.is_none()
+                                                && ask.tool_id == call_id
+                                                && ask.status != "running"
+                                                && (ask.status == "error") == res_failed
+                                        })
+                                    });
+                                ask_idx.and_then(|idx| {
+                                    state.turn_asks[idx].persisted = true;
+                                    state.turn_asks[idx].section_id.clone()
+                                })
+                            } else {
+                                None
+                            };
+                            let enriched_nested = if let Some(mut nested) =
+                                message.get("nestedCalls").filter(|v| !v.is_null()).cloned()
+                            {
+                                let mut enriched = false;
+                                if let Some(calls) = nested["calls"].as_array_mut() {
+                                    for call in calls {
+                                        let normalized = store::client_tool_name(
+                                            call["name"].as_str().unwrap_or(""),
+                                        )
+                                        .to_owned();
+                                        call["name"] = json!(normalized);
+                                        if normalized == "message_bot"
+                                            && let Some(nested_id) =
+                                                call["id"].as_str().filter(|id| !id.is_empty())
+                                        {
+                                            let call_args = call.get("arguments");
+                                            let call_to = call_args
+                                                .and_then(|a| a["to"].as_str())
+                                                .filter(|t| !t.is_empty());
+                                            let call_text =
+                                                call_args.and_then(|a| a["text"].as_str());
+                                            let call_has_args = call_args
+                                                .and_then(Value::as_object)
+                                                .is_some_and(|m| !m.is_empty());
+                                            let call_sent =
+                                                call_args.is_some_and(|a| a["wait"] == false);
+                                            let call_status = call["status"].as_str();
+                                            let ask_idx = state.turn_asks.iter().position(|ask| {
+                                                if ask.persisted
+                                                    || ask.parent_tool_call_id.as_deref()
+                                                        != Some(call_id)
+                                                    || ask.tool_id != nested_id
+                                                {
+                                                    return false;
+                                                }
+                                                if let (Some(parent_occ), Some(ask_parent_occ)) = (
+                                                    occ.as_deref(),
+                                                    ask.parent_occurrence_id.as_deref(),
+                                                ) && parent_occ != ask_parent_occ
+                                                {
+                                                    return false;
+                                                }
+                                                if let Some(to) = call_to {
+                                                    let ask_to = ask.args["to"]
+                                                        .as_str()
+                                                        .filter(|t| !t.is_empty())
+                                                        .or_else(|| {
+                                                            (!ask.context.is_empty())
+                                                                .then_some(ask.context.as_str())
+                                                        });
+                                                    if let Some(ask_to) = ask_to
+                                                        && ask_to != to
+                                                    {
+                                                        return false;
+                                                    }
+                                                }
+                                                if let (Some(t1), Some(t2)) =
+                                                    (call_text, ask.args["text"].as_str())
+                                                    && t1 != t2
+                                                {
+                                                    return false;
+                                                }
+                                                if call_has_args
+                                                    && ask
+                                                        .args
+                                                        .as_object()
+                                                        .is_some_and(|m| !m.is_empty())
+                                                    && (ask.args["wait"] == false) != call_sent
+                                                {
+                                                    return false;
+                                                }
+                                                if let Some(st) = call_status
+                                                    && ask.status != "running"
+                                                    && ((st == "error") != (ask.status == "error"))
+                                                {
+                                                    return false;
+                                                }
+                                                true
+                                            });
+                                            if let Some(idx) = ask_idx {
+                                                state.turn_asks[idx].persisted = true;
+                                                let ask = &state.turn_asks[idx];
+                                                if let Some(section_id) = &ask.section_id
+                                                    && call.get("section_id").is_none()
+                                                {
+                                                    call["section_id"] = json!(section_id);
+                                                    enriched = true;
+                                                }
+                                                if let Some(res) = &ask.result
+                                                    && call.get("result").is_none()
+                                                {
+                                                    let detail = res
+                                                        .get("details")
+                                                        .filter(|d| d.is_object())
+                                                        .unwrap_or(res);
+                                                    call["result"] = detail.clone();
+                                                    enriched = true;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                enriched.then_some(nested)
+                            } else {
+                                None
+                            };
+                            (context, occ, persisted_section_id, enriched_nested)
+                        };
                         let mut seed = observed.seed.clone().unwrap_or_else(|| json!({}));
                         if let Some(context) = context {
                             seed["context"] = json!(context);
+                        }
+                        if let Some(occ) = occurrence_id {
+                            seed["occurrence_id"] = json!(occ);
+                        }
+                        if let Some(section_id) = persisted_section_id {
+                            seed["section_id"] = json!(section_id);
+                        }
+                        if let Some(nested) = enriched_nested {
+                            seed["nested_calls"] = nested;
                         }
                         self.persist_message(s, message, None, Some(seed));
                     }
@@ -5696,25 +6471,179 @@ impl Runtime {
             "tool_execution_start" => {
                 let name = store::client_tool_name(event["toolName"].as_str().unwrap_or(""));
                 let context = tool_context(name, &event["args"]);
-                let to_computer = {
+                let targets_vm =
+                    name == "computer_use" && self.computer_targets_vm(s, &event["args"]);
+                let (occurrence_id, parent_occurrence_id, to_computer) = {
                     let mut state = s.state.lock().unwrap();
                     let id = event["toolCallId"].as_str().unwrap_or("");
-                    state.tool_started.insert(
-                        id.into(),
-                        (
-                            std::time::Instant::now(),
-                            event["toolName"].as_str().unwrap_or("").to_owned(),
-                        ),
-                    );
+                    let parent_tool_call_id = event["parentToolCallId"]
+                        .as_str()
+                        .filter(|p| !p.is_empty())
+                        .map(str::to_owned);
+                    let raw_name = event["toolName"].as_str().unwrap_or("").to_owned();
+                    state
+                        .tool_started
+                        .entry((id.to_owned(), raw_name))
+                        .or_default()
+                        .push_back(std::time::Instant::now());
                     state.tool_context.insert(id.into(), context.clone());
-                    let to_computer =
-                        name == "computer_use" && state.busy && state.on_computer.is_none();
-                    if to_computer {
-                        state.on_computer = Some(common::now());
+                    let ctx_key = (id.to_owned(), name.to_owned(), parent_tool_call_id.clone());
+                    let ctx_queue = state.live_tool_contexts.entry(ctx_key).or_default();
+                    let ctx_ambiguous = name != "message_bot"
+                        && !ctx_queue.is_empty()
+                        && ctx_queue
+                            .iter()
+                            .any(|existing| existing.as_deref() != Some(context.as_str()));
+                    if ctx_ambiguous {
+                        for existing in ctx_queue.iter_mut() {
+                            *existing = None;
+                        }
+                        ctx_queue.push_back(None);
+                    } else {
+                        ctx_queue.push_back(Some(context.clone()));
                     }
-                    to_computer
+                    let occ = if !id.is_empty() && parent_tool_call_id.is_none() {
+                        let announced = state.announced_occurrences.get_mut(id).and_then(|queue| {
+                            let idx = queue
+                                .iter()
+                                .position(|(tool_name, _)| tool_name == name)
+                                .unwrap_or(0);
+                            queue.remove(idx).map(|(_, occ)| occ)
+                        });
+                        let active_key = (id.to_owned(), name.to_owned());
+                        let concurrent = state
+                            .active_occurrences
+                            .get(&active_key)
+                            .is_some_and(|queue| !queue.is_empty());
+                        let occ = if concurrent {
+                            if let Some(queue) = state.active_occurrences.get_mut(&active_key) {
+                                for existing in queue.iter_mut() {
+                                    *existing = None;
+                                }
+                            }
+                            if name == "message_bot" {
+                                // `message_bot` completions resolve their exact `TurnAsk` rather
+                                // than popping FIFO from `active_occurrences`, so every parallel
+                                // ask keeps its own declaration-ordered occurrence ID.
+                                match announced {
+                                    Some(Some(occ)) => Some(occ),
+                                    _ => {
+                                        let fresh = common::id();
+                                        state
+                                            .result_entries
+                                            .entry(id.to_owned())
+                                            .or_default()
+                                            .push_back(QueuedResult {
+                                                tool_name: name.to_owned(),
+                                                occurrence_id: Some(fresh.clone()),
+                                                context: context.clone(),
+                                            });
+                                        Some(fresh)
+                                    }
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            match announced {
+                                Some(maybe) => maybe,
+                                None => {
+                                    let fresh = common::id();
+                                    state
+                                        .result_entries
+                                        .entry(id.to_owned())
+                                        .or_default()
+                                        .push_back(QueuedResult {
+                                            tool_name: name.to_owned(),
+                                            occurrence_id: Some(fresh.clone()),
+                                            context: context.clone(),
+                                        });
+                                    Some(fresh)
+                                }
+                            }
+                        };
+                        state
+                            .active_occurrences
+                            .entry(active_key)
+                            .or_default()
+                            .push_back(if concurrent { None } else { occ.clone() });
+                        occ
+                    } else {
+                        None
+                    };
+                    let parent_occurrence_id =
+                        parent_tool_call_id.as_deref().and_then(|parent_id| {
+                            let active: Vec<Option<&str>> = state
+                                .active_occurrences
+                                .iter()
+                                .filter(|((cid, _), _)| cid == parent_id)
+                                .flat_map(|(_, queue)| queue.iter().map(Option::as_deref))
+                                .collect();
+                            (active.len() == 1)
+                                .then(|| active[0].map(str::to_owned))
+                                .flatten()
+                        });
+                    if name == "message_bot" && !id.is_empty() {
+                        state.turn_asks.push(TurnAsk {
+                            occurrence_id: occ.clone(),
+                            parent_occurrence_id: parent_occurrence_id.clone(),
+                            tool_id: id.into(),
+                            parent_tool_call_id,
+                            message_id: observed.fields["message_id"].as_str().map(str::to_owned),
+                            turn_id: observed.fields["turn_id"].as_str().map(str::to_owned),
+                            args: event["args"].clone(),
+                            context: context.clone(),
+                            section_id: None,
+                            delivery_id: None,
+                            delivery_reply: None,
+                            failed_error: None,
+                            result: None,
+                            status: "running",
+                            persisted: false,
+                        });
+                    }
+                    let to_computer = if name == "computer_use" && state.busy {
+                        state.next_computer_seq += 1;
+                        let seq = state.next_computer_seq;
+                        state
+                            .computer_calls
+                            .entry(id.into())
+                            .or_default()
+                            .push_back(ComputerEntry {
+                                seq,
+                                targets_vm,
+                                claimed_by_bridge: false,
+                                settled_by_bridge: false,
+                            });
+                        if targets_vm && state.on_computer.is_none() {
+                            state.on_computer = Some(common::now());
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+                    (occ, parent_occurrence_id, to_computer)
                 };
-                self.emit(s, "tool.start", with_fields(json!({"tool_id":event["toolCallId"],"name":name,"context":context,"args":event["args"],"parent_tool_call_id":event["parentToolCallId"]}), &observed.fields));
+                let mut start_payload = json!({
+                    "tool_id": event["toolCallId"],
+                    "name": name,
+                    "context": context,
+                    "args": event["args"],
+                    "parent_tool_call_id": event["parentToolCallId"]
+                });
+                if let Some(occ) = occurrence_id {
+                    start_payload["occurrence_id"] = json!(occ);
+                }
+                if let Some(pocc) = parent_occurrence_id {
+                    start_payload["parent_occurrence_id"] = json!(pocc);
+                }
+                self.emit(
+                    s,
+                    "tool.start",
+                    with_fields(start_payload, &observed.fields),
+                );
                 if to_computer {
                     self.events
                         .emit(&s.owner, None, "hexbot.bots.changed", json!({"name":s.bot}));
@@ -5734,25 +6663,465 @@ impl Runtime {
                         &text
                     });
                 }
-                let duration = s
-                    .state
-                    .lock()
-                    .unwrap()
-                    .tool_started
-                    .remove(event["toolCallId"].as_str().unwrap_or(""))
-                    .map_or(0., |(start, _)| start.elapsed().as_secs_f64());
+                let (
+                    duration,
+                    context,
+                    ask_args,
+                    occurrence_id,
+                    parent_occurrence_id,
+                    left_computer,
+                ) = {
+                    let mut state = s.state.lock().unwrap();
+                    let id = event["toolCallId"].as_str().unwrap_or("");
+                    let parent_tool_call_id = event["parentToolCallId"]
+                        .as_str()
+                        .filter(|p| !p.is_empty())
+                        .map(str::to_owned);
+                    let raw_name = event["toolName"].as_str().unwrap_or("");
+                    let duration = state
+                        .tool_started
+                        .get_mut(&(id.to_owned(), raw_name.to_owned()))
+                        .and_then(VecDeque::pop_front)
+                        .map_or(0., |start| start.elapsed().as_secs_f64());
+                    let client_name = store::client_tool_name(raw_name);
+                    let mut context = match state
+                        .live_tool_contexts
+                        .get_mut(&(
+                            id.to_owned(),
+                            client_name.to_owned(),
+                            parent_tool_call_id.clone(),
+                        ))
+                        .and_then(VecDeque::pop_front)
+                    {
+                        Some(Some(preview)) => preview,
+                        Some(None) => String::new(),
+                        None => state.tool_context.get(id).cloned().unwrap_or_default(),
+                    };
+                    let mut occ = if !id.is_empty() && parent_tool_call_id.is_none() {
+                        state
+                            .active_occurrences
+                            .get_mut(&(id.to_owned(), client_name.to_owned()))
+                            .and_then(VecDeque::pop_front)
+                            .flatten()
+                    } else {
+                        None
+                    };
+                    let mut parent_occ = parent_tool_call_id.as_deref().and_then(|parent_id| {
+                        let active: Vec<Option<&str>> = state
+                            .active_occurrences
+                            .iter()
+                            .filter(|((cid, _), _)| cid == parent_id)
+                            .flat_map(|(_, queue)| queue.iter().map(Option::as_deref))
+                            .collect();
+                        (active.len() == 1)
+                            .then(|| active[0].map(str::to_owned))
+                            .flatten()
+                    });
+                    let mut ask_args = None;
+                    if client_name == "message_bot" && !id.is_empty() {
+                        let status = if failed { "error" } else { "ok" };
+                        let message_id = observed.fields["message_id"].as_str();
+                        let parsed_content = serde_json::from_str::<Value>(&text).ok();
+                        let section_id = result["details"]["section_id"]
+                            .as_str()
+                            .or_else(|| result["section_id"].as_str())
+                            .or_else(|| {
+                                parsed_content
+                                    .as_ref()
+                                    .and_then(|v| v["details"]["section_id"].as_str())
+                            })
+                            .or_else(|| {
+                                parsed_content
+                                    .as_ref()
+                                    .and_then(|v| v["section_id"].as_str())
+                            })
+                            .map(str::to_owned);
+                        let result_delivery_id = result["details"]["message_id"]
+                            .as_str()
+                            .or_else(|| result["message_id"].as_str())
+                            .or_else(|| {
+                                parsed_content
+                                    .as_ref()
+                                    .and_then(|v| v["details"]["message_id"].as_str())
+                            })
+                            .or_else(|| {
+                                parsed_content
+                                    .as_ref()
+                                    .and_then(|v| v["message_id"].as_str())
+                            });
+                        let result_reply = result["details"]["reply"]
+                            .as_str()
+                            .or_else(|| result["reply"].as_str())
+                            .or_else(|| {
+                                parsed_content
+                                    .as_ref()
+                                    .and_then(|v| v["details"]["reply"].as_str())
+                            })
+                            .or_else(|| parsed_content.as_ref().and_then(|v| v["reply"].as_str()));
+                        let result_sent = result["details"]["status"].as_str() == Some("sent")
+                            || result["status"].as_str() == Some("sent")
+                            || parsed_content.as_ref().is_some_and(|v| {
+                                v["details"]["status"].as_str() == Some("sent")
+                                    || v["status"].as_str() == Some("sent")
+                            });
+                        let result_target = result["details"]["to"]
+                            .as_str()
+                            .or_else(|| result["details"]["from"].as_str())
+                            .or_else(|| result["to"].as_str())
+                            .or_else(|| result["from"].as_str());
+                        let running_candidates: Vec<usize> = state
+                            .turn_asks
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, ask)| {
+                                ask.status == "running"
+                                    && ask.tool_id == id
+                                    && ask.parent_tool_call_id == parent_tool_call_id
+                                    && match (message_id, ask.message_id.as_deref()) {
+                                        (Some(a), Some(b)) => a == b,
+                                        _ => true,
+                                    }
+                            })
+                            .map(|(idx, _)| idx)
+                            .collect();
+                        let matched_index = occ
+                            .as_deref()
+                            .and_then(|target_occ| {
+                                state.turn_asks.iter().position(|ask| {
+                                    ask.occurrence_id.as_deref() == Some(target_occ)
+                                })
+                            })
+                            .or_else(|| {
+                                if failed {
+                                    if !text.is_empty() {
+                                        let by_error: Vec<usize> = running_candidates
+                                            .iter()
+                                            .copied()
+                                            .filter(|&idx| {
+                                                state.turn_asks[idx].failed_error.as_deref()
+                                                    == Some(text.as_str())
+                                            })
+                                            .collect();
+                                        if let Some(&idx) = by_error.first() {
+                                            return Some(idx);
+                                        }
+                                        if let Some(received) =
+                                            parse_validation_received_args(&text)
+                                        {
+                                            let by_received_unstarted: Vec<usize> =
+                                                running_candidates
+                                                    .iter()
+                                                    .copied()
+                                                    .filter(|&idx| {
+                                                        let ask = &state.turn_asks[idx];
+                                                        ask.section_id.is_none()
+                                                            && ask.failed_error.is_none()
+                                                            && ask.args == received
+                                                    })
+                                                    .collect();
+                                            if let Some(&idx) = by_received_unstarted.first() {
+                                                return Some(idx);
+                                            }
+                                            let by_received: Vec<usize> = running_candidates
+                                                .iter()
+                                                .copied()
+                                                .filter(|&idx| {
+                                                    state.turn_asks[idx].args == received
+                                                })
+                                                .collect();
+                                            if let Some(&idx) = by_received.first() {
+                                                return Some(idx);
+                                            }
+                                        }
+                                    }
+                                    let schema_invalid: Vec<(usize, Vec<&'static str>)> =
+                                        running_candidates
+                                            .iter()
+                                            .copied()
+                                            .filter_map(|idx| {
+                                                let ask = &state.turn_asks[idx];
+                                                if ask.section_id.is_some()
+                                                    || ask.failed_error.is_some()
+                                                {
+                                                    return None;
+                                                }
+                                                let issues = message_bot_schema_issues(&ask.args);
+                                                (!issues.is_empty()).then_some((idx, issues))
+                                            })
+                                            .collect();
+                                    if schema_invalid.len() == 1 {
+                                        return Some(schema_invalid[0].0);
+                                    }
+                                    if schema_invalid.len() > 1 {
+                                        if !text.is_empty() {
+                                            let lowered = text.to_lowercase();
+                                            let by_field: Vec<usize> = schema_invalid
+                                                .iter()
+                                                .filter_map(|(idx, issues)| {
+                                                    issues
+                                                        .iter()
+                                                        .any(|field| {
+                                                            lowered.contains(&format!("'{field}'"))
+                                                                || lowered.contains(&format!(
+                                                                    "\"{field}\""
+                                                                ))
+                                                                || lowered
+                                                                    .contains(&format!("{field}:"))
+                                                                || lowered
+                                                                    .contains(&format!("/{field}"))
+                                                        })
+                                                        .then_some(*idx)
+                                                })
+                                                .collect();
+                                            if let Some(&idx) = by_field.first() {
+                                                return Some(idx);
+                                            }
+                                        }
+                                        return Some(schema_invalid[0].0);
+                                    }
+                                }
+                                if !failed && let Some(del_id) = result_delivery_id {
+                                    let by_delivery: Vec<usize> = running_candidates
+                                        .iter()
+                                        .copied()
+                                        .filter(|&idx| {
+                                            state.turn_asks[idx].delivery_id.as_deref()
+                                                == Some(del_id)
+                                        })
+                                        .collect();
+                                    if let Some(&idx) = by_delivery.first() {
+                                        return Some(idx);
+                                    }
+                                }
+                                if !failed && let Some(rep) = result_reply {
+                                    let by_reply: Vec<usize> = running_candidates
+                                        .iter()
+                                        .copied()
+                                        .filter(|&idx| {
+                                            state.turn_asks[idx].delivery_reply.as_deref()
+                                                == Some(rep)
+                                                && (section_id.is_none()
+                                                    || state.turn_asks[idx].section_id.is_none()
+                                                    || state.turn_asks[idx].section_id
+                                                        == section_id)
+                                        })
+                                        .collect();
+                                    if let Some(&idx) = by_reply.first() {
+                                        return Some(idx);
+                                    }
+                                }
+                                if let Some(sid) = section_id.as_deref() {
+                                    let by_section: Vec<usize> = running_candidates
+                                        .iter()
+                                        .copied()
+                                        .filter(|&idx| {
+                                            state.turn_asks[idx].section_id.as_deref() == Some(sid)
+                                        })
+                                        .collect();
+                                    if by_section.len() == 1 {
+                                        return Some(by_section[0]);
+                                    }
+                                    if by_section.len() > 1 {
+                                        let by_mode: Vec<usize> = by_section
+                                            .iter()
+                                            .copied()
+                                            .filter(|&idx| {
+                                                (state.turn_asks[idx].args["wait"] == false)
+                                                    == result_sent
+                                            })
+                                            .collect();
+                                        return by_mode.first().or(by_section.first()).copied();
+                                    }
+                                }
+                                if let Some(target) = result_target {
+                                    let by_target: Vec<usize> = running_candidates
+                                        .iter()
+                                        .copied()
+                                        .filter(|&idx| state.turn_asks[idx].context == target)
+                                        .collect();
+                                    if by_target.len() == 1 {
+                                        return Some(by_target[0]);
+                                    }
+                                    if by_target.len() > 1 {
+                                        let by_mode: Vec<usize> = by_target
+                                            .iter()
+                                            .copied()
+                                            .filter(|&idx| {
+                                                (state.turn_asks[idx].args["wait"] == false)
+                                                    == result_sent
+                                            })
+                                            .collect();
+                                        return by_mode.first().or(by_target.first()).copied();
+                                    }
+                                }
+                                if failed {
+                                    if !text.is_empty() {
+                                        let lowered = text.to_lowercase();
+                                        let by_mention: Vec<usize> = running_candidates
+                                            .iter()
+                                            .copied()
+                                            .filter(|&idx| {
+                                                let ctx = &state.turn_asks[idx].context;
+                                                !ctx.is_empty()
+                                                    && lowered.contains(&ctx.to_lowercase())
+                                            })
+                                            .collect();
+                                        if by_mention.len() == 1 {
+                                            return Some(by_mention[0]);
+                                        }
+                                    }
+                                    if section_id.is_none() {
+                                        let without_section: Vec<usize> = running_candidates
+                                            .iter()
+                                            .copied()
+                                            .filter(|&idx| {
+                                                let ask = &state.turn_asks[idx];
+                                                ask.section_id.is_none()
+                                                    && ask.failed_error.is_none()
+                                            })
+                                            .collect();
+                                        if let Some(&idx) = without_section.first() {
+                                            return Some(idx);
+                                        }
+                                        let without_section_any: Vec<usize> = running_candidates
+                                            .iter()
+                                            .copied()
+                                            .filter(|&idx| {
+                                                state.turn_asks[idx].section_id.is_none()
+                                            })
+                                            .collect();
+                                        if let Some(&idx) = without_section_any.first() {
+                                            return Some(idx);
+                                        }
+                                    }
+                                    if let Some(&idx) = running_candidates.first() {
+                                        return Some(idx);
+                                    }
+                                }
+                                if running_candidates.len() == 1 {
+                                    return Some(running_candidates[0]);
+                                }
+                                None
+                            });
+                        if let Some(ask) = matched_index.map(|idx| &mut state.turn_asks[idx]) {
+                            ask.status = status;
+                            if ask.section_id.is_none() {
+                                ask.section_id = section_id;
+                            }
+                            if let Some(sec) = &ask.section_id
+                                && result["details"]["section_id"].is_null()
+                                && result["section_id"].is_null()
+                            {
+                                if !result.is_object() {
+                                    result = json!({"result": result});
+                                }
+                                result["section_id"] = json!(sec);
+                            }
+                            ask.result = Some(result.clone());
+                            if occ.is_none() && ask.occurrence_id.is_some() {
+                                occ = ask.occurrence_id.clone();
+                            }
+                            if let Some(pocc) = &ask.parent_occurrence_id {
+                                parent_occ = Some(pocc.clone());
+                            }
+                            if !ask.context.is_empty() {
+                                context = ask.context.clone();
+                            }
+                            if !ask.args.is_null() {
+                                ask_args = Some(ask.args.clone());
+                            }
+                        } else if running_candidates.is_empty() {
+                            state.turn_asks.push(TurnAsk {
+                                occurrence_id: occ.clone(),
+                                parent_occurrence_id: parent_occ.clone(),
+                                tool_id: id.into(),
+                                parent_tool_call_id,
+                                message_id: message_id.map(str::to_owned),
+                                turn_id: observed.fields["turn_id"].as_str().map(str::to_owned),
+                                args: Value::Null,
+                                context: context.clone(),
+                                section_id,
+                                delivery_id: result_delivery_id.map(str::to_owned),
+                                delivery_reply: result_reply.map(str::to_owned),
+                                failed_error: None,
+                                result: Some(result.clone()),
+                                status,
+                                persisted: false,
+                            });
+                        }
+                    }
+                    let result_computer = result["details"]["computer"]
+                        .as_str()
+                        .or_else(|| result["computer"].as_str());
+                    let left_computer = if client_name == "computer_use" {
+                        if let Some(queue) = state.computer_calls.get_mut(id) {
+                            let settled_idx = queue.iter().position(|e| {
+                                e.settled_by_bridge
+                                    && result_computer
+                                        .is_none_or(|c| e.targets_vm == (c == crate::machines::VM))
+                            });
+                            if let Some(idx) = settled_idx {
+                                queue.remove(idx);
+                            } else if let Some(comp) = result_computer {
+                                let wants_vm = comp == crate::machines::VM;
+                                if let Some(idx) = queue
+                                    .iter()
+                                    .position(|e| !e.settled_by_bridge && e.targets_vm == wants_vm)
+                                {
+                                    queue.remove(idx);
+                                } else {
+                                    queue.pop_front();
+                                }
+                            } else if let Some(idx) =
+                                queue.iter().position(|e| !e.settled_by_bridge)
+                            {
+                                queue.remove(idx);
+                            } else {
+                                queue.pop_front();
+                            }
+                            if queue.is_empty() {
+                                state.computer_calls.remove(id);
+                            }
+                        }
+                        s.peer_bot.is_some()
+                            && !state
+                                .computer_calls
+                                .values()
+                                .flatten()
+                                .any(|e| e.targets_vm && !e.settled_by_bridge)
+                            && state.on_computer.take().is_some()
+                    } else {
+                        false
+                    };
+                    (duration, context, ask_args, occ, parent_occ, left_computer)
+                };
+                let mut complete_payload = json!({
+                    "duration_s": duration,
+                    "parent_tool_call_id": event["parentToolCallId"],
+                    "tool_id": event["toolCallId"],
+                    "name": store::client_tool_name(event["toolName"].as_str().unwrap_or("")),
+                    "context": context,
+                    "result": result,
+                    "result_text": text
+                });
+                if let Some(args) = ask_args {
+                    complete_payload["args"] = args;
+                }
+                if let Some(occ) = occurrence_id {
+                    complete_payload["occurrence_id"] = json!(occ);
+                }
+                if let Some(pocc) = parent_occurrence_id {
+                    complete_payload["parent_occurrence_id"] = json!(pocc);
+                }
                 self.emit(
                     s,
                     "tool.complete",
-                    with_fields(json!({
-                        "duration_s": duration,
-                        "parent_tool_call_id": event["parentToolCallId"],
-                        "tool_id": event["toolCallId"],
-                        "name": store::client_tool_name(event["toolName"].as_str().unwrap_or("")),
-                        "result": result,
-                        "result_text": text
-                    }), &observed.fields),
+                    with_fields(complete_payload, &observed.fields),
                 );
+                if left_computer {
+                    self.events
+                        .emit(&s.owner, None, "hexbot.bots.changed", json!({"name":s.bot}));
+                }
             }
             "agent_settled" => {
                 self.retry_messages(s);
@@ -5801,6 +7170,7 @@ impl Runtime {
                     // Pi sends no end event for tools cut short by an abort.
                     state.tool_started.clear();
                     state.tool_context.clear();
+                    state.live_tool_contexts.clear();
                     (
                         ending
                             .as_ref()
@@ -6657,11 +8027,46 @@ fn tool_context(name: &str, args: &Value) -> String {
                 .and_then(Value::as_str)
         })
         .unwrap_or("");
+    if name == "message_bot" {
+        return match text.char_indices().nth(160) {
+            Some((end, _)) => format!("{}\u{2026}", &text[..end]),
+            None => text.to_owned(),
+        };
+    }
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     match text.char_indices().nth(80) {
         Some((end, _)) => format!("{}\u{2026}", &text[..end]),
         None => text,
     }
+}
+
+/// Parses the JSON object after Pi's `Received arguments:` validation trailer, if present.
+fn parse_validation_received_args(text: &str) -> Option<Value> {
+    let marker = "Received arguments:";
+    let (_, tail) = text.split_once(marker)?;
+    let trimmed = tail.trim_start();
+    serde_json::Deserializer::from_str(trimmed)
+        .into_iter::<Value>()
+        .next()
+        .and_then(std::result::Result::ok)
+}
+
+/// Reports fields violating `message_bot`'s JSON schema (`to`, `text`, optional `wait`).
+fn message_bot_schema_issues(args: &Value) -> Vec<&'static str> {
+    let Some(obj) = args.as_object() else {
+        return vec!["object"];
+    };
+    let mut issues = Vec::new();
+    if !obj.get("to").is_some_and(Value::is_string) {
+        issues.push("to");
+    }
+    if !obj.get("text").is_some_and(Value::is_string) {
+        issues.push("text");
+    }
+    if obj.get("wait").is_some_and(|value| !value.is_boolean()) {
+        issues.push("wait");
+    }
+    issues
 }
 /// The approval mode of a stored session: the bot's own mode (or the global
 /// one for `inherit`), replaced by its room's mode when it runs in a room.

@@ -123,8 +123,9 @@ own visual identity. Read `CLAUDE.md` for the words.
   that unfolds or folds in the column; 320 ms (`enter`) for a whole screen.
   `ease-out` settles, `ease-in-out` is for things leaving, `ease-spring` is
   for small controls that snap into place (the switch knob). Only what
-  arrives while the chat is open animates: history is drawn still. The one
-  continuous motion is bot faces. Respect prefers-reduced-motion.
+  arrives while the chat is open animates: history is drawn still. Continuous
+  motion is kept to bot faces and a calm opacity breathe on an active
+  bot-to-bot messaging pill. Respect prefers-reduced-motion.
 - Focus: the accent ring, 2 px outside the shape (`hex-focus`), on every
   rounded control, including the glass pills.
 
@@ -224,9 +225,15 @@ with Viewport Segments place both poses on the exact halves.
   Settings page, a plugin and a skill with a line glyph. The underline is a
   quiet tint that strengthens on hover. A tag for something that is not
   there reads as its plain words; a scheduled jobs tag keeps its glyph and
-  opens nothing, since this app has no page for jobs. The row that marks one bot messaging
-  another ("Messaged Biology", "Biology helped") sits in the middle of the
-  column, like the time separators, in the same small muted type.
+  opens nothing, since this app has no page for jobs. The row that marks one bot
+  messaging another ("Messaging Biology", "Message from Biology", "Messaged
+  Biology") sits in the middle of the column, like the time separators, with
+  the target bot in a rounded pill chip that opens their conversation full-view
+  in the main pane (floating `Bot A ⇄ Bot B` header and `Close Chat` pill at the
+  foot) rather than in the right sidebar; on mobile, the pill chip sits in the
+  same centered row and taps into the thread screen. While a bot answers another
+  bot in a private thread, its roster row stays quiet behind the scenes like
+  dreaming or heartbeat unless it needs the user.
 - Reactions: a face button appears beside a bot's bubble on hover (always on
   a touch screen) and opens a row of six emoji; the one already left is
   marked. A reaction is a small chip tucked under the bubble's corner, left

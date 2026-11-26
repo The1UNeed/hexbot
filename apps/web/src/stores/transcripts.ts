@@ -19,6 +19,7 @@ import {
   nextMessageId,
   sectionsTouch
 } from '../lib/api'
+import { ASKING_TOOL, askSameSignature, asksCompatible } from '../lib/asks'
 import { type NotifyInput, notifyUser } from '../lib/notify'
 import { agreedThenFailed } from '../lib/settled-cards'
 import { toMillis } from '../lib/time'
@@ -80,6 +81,8 @@ export interface Transcript {
   identity?: { turnId?: string; messageId?: string }
   /** The current run, independent of a late event from an earlier run. */
   activeTurnId?: string
+  /** Room-turn row identifier (`room_turns.id`), stable across fallback continuations. */
+  roomTurnId?: string
   /** Completed source fragments in the last authoritative snapshot. */
   durableFragments?: string[]
   approvals: ApprovalRequest[]
@@ -91,6 +94,8 @@ export interface Transcript {
   checking?: string
   /** Questions the bot asked through the clarify tool, oldest first. */
   clarifies: ClarifyRequest[]
+  /** Final text reported by `message.complete` for the latest turn (undefined while running). */
+  completedText?: string
   /** The context meter; null until the daemon has reported it. */
   context: null | ContextUsage
   /** Inline error rows are also pushed as messages; this is the header copy. */
@@ -145,19 +150,25 @@ export interface MessageCompletePayload {
 }
 
 export interface ToolStartPayload {
+  parent_occurrence_id?: string
   parent_tool_call_id?: string
   args?: unknown
   args_text?: string
   context?: string
   name?: string
+  occurrence_id?: string
   tool_id?: string
 }
 
 export interface ToolCompletePayload {
+  parent_occurrence_id?: string
   parent_tool_call_id?: string
   args?: unknown
+  context?: string
   duration_s?: number
+  is_error?: boolean
   name?: string
+  occurrence_id?: string
   result?: unknown
   result_text?: string
   summary?: string
@@ -212,6 +223,18 @@ export interface TranscriptsState {
   bySession: Record<string, Transcript>
   drop: (sessionId: string) => void
   dropAll: () => void
+  /**
+   * Merge asks from a running room-turn snapshot into an existing or cold live
+   * transcript without regressing settled live calls or dropping live deltas.
+   */
+  mergeTurnCalls: (
+    sessionId: string,
+    sectionId: string,
+    calls: ToolCall[],
+    turnId?: string,
+    snapshot?: OpenSnapshot,
+    roomTurnId?: string
+  ) => void
   errorEvent: (
     sessionId: string,
     message: string,
@@ -640,18 +663,109 @@ function closePart(message: Message): Message {
 /**
  * When the turn ends no step still runs, including one on a message an
  * approval card closed. A step left running would keep its message working.
+ * If an untagged failure was previously absorbed onto an identical hydrated
+ * settled sibling while this ask stayed running, settle this ask to `'error'`
+ * rather than flipping it to `'ok'`.
  */
-const stopSteps = <T extends Message>(messages: T[], status: ToolCallStatus): T[] =>
-  messages.map(message =>
+const stopSteps = <T extends Message>(messages: T[], status: ToolCallStatus): T[] => {
+  const hasRunning = messages.some(message =>
     message.toolCalls.some(call => call.status === 'running')
+  )
+
+  const hasPendingMeta = messages.some(message =>
+    message.toolCalls.some(
+      call => call.absorbedError !== undefined || call.ambiguousOutcomes !== undefined
+    )
+  )
+
+  if (!hasRunning && !hasPendingMeta) {
+    return messages
+  }
+
+  const absorbedPool: { call: ToolCall; used: boolean }[] = []
+
+  if (status === 'ok' && hasRunning && hasPendingMeta) {
+    for (const message of messages) {
+      for (const call of message.toolCalls) {
+        if (call.name === ASKING_TOOL && call.status === 'error' && call.absorbedError !== undefined) {
+          absorbedPool.push({ call, used: false })
+        }
+      }
+    }
+  }
+
+  return messages.map(message =>
+    message.toolCalls.some(
+      call =>
+        call.status === 'running' ||
+        call.absorbedError !== undefined ||
+        call.ambiguousOutcomes !== undefined
+    )
       ? {
           ...message,
-          toolCalls: message.toolCalls.map(call =>
-            call.status === 'running' ? { ...call, status } : call
-          )
+          toolCalls: message.toolCalls.map(call => {
+            if (call.status !== 'running') {
+              return call.absorbedError !== undefined || call.ambiguousOutcomes !== undefined
+                ? { ...call, absorbedError: undefined, ambiguousOutcomes: undefined }
+                : call
+            }
+
+            if (status === 'ok' && call.name === ASKING_TOOL && absorbedPool.length) {
+              const sibling = absorbedPool.find(
+                entry =>
+                  !entry.used &&
+                  entry.call.toolId === call.toolId &&
+                  (entry.call.parentToolCallId ?? '') === (call.parentToolCallId ?? '') &&
+                  entry.call.messageId === call.messageId &&
+                  askSameSignature(entry.call, call)
+              )
+
+              if (sibling) {
+                sibling.used = true
+
+                return {
+                  ...call,
+                  absorbedError: undefined,
+                  ambiguousOutcomes: undefined,
+                  result: sibling.call.absorbedError,
+                  status: 'error' as const
+                }
+              }
+            }
+
+            if (call.ambiguousOutcomes && call.ambiguousOutcomes.failed > 0) {
+              const { error, failed: failedCount, ok: okCount } = call.ambiguousOutcomes
+
+              if (okCount === 0) {
+                return {
+                  ...call,
+                  absorbedError: undefined,
+                  ambiguousOutcomes: undefined,
+                  result: call.result ?? error ?? 'Tool failed',
+                  status: 'error' as const
+                }
+              }
+
+              return {
+                ...call,
+                absorbedError: undefined,
+                ambiguousOutcomes: undefined,
+                result: {
+                  ...(error !== undefined ? { error } : {}),
+                  failed: failedCount,
+                  ok: okCount,
+                  unresolved: true
+                },
+                status: 'unresolved' as const
+              }
+            }
+
+            return { ...call, absorbedError: undefined, ambiguousOutcomes: undefined, status }
+          })
         }
       : message
   )
+}
 
 /**
  * A card that blocks the turn (a question, an approval) ends the bubble in
@@ -894,6 +1008,246 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
       })
     },
 
+    mergeTurnCalls(sessionId, sectionId, calls, turnId, snapshot, roomTurnId) {
+      set(state => {
+        const shown = state.bySession[sessionId]
+        const existing = shown && snapshot ? reconcile(shown, snapshot) : shown
+
+        const hydratedMessage = (
+          id: string,
+          toolCalls: ToolCall[]
+        ): TranscriptMessage => ({
+          attachments: [],
+          createdAt: 0,
+          id,
+          role: 'assistant',
+          streaming: false,
+          text: '',
+          toolCalls,
+          ...(turnId ? { turnId } : {})
+        })
+
+        const existingTurnId =
+          existing?.activeTurnId ?? existing?.messages.find(message => message.turnId)?.turnId
+
+        const differentTurn = Boolean(
+          roomTurnId && existing?.roomTurnId
+            ? existing.roomTurnId !== roomTurnId
+            : turnId && existingTurnId && existingTurnId !== turnId
+        )
+
+        if (!existing || !existing.messages.length || differentTurn) {
+          const initial = calls.length
+            ? [hydratedMessage(`hydrated-turn:${sessionId}`, calls)]
+            : []
+
+          return {
+            bySession: {
+              ...state.bySession,
+              [sessionId]: {
+                ...emptyTranscript(sessionId, sectionId),
+                ...withoutRestoredCards(
+                  { approvals: existing?.approvals ?? [], replaced: existing?.replaced },
+                  initial
+                ),
+                ...(turnId ? { activeTurnId: turnId } : {}),
+                ...(roomTurnId ? { roomTurnId } : {}),
+                clarifies: (existing?.clarifies ?? []).filter(clarifyWaiting),
+                settled: existing?.settled,
+                context: existing?.context ?? null,
+                messages: initial,
+                status: existing?.status ?? null
+              }
+            }
+          }
+        }
+
+        const nextActiveTurnId =
+          existing.streamingMessageId && existing.activeTurnId
+            ? existing.activeTurnId
+            : (turnId ?? existing.activeTurnId)
+
+        if (!calls.length) {
+          return {
+            bySession: {
+              ...state.bySession,
+              [sessionId]: {
+                ...existing,
+                ...(nextActiveTurnId ? { activeTurnId: nextActiveTurnId } : {}),
+                ...(roomTurnId ? { roomTurnId } : {}),
+                sectionId,
+                clarifies: existing.clarifies.filter(clarifyWaiting)
+              }
+            }
+          }
+        }
+
+        const nextMessages = existing.messages.map(message => ({
+          ...message,
+          toolCalls: [...message.toolCalls]
+        }))
+
+        const used = new Set<string>()
+        const matchedPos: ({ callIdx: number; msgIdx: number } | null)[] = []
+
+        for (const incoming of calls) {
+          let found: { callIdx: number; msgIdx: number } | undefined
+
+          for (let msgIdx = 0; msgIdx < nextMessages.length && !found; msgIdx++) {
+            const msg = nextMessages[msgIdx]!
+
+            for (let callIdx = 0; callIdx < msg.toolCalls.length; callIdx++) {
+              const key = `${msgIdx}:${callIdx}`
+
+              if (used.has(key)) {
+                continue
+              }
+
+              const current = msg.toolCalls[callIdx]!
+
+              if (
+                current.toolId !== incoming.toolId ||
+                current.name !== incoming.name ||
+                (current.parentToolCallId ?? '') !== (incoming.parentToolCallId ?? '')
+              ) {
+                continue
+              }
+
+              if (
+                current.parentOccurrenceId &&
+                incoming.parentOccurrenceId &&
+                current.parentOccurrenceId !== incoming.parentOccurrenceId
+              ) {
+                continue
+              }
+
+              const sameOcc = Boolean(
+                current.occurrenceId &&
+                  incoming.occurrenceId &&
+                  current.occurrenceId === incoming.occurrenceId
+              )
+
+              if (current.occurrenceId && incoming.occurrenceId && !sameOcc) {
+                continue
+              }
+
+              if (
+                current.messageId &&
+                incoming.messageId &&
+                current.messageId !== incoming.messageId
+              ) {
+                continue
+              }
+
+              if (!sameOcc && !asksCompatible(current, incoming)) {
+                continue
+              }
+
+              used.add(key)
+              found = { callIdx, msgIdx }
+
+              break
+            }
+          }
+
+          if (found) {
+            const msg = nextMessages[found.msgIdx]!
+            const current = msg.toolCalls[found.callIdx]!
+
+            msg.toolCalls[found.callIdx] =
+              current.status !== 'running' && incoming.status === 'running'
+                ? {
+                    ...current,
+                    args: current.args ?? incoming.args,
+                    messageId: current.messageId ?? incoming.messageId,
+                    occurrenceId: current.occurrenceId ?? incoming.occurrenceId,
+                    parentOccurrenceId: current.parentOccurrenceId ?? incoming.parentOccurrenceId,
+                    result: current.result ?? incoming.result,
+                    summary: current.summary ?? incoming.summary
+                  }
+                : current.status === 'running' && incoming.status !== 'running'
+                  ? {
+                      ...current,
+                      args: incoming.args ?? current.args,
+                      messageId: current.messageId ?? incoming.messageId,
+                      occurrenceId: current.occurrenceId ?? incoming.occurrenceId,
+                      parentOccurrenceId: current.parentOccurrenceId ?? incoming.parentOccurrenceId,
+                      result: incoming.result ?? current.result,
+                      status: incoming.status,
+                      summary: incoming.summary ?? current.summary
+                    }
+                  : {
+                      ...current,
+                      args: current.args ?? incoming.args,
+                      messageId: current.messageId ?? incoming.messageId,
+                      occurrenceId: current.occurrenceId ?? incoming.occurrenceId,
+                      parentOccurrenceId: current.parentOccurrenceId ?? incoming.parentOccurrenceId,
+                      result: current.result ?? incoming.result,
+                      summary: current.summary ?? incoming.summary
+                    }
+          }
+
+          matchedPos.push(found ?? null)
+        }
+
+        // Insert missing asks in snapshot order: before their next matched neighbor when
+        // one follows, or immediately after the last matched snapshot call so missed asks
+        // land ahead of newer live calls that arrived after the snapshot was sampled.
+        let lastMatchedPos: { callIdx: number; msgIdx: number } | null = null
+
+        for (const pos of matchedPos) {
+          if (pos) {
+            lastMatchedPos = pos
+          }
+        }
+
+        const leading: ToolCall[] = []
+        let nextMatch: { callIdx: number; msgIdx: number } | null = null
+
+        for (let idx = calls.length - 1; idx >= 0; idx--) {
+          const pos = matchedPos[idx]!
+
+          if (pos) {
+            nextMatch = pos
+          } else if (nextMatch) {
+            nextMessages[nextMatch.msgIdx]!.toolCalls.splice(nextMatch.callIdx, 0, calls[idx]!)
+          } else if (lastMatchedPos) {
+            nextMessages[lastMatchedPos.msgIdx]!.toolCalls.splice(
+              lastMatchedPos.callIdx + 1,
+              0,
+              calls[idx]!
+            )
+          } else {
+            leading.unshift(calls[idx]!)
+          }
+        }
+
+        if (leading.length) {
+          const existingPre = nextMessages.find(message => message.id.startsWith('hydrated-turn:'))
+
+          if (existingPre) {
+            existingPre.toolCalls = [...leading, ...existingPre.toolCalls]
+          } else {
+            nextMessages.unshift(hydratedMessage(`hydrated-turn:${sessionId}:pre`, leading))
+          }
+        }
+
+        return {
+          bySession: {
+            ...state.bySession,
+            [sessionId]: {
+              ...existing,
+              ...(nextActiveTurnId ? { activeTurnId: nextActiveTurnId } : {}),
+              ...(roomTurnId ? { roomTurnId } : {}),
+              sectionId,
+              clarifies: existing.clarifies.filter(clarifyWaiting),
+              messages: nextMessages
+            }
+          }
+        }
+      })
+    },
+
     drop(sessionId) {
       set(state => {
         const next = { ...state.bySession }
@@ -937,6 +1291,7 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
 
         return {
           ...transcript,
+          completedText: undefined,
           error: null,
           messages: [
             ...transcript.messages.map(previous =>
@@ -1053,33 +1408,247 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           return transcript
         }
 
-        const parents = transcript.messages.flatMap(message =>
-          message.toolCalls
-            .filter(
-              tool =>
-                tool.toolId === payload.parent_tool_call_id &&
-                (!transcript.identity?.messageId ||
-                  tool.messageId === transcript.identity.messageId) &&
-                (!transcript.identity?.turnId ||
-                  !message.turnId ||
-                  message.turnId === transcript.identity.turnId)
-            )
-            .map(tool => ({ message, tool }))
-        )
+        const explicitParentOccurrenceId =
+          typeof payload.parent_occurrence_id === 'string' && payload.parent_occurrence_id
+            ? payload.parent_occurrence_id
+            : undefined
 
-        const parent = payload.parent_tool_call_id && parents.length === 1 ? parents[0] : undefined
+        const allParents = payload.parent_tool_call_id
+          ? transcript.messages.flatMap(message =>
+              message.toolCalls
+                .filter(
+                  tool =>
+                    !tool.parentToolCallId &&
+                    tool.toolId === payload.parent_tool_call_id &&
+                    (!explicitParentOccurrenceId || tool.occurrenceId === explicitParentOccurrenceId) &&
+                    (!transcript.identity?.messageId ||
+                      tool.messageId === transcript.identity.messageId) &&
+                    (!transcript.identity?.turnId ||
+                      !message.turnId ||
+                      message.turnId === transcript.identity.turnId)
+                )
+                .map(tool => ({ message, tool }))
+            )
+          : []
+
+        const exactParents = explicitParentOccurrenceId
+          ? allParents.filter(({ tool }) => tool.occurrenceId === explicitParentOccurrenceId)
+          : []
+
+        const runningParents = allParents.filter(({ tool }) => tool.status === 'running')
+
+        const parents = exactParents.length
+          ? exactParents
+          : explicitParentOccurrenceId
+            ? []
+            : runningParents.length
+              ? runningParents
+              : allParents
+
+        const parent = parents.length === 1 ? parents[0] : undefined
+
+        const occurrenceId =
+          typeof payload.occurrence_id === 'string' && payload.occurrence_id
+            ? payload.occurrence_id
+            : undefined
+
+        const parentOccurrenceId = explicitParentOccurrenceId ?? parent?.tool.occurrenceId
 
         const call: ToolCall = {
           messageId: transcript.identity?.messageId ?? parent?.tool.messageId,
+          ...(occurrenceId && { occurrenceId }),
           args: payload.args ?? payload.args_text ?? null,
           durationS: null,
+          liveStarted: true,
           name: String(payload.name ?? 'tool'),
           result: null,
           startedAt: Date.now(),
           status: 'running',
           ...(payload.parent_tool_call_id && { parentToolCallId: payload.parent_tool_call_id }),
+          ...(parentOccurrenceId && { parentOccurrenceId }),
           summary: payload.context,
           toolId: String(payload.tool_id ?? nextMessageId('t'))
+        }
+
+        // If a replayed `tool.start` carries an explicit occurrence, fragment, or parent ID that is
+        // already settled on this transcript (for example hydrated from a room snapshot or nested
+        // codemode ask), keep the settled call instead of appending a duplicate running entry,
+        // consuming each untagged hydrated call at most once so a second parallel start upgrades any sibling.
+        if (
+          call.name === ASKING_TOOL &&
+          (call.occurrenceId || call.messageId || call.parentToolCallId) &&
+          payload.tool_id !== undefined
+        ) {
+          const exactOccSettled = call.occurrenceId
+            ? transcript.messages.flatMap(message =>
+                message.toolCalls
+                  .filter(
+                    tool =>
+                      tool.status !== 'running' &&
+                      tool.name === ASKING_TOOL &&
+                      tool.toolId === call.toolId &&
+                      (tool.parentToolCallId ?? '') === (call.parentToolCallId ?? '') &&
+                      (!call.parentOccurrenceId ||
+                        !tool.parentOccurrenceId ||
+                        tool.parentOccurrenceId === call.parentOccurrenceId) &&
+                      tool.occurrenceId === call.occurrenceId &&
+                      (!transcript.identity?.turnId ||
+                        !message.turnId ||
+                        message.turnId === transcript.identity.turnId)
+                  )
+                  .map(tool => ({ message, tool }))
+              )
+            : []
+
+          const settledMatch = exactOccSettled.length
+            ? exactOccSettled
+            : transcript.messages.flatMap(message =>
+                message.toolCalls
+                  .filter(
+                    tool =>
+                      tool.status !== 'running' &&
+                      !tool.liveStarted &&
+                      tool.name === ASKING_TOOL &&
+                      tool.toolId === call.toolId &&
+                      (tool.parentToolCallId ?? '') === (call.parentToolCallId ?? '') &&
+                      (explicitParentOccurrenceId
+                        ? tool.parentOccurrenceId === explicitParentOccurrenceId
+                        : !call.parentOccurrenceId ||
+                          !tool.parentOccurrenceId ||
+                          tool.parentOccurrenceId === call.parentOccurrenceId) &&
+                      (!call.occurrenceId ||
+                        !tool.occurrenceId ||
+                        tool.occurrenceId === call.occurrenceId) &&
+                      (call.parentToolCallId
+                        ? !call.messageId || !tool.messageId || tool.messageId === call.messageId
+                        : Boolean(call.messageId) && tool.messageId === call.messageId) &&
+                      asksCompatible(tool, call) &&
+                      (!transcript.identity?.turnId ||
+                        !message.turnId ||
+                        message.turnId === transcript.identity.turnId)
+                  )
+                  .map(tool => ({ message, tool }))
+              )
+
+          const canReuseSettled =
+            settledMatch.length === 1 ||
+            (settledMatch.length > 1 &&
+              settledMatch.every(
+                item =>
+                  item.tool.messageId === settledMatch[0]!.tool.messageId &&
+                  (item.tool.parentToolCallId ?? '') ===
+                    (settledMatch[0]!.tool.parentToolCallId ?? '') &&
+                  askSameSignature(item.tool, settledMatch[0]!.tool)
+              ))
+
+          if (canReuseSettled) {
+            const match = settledMatch[0]!
+
+            return replaceMessage(transcript, match.message.id, message => ({
+              ...message,
+              toolCalls: message.toolCalls.map(tool =>
+                tool === match.tool
+                  ? {
+                      ...tool,
+                      args: tool.args ?? call.args,
+                      liveStarted: true,
+                      occurrenceId: tool.occurrenceId ?? call.occurrenceId,
+                      parentOccurrenceId: tool.parentOccurrenceId ?? call.parentOccurrenceId,
+                      summary: tool.summary ?? call.summary
+                    }
+                  : tool
+              )
+            }))
+          }
+        }
+
+        // If a busy snapshot already hydrated this running `message_bot` declaration
+        // (`startedAt === 0`), upgrade it in place so a replayed `tool.start` never
+        // creates an ambiguous duplicate before `tool.complete`, without overwriting
+        // a different ask target or wait mode reusing the same call ID.
+        if (call.name === ASKING_TOOL && payload.tool_id !== undefined) {
+          const exactOccRunning = call.occurrenceId
+            ? transcript.messages.flatMap(message =>
+                message.toolCalls
+                  .filter(
+                    tool =>
+                      tool.status === 'running' &&
+                      tool.name === ASKING_TOOL &&
+                      tool.toolId === call.toolId &&
+                      (tool.parentToolCallId ?? '') === (call.parentToolCallId ?? '') &&
+                      (!call.parentOccurrenceId ||
+                        !tool.parentOccurrenceId ||
+                        tool.parentOccurrenceId === call.parentOccurrenceId) &&
+                      tool.occurrenceId === call.occurrenceId &&
+                      (!transcript.identity?.turnId ||
+                        !message.turnId ||
+                        message.turnId === transcript.identity.turnId)
+                  )
+                  .map(tool => ({ message, tool }))
+              )
+            : []
+
+          const hydratedMatches = exactOccRunning.length
+            ? exactOccRunning
+            : transcript.messages.flatMap(message =>
+                message.toolCalls
+                  .filter(
+                    tool =>
+                      tool.startedAt === 0 &&
+                      !tool.liveStarted &&
+                      tool.status === 'running' &&
+                      tool.name === ASKING_TOOL &&
+                      tool.toolId === call.toolId &&
+                      (tool.parentToolCallId ?? '') === (call.parentToolCallId ?? '') &&
+                      (explicitParentOccurrenceId
+                        ? tool.parentOccurrenceId === explicitParentOccurrenceId
+                        : !call.parentOccurrenceId ||
+                          !tool.parentOccurrenceId ||
+                          tool.parentOccurrenceId === call.parentOccurrenceId) &&
+                      (!call.occurrenceId ||
+                        !tool.occurrenceId ||
+                        tool.occurrenceId === call.occurrenceId) &&
+                      (!call.messageId || !tool.messageId || tool.messageId === call.messageId) &&
+                      (!transcript.identity?.turnId ||
+                        !message.turnId ||
+                        message.turnId === transcript.identity.turnId) &&
+                      asksCompatible(tool, call)
+                  )
+                  .map(tool => ({ message, tool }))
+              )
+
+          const interchangeableHydrated =
+            hydratedMatches.length === 1 ||
+            (hydratedMatches.length > 1 &&
+              hydratedMatches.every(
+                item =>
+                  item.tool.messageId === hydratedMatches[0]!.tool.messageId &&
+                  item.tool.parentOccurrenceId === hydratedMatches[0]!.tool.parentOccurrenceId &&
+                  askSameSignature(item.tool, hydratedMatches[0]!.tool)
+              ))
+
+          if (interchangeableHydrated) {
+            const match = hydratedMatches[0]!
+
+            return replaceMessage(transcript, match.message.id, message => ({
+              ...message,
+              toolCalls: message.toolCalls.map(tool =>
+                tool === match.tool
+                  ? {
+                      ...tool,
+                      args: call.args ?? tool.args,
+                      liveStarted: true,
+                      messageId: tool.messageId ?? call.messageId,
+                      occurrenceId: tool.occurrenceId ?? call.occurrenceId,
+                      parentOccurrenceId: tool.parentOccurrenceId ?? call.parentOccurrenceId,
+                      startedAt: call.startedAt,
+                      summary: call.summary ?? tool.summary
+                    }
+                  : tool
+              ),
+              workUntil: Date.now()
+            }))
+          }
         }
 
         const append = (message: TranscriptMessage) => ({
@@ -1096,7 +1665,10 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
     toolComplete(sessionId, payload) {
       const toolId = payload.tool_id === undefined ? null : String(payload.tool_id)
       const result = payload.result ?? payload.result_text ?? null
-      const failed = typeof result === 'object' && result !== null && 'error' in result
+
+      const failed = Boolean(
+        payload.is_error || (typeof result === 'object' && result !== null && 'error' in result)
+      )
 
       // The card it showed says so when the work the user agreed to failed,
       // as the card rebuilt from history will.
@@ -1141,27 +1713,185 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           return transcript
         }
 
+        const incomingName =
+          typeof payload.name === 'string' && payload.name ? payload.name : undefined
+
+        const occurrenceId =
+          typeof payload.occurrence_id === 'string' && payload.occurrence_id
+            ? payload.occurrence_id
+            : undefined
+
+        const incomingAsk =
+          !incomingName || incomingName === ASKING_TOOL
+            ? {
+                args: payload.args ?? null,
+                name: ASKING_TOOL,
+                ...(occurrenceId && { occurrenceId }),
+                result,
+                status: failed ? ('error' as const) : ('ok' as const),
+                summary: payload.summary ?? (payload.context || undefined)
+              }
+            : null
+
+        const explicitParentOccurrenceId =
+          typeof payload.parent_occurrence_id === 'string' && payload.parent_occurrence_id
+            ? payload.parent_occurrence_id
+            : undefined
+
+        const activeParents = payload.parent_tool_call_id
+          ? transcript.messages.flatMap(message =>
+              message.toolCalls
+                .filter(
+                  call =>
+                    !call.parentToolCallId &&
+                    call.toolId === payload.parent_tool_call_id &&
+                    call.status === 'running' &&
+                    (!explicitParentOccurrenceId ||
+                      call.occurrenceId === explicitParentOccurrenceId) &&
+                    (!source || call.messageId === source) &&
+                    (!turn || !message.turnId || message.turnId === turn)
+                )
+                .map(call => ({ message, call }))
+            )
+          : []
+
+        const activeParentOccurrenceId =
+          explicitParentOccurrenceId ??
+          (activeParents.length === 1 ? activeParents[0]!.call.occurrenceId : undefined)
+
         const candidates = transcript.messages.flatMap(message =>
           message.toolCalls
-            .filter(
-              call =>
-                call.toolId === toolId &&
-                (!payload.parent_tool_call_id ||
-                  call.parentToolCallId === payload.parent_tool_call_id) &&
-                (!turn ||
-                  message.turnId === turn ||
-                  (!message.turnId && (!otherTurn || (source && call.messageId === source))))
-            )
+            .filter(call => {
+              if (call.toolId !== toolId) {
+                return false
+              }
+
+              if (incomingName && call.name !== incomingName) {
+                return false
+              }
+
+              if (occurrenceId && call.occurrenceId && call.occurrenceId !== occurrenceId) {
+                return false
+              }
+
+              if (
+                payload.parent_tool_call_id
+                  ? call.parentToolCallId !== payload.parent_tool_call_id ||
+                    (activeParentOccurrenceId &&
+                      call.parentOccurrenceId &&
+                      call.parentOccurrenceId !== activeParentOccurrenceId) ||
+                    (explicitParentOccurrenceId &&
+                      call.status !== 'running' &&
+                      call.parentOccurrenceId !== explicitParentOccurrenceId)
+                  : Boolean(call.parentToolCallId) &&
+                    (Boolean(occurrenceId) ||
+                      call.name === ASKING_TOOL ||
+                      incomingName === ASKING_TOOL)
+              ) {
+                return false
+              }
+
+              if (
+                turn &&
+                message.turnId !== turn &&
+                !(!message.turnId && (!otherTurn || (source && call.messageId === source)))
+              ) {
+                return false
+              }
+
+              // A completion without matching occurrence_id (including parallel calls that
+              // share call_0 and message_id in one fragment) must never bind to a
+              // message_bot call with a different target, wait/send mode, outcome, or thread.
+              if (!(occurrenceId && call.occurrenceId) && call.name === ASKING_TOOL && incomingAsk) {
+                if (!asksCompatible(call, incomingAsk)) {
+                  return false
+                }
+              }
+
+              return true
+            })
             .map(call => ({ message, call }))
         )
 
-        const exact = source ? candidates.filter(({ call }) => call.messageId === source) : []
+        const exactParentOcc = activeParentOccurrenceId
+          ? candidates.filter(({ call }) => call.parentOccurrenceId === activeParentOccurrenceId)
+          : []
 
-        const matches = exact.length
+        const scopedCandidates = exactParentOcc.length ? exactParentOcc : candidates
+
+        const exactOcc = occurrenceId
+          ? scopedCandidates.filter(({ call }) => call.occurrenceId === occurrenceId)
+          : []
+
+        const exact = exactOcc.length
+          ? exactOcc
+          : source
+            ? scopedCandidates.filter(({ call }) => call.messageId === source)
+            : []
+
+        const baseMatches = exact.length
           ? exact
-          : candidates.filter(({ call }) => !source || !call.messageId)
+          : scopedCandidates.filter(({ call }) => !source || !call.messageId)
 
-        const target = matches.length === 1 ? matches[0] : undefined
+        const incomingSummary = payload.summary ?? (payload.context || undefined)
+
+        const contextMatches =
+          !incomingAsk && !occurrenceId && baseMatches.length > 1 && incomingSummary
+            ? baseMatches.filter(({ call }) => call.summary === incomingSummary)
+            : []
+
+        const matches = contextMatches.length ? contextMatches : baseMatches
+
+        const settledUncompleted = matches.filter(
+          ({ call }) =>
+            call.status !== 'running' &&
+            !call.liveCompleted &&
+            (!explicitParentOccurrenceId || call.parentOccurrenceId === explicitParentOccurrenceId)
+        )
+
+        const runningMatches = matches.filter(({ call }) => call.status === 'running')
+
+        const canPickSettledReplay =
+          settledUncompleted.length >= 1 &&
+          (settledUncompleted.length === 1 ||
+            (Boolean(incomingAsk) &&
+              !occurrenceId &&
+              settledUncompleted.every(
+                item =>
+                  item.call.messageId === settledUncompleted[0]!.call.messageId &&
+                  askSameSignature(item.call, settledUncompleted[0]!.call)
+              )))
+
+        const canPickRunning =
+          settledUncompleted.length === 0 &&
+          runningMatches.length >= 1 &&
+          (runningMatches.length === 1 ||
+            (Boolean(incomingAsk) &&
+              !occurrenceId &&
+              runningMatches.every(
+                item =>
+                  item.call.messageId === runningMatches[0]!.call.messageId &&
+                  askSameSignature(item.call, runningMatches[0]!.call)
+              )))
+
+        const target =
+          exactOcc.length === 1
+            ? exactOcc[0]
+            : canPickSettledReplay
+              ? settledUncompleted[0]
+              : canPickRunning
+                ? runningMatches[0]
+                : matches.length === 1
+                  ? matches[0]
+                  : undefined
+
+        const absorbedWhileRunning =
+          exactOcc.length !== 1 &&
+          canPickSettledReplay &&
+          failed &&
+          runningMatches.length > 0 &&
+          !occurrenceId &&
+          Boolean(incomingAsk)
 
         if (target) {
           return replaceMessage(transcript, target.message.id, message => ({
@@ -1170,12 +1900,21 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
               call === target.call
                 ? {
                     ...call,
+                    ...(absorbedWhileRunning
+                      ? { absorbedError: result }
+                      : { absorbedError: undefined }),
+                    ambiguousOutcomes: undefined,
+                    liveCompleted: true,
                     messageId: call.messageId ?? source,
+                    occurrenceId: call.occurrenceId ?? occurrenceId,
+                    ...(call.parentOccurrenceId || activeParentOccurrenceId
+                      ? { parentOccurrenceId: call.parentOccurrenceId ?? activeParentOccurrenceId }
+                      : {}),
                     args: payload.args ?? call.args,
                     durationS: payload.duration_s ?? call.durationS,
                     result,
                     status: failed ? 'error' : 'ok',
-                    summary: payload.summary ?? call.summary
+                    summary: payload.summary ?? (payload.context || undefined) ?? call.summary
                   }
                 : call
             ),
@@ -1183,18 +1922,55 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           }))
         }
 
-        // An ambiguous completion cannot pick a call or create a duplicate.
-        // A delayed old completion also cannot open a bubble in the current run.
+        // An ambiguous completion cannot pick one call or create a duplicate, so record
+        // the outcome counts on the colliding running siblings: if all succeeded they settle
+        // to `ok`, if all failed they settle to `error`, and if mixed they stay `unresolved`
+        // (neither falsely `ok` nor assigning the failure to every sibling) until history reconciles.
         if (matches.length || otherTurn) {
+          if (!otherTurn && runningMatches.length > 1) {
+            const collidingCalls = new Set(runningMatches.map(item => item.call))
+            const failurePayload = failed ? (result ?? 'Tool failed') : undefined
+
+            return {
+              ...transcript,
+              messages: transcript.messages.map(message =>
+                message.toolCalls.some(call => collidingCalls.has(call))
+                  ? {
+                      ...message,
+                      toolCalls: message.toolCalls.map(call => {
+                        if (!collidingCalls.has(call)) {
+                          return call
+                        }
+
+                        const prev = call.ambiguousOutcomes ?? { failed: 0, ok: 0 }
+
+                        return {
+                          ...call,
+                          ambiguousOutcomes: {
+                            error: prev.error ?? failurePayload,
+                            failed: prev.failed + (failed ? 1 : 0),
+                            ok: prev.ok + (failed ? 0 : 1)
+                          }
+                        }
+                      })
+                    }
+                  : message
+              )
+            }
+          }
+
           return transcript
         }
 
-        const parents = payload.parent_tool_call_id
+        const allParents = payload.parent_tool_call_id
           ? transcript.messages.flatMap(message =>
               message.toolCalls
                 .filter(
                   call =>
+                    !call.parentToolCallId &&
                     call.toolId === payload.parent_tool_call_id &&
+                    (!explicitParentOccurrenceId ||
+                      call.occurrenceId === explicitParentOccurrenceId) &&
                     (!source || call.messageId === source) &&
                     (!turn || !message.turnId || message.turnId === turn)
                 )
@@ -1202,7 +1978,21 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
             )
           : []
 
+        const exactParents = explicitParentOccurrenceId
+          ? allParents.filter(({ call }) => call.occurrenceId === explicitParentOccurrenceId)
+          : []
+
+        const parents = exactParents.length
+          ? exactParents
+          : explicitParentOccurrenceId
+            ? []
+            : activeParents.length
+              ? activeParents
+              : allParents
+
         const parent = parents.length === 1 ? parents[0] : undefined
+
+        const appendParentOccurrenceId = activeParentOccurrenceId ?? parent?.call.occurrenceId
 
         // A completion without a matching start (reconnect mid-tool) remains
         // a separate occurrence, keeping its explicit parent when supplied.
@@ -1212,14 +2002,17 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
             ...message.toolCalls,
             {
               messageId: source ?? parent?.call.messageId,
+              ...(occurrenceId && { occurrenceId }),
               ...(payload.parent_tool_call_id && { parentToolCallId: payload.parent_tool_call_id }),
+              ...(appendParentOccurrenceId && { parentOccurrenceId: appendParentOccurrenceId }),
               args: payload.args ?? null,
               durationS: payload.duration_s ?? null,
+              liveCompleted: true,
               name: String(payload.name ?? 'tool'),
               result,
               startedAt: Date.now(),
               status: failed ? 'error' : 'ok',
-              summary: payload.summary,
+              summary: payload.summary ?? (payload.context || undefined),
               toolId: toolId ?? nextMessageId('t')
             }
           ],
@@ -1244,11 +2037,28 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
             ? payload.text.slice(prefix.length).trimStart()
             : payload.text
 
+        const currentStreaming = transcript.streamingMessageId
+          ? transcript.messages.find(item => item.id === transcript.streamingMessageId)
+          : undefined
+
+        const completedText =
+          typeof payload.text === 'string' ? payload.text : (currentStreaming?.text ?? '')
+
+        const failed = Boolean(
+          payload.error ||
+            payload.partial === true ||
+            payload.status === 'error' ||
+            payload.status === 'interrupted'
+        )
+
+        const finishStatus: ToolCallStatus = failed ? 'error' : 'ok'
+
         if (!transcript.streamingMessageId && prefix && !finalText && !payload.error) {
           // The turn ended right after the card: the closed bubble already holds it all.
           return {
             ...transcript,
-            messages: stopSteps(transcript.messages, 'ok'),
+            completedText,
+            messages: stopSteps(transcript.messages, finishStatus),
             turnActive: false,
             turnPrefix: undefined,
             usage: payload.usage ?? transcript.usage
@@ -1266,9 +2076,6 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           sentAt: Date.now(),
           status: payload.status,
           streaming: false,
-          toolCalls: message.toolCalls.map(call =>
-            call.status === 'running' ? { ...call, status: 'ok' } : call
-          ),
           usage: payload.usage ?? message.usage ?? null,
           workUntil: message.toolCalls.some(call => call.status === 'running')
             ? Date.now()
@@ -1315,7 +2122,8 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
         return {
           ...next,
           checking: undefined,
-          messages: stopSteps(next.messages, 'ok'),
+          completedText,
+          messages: stopSteps(next.messages, finishStatus),
           turnPrefix: undefined,
           error: payload.error ?? null,
           status: null,

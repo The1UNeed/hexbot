@@ -15,6 +15,7 @@ import { useBots } from '../stores/bots'
 import { useConnection } from '../stores/connection'
 import { useRooms } from '../stores/rooms'
 import { useSections } from '../stores/sections'
+import { useUi } from '../stores/ui'
 
 import { DreamingBlock } from './bot-settings/memory'
 import { ChatChooser } from './chat-chooser'
@@ -396,6 +397,39 @@ it('a later click on the already selected room cancels the pending bot lookup', 
     fireEvent.click(screen.getByRole('button', { name: /Garden/ }))
     held.resolve({ section: healthy })
   })
+  expectLocation('/r/garden')
+  expect(methods()).not.toContain('hexbot.sections.open')
+})
+
+it('clicking Review on a waiting peer thread cancels a pending roster chat lookup', async () => {
+  const held = deferred()
+  call.mockImplementation((method: string) =>
+    method === 'hexbot.sections.create' ? held.promise : reply(method)
+  )
+
+  const waitingBot = {
+    avatar: null,
+    description: '',
+    display_name: 'Biology',
+    name: 'bio',
+    sections_recent: [],
+    status: 'needs_you',
+    status_detail: { peer_bot: 'owl', section_id: 'th-wait', session_id: 'live-wait' },
+    title: ''
+  } as unknown as Bot
+
+  await mount(false, '/r/garden')
+  act(() => {
+    useUi.setState({ thread: null })
+    useBots.setState({ byName: { owl: bot, bio: waitingBot }, order: ['owl', 'bio'], loaded: true })
+  })
+  fireEvent.click(screen.getByRole('button', { name: /Owl/ }))
+  await waitFor(() => expect(methods()).toContain('hexbot.sections.create'))
+  await act(async () => {
+    fireEvent.click(screen.getByRole('button', { name: /Review/ }))
+    held.resolve({ section: healthy })
+  })
+  expect(useUi.getState().thread).toEqual({ bot: 'bio', peer: 'owl', sectionId: 'th-wait' })
   expectLocation('/r/garden')
   expect(methods()).not.toContain('hexbot.sections.open')
 })

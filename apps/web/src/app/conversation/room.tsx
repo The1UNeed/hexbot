@@ -1,6 +1,6 @@
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { Info, Search } from 'lucide-react'
-import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { Avatar, useFaceColor } from '../../components/ui/avatar'
 import { RoomCluster } from '../../components/ui/room-cluster'
@@ -8,6 +8,7 @@ import { ScrollArea } from '../../components/ui/scroll-area'
 import { SkeletonLines } from '../../components/ui/skeleton'
 import { StatusDot } from '../../components/ui/status-dot'
 import { roomsSend, roomsStop } from '../../lib/api'
+import { asksOf } from '../../lib/asks'
 import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 import { plainError } from '../../lib/plain-error'
@@ -26,7 +27,7 @@ import { useSearch } from '../../stores/search'
 import { useTranscripts } from '../../stores/transcripts'
 import { useUi } from '../../stores/ui'
 
-import { AskingRow, AskRows } from './asking-row'
+import { AskRows } from './asking-row'
 import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
 import { NotificationsBanner } from './notifications-banner'
@@ -67,16 +68,20 @@ interface Unsent {
 // Stable empty values: a fresh [] or {} per render re-renders forever.
 const NO_EVENTS: RoomEvent[] = []
 const NO_TURNS: Record<string, RoomTurn> = {}
+const NO_COMPLETING_ASKS: Record<string, Ask[]> = {}
 
 export const RoomEventRow = memo(function RoomEventRow({
   event,
   fresh = false,
-  latest = false
+  latest = false,
+  showAsks = true
 }: {
   event: RoomEvent
   fresh?: boolean
   /** The bot's latest message in the room: its face shows what the bot feels. */
   latest?: boolean
+  /** False when RoomConversation lifts AskRows into the shared turn list to keep row identity. */
+  showAsks?: boolean
 }) {
   const bot = useBots(state => (event.actor_id ? state.byName[event.actor_id] : undefined))
   const emotion = useEmotion(latest ? event.actor_id : undefined)
@@ -222,12 +227,14 @@ export const RoomEventRow = memo(function RoomEventRow({
           </div>
         </div>
       </article>
-      {asked.length ? <AskRows asks={asked} sender={event.actor_id ?? null} /> : null}
+      {showAsks && asked.length ? (
+        <AskRows asks={asked} fresh={false} sender={event.actor_id ?? null} />
+      ) : null}
     </TagScope>
   )
 })
 
-/** A finished turn's asks from its `message.bot` payload: `[{to, section_id}]`. */
+/** A finished turn's asks from its `message.bot` payload: `[{to, section_id, waited?, failed?}]`. */
 function storedAsks(value: unknown): Ask[] {
   return Array.isArray(value)
     ? value.flatMap(item =>
@@ -235,8 +242,9 @@ function storedAsks(value: unknown): Ask[] {
           ? [
               {
                 sectionId: typeof item.section_id === 'string' ? item.section_id : null,
-                sent: false,
-                status: 'ok' as const,
+                sent: item.waited === 0 || item.waited === false,
+                status:
+                  item.failed === 1 || item.failed === true ? ('error' as const) : ('ok' as const),
                 target: item.to
               }
             ]
@@ -311,6 +319,7 @@ export function RoomConversation() {
   const events = useRooms(state => state.eventsByRoom[roomId] ?? NO_EVENTS)
   const loaded = useRooms(state => roomId in state.eventsByRoom)
   const turns = useRooms(state => state.liveTurnsByRoom[roomId] ?? NO_TURNS)
+  const completingAsks = useRooms(state => state.completingAsksByRoom[roomId] ?? NO_COMPLETING_ASKS)
   const transcripts = useTranscripts(state => state.bySession)
   const bots = useBots(state => state.byName)
   const [text, setText] = useState('')
@@ -397,8 +406,8 @@ export function RoomConversation() {
 
   // Presence, not the room object: every read mark stores a fresh room.
   const present = Boolean(room)
-  // Hidden behind a clicked bot's loading face, the room is not being read.
-  const hidden = useUi(state => state.openingBot !== null)
+  // Hidden behind a clicked bot's loading face or a full-view thread, the room is not being read.
+  const hidden = useUi(state => state.openingBot !== null || state.thread !== null)
   useEffect(() => {
     const seq = events.at(-1)?.seq
 
@@ -587,6 +596,23 @@ export function RoomConversation() {
     void deliver(item)
   }
 
+  // Index each bot's settled messages across the full log so a live turn's AskRows
+  // shares the exact React key with the settled message.bot row that replaces it.
+  const { botMessageTotal, turnIndexBySeq } = useMemo(() => {
+    const counts: Record<string, number> = {}
+    const bySeq = new Map<number, number>()
+
+    for (const event of events) {
+      if (event.kind === 'message.bot' && event.actor_id) {
+        const index = counts[event.actor_id] ?? 0
+        bySeq.set(event.seq, index)
+        counts[event.actor_id] = index + 1
+      }
+    }
+
+    return { botMessageTotal: counts, turnIndexBySeq: bySeq }
+  }, [events])
+
   if (!room) {
     return (
       <div className="grid h-full place-content-center">
@@ -705,80 +731,113 @@ export function RoomConversation() {
       >
         <div className={transcriptClass}>
           {start > 0 ? <LoadEarlierMessages onClick={loadEarlier} /> : null}
-          {shown.map((event, index) => {
-            const previous = shown[index - 1]
+          {[
+            ...shown.flatMap((event, index) => {
+              const previous = shown[index - 1]
 
-            const separator = separates(
-              previous && toMillis(previous.created_at),
-              toMillis(event.created_at)
-            )
+              const separator = separates(
+                previous && toMillis(previous.created_at),
+                toMillis(event.created_at)
+              )
 
-            return (
-              <div key={event.seq}>
-                {separator ? <DaySeparator time={event.created_at} /> : null}
-                <div data-search-id={event.seq}>
-                  <RoomEventRow
-                    event={event}
-                    fresh={toMillis(event.created_at) > openedAt}
-                    latest={event.actor_id ? latestByBot[event.actor_id] === event.seq : false}
-                  />
-                </div>
-              </div>
-            )
-          })}
-          {unsentHere.map(item => (
-            <article
-              className="flex flex-col items-end gap-1 py-1"
-              data-testid="room-unsent"
-              key={item.id}
-            >
-              <div className="flex max-w-[80%] flex-row-reverse gap-1">
-                <div
-                  className={cn('min-w-0 max-w-full', item.delivery === 'sending' && 'hex-pending')}
-                >
-                  <div className={cn(userBubbleClass, 'hex-message hex-message-mine')}>
-                    <div className="hex-prose">
-                      <Markdown text={item.text} />
+              const asked = event.kind === 'message.bot' ? storedAsks(event.payload.asks) : []
+              const turnIndex = turnIndexBySeq.get(event.seq) ?? event.seq
+
+              return [
+                <div key={`event:${event.seq}`}>
+                  {separator ? <DaySeparator time={event.created_at} /> : null}
+                  <div data-search-id={event.seq}>
+                    <RoomEventRow
+                      event={event}
+                      fresh={toMillis(event.created_at) > openedAt}
+                      latest={event.actor_id ? latestByBot[event.actor_id] === event.seq : false}
+                      showAsks={false}
+                    />
+                  </div>
+                </div>,
+                ...(asked.length
+                  ? [
+                      <AskRows
+                        asks={asked}
+                        fresh={false}
+                        key={`ask:${event.actor_id ?? 'bot'}:${turnIndex}`}
+                        sender={event.actor_id ?? null}
+                      />
+                    ]
+                  : [])
+              ]
+            }),
+            ...unsentHere.map(item => (
+              <article
+                className="flex flex-col items-end gap-1 py-1"
+                data-testid="room-unsent"
+                key={`unsent:${item.id}`}
+              >
+                <div className="flex max-w-[80%] flex-row-reverse gap-1">
+                  <div
+                    className={cn(
+                      'min-w-0 max-w-full',
+                      item.delivery === 'sending' && 'hex-pending'
+                    )}
+                  >
+                    <div className={cn(userBubbleClass, 'hex-message hex-message-mine')}>
+                      <div className="hex-prose">
+                        <Markdown text={item.text} />
+                      </div>
                     </div>
                   </div>
+                  <DeliveryMark
+                    delivery={item.delivery}
+                    onRetry={item.delivery === 'failed' ? () => void deliver(item) : undefined}
+                  />
                 </div>
-                <DeliveryMark
-                  delivery={item.delivery}
-                  onRetry={item.delivery === 'failed' ? () => void deliver(item) : undefined}
-                />
-              </div>
-              {item.delivery === 'failed' ? (
-                <NotSent label="Not sent" onRetry={() => void deliver(item)} reason={item.reason} />
-              ) : null}
-            </article>
-          ))}
-          {Object.values(turns).map(turn => {
-            const transcript = turn.live_session_id ? transcripts[turn.live_session_id] : undefined
-            const message = transcript?.messages.at(-1)
-            const bot = bots[turn.bot]
+                {item.delivery === 'failed' ? (
+                  <NotSent
+                    label="Not sent"
+                    onRetry={() => void deliver(item)}
+                    reason={item.reason}
+                  />
+                ) : null}
+              </article>
+            )),
+            ...Object.values(turns).flatMap(turn => {
+              const transcript = turn.live_session_id
+                ? transcripts[turn.live_session_id]
+                : undefined
 
-            const name =
-              bot?.display_name ??
-              room.members.find(
-                member => member.member_kind === 'bot' && member.member_id === turn.bot
-              )?.display_name ??
-              turn.bot
+              const message = transcript?.messages.at(-1)
+              const bot = bots[turn.bot]
 
-            // Members see the bot wait while the owner answers an approval or
-            // question; the daemon writes the text ("Waiting for Alice").
-            const waiting = transcript?.status?.kind === 'waiting' ? transcript.status.text : ''
-            // Only the owner receives the cards; answered or expired ones leave.
-            const approvals = transcript?.approvals.filter(approval => !approval.decision) ?? []
+              const name =
+                bot?.display_name ??
+                room.members.find(
+                  member => member.member_kind === 'bot' && member.member_id === turn.bot
+                )?.display_name ??
+                turn.bot
 
-            const clarifies =
-              transcript?.clarifies.filter(
-                clarify =>
-                  !clarify.expired && Object.keys(clarify.answers).length < clarify.questions.length
-              ) ?? []
+              // Members see the bot wait while the owner answers an approval or
+              // question; the daemon writes the text ("Waiting for Alice").
+              const waiting = transcript?.status?.kind === 'waiting' ? transcript.status.text : ''
+              // Only the owner receives the cards; answered or expired ones leave.
+              const approvals = transcript?.approvals.filter(approval => !approval.decision) ?? []
 
-            return (
-              <Fragment key={turn.bot}>
-                <article className="flex gap-2 py-1" data-testid="room-event">
+              const clarifies =
+                transcript?.clarifies.filter(
+                  clarify =>
+                    !clarify.expired &&
+                    Object.keys(clarify.answers).length < clarify.questions.length
+                ) ?? []
+
+              // Keep asks from every assistant message in the live turn so an approval or
+              // clarify split mid-turn never drops and remounts the ask pill.
+              const liveAsks = asksOf((transcript?.messages ?? []).flatMap(item => item.toolCalls))
+
+              return [
+                <article
+                  className="flex gap-2 py-1"
+                  data-testid="room-event"
+                  key={`turn:${turn.bot}`}
+                >
                   <span className="relative mt-1 shrink-0">
                     <Avatar
                       {...botFace(bot)}
@@ -808,21 +867,40 @@ export function RoomConversation() {
                       <StatusLine label={phaseLabel('thinking')} name={name} />
                     )}
                   </div>
-                </article>
-                {message ? <AskingRow message={message} sender={turn.bot} /> : null}
-                {clarifies.map(clarify => (
-                  <CardRow bot={bot} key={clarify.requestId}>
+                </article>,
+                ...(liveAsks.length
+                  ? [
+                      <AskRows
+                        asks={liveAsks}
+                        fresh
+                        key={`ask:${turn.bot}:${botMessageTotal[turn.bot] ?? 0}`}
+                        sender={turn.bot}
+                      />
+                    ]
+                  : []),
+                ...clarifies.map(clarify => (
+                  <CardRow bot={bot} key={`clarify:${clarify.requestId}`}>
                     <ClarifyCard bot={bot} clarify={clarify} />
                   </CardRow>
-                ))}
-                {approvals.map(approval => (
-                  <CardRow bot={bot} key={approval.requestId}>
+                )),
+                ...approvals.map(approval => (
+                  <CardRow bot={bot} key={`approval:${approval.requestId}`}>
                     <ApprovalCard approval={approval} />
                   </CardRow>
-                ))}
-              </Fragment>
-            )
-          })}
+                ))
+              ]
+            }),
+            ...Object.entries(completingAsks)
+              .filter(([bot]) => !(bot in turns))
+              .map(([bot, held]) => (
+                <AskRows
+                  asks={held}
+                  fresh={false}
+                  key={`ask:${bot}:${botMessageTotal[bot] ?? 0}`}
+                  sender={bot}
+                />
+              ))
+          ]}
           <div ref={bottom} />
         </div>
       </ScrollArea>

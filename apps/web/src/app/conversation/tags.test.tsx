@@ -6,6 +6,7 @@ import type * as Api from '../../lib/api'
 import { sectionsThread } from '../../lib/api'
 import type { Bot, Room, Section } from '../../lib/types'
 import { useBots } from '../../stores/bots'
+import { useConnection } from '../../stores/connection'
 import { usePlugins } from '../../stores/plugins'
 import { useRooms } from '../../stores/rooms'
 import { useSections } from '../../stores/sections'
@@ -16,6 +17,7 @@ import { TagScope } from './tags'
 import { Markdown } from './index'
 
 const navigate = vi.fn()
+const routerState = { location: { pathname: '/b/hexbot/s/chat' } }
 
 vi.mock('../../lib/api', async original => ({
   ...(await original<typeof Api>()),
@@ -24,7 +26,7 @@ vi.mock('../../lib/api', async original => ({
 
 vi.mock('@tanstack/react-router', async original => ({
   ...(await original<typeof Router>()),
-  useRouter: () => ({ navigate })
+  useRouter: () => ({ navigate, state: routerState })
 }))
 
 const bot = (name: string, display_name: string) =>
@@ -133,7 +135,10 @@ describe('tags in a message', () => {
     expect(screen.queryByRole('button', { name: 'my jobs' })).toBeNull()
     expect(screen.getByText('my jobs')).toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: 'Passwords' }))
-    expect(navigate).toHaveBeenLastCalledWith({ params: { tab: 'passwords' }, to: '/settings/$tab' })
+    expect(navigate).toHaveBeenLastCalledWith({
+      params: { tab: 'passwords' },
+      to: '/settings/$tab'
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Notion' }))
     expect(navigate).toHaveBeenLastCalledWith({ params: { tab: 'plugins' }, to: '/settings/$tab' })
     expect(usePlugins.getState().sought).toEqual({ kind: 'plugin', name: 'notion' })
@@ -147,5 +152,60 @@ describe('tags in a message', () => {
       'href',
       'mailto:me@example.com'
     )
+  })
+
+  it('ignores a slow bot-tag thread lookup after navigating away or switching connections', async () => {
+    let finish!: (value: { section: Section | null }) => void
+    vi.mocked(sectionsThread).mockImplementation(
+      () =>
+        new Promise(resolve => {
+          finish = resolve
+        })
+    )
+    routerState.location.pathname = '/b/hexbot/s/chat'
+    useConnection.setState({ epoch: 'e1' })
+
+    said('Talked to @biology earlier.')
+    fireEvent.click(screen.getByRole('button', { name: 'Open the conversation with Biology' }))
+    // Route changes before the lookup resolves.
+    routerState.location.pathname = '/b/biology/s/own'
+    finish({ section: { bot: 'biology', id: 't1', peer_bot: 'hexbot' } as unknown as Section })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(useUi.getState().thread).toBeNull()
+  })
+
+  it('ignores a slow mention lookup after Close Chat or a newer thread selection on the same route', async () => {
+    let finish!: (value: { section: Section | null }) => void
+    vi.mocked(sectionsThread).mockImplementation(
+      () =>
+        new Promise(resolve => {
+          finish = resolve
+        })
+    )
+    routerState.location.pathname = '/b/hexbot/s/chat'
+    useConnection.setState({ epoch: 'e1' })
+    useUi.setState({ thread: { bot: 'writer', peer: 'hexbot', sectionId: 'th-outer' } })
+
+    said('Check with @biology too.')
+    fireEvent.click(screen.getByRole('button', { name: 'Open the conversation with Biology' }))
+    // User closes the open thread before the mention lookup resolves (same pathname, target, epoch).
+    useUi.getState().closeThread()
+    finish({ section: { bot: 'biology', id: 't-bio', peer_bot: 'hexbot' } as unknown as Section })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(useUi.getState().thread).toBeNull()
+
+    // User clicks mention, then immediately clicks a different pill before mention lookup resolves.
+    fireEvent.click(screen.getByRole('button', { name: 'Open the conversation with Biology' }))
+    useUi.getState().openThread({ bot: 'planner', peer: 'hexbot', sectionId: 't-plan' })
+    finish({ section: { bot: 'biology', id: 't-bio', peer_bot: 'hexbot' } as unknown as Section })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(useUi.getState().thread).toEqual({
+      bot: 'planner',
+      peer: 'hexbot',
+      sectionId: 't-plan'
+    })
   })
 })

@@ -2429,8 +2429,20 @@ fn persist_pi_message(
     let mut projected = projection(message, display.as_deref());
     if let (Some(projected), Some(seed)) = (&mut projected, seed.and_then(Value::as_object)) {
         for (key, value) in seed {
-            if key != "_input_intent" && key != "input_id" {
+            if key != "_input_intent" && key != "input_id" && key != "_tool_call_occurrences" {
                 projected[key] = value.clone();
+            }
+        }
+        if let (Some(occurrences), Some(calls)) = (
+            seed.get("_tool_call_occurrences").and_then(Value::as_array),
+            projected
+                .get_mut("tool_calls")
+                .and_then(Value::as_array_mut),
+        ) {
+            for (call, occ) in calls.iter_mut().zip(occurrences.iter()) {
+                if let Some(occ) = occ.as_str() {
+                    call["occurrence_id"] = json!(occ);
+                }
             }
         }
     }

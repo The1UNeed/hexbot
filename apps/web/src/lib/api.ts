@@ -9,6 +9,7 @@ import { JsonRpcGatewayError } from '@hermes/shared'
 
 import { useConnection } from '../stores/connection'
 
+import { type AskCall, askExpectedSent, asksCompatible, asksOf, askTarget } from './asks'
 import { targetOrigin } from './daemon-origin'
 import { mediaSource, splitAttached } from './media'
 import { type HexbotRpcClient, rpcCall } from './rpc'
@@ -54,6 +55,7 @@ import type {
   Room,
   RoomEvent,
   RoomLimits,
+  RoomTurnAsk,
   Section,
   Settings,
   SkillInfo,
@@ -76,6 +78,8 @@ export interface HistoryRow {
       name: string
       arguments?: unknown
       durationMs?: number
+      result?: unknown
+      section_id?: string
       status: string
       error?: string
     }[]
@@ -86,6 +90,7 @@ export interface HistoryRow {
   name?: string
   role: string
   row_id?: string
+  section_id?: string
   text?: string
   [key: string]: unknown
 }
@@ -799,6 +804,8 @@ export function sectionsUnarchive(id: string): Promise<{ section: Section }> {
 }
 
 export interface SectionOpened {
+  /** Active or settled `message_bot` asks from the running turn; older daemons leave it out. */
+  asks?: RoomTurnAsk[]
   /** Whether a turn runs at this read; older daemons leave it out. */
   busy?: boolean
   /** How full the section's context is; see `ContextUsage`. */
@@ -1520,6 +1527,63 @@ export const clarifyAnswered = (clarify: ClarifyRequest) =>
   )
 
 /**
+ * Preserve `section_id` on persisted nested calls (such as a failed `message_bot`
+ * ask inside `codemode`) so reopening a chat or thread still opens the exact thread.
+ */
+function nestedToolResult(nested: {
+  error?: unknown
+  result?: unknown
+  section_id?: unknown
+}): unknown {
+  const sectionId =
+    typeof nested.section_id === 'string' && nested.section_id ? nested.section_id : undefined
+
+  if (nested.error != null) {
+    if (!sectionId) {
+      return nested.error
+    }
+
+    if (typeof nested.error === 'object' && !Array.isArray(nested.error)) {
+      const obj = nested.error as Record<string, unknown>
+
+      return { ...obj, section_id: obj.section_id ?? sectionId }
+    }
+
+    return { error: nested.error, section_id: sectionId }
+  }
+
+  if (nested.result != null) {
+    if (!sectionId) {
+      return nested.result
+    }
+
+    if (typeof nested.result === 'object' && !Array.isArray(nested.result)) {
+      const obj = nested.result as Record<string, unknown>
+
+      return { ...obj, section_id: obj.section_id ?? sectionId }
+    }
+
+    if (typeof nested.result === 'string') {
+      try {
+        const parsed: unknown = JSON.parse(nested.result)
+
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          const obj = parsed as Record<string, unknown>
+
+          return { ...obj, section_id: obj.section_id ?? sectionId }
+        }
+      } catch {
+        // Plain text result; keep both text and section_id.
+      }
+    }
+
+    return { result: nested.result, section_id: sectionId }
+  }
+
+  return sectionId ? { section_id: sectionId } : null
+}
+
+/**
  * Turn the Hexbot `session.history` projection into transcript messages.
  * Tool rows fold into the assistant message that issued their call, matching how
  * live `tool.start` / `tool.complete` events are rendered.
@@ -1534,13 +1598,14 @@ export const clarifyAnswered = (clarify: ClarifyRequest) =>
  */
 export function messagesFromHistory(
   rows: HistoryRow[],
-  options: { sender?: string } = {}
+  options: { asks?: RoomTurnAsk[]; busy?: boolean; sender?: string } = {}
 ): Message[] {
   const messages: Message[] = []
   const prefix = options.sender ? `@${options.sender}: ` : null
   // Tool rows carry no arguments; the assistant row that made the call does,
   // as the JSON the model wrote. Parsed, they match live `tool.start` args.
-  const callOwners = new Map<string, HistoryRow[]>()
+  const callOwners = new Map<string, { name?: string; row: HistoryRow }[]>()
+  const callOwnersByOccurrence = new Map<string, HistoryRow>()
   const formatted = new Map<HistoryRow, Message>()
   const dreams = new Set<Message>()
   const rowCounts = new Map<string, number>()
@@ -1563,10 +1628,20 @@ export function messagesFromHistory(
     }
 
     for (const call of Array.isArray(row.tool_calls) ? row.tool_calls : []) {
-      const { id } = (call ?? {}) as { id?: unknown }
+      const { function: fn, id, occurrence_id } = (call ?? {}) as {
+        function?: { name?: unknown }
+        id?: unknown
+        occurrence_id?: unknown
+      }
+
+      const name = typeof fn?.name === 'string' && fn.name ? fn.name : undefined
 
       if (typeof id === 'string') {
-        callOwners.set(id, [...(callOwners.get(id) ?? []), row])
+        callOwners.set(id, [...(callOwners.get(id) ?? []), { name, row }])
+      }
+
+      if (typeof occurrence_id === 'string' && occurrence_id) {
+        callOwnersByOccurrence.set(occurrence_id, row)
       }
     }
   }
@@ -1584,21 +1659,35 @@ export function messagesFromHistory(
 
     if (row.role === 'tool') {
       const toolId = String(row.tool_call_id ?? row.tool_id)
+      const rowName = typeof row.name === 'string' && row.name ? row.name : undefined
+
+      const occurrenceId =
+        typeof row.occurrence_id === 'string' && row.occurrence_id ? row.occurrence_id : undefined
 
       const parentId =
         typeof row.parent_tool_call_id === 'string' ? row.parent_tool_call_id : undefined
 
+      const occurrenceOwner = !parentId && occurrenceId ? callOwnersByOccurrence.get(occurrenceId) : undefined
       const declarations = callOwners.get(parentId ?? toolId) ?? []
 
       const candidates = declarations.filter(
-        owner => !row.turn_id || !owner.turn_id || row.turn_id === owner.turn_id
+        entry =>
+          (!row.turn_id || !entry.row.turn_id || row.turn_id === entry.row.turn_id) &&
+          (parentId || !rowName || !entry.name || entry.name === rowName)
       )
 
-      const owner = candidates.length === 1 ? candidates[0] : undefined
+      const owner = occurrenceOwner ?? (candidates.length === 1 ? candidates[0]!.row : undefined)
 
       const declaration =
         !parentId && owner?.tool_calls && Array.isArray(owner.tool_calls)
-          ? owner.tool_calls.find(call => call?.id === toolId)
+          ? (occurrenceId
+              ? owner.tool_calls.find(call => call?.occurrence_id === occurrenceId)
+              : undefined) ??
+            owner.tool_calls.find(
+              call =>
+                call?.id === toolId &&
+                (!rowName || !call?.function?.name || call.function.name === rowName)
+            )
           : undefined
 
       const args = declaration?.function?.arguments
@@ -1622,8 +1711,12 @@ export function messagesFromHistory(
           ? previous
           : undefined
 
+      const rawSectionId =
+        typeof row.section_id === 'string' && row.section_id ? row.section_id : undefined
+
       const call = {
         messageId,
+        ...(occurrenceId && { occurrenceId }),
         ...(parentId && { parentToolCallId: parentId }),
         args:
           row.args ??
@@ -1632,7 +1725,14 @@ export function messagesFromHistory(
             : null),
         durationS: null,
         name: String(row.name ?? 'tool'),
-        result: row.text ?? null,
+        result: rawSectionId
+          ? nestedToolResult({
+              ...(row.is_error === true
+                ? { error: row.text ?? 'Tool failed' }
+                : { result: row.text }),
+              section_id: rawSectionId
+            })
+          : (row.text ?? null),
         // History keeps no tool start times; 0 is "unknown", so no time is shown.
         startedAt: 0,
         status: row.is_error === true ? ('error' as const) : ('ok' as const),
@@ -1658,7 +1758,8 @@ export function messagesFromHistory(
           durationS: nested.durationMs == null ? null : nested.durationMs / 1000,
           name: nested.name,
           parentToolCallId: call.toolId,
-          result: nested.error ?? null,
+          ...(call.occurrenceId && { parentOccurrenceId: call.occurrenceId }),
+          result: nestedToolResult(nested),
           startedAt: 0,
           status: nested.status === 'error' ? ('error' as const) : ('ok' as const),
           toolId: nested.id
@@ -1683,6 +1784,7 @@ export function messagesFromHistory(
           createdAt: 0,
           id: String(row.row_id ?? nextMessageId()),
           ...sent(row),
+          ...(typeof row.turn_id === 'string' && { turnId: row.turn_id }),
           role: 'assistant',
           streaming: false,
           text: '',
@@ -1758,6 +1860,503 @@ export function messagesFromHistory(
 
     if (row.dream === true) {
       dreams.add(message)
+    }
+  }
+
+  // When a section opens mid-call (`busy: true`), restore any unmatched `message_bot`
+  // declarations from the latest exchange as running tool calls so the UI shows
+  // "Messaging <Bot>" immediately without waiting for `tool.complete`.
+  if (options.busy) {
+    const isBoundary = (row: HistoryRow) => {
+      const text = typeof row.text === 'string' ? row.text : ''
+
+      if (row.display_kind === 'hidden') {
+        return Boolean(prefix && row.role === 'user' && text.startsWith(prefix))
+      }
+
+      return row.role === 'user'
+    }
+
+    let maxExchange = 0
+
+    for (const row of rows) {
+      if (isBoundary(row)) {
+        maxExchange += 1
+      }
+    }
+
+    interface PendingDecl {
+      args: Record<string, unknown> | null
+      expectedSent: boolean | null
+      id: string
+      messageId?: string
+      occurrenceId?: string
+      row: HistoryRow
+      target: null | string
+      text?: string
+      turnId?: string
+    }
+
+    const declarations: PendingDecl[] = []
+
+    const results: {
+      expectedSent: boolean | null
+      id: string
+      messageId?: string
+      occurrenceId?: string
+      sent: boolean
+      status: 'error' | 'ok'
+      target: null | string
+      text?: string
+      turnId?: string
+    }[] = []
+
+    const persistedNested: {
+      call: AskCall
+      id: string
+      parentOccurrenceId?: string
+      parentToolCallId: string
+      turnId?: string
+    }[] = []
+
+    let exchange = 0
+    let latestTurnId: string | undefined
+
+    for (const row of rows) {
+      if (isBoundary(row)) {
+        exchange += 1
+
+        continue
+      }
+
+      if (exchange !== maxExchange || row.display_kind === 'hidden' || row.dream === true) {
+        continue
+      }
+
+      const rowTurnId = typeof row.turn_id === 'string' ? row.turn_id : undefined
+
+      if (row.role === 'assistant') {
+        if (rowTurnId) {
+          latestTurnId = rowTurnId
+        }
+
+        const messageId =
+          row.row_id != null && rowCounts.get(String(row.row_id)) === 1
+            ? String(row.row_id)
+            : undefined
+
+        for (const call of Array.isArray(row.tool_calls) ? row.tool_calls : []) {
+          const entry = (call ?? {}) as {
+            function?: { arguments?: unknown; name?: unknown }
+            id?: unknown
+            occurrence_id?: unknown
+          }
+
+          if (typeof entry.id !== 'string' || !entry.id) {
+            continue
+          }
+
+          const rawArgs = entry.function?.arguments
+
+          const parsedRaw =
+            typeof rawArgs === 'string'
+              ? parseArguments(rawArgs)
+              : rawArgs && typeof rawArgs === 'object'
+                ? rawArgs
+                : null
+
+          const parsed =
+            parsedRaw && typeof parsedRaw === 'object'
+              ? (parsedRaw as Record<string, unknown>)
+              : null
+
+          const fnName = typeof entry.function?.name === 'string' ? entry.function.name : undefined
+          const target = typeof parsed?.to === 'string' && parsed.to ? parsed.to : null
+          const isAsk = fnName === 'message_bot' || (!fnName && Boolean(target))
+
+          if (!isAsk) {
+            continue
+          }
+
+          declarations.push({
+            args: parsed,
+            expectedSent: askExpectedSent(parsed),
+            id: entry.id,
+            messageId,
+            ...(typeof entry.occurrence_id === 'string' && entry.occurrence_id
+              ? { occurrenceId: entry.occurrence_id }
+              : {}),
+            row,
+            target,
+            ...(typeof parsed?.text === 'string' ? { text: parsed.text } : {}),
+            turnId: rowTurnId
+          })
+        }
+      } else if (
+        row.role === 'tool' &&
+        (row.name === 'message_bot' ||
+          (row as { tool_name?: unknown }).tool_name === 'message_bot')
+      ) {
+        const id = String(row.tool_call_id ?? row.tool_id ?? '')
+
+        const explicitRow =
+          typeof (row as { message_id?: unknown }).message_id === 'string'
+            ? String((row as { message_id?: unknown }).message_id)
+            : undefined
+
+        const rawResArgs =
+          typeof row.args === 'string'
+            ? parseArguments(row.args)
+            : row.args && typeof row.args === 'object'
+              ? row.args
+              : null
+
+        const resArgs =
+          rawResArgs && typeof rawResArgs === 'object'
+            ? (rawResArgs as Record<string, unknown>)
+            : null
+
+        const rawTarget =
+          (typeof resArgs?.to === 'string' && resArgs.to ? resArgs.to : '') ||
+          (typeof row.context === 'string' ? row.context : '')
+
+        const resStatus: 'error' | 'ok' = row.is_error ? 'error' : 'ok'
+
+        const parsedAsk = asksOf([
+          {
+            args: resArgs,
+            name: 'message_bot',
+            result: row.text ?? row.content,
+            status: resStatus,
+            summary: typeof row.context === 'string' ? row.context : undefined
+          }
+        ])[0]
+
+        results.push({
+          expectedSent: askExpectedSent(resArgs),
+          id,
+          messageId: explicitRow,
+          ...(typeof row.occurrence_id === 'string' && row.occurrence_id
+            ? { occurrenceId: row.occurrence_id }
+            : {}),
+          sent: parsedAsk?.sent ?? false,
+          status: resStatus,
+          target: rawTarget || null,
+          ...(typeof resArgs?.text === 'string' ? { text: resArgs.text } : {}),
+          turnId: rowTurnId
+        })
+      } else if (row.role === 'tool' && Array.isArray(row.nested_calls?.calls)) {
+        const parentId = String(row.tool_call_id ?? row.tool_id ?? '')
+
+        const parentOccurrenceId =
+          typeof row.occurrence_id === 'string' && row.occurrence_id ? row.occurrence_id : undefined
+
+        for (const nested of row.nested_calls.calls) {
+          if (nested.name === 'message_bot' && nested.id) {
+            persistedNested.push({
+              call: {
+                args: nested.arguments ?? null,
+                name: 'message_bot',
+                result: nestedToolResult(nested),
+                status: nested.status === 'error' ? 'error' : 'ok'
+              },
+              id: nested.id,
+              ...(parentOccurrenceId ? { parentOccurrenceId } : {}),
+              parentToolCallId: parentId,
+              turnId: rowTurnId
+            })
+          }
+        }
+      }
+    }
+
+    const activeDeclarations = latestTurnId
+      ? declarations.filter(decl => !decl.turnId || decl.turnId === latestTurnId)
+      : declarations
+
+    const matched = new Set<number>()
+
+    for (const res of results) {
+      const idx = activeDeclarations.findIndex((decl, i) => {
+        if (matched.has(i) || decl.id !== res.id) {
+          return false
+        }
+
+        if (res.occurrenceId && decl.occurrenceId) {
+          return res.occurrenceId === decl.occurrenceId
+        }
+
+        if (res.turnId && decl.turnId && res.turnId !== decl.turnId) {
+          return false
+        }
+
+        if (res.messageId && decl.messageId && res.messageId !== decl.messageId) {
+          return false
+        }
+
+        if (res.target && decl.target && res.target !== decl.target) {
+          return false
+        }
+
+        if (res.text !== undefined && decl.text !== undefined && res.text !== decl.text) {
+          return false
+        }
+
+        if (
+          res.expectedSent !== null &&
+          decl.expectedSent !== null &&
+          res.expectedSent !== decl.expectedSent
+        ) {
+          return false
+        }
+
+        if (res.status === 'ok' && decl.expectedSent !== null && decl.expectedSent !== res.sent) {
+          return false
+        }
+
+        return true
+      })
+
+      if (idx >= 0) {
+        matched.add(idx)
+      }
+    }
+
+    const liveAsks = options.asks ?? []
+    const usedLiveAsks = new Set<number>()
+
+    const liveAskMeta = (ask: RoomTurnAsk) => {
+      const rawArgs = typeof ask.args === 'string' ? parseArguments(ask.args) : ask.args
+
+      const parsedArgs =
+        rawArgs && typeof rawArgs === 'object' ? (rawArgs as Record<string, unknown>) : null
+
+      const text = typeof parsedArgs?.text === 'string' ? parsedArgs.text : undefined
+
+      return {
+        expectedSent: askExpectedSent(parsedArgs),
+        target: askTarget({
+          args: parsedArgs,
+          name: 'message_bot',
+          status: ask.status,
+          summary: ask.context
+        }),
+        text
+      }
+    }
+
+    const matchLiveAsk = (entry: {
+      expectedSent: boolean | null
+      id: string
+      messageId?: string
+      occurrenceId?: string
+      sent?: boolean
+      status?: 'error' | 'ok'
+      target: null | string
+      text?: string
+      turnId?: string
+    }): RoomTurnAsk | undefined => {
+      const askIdx = liveAsks.findIndex((ask, idx) => {
+        if (usedLiveAsks.has(idx) || ask.tool_id !== entry.id || ask.parent_tool_call_id) {
+          return false
+        }
+
+        if (entry.status) {
+          if (ask.status !== entry.status) {
+            return false
+          }
+
+          if (entry.status === 'ok' && entry.sent !== undefined) {
+            const liveAskSummary = asksOf([
+              {
+                args: ask.args,
+                name: 'message_bot',
+                result: ask.result ?? (ask.section_id ? { section_id: ask.section_id } : null),
+                status: ask.status,
+                summary: ask.context
+              }
+            ])[0]
+
+            if (liveAskSummary && liveAskSummary.sent !== entry.sent) {
+              return false
+            }
+          }
+        }
+
+        if (ask.occurrence_id && entry.occurrenceId) {
+          return ask.occurrence_id === entry.occurrenceId
+        }
+
+        if (ask.turn_id && entry.turnId && ask.turn_id !== entry.turnId) {
+          return false
+        }
+
+        if (ask.message_id && entry.messageId && ask.message_id !== entry.messageId) {
+          return false
+        }
+
+        const meta = liveAskMeta(ask)
+
+        if (meta.target && entry.target && meta.target !== entry.target) {
+          return false
+        }
+
+        if (meta.text !== undefined && entry.text !== undefined && meta.text !== entry.text) {
+          return false
+        }
+
+        if (
+          meta.expectedSent !== null &&
+          entry.expectedSent !== null &&
+          meta.expectedSent !== entry.expectedSent
+        ) {
+          return false
+        }
+
+        return true
+      })
+
+      if (askIdx < 0) {
+        return undefined
+      }
+
+      usedLiveAsks.add(askIdx)
+
+      return liveAsks[askIdx]
+    }
+
+    // Consume live snapshot asks already represented by persisted tool results.
+    for (const res of results) {
+      matchLiveAsk(res)
+    }
+
+    for (let i = 0; i < activeDeclarations.length; i++) {
+      if (matched.has(i)) {
+        continue
+      }
+
+      const decl = activeDeclarations[i]!
+      const targetMessage = formatted.get(decl.row)
+
+      if (!targetMessage) {
+        continue
+      }
+
+      const liveAsk = matchLiveAsk(decl)
+      const messageId = decl.messageId ?? liveAsk?.message_id
+      const occurrenceId = decl.occurrenceId ?? liveAsk?.occurrence_id
+
+      targetMessage.toolCalls.push({
+        ...(messageId ? { messageId } : {}),
+        ...(occurrenceId ? { occurrenceId } : {}),
+        args: decl.args ?? liveAsk?.args ?? null,
+        durationS: null,
+        name: 'message_bot',
+        result: liveAsk
+          ? (liveAsk.result ?? (liveAsk.section_id ? { section_id: liveAsk.section_id } : null))
+          : null,
+        startedAt: 0,
+        status: liveAsk ? liveAsk.status : 'running',
+        ...(liveAsk?.context ? { summary: liveAsk.context } : {}),
+        toolId: decl.id
+      })
+    }
+
+    // Consume live snapshot asks already represented by persisted nested tool calls.
+    for (const nested of persistedNested) {
+      const askIdx = liveAsks.findIndex((ask, idx) => {
+        if (
+          usedLiveAsks.has(idx) ||
+          ask.status !== nested.call.status ||
+          ask.parent_tool_call_id !== nested.parentToolCallId ||
+          (ask.parent_occurrence_id &&
+            nested.parentOccurrenceId &&
+            ask.parent_occurrence_id !== nested.parentOccurrenceId) ||
+          ask.tool_id !== nested.id ||
+          (ask.turn_id && nested.turnId && ask.turn_id !== nested.turnId)
+        ) {
+          return false
+        }
+
+        return asksCompatible(nested.call, {
+          args: typeof ask.args === 'string' ? parseArguments(ask.args) : ask.args,
+          name: 'message_bot',
+          ...(ask.occurrence_id ? { occurrenceId: ask.occurrence_id } : {}),
+          result: ask.result ?? (ask.section_id ? { section_id: ask.section_id } : null),
+          status: ask.status,
+          summary: ask.context
+        })
+      })
+
+      if (askIdx >= 0) {
+        usedLiveAsks.add(askIdx)
+      }
+    }
+
+    // Restore live nested (e.g. codemode) asks and direct asks whose rows have not landed in
+    // persisted history yet (e.g. started or settled between reading history and sampling asks).
+    const lastUserMessageIndex = messages.findLastIndex(message => message.role === 'user')
+    const trailingMessages = messages.slice(lastUserMessageIndex + 1)
+    let fallbackAssistant = trailingMessages.findLast(message => message.role === 'assistant')
+
+    for (let idx = 0; idx < liveAsks.length; idx++) {
+      if (usedLiveAsks.has(idx)) {
+        continue
+      }
+
+      const ask = liveAsks[idx]!
+
+      const compatibleFallback =
+        fallbackAssistant &&
+        (!ask.turn_id || !fallbackAssistant.turnId || fallbackAssistant.turnId === ask.turn_id)
+          ? fallbackAssistant
+          : undefined
+
+      let ownerMessage =
+        (ask.message_id
+          ? trailingMessages.findLast(
+              message =>
+                message.role === 'assistant' && message.fragmentIds?.includes(ask.message_id!)
+            )
+          : undefined) ??
+        (ask.turn_id
+          ? trailingMessages.findLast(
+              message => message.role === 'assistant' && message.turnId === ask.turn_id
+            )
+          : undefined) ??
+        compatibleFallback
+
+      if (!ownerMessage) {
+        ownerMessage = {
+          attachments: [],
+          createdAt: 0,
+          ...(ask.message_id && { fragmentIds: [ask.message_id] }),
+          id: ask.message_id ?? nextMessageId('a'),
+          role: 'assistant',
+          streaming: false,
+          text: '',
+          toolCalls: [],
+          ...(ask.turn_id && { turnId: ask.turn_id })
+        }
+        messages.push(ownerMessage)
+        trailingMessages.push(ownerMessage)
+        fallbackAssistant = ownerMessage
+      }
+
+      ownerMessage.toolCalls.push({
+        ...(ask.message_id ? { messageId: ask.message_id } : {}),
+        ...(ask.occurrence_id ? { occurrenceId: ask.occurrence_id } : {}),
+        ...(ask.parent_occurrence_id ? { parentOccurrenceId: ask.parent_occurrence_id } : {}),
+        ...(ask.parent_tool_call_id ? { parentToolCallId: ask.parent_tool_call_id } : {}),
+        args: ask.args ?? null,
+        durationS: null,
+        name: 'message_bot',
+        result: ask.result ?? (ask.section_id ? { section_id: ask.section_id } : null),
+        startedAt: 0,
+        status: ask.status,
+        ...(ask.context ? { summary: ask.context } : {}),
+        toolId: ask.tool_id
+      })
     }
   }
 

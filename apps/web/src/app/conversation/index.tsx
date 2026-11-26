@@ -17,11 +17,7 @@ import {
   useState,
   useSyncExternalStore
 } from 'react'
-import ReactMarkdown, {
-  type Components,
-  defaultUrlTransform,
-  type Options
-} from 'react-markdown'
+import ReactMarkdown, { type Components, defaultUrlTransform, type Options } from 'react-markdown'
 import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
@@ -115,6 +111,7 @@ import { useSearchJump } from './search-jump'
 import { SignInCard } from './sign-in-card'
 import { asks, liveMood, liveMoodsOf } from './steps'
 import { MessageLink, remarkMentions, TagScope } from './tags'
+import { ThreadView } from './thread-view'
 import { DeliveryMark, NotSent, useLate } from './unsent'
 import { visualsOf } from './visual'
 import { Visuals } from './visual-frame'
@@ -414,7 +411,7 @@ export const Markdown = memo(function Markdown({
  * the chat, where it can be read and, when it is text, edited with the bot.
  * Without `onFile` and a session (a room) a card only names the file.
  */
-function Attachments({
+export function Attachments({
   attachments,
   mine,
   onFile,
@@ -695,13 +692,7 @@ export function StoppedCard({
  * A read of the chat that failed while messages are on screen: what was
  * shown stays, and this small card under it says the chat may be incomplete.
  */
-export function MissingMessagesCard({
-  reason,
-  onRetry
-}: {
-  reason: string
-  onRetry: () => void
-}) {
+export function MissingMessagesCard({ reason, onRetry }: { reason: string; onRetry: () => void }) {
   return (
     <div
       className="hex-bubble hex-fade mt-4 flex max-w-[min(85%,40rem)] items-center gap-3 rounded-[20px] border border-border bg-background py-2 pr-2 pl-3.5"
@@ -1066,7 +1057,7 @@ export const MessageRow = memo(function MessageRow({
           ) : null}
         </div>
       </article>
-      {assistant ? <AskingRow message={message} sender={bot?.name ?? null} /> : null}
+      {assistant ? <AskingRow fresh={fresh} message={message} sender={bot?.name ?? null} /> : null}
     </TagScope>
   )
 })
@@ -2054,7 +2045,12 @@ function BotConversation() {
     ]
   )
 
-  const [resolved, setResolved] = useState<{ entry: typeof entry; peer: boolean } | null>(null)
+  const [resolved, setResolved] = useState<{
+    entry: typeof entry
+    peer: boolean
+    peerBot?: string
+  } | null>(null)
+
   const bot = useBot(params.bot ?? null)
   const missingBot = useBots(state => Boolean(params.bot && botMissing(state, params.bot)))
   const section = useSection(params.section ?? null)
@@ -2393,7 +2389,11 @@ function BotConversation() {
           return
         }
 
-        setResolved({ entry, peer: Boolean(chat.peer_bot) })
+        setResolved({
+          entry,
+          peer: Boolean(chat.peer_bot),
+          ...(chat.peer_bot ? { peerBot: chat.peer_bot } : {})
+        })
       })().catch(error => {
         // Not connected: the chat is checked again when a daemon answers.
         // Connected without daemon info, Retry is the way forward.
@@ -2432,8 +2432,17 @@ function BotConversation() {
   // effect re-runs as the read names the live session.
   const [readEntry, setReadEntry] = useState<typeof entry | null>(null)
 
+  const peerBot = ready && resolved.peer ? (resolved.peerBot ?? null) : null
+  const overlayThreadOpen = useUi(state => Boolean(state.thread))
+
   useEffect(() => {
-    if (!ready || !params.section || (liveId && readFor.current === entry)) {
+    useUi.getState().setPeerRoute(peerBot ? (params.section ?? null) : null)
+
+    return () => useUi.getState().setPeerRoute(null)
+  }, [params.section, peerBot])
+
+  useEffect(() => {
+    if (!ready || peerBot || !params.section || (liveId && readFor.current === entry)) {
       return
     }
 
@@ -2467,7 +2476,7 @@ function BotConversation() {
     return () => {
       cancelled = true
     }
-  }, [ready, entry, params.section, liveId, router, location, target, epoch])
+  }, [ready, peerBot, entry, params.section, liveId, router, location, target, epoch])
   // The card a failed read leaves under the messages comes into view too.
   useEffect(() => {
     if (atBottom) {
@@ -2477,13 +2486,7 @@ function BotConversation() {
   // The turn, not its bubble: a card closes the bubble while the turn runs on.
   const busy = Boolean(transcript?.turnActive) || streaming
   // A finished reply notifies from lib/events.ts, for every bot's chat.
-  useConversationFeelings(
-    bot?.name,
-    section?.id,
-    messages,
-    ready,
-    busy
-  )
+  useConversationFeelings(bot?.name, section?.id, messages, ready, busy)
   const emotion = useEmotion(bot?.name)
   useTurnCues(section?.id, {
     failed: Boolean(messages.at(-1)?.error),
@@ -3031,6 +3034,54 @@ function BotConversation() {
         <h2 className="text-[length:var(--text-title)] font-semibold">This bot no longer exists</h2>
         <p className="text-muted">Choose another bot, or create a new one.</p>
       </div>
+    )
+  }
+
+  // Direct peer-thread URLs (notifications, bookmarks, deep links) use the same
+  // full-pane bot-to-bot view as opening a thread inline from a chat or room.
+  if (peerBot && params.bot && params.section) {
+    const closePeer = () => {
+      const own = knownChat(params.bot!)
+
+      if (own) {
+        void navigate({ to: '/b/$bot/s/$section', params: { bot: params.bot!, section: own.id } })
+
+        return
+      }
+
+      const lookup = useUi.getState().beginThreadLookup()
+
+      const stillHere = () =>
+        router.history.location === location &&
+        useConnection.getState().target === target &&
+        useConnection.getState().epoch === epoch &&
+        useUi.getState().threadNav === lookup
+
+      void sectionsActions()
+        .chat(params.bot!, stillHere)
+        .then(chat => {
+          if (!stillHere() || !chat) {
+            return
+          }
+
+          return navigate({ to: '/b/$bot/s/$section', params: { bot: chat.bot, section: chat.id } })
+        })
+        .catch(() => {
+          if (!stillHere()) {
+            return
+          }
+
+          void navigate({ to: '/' })
+        })
+    }
+
+    return (
+      <ThreadView
+        active={!overlayThreadOpen}
+        key={`${params.bot}/${peerBot}/${params.section}`}
+        onClose={closePeer}
+        thread={{ bot: params.bot, peer: peerBot, sectionId: params.section }}
+      />
     )
   }
 

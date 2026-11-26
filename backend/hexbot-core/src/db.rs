@@ -175,6 +175,8 @@ const COLUMNS: &[(&str, &str, &str)] = &[
     ("devices", "push_token", "TEXT"),
     ("devices", "push_platform", "TEXT"),
     ("bots", "pinned_at", "REAL"),
+    ("bot_messages", "waited", "INTEGER NOT NULL DEFAULT 1"),
+    ("bot_messages", "failed", "INTEGER NOT NULL DEFAULT 0"),
 ];
 
 /// Open the explicitly selected database without running schema migrations.

@@ -234,14 +234,16 @@ The native daemon provides `message_bot {to, text, wait: bool}` for bots:
   `[reply from <bot>]` message.
 - Threads are private one-to-one conversations. Section lists leave them
   out unless asked (`include_threads`); the app opens one on demand from the
-  row under the sender's reply (the two bots' faces turned toward each other,
-  "<sender> is asking <bot>", then the other
-  bot's tag: "<bot> helped", or "Messaged <bot>" when no reply was waited
-  for), or from that bot's name in a message, in a side panel. Dreaming reads them like
+  centered inline row under the sender's reply ("Messaging <bot>" while
+  running, settling in place to "Message from <bot>", "Messaged <bot>" when
+  no reply was waited for, or "Asked <bot>" on error), or from that bot's
+  name in a message, in the main conversation view (`<Bot A> ⇄ <Bot B>` with
+  a floating **Close Chat** button). Dreaming reads them like
   any other section, so both bots learn from the exchange. In a room, a
-  bot's `message.bot` event carries `asks: [{to, section_id}]` for the
-  teammates it asked during that turn (from `bot_messages.source_section`),
-  so the room keeps the "<bot> helped" row after the turn ends. Approval and
+  bot's `message.bot` event carries `asks: [{to, section_id, waited, failed}]`
+  for the teammates it asked during that turn (from `bot_messages.source_section`
+  plus pre-delivery rejected calls from the turn's transcript),
+  so the room keeps the inline ask row after the turn ends. Approval and
   question events carry `bot`, so a client honours that bot's Notify me
   for a thread it does not list.
 - A bot cannot message a bot that is waiting on its reply: the one that

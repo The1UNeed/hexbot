@@ -171,6 +171,10 @@ export type ChatItem =
       face?: FaceSource
       bot?: string
       peer?: string
+      /** Known peer thread section id, when the ask result reported it. */
+      sectionId?: string
+      /** True while the bot is still waiting on the teammate. */
+      running?: boolean
     }
   /** A bot's interactive visual, shown as its own card. */
   | { kind: 'visual'; id: string; title: string; index: number }

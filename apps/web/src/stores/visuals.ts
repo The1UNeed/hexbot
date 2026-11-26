@@ -33,7 +33,12 @@ export type SideTab = FileTab | Visual
 export const isFileTab = (tab: SideTab): tab is FileTab => 'file' in tab
 
 export function fileTab(title: string, file: FileTab['file']): FileTab {
-  return { file, title, toolId: `file:${file.path ?? file.url ?? title}` }
+  const target = file.path ?? file.url ?? title
+  // Peer-thread tabs coexist with an underlying chat's tabs; scope them so a
+  // peer file link never activates the owner chat's tab and its quick tools.
+  const scope = file.askable === false ? `${file.sectionId ?? file.sessionId}:` : ''
+
+  return { file, title, toolId: `file:${scope}${target}` }
 }
 
 export interface VisualsState {

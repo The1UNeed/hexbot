@@ -1,3 +1,4 @@
+import { ASKING_TOOL, asksCompatible } from '../lib/asks'
 import { findToolOccurrence } from '../lib/tool-occurrence'
 import type { Message, ToolCall } from '../lib/types'
 
@@ -36,6 +37,7 @@ export function hydrateHistory(
   // Looked up once per tool, so a long chat reopens in linear time.
   const findLive = occurrences(existing.messages.flatMap(message => message.toolCalls))
   const findStored = occurrences(history.flatMap(message => message.toolCalls))
+  const findStoredByName = occurrences(history.flatMap(message => message.toolCalls), true)
   const owners = new Map<string, Message[]>()
 
   for (const row of history) {
@@ -53,14 +55,158 @@ export function hydrateHistory(
   const fragmentOwners = (source: string | undefined) =>
     (source === undefined ? undefined : owners.get(source)) ?? []
 
+  const sameName = (a?: string, b?: string) =>
+    !a || !b || a === 'tool' || b === 'tool' || a === b
+
   const matchingLive = (tool: ToolCall) => {
     const live = findLive(tool)
 
+    const sameOcc = Boolean(
+      tool.occurrenceId && live?.occurrenceId && tool.occurrenceId === live.occurrenceId
+    )
+
     return live &&
-      (!tool.messageId || live.messageId === tool.messageId) &&
+      sameName(tool.name, live.name) &&
+      !(
+        tool.name === ASKING_TOOL &&
+        live.name === ASKING_TOOL &&
+        !sameOcc &&
+        !asksCompatible(tool, live)
+      ) &&
+      (sameOcc || !tool.messageId || live.messageId === tool.messageId) &&
       (!live.messageId || fragmentOwners(live.messageId).length === 1) &&
       findStored(live) === tool
       ? live
+      : undefined
+  }
+
+  // When a live tool omits `messageId` (because the daemon reused its `call_0` in a later
+  // fragment), only a unique same-name proven stored call within the same turn (or trailing
+  // exchange when untagged) with compatible ask args and parent occurrence can represent it,
+  // without ever pulling an earlier turn's answer onto the current turn or donating metadata.
+  const lastDurableUser = history.findLastIndex(message => message.role === 'user')
+
+  const sameNameProvenStored = (
+    liveTool: ToolCall,
+    liveMessage: TranscriptMessage,
+    liveToolIndex: number
+  ) => {
+    if (liveTool.messageId || !liveTool.name || liveTool.name === 'tool') {
+      return undefined
+    }
+
+    const liveParent = owningParent(liveMessage.toolCalls, liveToolIndex)
+
+    const priorLiveParents = liveParent
+      ? liveMessage.toolCalls.filter(
+          (candidate, index) =>
+            index < liveToolIndex &&
+            candidate !== liveParent &&
+            !candidate.parentToolCallId &&
+            candidate.toolId === liveParent.toolId
+        ).length
+      : 0
+
+    const storedInTurn: ToolCall[] = []
+    let matchedStoredParentCount = 0
+
+    for (let index = 0; index < history.length; index++) {
+      const candidateMsg = history[index]!
+
+      if (candidateMsg.role !== 'assistant') {
+        continue
+      }
+
+      if (liveMessage.turnId) {
+        if (candidateMsg.turnId !== liveMessage.turnId) {
+          continue
+        }
+      } else if (index <= lastDurableUser) {
+        continue
+      }
+
+      if (liveParent) {
+        const storedParents = candidateMsg.toolCalls.filter(
+          candidate => !candidate.parentToolCallId && candidate.toolId === liveParent.toolId
+        )
+
+        const storedParent =
+          (liveParent.occurrenceId
+            ? storedParents.find(candidate => candidate.occurrenceId === liveParent.occurrenceId)
+            : undefined) ??
+          (liveParent.messageId
+            ? storedParents.find(candidate => candidate.messageId === liveParent.messageId)
+            : undefined) ??
+          storedParents[0]
+
+        if (storedParents.length) {
+          matchedStoredParentCount += storedParents.length
+        }
+
+        if (
+          storedParent &&
+          ((liveParent.occurrenceId &&
+            storedParent.occurrenceId &&
+            liveParent.occurrenceId !== storedParent.occurrenceId) ||
+            (liveParent.messageId &&
+              storedParent.messageId &&
+              liveParent.messageId !== storedParent.messageId) ||
+            (!liveParent.occurrenceId &&
+              !liveParent.messageId &&
+              priorLiveParents >= matchedStoredParentCount))
+        ) {
+          continue
+        }
+      }
+
+      for (const candidateTool of candidateMsg.toolCalls) {
+        if (
+          liveTool.parentOccurrenceId &&
+          candidateTool.parentOccurrenceId &&
+          liveTool.parentOccurrenceId !== candidateTool.parentOccurrenceId
+        ) {
+          continue
+        }
+
+        if (
+          liveTool.name === ASKING_TOOL &&
+          candidateTool.name === ASKING_TOOL &&
+          !asksCompatible(candidateTool, liveTool)
+        ) {
+          continue
+        }
+
+        storedInTurn.push(candidateTool)
+      }
+    }
+
+    const stored = findToolOccurrence(liveTool, storedInTurn, { matchName: true })
+
+    if (!stored?.messageId || stored.name !== liveTool.name) {
+      return undefined
+    }
+
+    const liveInTurn = existing.messages.flatMap(message => {
+      if (!message.createdAt || message.role !== 'assistant') {
+        return []
+      }
+
+      if (liveMessage.turnId && message.turnId && message.turnId !== liveMessage.turnId) {
+        return []
+      }
+
+      return message.toolCalls.filter(
+        candidate =>
+          !(
+            liveTool.name === ASKING_TOOL &&
+            candidate.name === ASKING_TOOL &&
+            !asksCompatible(stored, candidate)
+          )
+      )
+    })
+
+    return findToolOccurrence(stored, liveInTurn, { matchName: true }) === liveTool
+      ? stored
       : undefined
   }
 
@@ -256,8 +402,24 @@ export function hydrateHistory(
       continue
     }
 
+    const liveIds = new Set(live.fragmentIds ?? [])
+
+    for (let toolIndex = 0; toolIndex < live.toolCalls.length; toolIndex++) {
+      const tool = live.toolCalls[toolIndex]!
+      const provenSameName = sameNameProvenStored(tool, live, toolIndex)
+      const stored = findStoredByName(tool) ?? provenSameName
+
+      if (
+        stored?.messageId &&
+        ((tool.occurrenceId && stored.occurrenceId === tool.occurrenceId) ||
+          provenSameName === stored)
+      ) {
+        liveIds.add(stored.messageId)
+      }
+    }
+
     const positions = messages.flatMap((message, index) =>
-      !message.createdAt && overlaps(live, message) ? [index] : []
+      !message.createdAt && message.fragmentIds?.some(id => liveIds.has(id)) ? [index] : []
     )
 
     const end = positions.at(-1) ?? messages.length
@@ -282,8 +444,8 @@ export function hydrateHistory(
 
     const region = messages.slice(begin, end + 1).filter(message => !message.createdAt)
     const order = region.flatMap(message => message.fragmentIds ?? [])
-    const first = order.findIndex(id => live.fragmentIds?.includes(id))
-    const last = order.findLastIndex(id => live.fragmentIds?.includes(id))
+    const first = order.findIndex(id => liveIds.has(id))
+    const last = order.findLastIndex(id => liveIds.has(id))
     const selected = new Set(first < 0 ? [] : order.slice(first, last + 1))
 
     const closed = region
@@ -300,12 +462,43 @@ export function hydrateHistory(
       .flatMap(message => message.toolCalls)
       .filter(tool => tool.messageId && selected.has(tool.messageId))
 
-    const liveTools = live.toolCalls.filter(tool => {
-      const stored = findStored(tool)
+    const selectedToolSet = new Set(selectedTools)
+    const provenMerges = new Map<ToolCall, ToolCall>()
+
+    const liveTools = live.toolCalls.filter((tool, toolIndex) => {
+      const provenSameName = sameNameProvenStored(tool, live, toolIndex)
+
+      if (provenSameName?.messageId && selected.has(provenSameName.messageId)) {
+        if (
+          selectedToolSet.has(provenSameName) &&
+          provenSameName.status === 'running' &&
+          (tool.status !== 'running' || tool.liveStarted)
+        ) {
+          provenMerges.set(provenSameName, tool)
+        }
+
+        return false
+      }
+
+      const stored = findStoredByName(tool)
+
+      if (
+        stored &&
+        tool.name === ASKING_TOOL &&
+        stored.name === ASKING_TOOL &&
+        !(tool.occurrenceId && stored.occurrenceId) &&
+        !asksCompatible(stored, tool)
+      ) {
+        return true
+      }
 
       return (
         !stored ||
-        (!(tool.messageId && tool.messageId === stored.messageId) && matchingLive(stored) !== tool)
+        (!(
+          (tool.occurrenceId && stored.occurrenceId && tool.occurrenceId === stored.occurrenceId) ||
+          (tool.messageId && tool.messageId === stored.messageId)
+        ) &&
+          matchingLive(stored) !== tool)
       )
     })
 
@@ -319,7 +512,14 @@ export function hydrateHistory(
       ...(live.parts || closed.length ? { parts: closed.map(part => part.text) } : {}),
       ...(live.partIds || closed.length ? { partIds: closed.map(part => part.id) } : {}),
       text: live.textId ? (storedParts.get(live.textId) ?? live.text) : live.text,
-      toolCalls: [...selectedTools, ...liveTools],
+      toolCalls: [
+        ...selectedTools.map(tool => {
+          const liveMatch = provenMerges.get(tool)
+
+          return liveMatch ? mergeTool(tool, liveMatch) : tool
+        }),
+        ...liveTools
+      ],
       ...(selectedCards.length && { approvals: selectedCards })
     }
 
@@ -352,7 +552,7 @@ export function hydrateHistory(
 }
 
 /** `findToolOccurrence` over `tools`, grouped once by call ID and parent scope. */
-function occurrences(tools: ToolCall[]) {
+function occurrences(tools: ToolCall[], matchName = false) {
   const key = (tool: Pick<ToolCall, 'toolId' | 'parentToolCallId'>) =>
     `${tool.toolId}\u0000${tool.parentToolCallId ?? ''}`
 
@@ -368,11 +568,7 @@ function occurrences(tools: ToolCall[]) {
     }
   }
 
-  return (tool: ToolCall) => findToolOccurrence(tool, groups.get(key(tool)) ?? [])
-}
-
-function overlaps(a: Message, b: Message) {
-  return Boolean(a.fragmentIds?.some(id => b.fragmentIds?.includes(id)))
+  return (tool: ToolCall) => findToolOccurrence(tool, groups.get(key(tool)) ?? [], { matchName })
 }
 
 function chunks(message: Message) {
@@ -500,14 +696,72 @@ function subset(message: Message, ids: Set<string>): Message[] {
   ]
 }
 
+function owningParent(toolCalls: readonly ToolCall[], childIndex: number): ToolCall | undefined {
+  const child = toolCalls[childIndex]
+
+  if (!child?.parentToolCallId) {
+    return undefined
+  }
+
+  if (child.parentOccurrenceId) {
+    const byOcc = toolCalls.find(
+      candidate =>
+        !candidate.parentToolCallId &&
+        candidate.toolId === child.parentToolCallId &&
+        candidate.occurrenceId === child.parentOccurrenceId
+    )
+
+    if (byOcc) {
+      return byOcc
+    }
+  }
+
+  if (child.messageId) {
+    const byMessage = toolCalls.find(
+      candidate =>
+        !candidate.parentToolCallId &&
+        candidate.toolId === child.parentToolCallId &&
+        candidate.messageId === child.messageId
+    )
+
+    if (byMessage) {
+      return byMessage
+    }
+  }
+
+  let fallback: ToolCall | undefined
+
+  for (let index = childIndex - 1; index >= 0; index--) {
+    const candidate = toolCalls[index]!
+
+    if (!candidate.parentToolCallId && candidate.toolId === child.parentToolCallId) {
+      if (child.status !== 'running' || candidate.status === 'running') {
+        return candidate
+      }
+
+      fallback ??= candidate
+    }
+  }
+
+  return fallback
+}
+
 function mergeTool(stored: ToolCall, live: ToolCall): ToolCall {
-  if (!findToolOccurrence(stored, [live])) {
+  if (
+    !findToolOccurrence(stored, [live], { matchName: true }) ||
+    (stored.name === ASKING_TOOL && live.name === ASKING_TOOL && !asksCompatible(stored, live))
+  ) {
     return stored
   }
 
   return {
     ...(live.status === 'running' ? { ...live, ...stored } : { ...stored, ...live }),
     messageId: live.messageId ?? stored.messageId,
-    args: live.args ?? stored.args
+    occurrenceId: live.occurrenceId ?? stored.occurrenceId,
+    parentOccurrenceId: live.parentOccurrenceId ?? stored.parentOccurrenceId,
+    ...(live.liveStarted || stored.liveStarted ? { liveStarted: true } : {}),
+    startedAt: stored.startedAt || live.startedAt,
+    args: live.args ?? stored.args,
+    summary: live.summary ?? stored.summary
   }
 }

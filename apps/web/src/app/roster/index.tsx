@@ -279,6 +279,8 @@ function RoomRow({
 interface BotRowProps {
   active: boolean
   bot: Bot
+  /** True while a bot-to-bot thread overlays the chat, so unread replies still show a dot. */
+  covered?: boolean
   draft: boolean
   focused: string | null
   live: LiveSections
@@ -297,6 +299,7 @@ interface BotRowProps {
 function BotRow({
   active,
   bot,
+  covered = false,
   draft,
   focused,
   live,
@@ -319,7 +322,7 @@ function BotRow({
     sections,
     live,
     moods,
-    active,
+    active && !covered,
     emotion
   )
 
@@ -556,9 +559,11 @@ export function RosterColumn() {
   // window behind another app has not shown it to you, so the daemon still
   // wakes the phone about it.
   const pageFocused = usePageFocused()
+  const openThread = useUi(state => state.thread)
+  const peerRoute = useUi(state => state.peerRoute)
 
-  // A chat hidden behind another bot's loading face has not been seen either.
-  const hidden = Boolean(asking && asking !== params.bot)
+  // A chat hidden behind another bot's loading face or an open bot-to-bot thread has not been seen.
+  const hidden = Boolean(openThread) || Boolean(asking && asking !== params.bot)
 
   // Once per finish: a refused read puts the dot back, and asking again would loop.
   const acknowledged = useRef<null | string>(null)
@@ -579,7 +584,15 @@ export function RosterColumn() {
 
   // What a notification about the chat or room on screen checks (lib/notify.ts).
   const shownRoom = (params as { room?: string }).room
-  const shown = shownRoom ? `room:${shownRoom}` : !hidden ? (params.section ?? null) : null
+
+  const shown = openThread
+    ? (openThread.sectionId ?? null)
+    : !hidden
+      ? shownRoom
+        ? `room:${shownRoom}`
+        : (params.section ?? null)
+      : null
+
   useEffect(() => {
     setShownSection(shown)
 
@@ -612,13 +625,18 @@ export function RosterColumn() {
     )
 
   const open = (bot: string, section: string) => {
+    useUi.getState().closeThread()
     void sectionsActions()
       .open(section)
       .catch(() => undefined)
     void navigate({ to: '/b/$bot/s/$section', params: { bot, section } })
   }
 
-  const openRoom = (room: string) => void navigate({ to: '/r/$room', params: { room } })
+  const openRoom = (room: string) => {
+    cancelChat()
+    useUi.getState().closeThread()
+    void navigate({ to: '/r/$room', params: { room } })
+  }
 
   const openRoomSettings = (room: string) =>
     void navigate({ to: '/r/$room/settings', params: { room } })
@@ -632,6 +650,7 @@ export function RosterColumn() {
    * One it named on this connection opens at once; the chat view asks again.
    */
   const openChat = async (bot: string) => {
+    useUi.getState().beginThreadLookup()
     const known = knownChat(bot)
 
     if (known) {
@@ -704,6 +723,7 @@ export function RosterColumn() {
       <BotRow
         active={chatShown((entry.item as Bot).name, asking, params)}
         bot={entry.item as Bot}
+        covered={Boolean(openThread || peerRoute)}
         draft={Object.values(sectionMap).some(
           section => section.bot === (entry.item as Bot).name && Boolean(drafts[section.id])
         )}
@@ -848,9 +868,16 @@ export function RosterColumn() {
         {query ? null : (
           <WaitingThreads
             bots={ordered}
-            onOpen={(bot, section) =>
-              void navigate({ to: '/b/$bot/s/$section', params: { bot, section } })
-            }
+            onOpen={(bot, section) => {
+              cancelChat()
+              const peer = ordered.find(item => item.name === bot)?.status_detail?.peer_bot
+
+              if (peer) {
+                useUi.getState().openThread({ bot, peer, sectionId: section })
+              } else {
+                void navigate({ to: '/b/$bot/s/$section', params: { bot, section } })
+              }
+            }}
           />
         )}
         {pinnedRoster.length ? (

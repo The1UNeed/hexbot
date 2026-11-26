@@ -124,6 +124,10 @@ fn team_shape(connection: &Connection) -> Vec<(String, Vec<Column>)> {
             ));
             columns.push(("pinned_at".into(), "REAL".into(), false, None, 0));
         }
+        if table == "bot_messages" {
+            columns.push(("waited".into(), "INTEGER".into(), true, Some("1".into()), 0));
+            columns.push(("failed".into(), "INTEGER".into(), true, Some("0".into()), 0));
+        }
     }
     // Native-only tables, in sqlite_master name order with the rest.
     let text = |name: &str, required: bool| (name.into(), "TEXT".into(), required, None, 0);

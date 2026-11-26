@@ -23,8 +23,17 @@ import { sectionsThread } from '../../lib/api'
 import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 import { mimeOf } from '../../lib/media'
-import { botHref, faviconOf, linkLabel, splitMentions, type Tag, tagHint, tagOf } from '../../lib/tags'
+import {
+  botHref,
+  faviconOf,
+  linkLabel,
+  splitMentions,
+  type Tag,
+  tagHint,
+  tagOf
+} from '../../lib/tags'
 import { useBot } from '../../stores/bots'
+import { useConnection } from '../../stores/connection'
 import { usePlugins } from '../../stores/plugins'
 import { useRooms } from '../../stores/rooms'
 import { knownChat, useSections } from '../../stores/sections'
@@ -78,15 +87,14 @@ function mention(node: Node): void {
       return [child]
     }
 
-    return splitMentions(child.value).map(
-      (part): Node =>
-        typeof part === 'string'
-          ? { type: 'text', value: part }
-          : {
-              children: [{ type: 'text', value: `@${part.handle}` }],
-              type: 'link',
-              url: botHref(part.handle)
-            }
+    return splitMentions(child.value).map((part): Node =>
+      typeof part === 'string'
+        ? { type: 'text', value: part }
+        : {
+            children: [{ type: 'text', value: `@${part.handle}` }],
+            type: 'link',
+            url: botHref(part.handle)
+          }
     )
   })
 }
@@ -232,6 +240,9 @@ export function BotTag({
   const open = () => {
     if (thread) {
       const speaker = from!
+      const originPath = router?.state?.location?.pathname
+      const { epoch, target } = useConnection.getState()
+      const lookup = uiActions().beginThreadLookup()
 
       // The thread belongs to the bot that was asked. The app keeps no list
       // of threads, so the daemon says which way round this one is.
@@ -241,6 +252,16 @@ export function BotTag({
       void (async () => {
         const asked = await there(handle, speaker)
         const asking = asked ? undefined : await there(speaker, handle)
+
+        // Do not open a stale thread if the user closed, switched threads, navigated, or reconnected.
+        if (
+          uiActions().threadNav !== lookup ||
+          router?.state?.location?.pathname !== originPath ||
+          useConnection.getState().target !== target ||
+          useConnection.getState().epoch !== epoch
+        ) {
+          return
+        }
 
         uiActions().openThread(
           asking

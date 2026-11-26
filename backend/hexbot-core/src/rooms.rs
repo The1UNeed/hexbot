@@ -32,7 +32,7 @@ fn get_with_conn(conn: &rusqlite::Connection, caller: &str, room: &str) -> Resul
     // Running turns let a reconnected client rebuild who is working.
     row["turns"] = json!(rows(
         conn,
-        "SELECT t.bot,s.live_session_id FROM room_turns t LEFT JOIN room_sessions s ON s.room_id=t.room_id AND s.bot=t.bot WHERE t.room_id=? AND t.status='running' ORDER BY t.started_at,t.bot",
+        "SELECT t.id,t.bot,s.live_session_id FROM room_turns t LEFT JOIN room_sessions s ON s.room_id=t.room_id AND s.bot=t.bot WHERE t.room_id=? AND t.status='running' ORDER BY t.started_at,t.bot",
         &[&room],
     )?);
     row["discord"] = crate::discord::room_info(conn, room)?;
@@ -1281,6 +1281,9 @@ impl RoomEngine {
         };
         let opened = self.runner.ensure(owner, bot, &stored).await;
         drop(admission);
+        // Sample `before_seq` after `ensure` reconciles any entries left behind
+        // by a crashed previous process so recovered calls never bleed into this turn.
+        let before_seq = turn_message_seq(&self.home, &stored);
         let live = opened.as_ref().ok().cloned();
         if let Some(live) = &live {
             db::open(&self.home)?.execute(
@@ -1300,7 +1303,7 @@ impl RoomEngine {
             owner,
             None,
             "hexbot.rooms.turn",
-            json!({"room_id":rid,"bot":bot,"live_session_id":live,"status":"running"}),
+            json!({"id":turn,"room_id":rid,"bot":bot,"live_session_id":live,"status":"running"}),
         );
         let result = match opened {
             Ok(_) if !self.cancelled(rid, generation) => {
@@ -1330,7 +1333,7 @@ impl RoomEngine {
             owner,
             None,
             "hexbot.rooms.turn",
-            json!({"room_id":rid,"bot":bot,"live_session_id":live,"status":status}),
+            json!({"id":turn,"room_id":rid,"bot":bot,"live_session_id":live,"status":status}),
         );
         match result {
             Ok(answer) if !self.cancelled(rid, generation) => {
@@ -1348,12 +1351,8 @@ impl RoomEngine {
                     return Ok(None);
                 }
                 // The teammates this bot asked during the turn stay with its reply, so the room
-                // can open those conversations after the live turn is gone.
-                let asks = rows(
-                    &db::open(&self.home)?,
-                    "SELECT to_bot AS \"to\",section_id FROM bot_messages WHERE source_section=? AND created_at>=(SELECT started_at FROM room_turns WHERE id=?) GROUP BY to_bot ORDER BY MIN(created_at)",
-                    &[&stored, &turn],
-                )?;
+                // can open those conversations (and keep rejected asks visible) after the live turn ends.
+                let asks = turn_asks(&self.home, &stored, &turn, before_seq)?;
                 let mut payload = json!({"text":answer,"trigger_seq":event["seq"]});
                 if !asks.is_empty() {
                     payload["asks"] = json!(asks);
@@ -1378,6 +1377,118 @@ impl RoomEngine {
             }
         }
     }
+}
+
+fn turn_message_seq(home: &Path, stored: &str) -> i64 {
+    crate::runtime_store::open(home)
+        .and_then(|conn| {
+            Ok(conn.query_row(
+                "SELECT COALESCE(MAX(seq),0) FROM native_messages WHERE session_id=?",
+                [stored],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap_or(0)
+}
+
+/// Collect the teammates a bot asked during one room turn in first-call order:
+/// delivered asks come from `bot_messages` (preserving `section_id`, `waited`,
+/// and `failed`), while calls rejected before delivery (such as an unknown
+/// handle or blocked cycle) are recovered from this turn's `native_messages`
+/// without writing synthetic rows into `bot_messages`.
+fn turn_asks(home: &Path, stored: &str, turn: &str, before_seq: i64) -> Result<Vec<Value>> {
+    let delivered_rows = rows(
+        &db::open(home)?,
+        "SELECT to_bot AS \"to\",section_id,MAX(CASE WHEN failed=0 THEN waited ELSE 0 END) AS waited,MIN(failed) AS failed FROM bot_messages WHERE source_section=? AND created_at>=(SELECT started_at FROM room_turns WHERE id=?) GROUP BY to_bot ORDER BY MIN(created_at)",
+        &[&stored, &turn],
+    )?;
+    let mut delivered: HashMap<String, Value> = HashMap::new();
+    let mut delivered_order: Vec<String> = Vec::new();
+    for row in delivered_rows {
+        if let Some(to) = row["to"].as_str() {
+            delivered_order.push(to.to_owned());
+            delivered.insert(to.to_owned(), row);
+        }
+    }
+    let mut seen_order: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut push_target = |raw: &str| {
+        if !raw.is_empty() && seen.insert(raw.to_owned()) {
+            seen_order.push(raw.to_owned());
+        }
+    };
+    if let Ok(conn) = crate::runtime_store::open(home)
+        && let Ok(mut stmt) = conn.prepare(
+            "SELECT m.message_json FROM native_messages m LEFT JOIN native_pi_journal p ON p.session_id=m.session_id AND p.projection_seq=m.seq WHERE m.session_id=?1 AND m.seq>?2 AND (p.active IS NULL OR p.active=1) ORDER BY m.seq",
+        )
+        && let Ok(iter) = stmt.query_map(params![stored, before_seq], |r| r.get::<_, String>(0))
+    {
+        for raw in iter.flatten() {
+            let Ok(message) = serde_json::from_str::<Value>(&raw) else {
+                continue;
+            };
+            match message["role"].as_str() {
+                Some("assistant") => {
+                    for call in message["tool_calls"].as_array().into_iter().flatten() {
+                        if call["function"]["name"].as_str() != Some("message_bot") {
+                            continue;
+                        }
+                        let args = match &call["function"]["arguments"] {
+                            Value::String(s) => {
+                                serde_json::from_str::<Value>(s).unwrap_or(Value::Null)
+                            }
+                            other => other.clone(),
+                        };
+                        if let Some(to) = args["to"].as_str() {
+                            push_target(to);
+                        }
+                    }
+                }
+                Some("tool") => {
+                    if message["name"].as_str() == Some("message_bot")
+                        && let Some(to) = message["args"]["to"]
+                            .as_str()
+                            .or_else(|| message["context"].as_str())
+                    {
+                        push_target(to);
+                    }
+                    for nested in message["nested_calls"]["calls"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                    {
+                        if nested["name"].as_str() != Some("message_bot") {
+                            continue;
+                        }
+                        let args = match &nested["arguments"] {
+                            Value::String(s) => {
+                                serde_json::from_str::<Value>(s).unwrap_or(Value::Null)
+                            }
+                            other => other.clone(),
+                        };
+                        if let Some(to) = args["to"].as_str() {
+                            push_target(to);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut asks = Vec::new();
+    for to in seen_order {
+        if let Some(row) = delivered.remove(&to) {
+            asks.push(row);
+        } else {
+            asks.push(json!({"to": to, "section_id": Value::Null, "waited": 0, "failed": 1}));
+        }
+    }
+    for to in delivered_order {
+        if let Some(row) = delivered.remove(&to) {
+            asks.push(row);
+        }
+    }
+    Ok(asks)
 }
 
 fn usage(home: &Path, bot: &str, stored: Option<&str>, since: Option<f64>) -> (i64, i64, f64) {
@@ -1666,5 +1777,117 @@ mod approval_tests {
                 4202
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod ask_tests {
+    use super::*;
+
+    #[test]
+    fn turn_asks_keeps_pre_delivery_rejected_calls_in_order_without_fake_bot_messages() {
+        let home = tempfile::tempdir().unwrap();
+        db::migrate(home.path()).unwrap();
+        let conn = db::open(home.path()).unwrap();
+        conn.execute_batch(
+            "INSERT INTO rooms(id,name) VALUES('r1','Room');
+             INSERT INTO room_turns(id,room_id,bot,trigger_seq,started_at,status)
+             VALUES('turn-1','r1','scout',1,100.0,'complete');
+             INSERT INTO bot_messages(id,from_bot,to_bot,section_id,source_section,created_at,text,waited,failed)
+             VALUES('m1','scout','biology','th-bio','stored-scout',102.0,'Check cells',1,0);",
+        )
+        .unwrap();
+        let rt = crate::runtime_store::open(home.path()).unwrap();
+        // An earlier turn's ask (seq 1) must be excluded by before_seq = 1.
+        rt.execute(
+            "INSERT INTO native_messages(session_id,seq,message_json) VALUES(?1,1,?2)",
+            params![
+                "stored-scout",
+                json!({
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "old",
+                        "type": "function",
+                        "function": {"name": "message_bot", "arguments": "{\"to\":\"old_peer\",\"text\":\"old\"}"}
+                    }]
+                })
+                .to_string()
+            ],
+        )
+        .unwrap();
+        // This turn asks unknown handle "ghost" (rejected before delivery), then "biology" (delivered).
+        rt.execute(
+            "INSERT INTO native_messages(session_id,seq,message_json) VALUES(?1,2,?2)",
+            params![
+                "stored-scout",
+                json!({
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "c1",
+                            "type": "function",
+                            "function": {"name": "message_bot", "arguments": "{\"to\":\"ghost\",\"text\":\"hi\"}"}
+                        },
+                        {
+                            "id": "c2",
+                            "type": "function",
+                            "function": {"name": "message_bot", "arguments": "{\"to\":\"biology\",\"text\":\"Check cells\"}"}
+                        }
+                    ]
+                })
+                .to_string()
+            ],
+        )
+        .unwrap();
+
+        // A rejected nested ask inside codemode is also recovered from nested_calls,
+        // and a padded handle ("biology ") stays distinct from delivered "biology".
+        rt.execute(
+            "INSERT INTO native_messages(session_id,seq,message_json) VALUES(?1,3,?2)",
+            params![
+                "stored-scout",
+                json!({
+                    "role": "tool",
+                    "name": "codemode",
+                    "tool_call_id": "code",
+                    "text": "done",
+                    "nested_calls": {
+                        "calls": [
+                            {
+                                "id": "code/1",
+                                "name": "message_bot",
+                                "arguments": {"to": "nested-ghost", "text": "hi"},
+                                "status": "error",
+                                "error": "Unknown bot"
+                            },
+                            {
+                                "id": "code/2",
+                                "name": "message_bot",
+                                "arguments": {"to": "biology ", "text": "hi"},
+                                "status": "error",
+                                "error": "Unknown bot"
+                            }
+                        ]
+                    }
+                })
+                .to_string()
+            ],
+        )
+        .unwrap();
+
+        let asks = turn_asks(home.path(), "stored-scout", "turn-1", 1).unwrap();
+        assert_eq!(
+            asks,
+            vec![
+                json!({"to": "ghost", "section_id": Value::Null, "waited": 0, "failed": 1}),
+                json!({"to": "biology", "section_id": "th-bio", "waited": 1, "failed": 0}),
+                json!({"to": "nested-ghost", "section_id": Value::Null, "waited": 0, "failed": 1}),
+                json!({"to": "biology ", "section_id": Value::Null, "waited": 0, "failed": 1})
+            ]
+        );
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM bot_messages", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
     }
 }

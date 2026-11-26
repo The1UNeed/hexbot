@@ -29,6 +29,8 @@ function RootLayout() {
   const location = useRouterState({ select: state => state.location })
   // The next location can change before Outlet switches to its new match.
   const pathname = useRouterState({ select: state => state.matches.at(-1)?.pathname })
+  const pathnameRef = useRef(pathname)
+  pathnameRef.current = pathname
   const theme = useUi(state => state.theme)
   const lost = useConnectionLost()
   const installing = useUpdateInstalling()
@@ -67,8 +69,38 @@ function RootLayout() {
     // A notification click names the section it is about. Clicked as the app
     // starts, it waits for the sections list to name the bot.
     const openSection = (section: string) => {
-      const open = (bot: string) =>
+      const inMainShell = () =>
+        /^\/(?:b\/[^/]+\/s\/[^/]+|r\/[^/]+)$/.test(pathnameRef.current ?? '')
+
+      const peerOf = (sectionId: string) => {
+        const match = Object.values(useBots.getState().byName).find(
+          item => item.status_detail?.peer_bot && item.status_detail.section_id === sectionId
+        )
+
+        return match?.status_detail?.peer_bot
+          ? { bot: match.name, peer: match.status_detail.peer_bot }
+          : undefined
+      }
+
+      const open = (bot: string, peer?: null | string) => {
+        if (peer && inMainShell()) {
+          useUi.getState().openThread({ bot, peer, sectionId: section })
+
+          return
+        }
+
+        // Clicking a notification for the covered chat must dismiss any open peer thread overlay.
+        useUi.getState().closeThread()
         void navigate({ params: { bot, section }, to: '/b/$bot/s/$section' })
+      }
+
+      const knownPeer = peerOf(section)
+
+      if (knownPeer) {
+        open(knownPeer.bot, knownPeer.peer)
+
+        return
+      }
 
       const bot = sectionBot(section)
 
@@ -80,10 +112,10 @@ function RootLayout() {
 
       let waiting = true
 
-      const found = (bot: string | undefined) => {
+      const found = (bot: string | undefined, peer?: null | string) => {
         if (bot && waiting) {
           stop()
-          open(bot)
+          open(bot, peer)
         }
       }
 
@@ -91,10 +123,22 @@ function RootLayout() {
       // daemon, and again once a connection that was not up yet comes back.
       const lookup = () =>
         void sectionsList({ include_archived: true, include_threads: true })
-          .then(result => found(result.sections?.find(row => row.id === section)?.bot))
+          .then(result => {
+            const row = result.sections?.find(item => item.id === section)
+            found(row?.bot, row?.peer_bot)
+          })
           .catch(() => undefined)
 
-      const check = () => found(sectionBot(section))
+      const check = () => {
+        const peer = peerOf(section)
+
+        if (peer) {
+          found(peer.bot, peer.peer)
+        } else {
+          found(sectionBot(section))
+        }
+      }
+
       const offSections = useSections.subscribe(check)
       const offBots = useBots.subscribe(check)
 

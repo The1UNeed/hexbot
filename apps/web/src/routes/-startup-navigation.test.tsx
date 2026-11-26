@@ -8,8 +8,11 @@ import {
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import type * as Connection from '../lib/connection'
-import type { ConnectionTarget } from '../lib/types'
+import { OPEN_SECTION_EVENT } from '../lib/notify'
+import type { Bot, ConnectionTarget } from '../lib/types'
+import { useBots } from '../stores/bots'
 import { useConnection } from '../stores/connection'
+import { useSections } from '../stores/sections'
 import { useUi } from '../stores/ui'
 import { useUpdates } from '../stores/updates'
 
@@ -170,4 +173,62 @@ it('recovers when the connection target is cleared while a chat is open', async 
   expect(await screen.findByRole('button', { name: 'Sign in with Hex Connect' })).toBeVisible()
   expect(router.state.location.pathname).toBe('/connect')
   expect(screen.queryByText('Conversation content')).not.toBeInTheDocument()
+})
+
+it('opens a waiting peer thread in ThreadView from a notification click while in a chat, and routes from settings', async () => {
+  useConnection.setState({ target: { kind: 'local' } })
+  useUi.setState({ thread: null })
+  useBots.setState({
+    byName: {
+      writer: {
+        display_name: 'Writer',
+        name: 'writer',
+        status: 'needs_you',
+        status_detail: {
+          action: null,
+          peer_bot: 'scout',
+          room_id: null,
+          section_id: 'th-notify',
+          session_id: 'live-notify',
+          since: 1,
+          text: 'Waiting for you'
+        }
+      } as unknown as Bot
+    }
+  })
+
+  const router = await mount('/b/owl/s/remembered')
+  await screen.findByText('Conversation content')
+
+  act(() => {
+    window.dispatchEvent(new CustomEvent(OPEN_SECTION_EVENT, { detail: 'th-notify' }))
+  })
+  expect(useUi.getState().thread).toEqual({
+    bot: 'writer',
+    peer: 'scout',
+    sectionId: 'th-notify'
+  })
+  expect(router.state.location.pathname).toBe('/b/owl/s/remembered')
+
+  // Clicking a notification for the covered ordinary chat closes the thread overlay.
+  useSections.setState({
+    byId: {
+      remembered: { bot: 'owl', id: 'remembered', peer_bot: null } as never
+    }
+  })
+  act(() => {
+    window.dispatchEvent(new CustomEvent(OPEN_SECTION_EVENT, { detail: 'remembered' }))
+  })
+  expect(useUi.getState().thread).toBeNull()
+  expect(router.state.location.pathname).toBe('/b/owl/s/remembered')
+
+  // From Settings, a notification navigates out of Settings to the peer thread route.
+  useUi.setState({ thread: null })
+  await act(async () => {
+    await router.navigate({ params: { tab: 'providers' }, to: '/settings/$tab' })
+  })
+  act(() => {
+    window.dispatchEvent(new CustomEvent(OPEN_SECTION_EVENT, { detail: 'th-notify' }))
+  })
+  await waitFor(() => expect(router.state.location.pathname).toBe('/b/writer/s/th-notify'))
 })

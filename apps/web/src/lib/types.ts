@@ -1324,7 +1324,7 @@ export interface Room {
   /** When you pinned it in the list; null when not pinned. Older daemons leave it out. */
   pinned_at?: null | number
   /** Bots with a turn running now; older daemons leave it out. */
-  turns?: Pick<RoomTurn, 'bot' | 'live_session_id'>[]
+  turns?: Pick<RoomTurn, 'asks' | 'bot' | 'id' | 'live_session_id' | 'pending_requests' | 'turn_id'>[]
   updated_at: number
 }
 
@@ -1355,13 +1355,33 @@ export interface RoomEvent {
   seq: number
 }
 
+export interface RoomTurnAsk {
+  args?: unknown
+  context?: string
+  message_id?: string
+  occurrence_id?: string
+  parent_occurrence_id?: string
+  parent_tool_call_id?: string
+  result?: unknown
+  section_id?: null | string
+  status: 'error' | 'ok' | 'running'
+  tool_id: string
+  turn_id?: string
+}
+
 export interface RoomTurn {
+  /** Active or settled `message_bot` calls in this running turn; older daemons leave it out. */
+  asks?: RoomTurnAsk[]
   bot: string
+  /** Room-turn row identifier from `room_turns`, when the daemon reports it. */
+  id?: string
   live_session_id: null | string
   /** Cards the running turn still waits on, at this read; older daemons leave it out. */
   pending_requests?: string[]
   room_id: string
   status: string
+  /** Active Pi turn identifier, when the daemon reports it. */
+  turn_id?: string
 }
 
 export interface StatusLine {
@@ -1372,7 +1392,19 @@ export interface StatusLine {
 export interface ToolCall {
   /** Assistant fragment that issued this call, when the daemon proves it. */
   messageId?: string
+  /** Stable per-call occurrence identifier shared by events, snapshots, and history. */
+  occurrenceId?: string
   parentToolCallId?: string
+  /** Occurrence ID of the enclosing parent tool call, distinguishing reused parent call IDs. */
+  parentOccurrenceId?: string
+  /** True once this call has matched a live or replayed `tool.start` in this session. */
+  liveStarted?: boolean
+  /** True once this call has matched a live or replayed `tool.complete` in this session. */
+  liveCompleted?: boolean
+  /** Error payload absorbed by an untagged settled ask while an identical sibling was still running. */
+  absorbedError?: unknown
+  /** Outcome counts from ambiguous colliding completions while multiple sibling calls ran. */
+  ambiguousOutcomes?: { error?: unknown; failed: number; ok: number }
   args: unknown
   durationS: number | null
   name: string
@@ -1383,7 +1415,7 @@ export interface ToolCall {
   toolId: string
 }
 
-export type ToolCallStatus = 'error' | 'ok' | 'running'
+export type ToolCallStatus = 'error' | 'ok' | 'running' | 'unresolved'
 
 export interface Usage {
   cost?: number

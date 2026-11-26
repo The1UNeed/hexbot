@@ -65,4 +65,23 @@ describe('bot bubble contrast', () => {
       }
     }
   })
+
+  it('keeps tinted speaker names at 4.5:1 on the background for every face colour', () => {
+    for (const [theme, block] of Object.entries(blocks())) {
+      const background = rgb(token(block, 'background'))
+      const text = rgb(token(block, 'text'))
+      const mix = Number.parseFloat(token(block, 'bot-label-mix')) / 100
+
+      for (const color of AVATAR_COLORS) {
+        const face = rgb(color.value)
+        // color-mix(in srgb, face mix, text)
+        const label = text.map((channel, index) => channel + (face[index]! - channel) * mix)
+
+        expect(
+          contrast(label, background),
+          `${color.label} speaker name, ${theme}`
+        ).toBeGreaterThanOrEqual(4.5)
+      }
+    }
+  })
 })

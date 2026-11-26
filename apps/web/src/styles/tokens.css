@@ -50,6 +50,8 @@
   --hex-bubble: #f0f0f2;
   /* How much of a bot's face colour washes its bubbles. */
   --hex-bot-wash: 14%;
+  /* How much of a bot's face colour tints speaker names (4.5:1+ on every face colour). */
+  --hex-bot-label-mix: 32%;
   /* Secondary text inside a washed bubble: 4.5:1 or better on every face colour. */
   --hex-bot-muted: #5c5c5c;
   --hex-glass-bg: rgb(255 255 255 / 0.58);
@@ -130,6 +132,7 @@
     --hex-canvas: #09090a;
     --hex-bubble: #232326;
     --hex-bot-wash: 20%;
+    --hex-bot-label-mix: 42%;
     --hex-bot-muted: #bebebe;
     --hex-glass-bg: rgb(28 28 31 / 0.6);
     --hex-glass-strong: rgb(24 24 27 / 0.82);
@@ -173,6 +176,8 @@
   --hex-bubble: #f0f0f2;
   /* How much of a bot's face colour washes its bubbles. */
   --hex-bot-wash: 14%;
+  /* How much of a bot's face colour tints speaker names (4.5:1+ on every face colour). */
+  --hex-bot-label-mix: 32%;
   /* Secondary text inside a washed bubble: 4.5:1 or better on every face colour. */
   --hex-bot-muted: #5c5c5c;
   --hex-glass-bg: rgb(255 255 255 / 0.58);
@@ -215,6 +220,7 @@
   --hex-canvas: #09090a;
   --hex-bubble: #232326;
   --hex-bot-wash: 20%;
+  --hex-bot-label-mix: 42%;
   --hex-bot-muted: #bebebe;
   --hex-glass-bg: rgb(28 28 31 / 0.6);
   --hex-glass-strong: rgb(24 24 27 / 0.82);
@@ -1109,6 +1115,59 @@ html {
   }
 }
 
+/* Bot-to-bot messaging row: gentle entrance, smooth label settle, and calm active glow. */
+@keyframes hex-ask-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes hex-ask-label {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes hex-ask-breathe {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* Full-pane bot-to-bot conversation view entering and closing smoothly over the chat. */
+@keyframes hex-thread-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.992);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes hex-thread-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(8px) scale(0.992);
+  }
+}
+
 @keyframes hex-shimmer {
   from {
     background-position: 200% 0;
@@ -1295,6 +1354,47 @@ html {
 .hex-rise {
   animation: hex-rise var(--hex-motion-enter) var(--hex-ease-out) both;
 }
+.hex-ask-enter {
+  animation: hex-ask-enter 280ms var(--hex-ease-out) both;
+}
+/* Reserves the widest prefix ("Message from") purely in CSS so the pill stays locked in place. */
+.hex-ask-prefix {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  font-size: var(--text-secondary);
+}
+.hex-ask-prefix::before {
+  content: 'Message from';
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+  user-select: none;
+}
+.hex-ask-label {
+  animation: hex-ask-label var(--hex-motion-rise) var(--hex-ease-out) both;
+}
+.hex-ask-live-text {
+  animation: hex-ask-breathe 2s ease-in-out infinite;
+}
+/* Dedicated tinted aura layer so opacity fades out smoothly with zero box-shadow snap. */
+.hex-ask-ring {
+  pointer-events: none;
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--hex-ask-tint, var(--hex-muted-text)) 40%, transparent),
+    0 0 12px -3px color-mix(in srgb, var(--hex-ask-tint, var(--hex-muted-text)) 26%, transparent);
+}
+.hex-ask-ring-live {
+  animation: hex-ask-breathe 2s ease-in-out infinite;
+}
+.hex-thread-in {
+  animation: hex-thread-in var(--hex-motion-panel) var(--hex-ease-out) both;
+}
+.hex-thread-out {
+  animation: hex-thread-out var(--hex-motion-rise) var(--hex-ease-in-out) both;
+  pointer-events: none;
+}
 /* Like hex-bubble, but honours an animation-delay: hidden until its turn. */
 .hex-pop-in {
   animation: hex-pop var(--hex-motion-enter) var(--hex-ease-out) both;
@@ -1444,6 +1544,11 @@ html {
   .hex-fade,
   .hex-pending-mark,
   .hex-rise,
+  .hex-ask-enter,
+  .hex-ask-label,
+  .hex-ask-live-text,
+  .hex-ask-ring-live,
+  .hex-thread-in,
   .hex-pop-in,
   .hex-menu-in,
   .hex-dialog-in,
@@ -1453,7 +1558,8 @@ html {
     animation: none;
   }
   .hex-fold,
-  .hex-slide-out {
+  .hex-slide-out,
+  .hex-thread-out {
     display: none;
   }
   .hex-pending {

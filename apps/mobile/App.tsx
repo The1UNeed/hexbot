@@ -85,7 +85,7 @@ import {
 import { MarkdownText, type ResolveTag } from './src/MarkdownText'
 import { VisualFrame } from './src/VisualFrame'
 import { visualDocument } from './src/core/visual'
-import { parseArgs, sharedFiles } from './src/core/chat'
+import { askItemId, mergeTurnTools, parseArgs, sharedFiles, turnAskGroups } from './src/core/chat'
 import { type SearchDocument, searchEntries } from './src/core/search'
 import { Management, type Panel } from './src/Management'
 import { useMobile } from './src/core/useMobile'
@@ -105,7 +105,7 @@ import {
 import { previewLine } from '../web/src/lib/preview'
 import { attachmentPrompt, mediaKind, mediaOf, mediaSource, mimeOf } from '../web/src/lib/media'
 import { type FileComment, withComments } from '../web/src/lib/file-comments'
-import { asksOf, askWords } from '../web/src/lib/asks'
+import { asksOf, askTarget, askWords } from '../web/src/lib/asks'
 import { settledCard } from '../web/src/lib/settled-cards'
 import { namedPlugin, pluginRows } from '../web/src/lib/plugin-rows'
 import { mediaUri } from './src/core/media'
@@ -114,7 +114,7 @@ import { mixHex } from '../web/src/app/conversation/visual'
 import { CONNECT_ORIGIN, parseConnectCallback } from './src/core/links'
 import { clearConnectSession, loadConnectSession, saveConnectSession } from './src/core/storage'
 import { connectGrant, request, RevokedError } from './src/core/transport'
-import type { Bot, ConnectDaemon, PluginsList, Room, Section } from './src/core/types'
+import type { Bot, ChatTool, ConnectDaemon, PluginsList, Room, Section } from './src/core/types'
 WebBrowser.maybeCompleteAuthSession()
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const ms = (seconds: number | null | undefined) => (seconds == null ? undefined : seconds * 1000)
@@ -214,6 +214,8 @@ export interface AppScreens {
   library: ReactNode
   /** The chat route was left, by its native back button or swipe. */
   onChatClosed: () => void
+  /** A peer thread opened from another chat/room: Back returns there before leaving to Home. */
+  hasThreadReturn: boolean
   /** Files are uploading: the chat stays open until they are sent. */
   uploading: boolean
   /**
@@ -997,11 +999,22 @@ function MobileApp({ children }: { children?: ReactNode }) {
       ]
   // The bot whose chat this is; a room's messages name their own.
   const chatBot = route?.kind === 'section' ? route.bot.name : undefined
-  const { items: historyItems, visuals } = useMemo(() => {
-    const botByName = (name: string) => mobile.bots.find(b => b.name === name)
-    const visuals = new Map<string, { title: string; html: string }>()
-    const items: ChatItem[] = mobile.chat.messages.flatMap((m): ChatItem[] =>
-      m.role === 'system'
+  const { botTurnTotal, items: historyItems, trailingAsk, trailingUntaggedSpeaker, visuals } =
+    useMemo(() => {
+      const botByName = (name: string) => mobile.bots.find(b => b.name === name)
+      const visuals = new Map<string, { title: string; html: string }>()
+      const messages = mobile.chat.messages
+      const isRoom = route?.kind === 'room'
+      const { botTurnTotal, groups: askGroups, trailingUntaggedSpeaker } = turnAskGroups(messages, {
+        chatBot,
+        isRoom
+      })
+      const trailingAskIds = new Set<string>()
+      const trailingIndex = messages.length - 1
+      const trailingGroup = !isRoom ? askGroups.get(trailingIndex) : undefined
+    const items: ChatItem[] = messages.flatMap((m, index): ChatItem[] => {
+      const askGroup = askGroups.get(index)
+      return m.role === 'system'
         ? [{ kind: 'notice', id: m.id, text: m.text, tone: m.tone }]
         : [
             // A conversation shows what bots say, the visuals they draw and the files they
@@ -1079,7 +1092,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
             // The draft, sign-in and plugin cards its tools showed, under its words, as
             // the user answered them. A live card leaves when its turn ends; this one stays.
             ...(m.tools ?? []).flatMap((t): ChatItem[] => {
-              if (t.status === 'running') return []
+              if (t.status === 'running' || t.status === 'unresolved') return []
               const card = settledCard({ ...t, result: t.detail })
               if (!card) return []
               return [
@@ -1097,43 +1110,206 @@ function MobileApp({ children }: { children?: ReactNode }) {
                 }
               ]
             }),
-            // The bots it messaged in this step, each marked with its tag.
-            ...(m.role === 'assistant' && chatBot
-              ? asksOf(
-                  (m.tools ?? []).map(t => ({
-                    args: t.args,
-                    name: t.name,
-                    result: t.detail,
-                    status: t.status,
-                    summary: t.action
-                  }))
-                )
-              : []
-            ).map((ask): ChatItem => {
-              const target = ask.target ? botByName(ask.target) : undefined
-              const words = askWords(ask, null)
-              return {
-                kind: 'ask',
-                id: `ask-${m.id}-${ask.target ?? 'teammate'}`,
-                ...words,
-                name:
-                  target?.display_name ??
-                  ask.target ??
-                  (words.before ? 'a teammate' : 'A teammate'),
-                face: target ? faceOf(target) : undefined,
-                bot: ask.target ?? undefined,
-                peer: chatBot
-              }
-            })
+            // The bots it messaged in this turn, grouped once per target (chats and rooms).
+            ...(askGroup
+              ? (() => {
+                  const toolIdByTarget = new Map<string, string>()
+                  const toolTurnByTarget = new Map<string, string>()
+                  for (const t of askGroup.tools) {
+                    if (t.name !== 'message_bot') continue
+                    const targetKey =
+                      askTarget({
+                        args: t.args,
+                        name: t.name,
+                        result: t.detail,
+                        status: t.status,
+                        summary: t.action
+                      }) ?? ''
+                    if (!toolIdByTarget.has(targetKey)) toolIdByTarget.set(targetKey, t.id)
+                    if (t.turnId && !toolTurnByTarget.has(targetKey))
+                      toolTurnByTarget.set(targetKey, t.turnId)
+                  }
+                  return asksOf(
+                    askGroup.tools.map(t => ({
+                      args: t.args,
+                      name: t.name,
+                      result: t.detail,
+                      status: t.status,
+                      summary: t.action
+                    }))
+                  ).map((ask): ChatItem => {
+                    const target = ask.target ? botByName(ask.target) : undefined
+                    const words = askWords(ask, null)
+                    const targetKey = ask.target ?? ''
+                    const id = askItemId({
+                      isRoom,
+                      speaker: askGroup.speaker,
+                      target: ask.target,
+                      toolId: toolIdByTarget.get(targetKey),
+                      turnId: askGroup.turnId ?? toolTurnByTarget.get(targetKey),
+                      turnIndex: askGroup.turnIndex
+                    })
+                    if (!isRoom && index === trailingIndex) trailingAskIds.add(id)
+                    return {
+                      kind: 'ask',
+                      id,
+                      ...words,
+                      name:
+                        target?.display_name ??
+                        ask.target ??
+                        (words.before ? 'a teammate' : 'A teammate'),
+                      face: target ? faceOf(target) : undefined,
+                      bot: ask.target ?? undefined,
+                      peer: askGroup.speaker,
+                      ...(ask.sectionId ? { sectionId: ask.sectionId } : {}),
+                      ...(ask.status === 'running' ? { running: true } : {})
+                    }
+                  })
+                })()
+              : [])
           ]
-    )
-    return { items, visuals }
+    })
+    return {
+      botTurnTotal,
+      items,
+      trailingAsk: trailingGroup ? { group: trailingGroup, itemIds: trailingAskIds } : undefined,
+      trailingUntaggedSpeaker,
+      visuals
+    }
   }, [mobile.chat.messages, mobile.bots, mobile.user?.id, mobile.reactions, route?.kind, chatBot])
   const items = [...historyItems]
   const liveTurns =
     route?.kind === 'room'
       ? Object.values(mobile.chat.turns)
       : [{ ...mobile.chat, sessionId: 'section', bot: route?.bot.name ?? '' }]
+  const activeTurnBots = new Set(liveTurns.map(turn => turn.bot).filter(Boolean))
+  const pushAsks = (
+    speaker: string,
+    tools: ChatTool[],
+    turnId?: string,
+    overrideTurnIndex?: number,
+    startedFresh?: boolean
+  ) => {
+    const isRoom = route?.kind === 'room'
+    const toolIdByTarget = new Map<string, string>()
+    const toolTurnByTarget = new Map<string, string>()
+    for (const t of tools) {
+      if (t.name !== 'message_bot') continue
+      const targetKey =
+        askTarget({
+          args: t.args,
+          name: t.name,
+          result: t.detail,
+          status: t.status,
+          summary: t.action
+        }) ?? ''
+      if (!toolIdByTarget.has(targetKey)) toolIdByTarget.set(targetKey, t.id)
+      if (t.turnId && !toolTurnByTarget.has(targetKey)) toolTurnByTarget.set(targetKey, t.turnId)
+    }
+    asksOf(
+      tools.map(t => ({
+        args: t.args,
+        name: t.name,
+        result: t.detail,
+        status: t.status,
+        summary: t.action
+      }))
+    ).forEach(ask => {
+      const target = ask.target ? botByName(ask.target) : undefined
+      const words = askWords(ask, null)
+      const targetKey = ask.target ?? ''
+      const effectiveTurnId = turnId ?? toolTurnByTarget.get(targetKey)
+      const turnIndex =
+        overrideTurnIndex ??
+        (!isRoom && !effectiveTurnId && !startedFresh && trailingUntaggedSpeaker === speaker
+          ? Math.max(0, (botTurnTotal[speaker] ?? 1) - 1)
+          : (botTurnTotal[speaker] ?? 0))
+      items.push({
+        kind: 'ask',
+        id: askItemId({
+          isRoom,
+          speaker,
+          target: ask.target,
+          toolId: toolIdByTarget.get(targetKey),
+          turnId: effectiveTurnId,
+          turnIndex
+        }),
+        ...words,
+        name: target?.display_name ?? ask.target ?? (words.before ? 'a teammate' : 'A teammate'),
+        face: target ? faceOf(target) : undefined,
+        bot: ask.target ?? undefined,
+        peer: speaker,
+        ...(ask.sectionId ? { sectionId: ask.sectionId } : {}),
+        ...(ask.status === 'running' ? { running: true } : {})
+      })
+    })
+  }
+  const sameSectionTurn = (
+    speaker: string,
+    turnId: string | undefined,
+    startedFresh?: boolean
+  ) =>
+    Boolean(
+      trailingAsk &&
+        trailingAsk.group.speaker === speaker &&
+        (turnId ? trailingAsk.group.turnId === turnId : !trailingAsk.group.turnId && !startedFresh)
+    )
+  let mergedTrailing = false
+  const consumeTrailingAsks = () => {
+    if (!trailingAsk || mergedTrailing) return
+    mergedTrailing = true
+    for (let i = items.length - 1; i >= 0; i--) {
+      const entry = items[i]
+      if (entry?.kind === 'ask' && trailingAsk.itemIds.has(entry.id)) items.splice(i, 1)
+    }
+  }
+  const sectionCompletingTools =
+    route?.kind === 'section'
+      ? (
+          mobile.chat.completingAsks?.[route.bot.name] ??
+          mobile.chat.completingAsks?.[''] ??
+          []
+        ).filter(t => t.name === 'message_bot')
+      : []
+  let completingOffset = 0
+  if (route?.kind === 'section' && sectionCompletingTools.length) {
+    const speaker = route.bot.name
+    const byTurn = new Map<string, ChatTool[]>()
+    for (const tool of sectionCompletingTools) {
+      const key = tool.turnId
+        ? `t:${tool.turnId}`
+        : tool.freshExchange !== undefined
+          ? `f:${tool.freshExchange}`
+          : tool.afterHistoryCount !== undefined
+            ? `a:${tool.afterHistoryCount}`
+            : 'u'
+      const group = byTurn.get(key)
+      if (group) group.push(tool)
+      else byTurn.set(key, [tool])
+    }
+    for (const [turnKey, groupTools] of byTurn) {
+      const completingTurnId = turnKey.startsWith('t:') ? turnKey.slice(2) : undefined
+      const isFreshUntagged = turnKey.startsWith('f:') || turnKey.startsWith('a:')
+      if (!mergedTrailing && sameSectionTurn(speaker, completingTurnId, isFreshUntagged)) {
+        consumeTrailingAsks()
+        pushAsks(
+          speaker,
+          mergeTurnTools(trailingAsk!.group.tools, groupTools),
+          completingTurnId ?? trailingAsk!.group.turnId,
+          trailingAsk!.group.turnIndex
+        )
+      } else {
+        pushAsks(
+          speaker,
+          groupTools,
+          completingTurnId,
+          (botTurnTotal[speaker] ?? 0) + completingOffset,
+          true
+        )
+        completingOffset += 1
+      }
+    }
+  }
   for (const turn of liveTurns) {
     const bot = botByName(turn.bot)
     const author = bot ? faceOf(bot) : { name: turn.bot }
@@ -1157,6 +1333,38 @@ function MobileApp({ children }: { children?: ReactNode }) {
         author,
         speaker: turn.bot || undefined
       })
+    if (turn.bot) {
+      const turnTools =
+        route?.kind === 'room' && 'asked' in turn && turn.asked?.length
+          ? turn.asked
+          : (turn.tools ?? [])
+      const liveAsks = turnTools.filter(t => t.name === 'message_bot')
+      const liveTurnId = turn.turnId ?? liveAsks.find(t => t.turnId)?.turnId
+      if (
+        route?.kind !== 'room' &&
+        liveAsks.length &&
+        !mergedTrailing &&
+        sameSectionTurn(turn.bot, liveTurnId, turn.startedFresh)
+      ) {
+        consumeTrailingAsks()
+        pushAsks(
+          turn.bot,
+          mergeTurnTools(trailingAsk!.group.tools, turnTools),
+          liveTurnId ?? trailingAsk!.group.turnId,
+          trailingAsk!.group.turnIndex
+        )
+      } else {
+        pushAsks(
+          turn.bot,
+          turnTools,
+          turn.turnId,
+          route?.kind !== 'room' && completingOffset
+            ? (botTurnTotal[turn.bot] ?? 0) + completingOffset
+            : undefined,
+          turn.startedFresh
+        )
+      }
+    }
     if (turn.error)
       items.push({
         kind: 'notice',
@@ -1164,6 +1372,11 @@ function MobileApp({ children }: { children?: ReactNode }) {
         text: turn.error,
         tone: 'danger'
       })
+  }
+  if (route?.kind === 'room') {
+    for (const [bot, tools] of Object.entries(mobile.chat.completingAsks ?? {})) {
+      if (!activeTurnBots.has(bot)) pushAsks(bot, tools)
+    }
   }
   mobile.chat.approvals.forEach(a =>
     items.push({
@@ -1328,28 +1541,10 @@ function MobileApp({ children }: { children?: ReactNode }) {
       stage([{ base64, bytes: Math.floor((base64.length * 3) / 4), mimeType, name, uri: dataUrl }])
     )
   }
-  // The private conversation between two bots: the thread in which `peer`
-  // asked `bot`, or the other way round when that is the one there is. With
-  // none yet, the bot's own chat.
+  // The private conversation between two bots, guarded by `useMobile`'s navigation generation.
   const openThread = useCallback(
-    (bot: string, peer: string) => {
-      const current = mobileRef.current
-      const between = (asked: string, asker: string) =>
-        current.sections.find(s => s.bot === asked && s.peer_bot === asker && !s.archived_at)
-      const known = between(bot, peer) ?? between(peer, bot)
-      // A thread this phone has not listed yet is the daemon's to name.
-      const asked = (asked: string, asker: string) =>
-        current
-          .rpc<{ section: Section | null }>('hexbot.sections.thread', { bot: asked, peer: asker })
-          .then(
-            found => found.section,
-            () => null
-          )
-      act(async () => {
-        const section = known ?? (await asked(bot, peer)) ?? (await asked(peer, bot))
-        const owner = current.bots.find(b => b.name === (section?.bot ?? bot))
-        if (owner) await mobileRef.current.openSection(owner, section ?? undefined)
-      })
+    (bot: string, peer: string, sectionId?: string, allowReverse = false) => {
+      act(() => mobileRef.current.openThread(bot, peer, { allowReverse, sectionId }))
     },
     [act]
   )
@@ -1369,7 +1564,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
               color: paint ? (mixHex(paint.color, theme.text, 0.38) ?? paint.color) : undefined,
               onPress: () =>
                 speaker && speaker !== tag.handle
-                  ? openThread(tag.handle, speaker)
+                  ? openThread(tag.handle, speaker, undefined, true)
                   : act(() => mobileRef.current.openSection(named))
             }
           }
@@ -1937,12 +2132,24 @@ function MobileApp({ children }: { children?: ReactNode }) {
   const select = (key: string | null) => {
     const row = conversations.find(c => `${c.kind}-${c.id}` === key)
     if (key && key !== 'settings' && key !== 'library' && !row) return
+    if (selected === 'chat' && key === null && mobileRef.current.hasThreadReturn) {
+      if (uploading) return
+      closeChat()
+      return
+    }
     if (selected === 'chat' && (key === null || key !== openChatRow)) {
       // Leaving a chat closes it, as back does; while a file uploads, it
-      // stays. Another chat replaces it, so the column never empties.
+      // stays. Another chat replaces it, so the column never empties. Explicit
+      // sidebar destinations (Settings, Bots & jobs) leave outright instead of
+      // popping the peer-thread return stack back to the originating chat.
       if (uploading) return
       if (row) setPanels([])
-      else closeChat()
+      else if (key === null) closeChat()
+      else if (demo) setBotPage(null)
+      else {
+        mobileRef.current.leave()
+        setPanels([])
+      }
     }
     // Pages pushed beside the sidebar belong to what was shown there.
     const shown = selected === 'chat' ? openChatRow || 'chat' : selected
@@ -2029,6 +2236,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
     settings: settingsScreen,
     library: libraryScreen,
     onChatClosed: closeChat,
+    hasThreadReturn: mobile.hasThreadReturn,
     uploading: !!uploading,
     panels,
     renderPanel: (index, frame) =>

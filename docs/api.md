@@ -431,15 +431,21 @@ clears it.
 `status` is `idle`, `working`, `needs_you`, or `stopped` (priority in that
 reverse order), folded by the daemon from live session state, room turns,
 room `waiting.human` events, and open incidents. Only a bot's chat and its
-room sessions make it `working`; heartbeats, scheduled jobs, dreams, CLI runs
-and subagents do only once their run acts on the bots' computer, until it
-ends (`status_detail.text` "Using the computer", no section or room), and one
-waiting on the user still makes it `needs_you`. The first `computer_use` call
-of a run sends `hexbot.bots.changed {name}`. `status_detail` is
+room sessions make it `working`; threads between bots (`peer_bot` non-null),
+heartbeats, scheduled jobs, dreams, CLI runs and subagents do only while
+waiting on the user (`needs_you`) or when they act on the bots' computer
+(`status_detail.text` "Using the computer"). For heartbeats, scheduled jobs,
+dreams, CLI runs and subagents, `working` starts on the first `computer_use`
+call on the bots' computer (emitting `hexbot.bots.changed {name}`) and stays
+until the run ends (no section or room). For a thread between bots, `working`
+lasts only while a `computer_use` call on the bots' computer is active and
+clears when it finishes, emitting `hexbot.bots.changed {name}` on both
+transitions, with `status_detail.section_id` and `status_detail.peer_bot` set.
+`status_detail` is
 `{text, section_id, room_id, session_id, since, action, in_chat, peer_bot}` where `action` is
 null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`. While a bot
-works or waits in a thread, `peer_bot` names the bot that asked it, so an app
-can open that thread without listing threads. A stopped
+uses the bots' computer or waits in a thread, `peer_bot` names the bot that
+asked it, so an app can open that thread without listing threads. A stopped
 bot's `in_chat` is true when the failure has no room and no conversation of
 its own, such as a dream's, a scheduled job's or a CLI run's; clients show it
 in the bot's chat. A room's
@@ -724,12 +730,16 @@ returned by `open`.
   caller's thread on `bot` whose sender is `peer`. It never creates one.
 - `hexbot.sections.open {id, history_cursor?}` → `{section: Section,
   messages: [Message], history_cursor: string, history_delta: boolean,
-  context: Context, pending_clarify?, busy, pending_requests}` (resumes the
+  context: Context, pending_clarify?, busy, pending_requests, asks?}` (resumes the
   stored session on the bot's profile; idempotent if live). If the bot is waiting on an approval,
   the daemon sends its `approval.request` event again so a reloaded client
   gets the card back; clients dedupe on `request_id`. `busy` says whether a
-  turn runs at this read and `pending_requests` lists the `request_id` of
-  every approval and question still waiting. A client that missed events,
+  turn runs at this read, `pending_requests` lists the `request_id` of
+  every approval and question still waiting, and when `busy` is true `asks`
+  lists the `message_bot` calls seen during the active turn (`{tool_id, args,
+  context, status, occurrence_id?, parent_tool_call_id?, parent_occurrence_id?,
+  message_id?, turn_id?, section_id?, result?}`) so cold or reconnecting clients
+  restore active and settled asks even when history trails the live turn. A client that missed events,
   such as while it was offline, drops the unanswered cards it showed before
   the read that are not listed, and ends a turn it showed when `busy` is
   false. Answered cards and anything received during the read stay. The web
@@ -1209,9 +1219,16 @@ The live session's events (`message.delta`, `tool.*`, `approval.*`,
 `clarify.*` and the rest) reach the owner, who answers approvals and
 questions; `session.events.since` replays a room session. Opening a room with
 `hexbot.rooms.get` re-sends pending cards for each running turn. In
-`hexbot.rooms.get` and `hexbot.rooms.list`, each running turn with a live
-session carries `pending_requests`, the cards it still waits on; a client
-that missed events drops the other cards it showed before that read. Tool labels in
+`hexbot.rooms.get` and `hexbot.rooms.list`, each running turn carries `id` (its
+`room_turns` row id) and, when it has a live session, `turn_id` (the active Pi
+turn id), `pending_requests` (the cards it still waits on), and `asks` (the
+`message_bot` calls seen in the active turn, same shape as `hexbot.sections.open`);
+a client that missed events drops the other cards it showed before that read.
+When a room turn posts a `message.bot` event after calling `message_bot`, the
+event payload includes `asks`: `[{to, section_id?, waited, failed}]` in
+first-call order, where `waited` and `failed` are SQLite `0`/`1` flags (legacy
+`bot_messages` rows from before the `waited` column default to `waited: 1`,
+`failed: 0`). Tool labels in
 rooms and sections stay in the present tense until the tool completes.
 
 ### Discord
@@ -1944,8 +1961,16 @@ need approval in a section with no visible chat or room entry fail immediately
 and tell the bot to use a visible section. Server stderr, up to the last 2 KB,
 may reach the model in tool errors.
 
-Live `tool.start` and `tool.complete` include `parent_tool_call_id` for nested
-calls. Stored parent tool rows include Pi's `nested_calls` record. Clients show
+Live `tool.start` and `tool.complete` include `parent_tool_call_id` (and
+`parent_occurrence_id` when the parent call has a unique active occurrence) for
+nested calls, and `occurrence_id` (also persisted on assistant `tool_calls` entries
+and `tool` result rows) to distinguish repeated calls that reuse a provider
+`tool_id`; `occurrence_id` is omitted when parallel same-ID calls in one
+assistant fragment cannot be uniquely attributed by completion order. Failed
+`message_bot` completions and persisted `tool` rows include `section_id` when a
+peer thread was already created before delivery failed. Stored parent tool rows
+include Pi's `nested_calls` record, with `section_id` enriched onto nested
+`message_bot` entries. Clients show
 nested steps below the code step both live and after reload. Pi retains nested
 arguments and status, not full nested result bodies; its record is bounded.
 
@@ -2272,7 +2297,9 @@ chat's process. While a turn runs, `reload` is false and a second
 `hexbot.sections.changed {id, bot, reload: true}` follows when that turn
 ends, always after the report is stored: when it settles, when a manual
 compaction finishes or fails, when Pi refuses the message, or when its
-process exits.
+process exits. Persisting an out-of-band hidden user question in a peer thread
+(including after a write retry) also emits `hexbot.sections.changed {id,
+reload: true}` so open thread viewers reload the incoming question.
 Connect registration and disconnection emit `hexbot.connect.changed {}`.
 Room mutations emit `hexbot.rooms.changed {id, deleted?}`; `add_member` and
 `remove_member` also name the bot in `bot` and `name`. Room deletion,
@@ -2280,7 +2307,7 @@ including last-member removal, sets `deleted: true`. Deletion, `add_member` and
 `remove_member` then emit an owner-scoped, session-less `hexbot.bots.changed
 {}`. Every persisted room event
 emits `hexbot.rooms.event {room_id, event}`. Turn state changes emit
-`hexbot.rooms.turn {room_id, bot, live_session_id, status}`. Room events go
+`hexbot.rooms.turn {id, room_id, bot, live_session_id, status}`. Room events go
 to the owner.
 Dream triggers emit `hexbot.dreaming.changed {bot}`.
 Password changes emit `hexbot.passwords.changed {}`.
