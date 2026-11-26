@@ -108,13 +108,17 @@ export function FileSheet({
 
   // The file and read that opened the card; another read alone means the chat reconnected.
   const opening = useRef('')
+  // The last read failed, as one does while the chat is away.
+  const readFailed = useRef(false)
 
   useEffect(() => {
     const key = JSON.stringify([attempt, edition, file?.id, file?.path])
     const reconnected = opening.current === key
     opening.current = key
-    // A reconnect reads again for a fresh stream link, but never over an edit not saved yet.
-    if (reconnected && edited.current) return
+    // A reconnect reads again only for a fresh stream link (video, audio) or after a
+    // failed read; a file read whole stays as it is, with any edit or comment under way.
+    const streamed = file?.kind === 'video' || file?.kind === 'audio'
+    if (reconnected && (edited.current || (!streamed && !readFailed.current))) return
     setDirty(false)
     edited.current = false
     setConflict(false)
@@ -133,11 +137,15 @@ export function FileSheet({
     read(file.path, file.kind === 'video' || file.kind === 'audio').then(
       next => {
         if (!live) return
+        readFailed.current = false
         version.current = next.version
         setOpened({ id: file.id, file: next })
       },
-      (e: unknown) =>
-        live && setOpened({ id: file.id, error: e instanceof Error ? e.message : String(e) })
+      (e: unknown) => {
+        if (!live) return
+        readFailed.current = true
+        setOpened({ id: file.id, error: e instanceof Error ? e.message : String(e) })
+      }
     )
     return () => {
       live = false
@@ -176,7 +184,7 @@ export function FileSheet({
   // One save at a time: a second one waits, then writes only what is newer.
   const writing = useRef<Promise<boolean> | null>(null)
   const save = async (): Promise<boolean> => {
-    while (writing.current) await writing.current
+    while (writing.current) await writing.current.catch(() => false)
     setSaving(true)
     const run = (async () => (await handle.current?.save()) ?? true)()
     writing.current = run
