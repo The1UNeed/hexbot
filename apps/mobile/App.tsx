@@ -135,9 +135,9 @@ const SETTINGS_PANELS: Partial<Record<string, Panel['kind']>> = {
   updates: 'updates',
   usage: 'usage'
 }
-/** Which status a conversation shows when several bots are busy in it. */
 /** One empty list, so a chat without comments keeps the same one. */
 const NO_COMMENTS: FileComment[] = []
+/** Which status a conversation shows when several bots are busy in it. */
 const URGENCY: Partial<Record<BotStatus, number>> = { needs_you: 3, stopped: 2, working: 1 }
 const PINNED: Record<string, number> = { needs_you: 0, stopped: 1, working: 2 }
 // A face picked in an app is drawn live, with its colour; otherwise the picture.

@@ -73,11 +73,6 @@ function useMediaUrl(
 }
 
 /**
- * A picture, video or audio file in the chat. A picture opens over the chat;
- * a video or audio file plays where it is. While the daemon's copy loads the
- * space it will take is held; a file that cannot be read is its card.
- */
-/**
  * Shows a picture over the chat. `whole` reads it as bytes, for a picture
  * shown from the daemon's stream that Mark up opens in the editor.
  */
@@ -87,6 +82,11 @@ export type ImageOpener = (
   whole?: () => Promise<string | undefined>
 ) => void
 
+/**
+ * A picture, video or audio file in the chat. A picture opens over the chat;
+ * a video or audio file plays where it is. While the daemon's copy loads the
+ * space it will take is held; a file that cannot be read is its card.
+ */
 export function MediaView({
   fallback,
   kind,

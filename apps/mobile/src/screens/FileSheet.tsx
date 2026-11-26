@@ -11,7 +11,13 @@ import {
 } from 'react-native'
 
 import type { FileComment } from '../../../web/src/lib/file-comments'
-import { asSaved, editorOf, saveFailure, type SavedContents } from '../core/file-edit'
+import {
+  asSaved,
+  editorOf,
+  saveFailure,
+  type SavedContents,
+  savesPicture
+} from '../core/file-edit'
 import { type OpenedFile, type Preview, previewOf, TABLE_COLUMNS } from '../core/files'
 import { fileCopy, mediaUri } from '../core/media'
 import { MarkdownText } from '../MarkdownText'
@@ -100,7 +106,15 @@ export function FileSheet({
   // The editor holds an edit not written yet, as the closing save reads it.
   const edited = useRef(false)
 
+  // The file and read that opened the card; another read alone means the chat reconnected.
+  const opening = useRef('')
+
   useEffect(() => {
+    const key = JSON.stringify([attempt, edition, file?.id, file?.path])
+    const reconnected = opening.current === key
+    opening.current = key
+    // A reconnect reads again for a fresh stream link, but never over an edit not saved yet.
+    if (reconnected && edited.current) return
     setDirty(false)
     edited.current = false
     setConflict(false)
@@ -140,7 +154,8 @@ export function FileSheet({
   const path = shown?.local ? undefined : shown?.path
 
   const writeFile: WriteFile | undefined =
-    write && path
+    // A GIF or other picture the daemon won't take back is marked up only to send.
+    write && path && (editor !== 'image' || savesPicture(current?.file?.mime ?? ''))
       ? async contents => {
           try {
             const reply = await write(path, contents, version.current)
@@ -158,11 +173,17 @@ export function FileSheet({
         }
       : undefined
 
-  const save = async () => {
+  // One save at a time: a second one waits, then writes only what is newer.
+  const writing = useRef<Promise<boolean> | null>(null)
+  const save = async (): Promise<boolean> => {
+    while (writing.current) await writing.current
     setSaving(true)
+    const run = (async () => (await handle.current?.save()) ?? true)()
+    writing.current = run
     try {
-      return (await handle.current?.save()) ?? true
+      return await run
     } finally {
+      writing.current = null
       setSaving(false)
     }
   }
