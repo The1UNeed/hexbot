@@ -73,6 +73,16 @@ function useMediaUrl(
 }
 
 /**
+ * Shows a picture over the chat. `whole` reads it as bytes, for a picture
+ * shown from the daemon's stream that Mark up opens in the editor.
+ */
+export type ImageOpener = (
+  source: string,
+  name?: string,
+  whole?: () => Promise<string | undefined>
+) => void
+
+/**
  * A picture, video or audio file in the chat. A picture opens over the chat;
  * a video or audio file plays where it is. While the daemon's copy loads the
  * space it will take is held; a file that cannot be read is its card.
@@ -89,7 +99,7 @@ export function MediaView({
   fallback: ReactNode
   kind: AttachmentKind
   name: string
-  onImage: (source: string) => void
+  onImage: ImageOpener
   path?: string
   sessionId?: string
   url?: string
@@ -153,7 +163,15 @@ export function MediaView({
       <button
         aria-label={`Open ${name}`}
         className="hex-focus rounded-panel"
-        onClick={() => onImage(src)}
+        onClick={() =>
+          onImage(
+            src,
+            name,
+            path && sessionId && !url
+              ? () => filesRead(sessionId, path, false).then(file => file.data_url)
+              : undefined
+          )
+        }
         type="button"
       >
         <img

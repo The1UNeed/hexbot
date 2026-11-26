@@ -298,21 +298,48 @@ with Viewport Segments place both poses on the exact halves.
   PDF preview), and on iPhone Share saves or sends it. A visual's card there
   takes its bot's colour, like the bot's bubbles.
 - Files beside the chat open as tabs in the side panel, next to any
-  visuals. Text opens in the editor (Markdown and plain text formatted,
-  code and data as plain text) and saves 0.8 s after typing stops. Under
-  it, quick tools ask the bot to change the file (Polish, Shorten, Make
-  longer, Fix mistakes; for code and data Fix bugs, Add comments, Tidy up)
-  and a field asks for anything else; each sends a message in the chat
-  naming the file. Each edit the bot finishes shows in the tab as it lands,
-  with "Updated by {bot}" for a moment; the editor follows unless it holds
-  an edit not saved yet; when the bot adds something the formatted view
-  would drop (a table), it switches to source. A save after the bot changed
-  the file is refused rather than overwriting it; the edit stays, with
-  "Load {bot}'s version" to drop it for the file as it is now. A quick tool
-  saves the edit on screen before it asks, and closing a tab or the panel
-  saves first and keeps a file whose edit did not save. While the bot works
-  the quick tools wait. A PDF opens in the viewer; any other file offers a
-  download. Desktop and browser only: the phone has no side panel.
+  visuals, each shown and edited the way its kind wants. Text opens in the
+  editor (Markdown and plain text formatted, code and data as plain text);
+  CSV and TSV as a table (Table or Text), with cells edited in place, rows
+  and columns added or removed, copy and paste as tab-separated text; HTML
+  and SVG rendered in a frame that runs no scripts (Preview or Source).
+  Word files open as a page whose paragraphs are edited in place, Enter
+  splitting one and Backspace joining it back; Excel files as their sheets,
+  cells and formulas edited in place with their styles kept; PowerPoint
+  files as their slides, with the text in boxes, shapes and tables edited in
+  place. Only the parts changed are written back, so styles, charts and
+  comments the panel does not show stay. Each saves 0.8 s after the last
+  edit. A picture opens in a markup editor: select and move, pen,
+  highlighter, arrow, line, rectangle, ellipse, text, numbered steps,
+  pixelate and crop, seven colours, three sizes and undo for each step.
+  Save writes PNG, JPEG and WebP back over the file; Add to message puts it,
+  as marked up, in the composer; a picture opened from the viewer's Mark up
+  is not saved, only added or downloaded.
+- The panel has no field of its own: the chat's composer is the one place to
+  write to the bot. Selecting text, a range of cells or an area of a picture
+  offers Comment; a comment waits above the composer, numbered, naming its
+  file and what it is about, and goes with the next message, the file named
+  as a tag, so the bot finds the place and edits that file. Each edit the
+  bot finishes shows in the tab as it lands, with "Updated by {bot}" for a
+  moment; the editor follows unless it holds an edit not saved yet; when the
+  bot adds something the formatted view would drop (a table), it switches to
+  source. A save after the bot changed the file is refused rather than
+  overwriting it; the edit stays, with "Load {bot}'s version" to drop it for
+  the file as it is now. Sending a message saves every open file's edit
+  first, and holds the message when one does not save; closing a tab or the
+  panel saves first and keeps a file whose edit did not save. A PDF opens in
+  the viewer; any other file offers a download. The phone has no side
+  panel: a file opens on its card in front of the chat, where text and
+  Markdown (Formatted or Edit) are edited in a field, CSV and TSV as a table
+  whose picked cell the field under it edits (Add row adds one), and
+  pictures are marked up with the same tools, colours and sizes, drawn by
+  the desktop's renderer in a web view. Save, or closing the card, writes
+  the edit back; a save after the bot changed the file is refused with
+  "Load {bot}'s version". Selecting words, a cell (a long press picks the
+  range up to another) or an area of a picture offers Comment; the note is
+  written at the bottom of the card, and the comment waits above the
+  composer, numbered, and goes with the next message. Word, Excel and
+  PowerPoint files stay without a preview there.
 - Questions: when a bot asks through the clarify tool, a card with the
   question, the choices as rows A, B, C… (the first marked Recommended)
   and a field for the user's own answer. One click answers a single-choice

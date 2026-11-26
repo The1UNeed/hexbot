@@ -38,7 +38,7 @@ import {
 } from './src/core/chat-send'
 import { daemonBehind } from './src/core/version-skew'
 import { version as appVersion } from '../desktop/package.json'
-import { type AttachSource, pickAttachments } from './src/core/pickFile'
+import { type AttachSource, type PickedFile, pickAttachments } from './src/core/pickFile'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import {
   ChatChooser,
@@ -103,7 +103,8 @@ import {
   unreadOf as unreadOfBot
 } from './src/core/routes'
 import { previewLine } from '../web/src/lib/preview'
-import { mediaKind, mediaOf, mediaSource, mimeOf } from '../web/src/lib/media'
+import { attachmentPrompt, mediaKind, mediaOf, mediaSource, mimeOf } from '../web/src/lib/media'
+import { type FileComment, withComments } from '../web/src/lib/file-comments'
 import { asksOf, askTarget, askWords } from '../web/src/lib/asks'
 import { settledCard } from '../web/src/lib/settled-cards'
 import { namedPlugin, pluginRows } from '../web/src/lib/plugin-rows'
@@ -134,6 +135,8 @@ const SETTINGS_PANELS: Partial<Record<string, Panel['kind']>> = {
   updates: 'updates',
   usage: 'usage'
 }
+/** One empty list, so a chat without comments keeps the same one. */
+const NO_COMMENTS: FileComment[] = []
 /** Which status a conversation shows when several bots are busy in it. */
 const URGENCY: Partial<Record<BotStatus, number>> = { needs_you: 3, stopped: 2, working: 1 }
 const PINNED: Record<string, number> = { needs_you: 0, stopped: 1, working: 2 }
@@ -450,6 +453,14 @@ function MobileApp({ children }: { children?: ReactNode }) {
     route?.kind === 'section' ? route.section.id : route?.kind === 'room' ? route.room.id : null
   const openChat = useRef(chatKey)
   openChat.current = chatKey
+  // Comments left on files in a bot's chat, waiting above its composer for
+  // the next message, by daemon and chat. Not kept: they belong to this run.
+  const [fileComments, setFileComments] = useState<Record<string, FileComment[]>>({})
+  const commentKey =
+    route?.kind === 'section' && mobile.active ? `${mobile.active.id}:${route.section.id}` : null
+  const chatComments = (commentKey && fileComments[commentKey]) || NO_COMMENTS
+  const setChatComments = (key: string, change: (list: FileComment[]) => FileComment[]) =>
+    setFileComments(all => ({ ...all, [key]: change(all[key] ?? []) }))
   // Opening a chat or a room, from the list, a link or Settings, shows it in
   // the Chats tab's native stack; its back button closes it again.
   const shownChat = useRef<string | null>(null)
@@ -576,6 +587,10 @@ function MobileApp({ children }: { children?: ReactNode }) {
     const { files, refused } = await pickAttachments(source)
     if (files.length && !sameChat(origin, chatNow()))
       throw new Error('The chat changed while you picked. Attach the files again.')
+    stage(files, refused)
+  }
+  /** Puts files in the composer, each uploading as soon as it is added. */
+  const stage = (files: PickedFile[], refused: string | null = null) => {
     const added: ComposerAttachment[] = []
     let tooBig: string | null = null
     for (const asset of files) {
@@ -1409,6 +1424,10 @@ function MobileApp({ children }: { children?: ReactNode }) {
     // In a chat, a message sent while the bot works cuts its reply off and goes
     // next; rooms queue messages themselves.
     const previous = draft
+    // The comments go with this message; a send that fails puts them back.
+    const sentKey = commentKey
+    const sentComments = chatComments
+    if (sentKey && sentComments.length) setChatComments(sentKey, list => list.filter(c => !sentComments.includes(c)))
     setDraft('')
     act(async () => {
       const daemonId = mobile.active?.id
@@ -1452,7 +1471,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
         const named = ids.length === files
         await mobile
           .send(
-            text,
+            withComments(attachmentPrompt(text, files > 0), sentComments),
             files > 0,
             named ? ids : undefined,
             // The daemon's copy, so a file you just sent previews before the chat reloads.
@@ -1480,16 +1499,19 @@ function MobileApp({ children }: { children?: ReactNode }) {
         attachmentData.current.clear()
       } catch (e) {
         setDraft(previous || text)
+        if (sentKey && sentComments.length)
+          setChatComments(sentKey, list => [...sentComments, ...list.filter(c => !sentComments.includes(c))])
         throw e
       } finally {
         setUploading(false)
       }
     })
   }
-  const readFile = useCallback(async (path: string) => {
+  // Off, `stream` reads a picture whole, as its card marks it up and saves it.
+  const readFile = useCallback(async (path: string, stream = true) => {
     if (!liveChat || !mobile.active) throw new Error('Open this chat again.')
     const file = await mobileRef.current.rpc<OpenedFile & { media_path?: string }>(
-      'hexbot.files.read', { session_id: liveChat, path, stream_media: true }
+      'hexbot.files.read', { session_id: liveChat, path, ...(stream ? { stream_media: true } : {}) }
     )
     return { ...file, mediaUrl: mediaSource(mobile.active.origin, file.media_path) }
   }, [liveChat, mobile.active, mobile.connects])
@@ -1497,6 +1519,30 @@ function MobileApp({ children }: { children?: ReactNode }) {
     const key = JSON.stringify([mobile.active?.id, liveChat, id, path])
     return mediaUri(key, () => readFile(path), mobile.connects)
   }, [liveChat, mobile.active?.id, mobile.connects, readFile])
+  // An edit made on the file's card writes it back through the same chat.
+  const writeFile = useCallback(
+    (path: string, contents: { text: string } | { data_url: string }, version?: string) => {
+      const current = mobileRef.current
+      const sessionId = current.liveSessionId()
+      if (!sessionId) return Promise.reject(new Error('Open this chat again.'))
+      return current.rpc<{ version: string }>('hexbot.files.write', {
+        session_id: sessionId,
+        path,
+        ...contents,
+        ...(version ? { version } : {})
+      })
+    },
+    []
+  )
+  /** A picture marked up on its card, added to the composer like a picked one. */
+  const addPicture = (dataUrl: string, name: string) => {
+    const comma = dataUrl.indexOf(',')
+    const base64 = dataUrl.slice(comma + 1)
+    const mimeType = /^data:([^;,]+)/.exec(dataUrl)?.[1] ?? 'image/png'
+    act(async () =>
+      stage([{ base64, bytes: Math.floor((base64.length * 3) / 4), mimeType, name, uri: dataUrl }])
+    )
+  }
   // The private conversation between two bots, guarded by `useMobile`'s navigation generation.
   const openThread = useCallback(
     (bot: string, peer: string, sectionId?: string, allowReverse = false) => {
@@ -1702,6 +1748,17 @@ function MobileApp({ children }: { children?: ReactNode }) {
         ? waitingStatus(mobile.chat, handle => botByName(handle)?.display_name ?? handle)
         : undefined,
     onSend: send,
+    comments: route?.kind === 'section' ? chatComments : undefined,
+    onRemoveComment: (id: string) =>
+      commentKey && setChatComments(commentKey, list => list.filter(c => c.id !== id)),
+    onOpenComment: (comment: FileComment) =>
+      comment.path &&
+      setFile({
+        id: `comment-${comment.path}`,
+        kind: mediaKind(mimeOf(comment.name), comment.name),
+        name: comment.name,
+        path: comment.path
+      }),
     draft,
     onDraftChange: setDraft,
     // A bot's chat has no Stop: Recall takes a message back. A room keeps it.
@@ -2292,9 +2349,21 @@ function MobileApp({ children }: { children?: ReactNode }) {
         </Layer>
         <FileSheet
           botName={route?.kind === 'section' ? route.bot.display_name : 'The bot'}
+          comments={chatComments}
           file={file}
+          onAddImage={route?.kind === 'section' ? addPicture : undefined}
           onClose={() => setFile(null)}
+          onComment={
+            commentKey
+              ? comment =>
+                  setChatComments(commentKey, list => [
+                    ...list,
+                    { ...comment, id: Crypto.randomUUID() }
+                  ])
+              : undefined
+          }
           read={readFile}
+          write={route?.kind === 'section' ? writeFile : undefined}
         />
         <SearchSheet
           documents={searchDocuments}

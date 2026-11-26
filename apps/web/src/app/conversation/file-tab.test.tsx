@@ -4,25 +4,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Bot, Message, ToolCall } from '../../lib/types'
 import { useBots } from '../../stores/bots'
+import { useFileComments } from '../../stores/file-comments'
 import { useSections } from '../../stores/sections'
 import { useTranscripts } from '../../stores/transcripts'
 import { useUi } from '../../stores/ui'
 import { fileTab, isFileTab, useVisuals, visualsActions } from '../../stores/visuals'
 
-import { blobFromDataUrl, editRequest, filesOf, mimeOf, openFile } from './file-tab'
+import { blobFromDataUrl, filesOf, flushOpenFiles, mimeOf, openFile } from './file-tab'
 import { VisualPanel } from './visual-frame'
 
-const api = vi.hoisted(() => ({ filesRead: vi.fn(), filesWrite: vi.fn() }))
-const chat = vi.hoisted(() => ({ sendText: vi.fn() }))
+const api = vi.hoisted(() => ({
+  filesRead: vi.fn(),
+  filesWrite: vi.fn(),
+  filesWriteBytes: vi.fn()
+}))
 
 vi.mock('../../lib/api', async importOriginal => ({
   ...(await importOriginal<object>()),
   ...api
-}))
-
-vi.mock('./index', async importOriginal => ({
-  ...(await importOriginal<object>()),
-  ...chat
 }))
 
 const call = (partial: Partial<ToolCall>): ToolCall => ({
@@ -116,15 +115,8 @@ describe('filesOf', () => {
   })
 })
 
-describe('editRequest', () => {
-  it('names the file so the bot edits that one', () => {
-    expect(editRequest('Shorten', 'plan.md', '/work/plan.md')).toBe(
-      'Shorten\n\nEdit the file in place: `/work/plan.md`'
-    )
-    expect(editRequest('What is on page 3?', 'deck.pdf', '/a/deck.pdf', false)).toBe(
-      'What is on page 3?\n\nFile: `/a/deck.pdf`'
-    )
-    expect(editRequest('Summarise it', 'deck.pdf')).toBe('Summarise it\n\nThis is about deck.pdf.')
+describe('mimeOf', () => {
+  it('knows a file by its name', () => {
     expect(mimeOf('Report.PDF')).toBe('application/pdf')
   })
 })
@@ -173,7 +165,7 @@ describe('a file beside the chat', () => {
       size: 30,
       version: 'v5'
     })
-    chat.sendText.mockResolvedValue(true)
+    useFileComments.setState({ byChat: {}, outbox: {} })
   })
 
   afterEach(() => {
@@ -205,9 +197,30 @@ describe('a file beside the chat', () => {
       'src',
       url + 'b'.repeat(32)
     )
+    expect(api.filesRead).toHaveBeenCalledWith('s', file.path, true)
   })
 
-  it('opens in the panel, asks the bot with a quick tool, and follows its edit', async () => {
+  it('reads a picture whole, so its editor can draw it and save against its hash', async () => {
+    api.filesRead.mockResolvedValue({
+      data_url: 'data:image/png;base64,iVBORw0KGgo=',
+      mime: 'image/png',
+      modified: 1,
+      name: 'shot.png',
+      path: '/work/shot.png',
+      size: 8,
+      version: 'sha'
+    })
+    act(() =>
+      visualsActions().open(
+        fileTab('shot.png', { mime: 'image/png', path: '/work/shot.png', sessionId: 's' })
+      )
+    )
+    render(<VisualPanel />)
+
+    await waitFor(() => expect(api.filesRead).toHaveBeenCalledWith('s', '/work/shot.png', false))
+  })
+
+  it("opens in the panel with no field of its own, and follows the bot's edit", async () => {
     act(() =>
       visualsActions().open(
         fileTab('plan.md', { mime: 'text/markdown', path: '/work/plan.md', sessionId: 's' })
@@ -216,16 +229,10 @@ describe('a file beside the chat', () => {
     render(<VisualPanel />)
 
     expect(await screen.findByText('Ship the board Friday')).toBeInTheDocument()
-    expect(api.filesRead).toHaveBeenCalledWith('s', '/work/plan.md')
-
-    fireEvent.click(screen.getByRole('button', { name: 'Shorten' }))
-    await waitFor(() =>
-      expect(chat.sendText).toHaveBeenCalledWith(
-        's',
-        'daily',
-        'Shorten plan.md.\n\nEdit the file in place: `/work/plan.md`'
-      )
-    )
+    expect(api.filesRead).toHaveBeenCalledWith('s', '/work/plan.md', false)
+    // The chat's own composer is the one place to write to the bot.
+    expect(screen.queryByLabelText('Ask Scout about this file')).toBeNull()
+    expect(screen.queryByRole('group', { name: 'Quick tools' })).toBeNull()
 
     // The bot edits the file: its finished step reads it again.
     api.filesRead.mockResolvedValue({
@@ -297,57 +304,78 @@ describe('a file beside the chat', () => {
     expect(screen.queryByText('Ship the board Friday')).toBeNull()
   })
 
-  it('opens a file from a thread between bots without quick tools', async () => {
-    act(() =>
-      openFile('s', { mime: 'text/markdown', name: 'plan.md', path: '/work/plan.md' }, false)
-    )
-    render(<VisualPanel />)
+  it('leaves a comment on selected text for the next message', async () => {
+    const field = await openPins()
 
-    expect(await screen.findByText('Ship the board Friday')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Shorten' })).toBeNull()
-    expect(screen.queryByLabelText('Ask Scout about this file')).toBeNull()
+    field.focus()
+    ;(field as HTMLTextAreaElement).setSelectionRange(4, 7)
+    fireEvent.mouseUp(field)
+    fireEvent.click(await screen.findByRole('button', { name: 'Comment' }))
+    fireEvent.change(screen.getByLabelText('Comment for Scout'), {
+      target: { value: 'Rename this pin' }
+    })
+    fireEvent.keyDown(screen.getByLabelText('Comment for Scout'), { key: 'Enter' })
+
+    expect(useFileComments.getState().byChat.daily).toEqual([
+      expect.objectContaining({
+        name: 'pins.conf',
+        note: 'Rename this pin',
+        path: '/work/pins.conf',
+        quote: 'use',
+        where: 'line 1'
+      })
+    ])
+    expect(screen.queryByLabelText('Comment for Scout')).toBeNull()
   })
 
-  it('holds the quick tools while the bot is working', async () => {
-    transcript([], true)
+  it('offers no comments on a file from a thread between bots', async () => {
+    api.filesRead.mockResolvedValue({
+      mime: 'text/plain',
+      modified: 3,
+      version: 'v3',
+      name: 'pins.conf',
+      path: '/work/pins.conf',
+      size: 7,
+      text: 'pin,use\nGPIO2,ADC'
+    })
     act(() =>
-      visualsActions().open(
-        fileTab('plan.md', { mime: 'text/markdown', path: '/work/plan.md', sessionId: 's' })
-      )
+      openFile('s', { mime: 'text/plain', name: 'pins.conf', path: '/work/pins.conf' }, false)
     )
     render(<VisualPanel />)
 
-    await screen.findByText('Ship the board Friday')
-    expect(screen.getByRole('button', { name: 'Polish' })).toBeDisabled()
-    expect(screen.getByPlaceholderText('Scout is working…')).toBeDisabled()
+    const field = await screen.findByLabelText('pins.conf source')
+    field.focus()
+    ;(field as HTMLTextAreaElement).setSelectionRange(0, 3)
+    fireEvent.mouseUp(field)
+    await act(async () => {})
+    expect(screen.queryByRole('button', { name: 'Comment' })).toBeNull()
   })
 
   it('saves what the user types, naming the version it edited', async () => {
     act(() =>
       visualsActions().open(
-        fileTab('pins.csv', { mime: 'text/csv', path: '/work/pins.csv', sessionId: 's' })
+        fileTab('pins.conf', { mime: 'text/plain', path: '/work/pins.conf', sessionId: 's' })
       )
     )
     api.filesRead.mockResolvedValue({
-      mime: 'text/csv',
+      mime: 'text/plain',
       modified: 3,
       version: 'v3',
-      name: 'pins.csv',
-      path: '/work/pins.csv',
+      name: 'pins.conf',
+      path: '/work/pins.conf',
       size: 7,
       text: 'pin,use'
     })
     render(<VisualPanel />)
 
-    const field = await screen.findByLabelText('pins.csv source')
-    expect(screen.getByRole('button', { name: 'Fix bugs' })).toBeInTheDocument()
+    const field = await screen.findByLabelText('pins.conf source')
     fireEvent.change(field, { target: { value: 'pin,use\nGPIO15,JTAG' } })
 
     await waitFor(
       () =>
         expect(api.filesWrite).toHaveBeenCalledWith(
           's',
-          '/work/pins.csv',
+          '/work/pins.conf',
           'pin,use\nGPIO15,JTAG',
           'v3'
         ),
@@ -356,17 +384,17 @@ describe('a file beside the chat', () => {
 
     // Once the edit is saved, the bot's next change still shows.
     api.filesRead.mockResolvedValue({
-      mime: 'text/csv',
+      mime: 'text/plain',
       modified: 6,
       version: 'v6',
-      name: 'pins.csv',
-      path: '/work/pins.csv',
+      name: 'pins.conf',
+      path: '/work/pins.conf',
       size: 30,
       text: 'pin,use\nGPIO15,JTAG source select'
     })
-    act(() => transcript([call({ args: { path: '/work/pins.csv' }, name: 'edit' })]))
+    act(() => transcript([call({ args: { path: '/work/pins.conf' }, name: 'edit' })]))
     await waitFor(() =>
-      expect(screen.getByLabelText('pins.csv source')).toHaveValue(
+      expect(screen.getByLabelText('pins.conf source')).toHaveValue(
         'pin,use\nGPIO15,JTAG source select'
       )
     )
@@ -375,36 +403,38 @@ describe('a file beside the chat', () => {
   it("reads, saves and follows through the chat's new session after a daemon restart", async () => {
     useSections.setState({ liveSessionId: { daily: 'gone' } })
     api.filesRead.mockResolvedValue({
-      mime: 'text/csv',
+      mime: 'text/plain',
       modified: 3,
       version: 'v3',
-      name: 'pins.csv',
-      path: '/work/pins.csv',
+      name: 'pins.conf',
+      path: '/work/pins.conf',
       size: 7,
       text: 'pin,use'
     })
     act(() =>
       openFile(
         'gone',
-        { mime: 'text/csv', name: 'pins.csv', path: '/work/pins.csv' },
+        { mime: 'text/plain', name: 'pins.conf', path: '/work/pins.conf' },
         true,
         'daily'
       )
     )
     render(<VisualPanel />)
-    const field = await screen.findByLabelText('pins.csv source')
-    expect(api.filesRead).toHaveBeenLastCalledWith('gone', '/work/pins.csv')
+    const field = await screen.findByLabelText('pins.conf source')
+    expect(api.filesRead).toHaveBeenLastCalledWith('gone', '/work/pins.conf', false)
 
     // The daemon restarts and the chat reopens with a new live session.
     act(() => useSections.setState({ liveSessionId: { daily: 's' } }))
-    await waitFor(() => expect(api.filesRead).toHaveBeenLastCalledWith('s', '/work/pins.csv'))
+    await waitFor(() =>
+      expect(api.filesRead).toHaveBeenLastCalledWith('s', '/work/pins.conf', false)
+    )
 
     fireEvent.change(field, { target: { value: 'pin,use\nGPIO15,JTAG' } })
     await waitFor(
       () =>
         expect(api.filesWrite).toHaveBeenCalledWith(
           's',
-          '/work/pins.csv',
+          '/work/pins.conf',
           'pin,use\nGPIO15,JTAG',
           'v3'
         ),
@@ -412,17 +442,17 @@ describe('a file beside the chat', () => {
     )
 
     api.filesRead.mockResolvedValue({
-      mime: 'text/csv',
+      mime: 'text/plain',
       modified: 6,
       version: 'v6',
-      name: 'pins.csv',
-      path: '/work/pins.csv',
+      name: 'pins.conf',
+      path: '/work/pins.conf',
       size: 30,
       text: 'pin,use\nGPIO15,JTAG source select'
     })
-    act(() => transcript([call({ args: { path: '/work/pins.csv' }, name: 'edit' })]))
+    act(() => transcript([call({ args: { path: '/work/pins.conf' }, name: 'edit' })]))
     await waitFor(() =>
-      expect(screen.getByLabelText('pins.csv source')).toHaveValue(
+      expect(screen.getByLabelText('pins.conf source')).toHaveValue(
         'pin,use\nGPIO15,JTAG source select'
       )
     )
@@ -431,34 +461,34 @@ describe('a file beside the chat', () => {
 
   it('saves an edit typed while the bot changed the file against the version it started from', async () => {
     api.filesRead.mockResolvedValue({
-      mime: 'text/csv',
+      mime: 'text/plain',
       modified: 3,
       version: 'v3',
-      name: 'pins.csv',
-      path: '/work/pins.csv',
+      name: 'pins.conf',
+      path: '/work/pins.conf',
       size: 7,
       text: 'pin,use'
     })
     act(() =>
       visualsActions().open(
-        fileTab('pins.csv', { mime: 'text/csv', path: '/work/pins.csv', sessionId: 's' })
+        fileTab('pins.conf', { mime: 'text/plain', path: '/work/pins.conf', sessionId: 's' })
       )
     )
     render(<VisualPanel />)
-    const field = await screen.findByLabelText('pins.csv source')
+    const field = await screen.findByLabelText('pins.conf source')
 
     // The user types; before the save runs, the bot edits the same file.
     fireEvent.change(field, { target: { value: 'pin,use\nGPIO9,BOOT' } })
     api.filesRead.mockResolvedValue({
-      mime: 'text/csv',
+      mime: 'text/plain',
       modified: 9,
       version: 'v9',
-      name: 'pins.csv',
-      path: '/work/pins.csv',
+      name: 'pins.conf',
+      path: '/work/pins.conf',
       size: 20,
       text: "pin,use\nthe bot's row"
     })
-    act(() => transcript([call({ args: { path: '/work/pins.csv' }, name: 'edit' })]))
+    act(() => transcript([call({ args: { path: '/work/pins.conf' }, name: 'edit' })]))
     await waitFor(() => expect(api.filesRead).toHaveBeenCalledTimes(2))
 
     // The draft stays, and its save names version 3, so the daemon can refuse it.
@@ -467,7 +497,7 @@ describe('a file beside the chat', () => {
       () =>
         expect(api.filesWrite).toHaveBeenCalledWith(
           's',
-          '/work/pins.csv',
+          '/work/pins.conf',
           'pin,use\nGPIO9,BOOT',
           'v3'
         ),
@@ -484,34 +514,34 @@ describe('a file beside the chat', () => {
 
     const large = {
       data_url: 'data:text/csv;base64,cGluLHVzZQ==',
-      mime: 'text/csv',
+      mime: 'text/plain',
       modified: 9,
-      name: 'pins.csv',
-      path: '/work/pins.csv',
+      name: 'pins.conf',
+      path: '/work/pins.conf',
       size: 3 * 1024 * 1024,
       version: 'v9'
     }
 
     api.filesRead.mockResolvedValue(large)
-    act(() => transcript([call({ args: { path: '/work/pins.csv' }, name: 'write' })]))
+    act(() => transcript([call({ args: { path: '/work/pins.conf' }, name: 'write' })]))
     await waitFor(() => expect(api.filesRead).toHaveBeenCalledTimes(2))
 
     expect(
       await screen.findByText(/Scout changed this file, and it can no longer be edited here/)
     ).toBeVisible()
-    expect(screen.getByLabelText('pins.csv source')).toHaveValue('pin,use\nGPIO9,BOOT')
+    expect(screen.getByLabelText('pins.conf source')).toHaveValue('pin,use\nGPIO9,BOOT')
     expect(screen.queryByText(/No preview for this file/)).toBeNull()
 
     // Only the user's choice replaces the editor.
     fireEvent.click(screen.getByRole('button', { name: "Load Scout's version" }))
     expect(await screen.findByText(/No preview for this file/)).toBeVisible()
-    expect(screen.queryByLabelText('pins.csv source')).toBeNull()
+    expect(screen.queryByLabelText('pins.conf source')).toBeNull()
   })
 
   it('keeps an unsaved edit when another tab is shown and back', async () => {
     api.filesRead.mockImplementation((_session: string, path: string) =>
       Promise.resolve({
-        mime: 'text/csv',
+        mime: 'text/plain',
         modified: 3,
         version: 'v3',
         name: path.split('/').pop(),
@@ -523,30 +553,30 @@ describe('a file beside the chat', () => {
     api.filesWrite.mockRejectedValue(new Error('the file changed since it was opened'))
     act(() => {
       visualsActions().open(
-        fileTab('pins.csv', { mime: 'text/csv', path: '/work/pins.csv', sessionId: 's' })
+        fileTab('pins.conf', { mime: 'text/plain', path: '/work/pins.conf', sessionId: 's' })
       )
       visualsActions().open(
-        fileTab('parts.csv', { mime: 'text/csv', path: '/work/parts.csv', sessionId: 's' })
+        fileTab('parts.conf', { mime: 'text/plain', path: '/work/parts.conf', sessionId: 's' })
       )
-      visualsActions().activate('file:/work/pins.csv')
+      visualsActions().activate('file:/work/pins.conf')
     })
     render(<VisualPanel />)
 
-    fireEvent.change(await screen.findByLabelText('pins.csv source'), {
+    fireEvent.change(await screen.findByLabelText('pins.conf source'), {
       target: { value: 'pin,use\nGPIO9,BOOT' }
     })
-    act(() => visualsActions().activate('file:/work/parts.csv'))
-    await screen.findByLabelText('parts.csv source')
-    act(() => visualsActions().activate('file:/work/pins.csv'))
+    act(() => visualsActions().activate('file:/work/parts.conf'))
+    await screen.findByLabelText('parts.conf source')
+    act(() => visualsActions().activate('file:/work/pins.conf'))
 
-    expect(screen.getByLabelText('pins.csv source')).toHaveValue('pin,use\nGPIO9,BOOT')
+    expect(screen.getByLabelText('pins.conf source')).toHaveValue('pin,use\nGPIO9,BOOT')
   })
 
   async function openPins() {
     api.filesRead.mockResolvedValue({
-      mime: 'text/csv',
-      name: 'pins.csv',
-      path: '/work/pins.csv',
+      mime: 'text/plain',
+      name: 'pins.conf',
+      path: '/work/pins.conf',
       modified: 3,
       version: 'v3',
       size: 7,
@@ -554,27 +584,27 @@ describe('a file beside the chat', () => {
     })
     act(() =>
       visualsActions().open(
-        fileTab('pins.csv', { mime: 'text/csv', path: '/work/pins.csv', sessionId: 's' })
+        fileTab('pins.conf', { mime: 'text/plain', path: '/work/pins.conf', sessionId: 's' })
       )
     )
     render(<VisualPanel />)
 
-    return screen.findByLabelText('pins.csv source')
+    return screen.findByLabelText('pins.conf source')
   }
 
   it('keeps its version when the bot rewrites the file unchanged', async () => {
     const field = await openPins()
     // The same contents hash the same, whatever the new modification time.
     api.filesRead.mockResolvedValue({
-      mime: 'text/csv',
-      name: 'pins.csv',
-      path: '/work/pins.csv',
+      mime: 'text/plain',
+      name: 'pins.conf',
+      path: '/work/pins.conf',
       modified: 9,
       version: 'v3',
       size: 7,
       text: 'pin,use'
     })
-    act(() => transcript([call({ args: { path: '/work/pins.csv' }, name: 'write' })]))
+    act(() => transcript([call({ args: { path: '/work/pins.conf' }, name: 'write' })]))
     await waitFor(() => expect(api.filesRead).toHaveBeenCalledTimes(2))
 
     fireEvent.change(field, { target: { value: 'pin,use\nGPIO2,ADC' } })
@@ -582,7 +612,7 @@ describe('a file beside the chat', () => {
       () =>
         expect(api.filesWrite).toHaveBeenCalledWith(
           's',
-          '/work/pins.csv',
+          '/work/pins.conf',
           'pin,use\nGPIO2,ADC',
           'v3'
         ),
@@ -594,37 +624,33 @@ describe('a file beside the chat', () => {
     const field = await openPins()
     fireEvent.change(field, { target: { value: 'pin,use\nGPIO2,ADC' } })
     api.filesRead.mockRejectedValue(new Error('not connected'))
-    act(() => transcript([call({ args: { path: '/work/pins.csv' }, name: 'edit' })]))
+    act(() => transcript([call({ args: { path: '/work/pins.conf' }, name: 'edit' })]))
 
     expect(await screen.findByRole('alert')).toHaveTextContent('not connected')
-    expect(screen.getByLabelText('pins.csv source')).toHaveValue('pin,use\nGPIO2,ADC')
+    expect(screen.getByLabelText('pins.conf source')).toHaveValue('pin,use\nGPIO2,ADC')
   })
 
-  it('saves the edit on screen before a quick tool asks the bot', async () => {
+  it('saves the edit on screen before a message goes', async () => {
     const field = await openPins()
-    fireEvent.change(field, { target: { value: 'pin,use\nGPIO2,ADC' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Fix bugs' }))
+    fireEvent.change(field, { target: { value: 'pin,use\nGPIO2,ADC,3V3' } })
 
-    await waitFor(() => expect(chat.sendText).toHaveBeenCalled())
-    expect(api.filesWrite).toHaveBeenCalledWith('s', '/work/pins.csv', 'pin,use\nGPIO2,ADC', 'v3')
-    expect(api.filesWrite.mock.invocationCallOrder[0]!).toBeLessThan(
-      chat.sendText.mock.invocationCallOrder[0]!
+    expect(await flushOpenFiles()).toBe(true)
+    expect(api.filesWrite).toHaveBeenCalledWith(
+      's',
+      '/work/pins.conf',
+      'pin,use\nGPIO2,ADC,3V3',
+      'v3'
     )
   })
 
-  it('sends nothing when the edit on screen does not save', async () => {
+  it('holds the message when the edit on screen does not save', async () => {
     const field = await openPins()
     api.filesWrite.mockRejectedValue(new Error('the file changed since it was opened'))
-    fireEvent.change(field, { target: { value: 'pin,use\nGPIO2,ADC' } })
-    fireEvent.change(screen.getByLabelText('Ask Scout about this file'), {
-      target: { value: 'Sort by pin' }
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Ask Scout' }))
+    fireEvent.change(field, { target: { value: 'pin,use\nGPIO2,ADC,3V3' } })
 
-    await waitFor(() => expect(api.filesWrite).toHaveBeenCalled())
-    await act(async () => {})
-    expect(chat.sendText).not.toHaveBeenCalled()
-    expect(screen.getByLabelText('Ask Scout about this file')).toHaveValue('Sort by pin')
+    expect(await flushOpenFiles()).toBe(false)
+    expect(await screen.findByRole('alert')).toHaveTextContent('the file changed')
+    expect(screen.getByLabelText('pins.conf source')).toHaveValue('pin,use\nGPIO2,ADC,3V3')
   })
 
   it('keeps a file open when closing the panel cannot save its edit', async () => {
@@ -636,12 +662,12 @@ describe('a file beside the chat', () => {
     await waitFor(() => expect(api.filesWrite).toHaveBeenCalled())
     await act(async () => {})
     expect(useVisuals.getState().tabs).toHaveLength(1)
-    expect(screen.getByLabelText('pins.csv source')).toHaveValue('pin,use\nGPIO2,ADC')
+    expect(screen.getByLabelText('pins.conf source')).toHaveValue('pin,use\nGPIO2,ADC')
 
     // Once it saves, closing closes.
     api.filesWrite.mockResolvedValue({
       modified: 5,
-      path: '/work/pins.csv',
+      path: '/work/pins.conf',
       size: 20,
       version: 'v5'
     })
@@ -663,9 +689,9 @@ describe('a file beside the chat', () => {
     )
 
     api.filesRead.mockResolvedValue({
-      mime: 'text/csv',
-      name: 'pins.csv',
-      path: '/work/pins.csv',
+      mime: 'text/plain',
+      name: 'pins.conf',
+      path: '/work/pins.conf',
       modified: 9,
       version: 'v9',
       size: 20,
@@ -677,13 +703,182 @@ describe('a file beside the chat', () => {
 
     fireEvent.click(load)
     await waitFor(() =>
-      expect(screen.getByLabelText('pins.csv source')).toHaveValue("pin,use\nthe bot's row")
+      expect(screen.getByLabelText('pins.conf source')).toHaveValue("pin,use\nthe bot's row")
     )
     await act(async () => {})
     expect(api.filesWrite).toHaveBeenCalledTimes(refused)
 
     fireEvent.click(screen.getByRole('button', { name: 'Close the side panel' }))
     await waitFor(() => expect(useVisuals.getState().tabs).toHaveLength(0))
+  })
+
+  it("drops a refused table edit for the bot's version without writing it again", async () => {
+    api.filesRead.mockResolvedValue({
+      mime: 'text/csv',
+      modified: 3,
+      name: 'pins.csv',
+      path: '/work/pins.csv',
+      size: 7,
+      text: 'pin,use\nGPIO2,ADC\n',
+      version: 'v3'
+    })
+    api.filesWrite.mockRejectedValue(
+      new JsonRpcGatewayError('the file changed since it was opened', { code: 4209 })
+    )
+    act(() =>
+      visualsActions().open(
+        fileTab('pins.csv', { mime: 'text/csv', path: '/work/pins.csv', sessionId: 's' })
+      )
+    )
+    render(<VisualPanel />)
+
+    fireEvent.doubleClick(await screen.findByText('ADC'))
+    fireEvent.change(screen.getByLabelText('Edit B2'), { target: { value: 'JTAG' } })
+    fireEvent.keyDown(screen.getByLabelText('Edit B2'), { key: 'Enter' })
+
+    const load = await screen.findByRole(
+      'button',
+      { name: "Load Scout's version" },
+      { timeout: 3000 }
+    )
+
+    const refused = api.filesWrite.mock.calls.length
+
+    api.filesRead.mockResolvedValue({
+      mime: 'text/csv',
+      modified: 9,
+      name: 'pins.csv',
+      path: '/work/pins.csv',
+      size: 20,
+      text: "pin,use\nthe bot's row\n",
+      version: 'v9'
+    })
+    fireEvent.click(load)
+
+    expect(await screen.findByText("the bot's row")).toBeInTheDocument()
+    await act(async () => {})
+    expect(api.filesWrite).toHaveBeenCalledTimes(refused)
+  })
+
+  it('drops a cell edit on Escape without saving it', async () => {
+    api.filesRead.mockResolvedValue({
+      mime: 'text/csv',
+      modified: 3,
+      name: 'pins.csv',
+      path: '/work/pins.csv',
+      size: 7,
+      text: 'pin,use\nGPIO2,ADC\n',
+      version: 'v3'
+    })
+    act(() =>
+      visualsActions().open(
+        fileTab('pins.csv', { mime: 'text/csv', path: '/work/pins.csv', sessionId: 's' })
+      )
+    )
+    render(<VisualPanel />)
+
+    fireEvent.doubleClick(await screen.findByText('ADC'))
+    fireEvent.change(screen.getByLabelText('Edit B2'), { target: { value: 'JTAG' } })
+    fireEvent.keyDown(screen.getByLabelText('Edit B2'), { key: 'Escape' })
+
+    expect(await screen.findByText('ADC')).toBeInTheDocument()
+    expect(await flushOpenFiles()).toBe(true)
+    expect(api.filesWrite).not.toHaveBeenCalledWith(
+      's',
+      '/work/pins.csv',
+      expect.stringContaining('JTAG'),
+      expect.anything()
+    )
+  })
+
+  it('keeps typing in the bar above the cells', async () => {
+    api.filesRead.mockResolvedValue({
+      mime: 'text/csv',
+      modified: 3,
+      name: 'pins.csv',
+      path: '/work/pins.csv',
+      size: 7,
+      text: 'pin,use\nGPIO2,ADC\n',
+      version: 'v3'
+    })
+    act(() =>
+      visualsActions().open(
+        fileTab('pins.csv', { mime: 'text/csv', path: '/work/pins.csv', sessionId: 's' })
+      )
+    )
+    render(<VisualPanel />)
+
+    fireEvent.pointerDown(await screen.findByText('ADC'), { button: 0 })
+    const bar = screen.getByLabelText('Cell contents')
+
+    bar.focus()
+    fireEvent.change(bar, { target: { value: 'J' } })
+    expect(document.activeElement).toBe(bar)
+    fireEvent.change(bar, { target: { value: 'JTAG' } })
+    fireEvent.keyDown(bar, { key: 'Enter' })
+
+    expect(await flushOpenFiles()).toBe(true)
+    expect(api.filesWrite).toHaveBeenLastCalledWith(
+      's',
+      '/work/pins.csv',
+      'pin,use\nGPIO2,JTAG\n',
+      'v3'
+    )
+  })
+
+  it('saves a cell being typed in when the chat is left', async () => {
+    api.filesRead.mockResolvedValue({
+      mime: 'text/csv',
+      modified: 3,
+      name: 'pins.csv',
+      path: '/work/pins.csv',
+      size: 7,
+      text: 'pin,use\nGPIO2,ADC\n',
+      version: 'v3'
+    })
+    act(() =>
+      visualsActions().open(
+        fileTab('pins.csv', { mime: 'text/csv', path: '/work/pins.csv', sessionId: 's' })
+      )
+    )
+    render(<VisualPanel />)
+
+    fireEvent.doubleClick(await screen.findByText('ADC'))
+    fireEvent.change(screen.getByLabelText('Edit B2'), { target: { value: 'JTAG' } })
+    // Leaving the chat closes its tabs at once: no Enter, no blur.
+    act(() => visualsActions().closeAll())
+
+    await waitFor(() =>
+      expect(api.filesWrite).toHaveBeenCalledWith(
+        's',
+        '/work/pins.csv',
+        'pin,use\nGPIO2,JTAG\n',
+        'v3'
+      )
+    )
+  })
+
+  it('keeps the selection on the sheet after its last row goes', async () => {
+    api.filesRead.mockResolvedValue({
+      mime: 'text/csv',
+      modified: 3,
+      name: 'pins.csv',
+      path: '/work/pins.csv',
+      size: 7,
+      text: 'pin,use\nGPIO2,ADC\n',
+      version: 'v3'
+    })
+    act(() =>
+      visualsActions().open(
+        fileTab('pins.csv', { mime: 'text/csv', path: '/work/pins.csv', sessionId: 's' })
+      )
+    )
+    render(<VisualPanel />)
+
+    fireEvent.pointerDown(await screen.findByText('ADC'), { button: 0 })
+    fireEvent.click(screen.getByRole('button', { name: 'Delete row' }))
+
+    expect(await screen.findByText('B1')).toBeInTheDocument()
   })
 
   it('keeps the edit when the version to load cannot be read', async () => {
@@ -703,7 +898,7 @@ describe('a file beside the chat', () => {
     fireEvent.click(load)
 
     expect(await screen.findByText('not connected')).toBeInTheDocument()
-    expect(screen.getByLabelText('pins.csv source')).toHaveValue('pin,use\nGPIO2,ADC')
+    expect(screen.getByLabelText('pins.conf source')).toHaveValue('pin,use\nGPIO2,ADC')
   })
 
   it("drops a read that started before the user's save landed", async () => {
@@ -711,12 +906,12 @@ describe('a file beside the chat', () => {
 
     let answer: (file: unknown) => void = () => {}
     api.filesRead.mockReturnValue(new Promise(resolve => (answer = resolve)))
-    act(() => transcript([call({ args: { path: '/work/pins.csv' }, name: 'edit' })]))
+    act(() => transcript([call({ args: { path: '/work/pins.conf' }, name: 'edit' })]))
     await waitFor(() => expect(api.filesRead).toHaveBeenCalledTimes(2))
 
     api.filesWrite.mockResolvedValue({
       modified: 5,
-      path: '/work/pins.csv',
+      path: '/work/pins.conf',
       size: 20,
       version: 'v5'
     })
@@ -725,16 +920,16 @@ describe('a file beside the chat', () => {
 
     await act(async () =>
       answer({
-        mime: 'text/csv',
-        name: 'pins.csv',
-        path: '/work/pins.csv',
+        mime: 'text/plain',
+        name: 'pins.conf',
+        path: '/work/pins.conf',
         modified: 3,
         version: 'v3',
         size: 7,
         text: 'pin,use'
       })
     )
-    expect(screen.getByLabelText('pins.csv source')).toHaveValue('pin,use\nGPIO2,ADC')
+    expect(screen.getByLabelText('pins.conf source')).toHaveValue('pin,use\nGPIO2,ADC')
   })
 
   it('offers a download for a file it cannot show', async () => {
@@ -757,7 +952,6 @@ describe('a file beside the chat', () => {
     expect(
       await screen.findByText('No preview for this file. Scout can still read it.')
     ).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Polish' })).toBeNull()
-    expect(screen.getByLabelText('Ask Scout about this file')).toBeEnabled()
+    expect(screen.queryByLabelText('Ask Scout about this file')).toBeNull()
   })
 })

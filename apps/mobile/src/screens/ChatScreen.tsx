@@ -27,6 +27,7 @@ import {
 } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
+import type { FileComment } from '../../../web/src/lib/file-comments'
 import type { WorkLabel } from '../../../web/src/lib/work-label'
 import { messageText } from '../core/message-text'
 
@@ -108,6 +109,11 @@ export interface ChatScreenProps {
   onOpenAttachment?: (id: string) => void
   /** Tries a failed upload again. */
   onRetryAttachment?: (id: string) => void
+  /** Comments left on files, numbered; they go with the next message. */
+  comments?: FileComment[]
+  onRemoveComment?: (id: string) => void
+  /** Opens the file a comment is on. */
+  onOpenComment?: (comment: FileComment) => void
   /** Controlled draft; leave both out to let the screen keep it. */
   draft?: string
   onDraftChange?: (text: string) => void
@@ -1367,11 +1373,14 @@ function Composer({
   attachments,
   bottom,
   busy,
+  comments,
   draft,
   onAttach,
   onDraftChange,
   onOpenAttachment,
+  onOpenComment,
   onRemoveAttachment,
+  onRemoveComment,
   onRetryAttachment,
   onSend,
   onStop,
@@ -1386,7 +1395,8 @@ function Composer({
   const [menu, setMenu] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
   const text = draft ?? own
   const setText = onDraftChange ?? setOwn
-  const canSend = (text.trim() !== '' || !!attachments?.length) && !sendDisabledReason
+  const canSend =
+    (text.trim() !== '' || !!attachments?.length || !!comments?.length) && !sendDisabledReason
 
   const send = () => {
     if (!canSend) {
@@ -1406,6 +1416,56 @@ function Composer({
         <Text align="center" tone="muted" variant="footnote">
           {sendDisabledReason}
         </Text>
+      ) : null}
+      {comments?.length ? (
+        <ScrollView
+          contentContainerStyle={styles.pending}
+          horizontal
+          keyboardShouldPersistTaps="handled"
+          showsHorizontalScrollIndicator={false}
+          testID="chat-comments"
+        >
+          {comments.map((comment, index) => (
+            <View
+              key={comment.id}
+              style={[styles.pendingFile, styles.comment, { backgroundColor: theme.fill }]}
+            >
+              <Pressable
+                accessibilityHint={comment.path ? 'Opens the file' : undefined}
+                accessibilityLabel={`Comment ${index + 1} on ${comment.name}${comment.where ? `, ${comment.where}` : ''}: ${comment.note}`}
+                accessibilityRole="button"
+                disabled={!comment.path || !onOpenComment}
+                onPress={() => onOpenComment?.(comment)}
+                style={styles.pendingOpen}
+                testID={`chat-comment-${index + 1}`}
+              >
+                <View style={[styles.commentNumber, { backgroundColor: theme.accent }]}>
+                  <Text style={{ color: theme.onAccent }} variant="caption">
+                    {index + 1}
+                  </Text>
+                </View>
+                <Text numberOfLines={1} style={styles.fileName} variant="footnote">
+                  {comment.note}
+                </Text>
+                {/* A short place ("line 3", "B2:C4") fits beside the note; a long one names the file. */}
+                <Text numberOfLines={1} style={styles.commentWhere} tone="muted" variant="caption">
+                  {comment.where && comment.where.length <= 16 ? comment.where : comment.name}
+                </Text>
+              </Pressable>
+              {onRemoveComment ? (
+                <IconButton
+                  accessibilityLabel={`Remove comment ${index + 1}`}
+                  color={theme.muted}
+                  icon="close"
+                  iconSize={16}
+                  onPress={() => onRemoveComment(comment.id)}
+                  size={28}
+                  testID={`chat-comment-remove-${index + 1}`}
+                />
+              ) : null}
+            </View>
+          ))}
+        </ScrollView>
       ) : null}
       {attachments?.length ? (
         <ScrollView
@@ -1674,6 +1734,16 @@ const styles = StyleSheet.create({
   reactionEmoji: { fontSize: 14, lineHeight: 18 },
   reactions: { flexDirection: 'row', gap: 4, marginTop: -8, paddingHorizontal: 10, zIndex: 1 },
   notice: { marginTop: 14, paddingHorizontal: 24 },
+  comment: { maxWidth: 260 },
+  commentNumber: {
+    alignItems: 'center',
+    borderRadius: 9,
+    height: 18,
+    justifyContent: 'center',
+    minWidth: 18,
+    paddingHorizontal: 4
+  },
+  commentWhere: { flexShrink: 0, maxWidth: 110 },
   pending: { gap: 8 },
   pendingOpen: { alignItems: 'center', flexDirection: 'row', flexShrink: 1, gap: 6 },
   percent: { fontVariant: ['tabular-nums'], minWidth: 30 },

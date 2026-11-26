@@ -1,4 +1,7 @@
+import { parseDelimited } from '../../../web/src/lib/delimited'
 import { extensionOf } from '../../../web/src/lib/file-kinds'
+
+export { parseDelimited }
 
 /** What `hexbot.files.read` answers: text, inline bytes, or a media stream. */
 export interface OpenedFile {
@@ -64,43 +67,6 @@ export function previewOf(file: OpenedFile): Preview {
   if (file.mime.startsWith('video/')) return { kind: 'video' }
   if (file.mime.startsWith('audio/')) return { kind: 'audio' }
   return { kind: 'none' }
-}
-
-/**
- * Rows of a CSV or TSV file, as RFC 4180 reads them: a quoted field may hold
- * the delimiter, line breaks and doubled quotes. Blank lines are skipped.
- */
-export function parseDelimited(text: string, delimiter: string): string[][] {
-  const rows: string[][] = []
-  let row: string[] = []
-  let field = ''
-  let quoted = false
-  const body = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
-
-  const endRow = () => {
-    row.push(field)
-    if (row.length > 1 || row[0] !== '') rows.push(row)
-    row = []
-    field = ''
-  }
-
-  for (let i = 0; i < body.length; i++) {
-    const char = body[i]!
-    if (quoted) {
-      if (char !== '"') field += char
-      else if (body[i + 1] === '"') {
-        field += '"'
-        i++
-      } else quoted = false
-    } else if (char === '"' && field === '') quoted = true
-    else if (char === delimiter) {
-      row.push(field)
-      field = ''
-    } else if (char === '\n') endRow()
-    else if (char !== '\r') field += char
-  }
-  if (field !== '' || row.length) endRow()
-  return rows
 }
 
 /** "microduck-parts-list", "csv": the name cut before its extension, so the extension always shows. */

@@ -1184,14 +1184,19 @@ export interface OpenedFile {
 }
 
 /** Reads a file the bot can reach: its working folder, artifacts, or this chat's attachments. */
-export async function filesRead(sessionId: string, path: string): Promise<OpenedFile> {
+export async function filesRead(
+  sessionId: string,
+  path: string,
+  // Audio, video and pictures as a link the player streams; off, they come whole.
+  stream = true
+): Promise<OpenedFile> {
   const target = useConnection.getState().target
   const origin = targetOrigin(target ?? { kind: 'local' })
 
   const file = await rpcCall<OpenedFile & { media_path?: string }>('hexbot.files.read', {
     path,
     session_id: sessionId,
-    stream_media: true
+    ...(stream ? { stream_media: true } : {})
   })
 
   return { ...file, mediaUrl: mediaSource(origin, file.media_path) }
@@ -1210,6 +1215,19 @@ export function filesWrite(
     text,
     ...(version ? { version } : {})
   })
+}
+
+/**
+ * Saves a picture or Office file the panel edited, whole, as a data URL;
+ * refused with 4209 when the file is no longer at `version`.
+ */
+export function filesWriteBytes(
+  sessionId: string,
+  path: string,
+  dataUrl: string,
+  version: string
+): Promise<{ modified: number; path: string; size: number; version: string }> {
+  return rpcCall('hexbot.files.write', { data_url: dataUrl, path, session_id: sessionId, version })
 }
 
 /** `data:<mime>;base64,<payload>` for the whole file. */

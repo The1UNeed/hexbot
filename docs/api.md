@@ -101,8 +101,8 @@ data model. The native transport and event projection live in
   are capped at 64 MiB per connection.
 - Files beside the chat: `hexbot.files.read {session_id, path}` →
   `{path, name, size, modified, version, mime, text? | data_url?}` and
-  `hexbot.files.write {session_id, path, text, version?}` → `{path, size,
-  modified, version}`. Both reach only existing regular files, after
+  `hexbot.files.write {session_id, path, text | data_url, version?}` →
+  `{path, size, modified, version}`. Both reach only existing regular files, after
   symlinks are resolved, inside the folders the session's bot may write: the
   chat's working folder, the bot's `artifacts` folder, and the chat's
   `attachments` folder (4302 elsewhere, 4204 when missing); a relative path
@@ -122,8 +122,12 @@ data model. The native transport and event projection live in
   for a fresh link. The daemon identifies streamed revisions using filesystem metadata.
   For other reads, `version` is the SHA-256 of the contents. A write replaces a text file up
   to 2 MiB in one step through a directory handle that refuses symlinks and
-  keeps its permissions, one write at a time; it refuses binary files (4202)
-  and, when `version` (from the last read or write) no longer matches the
+  keeps its permissions, one write at a time; it refuses binary files (4202).
+  A write with a base64 `data_url` replaces a PNG, JPEG or WebP picture or a
+  Word, Excel or PowerPoint file the panel edited, up to 45 MiB, the same
+  way; it must name `version` (4200 without), refuses any other format and
+  bytes that are not the format the file's name says (4202), and answers
+  4209 for a file grown past 45 MiB. Either write, when `version` (from the last read or write) no longer matches the
   file, answers 4209 and changes nothing. In Auto and Manual a bot's `edit`
   takes the same turn and is refused the same way when the file changed
   after the bot read it, so it cannot undo a save made in between; the bot

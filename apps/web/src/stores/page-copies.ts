@@ -8,7 +8,7 @@
 import { useTranscripts } from './transcripts'
 import { isFileTab, useVisuals } from './visuals'
 
-const held = new Set<string>()
+const held = new Map<string, Blob>()
 let timer: ReturnType<typeof setTimeout> | undefined
 
 /** How long a copy outlives its last message or tab, so a row that is replaced in place keeps it. */
@@ -17,10 +17,18 @@ export const RELEASE_AFTER_MS = 5000
 /** A URL for `file` that is released when nothing shows it. */
 export function holdCopy(file: Blob): string {
   const url = URL.createObjectURL(file)
-  held.add(url)
+  held.set(url, file)
   schedule()
 
   return url
+}
+
+/**
+ * The file behind a held URL. The app's CSP lets the page fetch only http(s),
+ * so a viewer that needs the bytes (an Office file) reads them from here.
+ */
+export function heldFile(url: string): Blob | undefined {
+  return held.get(url)
 }
 
 /** True while `url` from `holdCopy` has not been released. */
@@ -54,7 +62,7 @@ function release() {
   timer = undefined
   const used = inUse()
 
-  for (const url of held) {
+  for (const url of held.keys()) {
     if (!used.has(url)) {
       held.delete(url)
       URL.revokeObjectURL(url)
