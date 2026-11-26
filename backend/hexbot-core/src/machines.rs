@@ -632,7 +632,7 @@ pub fn prompt_block(list: &Value) -> String {
                     .to_owned()
             }
             Some("host") => {
-                "The computer Hexbot runs on. Its terminal is sandboxed as your approval mode says; set full_access with a reason when a command needs the internet or writes outside the workspace. The user allows each app on its desktop the first time."
+                "The computer Hexbot runs on. Its terminal is sandboxed as your approval mode says; when a command needs the internet or writes outside the workspace, set full_access with a short reason on the first try instead of failing in the sandbox first. The user allows each app on its desktop the first time."
                     .to_owned()
             }
             _ => format!(

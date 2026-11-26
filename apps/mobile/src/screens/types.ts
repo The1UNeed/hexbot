@@ -84,6 +84,10 @@ export type ApprovalChoice = 'always' | 'deny' | 'once' | 'session'
 
 export interface ApprovalRequestView {
   requestId: string
+  /** Plain-English summary shown as the card heading instead of raw commands. */
+  title?: string | null
+  /** Reusable rule saved when the user taps Always allow. */
+  rule?: string | null
   /** The command or action, shown in monospace. */
   command?: string | null
   reason?: string | null

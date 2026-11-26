@@ -304,32 +304,39 @@ more freedom and more capability than a hosted product can offer.
   skills or tools. Assistant text, tool output and bot-added messages stay out.
   A step the owner approves on a reviewed card is shown to later reviews in
   the same turn (the newest twelve, as the card showed them), so ten edits to
-  one page ask once; it is evidence for the reviewer, not a grant, and the
-  next turn starts without it. A connected service names things by ids the
-  reviewer cannot check, so it judges the action and the content: an edit that
-  fits the request runs, and deleting, sharing or notifying people asks.
+  one page ask once; a denied step is also shown for that turn so retries do
+  not silently auto-allow. Clicking **Always allow** on a non-critical card
+  persists an **Allow automatically** rule (`approval_rules` in `hexbot.db`,
+  managed alongside **Ask first** rules in Settings, Approvals,
+  `hexbot.approvals.rules.*`); **Ask first** rules always override **Allow
+  automatically**, and critical safety hazards never offer Always allow.
+  Reviewed cards lead with a plain-English title and reason and tuck raw
+  commands behind an expandable disclosure. A connected service names things by
+  ids the reviewer cannot check, so it judges the action and the content: an
+  edit that fits the request runs, and deleting, sharing or notifying people asks.
   Pi starts in an empty directory and explicitly excludes `APPEND_SYSTEM.md`.
   ACP reviewers also use an isolated temporary home and Copilot/XDG folders,
   keeping only explicit GitHub-token authentication. Stored CLI login is not
   imported. Only `--acp` and `--stdio` are accepted as configured ACP arguments.
   Extra arguments, missing auth or rejected isolation flags fall back to a
   card; ordinary ACP sessions keep their login behavior.
-  A step over 20,000 characters asks without review, whatever the tool.
-  Owner messages fill the rest of an 80,000-character request, newest first
-  and never clipped. When older ones are left out (or a stored row is too
-  large to load), the request says so and only a low risk `allow` runs: a
-  long chat's lost restriction could forbid a medium-risk step, so it asks.
+  A step over 40,000 characters asks without review, whatever the tool.
+  Owner messages fill the rest of an 80,000-character request alongside the
+  user's standing Custom Rules (`allow` and `ask`), newest first and never
+  clipped. Oversized non-owner rows are skipped by metadata so they never hide
+  earlier user messages; when older owner messages are still left out, only a
+  low-risk `allow` runs so a missing chat restriction can still guard a
+  medium-risk step.
   History-read failures also ask. Each section runs at most two reviews at
   once, and shows "Checking this step" while one runs. The final check
   retries once when the database or reply slot is briefly busy. Reported reviewer usage counts toward section,
-  room and daily totals. Changed owner messages or pending owner prompts and steers
+  room and daily totals. Changed owner messages, changed approval rules, or pending owner prompts and steers
   invalidate automatic approval when the complete evidence is rechecked.
   Copilot ACP reports zero token usage and cost, so its reviews add no measured
   usage to budgets or totals.
   A low or medium risk `allow` runs the step; anything else, including a failure,
-  a timeout (60 s) or unparseable output, shows the card with the reviewer's sentence. Those
-  cards offer Approve and Deny only, and reviewed steps ignore Allow for now
-  grants from Manual, so one approval never covers the next step. Changing the mode
+  a timeout (60 s) or unparseable output, shows a card with the reviewer's sentence.
+  When the reviewer supplied a plain-English title, the card leads with it and tucks the raw command behind an expandable disclosure; failed or untitled reviews show the raw command directly. Non-critical reviewed cards offer **Allow once**, **Always allow** (showing the exact computer-scoped rule it will save to Allow automatically), and **Deny**; critical or failed-review cards offer **Allow once** and **Deny** only. Reviewed steps ignore Allow for now grants from Manual. Changing the mode
   or working directory during review blocks the step. File execution also
   checks the resolved destination and reviewed overwrite status again.
   Only visible sections are reviewed; the rest still refuse.
@@ -403,9 +410,12 @@ more freedom and more capability than a hosted product can offer.
   and every call checks the live grant (`computersNow`).
   - The bots' computer: commands run there through `cua sb exec`, without
     the OS sandbox, since it is easy to reset. Bypass runs them; Manual asks
-    for each (Allow for now covers it); Auto sends only risky ones to the
-    reviewer: installs, network clients, root, broad deletes, piping into a
-    shell (`riskyCommand` in the extension). `full_access` is refused there.
+    for each (Allow for now covers it); Auto runs routine dev work (package
+    installs, read-only fetches, git clone/pull/fetch) freely and sends only
+    higher-impact commands to the reviewer: root escalation, remote host
+    shells/transfers, `git push`, outbound network uploads/mutations, broad
+    deletes, or piping into a shell (`riskyCommand` in the extension).
+    `full_access` is refused there.
   - This computer: bash in the OS sandbox exactly as before. Its desktop is
     shared through Cua's direct connection on loopback (`cua host setup
     --direct 127.0.0.1:3211 --no-provide-spaces`, never the relay), turned

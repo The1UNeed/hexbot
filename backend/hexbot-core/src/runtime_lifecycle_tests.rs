@@ -2354,13 +2354,13 @@ const fs=require('node:fs')"#,
         }
     };
     assert_eq!(card["request_id"], "pi-rm");
-    assert_eq!(
-        card["reason"],
-        "Run outside the sandbox. Auto mode asks because: Deletes your home folder."
-    );
+    assert_eq!(card["reason"], "Deletes your home folder.");
+    // Untitled critical review leaves `title` absent so clients show the raw command.
+    assert!(card.get("title").is_none());
+    // Critical risk never offers Always allow.
     assert_eq!(card["choices"], json!(["once", "deny"]));
     assert!(card.get("review").is_none() && card.get("input").is_none());
-    // A reviewer that cannot answer leaves the decision to the user.
+    // A reviewer that cannot answer shows the raw command and never offers Always allow.
     runtime.event(&s, ask("pi-broken", "broken")).unwrap();
     let card = loop {
         let event = events.recv().await.unwrap();
@@ -2369,10 +2369,10 @@ const fs=require('node:fs')"#,
         }
     };
     assert_eq!(card["request_id"], "pi-broken");
-    assert_eq!(
-        card["reason"],
-        format!("Run outside the sandbox. {}", review::UNAVAILABLE)
-    );
+    assert_eq!(card["reason"], review::UNAVAILABLE);
+    assert!(card.get("title").is_none());
+    assert_eq!(card["choices"], json!(["once", "deny"]));
+    assert!(card.get("rule").is_none());
     // Failed verdicts cost tokens too. Reviewer text never appears in chat.
     assert_eq!(
         store::usage(home.path(), "first").unwrap()["total_tokens"],
@@ -2424,11 +2424,9 @@ const fs=require('node:fs')"#,
                 event.frame["params"]["payload"]["request_id"],
                 "pi-unreadable-evidence"
             );
-            assert!(
-                event.frame["params"]["payload"]["reason"]
-                    .as_str()
-                    .unwrap()
-                    .contains(review::UNAVAILABLE)
+            assert_eq!(
+                event.frame["params"]["payload"]["reason"],
+                review::UNAVAILABLE
             );
             break;
         }
@@ -2466,16 +2464,19 @@ const fs=require('node:fs')"#,
         }
     };
     assert_eq!(card["request_id"], "pi-long");
-    assert_eq!(
-        card["reason"],
-        format!("Run outside the sandbox. {}", review::LONG_CHAT)
+    assert_eq!(card["reason"], review::LONG_CHAT);
+    assert_eq!(card["choices"], json!(["once", "always", "deny"]));
+    assert!(
+        card["rule"]
+            .as_str()
+            .is_some_and(|r| r.contains("on this computer"))
     );
     let sent: Value =
         serde_json::from_slice(&fs::read(home.path().join("review-request.json")).unwrap())
             .unwrap();
     assert_eq!(sent["earlier_user_messages_omitted"], true);
     assert!(sent.get("user_approved_steps").is_none());
-    // The owner approves that card. Later reviews in the turn read the
+    // The owner approves that card once. Later reviews in the turn read the
     // approval, so the same kind of step need not ask again...
     runtime
         .call(
@@ -2486,8 +2487,8 @@ const fs=require('node:fs')"#,
         .await
         .unwrap()
         .unwrap();
-    let mut reviewed = async |id: &str| {
-        runtime.event(&s, ask(id, "broken")).unwrap();
+    let mut reviewed = async |id: &str, cmd: &str| {
+        runtime.event(&s, ask(id, cmd)).unwrap();
         loop {
             let event = events.recv().await.unwrap();
             if event.frame["params"]["type"] == "approval.request" {
@@ -2498,16 +2499,79 @@ const fs=require('node:fs')"#,
         serde_json::from_slice::<Value>(&fs::read(home.path().join("review-request.json")).unwrap())
             .unwrap()
     };
-    let sent = reviewed("pi-after-approval").await;
+    let sent = reviewed("pi-after-approval", "medium").await;
     assert_eq!(
         sent["user_approved_steps"],
         // The computer it ran on goes with it.
         json!([{"tool":"bash","command":"medium","computer":"host"}])
     );
-    // ...and the next turn starts without it.
+    // Always allow persists a computer-scoped rule so future turns see it in custom_rules.
+    runtime
+        .call(
+            "alice",
+            "approval.respond",
+            &json!({"session_id":s.id,"request_id":"pi-after-approval","choice":"always"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    // Deny records the denial for the rest of this turn.
+    let _ = reviewed("pi-to-deny", "broken").await;
+    runtime
+        .call(
+            "alice",
+            "approval.respond",
+            &json!({"session_id":s.id,"request_id":"pi-to-deny","choice":"deny"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let sent = reviewed("pi-after-deny", "broken").await;
+    assert_eq!(
+        sent["user_denied_steps"],
+        json!([{"tool":"bash","command":"broken","computer":"host"}])
+    );
+    assert_eq!(sent["custom_rules"]["allow"][0]["computer"], "host");
+    // ...and the next turn clears turn-only memory while keeping persisted custom_rules.
     s.state.lock().unwrap().end_turn();
-    let sent = reviewed("pi-next-turn").await;
+    let sent = reviewed("pi-next-turn", "broken").await;
     assert!(sent.get("user_approved_steps").is_none());
+    assert!(sent.get("user_denied_steps").is_none());
+    assert_eq!(sent["custom_rules"]["allow"][0]["computer"], "host");
+    // Hitting the 40-rule cap rejects a new Always allow rule without settling the card, so Allow once still works.
+    crate::approval_rules::clear(home.path(), "alice", Some("allow")).unwrap();
+    for i in 0..crate::approval_rules::MAX_RULES_PER_KIND {
+        crate::approval_rules::add(
+            home.path(),
+            "alice",
+            "allow",
+            &format!("Filler rule {i}"),
+            "manual",
+            None,
+            None,
+        )
+        .unwrap();
+    }
+    let _ = reviewed("pi-at-cap", "medium").await;
+    let err = runtime
+        .call(
+            "alice",
+            "approval.respond",
+            &json!({"session_id":s.id,"request_id":"pi-at-cap","choice":"always"}),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(err.code, 4202);
+    runtime
+        .call(
+            "alice",
+            "approval.respond",
+            &json!({"session_id":s.id,"request_id":"pi-at-cap","choice":"once"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
     // A review model chosen in Settings judges in place of the bot's own.
     assert_ne!(reviewer_model(), "checker");
     conn.execute(
@@ -2515,7 +2579,7 @@ const fs=require('node:fs')"#,
         [],
     )
     .unwrap();
-    reviewed("pi-review-model").await;
+    reviewed("pi-review-model", "broken").await;
     assert_eq!(reviewer_model(), "checker");
     runtime.shutdown().await;
 }
@@ -3173,11 +3237,21 @@ async fn review_evidence_keeps_the_newest_owner_messages_under_one_budget() {
     );
     assert_eq!(sent["earlier_user_messages_omitted"], true);
     conn.execute("DELETE FROM room_events", []).unwrap();
-    // The same holds for an oversized non-owner row, without loading its JSON.
+    // An oversized non-owner tool row written normally is skipped without hiding user messages.
     store::append(
         home.path(),
         "first",
         json!({"role":"tool","text":"x".repeat(1_000_000)}),
+    )
+    .unwrap();
+    let sent = evidence(&conn).unwrap().unwrap();
+    assert_eq!(sent["user_messages"].as_array().unwrap().len(), 36);
+    assert_eq!(sent["earlier_user_messages_omitted"], false);
+    // An oversized user message still stops without allocating its JSON.
+    store::append(
+        home.path(),
+        "first",
+        json!({"role":"user","text":"x".repeat(1_000_000)}),
     )
     .unwrap();
     let sent = evidence(&conn).unwrap().unwrap();
@@ -3348,7 +3422,7 @@ async fn actual_pi_reviewer_excludes_instructions_and_tools_and_accounts_usage()
         .await
         .unwrap();
     assert!(!failed);
-    assert_eq!(review::verdict(&text, false), None);
+    assert_eq!(review::verdict(&text, false), review::ReviewDecision::Allow);
     assert_eq!(
         store::usage(home.path(), "first").unwrap()["total_tokens"],
         40
@@ -3408,7 +3482,7 @@ async fn actual_pi_reviewer_excludes_instructions_and_tools_and_accounts_usage()
         .await
         .unwrap();
     assert!(!failed);
-    assert_eq!(review::verdict(&text, false), None);
+    assert_eq!(review::verdict(&text, false), review::ReviewDecision::Allow);
     assert_eq!(
         requests.lock().unwrap().last().unwrap()["model"],
         "chosen-reviewer"
@@ -3463,7 +3537,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs');for(const flag 
         .await
         .unwrap();
     assert!(!failed, "ACP reviewer did not complete: {text}");
-    assert_eq!(review::verdict(&text, false), None);
+    assert_eq!(review::verdict(&text, false), review::ReviewDecision::Allow);
     assert!(!home.workspace().join("unsafe").exists());
     // Config arguments cannot restore an external instruction/plugin catalog.
     fs::write(home.path().join(".env"), format!("HEXBOT_COPILOT_ACP_COMMAND={}\nHEXBOT_COPILOT_ACP_ARGS=\"--acp --config-dir /tmp/untrusted\"\n", serde_json::to_string(&script.to_string_lossy()).unwrap())).unwrap();

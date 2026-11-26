@@ -1,4 +1,5 @@
 /** The authorized daemon's roster and recent room logs. Never restored before auth. */
+import { useApprovalRules } from '../stores/approval-rules'
 import { botCacheRead, selectBotList, useBots } from '../stores/bots'
 import { useComputer } from '../stores/computer'
 import { useComputers } from '../stores/computers'
@@ -59,6 +60,7 @@ export function clearPersonalState(): void {
   })
   usePlugins.getState().reset()
   usePasswords.getState().reset()
+  useApprovalRules.getState().reset()
   useReactions.getState().reset()
 }
 

@@ -38,6 +38,7 @@ import { pairWithDaemon, targetOrigin } from '../../lib/connection'
 import { primeSounds } from '../../lib/sounds'
 import type { DaemonInfo, ModelOption, PairingCode, Provider } from '../../lib/types'
 import { daemonBehind } from '../../lib/version-skew'
+import { useApprovalRules } from '../../stores/approval-rules'
 import { useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { useMe } from '../../stores/me'
@@ -1194,6 +1195,103 @@ function formatDate(value: null | number): string {
 /** The review model choice that means no model of its own. */
 const OWN_MODEL = '__own__'
 
+function ApprovalRulesSection({
+  kind,
+  placeholder,
+  title,
+  footer
+}: {
+  footer: string
+  kind: 'allow' | 'ask'
+  placeholder: string
+  title: string
+}): React.JSX.Element {
+  const rules = useApprovalRules(state => state.rules)
+  const add = useApprovalRules(state => state.add)
+  const remove = useApprovalRules(state => state.remove)
+  const [draft, setDraft] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<null | string>(null)
+
+  const items = rules.filter(rule => rule.kind === kind)
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault()
+    const trimmed = draft.trim()
+
+    if (!trimmed || saving) {
+      return
+    }
+
+    setSaving(true)
+    setError(null)
+
+    try {
+      await add(kind, trimmed)
+      setDraft('')
+    } catch (caught) {
+      setError(errorText(caught))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div>
+      <Group footer={footer} title={title}>
+        {items.map(rule => (
+          <Row
+            control={
+              <Button
+                aria-label={`Remove rule ${rule.text}`}
+                className="rounded-full text-muted hover:bg-danger/10 hover:text-danger"
+                onClick={() => {
+                  setError(null)
+                  void remove(rule.id).catch(caught => setError(errorText(caught)))
+                }}
+                size="sm"
+                variant="ghost"
+              >
+                Remove
+              </Button>
+            }
+            description={
+              rule.source === 'card' ? (
+                <span className="text-[length:var(--text-meta)]">Saved from Always allow</span>
+              ) : undefined
+            }
+            key={rule.id}
+            title={rule.text}
+          />
+        ))}
+        <form
+          className="flex min-h-[50px] items-center gap-2.5 px-4 py-2 transition-colors duration-[var(--hex-motion-fast)] first:rounded-t-2xl last:rounded-b-2xl focus-within:bg-foreground/[0.025]"
+          onSubmit={event => void submit(event)}
+        >
+          <Plus aria-hidden className="shrink-0 text-muted/80" size={15} />
+          <input
+            aria-label={`Add ${title.toLowerCase()} rule`}
+            className="min-w-0 flex-1 bg-transparent py-1 text-[length:var(--text-body)] text-foreground outline-none placeholder:text-muted/75"
+            onChange={event => setDraft(event.target.value)}
+            placeholder={placeholder}
+            value={draft}
+          />
+          <Button
+            className="rounded-full"
+            disabled={!draft.trim() || saving}
+            size="sm"
+            type="submit"
+            variant={draft.trim() ? 'primary' : 'secondary'}
+          >
+            Add
+          </Button>
+        </form>
+      </Group>
+      {error ? <ErrorLine>{error}</ErrorLine> : null}
+    </div>
+  )
+}
+
 export function ApprovalsSettings(): React.JSX.Element {
   const role = useMe(state => state.me?.role)
   const settings = useSettings(state => state.settings)
@@ -1201,18 +1299,26 @@ export function ApprovalsSettings(): React.JSX.Element {
   const patch = useSettings(state => state.patch)
   const [info, setInfo] = useState<DaemonInfo | undefined>(undefined)
   const refreshProviders = useSettings(state => state.refreshProviders)
+  const refreshRules = useApprovalRules(state => state.refresh)
+  const rulesSupported = useApprovalRules(state => state.supported)
   const choices = useModelChoices()
   const reviewModel = settings?.review_model ?? OWN_MODEL
+  const target = useConnection(state => state.target)
+  const epoch = useConnection(state => state.epoch)
+  const connects = useConnection(state => state.connects)
   useEffect(() => {
     void refresh()
     // The review model picker lists the connected providers' models. Without
     // them it still shows the saved choice.
     void refreshProviders().catch(() => {})
+    void refreshRules().catch(() => {})
     // Without daemon info, as from an older daemon, there is nothing to warn about.
     void daemonInfo()
       .then(setInfo)
       .catch(() => {})
-  }, [refresh, refreshProviders])
+
+    return () => useApprovalRules.setState({ loaded: false })
+  }, [refresh, refreshProviders, refreshRules, target, epoch, connects])
 
   return (
     <>
@@ -1276,6 +1382,22 @@ export function ApprovalsSettings(): React.JSX.Element {
               title="Review model"
             />
           </Group>
+        ) : null}
+        {rulesSupported && (info?.approval_rules === true || info === undefined) ? (
+          <>
+            <ApprovalRulesSection
+              footer="Clicking Always allow on an Auto approval card adds a rule here so similar steps run without asking."
+              kind="allow"
+              placeholder="e.g. Push feature branches to GitHub"
+              title="Allow automatically"
+            />
+            <ApprovalRulesSection
+              footer="Always ask before steps matching these rules. Ask first rules win if an Allow automatically rule also matches."
+              kind="ask"
+              placeholder="e.g. Before pushing to main or deleting files"
+              title="Ask first"
+            />
+          </>
         ) : null}
       </div>
     </>

@@ -2,6 +2,9 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { beforeEach, vi } from 'vitest'
 
 import {
+  approvalRulesAdd,
+  approvalRulesList,
+  approvalRulesRemove,
   connectRegisterPoll,
   connectRegisterStart,
   connectStatus,
@@ -15,6 +18,7 @@ import {
 import type { UpdateState } from '../../lib/bridge'
 import { pairWithDaemon } from '../../lib/connection'
 import type { DaemonInfo } from '../../lib/types'
+import { useApprovalRules } from '../../stores/approval-rules'
 import { useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { useMe } from '../../stores/me'
@@ -34,7 +38,10 @@ import {
 
 vi.mock('../../lib/api', async importOriginal => ({
   ...(await importOriginal()),
-  daemonInfo: vi.fn().mockResolvedValue({ version: '0.1.5-alpha.1' }),
+  approvalRulesAdd: vi.fn(),
+  approvalRulesList: vi.fn().mockResolvedValue({ rules: [] }),
+  approvalRulesRemove: vi.fn().mockResolvedValue({ removed: true }),
+  daemonInfo: vi.fn().mockResolvedValue({ approval_rules: true, version: '0.1.5-alpha.1' }),
   modelsList: vi.fn(),
   providerModels: vi.fn().mockResolvedValue([]),
   providersList: vi.fn().mockRejectedValue(new Error('offline')),
@@ -398,6 +405,63 @@ describe('settings', () => {
     fireEvent.mouseMove(own)
     fireEvent.click(own)
     expect(patch).toHaveBeenLastCalledWith({ review_model: null })
+  })
+
+  it('lists, adds, and removes Allow automatically and Ask first rules', async () => {
+    useApprovalRules.getState().reset()
+    vi.mocked(approvalRulesList).mockResolvedValueOnce({
+      rules: [
+        {
+          created_at: 1,
+          id: 'r-card',
+          kind: 'allow',
+          source: 'card',
+          text: 'Allow pushing feature branches to GitHub'
+        }
+      ]
+    })
+    vi.mocked(approvalRulesAdd).mockResolvedValueOnce({
+      rule: {
+        created_at: 2,
+        id: 'r-ask',
+        kind: 'ask',
+        source: 'manual',
+        text: 'Before pushing to main'
+      }
+    })
+    useSettings.setState({
+      patch: vi.fn().mockResolvedValue(undefined),
+      refresh: vi.fn().mockResolvedValue(undefined),
+      settings: {
+        approval_mode: 'smart',
+        billing_notice_ack: false,
+        dream_enabled: true,
+        dream_time: '03:00',
+        lan_enabled: false,
+        review_model: null,
+        service_installed: false,
+        workspace_dir: ''
+      }
+    })
+
+    render(<ApprovalsSettings />)
+    expect(await screen.findByText('Allow pushing feature branches to GitHub')).toBeVisible()
+    expect(screen.getByText('Saved from Always allow')).toBeVisible()
+
+    const askInput = screen.getByLabelText('Add ask first rule')
+    fireEvent.change(askInput, { target: { value: 'Before pushing to main' } })
+    fireEvent.submit(askInput.closest('form')!)
+
+    await waitFor(() =>
+      expect(approvalRulesAdd).toHaveBeenCalledWith('ask', 'Before pushing to main')
+    )
+    expect(await screen.findByText('Before pushing to main')).toBeVisible()
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Remove rule Allow pushing feature branches to GitHub' })
+    )
+    await waitFor(() => expect(approvalRulesRemove).toHaveBeenCalledWith('r-card'))
+    expect(screen.queryByText('Allow pushing feature branches to GitHub')).toBeNull()
   })
 
   it.each([

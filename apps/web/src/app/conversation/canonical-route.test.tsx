@@ -510,7 +510,7 @@ it.each(['empty', 'history', 'stopped', 'archived'] as const)(
           choices: ['once', 'deny']
         })
       )
-      fireEvent.click(await screen.findByRole('button', { name: 'Approve' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Allow once' }))
       await waitFor(() =>
         expect(call).toHaveBeenCalledWith(
           'approval.respond',
