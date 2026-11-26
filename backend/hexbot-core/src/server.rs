@@ -632,6 +632,14 @@ impl App {
                         if let Some(pending) = self.runtime.pending_requests(owner, &live) {
                             turn["pending_requests"] = json!(pending);
                         }
+                        if let Some(turn_id) = self.runtime.active_turn_id(owner, &live) {
+                            turn["turn_id"] = json!(turn_id);
+                        }
+                        if let Some(asks) = self.runtime.turn_asks(owner, &live)
+                            && !asks.is_empty()
+                        {
+                            turn["asks"] = json!(asks);
+                        }
                     }
                 }
             }

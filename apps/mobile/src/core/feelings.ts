@@ -16,6 +16,26 @@ import type { ChatState } from './types'
  * the turn it started, running or finished. Mobile does not time turns, so
  * pride comes from the number of steps alone.
  */
+const unresolvedErrors = (
+  tools: readonly { detail: string; id: string; name: string; parentToolCallId?: string; row?: string; status: string }[]
+) => {
+  const seen = new Set<string>()
+  let count = 0
+  for (const tool of tools) {
+    if (tool.status !== 'unresolved') continue
+    const key = `${tool.row ?? ''}\u0000${tool.parentToolCallId ?? ''}\u0000${tool.id}\u0000${tool.name}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    try {
+      const parsed = JSON.parse(tool.detail) as { failed?: unknown }
+      count += typeof parsed.failed === 'number' && parsed.failed > 0 ? parsed.failed : 1
+    } catch {
+      count += 1
+    }
+  }
+  return count
+}
+
 export function chatMoment(chat: ChatState): Moment {
   const users = chat.messages.filter(message => message.role === 'user')
   const id = `turn-${users.length}`
@@ -24,7 +44,7 @@ export function chatMoment(chat: ChatState): Moment {
   if (chat.busy) {
     return {
       reply: {
-        errors: chat.tools.filter(tool => tool.status === 'error').length,
+        errors: chat.tools.filter(tool => tool.status === 'error').length + unresolvedErrors(chat.tools),
         failed: false,
         id,
         steps: chat.tools.length,
@@ -42,7 +62,7 @@ export function chatMoment(chat: ChatState): Moment {
 
   return {
     reply: {
-      errors: tools.filter(tool => tool.status === 'error').length,
+      errors: tools.filter(tool => tool.status === 'error').length + unresolvedErrors(tools),
       failed: Boolean(chat.error) && !interrupted(chat.error),
       id,
       status: interrupted(chat.error) ? 'interrupted' : chat.error ? 'error' : 'complete',

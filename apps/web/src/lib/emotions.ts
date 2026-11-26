@@ -97,9 +97,32 @@ export function momentOf(
   // You pressed Stop: the daemon reports it as an error, but nothing failed.
   const cut = interrupted(reply?.error)
 
+  const unresolvedErrorCount = (() => {
+    const seen = new Set<string>()
+    let count = 0
+
+    for (const call of calls) {
+      if (call.status !== 'unresolved') {
+        continue
+      }
+
+      const key = `${call.messageId ?? ''}\u0000${call.parentToolCallId ?? ''}\u0000${call.toolId}\u0000${call.name}`
+
+      if (seen.has(key)) {
+        continue
+      }
+
+      seen.add(key)
+      const failedCount = (call.result as { failed?: unknown } | null)?.failed
+      count += typeof failedCount === 'number' && failedCount > 0 ? failedCount : 1
+    }
+
+    return count
+  })()
+
   return {
     reply: reply && {
-      errors: calls.filter(call => call.status === 'error').length,
+      errors: calls.filter(call => call.status === 'error').length + unresolvedErrorCount,
       failed: !cut && (Boolean(reply.error) || reply.status === 'error' || Boolean(stopped)),
       id: reply.id,
       status: cut ? 'interrupted' : reply.status,

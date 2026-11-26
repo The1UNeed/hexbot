@@ -11,8 +11,10 @@ import {
 } from 'react'
 import * as Clipboard from 'expo-clipboard'
 import {
+  AccessibilityInfo,
   ActionSheetIOS,
   Alert,
+  Animated,
   FlatList,
   type ListRenderItemInfo,
   Platform,
@@ -131,7 +133,7 @@ export interface ChatScreenProps {
    */
   onReact?: (rowId: string, emoji: string) => void
   /** Opens the conversation in which `peer` asked `bot`; the ask row opens it. */
-  onOpenThread?: (bot: string, peer: string) => void
+  onOpenThread?: (bot: string, peer: string, sectionId?: string) => void
 
   archived?: boolean
   onUnarchive?: () => void
@@ -954,10 +956,38 @@ function WaitingRow({
   )
 }
 
+const nativeDriver = Platform.OS !== 'web'
+
+function useReduceMotion() {
+  const [reduce, setReduce] = useState<boolean | null>(() =>
+    typeof AccessibilityInfo?.isReduceMotionEnabled === 'function' ? null : false
+  )
+
+  useEffect(() => {
+    let alive = true
+    void AccessibilityInfo?.isReduceMotionEnabled?.()
+      .then(enabled => {
+        if (alive) setReduce(Boolean(enabled))
+      })
+      .catch(() => {
+        if (alive) setReduce(false)
+      })
+    const subscription = AccessibilityInfo?.addEventListener?.('reduceMotionChanged', setReduce)
+
+    return () => {
+      alive = false
+      subscription?.remove()
+    }
+  }, [])
+
+  return reduce
+}
+
 /**
  * One bot messaging another in a turn, marked with the other bot's face and
- * name: "Messaged" Writer, Writer "helped". Opens the conversation between the
- * two when it can.
+ * name: "Messaging" Biology while running, settling smoothly in place to
+ * "Message from" Biology or "Messaged" Biology. Opens the conversation between
+ * the two when it can.
  */
 function AskRow({
   ask,
@@ -966,8 +996,98 @@ function AskRow({
   ask: Extract<ChatItem, { kind: 'ask' }>
   onOpen?: ChatScreenProps['onOpenThread']
 }) {
-  const paint = ask.face ? faceColor(ask.face) : null
-  const open = onOpen && ask.bot && ask.peer ? () => onOpen(ask.bot!, ask.peer!) : undefined
+  const theme = useTheme()
+  const reduceMotion = useReduceMotion()
+  const running = ask.running ?? ask.before === 'Messaging'
+  const labelOpacity = useRef(new Animated.Value(1)).current
+  const ringOpacity = useRef(new Animated.Value(running ? 0.45 : 0)).current
+  const prevRunning = useRef(running)
+  const prevBefore = useRef(ask.before)
+
+  useEffect(() => {
+    const wasRunning = prevRunning.current
+    const beforeChanged = prevBefore.current !== ask.before
+    prevRunning.current = running
+    prevBefore.current = ask.before
+
+    let active: Animated.CompositeAnimation | null = null
+
+    if (running) {
+      if (reduceMotion !== false) {
+        labelOpacity.setValue(1)
+        ringOpacity.setValue(0.45)
+      } else {
+        labelOpacity.setValue(1)
+        ringOpacity.setValue(0.28)
+        active = Animated.loop(
+          Animated.parallel([
+            Animated.sequence([
+              Animated.timing(labelOpacity, {
+                duration: 1100,
+                toValue: 0.56,
+                useNativeDriver: nativeDriver
+              }),
+              Animated.timing(labelOpacity, {
+                duration: 1100,
+                toValue: 1,
+                useNativeDriver: nativeDriver
+              })
+            ]),
+            Animated.sequence([
+              Animated.timing(ringOpacity, {
+                duration: 1100,
+                toValue: 0.72,
+                useNativeDriver: nativeDriver
+              }),
+              Animated.timing(ringOpacity, {
+                duration: 1100,
+                toValue: 0.28,
+                useNativeDriver: nativeDriver
+              })
+            ])
+          ])
+        )
+        active.start()
+      }
+    } else if (wasRunning || beforeChanged) {
+      if (reduceMotion !== false) {
+        ringOpacity.setValue(0)
+        labelOpacity.setValue(1)
+      } else {
+        if (beforeChanged) labelOpacity.setValue(0.35)
+        active = Animated.parallel([
+          Animated.timing(ringOpacity, {
+            duration: 200,
+            toValue: 0,
+            useNativeDriver: nativeDriver
+          }),
+          Animated.timing(labelOpacity, {
+            duration: 220,
+            toValue: 1,
+            useNativeDriver: nativeDriver
+          })
+        ])
+        active.start()
+      }
+    } else {
+      ringOpacity.setValue(0)
+      labelOpacity.setValue(1)
+    }
+
+    return () => {
+      active?.stop()
+    }
+  }, [ask.before, labelOpacity, reduceMotion, ringOpacity, running])
+
+  const open =
+    onOpen && ask.bot && ask.peer
+      ? () =>
+          ask.sectionId
+            ? onOpen(ask.bot!, ask.peer!, ask.sectionId)
+            : onOpen(ask.bot!, ask.peer!)
+      : undefined
+  const ringTint = (ask.face ? faceColor?.(ask.face)?.color : null) ?? theme.accent ?? theme.hairline
+  const ringColor = ringTint ? withAlpha(ringTint, 0.55) : theme.hairline
 
   return (
     <Pressable
@@ -977,22 +1097,44 @@ function AskRow({
       disabled={!open}
       hitSlop={6}
       onPress={open}
-      style={({ pressed }) => [styles.ask, { opacity: pressed ? 0.6 : 1 }]}
+      style={({ pressed }) => [styles.ask, { opacity: pressed ? 0.65 : 1 }]}
       testID={`chat-ask-${ask.id}`}
     >
       {ask.before ? (
-        <Text tone="muted" variant="caption">
-          {ask.before}
-        </Text>
+        <View style={styles.askPrefixSlot}>
+          <Text
+            accessibilityElementsHidden
+            aria-hidden
+            importantForAccessibility="no-hide-descendants"
+            numberOfLines={1}
+            pointerEvents="none"
+            style={styles.askPrefixSizer}
+            variant="caption"
+          >
+            Message from
+          </Text>
+          <Animated.View style={[styles.askPrefixOverlay, { opacity: labelOpacity }]}>
+            <Text numberOfLines={1} style={styles.askPrefix} tone="muted" variant="caption">
+              {ask.before}
+            </Text>
+          </Animated.View>
+        </View>
       ) : null}
-      {ask.face ? <BotFace {...ask.face} size={16} /> : null}
-      <Text
-        style={[styles.askName, paint ? { color: paint.color } : null]}
-        tone={paint ? undefined : 'muted'}
-        variant="caption"
+      <View
+        style={[
+          styles.askPill,
+          { backgroundColor: theme.fill, borderColor: theme.hairline }
+        ]}
       >
-        {ask.name}
-      </Text>
+        <Animated.View
+          pointerEvents="none"
+          style={[styles.askRing, { borderColor: ringColor, opacity: ringOpacity }]}
+        />
+        {ask.face ? <BotFace {...ask.face} size={18} /> : null}
+        <Text numberOfLines={1} style={styles.askName} variant="caption">
+          {ask.name}
+        </Text>
+      </View>
       {ask.after ? (
         <Text tone="muted" variant="caption">
           {ask.after}
@@ -1343,11 +1485,43 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     alignSelf: 'center',
     flexDirection: 'row',
-    gap: 5,
+    gap: 8,
     marginTop: 10,
     paddingHorizontal: 4
   },
-  askName: { fontWeight: '600' },
+  // Reserve width for the widest scaled status word ("Message from") using the same caption
+  // typography so the pill stays anchored across Dynamic Type sizes when the label settles.
+  askPrefixSlot: { justifyContent: 'center' },
+  askPrefixSizer: { opacity: 0 },
+  askPrefixOverlay: {
+    bottom: 0,
+    justifyContent: 'center',
+    position: 'absolute',
+    right: 0,
+    top: 0
+  },
+  askPrefix: { textAlign: 'right' },
+  askPill: {
+    alignItems: 'center',
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    gap: 6,
+    maxWidth: 220,
+    paddingLeft: 6,
+    paddingRight: 10,
+    paddingVertical: 4
+  },
+  askRing: {
+    borderRadius: 999,
+    borderWidth: 1.5,
+    bottom: 0,
+    left: 0,
+    position: 'absolute',
+    right: 0,
+    top: 0
+  },
+  askName: { flexShrink: 1, fontWeight: '600' },
   archivedText: { textAlign: 'center' },
   attachments: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 4, maxWidth: '82%' },
   author: { alignItems: 'center', flexDirection: 'row', gap: 6, marginBottom: 4, marginLeft: 4 },

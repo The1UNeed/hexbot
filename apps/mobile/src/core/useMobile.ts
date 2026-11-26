@@ -16,11 +16,18 @@ import { registerPush } from './push'
 import { parsePairing, normalizeOrigin } from './links'
 import {
   answeredApproval,
+  bufferedRunEnded,
   emptyChat,
   heartbeatMessage,
   historyMessages,
+  isFailedCompletion,
+  latestRunEvents,
+  mergeTurnTools,
+  pendingTurnTools,
   reduceChat,
-  replayChat
+  replayChat,
+  settleTurnTools,
+  unconfirmedTurnTools
 } from './chat'
 import {
   afterRead,
@@ -32,7 +39,7 @@ import {
   type HeldRows,
   type HistoryRead
 } from './chat-cache'
-import { reduceRoom, restoreRoom, roomChat, roomMessage } from './room-chat'
+import { mergeAsked, reduceRoom, restoreRoom, roomChat, roomMessage } from './room-chat'
 import { attachmentPrompt, unknownMethod } from './chat-send'
 import { addNotice, type ComputersListed, latestReads } from './computer'
 import {
@@ -57,6 +64,7 @@ import type {
   Bot,
   ChatMessage,
   ChatState,
+  ChatTool,
   ComputerQuality,
   Computer,
   ComputerStatus,
@@ -94,6 +102,8 @@ export function useMobile() {
   const roomsRef = useRef(rooms)
   roomsRef.current = rooms
   const [sections, setSections] = useState<Section[]>([])
+  const sectionsRef = useRef(sections)
+  sectionsRef.current = sections
   const [info, setInfo] = useState<DaemonInfo | null>(null)
   const infoRef = useRef<DaemonInfo | null>(null)
   const refreshSequence = useRef(0)
@@ -146,25 +156,58 @@ export function useMobile() {
   const [user, setUser] = useState<CurrentUser | null>(null)
   const [route, setRoute] = useState<ChatRoute | null>(null)
   const [chat, setChat] = useState(emptyChat)
+  const chatRef = useRef(chat)
+  chatRef.current = chat
   // The open chat's reactions; a room or a thread between bots has none.
   const [reactions, setReactions] = useState(emptyReactions)
   const [loading, setLoading] = useState(false)
   // The chat whose history the transcript shows; until then it is still opening.
-  const [readId, setReadId] = useState<null | string>(null)
+  const [readId, setReadIdRaw] = useState<null | string>(null)
+  const readIdRef = useRef<null | string>(null)
+  const setReadId = useCallback((id: null | string) => {
+    readIdRef.current = id
+    setReadIdRaw(id)
+  }, [])
   const [hasEarlier, setHasEarlier] = useState(false)
   const [loadingEarlier, setLoadingEarlier] = useState(false)
   const session = useRef<MobileSession | null>(null)
   const routeRef = useRef<ChatRoute | null>(null)
+  /** Originating chats/rooms behind an opened bot-to-bot thread so Back returns there. */
+  const returnStack = useRef<ChatRoute[]>([])
+  const [hasThreadReturn, setHasThreadReturn] = useState(false)
+  const setReturn = useCallback((next: ChatRoute[]) => {
+    returnStack.current = next
+    setHasThreadReturn(next.length > 0)
+  }, [])
   /** A profile or settings page is over the open chat, so what lands there is unseen. */
   const chatCovered = useRef(false)
   const liveId = useRef<string | null>(null)
+  // Live events for the open session's current in-flight turn, preserved across same-section reloads.
+  const liveTurnEvents = useRef<{ sessionId: string; events: GatewayEvent[] } | null>(null)
   // A reconnect cannot restore an old owner row until canonical lookup succeeds.
   const ownerPending = useRef(false)
   const roomEvents = useRef<RoomEvent[]>([])
   const loadingEvents = useRef<GatewayEvent[] | null>(null)
+  const loadingForSection = useRef<string | null>(null)
+  const pendingSectionEvents = useRef<{ sectionId: string; events: GatewayEvent[] } | null>(null)
+  // Completed asks awaiting stored history confirmation, scoped by section so superseding reloads keep them.
+  const pendingAsksBySection = useRef(new Map<string, ChatTool[]>())
+  // Live turns and completing asks for any room behind an open peer thread, kept current while away so Back preserves them.
+  const roomLiveByRoom = useRef(
+    new Map<string, { lastSeq: number; room: Room; state: ChatState }>()
+  )
+  // Live turn events for any section behind an open peer thread, kept current while away so Back preserves running asks.
+  const sectionLiveBySection = useRef(
+    new Map<string, { events: GatewayEvent[]; sessionId: string }>()
+  )
+  // Events captured while an uncached openThread looks up a section from another screen.
+  const threadLookupCapture = useRef<{ events: GatewayEvent[] } | null>(null)
+  const replayingRoom = useRef(false)
+  const threadLoading = useRef(false)
   const openSequence = useRef(0)
-  // Navigation starts before canonical lookup; history sync has its own sequence.
+  // Navigation starts before canonical lookup; history sync and thread lookups have their own sequences.
   const navigation = useRef(0)
+  const threadLookupSequence = useRef(0)
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   /**
    * Changes shown before the daemon answered, by `bot:<name>` or `room:<id>`.
@@ -213,12 +256,17 @@ export function useMobile() {
   /** Chats that changed on screen since their rows were held: never drawn from them. */
   const changed = useRef(new Set<string>())
   const leftRef = useRef<(id: string) => void>(() => {})
-  const cancelNavigation = useCallback(() => {
+  const cancelNavigation = useCallback((keepCapture?: { events: GatewayEvent[] }) => {
     const left = routeRef.current
     if (left?.kind === 'section') leftRef.current(left.section.id)
     navigation.current++
     openSequence.current++
     loadingEvents.current = null
+    loadingForSection.current = null
+    pendingSectionEvents.current = null
+    if (!keepCapture || threadLookupCapture.current !== keepCapture)
+      threadLookupCapture.current = null
+    threadLoading.current = false
     setChoosing(null)
     setLoading(false)
   }, [])
@@ -271,12 +319,16 @@ export function useMobile() {
   const leave = useCallback(() => {
     releaseStaged()
     cancelNavigation()
+    roomLiveByRoom.current.clear()
+    sectionLiveBySection.current.clear()
+    setReturn([])
     routeRef.current = null
     liveId.current = null
+    liveTurnEvents.current = null
     ownerPending.current = false
     setRoute(null)
     setHasEarlier(false)
-  }, [releaseStaged, cancelNavigation])
+  }, [releaseStaged, cancelNavigation, setReturn])
   const refresh = useCallback(
     async (reconnecting = false) => {
       const current = session.current
@@ -431,82 +483,216 @@ export function useMobile() {
         setHasEarlier((events[0]?.seq ?? 1) > 1)
         const buffered = loadingEvents.current ?? []
         loadingEvents.current = null
-        setChat(restoreRoom(room, events))
+        const base = restoreRoom(room, events)
+        const cached = roomLiveByRoom.current.get(id)
+        roomLiveByRoom.current.delete(id)
+        let mergedBase = base
+        if (cached) {
+          const settledBots = new Set(
+            events
+              .filter(
+                e => e.seq > cached.lastSeq && (e.kind === 'message.bot' || e.kind === 'turn.failed')
+              )
+              .map(e => e.actor_id)
+              .filter((bot): bot is string => Boolean(bot))
+          )
+          const turns = { ...base.turns }
+          for (const [turnId, freshTurn] of Object.entries(turns)) {
+            const previous = cached.state.turns[turnId]
+            const sameTurn =
+              previous?.roomTurnId && freshTurn.roomTurnId
+                ? previous.roomTurnId === freshTurn.roomTurnId
+                : !previous?.turnId || !freshTurn.turnId || previous.turnId === freshTurn.turnId
+            if (previous && sameTurn && !settledBots.has(freshTurn.bot)) {
+              const mergedAsked = mergeAsked(previous.asked, freshTurn.asked ?? [], 'prepend')
+              const mergedTools = mergeAsked(previous.tools, freshTurn.tools, 'prepend')
+              turns[turnId] = {
+                ...freshTurn,
+                ...previous,
+                ...(freshTurn.turnId && { turnId: freshTurn.turnId }),
+                ...(mergedAsked.length && { asked: mergedAsked }),
+                ...(mergedTools.length && { tools: mergedTools })
+              }
+            }
+          }
+          const completingAsks: Record<string, ChatTool[]> = {}
+          for (const [bot, asks] of Object.entries(cached.state.completingAsks ?? {})) {
+            if (!settledBots.has(bot) && !Object.values(turns).some(t => t.bot === bot)) {
+              completingAsks[bot] = asks
+            }
+          }
+          mergedBase = roomChat({ ...base, turns, completingAsks })
+        }
+        setChat(mergedBase)
         routeRef.current = { kind: 'room', room }
         // Replayed approvals and events received during history loading go through the same reducer.
-        for (const event of buffered) eventRef.current(event)
+        replayingRoom.current = true
+        try {
+          for (const event of buffered) eventRef.current(event)
+        } finally {
+          replayingRoom.current = false
+        }
         const updated = { kind: 'room' as const, room }
         routeRef.current = updated
         setRoute(updated)
         if (events.length)
           void rpc('hexbot.rooms.mark_read', { id, seq: events.at(-1)!.seq }).catch(() => {})
       } finally {
-        if (sequence === openSequence.current) loadingEvents.current = null
+        if (sequence === openSequence.current) {
+          loadingEvents.current = null
+          loadingForSection.current = null
+          pendingSectionEvents.current = null
+        }
       }
     },
     [rpc]
   )
-  const syncChat = useCallback(async () => {
-    const target = routeRef.current
-    if (!target) return
-    if (target.kind === 'room') return syncRoom(target.room.id)
-    if (ownerPending.current) return
-    let failure: string | null = null
-    for (let attempt = 0; ; attempt++) {
-      const sequence = ++openSequence.current
-      loadingEvents.current = []
-      try {
-        const kept = heldRows(target.section.id)
-        const cursor = cursorFor(kept)
-        const result = await rpc<
-          HistoryRead & {
-            section: Section
-            busy?: boolean
-            pending_clarify?: Record<string, unknown>
-          }
-        >('hexbot.sections.open', {
-          id: target.section.id,
-          ...(cursor && { history_cursor: cursor })
-        })
-        if (
-          sequence !== openSequence.current ||
-          routeRef.current?.kind !== 'section' ||
-          routeRef.current.section.id !== target.section.id
+  type SectionOpenResult = HistoryRead & {
+    section: Section
+    busy?: boolean
+    asks?: import('./types').RoomTurnAsk[]
+    pending_clarify?: Record<string, unknown>
+  }
+  type PreloadedSection = {
+    capture: { events: GatewayEvent[] }
+    cursor?: string
+    result?: SectionOpenResult
+  }
+  const syncChat = useCallback(
+    async (initialFailure: string | null = null, preloaded?: PreloadedSection) => {
+      const target = routeRef.current
+      if (!target) return
+      if (target.kind === 'room') return syncRoom(target.room.id)
+      if (ownerPending.current) return
+      let failure: string | null = initialFailure
+      const sameLive = liveId.current
+      const sameLoading = loadingForSection.current === target.section.id
+      const priorBuffered = sameLoading ? (loadingEvents.current ?? []) : []
+      const priorPending =
+        !sameLive && pendingSectionEvents.current?.sectionId === target.section.id
+          ? pendingSectionEvents.current.events
+          : []
+      const preloadedEvents = preloaded ? [...preloaded.capture.events] : []
+      if (preloaded && threadLookupCapture.current === preloaded.capture)
+        threadLookupCapture.current = null
+      let reloadSeen = preloadedEvents.some(event => {
+        const p = (event.payload ?? {}) as Record<string, unknown>
+        return (
+          event.type === 'hexbot.sections.changed' &&
+          p.id === target.section.id &&
+          p.reload === true
         )
-          return
-        const restoredLiveId = result.section.live_session_id
-        if (!restoredLiveId) throw new Error('Open this conversation again before sending.')
-        const rows = afterRead(kept, result, cursor, Date.now())
-        setHasEarlier(false)
-        const busy =
-          typeof result.busy === 'boolean'
-            ? result.busy
-            : (await rpc<{ status: string }>('session.status', { session_id: restoredLiveId }))
-                .status === 'working'
-        if (sequence !== openSequence.current) return
-        const messages = historyMessages(rows.rows, target.section.peer_bot)
-        let snapshot: ChatState = {
-          ...emptyChat(),
-          busy,
-          messages,
-          // A reply already running when the chat opened lands after these rows.
-          ...(busy && { turnAt: messages.length })
+      })
+      const savedSection = sectionLiveBySection.current.get(target.section.id)
+      sectionLiveBySection.current.delete(target.section.id)
+      let carried: GatewayEvent[] = [
+        ...(savedSection ? savedSection.events : []),
+        ...(sameLive && liveTurnEvents.current?.sessionId === sameLive
+          ? liveTurnEvents.current.events
+          : []),
+        ...priorPending,
+        ...priorBuffered,
+        ...preloadedEvents
+      ]
+      if (sameLive && carried.length)
+        liveTurnEvents.current = {
+          sessionId: sameLive,
+          events: carried.filter(event => event.session_id === sameLive)
         }
-        // The snapshot goes first: an answer or Stop that arrived while it loaded is newer.
-        if (result.pending_clarify)
-          snapshot = reduceChat(snapshot, {
-            type: 'clarify.request',
-            session_id: restoredLiveId,
-            payload: result.pending_clarify
-          })
-        const replay = replayChat(
-          snapshot,
-          (loadingEvents.current ?? []).filter(event => event.session_id === restoredLiveId)
-        )
-        failure = replay.state.error ?? failure
-        // A turn finished while the history loaded; read it again so its replies show once.
-        if (replay.reread && attempt < 2) continue
+      else if (!sameLive && carried.length)
+        pendingSectionEvents.current = { sectionId: target.section.id, events: carried }
+      for (let attempt = 0; ; attempt++) {
+        const sequence = ++openSequence.current
+        loadingEvents.current = []
+        loadingForSection.current = target.section.id
+        let retrying = false
+        try {
+          const kept = heldRows(target.section.id)
+          const cursor = attempt === 0 && preloaded?.result ? preloaded.cursor : cursorFor(kept)
+          const result =
+            attempt === 0 && preloaded?.result
+              ? preloaded.result
+              : await rpc<SectionOpenResult>('hexbot.sections.open', {
+                  id: target.section.id,
+                  ...(cursor && { history_cursor: cursor })
+                })
+          if (
+            sequence !== openSequence.current ||
+            routeRef.current?.kind !== 'section' ||
+            routeRef.current.section.id !== target.section.id
+          )
+            return
+          const restoredLiveId = result.section.live_session_id
+          if (!restoredLiveId) throw new Error('Open this conversation again before sending.')
+          const rows = afterRead(kept, result, cursor, Date.now())
+          setHasEarlier(false)
+          const busy =
+            typeof result.busy === 'boolean'
+              ? result.busy
+              : (await rpc<{ status: string }>('session.status', { session_id: restoredLiveId }))
+                  .status === 'working'
+          if (sequence !== openSequence.current) return
+          const messages = historyMessages(rows.rows, target.section.peer_bot)
+          const pendingTools = busy
+            ? pendingTurnTools(rows.rows, target.section.peer_bot, result.asks)
+            : []
+          const snapshotTurnId =
+            messages.findLast(m => m.turnId)?.turnId ?? pendingTools.findLast(t => t.turnId)?.turnId
+          let snapshot: ChatState = {
+            ...emptyChat(),
+            busy,
+            messages,
+            ...(pendingTools.length && { tools: pendingTools }),
+            ...(snapshotTurnId && { turnId: snapshotTurnId }),
+            // A reply already running when the chat opened lands after these rows.
+            ...(busy && { turnAt: messages.length }),
+            ...(failure && !busy && { error: failure })
+          }
+          // The snapshot goes first: an answer or Stop that arrived while it loaded is newer.
+          if (result.pending_clarify)
+            snapshot = reduceChat(snapshot, {
+              type: 'clarify.request',
+              session_id: restoredLiveId,
+              payload: result.pending_clarify
+            })
+          const sessionEvents = [...carried, ...(loadingEvents.current ?? [])].filter(
+            event => event.session_id === restoredLiveId
+          )
+          const tailAfterComplete = (events: GatewayEvent[]) => {
+            for (let i = events.length - 1; i >= 0; i--) {
+              if (events[i]?.type === 'message.complete' || events[i]?.type === 'error')
+                return events.slice(i + 1)
+            }
+            return events
+          }
+          const replay = replayChat(snapshot, sessionEvents)
+          const replayedAsks = Object.values(replay.state.completingAsks ?? {}).flat()
+          if (replayedAsks.length) {
+            const existing = pendingAsksBySection.current.get(target.section.id) ?? []
+            pendingAsksBySection.current.set(
+              target.section.id,
+              mergeTurnTools(existing, replayedAsks)
+            )
+          }
+          failure = replay.state.error
+          // A turn finished or a reload landed while the history loaded; read it again so its
+          // replies/questions show once, carrying forward live events from any newer in-flight turn.
+          if ((replay.reread || reloadSeen) && attempt < 2) {
+            reloadSeen = false
+            carried = tailAfterComplete(sessionEvents)
+            liveTurnEvents.current = carried.length
+              ? { sessionId: restoredLiveId, events: carried }
+              : null
+            pendingSectionEvents.current = carried.length
+              ? { sectionId: target.section.id, events: carried }
+              : null
+            retrying = true
+            continue
+          }
         straddling.current = replay.state.busy ? restoredLiveId : null
+        liveTurnEvents.current = replay.state.busy
+          ? { sessionId: restoredLiveId, events: tailAfterComplete(sessionEvents) }
+          : null
         let restored = { ...replay.state, error: failure }
         // Heartbeat messages that arrived while it loaded carry no session; match the section.
         for (const event of loadingEvents.current ?? []) {
@@ -527,11 +713,32 @@ export function useMobile() {
               (event.payload as Record<string, unknown> | undefined)?.section_id === target.section.id)
         )
         loadingEvents.current = null
+        loadingForSection.current = null
+        pendingSectionEvents.current = null
         keepRows(target.section.id, rows)
         if (missed) changed.current.add(target.section.id)
         else changed.current.delete(target.section.id)
         liveId.current = restoredLiveId
-        setChat(restored)
+        setChat(previous => {
+          const sameSection = readIdRef.current === target.section.id || sameLive === restoredLiveId
+          const priorAsks = sameSection
+            ? [
+                ...(previous.completingAsks?.[target.section.bot] ?? []),
+                ...(previous.completingAsks?.[''] ?? [])
+              ]
+            : []
+          const sectionPending = pendingAsksBySection.current.get(target.section.id) ?? []
+          const remaining = unconfirmedTurnTools(
+            mergeTurnTools(priorAsks, sectionPending),
+            restored.messages
+          )
+          if (remaining.length) pendingAsksBySection.current.set(target.section.id, remaining)
+          else pendingAsksBySection.current.delete(target.section.id)
+          return {
+            ...restored,
+            completingAsks: remaining.length ? { [target.section.bot]: remaining } : {}
+          }
+        })
         setReadId(target.section.id)
         // A daemon from before one chat names no purpose; keep the one the list marked.
         const section =
@@ -543,9 +750,13 @@ export function useMobile() {
         setRoute(newRoute)
         void rpc('hexbot.sections.mark_read', { id: target.section.id }).catch(() => {})
         return
-      } finally {
-        if (sequence === openSequence.current) loadingEvents.current = null
-      }
+        } finally {
+          if (!retrying && sequence === openSequence.current) {
+            loadingEvents.current = null
+            loadingForSection.current = null
+            pendingSectionEvents.current = null
+          }
+        }
     }
   }, [rpc, syncRoom])
   const syncChatRef = useRef(syncChat)
@@ -651,6 +862,8 @@ export function useMobile() {
   readRef.current = readOpenChat
   const onEvent = useCallback(
     (event: GatewayEvent) => {
+      if (threadLookupCapture.current && !replayingRoom.current)
+        threadLookupCapture.current.events.push(event)
       const target = routeRef.current
       const p = (event.payload ?? {}) as Record<string, unknown>
       // A card settled anywhere drops its kept edits, whatever is on screen.
@@ -694,12 +907,41 @@ export function useMobile() {
       // A dream report landed in this chat; read it again.
       if (
         event.type === 'hexbot.sections.changed' &&
-        p.reload === true &&
         target?.kind === 'section' &&
-        target.section.id === p.id
+        target.section.id === p.id &&
+        p.reload === true
       ) {
         void syncChatRef.current().catch(e => setError(errorText(e)))
         return
+      }
+      // Keep live turns for any room behind an open peer thread up to date while away.
+      if (!replayingRoom.current && roomLiveByRoom.current.size > 0) {
+        const botName = (id: string) => botsRef.current.find(b => b.name === id)?.display_name || id
+        for (const [roomId, entry] of roomLiveByRoom.current.entries()) {
+          if (target?.kind === 'room' && target.room.id === roomId) continue
+          const nextState = reduceRoom(entry.state, event, entry.room, botName)
+          const nextSeq =
+            event.type === 'hexbot.rooms.event' &&
+            p.room_id === roomId &&
+            typeof (p.event as RoomEvent | undefined)?.seq === 'number'
+              ? Math.max(entry.lastSeq, (p.event as RoomEvent).seq)
+              : entry.lastSeq
+          if (nextState !== entry.state || nextSeq !== entry.lastSeq) {
+            roomLiveByRoom.current.set(roomId, { ...entry, state: nextState, lastSeq: nextSeq })
+          }
+        }
+      }
+      // Keep live turn events for any section behind an open peer thread up to date while away.
+      if (event.session_id && sectionLiveBySection.current.size > 0) {
+        for (const [sectionId, entry] of sectionLiveBySection.current.entries()) {
+          if (target?.kind === 'section' && target.section.id === sectionId) continue
+          if (event.session_id !== entry.sessionId) continue
+          const nextEvents =
+            event.type === 'message.start' && bufferedRunEnded(entry.events)
+              ? [event]
+              : [...entry.events, event]
+          sectionLiveBySection.current.set(sectionId, { ...entry, events: nextEvents })
+        }
       }
       if (loadingEvents.current) {
         loadingEvents.current.push(event)
@@ -742,20 +984,67 @@ export function useMobile() {
         }
         if (!event.session_id || event.session_id !== liveId.current) return
         changed.current.add(target.section.id)
+        if (event.type === 'message.start') {
+          if (liveTurnEvents.current?.sessionId === event.session_id) {
+            liveTurnEvents.current.events.push(event)
+          } else {
+            liveTurnEvents.current = { sessionId: event.session_id, events: [event] }
+          }
+        } else if (event.type === 'message.complete' || event.type === 'error') {
+          liveTurnEvents.current = null
+        } else if (liveTurnEvents.current?.sessionId === event.session_id) {
+          liveTurnEvents.current.events.push(event)
+        } else {
+          liveTurnEvents.current = { sessionId: event.session_id, events: [event] }
+        }
         // Read as it lands on screen, so the daemon does not wake this phone about it.
         if (event.type === 'message.complete') readOpenChat()
-        if (event.type === 'message.complete' && straddling.current === event.session_id) {
-          // Part of this turn was already in the history; the history now has all of it.
+        if (
+          event.type === 'message.complete' &&
+          (straddling.current === event.session_id || Boolean(target.section.peer_bot))
+        ) {
+          // Part of this turn was already in the history, or an out-of-band peer question
+          // preceded this reply; re-read history so both question and reply stay separated,
+          // keeping completed ask chips visible under the same key until history confirms them.
           straddling.current = null
           const failed = typeof p.error === 'string' ? p.error : null
-          setChat(c => ({ ...reduceChat(c, event), messages: c.messages }))
-          void syncChatRef
-            .current()
-            .then(() => {
-              if (failed && liveId.current === event.session_id)
-                setChat(c => ({ ...c, error: failed }))
-            })
-            .catch(e => setError(errorText(e)))
+          setChat(c => {
+            const turnId =
+              (typeof p.turn_id === 'string' ? p.turn_id : undefined) ??
+              c.turnId ??
+              c.tools.find(t => t.turnId)?.turnId
+            const freshAfter =
+              !turnId && c.startedFresh && c.turnAt !== undefined ? c.turnAt : undefined
+            const freshExchange = !turnId && c.startedFresh ? c.freshExchange : undefined
+            const failedTurn = isFailedCompletion(p, c.error)
+            const finishedAsks = settleTurnTools(
+              c.tools.filter(t => t.name === 'message_bot'),
+              failedTurn,
+              turnId,
+              freshAfter,
+              freshExchange
+            )
+            if (finishedAsks.length) {
+              const sectionPending = pendingAsksBySection.current.get(target.section.id) ?? []
+              pendingAsksBySection.current.set(
+                target.section.id,
+                mergeTurnTools(sectionPending, finishedAsks)
+              )
+            }
+            const existingAsks = c.completingAsks?.[target.section.bot] ?? []
+            const completingAsks = finishedAsks.length
+              ? {
+                  ...(c.completingAsks ?? {}),
+                  [target.section.bot]: mergeTurnTools(existingAsks, finishedAsks)
+                }
+              : c.completingAsks
+            return {
+              ...reduceChat(c, event),
+              messages: c.messages,
+              ...(completingAsks && { completingAsks })
+            }
+          })
+          void syncChatRef.current(failed).catch(e => setError(errorText(e)))
           return
         }
         setChat(c => reduceChat(c, event))
@@ -854,10 +1143,15 @@ export function useMobile() {
       named.current.clear()
       held.current.clear()
       prefetched.current.clear()
+      pendingAsksBySection.current.clear()
+      roomLiveByRoom.current.clear()
+      sectionLiveBySection.current.clear()
       openSequence.current++
       loadingEvents.current = null
       routeRef.current = null
       liveId.current = null
+      liveTurnEvents.current = null
+      setReturn([])
       setRoute(null)
       setChat(emptyChat())
       setReadId(null)
@@ -883,8 +1177,11 @@ export function useMobile() {
           // Grants may have changed while away: the list waits for this connection's read.
           computersRead.drop()
           setComputersListed('loading')
-          // A reconnect can reach an upgraded daemon at the same address.
+          // A reconnect can reach an upgraded daemon at the same address, and missed
+          // sessionless room/section transitions while offline make background caches stale.
           cancelNavigation()
+          roomLiveByRoom.current.clear()
+          sectionLiveBySection.current.clear()
           named.current.clear()
           prefetched.current.clear()
           const generation = navigation.current
@@ -896,6 +1193,7 @@ export function useMobile() {
           infoRef.current = null
           setInfo(null)
           liveId.current = null
+          liveTurnEvents.current = null
           setChat(emptyChat())
           setReadId(null)
           setLoading(true)
@@ -932,7 +1230,7 @@ export function useMobile() {
       await selectDaemon(daemon.id)
       await next.connect()
     },
-    [onEvent, releaseStaged, clearModels, cancelNavigation, leave]
+    [onEvent, releaseStaged, clearModels, cancelNavigation, leave, setReturn]
   )
   useEffect(() => {
     mounted.current = true
@@ -981,8 +1279,51 @@ export function useMobile() {
       setLoading(false)
     }
   }
-  const openSection = async (bot: Bot, section?: Section) => {
-    cancelNavigation()
+  const openSection = async (
+    bot: Bot,
+    section?: Section,
+    keepReturn = false,
+    originOverride?: ChatRoute | null,
+    preloaded?: PreloadedSection
+  ) => {
+    // Capture any in-flight or buffered events from the originating section BEFORE
+    // cancelNavigation clears loadingEvents / pendingSectionEvents (e.g. tapping into
+    // a peer thread while the originating chat is refreshing).
+    const departingRoute = originOverride !== undefined ? originOverride : routeRef.current
+    const departingSection = departingRoute?.kind === 'section' ? departingRoute.section : null
+    const departingSectionId = departingSection?.id ?? null
+    const departingLiveId =
+      departingSection &&
+      routeRef.current?.kind === 'section' &&
+      routeRef.current.section.id === departingSection.id
+        ? (liveId.current ?? departingSection.live_session_id ?? null)
+        : (departingSection?.live_session_id ?? null)
+    const departingEvents: GatewayEvent[] = []
+    if (departingSectionId) {
+      const seenEvents = new Set<GatewayEvent>()
+      const addEvents = (list: readonly GatewayEvent[]) => {
+        for (const ev of list) {
+          if (!seenEvents.has(ev)) {
+            seenEvents.add(ev)
+            departingEvents.push(ev)
+          }
+        }
+      }
+      const currentLive = liveTurnEvents.current
+      if (departingLiveId && currentLive && currentLive.sessionId === departingLiveId) {
+        addEvents(currentLive.events)
+      }
+      if (pendingSectionEvents.current?.sectionId === departingSectionId) {
+        addEvents(pendingSectionEvents.current.events)
+      }
+      if (loadingForSection.current === departingSectionId && loadingEvents.current) {
+        addEvents(loadingEvents.current)
+      }
+      if (preloaded?.capture.events.length) {
+        addEvents(preloaded.capture.events)
+      }
+    }
+    cancelNavigation(preloaded?.capture)
     const generation = navigation.current
     const current = session.current
     const stale = () =>
@@ -1019,13 +1360,49 @@ export function useMobile() {
         return
       }
       const selected = found.section
-      const here = routeRef.current
-      if (here?.kind !== 'section' || here.section.id !== selected.id) releaseStaged()
+      const here = originOverride !== undefined ? originOverride : routeRef.current
+      if (routeRef.current?.kind !== 'section' || routeRef.current.section.id !== selected.id)
+        releaseStaged()
+      if (!keepReturn) {
+        if (
+          selected.peer_bot &&
+          here &&
+          (here.kind !== 'section' || here.section.id !== selected.id)
+        ) {
+          if (here.kind === 'room') {
+            roomLiveByRoom.current.set(here.room.id, {
+              lastSeq: roomEvents.current.at(-1)?.seq ?? 0,
+              room: here.room,
+              state: chatRef.current
+            })
+          } else {
+            const originSessionId =
+              departingLiveId ??
+              liveId.current ??
+              here.section.live_session_id ??
+              departingEvents.find(e => typeof e.session_id === 'string')?.session_id ??
+              null
+            if (originSessionId) {
+              const sessionScoped = departingEvents.filter(e => e.session_id === originSessionId)
+              sectionLiveBySection.current.set(here.section.id, {
+                events: latestRunEvents(sessionScoped),
+                sessionId: originSessionId
+              })
+            }
+          }
+          setReturn([...returnStack.current, here])
+        } else if (!selected.peer_bot) {
+          roomLiveByRoom.current.clear()
+          sectionLiveBySection.current.clear()
+          setReturn([])
+        }
+      }
       const target: ChatRoute = { kind: 'section', section: selected, bot }
       routeRef.current = target
       setRoute(target)
       ownerPending.current = false
       liveId.current = null
+      liveTurnEvents.current = null
       // What is held shows now; sending waits for the read that makes the chat live.
       const kept = changed.current.has(selected.id) ? undefined : heldRows(selected.id)
       setChat(
@@ -1034,7 +1411,7 @@ export function useMobile() {
           : emptyChat()
       )
       setReadId(null)
-      await syncChat()
+      await syncChat(null, preloaded)
     } catch (e) {
       if (!stale()) setError(errorText(e))
     } finally {
@@ -1050,10 +1427,16 @@ export function useMobile() {
     cancelNavigation()
     if (asked && section) void openSection(asked.bot, section)
   }
-  const openRoom = async (room: Room) => {
+  const openRoom = async (room: Room, keepReturn = false) => {
     cancelNavigation()
     const generation = navigation.current
     const stale = () => !mounted.current || generation !== navigation.current
+    if (!keepReturn) {
+      roomLiveByRoom.current.clear()
+      sectionLiveBySection.current.clear()
+      setReturn([])
+    }
+    const cachedRoom = keepReturn ? roomLiveByRoom.current.get(room.id) : undefined
     setLoading(true)
     setError(null)
     releaseStaged()
@@ -1061,7 +1444,7 @@ export function useMobile() {
     setHasEarlier(false)
     routeRef.current = { kind: 'room', room }
     setRoute(routeRef.current)
-    setChat(emptyChat())
+    setChat(cachedRoom ? cachedRoom.state : emptyChat())
     setReadId(null)
     try {
       await syncRoom(room.id)
@@ -1071,6 +1454,136 @@ export function useMobile() {
       if (!stale()) setLoading(false)
     }
   }
+  const openRoomRef = useRef(openRoom)
+  openRoomRef.current = openRoom
+  /**
+   * Opens the private conversation in which `peer` asked `botName`.
+   * Guarded by the navigation generation so a delayed lookup never overrides
+   * a newer room or chat choice. An explicit `sectionId` is honored directly
+   * (including archived history) without falling back to a newer thread or
+   * the recipient's own chat.
+   */
+  const openThread = async (
+    botName: string,
+    peer: string,
+    options?: { allowReverse?: boolean; sectionId?: string }
+  ) => {
+    // Snapshot navigation generation without advancing it so a failed lookup never cancels
+    // the originating view's in-flight load or drops its buffered events/approvals.
+    const lookupSeq = ++threadLookupSequence.current
+    const generation = navigation.current
+    const current = session.current
+    const origin = routeRef.current
+    const stale = () =>
+      !mounted.current ||
+      lookupSeq !== threadLookupSequence.current ||
+      generation !== navigation.current ||
+      session.current !== current
+    const lookup: Rpc = async (method, params) => {
+      if (stale()) throw new Error('Navigation cancelled.')
+      const result = await rpc(method, params)
+      if (stale()) throw new Error('Navigation cancelled.')
+      return result as never
+    }
+    const capture = { events: [] as GatewayEvent[] }
+    threadLookupCapture.current = capture
+    const releaseCapture = () => {
+      if (threadLookupCapture.current === capture) threadLookupCapture.current = null
+    }
+    const openFound = async (section: Section, preloaded?: PreloadedSection) => {
+      const owner = botsRef.current.find(b => b.name === section.bot)
+      if (!owner) {
+        releaseCapture()
+        if (!stale()) setError('This conversation is no longer available.')
+        return
+      }
+      threadLoading.current = false
+      await openSectionRef.current(owner, section, false, origin, preloaded)
+    }
+    // Preload any target thread before switching routes so a deleted or missing thread (e.g. 4204)
+    // leaves the originating chat/room and its pending approvals untouched.
+    const openById = async (id: string) => {
+      threadLoading.current = true
+      setLoading(true)
+      setError(null)
+      try {
+        const cursor = cursorFor(heldRows(id))
+        const opened = await lookup<SectionOpenResult>('hexbot.sections.open', {
+          id,
+          ...(cursor && { history_cursor: cursor })
+        })
+        if (stale()) return
+        await openFound(opened.section, { capture, cursor, result: opened })
+      } catch {
+        if (!stale()) setError('This conversation is no longer available.')
+      }
+    }
+    try {
+      if (options?.sectionId) {
+        await openById(options.sectionId)
+        return
+      }
+      const between = (askedBot: string, asker: string) =>
+        sectionsRef.current.find(
+          s => s.bot === askedBot && s.peer_bot === asker && !s.archived_at
+        )
+      const asked = async (askedBot: string, asker: string) => {
+        const found = await lookup<{ section: Section | null }>('hexbot.sections.thread', {
+          bot: askedBot,
+          peer: asker
+        })
+        return found.section
+      }
+      let found: Section | null = between(botName, peer) ?? null
+      if (!found) {
+        found = await asked(botName, peer)
+        if (stale()) return
+      }
+      if (!found && options?.allowReverse) {
+        found = between(peer, botName) ?? (await asked(peer, botName))
+        if (stale()) return
+      }
+      if (found) {
+        await openById(found.id)
+        return
+      }
+      if (options?.allowReverse) {
+        const owner = botsRef.current.find(b => b.name === botName)
+        if (owner) {
+          threadLoading.current = false
+          await openSectionRef.current(owner, undefined, false, origin)
+        }
+        return
+      }
+      setError('This conversation is not available yet.')
+    } catch (e) {
+      if (!stale()) setError(errorText(e))
+    } finally {
+      releaseCapture()
+      if (!stale() && threadLoading.current) {
+        threadLoading.current = false
+        setLoading(false)
+      }
+    }
+  }
+  const back = useCallback(() => {
+    const here = routeRef.current
+    if (here?.kind === 'section' && here.section.peer_bot && returnStack.current.length > 0) {
+      const previous = returnStack.current.at(-1)!
+      setReturn(returnStack.current.slice(0, -1))
+      if (previous.kind === 'room') {
+        const latestRoom = roomsRef.current.find(r => r.id === previous.room.id) ?? previous.room
+        void openRoomRef.current(latestRoom, true)
+      } else {
+        const latestBot = botsRef.current.find(b => b.name === previous.bot.name) ?? previous.bot
+        const latestSection =
+          sectionsRef.current.find(s => s.id === previous.section.id) ?? previous.section
+        void openSectionRef.current(latestBot, latestSection, true)
+      }
+      return
+    }
+    leave()
+  }, [leave, setReturn])
   /**
    * `attachments` are the ids of the files uploaded for this message; the
    * daemon sends only those. Undefined leaves every staged file attached, for
@@ -1382,7 +1895,10 @@ export function useMobile() {
     },
     /** The daemon process this app talks to; a restart drops what was staged. */
     epoch: () => session.current?.client.epoch ?? null,
-    back: leave,
+    openThread,
+    back,
+    leave,
+    hasThreadReturn,
     disconnect: async () => {
       leave()
       session.current?.stop()

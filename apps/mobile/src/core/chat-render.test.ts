@@ -9,13 +9,56 @@ import type { ChatScreenProps } from '../screens/ChatScreen'
 import type { ChatItem } from '../screens/types'
 import { formatDayDivider } from '../ui/format'
 
+const nativeAnim = vi.hoisted(() => ({
+  reduceMotion: false,
+  timingCalls: [] as { toValue: number; duration: number; useNativeDriver?: boolean }[],
+  loopStarts: 0,
+  loopStops: 0
+}))
+
 // FlatList's native windowing is irrelevant here; exercise every production row.
 vi.mock('react-native', async () => {
   const { createElement } = await import('react')
   const view = ({ children, testID }: { children?: ReactNode; testID?: string }) =>
     createElement('div', { 'data-testid': testID }, children)
+  class MockValue {
+    value: number
+    constructor(initial: number) {
+      this.value = initial
+    }
+    setValue(next: number) {
+      this.value = next
+    }
+  }
+  const composite = (onStart?: () => void, onStop?: () => void) => ({
+    start: () => onStart?.(),
+    stop: () => onStop?.()
+  })
   return {
     View: view, ScrollView: view, Text: view, Image: () => null,
+    AccessibilityInfo: {
+      isReduceMotionEnabled: () => Promise.resolve(nativeAnim.reduceMotion),
+      addEventListener: () => ({ remove: () => {} })
+    },
+    Animated: {
+      Value: MockValue,
+      View: view,
+      timing: (_val: unknown, config: { toValue: number; duration: number; useNativeDriver?: boolean }) => {
+        nativeAnim.timingCalls.push(config)
+        return composite()
+      },
+      sequence: () => composite(),
+      parallel: () => composite(),
+      loop: () =>
+        composite(
+          () => {
+            nativeAnim.loopStarts += 1
+          },
+          () => {
+            nativeAnim.loopStops += 1
+          }
+        )
+    },
     // A long press, as a context menu: the one gesture the DOM has for it.
     Pressable: ({ children, onLongPress, onPress, testID }: { children?: ReactNode; onLongPress?: () => void; onPress?: () => void; testID?: string }) =>
       createElement('div', { 'data-testid': testID, onClick: onPress, onContextMenu: onLongPress }, children),
@@ -52,9 +95,29 @@ vi.mock('../ui', async () => {
   const format = await import('../ui/format')
   const view = ({ children, testID }: { children?: ReactNode; testID?: string }) =>
     createElement('div', { 'data-testid': testID }, children)
+  const text = ({
+    accessibilityElementsHidden,
+    children,
+    testID,
+    variant
+  }: {
+    accessibilityElementsHidden?: boolean
+    children?: ReactNode
+    testID?: string
+    variant?: string
+  }) =>
+    createElement(
+      'div',
+      {
+        'aria-hidden': accessibilityElementsHidden ? 'true' : undefined,
+        'data-testid': testID,
+        'data-variant': variant
+      },
+      children
+    )
   return {
     ...format,
-    Text: view, Screen: view, Glass: view, TopBar: () => null,
+    Text: text, Screen: view, Glass: view, TopBar: () => null,
     BotFace: () => null, RoomFace: () => null, LoadingFace: () => null,
     Button: ({ accessibilityLabel, onPress, disabled, busy }: { accessibilityLabel?: string; onPress?: () => void; disabled?: boolean; busy?: boolean }) =>
       createElement('button', { 'aria-label': accessibilityLabel, onClick: onPress, disabled: disabled || busy }),
@@ -301,10 +364,123 @@ it('says what the bot is doing in two parts, and marks a bot it messaged', () =>
     waiting: { label: { object: 'Taobao', verb: 'Opening' }, mood: 'computer' }, onOpenThread: thread
   }))
   expect(screen.getByTestId('chat-waiting').textContent).toBe('Opening Taobao')
-  expect(screen.getByTestId('chat-ask-ask-1').textContent).toBe('MessagedBiology')
-  fireEvent.click(screen.getByTestId('chat-ask-ask-1'))
+  const askRow = screen.getByTestId('chat-ask-ask-1')
+  const visibleTexts = [...askRow.querySelectorAll('[data-variant]')].filter(
+    el => el.getAttribute('aria-hidden') !== 'true'
+  )
+  expect(visibleTexts.map(el => el.textContent)).toEqual(['Messaged', 'Biology'])
+  // Hidden sizer reserves the widest scaled label ("Message from") with the same caption style.
+  const sizer = askRow.querySelector('[aria-hidden="true"]')
+  expect(sizer?.textContent).toBe('Message from')
+  expect(sizer?.getAttribute('data-variant')).toBe('caption')
+  fireEvent.click(askRow)
   expect(thread).toHaveBeenCalledWith('biology', 'hexbot')
   // Without the two bots' names there is no conversation to open.
   fireEvent.click(screen.getByTestId('chat-ask-ask-2'))
   expect(thread).toHaveBeenCalledTimes(1)
+})
+
+it('animates live ask rows with native opacity, settles smoothly, stays still for history, and respects Reduce Motion', async () => {
+  nativeAnim.reduceMotion = false
+  nativeAnim.timingCalls = []
+  nativeAnim.loopStarts = 0
+  nativeAnim.loopStops = 0
+
+  // 1. Settled history ask starts completely still.
+  const settledItem: ChatItem = {
+    kind: 'ask',
+    id: 'hist-1',
+    before: 'Message from',
+    after: '',
+    name: 'Biology',
+    bot: 'biology',
+    peer: 'hexbot'
+  }
+  const histView = render(
+    createElement(ChatScreen, {
+      title: 'HexBot',
+      face: { name: 'HexBot' },
+      items: [settledItem],
+      onSend: vi.fn(),
+      onApprove: vi.fn()
+    })
+  )
+  await act(async () => {
+    await Promise.resolve()
+  })
+  expect(nativeAnim.loopStarts).toBe(0)
+  expect(nativeAnim.timingCalls).toHaveLength(0)
+  histView.unmount()
+
+  // 2. Running ask pulses with native opacity, then settles smoothly when done.
+  const runningItem: ChatItem = {
+    kind: 'ask',
+    id: 'live-1',
+    before: 'Messaging',
+    after: '',
+    name: 'Biology',
+    bot: 'biology',
+    peer: 'hexbot',
+    running: true
+  }
+  const view = render(
+    createElement(ChatScreen, {
+      title: 'HexBot',
+      face: { name: 'HexBot' },
+      items: [runningItem],
+      onSend: vi.fn(),
+      onApprove: vi.fn()
+    })
+  )
+  await act(async () => {
+    await Promise.resolve()
+  })
+  expect(nativeAnim.loopStarts).toBe(1)
+  expect(nativeAnim.timingCalls.every(call => call.useNativeDriver === true)).toBe(true)
+
+  const beforeSettleTimings = nativeAnim.timingCalls.length
+  view.rerender(
+    createElement(ChatScreen, {
+      title: 'HexBot',
+      face: { name: 'HexBot' },
+      items: [{ ...runningItem, before: 'Message from', running: false }],
+      onSend: vi.fn(),
+      onApprove: vi.fn()
+    })
+  )
+  expect(nativeAnim.loopStops).toBe(1)
+  expect(nativeAnim.timingCalls.length).toBeGreaterThan(beforeSettleTimings)
+  expect(nativeAnim.timingCalls.slice(beforeSettleTimings).every(c => c.useNativeDriver === true)).toBe(true)
+  view.unmount()
+
+  // 3. Reduce Motion disables both the live pulse and the settle transition.
+  nativeAnim.reduceMotion = true
+  nativeAnim.timingCalls = []
+  nativeAnim.loopStarts = 0
+  nativeAnim.loopStops = 0
+  const reduced = render(
+    createElement(ChatScreen, {
+      title: 'HexBot',
+      face: { name: 'HexBot' },
+      items: [runningItem],
+      onSend: vi.fn(),
+      onApprove: vi.fn()
+    })
+  )
+  await act(async () => {
+    await Promise.resolve()
+  })
+  expect(nativeAnim.loopStarts).toBe(0)
+  expect(nativeAnim.timingCalls).toHaveLength(0)
+  reduced.rerender(
+    createElement(ChatScreen, {
+      title: 'HexBot',
+      face: { name: 'HexBot' },
+      items: [{ ...runningItem, before: 'Message from', running: false }],
+      onSend: vi.fn(),
+      onApprove: vi.fn()
+    })
+  )
+  expect(nativeAnim.timingCalls).toHaveLength(0)
+  nativeAnim.reduceMotion = false
 })

@@ -78,6 +78,10 @@ function StepMark({ call }: { call: ToolCall }) {
     return <span className="size-1.5 shrink-0 rounded-full bg-info" />
   }
 
+  if (call.status === 'unresolved') {
+    return <CircleAlert className="shrink-0 text-warning" size={13} />
+  }
+
   return call.status === 'error' ? (
     <CircleAlert className="shrink-0 text-danger" size={13} />
   ) : (

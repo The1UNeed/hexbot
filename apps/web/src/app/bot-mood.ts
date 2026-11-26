@@ -87,7 +87,8 @@ export function useBotMood(bot: Bot): FaceMood {
   const params = useParams({ strict: false }) as { bot?: string; section?: string }
   // The roster's own `asking`, which it shares as `openingBot`.
   const opening = useUi(state => state.openingBot)
-  const active = chatShown(bot.name, opening, params)
+  const openThread = useUi(state => state.thread)
+  const active = !openThread && chatShown(bot.name, opening, params)
   const emotion = useEmotion(bot.name)
 
   const sections = useSections(

@@ -443,6 +443,107 @@ describe('history projection', () => {
 
     expect(message?.clarifies).toBeUndefined()
   })
+
+  it('restores unmatched running message_bot declarations only when busy is true', () => {
+    const rows = [
+      { role: 'user', row_id: 'u0', text: 'Old' },
+      {
+        role: 'assistant',
+        row_id: 'a0',
+        text: 'Old reply.',
+        tool_calls: [
+          { function: { arguments: '{"to":"old"}', name: 'message_bot' }, id: 'c0', type: 'function' }
+        ],
+        turn_id: 'T0'
+      },
+      { role: 'user', row_id: 'u1', text: 'Ask Biology' },
+      {
+        role: 'assistant',
+        row_id: 'a1',
+        text: 'Checking.',
+        tool_calls: [
+          {
+            function: { arguments: '{"to":"chemistry"}', name: 'message_bot' },
+            id: 'call_0',
+            type: 'function'
+          },
+          {
+            function: { arguments: '{"to":"biology"}', name: 'message_bot' },
+            id: 'call_1',
+            type: 'function'
+          }
+        ],
+        turn_id: 'T1'
+      },
+      {
+        name: 'message_bot',
+        role: 'tool',
+        text: '{"section_id":"th-chem"}',
+        tool_call_id: 'call_0',
+        turn_id: 'T1'
+      }
+    ] as Parameters<typeof messagesFromHistory>[0]
+
+    const busyMessages = messagesFromHistory(rows, { busy: true })
+    expect(busyMessages.at(-1)?.toolCalls).toMatchObject([
+      { args: { to: 'chemistry' }, name: 'message_bot', status: 'ok', toolId: 'call_0' },
+      {
+        args: { to: 'biology' },
+        messageId: 'a1',
+        name: 'message_bot',
+        startedAt: 0,
+        status: 'running',
+        toolId: 'call_1'
+      }
+    ])
+    // Earlier exchange's unmatched declaration is NOT restored.
+    expect(busyMessages[1]?.toolCalls).toEqual([])
+
+    // Idle chats do not restore unmatched running declarations.
+    const idleMessages = messagesFromHistory(rows, { busy: false })
+    expect(idleMessages.at(-1)?.toolCalls).toMatchObject([
+      { args: { to: 'chemistry' }, name: 'message_bot', status: 'ok', toolId: 'call_0' }
+    ])
+
+    // An earlier non-message_bot tool (e.g. web_search) sharing call_0 and context "biology"
+    // must NOT consume an active message_bot(to: "biology") declaration.
+    const mixedRows = [
+      { role: 'user', row_id: 'u2', text: 'Search then ask Biology' },
+      {
+        role: 'assistant',
+        row_id: 's1',
+        text: 'Searching.',
+        tool_calls: [
+          { function: { arguments: '{"query":"biology"}', name: 'web_search' }, id: 'call_0', type: 'function' }
+        ],
+        turn_id: 'T2'
+      },
+      {
+        context: 'biology',
+        name: 'web_search',
+        role: 'tool',
+        text: 'search results',
+        tool_call_id: 'call_0',
+        turn_id: 'T2'
+      },
+      {
+        role: 'assistant',
+        row_id: 's2',
+        text: 'Asking.',
+        tool_calls: [
+          { function: { arguments: '{"to":"biology"}', name: 'message_bot' }, id: 'call_0', type: 'function' }
+        ],
+        turn_id: 'T2'
+      }
+    ] as Parameters<typeof messagesFromHistory>[0]
+
+    const mixedMessages = messagesFromHistory(mixedRows, { busy: true })
+    expect(
+      mixedMessages.flatMap(m => m.toolCalls).filter(c => c.name === 'message_bot')
+    ).toMatchObject([
+      { args: { to: 'biology' }, messageId: 's2', name: 'message_bot', status: 'running', toolId: 'call_0' }
+    ])
+  })
 })
 
 it('restores nested code steps with their parent, arguments, duration and errors', () => {
@@ -486,6 +587,453 @@ it('restores nested code steps with their parent, arguments, duration and errors
       status: 'ok'
     },
     { toolId: 'code/2', parentToolCallId: 'code', result: 'Denied', status: 'error' }
+  ])
+})
+
+it('preserves wait:false outcome and section_id on persisted nested message_bot calls', async () => {
+  const { asksOf } = await import('./asks')
+
+  const [message] = messagesFromHistory([
+    { role: 'assistant', text: '' },
+    {
+      role: 'tool',
+      name: 'codemode',
+      tool_id: 'code',
+      text: 'done',
+      nested_calls: {
+        calls: [
+          {
+            id: 'code/1',
+            name: 'message_bot',
+            arguments: { to: 'biology', text: 'FYI', wait: false },
+            durationMs: 15,
+            status: 'ok'
+          },
+          {
+            id: 'code/2',
+            name: 'message_bot',
+            arguments: { to: 'chemistry', text: 'FYI', wait: false },
+            durationMs: 12,
+            section_id: 'th-chem',
+            status: 'ok'
+          }
+        ]
+      }
+    },
+    { role: 'assistant', text: 'Notified both.' }
+  ])
+
+  expect(asksOf(message?.toolCalls ?? [])).toEqual([
+    { sectionId: null, sent: true, status: 'ok', target: 'biology' },
+    { sectionId: 'th-chem', sent: true, status: 'ok', target: 'chemistry' }
+  ])
+})
+
+it('disambiguates same-fragment call_0 declarations by text and wait mode when restoring pending asks', () => {
+  const pendingByText = messagesFromHistory(
+    [
+      { role: 'user', text: 'Ask writer twice' },
+      {
+        role: 'assistant',
+        row_id: 'a1',
+        turn_id: 'T1',
+        text: '',
+        tool_calls: [
+          {
+            id: 'call_0',
+            function: { name: 'message_bot', arguments: '{"to":"writer","text":"first","wait":true}' }
+          },
+          {
+            id: 'call_0',
+            function: {
+              name: 'message_bot',
+              arguments: '{"to":"writer","text":"second","wait":true}'
+            }
+          }
+        ]
+      },
+      {
+        role: 'tool',
+        row_id: 't1',
+        turn_id: 'T1',
+        message_id: 'a1',
+        tool_call_id: 'call_0',
+        name: 'message_bot',
+        context: 'writer',
+        args: { to: 'writer', text: 'second', wait: true },
+        text: '{"reply":"ok","section_id":"th-w"}'
+      }
+    ],
+    { busy: true }
+  )
+
+  const runningByText = pendingByText
+    .flatMap(m => m.toolCalls)
+    .filter(c => c.status === 'running')
+    .map(c => (c.args as { text?: string } | null)?.text)
+
+  expect(runningByText).toEqual(['first'])
+
+  const pendingByWait = messagesFromHistory(
+    [
+      { role: 'user', text: 'Send and wait' },
+      {
+        role: 'assistant',
+        row_id: 'a2',
+        turn_id: 'T2',
+        text: '',
+        tool_calls: [
+          {
+            id: 'call_0',
+            function: { name: 'message_bot', arguments: '{"to":"writer","text":"Q","wait":false}' }
+          },
+          {
+            id: 'call_0',
+            function: { name: 'message_bot', arguments: '{"to":"writer","text":"Q","wait":true}' }
+          }
+        ]
+      },
+      {
+        role: 'tool',
+        row_id: 't2',
+        turn_id: 'T2',
+        message_id: 'a2',
+        tool_call_id: 'call_0',
+        name: 'message_bot',
+        context: 'writer',
+        is_error: true,
+        args: { to: 'writer', text: 'Q', wait: true },
+        text: '{"error":"timed out"}'
+      }
+    ],
+    { busy: true }
+  )
+
+  const runningByWait = pendingByWait
+    .flatMap(m => m.toolCalls)
+    .filter(c => c.status === 'running')
+    .map(c => (c.args as { wait?: boolean } | null)?.wait)
+
+  expect(runningByWait).toEqual([false])
+
+  // Live asks from `sections.open` prevent a rejected sibling from reviving as running while
+  // Pi still buffers the parallel batch's toolResult rows.
+  const withLiveAsks = messagesFromHistory(
+    [
+      { role: 'user', text: 'Ask fox and ghost' },
+      {
+        role: 'assistant',
+        row_id: 'a3',
+        turn_id: 'T3',
+        text: '',
+        tool_calls: [
+          {
+            id: 'call_0',
+            function: { name: 'message_bot', arguments: '{"to":"fox","text":"Hi","wait":true}' }
+          },
+          {
+            id: 'call_1',
+            function: { name: 'message_bot', arguments: '{"to":"ghost","text":"Hi","wait":true}' }
+          }
+        ]
+      }
+    ],
+    {
+      asks: [
+        {
+          args: { to: 'fox', text: 'Hi', wait: true },
+          context: 'fox',
+          message_id: 'a3',
+          section_id: 'th-fox',
+          status: 'running',
+          tool_id: 'call_0',
+          turn_id: 'T3'
+        },
+        {
+          args: { to: 'ghost', text: 'Hi', wait: true },
+          context: 'ghost',
+          message_id: 'a3',
+          result: { error: 'Unknown bot: ghost' },
+          status: 'error',
+          tool_id: 'call_1',
+          turn_id: 'T3'
+        }
+      ],
+      busy: true
+    }
+  )
+
+  expect(
+    withLiveAsks.flatMap(m => m.toolCalls).map(c => ({
+      status: c.status,
+      to: (c.args as { to?: string } | null)?.to
+    }))
+  ).toEqual([
+    { status: 'running', to: 'fox' },
+    { status: 'error', to: 'ghost' }
+  ])
+
+  // Untrimmed whitespace handles (`"fox "` / `" ghost"`) match their rejected snapshot ask.
+  const withWhitespaceHandle = messagesFromHistory(
+    [
+      { role: 'user', text: 'Ask fox and padded handle' },
+      {
+        role: 'assistant',
+        row_id: 'a4',
+        turn_id: 'T4',
+        text: '',
+        tool_calls: [
+          {
+            id: 'call_0',
+            function: { name: 'message_bot', arguments: '{"to":"fox","text":"Hi","wait":true}' }
+          },
+          {
+            id: 'call_0',
+            function: { name: 'message_bot', arguments: '{"to":"fox ","text":"Hi","wait":true}' }
+          },
+          {
+            id: 'call_0',
+            function: { name: 'message_bot', arguments: '{"to":" ghost","text":"Hi","wait":true}' }
+          }
+        ]
+      }
+    ],
+    {
+      asks: [
+        {
+          args: { to: 'fox', text: 'Hi', wait: true },
+          context: 'fox',
+          message_id: 'a4',
+          section_id: 'th-fox',
+          status: 'running',
+          tool_id: 'call_0',
+          turn_id: 'T4'
+        },
+        {
+          args: { to: 'fox ', text: 'Hi', wait: true },
+          context: 'fox ',
+          message_id: 'a4',
+          result: { error: 'Unknown bot: fox ' },
+          status: 'error',
+          tool_id: 'call_0',
+          turn_id: 'T4'
+        },
+        {
+          args: { to: ' ghost', text: 'Hi', wait: true },
+          context: ' ghost',
+          message_id: 'a4',
+          result: { error: 'Unknown bot:  ghost' },
+          status: 'error',
+          tool_id: 'call_0',
+          turn_id: 'T4'
+        }
+      ],
+      busy: true
+    }
+  )
+
+  expect(withWhitespaceHandle.flatMap(m => m.toolCalls).map(c => c.status)).toEqual([
+    'running',
+    'error',
+    'error'
+  ])
+
+  // Persisted nested codemode ask from turn t1 is NOT duplicated onto fallback turn t2.
+  const fallbackNested = messagesFromHistory(
+    [
+      { role: 'user', text: 'Run code' },
+      {
+        role: 'assistant',
+        row_id: 'a-t1',
+        turn_id: 't1',
+        text: '',
+        tool_calls: [{ id: 'code', function: { name: 'codemode', arguments: '{}' } }]
+      },
+      {
+        role: 'tool',
+        row_id: 'r-t1',
+        turn_id: 't1',
+        tool_call_id: 'code',
+        name: 'codemode',
+        text: 'ok',
+        nested_calls: {
+          calls: [
+            {
+              id: 'code/1',
+              name: 'message_bot',
+              arguments: { to: 'fox', text: 'Hi', wait: true },
+              section_id: 'th-fox',
+              status: 'ok',
+              durationMs: 10
+            }
+          ]
+        }
+      },
+      {
+        role: 'assistant',
+        row_id: 'a-t2',
+        turn_id: 't2',
+        text: '',
+        tool_calls: [{ id: 'sh-1', function: { name: 'terminal', arguments: '{"cmd":"ls"}' } }]
+      }
+    ],
+    {
+      asks: [
+        {
+          args: { to: 'fox', text: 'Hi', wait: true },
+          context: 'fox',
+          parent_tool_call_id: 'code',
+          section_id: 'th-fox',
+          status: 'ok',
+          tool_id: 'code/1',
+          turn_id: 't1'
+        }
+      ],
+      busy: true
+    }
+  )
+
+  expect(
+    fallbackNested.flatMap(m => m.toolCalls).filter(c => c.name === 'message_bot')
+  ).toHaveLength(1)
+
+  // Persisted error result consumes only the matching settled snapshot ask, never a running sibling.
+  const persistedErrorWithRunningSibling = messagesFromHistory(
+    [
+      { role: 'user', text: 'Ask fox twice' },
+      {
+        role: 'assistant',
+        row_id: 'a5',
+        turn_id: 'T5',
+        text: '',
+        tool_calls: [
+          {
+            id: 'call_0',
+            function: { name: 'message_bot', arguments: '{"to":"fox","text":"Hi","wait":true}' }
+          },
+          {
+            id: 'call_0',
+            function: { name: 'message_bot', arguments: '{"to":"fox","text":"Hi","wait":true}' }
+          }
+        ]
+      },
+      {
+        role: 'tool',
+        row_id: 't5',
+        turn_id: 'T5',
+        message_id: 'a5',
+        tool_call_id: 'call_0',
+        name: 'message_bot',
+        context: 'fox',
+        is_error: true,
+        text: '{"error":"failed"}'
+      }
+    ],
+    {
+      asks: [
+        {
+          args: { to: 'fox', text: 'Hi', wait: true },
+          context: 'fox',
+          message_id: 'a5',
+          section_id: 'th-fox',
+          status: 'running',
+          tool_id: 'call_0',
+          turn_id: 'T5'
+        },
+        {
+          args: { to: 'fox', text: 'Hi', wait: true },
+          context: 'fox',
+          message_id: 'a5',
+          result: { error: 'failed' },
+          status: 'error',
+          tool_id: 'call_0',
+          turn_id: 'T5'
+        }
+      ],
+      busy: true
+    }
+  )
+
+  expect(persistedErrorWithRunningSibling.flatMap(m => m.toolCalls).map(c => c.status)).toEqual([
+    'running',
+    'error'
+  ])
+
+  // Persisted nested codemode ask must not consume an earlier running snapshot sibling.
+  const nestedParallelMessages = messagesFromHistory(
+    [
+      { content: 'Check two scripts', role: 'user' },
+      {
+        content: '',
+        role: 'assistant',
+        row_id: 'a-np',
+        tool_calls: [
+          {
+            function: { arguments: '{"code":"ask(fox)"}', name: 'codemode' },
+            id: 'call_0',
+            occurrence_id: 'occ-p1'
+          },
+          {
+            function: { arguments: '{"code":"ask(fox)"}', name: 'codemode' },
+            id: 'call_0',
+            occurrence_id: 'occ-p2'
+          }
+        ],
+        turn_id: 'T-np'
+      },
+      {
+        name: 'codemode',
+        nested_calls: {
+          calls: [
+            {
+              arguments: { text: 'Ping', to: 'fox', wait: true },
+              id: 'call_0/1',
+              name: 'message_bot',
+              section_id: 'th-fox',
+              status: 'ok'
+            }
+          ]
+        },
+        occurrence_id: 'occ-p2',
+        role: 'tool',
+        text: 'done',
+        tool_call_id: 'call_0',
+        turn_id: 'T-np'
+      }
+    ],
+    {
+      asks: [
+        {
+          args: { text: 'Ping', to: 'fox', wait: true },
+          context: 'fox',
+          parent_occurrence_id: 'occ-p1',
+          parent_tool_call_id: 'call_0',
+          status: 'running',
+          tool_id: 'call_0/1',
+          turn_id: 'T-np'
+        },
+        {
+          args: { text: 'Ping', to: 'fox', wait: true },
+          context: 'fox',
+          parent_occurrence_id: 'occ-p2',
+          parent_tool_call_id: 'call_0',
+          section_id: 'th-fox',
+          status: 'ok',
+          tool_id: 'call_0/1',
+          turn_id: 'T-np'
+        }
+      ],
+      busy: true
+    }
+  )
+
+  const nestedAskCalls = nestedParallelMessages
+    .flatMap(m => m.toolCalls)
+    .filter(c => c.name === 'message_bot')
+
+  expect(nestedAskCalls.map(c => [c.parentOccurrenceId, c.status])).toEqual([
+    ['occ-p2', 'ok'],
+    ['occ-p1', 'running']
   ])
 })
 

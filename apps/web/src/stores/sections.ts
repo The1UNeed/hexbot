@@ -33,15 +33,15 @@ import {
   rememberHistory,
   syncHistory
 } from '../lib/device-cache'
-import type { Bot, BotStatus, DaemonInfo, Message, Section } from '../lib/types'
+import type { Bot, BotStatus, DaemonInfo, Message, RoomTurnAsk, Section } from '../lib/types'
 
 import { useBots } from './bots'
 import { connectionRead, useConnection } from './connection'
 import { releaseHeartbeatMessages, useTranscripts } from './transcripts'
 
 /** Interrupted hidden kickoffs must stay hidden in cached and fresh history. */
-function chatMessages(rows: HistoryRow[]) {
-  return messagesFromHistory(rows).filter(
+function chatMessages(rows: HistoryRow[], busy = false, asks?: RoomTurnAsk[]) {
+  return messagesFromHistory(rows, { asks, busy }).filter(
     message => !(message.role === 'user' && message.text.includes(KICKOFF_MARKER))
   )
 }
@@ -767,7 +767,7 @@ export const useSections = create<SectionsState>((set, get) => ({
         throw new Error('The selected daemon changed. Open this chat again.')
       }
 
-      const { busy, context, pending_clarify, pending_requests, section } = result
+      const { asks, busy, context, pending_clarify, pending_requests, section } = result
       const live = section.live_session_id
       const appended = result.messages ?? []
       const delta = Boolean(cursor && memory && result.history_delta)
@@ -822,6 +822,12 @@ export const useSections = create<SectionsState>((set, get) => ({
         const shown = useTranscripts.getState().bySession[live]
         const built = hydrated.get(live)
 
+        const hasHydratedRunning = Boolean(
+          shown?.messages.some(message =>
+            message.toolCalls.some(call => call.status === 'running' && call.startedAt === 0)
+          )
+        )
+
         // Nothing new since the read that built what is shown, and nothing
         // happened to it since: only the snapshot's turn and cards settle.
         if (
@@ -829,14 +835,17 @@ export const useSections = create<SectionsState>((set, get) => ({
           shown &&
           built?.cursor === cursor &&
           built?.messages === shown.messages &&
-          !shown.unproven?.length
+          !shown.unproven?.length &&
+          !(busy && !shown.turnActive) &&
+          !(hasHydratedRunning && !busy) &&
+          !asks?.length
         ) {
           useTranscripts.getState().settle(live, id, { busy, pending: pending_requests, readAt })
         } else {
           useTranscripts.getState().open(
             live,
             id,
-            chatMessages(messages),
+            chatMessages(messages, busy === true, asks),
             identified
               ? {
                   inputsAtRead,
@@ -984,11 +993,22 @@ export const useSections = create<SectionsState>((set, get) => ({
   },
 
   async openThread(id, peer) {
-    const { messages, pending_clarify, section } = await sectionsOpen(id)
+    const readAt = Date.now()
+    const { epoch, target } = useConnection.getState()
+
+    const { asks, busy, messages, pending_clarify, pending_requests, section } =
+      await sectionsOpen(id)
+
     const live = section.live_session_id
 
-    if (live) {
+    const current =
+      useConnection.getState().target === target && useConnection.getState().epoch === epoch
+
+    if (live && current) {
       set(state => ({ liveSessionId: { ...state.liveSessionId, [id]: live } }))
+      // Reconcile pending approvals and questions against the daemon's snapshot so cards
+      // settled elsewhere during reconnect are retired rather than staying actionable.
+      useTranscripts.getState().settle(live, id, { busy, pending: pending_requests, readAt })
 
       // The owner answers the receiving bot's questions here: threads have no other view.
       if (pending_clarify) {
@@ -998,7 +1018,7 @@ export const useSections = create<SectionsState>((set, get) => ({
 
     return {
       liveSessionId: live,
-      messages: messagesFromHistory(messages ?? [], { sender: peer }),
+      messages: messagesFromHistory(messages ?? [], { asks, busy: busy === true, sender: peer }),
       section
     }
   },

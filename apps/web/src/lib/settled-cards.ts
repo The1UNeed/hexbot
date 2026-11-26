@@ -31,7 +31,7 @@ export interface CardTool {
   name: string
   /** The tool's result: its JSON text from history, or the object a live event carries. */
   result: unknown
-  status: 'error' | 'ok' | 'running'
+  status: 'error' | 'ok' | 'running' | 'unresolved'
 }
 
 /**
@@ -250,7 +250,7 @@ function pluginCard(tool: CardTool, args: Fields): SettledCard | null {
 
 /** The answered card a finished tool call showed, or null when it showed none. */
 export function settledCard(tool: CardTool): SettledCard | null {
-  if (tool.status === 'running') {
+  if (tool.status === 'running' || tool.status === 'unresolved') {
     return null
   }
 
