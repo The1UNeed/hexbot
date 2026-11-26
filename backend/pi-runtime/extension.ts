@@ -268,7 +268,7 @@ export default function hexbot(pi: any) {
         if (reason) return {block: true, reason};
       }
       if (choice === 'session' && !ask.once && !review) sessionAllowed.add(ask.key);
-      else if (choice !== 'once' && choice !== 'session') return {block: true, reason: 'The user denied this action.'};
+      else if (choice !== 'once' && choice !== 'session' && choice !== 'always') return {block: true, reason: 'The user denied this action.'};
     };
     const browser = event.toolName === 'browser_console' && typeof event.input.expression === 'string';
     const mcp = event.toolName.startsWith('mcp__');
@@ -345,7 +345,7 @@ export default function hexbot(pi: any) {
       let ask: {key: string, command: string, reason: string, once?: boolean} | undefined;
       if (mcp) {
         const tool = pi.getAllTools().find((candidate: any) => candidate.name === event.toolName);
-        if (live.approvalMode === 'manual' || tool?.annotations?.readOnlyHint !== true) {
+        if (live.approvalMode === 'manual' || !mcpReadOnly(event.toolName, tool)) {
           const namespace = tool?.namespace?.name ?? event.toolName;
           const server = mcpServer(event.toolName) ?? namespace;
           const label = `${server}/${event.toolName.slice(namespace.length + 2) || event.toolName}`;
@@ -433,7 +433,7 @@ export default function hexbot(pi: any) {
     const definition = name === 'bash' ? {
       description: tool.description + (process.platform === 'win32'
         ? ' On this computer (host), Windows is unsupported: Auto and Manual refuse local tools, including full_access. In Bypass this is Pi\'s Bash shell, such as Git Bash, with no sandbox; there, use Bash syntax, not cmd.exe or PowerShell syntax. Other computers use their own shell, as your Computers list says.'
-        : ' On this computer (host), commands may run in a sandbox that blocks internet access and writes outside the workspace; when a command needs either, set full_access and give a reason.') +
+        : ' On this computer (host), commands run in a sandbox that blocks internet access and writes outside the workspace; when a command needs either, set full_access and give a short reason on the first try.') +
         ' Name another computer from your Computers list in computer to run the command there instead.',
       parameters: {type: 'object', properties: {
         command: {type: 'string', description: 'Shell command to execute'},
@@ -775,17 +775,31 @@ export function terminalComputer(input: any, computers: any[] | undefined): stri
   return computers.find(computer => computer?.terminal === true)?.id ?? 'host';
 }
 
-// Commands on the bots' computer that Auto checks first: they install, reach
-// the network, or delete broadly. Everything else runs there without asking;
-// the computer is easy to reset (machines.rs).
+// Whether an MCP tool is read-only in Auto mode. Explicit MCP annotations always
+// win; when a server omits annotations, obvious read-only tool names run freely
+// while anything ambiguous or mutating goes through Auto Review.
+const MCP_READ_PREFIX = /^(get|list|search|read|find|fetch|describe|show|view|lookup|count|inspect|whoami|status|info)($|[_-]|[A-Z])/;
+const MCP_WRITE_TOKEN = /(?:^|[_-])(and|or|create|add|new|insert|write|edit|update|patch|put|post|set|delete|remove|rm|drop|destroy|clear|purge|send|reply|publish|deploy|merge|rebase|commit|push|force|reset|revert|checkout|fork|close|reopen|resolve|archive|unarchive|trash|move|rename|copy|share|invite|grant|revoke|run|exec|execute|eval|call|trigger|start|stop|restart|kill|terminate|pay|buy|purchase|transfer|charge|approve|reject|sign|login|logout|sync|import|export|upload|submit|mutate|modify|change|toggle|enable|disable|install|uninstall|mark|label|unlabel|tag|untag|assign|unassign|ack|acknowledge|star|unstar|pin|unpin|comment|react|mute|unmute|flag|unflag|subscribe|unsubscribe|follow|unfollow|bookmark|lock|unlock|replace|upsert|save|store|append|prepend|apply|cancel|abort|schedule|complete|dismiss|notify|notification|generate|restore|undo|redo)(?:$|[_-])/;
+export function mcpReadOnly(toolName: string, tool?: any): boolean {
+  if (tool?.annotations?.readOnlyHint === true) return true;
+  if (tool?.annotations?.readOnlyHint === false || tool?.annotations?.destructiveHint === true) return false;
+  const match = /^mcp__[^_]+(?:_[^_]+)*__(.+)$/.exec(toolName) ?? /^mcp__.*?__(.+)$/.exec(toolName);
+  const local = match?.[1] ?? toolName;
+  if (!MCP_READ_PREFIX.test(local)) return false;
+  const normalized = local.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+  return !MCP_WRITE_TOKEN.test(normalized);
+}
+
+// Commands on the bots' computer that Auto checks first: root escalation,
+// pushing to external hosts/repos, uploading data out, piping remote code into
+// a shell, or deleting broadly. Routine dev work (package installs, git
+// clone/fetch/pull, read-only curl/wget GETs) runs freely inside the disposable VM.
 const RISKY_COMMANDS: [RegExp, string][] = [
   [/(^|[\s;&|(])(sudo|su)\s/, 'run as root'],
-  [/(^|[\s;&|(])(apt|apt-get|dnf|yum|apk|pacman|brew|snap)\s+(install|add|remove|purge|upgrade|update)\b/, 'install or remove programs'],
-  [/(^|[\s;&|(])(pip3?|uv\s+pip|pipx)\s+install\b/, 'install packages'],
-  [/(^|[\s;&|(])(npm|pnpm|yarn|bun)\s+(i|install|add|global)\b|(^|[\s;&|(])npx\s/, 'install packages'],
-  [/(^|[\s;&|(])(cargo|go|gem)\s+install\b|(^|[\s;&|(])uv\s+(add|tool\s+install)\b/, 'install packages'],
-  [/(^|[\s;&|(])(curl|wget|ssh|scp|sftp|rsync|nc|ncat|telnet|ftp)\s/, 'reach the network'],
-  [/(^|[\s;&|(])git\s+(clone|push|pull|fetch|remote\s+add)\b/, 'reach the network'],
+  [/(^|[\s;&|(])(ssh|scp|sftp|rsync|nc|ncat|telnet|ftp)\s/, 'connect to another host'],
+  [/(^|[\s;&|(])git\s+push\b/, 'push to a remote repository'],
+  [/(^|[\s;&|(])curl\b[^;&|\n]*(\s(-[A-Za-z]*[dFT]|--data[^\s]*|--form|--upload-file|--json)\b|\s(-X|--request)\s*(?:[Pp][Oo][Ss][Tt]|[Pp][Uu][Tt]|[Pp][Aa][Tt][Cc][Hh]|[Dd][Ee][Ll][Ee][Tt][Ee])\b)/, 'send data over the network'],
+  [/(^|[\s;&|(])wget\b[^;&|\n]*\s(--post-data|--post-file|--body-data|--body-file|--method=(POST|PUT|PATCH|DELETE))\b/i, 'send data over the network'],
   [/(^|[\s;&|(])(mkfs|dd\s+if=|shutdown|reboot|:\(\)\s*\{)/, 'delete broadly or stop the computer'],
   [/\|\s*(sh|bash|zsh|python3?)\b/, 'run downloaded code'],
 ];

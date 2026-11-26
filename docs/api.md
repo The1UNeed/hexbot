@@ -347,8 +347,9 @@ mutation methods check ownership.
 
 - `hexbot.info {}` → `{version, hermes_version, daemon_name, install_id,
   auth_required, lan_enabled, addresses: [string], platform, sandbox, home,
-  update_capability, one_chat, transcript_identity?}`. See optional transcript
-  identity above. `one_chat` is true once
+  update_capability, one_chat, transcript_identity?, approval_rules?}`. See optional transcript
+  identity above. `approval_rules` is true once the daemon supports
+  `hexbot.approvals.rules.*` persistent Auto-mode rules. `one_chat` is true once
   `hexbot.sections.create` returns the bot's one chat; older daemons leave it
   out. `update_capability` is `desktop` when the Hexbot app
   on that machine runs the daemon, `service` when launchd or systemd does,
@@ -376,6 +377,21 @@ mutation methods check ownership.
   number from 500 to 20000 (4202 otherwise). Room settings are `room_bot_turns_per_human_turn` (default 8),
   `room_budget_tokens_per_human_turn` (default null), and
   `bot_daily_token_budget` (default null).
+- `hexbot.approvals.rules.list {}` → `{rules: [{id, kind, text, source, tool, computer, created_at}]}`.
+  Owner-scoped Auto-mode rules (`kind` is `allow` for Allow automatically or
+  `ask` for Ask first; `source` is `manual` or `card`). Ask first always overrides
+  Allow automatically; card-saved rules carry their target `computer`.
+- `hexbot.approvals.rules.add {kind, text, tool?, computer?}` → `{rule}`.
+  Deduplicates case-insensitively per owner and kind; caps at 40 rules per kind
+  and 500 characters per rule (4202 otherwise). Emits `hexbot.approvals.changed`.
+- `hexbot.approvals.rules.remove {id}` → `{removed: boolean}`. Owner-scoped.
+  Emits `hexbot.approvals.changed`.
+- `hexbot.approvals.rules.clear {kind?}` → `{removed: number}`. Removes all
+  rules for the owner (or only the given `kind`). Emits `hexbot.approvals.changed`.
+  Non-critical Auto-mode `approval.request` cards may carry reviewer-authored
+  `title`, the computer-scoped `rule` that `choice: "always"` will save, and
+  `choices: ["once", "always", "deny"]`; clicking `always` validates and saves
+  the rule before settling and returns 4202 if the rule cannot be stored.
 
 ### Bots
 

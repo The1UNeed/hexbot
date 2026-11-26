@@ -557,7 +557,7 @@ describe('approvals and questions in a room', () => {
   })
 
   it.each([
-    ['Approve', 'once'],
+    ['Allow once', 'once'],
     ['Allow for now', 'session'],
     ['Deny', 'deny']
   ])(
@@ -698,7 +698,7 @@ describe('approvals and questions in a room', () => {
     expect(await screen.findByText('Waiting for Alice')).toBeVisible()
     expect(screen.getByRole('status', { name: /^Owl is / })).toBeVisible()
     expect(screen.queryByText('Approval needed')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Allow once' })).not.toBeInTheDocument()
     act(() =>
       routeEvent({
         payload: { kind: 'working', text: 'Working' },
@@ -721,7 +721,7 @@ describe('approvals and questions in a room', () => {
     )
     expect(await screen.findByText('Waiting for Alice')).toBeVisible()
     expect(screen.queryByText('Approval needed')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Allow once' })).not.toBeInTheDocument()
   })
 })
 

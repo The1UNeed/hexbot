@@ -87,6 +87,8 @@ pub fn open(home: &Path) -> Result<Connection> {
         "CREATE TABLE IF NOT EXISTS native_sessions(stored_id TEXT PRIMARY KEY,owner TEXT NOT NULL,bot TEXT NOT NULL,prompt TEXT NOT NULL,options TEXT NOT NULL DEFAULT '{}');
       CREATE TABLE IF NOT EXISTS native_live_sessions(stored_id TEXT PRIMARY KEY REFERENCES native_sessions(stored_id) ON DELETE CASCADE,live_id TEXT NOT NULL UNIQUE);
       CREATE TABLE IF NOT EXISTS native_messages(session_id TEXT NOT NULL,seq INTEGER NOT NULL,message_json TEXT NOT NULL,PRIMARY KEY(session_id,seq));
+      CREATE TABLE IF NOT EXISTS native_message_meta(session_id TEXT NOT NULL,seq INTEGER NOT NULL,is_user INTEGER NOT NULL,PRIMARY KEY(session_id,seq));
+      CREATE TRIGGER IF NOT EXISTS meta_message_delete AFTER DELETE ON native_messages BEGIN DELETE FROM native_message_meta WHERE session_id=OLD.session_id AND seq=OLD.seq; END;
       CREATE TABLE IF NOT EXISTS native_usage(id INTEGER PRIMARY KEY,session_id TEXT NOT NULL,owner_id TEXT NOT NULL,bot TEXT NOT NULL,model TEXT NOT NULL,provider TEXT NOT NULL,input_tokens INTEGER NOT NULL,output_tokens INTEGER NOT NULL,cache_read_tokens INTEGER NOT NULL,cache_write_tokens INTEGER NOT NULL,cost REAL NOT NULL,timestamp REAL NOT NULL);
       CREATE INDEX IF NOT EXISTS idx_native_usage_owner_time ON native_usage(owner_id,timestamp);
       CREATE TABLE IF NOT EXISTS native_pi_journal(journal_id TEXT PRIMARY KEY,session_id TEXT NOT NULL,raw_json TEXT NOT NULL,entry_id TEXT,projection_seq INTEGER,usage_id INTEGER UNIQUE,active INTEGER NOT NULL DEFAULT 1,UNIQUE(session_id,entry_id));
@@ -239,6 +241,22 @@ fn for_apps(mut row: Value) -> Value {
     }
     row
 }
+fn is_owner_user_message(message: &Value) -> i64 {
+    i64::from(
+        message["role"] == "user"
+            && message["display_kind"] != "hidden"
+            && message["custom_type"].is_null(),
+    )
+}
+
+fn record_message_meta(conn: &Connection, stored: &str, seq: i64, message: &Value) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO native_message_meta(session_id,seq,is_user) VALUES(?1,?2,?3)",
+        params![stored, seq, is_owner_user_message(message)],
+    )?;
+    Ok(())
+}
+
 /// Stream visible owner evidence, newest first. Stops before allocating an
 /// oversized row, or when the caller's serialized request is full; either way
 /// the result is false and the older messages are left out.
@@ -251,8 +269,11 @@ pub(crate) fn user_history(
     let conn = open(home)?;
     let mut stmt = conn.prepare(
         "SELECT CASE WHEN octet_length(m.message_json)<=?2 THEN m.message_json END
-         FROM native_messages m LEFT JOIN native_pi_journal p ON p.session_id=m.session_id AND p.projection_seq=m.seq
+         FROM native_messages m
+         LEFT JOIN native_pi_journal p ON p.session_id=m.session_id AND p.projection_seq=m.seq
+         LEFT JOIN native_message_meta meta ON meta.session_id=m.session_id AND meta.seq=m.seq
          WHERE m.session_id=?1 AND (p.active IS NULL OR p.active=1)
+         AND (meta.is_user IS NULL OR meta.is_user=1)
          AND CASE WHEN octet_length(m.message_json)>?2 THEN 1 ELSE
              json_extract(m.message_json,'$.role')='user'
              AND json_extract(m.message_json,'$.display_kind') IS NOT 'hidden'
@@ -260,8 +281,8 @@ pub(crate) fn user_history(
     )?;
     let mut rows = stmt.query(params![stored, row_bytes])?;
     while let Some(row) = rows.next()? {
-        // Size is checked before JSON parsing, including for non-owner rows:
-        // an oversized row and everything older count as left out.
+        // Size is checked before JSON parsing for user rows and legacy rows
+        // without metadata: an oversized row and everything older count as left out.
         let Some(raw) = row.get::<_, Option<String>>(0)? else {
             return Ok(false);
         };
@@ -299,10 +320,16 @@ pub fn append(home: &Path, stored: &str, mut message: Value) -> Result<()> {
     if message.get("row_id").is_none() {
         message["row_id"] = json!(id());
     }
-    tx.execute(
-        "INSERT INTO native_messages(session_id,seq,message_json) SELECT ?1,COALESCE(MAX(seq),0)+1,?2 FROM native_messages WHERE session_id=?1",
-        params![stored, message.to_string()],
+    let seq: i64 = tx.query_row(
+        "SELECT COALESCE(MAX(seq),0)+1 FROM native_messages WHERE session_id=?1",
+        [stored],
+        |r| r.get(0),
     )?;
+    tx.execute(
+        "INSERT INTO native_messages(session_id,seq,message_json) VALUES(?1,?2,?3)",
+        params![stored, seq, message.to_string()],
+    )?;
+    record_message_meta(&tx, stored, seq, &message)?;
     tx.commit()?;
     Ok(())
 }
@@ -1270,6 +1297,7 @@ pub(crate) fn prepare_chat_fork(
     for (table, column) in [
         ("native_sessions", "stored_id"),
         ("native_messages", "session_id"),
+        ("native_message_meta", "session_id"),
         ("native_pi_journal", "session_id"),
         ("native_usage", "session_id"),
         ("native_deleted", "session_id"),
@@ -1938,10 +1966,12 @@ pub fn import_hermes(home: &Path, bot: &str, stored: &str, cwd: &Path) -> Result
         if reports.iter().all(|message| message["dream"] == true) {
             tx.execute("DELETE FROM native_messages WHERE session_id=?", [stored])?;
             for (i, message) in projected.iter().chain(&reports).enumerate() {
+                let seq = i as i64 + 1;
                 tx.execute(
                     "INSERT INTO native_messages VALUES(?,?,?)",
-                    params![stored, i + 1, message.to_string()],
+                    params![stored, seq, message.to_string()],
                 )?;
+                record_message_meta(&tx, stored, seq, message)?;
             }
         }
         tx.commit()?;
@@ -2481,6 +2511,7 @@ fn persist_pi_message(
                 "UPDATE native_messages SET message_json=? WHERE session_id=? AND seq=?",
                 params![projected.to_string(), stored, seq],
             )?;
+            record_message_meta(conn, stored, seq, &projected)?;
         } else {
             if projected.get("row_id").is_none() {
                 projected["row_id"] = json!(
@@ -2498,6 +2529,7 @@ fn persist_pi_message(
                 "INSERT INTO native_messages(session_id,seq,message_json) VALUES (?,?,?)",
                 params![stored, seq, projected.to_string()],
             )?;
+            record_message_meta(conn, stored, seq, &projected)?;
             projection_seq = Some(seq);
         }
     }
@@ -3238,6 +3270,12 @@ fn reorder_projection(conn: &Connection, stored: &str, source_order: &[i64]) -> 
         "SELECT journal_id,projection_seq FROM native_pi_journal WHERE session_id=? AND projection_seq IS NOT NULL",
         &[&stored],
     )?;
+    let existing_meta: HashMap<i64, i64> = {
+        let mut stmt =
+            conn.prepare("SELECT seq,is_user FROM native_message_meta WHERE session_id=?")?;
+        stmt.query_map([stored], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?
+            .collect::<std::result::Result<_, _>>()?
+    };
     conn.execute("DELETE FROM native_messages WHERE session_id=?", [stored])?;
     let mut remap = HashMap::new();
     for (index, old) in order.iter().enumerate() {
@@ -3247,6 +3285,12 @@ fn reorder_projection(conn: &Connection, stored: &str, source_order: &[i64]) -> 
             "INSERT INTO native_messages(session_id,seq,message_json) VALUES (?,?,?)",
             params![stored, seq, messages[old]],
         )?;
+        if let Some(&is_user) = existing_meta.get(old) {
+            conn.execute(
+                "INSERT OR REPLACE INTO native_message_meta(session_id,seq,is_user) VALUES(?1,?2,?3)",
+                params![stored, seq, is_user],
+            )?;
+        }
     }
     for link in links {
         let old = link["projection_seq"].as_i64().unwrap();

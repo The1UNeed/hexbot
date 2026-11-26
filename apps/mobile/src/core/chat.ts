@@ -104,7 +104,10 @@ export function answeredApproval(
   answer: { choice?: unknown; draft?: unknown; mail_action?: unknown }
 ): PendingApproval {
   const decision =
-    answer.choice === 'deny' || answer.choice === 'once' || answer.choice === 'session'
+    answer.choice === 'always' ||
+    answer.choice === 'deny' ||
+    answer.choice === 'once' ||
+    answer.choice === 'session'
       ? answer.choice
       : 'once'
   const action = answer.mail_action
@@ -1540,6 +1543,8 @@ export function reduceChat(state: ChatState, event: GatewayEvent): ChatState {
         requestId: p.request_id,
         sessionId,
         command: String(p.command ?? p.tool_name ?? 'Approve this action'),
+        ...(typeof p.title === 'string' && p.title ? { title: p.title } : {}),
+        ...(typeof p.rule === 'string' && p.rule ? { rule: p.rule } : {}),
         reason: typeof p.reason === 'string' ? p.reason : undefined,
         choices: Array.isArray(p.choices) ? (p.choices as string[]) : ['once', 'deny'],
         ...(typeof p.tool_id === 'string' && { toolId: p.tool_id }),

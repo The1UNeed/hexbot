@@ -385,7 +385,10 @@ async fn stopping_cancels_an_inflight_auto_review_without_a_fallback_card() {
     socket.write_all(b"finish\n").await.unwrap();
     let card = stop_event(&mut events, |event| event["type"] == "approval.request").await;
     assert_eq!(card["payload"]["request_id"], "fresh-review");
-    assert_eq!(card["payload"]["choices"], json!(["once", "deny"]));
+    assert_eq!(
+        card["payload"]["choices"],
+        json!(["once", "always", "deny"])
+    );
     runtime.shutdown().await;
 }
 

@@ -117,10 +117,12 @@ export interface PendingApproval {
   requestId: string
   sessionId: string
   command: string
+  title?: string
+  rule?: string
   reason?: string
   choices: string[]
   /** Set once answered, here or on another app; the card stays until the turn ends. */
-  decision?: 'deny' | 'once' | 'session'
+  decision?: 'always' | 'deny' | 'once' | 'session'
   /** The tool call that showed the card, when the daemon names it. */
   toolId?: string
   /** The user agreed, but what the card was for didn't work. */

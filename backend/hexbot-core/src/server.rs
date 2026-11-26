@@ -445,6 +445,8 @@ impl App {
                 "sandbox": crate::credentials::sandbox(),
                 // Clients describe Manual, Auto and Bypass only to a daemon that has them.
                 "approvals": "sandbox",
+                // `hexbot.approvals.rules.*`: persistent Always allow and Ask first rules.
+                "approval_rules": true,
                 // `hexbot.sections.create` returns the bot's one chat; an older
                 // daemon makes a new section every time.
                 "one_chat": true,
@@ -519,6 +521,14 @@ impl App {
                     }
                     result
                 } else if let Some(result) = settings::call(&self.home, owner, method, p) {
+                    result
+                } else if let Some(result) =
+                    crate::approval_rules::call(&self.home, owner, method, p)
+                {
+                    if result.is_ok() && crate::approval_rules::CHANGES.contains(&method) {
+                        self.events
+                            .emit(owner, None, "hexbot.approvals.changed", json!({}));
+                    }
                     result
                 } else if let Some(result) = rooms::call(&self.home, owner, method, p) {
                     result

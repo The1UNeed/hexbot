@@ -78,15 +78,21 @@ Windows releases. See [the remaining Windows requirements](docs/windows-security
   or the section's model when none is chosen. It reads the owner's most
   recent messages, whole, and the whole step, including the checked file
   destination and overwrite status. It loads no project instruction files,
-  skills or tools, and sees no tool output or bot replies. A step over 20,000
-  characters, or evidence that cannot be read, asks. When older owner messages
-  do not fit, the reviewer is told, and only a step it rates low risk runs. Changed owner evidence or queued owner prompts and steers
-  invalidate automatic approval when the evidence is rechecked. A step it rates
-  low or medium risk runs without asking; anything else, and any review that
-  fails or times out, asks the user for that step only. Allow for now grants do
-  not cover reviewed steps. A step the user approves on such a card is shown
-  to later reviews in the same turn, which can then let the same kind of step
-  run without a card; the reviewer still judges each one. In a connected
+  skills or tools, and sees no tool output or bot replies. A step over 40,000
+  characters, or evidence that cannot be read, asks. Standing user rules
+  (`Allow automatically` and `Ask first`, managed in Settings, Approvals) are
+  always included alongside the newest owner messages; `Ask first` rules always
+  override `Allow automatically`, and critical hazards never offer Always allow.
+  Changed owner evidence, changed approval rules, or queued owner prompts and steers
+  invalidate automatic approval when the evidence is rechecked. When older owner
+  messages do not fit, the reviewer is told and only a step it rates low risk runs.
+  Otherwise a step it rates low or medium risk runs without asking; anything else,
+  and any review that fails or times out, asks the user for that step only. Allow
+  for now grants from Manual do not cover reviewed steps. Clicking Always allow
+  on a non-critical reviewed card shows the exact computer-scoped rule before
+  saving and persists an `Allow automatically` rule for future reviews; critical
+  and failed-review cards never offer Always allow; Allow once and Deny are
+  remembered for the rest of the current turn only. In a connected
   service the reviewer cannot check which page or file an id names, so an edit
   whose content fits the request can run against the wrong one. A mode or working-directory change during review
   blocks execution; file execution rechecks the destination and reviewed
