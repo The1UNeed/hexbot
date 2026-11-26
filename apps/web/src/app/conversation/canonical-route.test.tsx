@@ -1126,3 +1126,113 @@ it('opens a file again in the tab it already has', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Remove clip.mp4' }))
   expect(useVisuals.getState().tabs.filter(tab => tab.title === 'clip.mp4')).toHaveLength(0)
 })
+
+it.each(['resolve', 'reject'] as const)(
+  'direct peer Close Chat yields to a newer navigation while the owner chat lookup is pending (%s)',
+  async outcome => {
+    const lookup = deferred()
+    let holdCreate = false
+    call.mockImplementation((method: string, input: Record<string, unknown> = {}) => {
+      if (method === 'hexbot.sections.open' && input.id === 'peer') {
+        return Promise.resolve({
+          section: section('peer', { peer_bot: 'yak', live_session_id: 'peer-live' }),
+          messages: [{ display_kind: 'hidden', role: 'user', text: '@yak: Check this' }]
+        })
+      }
+
+      if (method === 'hexbot.sections.create' && holdCreate) {
+        return lookup.promise
+      }
+
+      return reply(method, input)
+    })
+
+    const view = await mount('/b/owl/s/peer')
+    expect(await screen.findByText('Check this')).toBeVisible()
+
+    // Ensure no cached owner chat exists so Close Chat has to look it up over RPC.
+    act(() => useSections.setState({ byId: {}, idsByBot: {} }))
+    const createsBefore = calls('hexbot.sections.create').length
+    holdCreate = true
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close Chat' }))
+    await waitFor(() => expect(calls('hexbot.sections.create')).toHaveLength(createsBefore + 1))
+
+    // User switches to a room while the owner-chat lookup is still in flight.
+    await act(async () => {
+      await view.router.navigate({ to: '/r/$room', params: { room: 'garden' } })
+    })
+    expect(view.router.state.location.pathname).toBe('/r/garden')
+
+    // Settling the obsolete Close Chat lookup must not yank the user away from the room.
+    await act(async () => {
+      if (outcome === 'resolve') {
+        lookup.resolve({ section: canonical })
+      } else {
+        lookup.reject(new Error('network lost'))
+      }
+
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(view.router.state.location.pathname).toBe('/r/garden')
+  }
+)
+
+it('direct peer Close Chat does not navigate to / when superseded by a newer bot selection', async () => {
+  const owlLookup = deferred()
+  const yakLookup = deferred()
+  const yakSection = section('yak-chat', { bot: 'yak' })
+  let holdCreate = false
+
+  call.mockImplementation((method: string, input: Record<string, unknown> = {}) => {
+    if (method === 'hexbot.sections.open' && input.id === 'peer') {
+      return Promise.resolve({
+        section: section('peer', { peer_bot: 'yak', live_session_id: 'peer-live' }),
+        messages: [{ display_kind: 'hidden', role: 'user', text: '@yak: Check this' }]
+      })
+    }
+
+    if (method === 'hexbot.sections.create' && holdCreate) {
+      return input.bot === 'owl' ? owlLookup.promise : yakLookup.promise
+    }
+
+    return reply(method, input)
+  })
+
+  const view = await mount('/b/owl/s/peer')
+  expect(await screen.findByText('Check this')).toBeVisible()
+
+  act(() => useSections.setState({ byId: {}, idsByBot: {} }))
+  holdCreate = true
+
+  fireEvent.click(screen.getByRole('button', { name: 'Close Chat' }))
+  await waitFor(() =>
+    expect(calls('hexbot.sections.create').some(([, input]) => input.bot === 'owl')).toBe(true)
+  )
+
+  // Before owl's Close Chat lookup finishes, the user selects another bot whose chat needs a lookup.
+  let yakPromise!: Promise<Section | null>
+  act(() => {
+    yakPromise = selectChat('yak')
+  })
+  await waitFor(() =>
+    expect(calls('hexbot.sections.create').some(([, input]) => input.bot === 'yak')).toBe(true)
+  )
+
+  // owl's superseded lookup returns null in sections.chat() and must NOT navigate to '/'.
+  await act(async () => {
+    owlLookup.resolve({ section: canonical })
+    await Promise.resolve()
+    await Promise.resolve()
+  })
+  expect(view.router.state.location.pathname).toBe('/b/owl/s/peer')
+
+  // The newer roster selection still completes cleanly.
+  let chosen: null | Section = null
+  await act(async () => {
+    yakLookup.resolve({ section: yakSection })
+    chosen = await yakPromise
+  })
+  expect((chosen as null | Section)?.id).toBe('yak-chat')
+})

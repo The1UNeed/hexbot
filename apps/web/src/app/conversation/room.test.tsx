@@ -7,6 +7,7 @@ import { setActiveRpc } from '../../lib/rpc'
 import * as sounds from '../../lib/sounds'
 import type { Bot, Room, RoomEvent, RoomMember } from '../../lib/types'
 import { useBots } from '../../stores/bots'
+import { useConnection } from '../../stores/connection'
 import { useMe } from '../../stores/me'
 import { useRooms } from '../../stores/rooms'
 import {
@@ -179,6 +180,312 @@ describe('reading a room', () => {
     await waitFor(() =>
       expect(call).toHaveBeenCalledWith('hexbot.rooms.mark_read', { id: 'r1', seq: 2 })
     )
+  })
+
+  it('does not mark a room read while a bot-to-bot thread covers it', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const room = { id: 'r1', members: [], name: 'Lab', owner_id: 'local' } as unknown as Room
+
+    const message = (seq: number) =>
+      ({
+        actor_id: 'local',
+        actor_kind: 'human',
+        created_at: seq,
+        kind: 'message.user',
+        payload: { text: `hi ${seq}` },
+        room_id: 'r1',
+        seq
+      }) as RoomEvent
+
+    useRooms.setState({ byId: { r1: room }, eventsByRoom: {}, liveTurnsByRoom: {}, order: ['r1'] })
+
+    let logEvents = [message(1)]
+
+    const call = vi.fn((method: string) =>
+      Promise.resolve(method === 'hexbot.rooms.log' ? { events: logEvents } : { room: { ...room } })
+    )
+
+    setActiveRpc({ call } as never)
+    render(<RoomConversation />)
+    await waitFor(() =>
+      expect(call).toHaveBeenCalledWith('hexbot.rooms.mark_read', { id: 'r1', seq: 1 })
+    )
+
+    await act(async () =>
+      useUi.setState({ thread: { bot: 'writer', peer: 'owl', sectionId: 'th1' } })
+    )
+    // Both a live event AND a reconnect reopen must keep the covered room unread.
+    logEvents = [message(1), message(2)]
+    await act(async () => useConnection.setState({ epoch: 'reconnected-room-test' }))
+
+    for (let flush = 0; flush < 6; flush++) {
+      await act(async () => {})
+    }
+
+    expect(call).not.toHaveBeenCalledWith('hexbot.rooms.mark_read', { id: 'r1', seq: 2 })
+
+    await act(async () => useUi.setState({ thread: null }))
+    await waitFor(() =>
+      expect(call).toHaveBeenCalledWith('hexbot.rooms.mark_read', { id: 'r1', seq: 2 })
+    )
+  })
+
+  it('preserves the asking pill avatar across the real turn(complete) -> message.bot wire sequence', async () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const room = { id: 'r1', members: [], name: 'Lab', owner_id: 'local' } as unknown as Room
+
+    useBots.setState({
+      byName: {
+        owl: { avatar: null, display_name: 'Owl', name: 'owl' } as unknown as Bot,
+        writer: { avatar: null, display_name: 'Writer', name: 'writer' } as unknown as Bot
+      }
+    })
+    useTranscripts.setState({ bySession: {} })
+    useRooms.setState({
+      byId: { r1: room },
+      completingAsksByRoom: {},
+      eventsByRoom: {},
+      liveTurnsByRoom: {},
+      order: ['r1']
+    })
+    useRooms.getState().handleTurn({
+      bot: 'owl',
+      live_session_id: 'live-room-1',
+      room_id: 'r1',
+      status: 'running'
+    })
+
+    const call = vi.fn((method: string) =>
+      Promise.resolve(method === 'hexbot.rooms.log' ? { events: [] } : { room })
+    )
+
+    setActiveRpc({ call } as never)
+    render(<RoomConversation />)
+
+    act(() => {
+      routeEvent({
+        payload: {
+          args: { text: 'FYI', to: 'writer', wait: false },
+          name: 'message_bot',
+          tool_id: 't1'
+        },
+        session_id: 'live-room-1',
+        type: 'tool.start'
+      } as GatewayEvent)
+    })
+
+    const liveRow = await screen.findByTestId('asking-row')
+    expect(liveRow).toHaveTextContent('Messaging Writer')
+    const face = screen.getByRole('img', { name: 'Writer' })
+
+    // Step 1 of the daemon's real wire sequence: hexbot.rooms.turn(complete) arrives BEFORE message.bot.
+    act(() => {
+      routeEvent({
+        payload: {
+          bot: 'owl',
+          live_session_id: 'live-room-1',
+          room_id: 'r1',
+          status: 'complete'
+        },
+        session_id: '',
+        type: 'hexbot.rooms.turn'
+      } as GatewayEvent)
+    })
+    // The ask pill and its avatar stay mounted across the gap.
+    expect(screen.getByRole('img', { name: 'Writer' })).toBe(face)
+
+    // Step 2: settled message.bot lands with persisted waited: 0.
+    act(() => {
+      routeEvent({
+        payload: {
+          event: {
+            actor_id: 'owl',
+            actor_kind: 'bot',
+            created_at: Date.now() / 1000,
+            kind: 'message.bot',
+            payload: {
+              asks: [{ section_id: 'th1', to: 'writer', waited: 0 }],
+              text: 'Sent a note to Writer.'
+            },
+            room_id: 'r1',
+            seq: 1
+          },
+          room_id: 'r1'
+        },
+        session_id: '',
+        type: 'hexbot.rooms.event'
+      } as GatewayEvent)
+    })
+
+    expect(await screen.findByText('Sent a note to Writer.')).toBeVisible()
+    const settledRow = screen.getByTestId('asking-row')
+    expect(settledRow).toHaveTextContent('Messaged Writer')
+    expect(settledRow).not.toHaveClass('hex-ask-enter')
+    // Exact same avatar DOM node survived all three frames without unmounting.
+    expect(screen.getByRole('img', { name: 'Writer' })).toBe(face)
+  })
+
+  it('keeps asks mounted across multi-message room turns and restores failed room asks as Asked', async () => {
+    const room = { id: 'r1', members: [], name: 'Lab', owner_id: 'alice' } as unknown as Room
+    useBots.setState({
+      byName: {
+        owl: { display_name: 'Owl', name: 'owl' } as never,
+        writer: { display_name: 'Writer', name: 'writer' } as never
+      }
+    })
+    useRooms.setState({
+      byId: { r1: room },
+      completingAsksByRoom: {},
+      eventsByRoom: {},
+      liveTurnsByRoom: {},
+      order: ['r1']
+    })
+    useRooms.getState().handleTurn({
+      bot: 'owl',
+      live_session_id: 'live-room-2',
+      room_id: 'r1',
+      status: 'running'
+    })
+
+    const call = vi.fn((method: string) =>
+      Promise.resolve(method === 'hexbot.rooms.log' ? { events: [] } : { room })
+    )
+
+    setActiveRpc({ call } as never)
+    render(<RoomConversation />)
+
+    // First assistant message asks Writer, then fails.
+    act(() => {
+      routeEvent({
+        payload: {
+          args: { text: 'Help?', to: 'writer' },
+          name: 'message_bot',
+          tool_id: 't1'
+        },
+        session_id: 'live-room-2',
+        type: 'tool.start'
+      } as GatewayEvent)
+      routeEvent({
+        payload: {
+          is_error: true,
+          name: 'message_bot',
+          result: { error: 'Timed out' },
+          tool_id: 't1'
+        },
+        session_id: 'live-room-2',
+        type: 'tool.complete'
+      } as GatewayEvent)
+      // A second assistant message starts in the same room turn (e.g. after a card).
+      routeEvent({
+        payload: {},
+        session_id: 'live-room-2',
+        type: 'message.start'
+      } as GatewayEvent)
+      routeEvent({
+        payload: { text: 'Proceeding without Writer.' },
+        session_id: 'live-room-2',
+        type: 'message.delta'
+      } as GatewayEvent)
+    })
+
+    // First message's ask stays mounted even after a second assistant message opens.
+    const liveRow = await screen.findByTestId('asking-row')
+    expect(liveRow).toHaveTextContent('Asked Writer')
+    const face = screen.getByRole('img', { name: 'Writer' })
+
+    act(() => {
+      routeEvent({
+        payload: {
+          bot: 'owl',
+          live_session_id: 'live-room-2',
+          room_id: 'r1',
+          status: 'complete'
+        },
+        session_id: '',
+        type: 'hexbot.rooms.turn'
+      } as GatewayEvent)
+    })
+    expect(screen.getByRole('img', { name: 'Writer' })).toBe(face)
+    expect(screen.getByTestId('asking-row')).toHaveTextContent('Asked Writer')
+
+    act(() => {
+      routeEvent({
+        payload: {
+          event: {
+            actor_id: 'owl',
+            actor_kind: 'bot',
+            created_at: Date.now() / 1000,
+            kind: 'message.bot',
+            payload: {
+              asks: [{ failed: 1, section_id: 'th-w', to: 'writer', waited: 0 }],
+              text: 'Proceeding without Writer.'
+            },
+            room_id: 'r1',
+            seq: 1
+          },
+          room_id: 'r1'
+        },
+        session_id: '',
+        type: 'hexbot.rooms.event'
+      } as GatewayEvent)
+    })
+
+    expect(await screen.findByText('Proceeding without Writer.')).toBeVisible()
+    expect(screen.getByTestId('asking-row')).toHaveTextContent('Asked Writer')
+    expect(screen.getByRole('img', { name: 'Writer' })).toBe(face)
+  })
+
+  it('does not hold a ghost completing ask when a room turn ends with interim plus (pass) or empty final text', () => {
+    const room = { id: 'r1', members: [], name: 'Lab', owner_id: 'alice' } as unknown as Room
+    useRooms.setState({
+      byId: { r1: room },
+      completingAsksByRoom: {},
+      eventsByRoom: {},
+      liveTurnsByRoom: {},
+      order: ['r1']
+    })
+
+    for (const [sessionId, finalText] of [
+      ['live-pass', '(pass)'],
+      ['live-empty', '']
+    ] as const) {
+      useRooms.getState().handleTurn({
+        bot: 'owl',
+        live_session_id: sessionId,
+        room_id: 'r1',
+        status: 'running'
+      })
+      routeEvent({
+        payload: { text: 'I will check first.' },
+        session_id: sessionId,
+        type: 'message.interim'
+      } as GatewayEvent)
+      routeEvent({
+        payload: { args: { text: 'Check', to: 'writer' }, name: 'message_bot', tool_id: 't1' },
+        session_id: sessionId,
+        type: 'tool.start'
+      } as GatewayEvent)
+      routeEvent({
+        payload: {
+          name: 'message_bot',
+          result: { details: { reply: 'No need', section_id: 'th-w' } },
+          tool_id: 't1'
+        },
+        session_id: sessionId,
+        type: 'tool.complete'
+      } as GatewayEvent)
+      routeEvent({
+        payload: { text: finalText },
+        session_id: sessionId,
+        type: 'message.complete'
+      } as GatewayEvent)
+      routeEvent({
+        payload: { bot: 'owl', live_session_id: sessionId, room_id: 'r1', status: 'complete' },
+        session_id: '',
+        type: 'hexbot.rooms.turn'
+      } as GatewayEvent)
+      expect(useRooms.getState().completingAsksByRoom.r1?.owl).toBeUndefined()
+    }
   })
 })
 

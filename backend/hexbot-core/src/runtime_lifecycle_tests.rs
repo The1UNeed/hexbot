@@ -3532,7 +3532,9 @@ async fn bot_message_hops_count_per_turn_and_follow_the_chain() {
     open(&runtime).await;
     let owl = runtime.sessions.lock().unwrap()["first"].clone();
     for _ in 0..MAX_HOPS {
-        let (stored, _, chain) = runtime.prepare_delivery(&owl, "cat", "hello").unwrap();
+        let (stored, _, chain) = runtime
+            .prepare_delivery(&owl, "cat", "hello", true)
+            .unwrap();
         runtime
             .deliver_message(&owl, "cat", "hello", &stored, chain)
             .await
@@ -3540,7 +3542,7 @@ async fn bot_message_hops_count_per_turn_and_follow_the_chain() {
     }
     assert_eq!(
         runtime
-            .prepare_delivery(&owl, "cat", "one too many")
+            .prepare_delivery(&owl, "cat", "one too many", true)
             .unwrap_err()
             .code,
         4240
@@ -3561,7 +3563,7 @@ async fn bot_message_hops_count_per_turn_and_follow_the_chain() {
     }
     assert_eq!(
         runtime
-            .prepare_delivery(&cat, "fox", "onward")
+            .prepare_delivery(&cat, "fox", "onward", true)
             .unwrap_err()
             .code,
         4240
@@ -3575,7 +3577,9 @@ async fn bot_message_hops_count_per_turn_and_follow_the_chain() {
         &owl.state.lock().unwrap().chain.hops,
         &cat.state.lock().unwrap().chain.hops
     ));
-    let (stored, _, chain) = runtime.prepare_delivery(&owl, "cat", "hello").unwrap();
+    let (stored, _, chain) = runtime
+        .prepare_delivery(&owl, "cat", "hello", true)
+        .unwrap();
     runtime
         .deliver_message(&owl, "cat", "hello", &stored, chain)
         .await
@@ -3609,19 +3613,23 @@ async fn a_bot_cannot_hand_a_request_back_up_the_chain() {
             .cloned()
             .unwrap()
     };
-    let (stored, _, chain) = runtime.prepare_delivery(&owl, "cat", "research").unwrap();
+    let (stored, _, chain) = runtime
+        .prepare_delivery(&owl, "cat", "research", true)
+        .unwrap();
     runtime
         .deliver_message(&owl, "cat", "research", &stored, chain)
         .await
         .unwrap();
     let cat = live("cat");
     let error = runtime
-        .prepare_delivery(&cat, "owl", "research")
+        .prepare_delivery(&cat, "owl", "research", true)
         .unwrap_err();
     assert_eq!(error.code, 4202);
     assert!(error.message.starts_with("owl is waiting on this request."));
     // Asking a bot outside the chain is still fine, and the chain grows with it.
-    let (stored, _, chain) = runtime.prepare_delivery(&cat, "fox", "a detail").unwrap();
+    let (stored, _, chain) = runtime
+        .prepare_delivery(&cat, "fox", "a detail", true)
+        .unwrap();
     runtime
         .deliver_message(&cat, "fox", "a detail", &stored, chain)
         .await
@@ -3630,14 +3638,16 @@ async fn a_bot_cannot_hand_a_request_back_up_the_chain() {
     for upstream in ["owl", "cat"] {
         assert_eq!(
             runtime
-                .prepare_delivery(&fox, upstream, "over to you")
+                .prepare_delivery(&fox, upstream, "over to you", true)
                 .unwrap_err()
                 .code,
             4202
         );
     }
     // The bot that started the chain can still ask again.
-    runtime.prepare_delivery(&owl, "cat", "one more").unwrap();
+    runtime
+        .prepare_delivery(&owl, "cat", "one more", true)
+        .unwrap();
     runtime.shutdown().await;
 }
 
@@ -4985,7 +4995,7 @@ async fn concurrent_deliveries_reserve_writes_before_reading_the_target_section(
             .map(|_| {
                 scope.spawn(|| {
                     barrier.wait();
-                    runtime.record_delivery(&s, "cat", "hello").unwrap().0
+                    runtime.record_delivery(&s, "cat", "hello", true).unwrap().0
                 })
             })
             .collect();
@@ -5627,7 +5637,10 @@ async fn message_bot_checks_teammates_reuses_threads_and_returns_section_ids() {
     }));
     assert_eq!(tool_context("message_bot", &json!({"to":"cat"})), "cat");
     let cat = runtime.sessions.lock().unwrap()[id].clone();
-    let reverse = runtime.record_delivery(&cat, "owl", "Reply").unwrap().0;
+    let reverse = runtime
+        .record_delivery(&cat, "owl", "Reply", true)
+        .unwrap()
+        .0;
     assert_ne!(reverse, id);
     assert_eq!(
         crate::catalog::section(h, "alice", &reverse).unwrap()["peer_bot"],
@@ -5639,12 +5652,18 @@ async fn message_bot_checks_teammates_reuses_threads_and_returns_section_ids() {
         .unwrap()
         .execute_batch("UPDATE bots SET display_name='New Owl' WHERE name='owl';")
         .unwrap();
-    assert_eq!(runtime.record_delivery(&s, "cat", "Again").unwrap().0, id);
+    assert_eq!(
+        runtime.record_delivery(&s, "cat", "Again", true).unwrap().0,
+        id
+    );
     db::open(h)
         .unwrap()
         .execute("UPDATE sections SET archived_at=1 WHERE id=?", [id])
         .unwrap();
-    let next = runtime.record_delivery(&s, "cat", "New thread").unwrap().0;
+    let next = runtime
+        .record_delivery(&s, "cat", "New thread", true)
+        .unwrap()
+        .0;
     assert_ne!(next, id);
     assert_eq!(
         crate::catalog::section(h, "alice", &next).unwrap()["title"],

@@ -1,6 +1,6 @@
 import { useParams } from '@tanstack/react-router'
 import { PanelLeft } from 'lucide-react'
-import { type CSSProperties, type ReactNode, useEffect, useState } from 'react'
+import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from 'react'
 
 import { HexbotMark } from '../components/ui/wordmark'
 import { cn } from '../lib/cn'
@@ -10,14 +10,15 @@ import { searchActions, useSearch } from '../stores/search'
 import { useUi } from '../stores/ui'
 import { useVisuals, visualsActions } from '../stores/visuals'
 
+import { ThreadView } from './conversation/thread-view'
 import { VisualPanel } from './conversation/visual-frame'
 import { RoomSearchPanel } from './panel/search-panel'
-import { ThreadPanel } from './panel/thread'
 import { ConversationColumn, ProfilePanel, RosterColumn } from './slots'
 
-/** The canvas gutter between the cards, and the panel's exit time in ms. */
+/** The canvas gutter between the cards, and the exit times in ms. */
 const GUTTER = 8
 const PANEL_MOTION = 240
+const THREAD_MOTION = 200
 
 // Panels float over the chat on narrow windows and on a half-open foldable,
 // where the fold rules in tokens.css hide the panel column.
@@ -74,18 +75,74 @@ function Shell({ children }: { children?: ReactNode }) {
   const panelOpen = useUi(state => state.rightPanelOpen)
   const togglePanel = useUi(state => state.toggleRightPanel)
   const thread = useUi(state => state.thread)
+  const peerRoute = useUi(state => Boolean(state.peerRoute))
   const closeThread = useUi(state => state.closeThread)
   const [compact, setCompact] = useState(() => window.matchMedia(COMPACT).matches)
   const params = useParams({ strict: false }) as { bot?: string; room?: string; section?: string }
   const roomMode = Boolean(params.room)
-  // The thread panel takes the same slot as the profile, in rooms too, and goes first.
+  // A bot-to-bot thread opens full-view over the main card, tucking the side panel away.
   const showThread = Boolean(thread) && !children
   // Visuals opened beside the chat take the slot first, wider, as tabs.
   const showVisuals = useVisuals(state => state.tabs.length > 0) && !children
   // A room has no profile panel; its slot opens for search alone.
   const showSearch = useSearch(state => state.open) && roomMode && !children
-  const showPanel = showVisuals || showThread || showSearch || (panelOpen && !roomMode && !children)
+
+  const showPanel =
+    showVisuals ||
+    (!showThread && !peerRoute && (showSearch || (panelOpen && !roomMode && !children)))
+
   const width = showVisuals ? visualsWidth : panelWidth
+
+  // Keep a closing thread mounted briefly so it can animate out cleanly.
+  const [closingThread, setClosingThread] = useState(showThread ? thread : null)
+  const activeThread = showThread ? thread : closingThread
+  const threadContainer = useRef<HTMLDivElement>(null)
+  const opener = useRef<HTMLElement | null>(null)
+  const wasThreadOpen = useRef(showThread)
+
+  useEffect(() => {
+    if (showThread && !wasThreadOpen.current) {
+      opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+
+      const target =
+        threadContainer.current?.querySelector<HTMLElement>('[data-testid="thread-view"]') ??
+        threadContainer.current
+
+      target?.focus({ preventScroll: true })
+    } else if (!showThread && wasThreadOpen.current) {
+      const currentFocus = document.activeElement
+
+      const focusWasInThread =
+        currentFocus === document.body ||
+        currentFocus === null ||
+        Boolean(threadContainer.current?.contains(currentFocus))
+
+      if (
+        focusWasInThread &&
+        opener.current &&
+        opener.current.isConnected &&
+        !opener.current.closest('[inert]')
+      ) {
+        opener.current.focus({ preventScroll: true })
+      }
+
+      opener.current = null
+    }
+
+    wasThreadOpen.current = showThread
+  }, [showThread])
+
+  useEffect(() => {
+    if (showThread && thread) {
+      setClosingThread(thread)
+
+      return
+    }
+
+    const timer = window.setTimeout(() => setClosingThread(null), THREAD_MOTION)
+
+    return () => window.clearTimeout(timer)
+  }, [showThread, thread])
 
   // The panel stays in the tree for one beat after it closes, so it can slide
   // out while its column shrinks instead of vanishing.
@@ -121,20 +178,15 @@ function Shell({ children }: { children?: ReactNode }) {
   }, [togglePanel])
 
   useEffect(() => setMobileRosterOpen(false), [params.bot, params.room, params.section])
-  // A thread belongs to the chat it was opened from; leaving that chat closes it.
-  useEffect(() => closeThread(), [closeThread, params.bot, params.room, params.section])
+  // A thread belongs to the chat it was opened from; leaving that chat closes it at once.
+  useEffect(() => {
+    closeThread()
+    setClosingThread(null)
+  }, [closeThread, params.bot, params.room, params.section])
   useEffect(() => visualsActions().closeAll(), [params.bot, params.room, params.section])
   useEffect(() => searchActions().reset(), [params.bot, params.room, params.section])
 
-  const panel = showVisuals ? (
-    <VisualPanel />
-  ) : thread && showThread ? (
-    <ThreadPanel key={`${thread.bot}/${thread.peer}`} thread={thread} />
-  ) : roomMode ? (
-    <RoomSearchPanel />
-  ) : (
-    <ProfilePanel />
-  )
+  const panel = showVisuals ? <VisualPanel /> : roomMode ? <RoomSearchPanel /> : <ProfilePanel />
 
   const resize = (side: 'left' | 'right', start: number) => (event: React.PointerEvent) => {
     event.currentTarget.setPointerCapture(event.pointerId)
@@ -218,6 +270,16 @@ function Shell({ children }: { children?: ReactNode }) {
             : 'max-[700px]:invisible max-[700px]:-translate-x-full'
         )}
         data-testid="app-roster"
+        onClick={event => {
+          if (
+            mobileRosterOpen &&
+            (event.target as HTMLElement).closest(
+              '[data-roster-id], [data-testid="roster-waiting"] button'
+            )
+          ) {
+            setMobileRosterOpen(false)
+          }
+        }}
       >
         <RosterColumn />
       </aside>
@@ -229,14 +291,38 @@ function Shell({ children }: { children?: ReactNode }) {
       >
         <span className={handleLine} />
       </div>
-      <section className={cn(card, 'hex-shell-main bg-background shadow-card')}>
-        {children ?? <ConversationColumn />}
+      <section className={cn(card, 'hex-shell-main relative bg-background shadow-card')}>
+        <div
+          aria-hidden={showThread || undefined}
+          className="h-full"
+          inert={showThread || undefined}
+        >
+          {children ?? <ConversationColumn />}
+        </div>
+        {activeThread && !children ? (
+          <div
+            aria-hidden={!showThread || undefined}
+            className={cn(
+              'absolute inset-0 z-30 overflow-hidden bg-background focus:outline-none',
+              showThread ? 'hex-thread-in' : 'hex-thread-out'
+            )}
+            inert={!showThread || undefined}
+            ref={threadContainer}
+            tabIndex={-1}
+          >
+            <ThreadView
+              active={showThread}
+              key={`${activeThread.bot}/${activeThread.peer}`}
+              thread={activeThread}
+            />
+          </div>
+        ) : null}
       </section>
       <div className="hex-shell-track relative flex min-w-0 justify-end overflow-hidden max-[700px]:hidden">
         {panelMounted && !compact ? (
           <>
             <div
-              aria-label={showThread ? 'Resize conversation' : 'Resize profile'}
+              aria-label="Resize profile"
               className={cn(handle, 'absolute inset-y-0 left-[5px] z-10')}
               onPointerDown={event => resize('right', event.clientX)(event)}
               role="separator"
@@ -244,11 +330,13 @@ function Shell({ children }: { children?: ReactNode }) {
               <span className={handleLine} />
             </div>
             <aside
+              aria-hidden={!showPanel || undefined}
               className={cn(
                 card,
                 'hex-glass-strong mr-2 ml-2 shrink-0 transition-opacity duration-[var(--hex-motion-panel)]',
                 showPanel ? 'opacity-100' : 'opacity-0'
               )}
+              inert={!showPanel || undefined}
               style={{ width }}
             >
               {panel}
@@ -258,12 +346,14 @@ function Shell({ children }: { children?: ReactNode }) {
       </div>
       {panelMounted && compact ? (
         <aside
+          aria-hidden={!showPanel || undefined}
           className={cn(
             card,
             'hex-shell-panel hex-glass-strong fixed inset-y-2 right-2 z-40 max-[700px]:inset-y-2 max-[700px]:rounded-[22px]',
             showVisuals ? 'w-[min(92vw,600px)]' : 'w-[min(92vw,360px)]',
             showPanel ? 'hex-slide-in' : 'hex-slide-out'
           )}
+          inert={!showPanel || undefined}
         >
           {panel}
         </aside>

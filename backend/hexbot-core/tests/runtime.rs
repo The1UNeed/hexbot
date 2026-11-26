@@ -41,8 +41,8 @@ const rl=require('node:readline').createInterface({input:process.stdin});
 const emit=v=>process.stdout.write(JSON.stringify(v)+'\n');
 let pending;
 function complete(text){emit({type:'message_update',assistantMessageEvent:{type:'text_delta',delta:text}});emit({type:'message_end',message:{role:'assistant',content:[{type:'text',text}],model:'test-model',provider:'test',usage:{input:11,output:4,cacheRead:2,cacheWrite:0,cost:{total:.01}},stopReason:'stop'}});emit({type:'agent_end'});emit({type:'agent_settled'});}
-rl.on('line',line=>{const c=JSON.parse(line);if(c.type==='extension_ui_response'){complete(c.value==='deny'?'Denied':'Approved');return;}emit({type:'response',id:c.id,command:c.type,success:true,data:c.type==='get_available_models'?{models:[{id:'test-model',provider:'test'},{id:'costly',provider:'test',cost:{input:21,output:101}}]}:{}});
-if(c.type==='prompt'){emit({type:'agent_start'});emit({type:'message_end',message:{role:'user',content:c.message}});if(c.message==='approval'){emit({type:'extension_ui_request',id:'approval-1',method:'select',title:'__HEXBOT_APPROVAL__'+JSON.stringify({tool:'bash',command:'pwd',reason:'Run command'}),options:['once','session','deny']});}else if(c.message==='batch'){emit({type:'extension_ui_request',id:'batch-1',method:'input',title:'__HEXBOT_CLARIFY__'+JSON.stringify({questions:[{qid:'color',question:'Color?',choices:['red','blue']},{qid:'shape',question:'Shape?'}]})});}else if(c.message==='waiting'){}else if(c.message==='computer'){emit({type:'tool_execution_start',toolCallId:'computer-1',toolName:'computer_use',args:{action:'screenshot'}});}else if(c.message==='streaming'){pending='streaming';}else if(c.message==='fail'){emit({type:'message_end',message:{role:'assistant',content:[],model:'test-model',provider:'test',stopReason:'error',errorMessage:'Provider down'}});emit({type:'agent_end'});emit({type:'agent_settled'});}else complete('Reply: '+c.message);}
+rl.on('line',line=>{const c=JSON.parse(line);if(c.type==='extension_ui_response'){if(c.id==='approval-stay-1'){return;}if(c.id==='host-reject-1'){const parsed=JSON.parse(c.value||'{}');emit({type:'tool_execution_end',toolCallId:'call_0',toolName:'computer_use',result:{content:[{type:'text',text:parsed.error||'rejected'}]},isError:true});return;}if(c.id==='vm-a-1'){emit({type:'tool_execution_end',toolCallId:'call_a',toolName:'computer_use',result:{content:[]}});return;}complete(c.value==='deny'?'Denied':'Approved');return;}emit({type:'response',id:c.id,command:c.type,success:true,data:c.type==='get_available_models'?{models:[{id:'test-model',provider:'test'},{id:'costly',provider:'test',cost:{input:21,output:101}}]}:{}});
+if(c.type==='prompt'){emit({type:'agent_start'});emit({type:'message_end',message:{role:'user',content:c.message}});if(c.message==='approval'){emit({type:'extension_ui_request',id:'approval-1',method:'select',title:'__HEXBOT_APPROVAL__'+JSON.stringify({tool:'bash',command:'pwd',reason:'Run command'}),options:['once','session','deny']});}else if(c.message==='approval-stay'){emit({type:'extension_ui_request',id:'approval-stay-1',method:'select',title:'__HEXBOT_APPROVAL__'+JSON.stringify({tool:'bash',command:'pwd',reason:'Run command'}),options:['once','deny']});}else if(c.message==='batch'){emit({type:'extension_ui_request',id:'batch-1',method:'input',title:'__HEXBOT_CLARIFY__'+JSON.stringify({questions:[{qid:'color',question:'Color?',choices:['red','blue']},{qid:'shape',question:'Shape?'}]})});}else if(c.message==='waiting'){}else if(c.message==='computer'){emit({type:'tool_execution_start',toolCallId:'computer-1',toolName:'computer_use',args:{action:'screenshot'}});}else if(c.message==='computer-finish'){emit({type:'tool_execution_start',toolCallId:'computer-fin-1',toolName:'computer_use',args:{action:'screenshot'}});const fs=require('node:fs');const marker=require('node:path').join(__dirname,'finish-computer');const t=setInterval(()=>{if(fs.existsSync(marker)){clearInterval(t);emit({type:'tool_execution_end',toolCallId:'computer-fin-1',toolName:'computer_use',result:{content:[]}});}},10);t.unref();}else if(c.message==='computer-collide'){emit({type:'tool_execution_start',toolCallId:'call_0',toolName:'computer_use',args:{action:'screenshot'}});emit({type:'tool_execution_start',toolCallId:'call_0',toolName:'web_search',args:{query:'mitosis'}});emit({type:'tool_execution_end',toolCallId:'call_0',toolName:'web_search',result:{content:[{type:'text',text:'done'}]}});const fs=require('node:fs');const marker=require('node:path').join(__dirname,'finish-computer-collide');const t=setInterval(()=>{if(fs.existsSync(marker)){clearInterval(t);emit({type:'tool_execution_end',toolCallId:'call_0',toolName:'computer_use',result:{content:[]}});}},10);t.unref();}else if(c.message==='computer-vm-then-host'){emit({type:'tool_execution_start',toolCallId:'call_0',toolName:'computer_use',args:{action:'screenshot'}});emit({type:'tool_execution_start',toolCallId:'call_0',toolName:'computer_use',args:{action:'screenshot',computer:'host'}});const fs=require('node:fs');const marker=require('node:path').join(__dirname,'finish-vm-first');const t=setInterval(()=>{if(fs.existsSync(marker)){clearInterval(t);emit({type:'tool_execution_end',toolCallId:'call_0',toolName:'computer_use',result:{content:[]}});}},10);t.unref();}else if(c.message==='computer-vm-host-reject'){emit({type:'tool_execution_start',toolCallId:'call_0',toolName:'computer_use',args:{action:'screenshot'}});emit({type:'tool_execution_start',toolCallId:'call_0',toolName:'computer_use',args:{action:'screenshot',computer:'host'}});emit({type:'extension_ui_request',id:'host-reject-1',method:'input',title:'__HEXBOT_TOOL__'+JSON.stringify({name:'computer_use',id:'call_0',args:{action:'screenshot',computer:'host'}})});const fs=require('node:fs');const marker=require('node:path').join(__dirname,'finish-vm-after-reject');const t=setInterval(()=>{if(fs.existsSync(marker)){clearInterval(t);emit({type:'tool_execution_end',toolCallId:'call_0',toolName:'computer_use',result:{content:[]}});}},10);t.unref();}else if(c.message==='computer-two-vm'){emit({type:'tool_execution_start',toolCallId:'call_b',toolName:'computer_use',args:{action:'screenshot'}});emit({type:'tool_execution_start',toolCallId:'call_a',toolName:'computer_use',args:{action:'screenshot'}});emit({type:'extension_ui_request',id:'vm-a-1',method:'input',title:'__HEXBOT_TOOL__'+JSON.stringify({name:'computer_use',id:'call_a',args:{action:'screenshot'}})});const fs=require('node:fs');const marker=require('node:path').join(__dirname,'finish-vm-b');const t=setInterval(()=>{if(fs.existsSync(marker)){clearInterval(t);emit({type:'tool_execution_end',toolCallId:'call_b',toolName:'computer_use',result:{content:[]}});}},10);t.unref();}else if(c.message==='computer-host'){emit({type:'tool_execution_start',toolCallId:'computer-host-1',toolName:'computer_use',args:{action:'screenshot',computer:'host'}});}else if(c.message==='streaming'){pending='streaming';}else if(c.message==='fail'){emit({type:'message_end',message:{role:'assistant',content:[],model:'test-model',provider:'test',stopReason:'error',errorMessage:'Provider down'}});emit({type:'agent_end'});emit({type:'agent_settled'});}else complete('Reply: '+c.message);}
 if(c.type==='abort'){if(pending==='streaming'){pending=undefined;emit({type:'message_end',message:{role:'assistant',content:[],model:'test-model',provider:'test',stopReason:'aborted'}});}emit({type:'agent_settled'});}
 });
 "##).unwrap();
@@ -1835,12 +1835,329 @@ async fn background_runs_do_not_mark_the_bot_working() {
     runtime.shutdown().await;
     let _ = (job.await, asking.await);
 }
+/// A bot answering another bot in a private thread works quietly behind the
+/// scenes like a dream or heartbeat: its roster row stays idle unless it needs
+/// the user's input or approval.
+#[tokio::test]
+async fn peer_threads_do_not_mark_the_bot_working() {
+    let home = setup();
+    db::open(home.path())
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO bots(name,owner_id) VALUES('fox','alice'); \
+             INSERT INTO sections(id,bot,owner_id,title,peer_bot) VALUES('thread-1','owl','alice','From Fox','fox'); \
+             INSERT INTO sections(id,bot,owner_id,title,peer_bot) VALUES('thread-2','owl','alice','From Fox','fox');",
+        )
+        .unwrap();
+    let hub = EventHub::new();
+    let mut events = hub.subscribe();
+    let runtime = Runtime::new(home.path().into(), hub, fake_pi(home.path())).unwrap();
+    let reply = {
+        let runtime = runtime.clone();
+        tokio::spawn(async move {
+            runtime
+                .run_hidden_job("alice", "owl", "thread-1", "waiting", &json!({}))
+                .await
+        })
+    };
+    next_kind(&mut events, "message.start").await;
+    // Once the hidden peer question is persisted, open viewers receive reload: true while the reply is still running.
+    let reload = next_kind(&mut events, "hexbot.sections.changed").await;
+    assert_eq!(reload["payload"]["id"], "thread-1");
+    assert_eq!(reload["payload"]["reload"], true);
+    let opened = runtime
+        .call("alice", "hexbot.sections.open", &json!({"id": "thread-1"}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(opened["messages"][0]["text"], "waiting");
+    assert_eq!(opened["messages"][0]["display_kind"], "hidden");
+    assert!(
+        runtime
+            .busy_sections("owl")
+            .iter()
+            .any(|s| s["id"] == "thread-1")
+    );
+    assert!(runtime.status_for_bot("alice", "owl").is_none());
+    let asking = {
+        let runtime = runtime.clone();
+        tokio::spawn(async move {
+            runtime
+                .run_hidden_job("alice", "owl", "thread-2", "approval-stay", &json!({}))
+                .await
+        })
+    };
+    let req = next_kind(&mut events, "approval.request").await;
+    let status = runtime.status_for_bot("alice", "owl").unwrap();
+    assert_eq!(status["status"], "needs_you");
+    assert_eq!(status["status_detail"]["section_id"], "thread-2");
+    assert_eq!(status["status_detail"]["peer_bot"], "fox");
+    // Answering the approval returns the busy peer thread back to quiet background work.
+    runtime
+        .call(
+            "alice",
+            "approval.respond",
+            &json!({
+                "session_id": req["session_id"],
+                "request_id": "approval-stay-1",
+                "choice": "once"
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    next_kind(&mut events, "approval.resolved").await;
+    assert!(
+        runtime
+            .busy_sections("owl")
+            .iter()
+            .any(|s| s["id"] == "thread-2")
+    );
+    assert!(runtime.status_for_bot("alice", "owl").is_none());
+    // Meanwhile a concurrent prompt in the bot's own chat still marks it working.
+    let live = open(&runtime, "alice").await["section"]["live_session_id"].clone();
+    runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id": live, "text": "waiting"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    next_kind(&mut events, "message.start").await;
+    let own = runtime.status_for_bot("alice", "owl").unwrap();
+    assert_eq!(own["status"], "working");
+    assert_eq!(own["status_detail"]["section_id"], "section-a");
+    runtime.shutdown().await;
+    let _ = (reply.await, asking.await);
+}
+/// A peer thread acting on the host desktop, without a VM desktop grant, or
+/// after its VM desktop grant was revoked does not claim the shared bots'
+/// computer; a granted VM action marks it working only while the call runs.
+#[tokio::test]
+async fn peer_thread_computer_use_only_marks_working_for_vm() {
+    let home = setup();
+    db::open(home.path())
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO bots(name,owner_id) VALUES('fox','alice'); \
+             INSERT INTO sections(id,bot,owner_id,title,peer_bot) VALUES('thread-denied','owl','alice','From Fox','fox'); \
+             INSERT INTO sections(id,bot,owner_id,title,peer_bot) VALUES('thread-revoked','owl','alice','From Fox','fox'); \
+             INSERT INTO sections(id,bot,owner_id,title,peer_bot) VALUES('thread-host','owl','alice','From Fox','fox'); \
+             INSERT INTO sections(id,bot,owner_id,title,peer_bot) VALUES('thread-vm','owl','alice','From Fox','fox'); \
+             INSERT INTO sections(id,bot,owner_id,title,peer_bot) VALUES('thread-collide','owl','alice','From Fox','fox'); \
+             INSERT INTO sections(id,bot,owner_id,title,peer_bot) VALUES('thread-vm-host','owl','alice','From Fox','fox'); \
+             INSERT INTO sections(id,bot,owner_id,title,peer_bot) VALUES('thread-vm-reject','owl','alice','From Fox','fox'); \
+             INSERT INTO sections(id,bot,owner_id,title,peer_bot) VALUES('thread-two-vm','owl','alice','From Fox','fox');",
+        )
+        .unwrap();
+    runtime_store::open(home.path())
+        .unwrap()
+        .execute_batch(
+            r#"INSERT INTO native_sessions(stored_id,owner,bot,prompt,options) VALUES
+             ('thread-denied','alice','owl','','{"provider":"openai","model":"test-model","tools":[],"computers":[]}'),
+             ('thread-revoked','alice','owl','','{"provider":"openai","model":"test-model","tools":[],"computers":[{"id":"vm","desktop":true}]}'),
+             ('thread-host','alice','owl','','{"provider":"openai","model":"test-model","tools":[],"computers":[{"id":"vm","desktop":true},{"id":"host","desktop":true}]}'),
+             ('thread-vm','alice','owl','','{"provider":"openai","model":"test-model","tools":[],"computers":[{"id":"vm","desktop":true},{"id":"host","desktop":true}]}'),
+             ('thread-collide','alice','owl','','{"provider":"openai","model":"test-model","tools":[],"computers":[{"id":"vm","desktop":true},{"id":"host","desktop":true}]}'),
+             ('thread-vm-host','alice','owl','','{"provider":"openai","model":"test-model","tools":[],"computers":[{"id":"vm","desktop":true},{"id":"host","desktop":true}]}'),
+             ('thread-vm-reject','alice','owl','','{"provider":"openai","model":"test-model","tools":[],"computers":[{"id":"vm","desktop":true}]}'),
+             ('thread-two-vm','alice','owl','','{"provider":"openai","model":"test-model","tools":[],"computers":[{"id":"vm","desktop":true}]}');"#,
+        )
+        .unwrap();
+    // Revoke owl's current VM desktop grant even though thread-revoked froze it earlier.
+    fs::write(
+        home.path().join("config.yaml"),
+        "computers:\n  vm:\n    terminal: []\n  computer_use: []\n",
+    )
+    .unwrap();
+    let hub = EventHub::new();
+    let mut events = hub.subscribe();
+    let runtime = Runtime::new(home.path().into(), hub, fake_pi(home.path())).unwrap();
+    let denied_run = {
+        let runtime = runtime.clone();
+        tokio::spawn(async move {
+            runtime
+                .run_hidden_job("alice", "owl", "thread-denied", "computer", &json!({}))
+                .await
+        })
+    };
+    next_kind(&mut events, "tool.start").await;
+    assert!(runtime.status_for_bot("alice", "owl").is_none());
+    let revoked_run = {
+        let runtime = runtime.clone();
+        tokio::spawn(async move {
+            runtime
+                .run_hidden_job("alice", "owl", "thread-revoked", "computer", &json!({}))
+                .await
+        })
+    };
+    next_kind(&mut events, "tool.start").await;
+    assert!(runtime.status_for_bot("alice", "owl").is_none());
+    // Grant owl VM desktop access now; host desktop still stays quiet, VM marks working while active.
+    fs::write(
+        home.path().join("config.yaml"),
+        "computers:\n  vm:\n    terminal:\n      - owl\n  computer_use:\n    - owl\n",
+    )
+    .unwrap();
+    let host_run = {
+        let runtime = runtime.clone();
+        tokio::spawn(async move {
+            runtime
+                .run_hidden_job("alice", "owl", "thread-host", "computer-host", &json!({}))
+                .await
+        })
+    };
+    next_kind(&mut events, "tool.start").await;
+    assert!(runtime.status_for_bot("alice", "owl").is_none());
+    let vm_run = {
+        let runtime = runtime.clone();
+        tokio::spawn(async move {
+            runtime
+                .run_hidden_job("alice", "owl", "thread-vm", "computer-finish", &json!({}))
+                .await
+        })
+    };
+    next_kind(&mut events, "tool.start").await;
+    assert_eq!(
+        next_kind(&mut events, "hexbot.bots.changed").await["payload"]["name"],
+        "owl"
+    );
+    let status = runtime.status_for_bot("alice", "owl").unwrap();
+    assert_eq!(status["status"], "working");
+    assert_eq!(status["status_detail"]["text"], "Using the computer");
+    // Once the computer_use tool ends, the peer bot returns to quiet even while its turn continues.
+    fs::write(home.path().join("finish-computer"), "").unwrap();
+    next_kind(&mut events, "tool.complete").await;
+    assert_eq!(
+        next_kind(&mut events, "hexbot.bots.changed").await["payload"]["name"],
+        "owl"
+    );
+    assert!(runtime.status_for_bot("alice", "owl").is_none());
+    assert!(
+        runtime
+            .busy_sections("owl")
+            .iter()
+            .any(|s| s["id"] == "thread-vm")
+    );
+    // An unrelated tool sharing `call_0` completing before `computer_use` must not clear VM status.
+    let collide_run = {
+        let runtime = runtime.clone();
+        tokio::spawn(async move {
+            runtime
+                .run_hidden_job(
+                    "alice",
+                    "owl",
+                    "thread-collide",
+                    "computer-collide",
+                    &json!({}),
+                )
+                .await
+        })
+    };
+    next_kind(&mut events, "tool.complete").await;
+    let still_working = runtime.status_for_bot("alice", "owl").unwrap();
+    assert_eq!(still_working["status"], "working");
+    assert_eq!(still_working["status_detail"]["text"], "Using the computer");
+    fs::write(home.path().join("finish-computer-collide"), "").unwrap();
+    next_kind(&mut events, "tool.complete").await;
+    assert!(runtime.status_for_bot("alice", "owl").is_none());
+    // Overlapping VM + host `computer_use` calls sharing `call_0`: finishing VM first clears
+    // "Using the computer" immediately even while the host call remains active.
+    let vm_host_run = {
+        let runtime = runtime.clone();
+        tokio::spawn(async move {
+            runtime
+                .run_hidden_job(
+                    "alice",
+                    "owl",
+                    "thread-vm-host",
+                    "computer-vm-then-host",
+                    &json!({}),
+                )
+                .await
+        })
+    };
+    next_kind(&mut events, "tool.start").await;
+    next_kind(&mut events, "tool.start").await;
+    assert_eq!(
+        runtime.status_for_bot("alice", "owl").unwrap()["status"],
+        "working"
+    );
+    fs::write(home.path().join("finish-vm-first"), "").unwrap();
+    next_kind(&mut events, "tool.complete").await;
+    assert!(runtime.status_for_bot("alice", "owl").is_none());
+    // Rejected host call sharing `call_0` (host absent from frozen desktops) must NOT clear VM status.
+    let vm_reject_run = {
+        let runtime = runtime.clone();
+        tokio::spawn(async move {
+            runtime
+                .run_hidden_job(
+                    "alice",
+                    "owl",
+                    "thread-vm-reject",
+                    "computer-vm-host-reject",
+                    &json!({}),
+                )
+                .await
+        })
+    };
+    next_kind(&mut events, "tool.complete").await;
+    let still_vm = runtime.status_for_bot("alice", "owl").unwrap();
+    assert_eq!(still_vm["status"], "working");
+    assert_eq!(still_vm["status_detail"]["text"], "Using the computer");
+    fs::write(home.path().join("finish-vm-after-reject"), "").unwrap();
+    next_kind(&mut events, "tool.complete").await;
+    assert!(runtime.status_for_bot("alice", "owl").is_none());
+    // Two distinct VM calls (`call_b` still running while `call_a` ends through bridge): guard
+    // settles only `call_a`, keeping `on_computer` active until `call_b` ends.
+    let two_vm_run = {
+        let runtime = runtime.clone();
+        tokio::spawn(async move {
+            runtime
+                .run_hidden_job(
+                    "alice",
+                    "owl",
+                    "thread-two-vm",
+                    "computer-two-vm",
+                    &json!({}),
+                )
+                .await
+        })
+    };
+    next_kind(&mut events, "tool.complete").await;
+    let still_b = runtime.status_for_bot("alice", "owl").unwrap();
+    assert_eq!(still_b["status"], "working");
+    assert_eq!(still_b["status_detail"]["text"], "Using the computer");
+    fs::write(home.path().join("finish-vm-b"), "").unwrap();
+    next_kind(&mut events, "tool.complete").await;
+    assert!(runtime.status_for_bot("alice", "owl").is_none());
+    runtime.shutdown().await;
+    let _ = (
+        denied_run.await,
+        revoked_run.await,
+        host_run.await,
+        vm_run.await,
+        collide_run.await,
+        vm_host_run.await,
+        vm_reject_run.await,
+        two_vm_run.await,
+    );
+}
 /// The user watches the bots' computer, so a scheduled job that acts on it
 /// makes the bot look busy until the run ends, though nothing else about the
 /// job shows.
 #[tokio::test]
 async fn a_background_run_on_the_computer_marks_the_bot_working() {
     let home = setup();
+    runtime_store::open(home.path())
+        .unwrap()
+        .execute(
+            "INSERT INTO native_sessions(stored_id,owner,bot,prompt,options) VALUES('cron-1','alice','owl','',?)",
+            [json!({"provider":"openai","model":"test-model","tools":[],"computers":[{"id":"vm","desktop":true}]}).to_string()],
+        )
+        .unwrap();
     let hub = EventHub::new();
     let mut events = hub.subscribe();
     let runtime = Runtime::new(home.path().into(), hub, fake_pi(home.path())).unwrap();
@@ -1848,7 +2165,7 @@ async fn a_background_run_on_the_computer_marks_the_bot_working() {
         let runtime = runtime.clone();
         tokio::spawn(async move {
             runtime
-                .run_hidden_job("alice", "owl", "cron-1", "computer", &json!({}))
+                .run_hidden_job("alice", "owl", "cron-1", "computer-finish", &json!({}))
                 .await
         })
     };
@@ -1862,6 +2179,14 @@ async fn a_background_run_on_the_computer_marks_the_bot_working() {
     assert_eq!(status["status"], "working");
     assert_eq!(status["status_detail"]["text"], "Using the computer");
     assert!(status["status_detail"]["section_id"].is_null());
+    // Unlike peer threads, a scheduled job stays Working on the computer after
+    // its computer_use action completes until the entire run finishes.
+    fs::write(home.path().join("finish-computer"), "").unwrap();
+    next_kind(&mut events, "tool.complete").await;
+    let still_working = runtime.status_for_bot("alice", "owl").unwrap();
+    assert_eq!(still_working["status"], "working");
+    assert_eq!(still_working["status_detail"]["text"], "Using the computer");
+    assert!(still_working["status_detail"]["section_id"].is_null());
     runtime.shutdown().await;
     let _ = job.await;
 }
