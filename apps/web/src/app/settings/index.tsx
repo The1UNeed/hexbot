@@ -62,6 +62,7 @@ import {
   Row
 } from '../bot-settings/shared'
 import { ConfirmUpdate, installTarget } from '../confirm-update'
+import { UpdateEverythingGroup } from '../update-everything'
 
 import { ComputerSettings } from './computer'
 import { DiagnosticsSettings } from './diagnostics'
@@ -1534,6 +1535,7 @@ const DAEMON_STAGES: Record<DaemonUpdate['status'], string> = {
   installing: 'Installing…',
   requested: 'Asking the daemon…',
   restarting: 'Restarting the daemon…',
+  staged: 'Downloaded. Waiting to restart…',
   'up-to-date': 'Nothing to install.'
 }
 
@@ -1631,6 +1633,8 @@ function DaemonUpdates({ appVersion }: { appVersion: null | string }): React.JSX
 
 export function UpdatesSettings(): React.JSX.Element {
   const bridge = getBridge()
+  // A daemon with Update everything updates every machine from here.
+  const supported = useConnection(state => Boolean(state.daemon?.app_updates))
   const app = useUpdates(state => state.app)
   const [pending, setPending] = useState(false)
   const [confirming, setConfirming] = useState(false)
@@ -1720,7 +1724,11 @@ export function UpdatesSettings(): React.JSX.Element {
             version={confirming ? installTarget(app) : null}
           />
         ) : null}
-        <DaemonUpdates appVersion={bridge?.version ?? null} />
+        {supported ? (
+          <UpdateEverythingGroup />
+        ) : (
+          <DaemonUpdates appVersion={bridge?.version ?? null} />
+        )}
       </div>
     </>
   )

@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { readDesktopState, updateDesktopState } from './desktop-state'
+import { changeDesktopState, readDesktopState, updateDesktopState } from './desktop-state'
 
 vi.mock('electron', () => ({ app: {} }))
 const directories: string[] = []
@@ -16,6 +16,30 @@ afterEach(() =>
 )
 
 describe('desktop state', () => {
+  it('changes a nested map without losing entries written at the same time', async () => {
+    const file = await stateFile()
+    const pending = (version: string) => ({
+      version,
+      requestId: 'r',
+      daemon: null,
+      edition: 'full' as const,
+      expiresAt: 1
+    })
+    await Promise.all(
+      ['app.a', 'app.b', 'app.c'].map(id =>
+        changeDesktopState(
+          state => ({ pendingInstall: { ...state.pendingInstall, [id]: pending(id) } }),
+          file
+        )
+      )
+    )
+    expect(Object.keys((await readDesktopState(file)).pendingInstall ?? {}).sort()).toEqual([
+      'app.a',
+      'app.b',
+      'app.c'
+    ])
+  })
+
   it('keeps every patch when settings, the notice, and bounds overlap', async () => {
     const file = await stateFile()
     await Promise.all([

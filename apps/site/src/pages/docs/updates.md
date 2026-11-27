@@ -43,6 +43,12 @@ Existing Python background services try to install the native daemon during thei
 next update. If the download or runtime validation fails, the update reports failure
 and the running daemon keeps going unchanged. Try the update again later.
 
+## Updating everything at once
+
+When the daemon and every Hexbot app connected to it can be updated together, the pill says "Update". It opens a list of what will update: the daemon, this app and each other app, or why one is left out, such as "Up to date" or "Update on that computer" for an app too old to take part. Settings, Updates shows the same list and the Update everything button.
+
+The daemon updates first. If it runs as a service it starts the new version on trial and goes back to the version you had if it can't start; then nothing else updates and the list says why. Each other app then shows "Restart in 10s" with Later on its own screen. The app you clicked in restarts last, after "Restart in 5s · Later", and shows the result when it is back. A browser tab reloads onto the new version. The phone app updates from TestFlight or the App Store; its Settings, Updates page can start the update for everything else.
+
 ## Stable and nightly
 
 Hexbot ships on two tracks:

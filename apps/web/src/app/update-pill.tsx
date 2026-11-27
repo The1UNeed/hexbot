@@ -1,7 +1,9 @@
 /**
- * The roster's update pill (T3 Code's sidebar update pill). Hidden until
- * there is something to do: download an app update, restart into one, or
- * update a daemon that is behind this app. Progress shows in place.
+ * The roster's update pill (T3 Code's sidebar update pill and capsule).
+ * Hidden until there is something to do. With a daemon that has Update
+ * everything it says "Update" for the daemon and every app at once, then
+ * shows the run in place: progress, "Restart in 5s · Later", the result.
+ * An older daemon keeps the app's own update and "Update daemon".
  */
 
 import { useNavigate } from '@tanstack/react-router'
@@ -11,11 +13,14 @@ import { useState } from 'react'
 import { Spinner } from '../components/ui/spinner'
 import { getBridge, updateAction, type UpdateState } from '../lib/bridge'
 import { cn } from '../lib/cn'
+import { describeCapsule } from '../lib/update-everything'
 import { daemonBehind } from '../lib/version-skew'
 import { useConnection } from '../stores/connection'
+import { useUpdateRun } from '../stores/update-run'
 import { type DaemonUpdate, useUpdates } from '../stores/updates'
 
 import { ConfirmUpdate, installTarget } from './confirm-update'
+import { UpdateEverythingDialog } from './update-everything'
 
 export interface PillContent {
   action: 'download' | 'install' | 'settings' | null
@@ -104,15 +109,67 @@ export function describePill(
   return null
 }
 
+const pillClass =
+  'hex-no-drag inline-flex h-8 items-center gap-2 rounded-panel border border-border px-3 text-[length:var(--text-secondary)] font-medium whitespace-nowrap text-foreground transition-colors hover:bg-surface-2 disabled:opacity-60'
+
 export function UpdatePill({ className }: { className?: string }) {
   const navigate = useNavigate()
   const app = useUpdates(state => state.app)
   const daemonUpdate = useUpdates(state => state.daemon)
   const daemon = useConnection(state => state.daemon)
+  const everything = useUpdateRun()
   const [pending, setPending] = useState(false)
   const [confirming, setConfirming] = useState(false)
+  const [planning, setPlanning] = useState(false)
   const bridge = getBridge()
-  const pill = describePill(app, daemonUpdate, bridge?.version ?? null, daemon?.version ?? null)
+  const settings = () => void navigate({ to: '/settings/$tab', params: { tab: 'updates' } })
+
+  // Update everything: one pill for the daemon and every app.
+  if (everything.supported) {
+    const { countdown, plan, run } = everything
+    const capsule = describeCapsule(run, countdown)
+
+    if (capsule || run?.result || plan?.actionable) {
+      const counting = run?.phase === 'counting-down'
+      const busy = !!capsule && !counting
+      const label = capsule ?? (run?.result ? run.result.message : 'Update')
+
+      return (
+        <>
+          <button
+            className={cn(pillClass, className)}
+            data-testid="update-pill"
+            onClick={() => {
+              if (counting) {
+                everything.later()
+              } else if (run) {
+                settings()
+              } else {
+                setPlanning(true)
+              }
+            }}
+            title={
+              counting
+                ? 'Restart this app now to finish, or Later to keep this version'
+                : (run?.result?.message ?? plan?.summary ?? undefined)
+            }
+            type="button"
+          >
+            {busy ? <Spinner size="sm" /> : <CircleArrowUp aria-hidden size={14} />}
+            <span className="truncate">{label}</span>
+          </button>
+          <UpdateEverythingDialog onClose={() => setPlanning(false)} open={planning} />
+        </>
+      )
+    }
+  }
+
+  const pill = describePill(
+    app,
+    daemonUpdate,
+    bridge?.version ?? null,
+    everything.supported ? null : (daemon?.version ?? null)
+  )
 
   if (!pill) {
     return null
@@ -127,7 +184,7 @@ export function UpdatePill({ className }: { className?: string }) {
 
   const act = () => {
     if (pill.action === 'settings') {
-      void navigate({ to: '/settings/$tab', params: { tab: 'updates' } })
+      settings()
 
       return
     }
@@ -151,10 +208,7 @@ export function UpdatePill({ className }: { className?: string }) {
   return (
     <>
       <button
-        className={cn(
-          'hex-no-drag inline-flex h-8 items-center gap-2 rounded-panel border border-border px-3 text-[length:var(--text-secondary)] font-medium whitespace-nowrap text-foreground transition-colors hover:bg-surface-2 disabled:opacity-60',
-          className
-        )}
+        className={cn(pillClass, className)}
         data-testid="update-pill"
         disabled={pill.busy || pending}
         onClick={act}

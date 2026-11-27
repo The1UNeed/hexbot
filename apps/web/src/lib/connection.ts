@@ -30,7 +30,9 @@ import { useRooms } from '../stores/rooms'
 import { sectionsActions } from '../stores/sections'
 import { settingsActions } from '../stores/settings'
 import { uiActions } from '../stores/ui'
+import { useUpdateRun } from '../stores/update-run'
 
+import { connectionOpened, watchThisApp } from './app-reporter'
 import { getBridge, type HexbotBridge } from './bridge'
 import { connectionClosed, offerThisComputer, watchThisComputer } from './computer-endpoint'
 import { DaemonIdentityError, DaemonUnreachableError } from './daemon-identity'
@@ -556,6 +558,10 @@ export class ConnectionSupervisor {
     // A desktop app on another computer offers it, if the user allowed it there.
     watchThisComputer()
     void offerThisComputer()
+    // Every desktop app reports itself for Update everything.
+    watchThisApp()
+    connectionOpened()
+    void useUpdateRun.getState().refresh()
   }
 
   /**

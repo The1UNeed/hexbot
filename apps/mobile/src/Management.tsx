@@ -25,6 +25,7 @@ import {
   useTheme
 } from './ui'
 import { Licenses } from './Licenses'
+import { UpdateEverything } from './UpdateEverything'
 import { Usage } from './Usage'
 import { ModelPill, useCurrentModel } from './screens/ModelMenu'
 import { SubscriptionSignIn } from './screens/SubscriptionSignIn'
@@ -3458,7 +3459,13 @@ export function Management({
               />
             ) : null}
           </Group>
-          {extra.capability ? (
+          {mobile.info?.app_updates ? (
+            <UpdateEverything
+              connected={mobile.connection === 'connected'}
+              info={mobile.info}
+              rpc={rpc}
+            />
+          ) : extra.capability ? (
             <>
               {field('version', 'Version to install')}
               {action(

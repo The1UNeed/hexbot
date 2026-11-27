@@ -13,6 +13,8 @@ import {
   onInstallStart,
   onProgress,
   onUpToDate,
+  afterRelaunch,
+  remoteReady,
   versionChannel
 } from './update-state'
 
@@ -61,7 +63,10 @@ describe('update transitions', () => {
     expect(nextAction(downloaded)).toBe('install')
     // Installing offers nothing: the app is about to close and reopen.
     const installing = onInstallStart(downloaded)
-    expect(installing).toMatchObject({ status: 'installing', downloadedVersion: downloaded.downloadedVersion })
+    expect(installing).toMatchObject({
+      status: 'installing',
+      downloadedVersion: downloaded.downloadedVersion
+    })
     expect(nextAction(installing)).toBeNull()
     // A later poll finds the same version again: still ready to install.
     expect(onAvailable(onCheckStart(downloaded), '0.1.5-nightly.20260916.9', at).status).toBe(
@@ -92,5 +97,51 @@ describe('versionChannel', () => {
     expect(versionChannel('0.1.5-nightly.20260916.9')).toBe('nightly')
     expect(versionChannel('0.1.5-alpha.1')).toBe('stable')
     expect(versionChannel('1.0.0')).toBe('stable')
+  })
+})
+
+describe('Update everything on this app', () => {
+  it('is ready only with the download on disk, and says why not otherwise', () => {
+    const downloaded = onDownloaded(
+      onDownloadStart(onAvailable(idle, '0.1.6-nightly.20260915.1', at)),
+      '0.1.6-nightly.20260915.1'
+    )
+    expect(remoteReady(downloaded)).toEqual({ ready: true, version: '0.1.6-nightly.20260915.1' })
+    expect(remoteReady(onUpToDate(idle, at))).toEqual({
+      ready: false,
+      error: 'Nothing newer on the Nightly track.'
+    })
+    expect(remoteReady(onDownloadError(downloaded, 'disk full'))).toEqual({
+      ready: false,
+      error: 'disk full'
+    })
+  })
+
+  it('finds an update that did not apply and forgets what the running version settles', () => {
+    const now = 1_000
+    const entry = (version: string, edition: 'full' | 'client', expiresAt = 2_000) => ({
+      version,
+      requestId: 'r1',
+      daemon: 'd1',
+      edition,
+      expiresAt
+    })
+    const pending = {
+      'app.hexbot.desktop': entry('0.1.7', 'full'),
+      // The same app before a track switch changed its id: settled.
+      'app.hexbot.desktop.nightly': entry('0.1.6', 'full'),
+      // Another app on this computer keeps its entry.
+      'app.hexbot.client': entry('0.1.7', 'client'),
+      'app.hexbot.old': entry('0.1.1', 'client', 500)
+    }
+    expect(afterRelaunch(pending, 'app.hexbot.desktop', 'full', '0.1.6', now)).toEqual({
+      notApplied: entry('0.1.7', 'full'),
+      keep: { 'app.hexbot.client': entry('0.1.7', 'client') }
+    })
+    expect(afterRelaunch(pending, 'app.hexbot.desktop', 'full', '0.1.7', now).notApplied).toBeNull()
+    expect(afterRelaunch(undefined, 'app.hexbot.desktop', 'full', '0.1.7', now)).toEqual({
+      notApplied: null,
+      keep: {}
+    })
   })
 })

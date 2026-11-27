@@ -26,7 +26,7 @@ import { bootstrap, type BootstrapProgress } from './backend/bootstrap'
 import { DaemonManager } from './backend/manager'
 import { hexbotHome } from './backend/paths'
 import { resolveWebDevUrl } from './dev-url'
-import { edition, hasRuntime, requireRuntime } from './edition'
+import { appId, edition, hasRuntime, requireRuntime } from './edition'
 import { parseDeepLink } from './deep-link'
 import { askToNotify, notificationSettingsUrl, notify, reportShown, sendShown } from './notify'
 import { OAuthReturns } from './oauth-return'
@@ -42,17 +42,36 @@ import { WindowLifecycle } from './window-lifecycle'
 import { handleDaemonUpdateRequest } from './remote-update'
 import { guardWindow, isTrustedSender } from './window-security'
 import {
+  cancelRemote,
   checkForUpdates,
+  commitRemote,
   downloadUpdate,
+  getRemoteRequest,
   getUpdateState,
   installUpdate,
+  prepareRemote,
+  readNotApplied,
   readUpdateChannelSetting,
+  REMOTE_COUNTDOWN_MS,
   setUpdateChannel,
   updaterEvents,
   type UpdateState
 } from './updater'
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url))
+
+/** The daemon manager's state, with the install id of the daemon it runs. */
+function daemonStatus(): ReturnType<DaemonManager['status']> & { installId: string | null } {
+  const status = daemon.status()
+  let installId: string | null = null
+  if (status.state === 'running')
+    try {
+      installId = readFileSync(join(hexbotHome(), 'install_id'), 'utf8').trim() || null
+    } catch {
+      installId = null
+    }
+  return { ...status, installId }
+}
 const rendererDirectory = join(currentDirectory, '../renderer')
 const webDevUrl = app.isPackaged ? undefined : resolveWebDevUrl()
 if (!app.isPackaged) app.setName(hasRuntime ? 'Hexbot (dev)' : 'Hexbot Client (dev)')
@@ -335,10 +354,11 @@ function registerIpc(): void {
       platform: process.platform,
       version: app.getVersion(),
       isPackaged: app.isPackaged,
-      edition
+      edition,
+      appId
     }
   })
-  handle('hexbot:daemon:status', () => daemon.status())
+  handle('hexbot:daemon:status', () => daemonStatus())
   handle('hexbot:daemon:start', async () => {
     requireRuntime('Running a daemon on this machine')
     return daemon.start(
@@ -407,6 +427,21 @@ function registerIpc(): void {
   handle('hexbot:updater:download', () => downloadUpdate())
   handle('hexbot:updater:install', () => installUpdate())
   handle('hexbot:updater:channel', () => readUpdateChannelSetting())
+  // Update everything: requests the daemon passed on from another client.
+  const requestId = (value: unknown): string => {
+    if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(value)) throw new TypeError('Invalid request id')
+    return value
+  }
+  handle('hexbot:updater:remote', () => getRemoteRequest())
+  handle('hexbot:updater:prepare', (_event, id: unknown, track: unknown, daemonId: unknown) => {
+    if (track !== null && track !== 'stable' && track !== 'nightly') throw new TypeError('Invalid update channel')
+    if (daemonId !== null && (typeof daemonId !== 'string' || daemonId.length > 64)) throw new TypeError('Invalid daemon')
+    return prepareRemote(requestId(id), track, daemonId)
+  })
+  handle('hexbot:updater:commit', (_event, id: unknown, countdown: unknown) =>
+    commitRemote(requestId(id), countdown === true ? REMOTE_COUNTDOWN_MS : 0)
+  )
+  handle('hexbot:updater:cancel', (_event, id: unknown, later: unknown) => cancelRemote(requestId(id), later === true))
   handle('hexbot:updater:set-channel', (_event, channel: unknown) => {
     if (channel !== 'stable' && channel !== 'nightly') throw new TypeError('Invalid update channel')
     return setUpdateChannel(channel)
@@ -479,6 +514,16 @@ else {
       for (const window of BrowserWindow.getAllWindows())
         window.webContents.send('hexbot:updater:status', state)
     })
+    updaterEvents.on('remote', remote => {
+      for (const window of BrowserWindow.getAllWindows())
+        window.webContents.send('hexbot:updater:remote', remote)
+    })
+    // The app reports whether it runs the daemon it is connected to.
+    daemon.on('status', () => {
+      const status = daemonStatus()
+      for (const window of BrowserWindow.getAllWindows())
+        window.webContents.send('hexbot:daemon:status', status)
+    })
     daemon.on(
       'update-requested',
       (version: string) => void handleDaemonUpdateRequest(version, daemon)
@@ -492,6 +537,7 @@ else {
     }
     // Starts the startup check and the poller (updater.ts); dev builds stay off.
     void getUpdateState()
+    void readNotApplied().catch(error => log.warn(`update state unreadable: ${errorMessage(error)}`))
     app.on('activate', () => void showWindow())
   })
 }
