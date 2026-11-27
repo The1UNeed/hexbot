@@ -526,13 +526,22 @@ async fn serve(
                     update_trial::abandon(&home, &update_id, &version, &error.to_string())?
                 }
             };
-            let error = update_trial::exec_launcher(&home, &next, address);
-            // Fails the trial if the switch happened; the service restarts.
-            // Without a trial the service starts whatever is selected.
-            if update_trial::read_trial(&home)?.is_some() {
-                update_trial::abandon(&home, &update_id, &version, &error.to_string())?;
+            #[cfg(unix)]
+            {
+                let error = update_trial::exec_launcher(&home, &next, address);
+                // Fails the trial if the switch happened; the service restarts.
+                // Without a trial the service starts whatever is selected.
+                if update_trial::read_trial(&home)?.is_some() {
+                    update_trial::abandon(&home, &update_id, &version, &error.to_string())?;
+                }
+                return Err(error.into());
             }
-            return Err(error.into());
+            #[cfg(not(unix))]
+            {
+                // The service starts the new selection once this process exits.
+                let _ = next;
+                return Ok(());
+            }
         }
     }
     Ok(())

@@ -7,6 +7,8 @@
 //! back and exits; the service starts the old build, which restores the
 //! snapshot before it opens a database. The decisions are pure functions over
 //! the trial file so tests can drive them; the I/O is in small wrappers.
+//! POSIX only: elsewhere `services::begin_update` switches without a trial,
+//! so no trial file is ever written.
 use crate::{Error, Result, common, server::App, services};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -165,6 +167,11 @@ pub fn check_space(needed: u64, free: u64) -> Result<()> {
     }
     Ok(())
 }
+#[cfg(not(unix))]
+fn free_space(_path: &Path) -> Result<u64> {
+    Ok(u64::MAX)
+}
+#[cfg(unix)]
 fn free_space(path: &Path) -> Result<u64> {
     use std::os::unix::ffi::OsStrExt;
     let path = std::ffi::CString::new(path.as_os_str().as_bytes())
@@ -492,6 +499,7 @@ pub fn launcher_env(
     changes
 }
 /// Replaces this process with `serve` from another launcher. Returns only on failure.
+#[cfg(unix)]
 pub fn exec_launcher(
     home: &Path,
     executable: &Path,
@@ -514,6 +522,6 @@ pub fn exec_launcher(
     next.exec()
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[path = "update_trial_tests.rs"]
 mod tests;

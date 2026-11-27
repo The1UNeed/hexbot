@@ -1247,16 +1247,6 @@ pub async fn shutdown(home: &Path) -> Result<()> {
     }
     Ok(())
 }
-fn valid_update_id(id: &str) -> bool {
-    #[cfg(unix)]
-    {
-        crate::update_trial::valid_id(id)
-    }
-    #[cfg(not(unix))]
-    {
-        common::identifier(id).is_ok() && id.len() <= 64
-    }
-}
 /// The update id and the staged build of a requested restart.
 /// A LAN rebind restarts Connect only; a download or a staged update stays.
 pub async fn stop_connect(home: &Path) -> Result<()> {
@@ -1501,10 +1491,7 @@ async fn update_status(home: &Path) -> Result<Value> {
         }
     }
     current["capability"] = json!(capability);
-    #[cfg(unix)]
-    {
-        current["outcome"] = crate::update_trial::outcome(home).unwrap_or(Value::Null);
-    }
+    current["outcome"] = crate::update_trial::outcome(home).unwrap_or(Value::Null);
     Ok(current)
 }
 async fn update_state(
@@ -2401,7 +2388,6 @@ async fn signed_manifest(url: &str) -> Result<Value> {
 /// Downloads and checks a build into `runtime/native/.staged-*` without
 /// switching to it. The old daemon keeps serving whatever happens here.
 async fn stage_native(home: &Path, version: &str, service: &Service) -> Result<Staged> {
-    #[cfg(unix)]
     crate::update_trial::require_space(home)?;
     let config = common::read_config(home)?;
     let base = config
@@ -2620,6 +2606,27 @@ pub fn begin_update(home: &Path, staged: Staged, update_id: &str) -> Result<Path
         None,
     )?;
     Ok(to_executable)
+}
+
+/// Without symlinks there is no trial: publish as before.
+#[cfg(not(unix))]
+pub fn begin_update(home: &Path, staged: Staged, _update_id: &str) -> Result<PathBuf> {
+    let native = native_directory(home)?;
+    publish_native(
+        &native,
+        &staged.version,
+        &staged.dir,
+        &staged.entrypoint,
+        Some(&staged.manifest),
+    )
+}
+#[cfg(not(unix))]
+pub(crate) fn roll_back_selection(_: &Path, _: &crate::update_trial::Trial) -> Result<()> {
+    Ok(())
+}
+#[cfg(not(unix))]
+pub(crate) fn repair_rolled_back_selection(_: &Path, _: &crate::update_trial::Trial) -> Result<()> {
+    Ok(())
 }
 
 /// Writes a selection record and points `native-executable` at `executable`.
@@ -2868,7 +2875,7 @@ pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<
                     // A driver passes its own id, so a reply the restart cuts
                     // off doesn't lose it. It becomes a directory name.
                     let update_id = match p.get("update_id").and_then(Value::as_str) {
-                        Some(id) if valid_update_id(id) => id.to_owned(),
+                        Some(id) if crate::update_trial::valid_id(id) => id.to_owned(),
                         Some(_) => return Err(Error::new(4200, "invalid parameter: update_id")),
                         None => common::id(),
                     };
