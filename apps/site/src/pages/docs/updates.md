@@ -58,7 +58,7 @@ Hexbot ships on two tracks:
 
 Hexbot is in alpha, in very early development, so for now only the nightly track has builds.
 
-A stable install follows the stable track and a nightly install follows the nightly track. You can switch in Settings, Updates. Switching affects the next update check: a stable app on the nightly track is replaced by the next nightly, and a nightly app on the stable track by the next stable release, even when that release has a lower version number. The installed app is not changed until an update is installed.
+A stable install follows the stable track and a nightly install follows the nightly track. When the daemon updates everything at once, Settings, Updates has one Track for the daemon and every app: switching it moves them all together. Each moves once the new track has a build newer than it runs, so a switch from Nightly to Stable may wait for the next Stable release, and the apps never end up older than the daemon. With an older daemon each app has its own track, and you can switch it in Settings, Updates. Switching affects the next update check: a stable app on the nightly track is replaced by the next nightly, and a nightly app on the stable track by the next stable release, even when that release has a lower version number. The installed app is not changed until an update is installed.
 
 Dev builds run from a source checkout and do not check for updates.
 

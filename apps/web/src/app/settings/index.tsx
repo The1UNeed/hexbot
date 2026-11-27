@@ -1697,6 +1697,8 @@ export function UpdatesSettings(): React.JSX.Element {
                 </>
               }
             />
+            {/* With Update everything the track is the daemon's, for every app. */}
+            {supported ? null : (
             <Row
               control={
                 <div className="w-[160px]">
@@ -1715,6 +1717,7 @@ export function UpdatesSettings(): React.JSX.Element {
               }
               title="Update track"
             />
+            )}
           </Group>
         ) : null}
         {bridge ? (

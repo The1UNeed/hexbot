@@ -10,6 +10,7 @@ import { useEffect, useState } from 'react'
 
 import { Button } from '../components/ui/button'
 import { Dialog } from '../components/ui/dialog'
+import { Select } from '../components/ui/select'
 import { Spinner } from '../components/ui/spinner'
 import { getBridge } from '../lib/bridge'
 import { cn } from '../lib/cn'
@@ -119,7 +120,10 @@ export function UpdateEverythingGroup() {
   const countdown = useUpdateRun(state => state.countdown)
   const dismiss = useUpdateRun(state => state.dismiss)
   const refresh = useUpdateRun(state => state.refresh)
+  const check = useUpdateRun(state => state.check)
+  const setTrack = useUpdateRun(state => state.setTrack)
   const [open, setOpen] = useState(false)
+  const [switching, setSwitching] = useState(false)
   const running = !!run && !run.result
 
   useEffect(() => {
@@ -147,14 +151,37 @@ export function UpdateEverythingGroup() {
           )
         }
         description={
-          run?.result?.message ??
-          describeCapsule(run, countdown) ??
-          plan?.blocked ??
-          plan?.summary
+          run?.result?.message ?? describeCapsule(run, countdown) ?? plan?.blocked ?? plan?.summary
         }
         title="Everything"
       >
         <UpdateRows rows={run?.rows ?? plan?.rows ?? []} />
+      </Group>
+      <Group footer="Stable is tagged releases. Nightly is built from main every day and may break. The daemon and every app switch together, and each moves once the new track has a newer build than it runs.">
+        <Row
+          control={
+            <div className="w-[160px]">
+              <Select
+                disabled={running || switching || !check}
+                label="Track"
+                onValueChange={value => {
+                  setSwitching(true)
+                  void setTrack(value === 'nightly' ? 'nightly' : 'stable')
+                    // The daemon has a newer build there: update everything onto it.
+                    .then(next => next?.actionable && !next.rows[0]?.skip && setOpen(true))
+                    .catch(() => undefined)
+                    .finally(() => setSwitching(false))
+                }}
+                options={[
+                  { label: 'Stable', value: 'stable' },
+                  { label: 'Nightly', value: 'nightly' }
+                ]}
+                value={check?.track}
+              />
+            </div>
+          }
+          title="Track"
+        />
       </Group>
       <UpdateEverythingDialog onClose={() => setOpen(false)} open={open} />
     </>

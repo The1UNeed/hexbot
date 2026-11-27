@@ -15,7 +15,7 @@ import {
 } from '../../web/src/lib/update-everything'
 import { daemonSteps, newId } from '../../web/src/lib/update-run-steps'
 import type { Rpc } from './core/types'
-import { confirm, Group, Row } from './ui'
+import { ChoiceRow, confirm, Group, Row } from './ui'
 
 /**
  * Settings, Updates on the phone: Update everything, the daemon and every
@@ -45,6 +45,7 @@ export function UpdateEverything({
 }) {
   const [plan, setPlan] = useState<Plan | null>(null)
   const [run, setRun] = useState<RunState | null>(null)
+  const [track, setTrack] = useState<'nightly' | 'stable' | null>(null)
   const running = useRef(false)
 
   const refresh = useCallback(async () => {
@@ -53,6 +54,7 @@ export function UpdateEverything({
       rpc<DaemonCheck>('hexbot.update.check').catch(() => null)
     ])
     if (!apps) return
+    setTrack(check?.track ?? null)
     setPlan(
       collectTargets({
         apps,
@@ -159,6 +161,25 @@ export function UpdateEverything({
             }
           />
         )}
+      </Group>
+      <Group
+        title="Track"
+        footer="The daemon and every app switch together, and each moves once the new track has a newer build than it runs. Nightly is built from main every day and may break."
+      >
+        {(['stable', 'nightly'] as const).map(choice => (
+          <ChoiceRow
+            key={choice}
+            title={choice === 'stable' ? 'Stable' : 'Nightly'}
+            selected={track === choice}
+            disabled={!connected || !track || !!run}
+            testID={`update-track-${choice}`}
+            onPress={() => {
+              if (choice === track) return
+              setTrack(choice)
+              void rpc('hexbot.update.set_track', { track: choice }).then(() => refresh())
+            }}
+          />
+        ))}
       </Group>
       <Group title="This phone" footer="Update the app from TestFlight or the App Store.">
         <Row
