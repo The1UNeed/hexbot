@@ -107,14 +107,31 @@ fn connector_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<
     Ok(rows)
 }
 
-fn skill_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<Value>> {
-    let per_bot = own
+/// Each of the caller's bots with its skills. Discovery is shared, so a
+/// roster of hundreds reads the skill folders once.
+fn skills_per_bot(home: &Path, own: &[String]) -> Result<Vec<(String, Vec<skills::Skill>)>> {
+    Ok(own
         .iter()
-        .map(|b| Ok((b.as_str(), skills::resolve(home, Some(b))?)))
-        .collect::<Result<Vec<_>>>()?;
+        .cloned()
+        .zip(skills::resolve_for_bots(
+            home,
+            own.iter().map(String::as_str),
+        )?)
+        .collect())
+}
+
+fn skill_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<Value>> {
+    skill_rows_of(home, bot, &skills_per_bot(home, own)?)
+}
+
+fn skill_rows_of(
+    home: &Path,
+    bot: Option<&str>,
+    per_bot: &[(String, Vec<skills::Skill>)],
+) -> Result<Vec<Value>> {
     // With a bot, each row is that bot's own view: its grant, its private
     // skills and the keys in its `.env`.
-    let listed = match bot.and_then(|b| per_bot.iter().find(|(name, _)| *name == b)) {
+    let listed = match bot.and_then(|b| per_bot.iter().find(|(name, _)| name == b)) {
         Some((_, list)) => list.clone(),
         None => skills::resolve(home, None)?,
     };
@@ -136,14 +153,14 @@ fn skill_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<Valu
                 list.iter()
                     .any(|s| s.name == skill.name && s.enabled_for_bot && s.ready)
             })
-            .map(|(b, _)| *b)
+            .map(|(b, _)| b.as_str())
             .collect::<Vec<_>>();
         // Set up for a bot when it has what it needs there, as through a
         // key in that bot's own `.env`.
         let ready_bots = per_bot
             .iter()
             .filter(|(_, list)| list.iter().any(|s| s.name == skill.name && s.ready))
-            .map(|(b, _)| *b)
+            .map(|(b, _)| b.as_str())
             .collect::<Vec<_>>();
         let mut row = json!(skill);
         row["kind"] = json!("skill");
@@ -158,7 +175,7 @@ fn skill_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<Valu
                     list.iter()
                         .any(|s| s.name == skill.name && s.enabled_for_bot && !s.ready)
                 })
-                .map(|(b, _)| *b)
+                .map(|(b, _)| b.as_str())
                 .collect::<Vec<_>>()
         );
         row.as_object_mut().unwrap().remove("path");
@@ -169,12 +186,17 @@ fn skill_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<Valu
 
 pub(crate) fn list(home: &Path, caller: &str, bot: Option<&str>) -> Result<Value> {
     let own = own_bots(home, caller)?;
+    // Every row asks about every bot; the roster is read once for all of them.
+    let _listed = connectors::Listed::hold(home)?;
+    // Read once for the skills and the packages: with hundreds of bots it
+    // is most of the work.
+    let per_bot = skills_per_bot(home, &own)?;
     Ok(json!({
         "connectors": connector_rows(home, &own, bot)?,
-        "skills": skill_rows(home, &own, bot)?,
+        "skills": skill_rows_of(home, bot, &per_bot)?,
         // Clients from before Settings, Manuals, still read this list.
         "capabilities": [],
-        "packages": package_rows(home, &own, bot)?,
+        "packages": package_rows_of(home, &own, bot, &per_bot)?,
     }))
 }
 
@@ -231,6 +253,8 @@ pub(crate) fn set_bots(home: &Path, caller: &str, p: &Value) -> Result<Value> {
     }
     let current = find(home, caller, kind, id)?;
     let own = own_bots(home, caller)?;
+    // Every bot is asked about in turn; the roster is read once for all of them.
+    let _listed = connectors::Listed::hold(home)?;
     if kind == "connector" && id == "discord" {
         let chosen = connectors::chosen_bots(home, caller, &[], &p["bots"])?;
         for bot in &own {
@@ -277,9 +301,7 @@ pub(crate) fn set_bots(home: &Path, caller: &str, p: &Value) -> Result<Value> {
             "skill" => Ok(skills::resolve(home, Some(bot))?
                 .iter()
                 .any(|s| s.name == id && s.ready)),
-            "connector" if !id.starts_with("mcp:") => {
-                Ok(connectors::get(home, Some(bot), id)?["ready"] == true)
-            }
+            "connector" if !id.starts_with("mcp:") => connectors::ready_for(home, bot, id),
             _ => Ok(current["ready"] == true),
         }
     };
@@ -983,17 +1005,27 @@ fn server_details(entry: &Value) -> Value {
 }
 
 fn package_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<Value>> {
+    package_rows_of(home, own, bot, &skills_per_bot(home, own)?)
+}
+
+fn package_rows_of(
+    home: &Path,
+    own: &[String],
+    bot: Option<&str>,
+    per_bot: &[(String, Vec<skills::Skill>)],
+) -> Result<Vec<Value>> {
+    let names = package_names(home)?;
+    // Without a package there is nothing to list, and no connector to read.
+    if names.is_empty() {
+        return Ok(vec![]);
+    }
     let config = read_config(home)?;
     let connectors = connectors::list(home, None)?["connectors"]
         .as_array()
         .cloned()
         .unwrap_or_default();
-    let per_bot = own
-        .iter()
-        .map(|b| Ok((b.clone(), skills::resolve(home, Some(b))?)))
-        .collect::<Result<Vec<_>>>()?;
     let mut rows = vec![];
-    for name in package_names(home)? {
+    for name in names {
         let Ok(manifest) = manifest(home, &name) else {
             continue;
         };
@@ -1026,7 +1058,7 @@ fn package_rows(home: &Path, own: &[String], bot: Option<&str>) -> Result<Vec<Va
             .collect::<Vec<_>>();
         // Until its server has its values, or one of its skills what it
         // needs, it is given to nobody, or only to the bots set up for it.
-        let grants = package_grants(own, &server_bots, &per_bot, &parts);
+        let grants = package_grants(own, &server_bots, per_bot, &parts);
         let given = grants
             .iter()
             .filter(|b| !waiting && (!unready_skills || ready_bots.contains(b)))
@@ -1126,10 +1158,7 @@ fn stored_package_bots(home: &Path, own: &[String], name: &str) -> Result<Vec<St
         .into_iter()
         .filter(|s| s.plugin.as_deref() == Some(name))
         .collect::<Vec<_>>();
-    let per_bot = own
-        .iter()
-        .map(|b| Ok((b.clone(), skills::resolve(home, Some(b))?)))
-        .collect::<Result<Vec<_>>>()?;
+    let per_bot = skills_per_bot(home, own)?;
     Ok(package_grants(own, &server_bots, &per_bot, &parts))
 }
 

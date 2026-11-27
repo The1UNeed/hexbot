@@ -25,9 +25,11 @@ import type { Bot, Plugin } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { usePlugins } from '../../stores/plugins'
+import { useUi } from '../../stores/ui'
 import { cardClass, errorText, fieldLabel, Group, Heading } from '../bot-settings/shared'
 
 import { PluginSheet, useDiscordSwitch } from './plugin-sheet'
+import { PluginsAccess } from './plugins-access'
 
 const keyOf = (plugin: Plugin) => `${plugin.kind}:${plugin.id}`
 
@@ -88,7 +90,14 @@ const CATEGORIES: {
 const categoryOf = (plugin: Plugin): Category =>
   plugin.category === 'mcp' ? 'servers' : plugin.kind === 'connector' ? 'connectors' : 'skills'
 
+/** Settings, Plugins: the page below, or the table once it is switched on in Settings, Experimental. */
 export function PluginsSettings(): React.JSX.Element {
+  const table = useUi(state => state.accessTable)
+
+  return table ? <PluginsAccess /> : <PluginsToday />
+}
+
+function PluginsToday(): React.JSX.Element {
   const byName = useBots(state => state.byName)
   const order = useBots(state => state.order)
 
@@ -625,7 +634,12 @@ function PluginRow({
   )
 }
 
-function AddServerForm({ onDone }: { onDone: () => void }) {
+export function AddServerForm({
+  onDone
+}: {
+  /** With the new server's name once it is added. */
+  onDone: (name?: string) => void
+}) {
   const install = usePlugins(state => state.install)
   const [name, setName] = useState('')
   const [target, setTarget] = useState('')
@@ -665,7 +679,7 @@ function AddServerForm({ onDone }: { onDone: () => void }) {
         }
 
         void install(input)
-          .then(onDone)
+          .then(() => onDone(plugin))
           .catch(cause => setError(errorText(cause)))
           .finally(() => setBusy(false))
       }}
@@ -729,7 +743,7 @@ function AddServerForm({ onDone }: { onDone: () => void }) {
         >
           Add server
         </Button>
-        <Button onClick={onDone} size="sm" variant="ghost">
+        <Button onClick={() => onDone()} size="sm" variant="ghost">
           Cancel
         </Button>
       </div>
@@ -741,7 +755,7 @@ function AddServerForm({ onDone }: { onDone: () => void }) {
  * A skill of your own: a description and instructions, or a SKILL.md you
  * load. It starts on for the bot in view, or for every bot.
  */
-function AddSkillForm({
+export function AddSkillForm({
   bots,
   focus,
   onDone

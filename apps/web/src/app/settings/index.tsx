@@ -65,6 +65,7 @@ import { ConfirmUpdate, installTarget } from '../confirm-update'
 
 import { ComputerSettings } from './computer'
 import { DiagnosticsSettings } from './diagnostics'
+import { ExperimentalSettings } from './experimental'
 import { OPEN_SOURCE } from './licenses'
 import { NotificationsSettings } from './notifications'
 import { PasswordsSettings } from './passwords'
@@ -87,7 +88,8 @@ export const SETTINGS_TABS = [
   'updates',
   'privacy',
   'about',
-  'diagnostics'
+  'diagnostics',
+  'experimental'
 ] as const
 
 export type SettingsTab = (typeof SETTINGS_TABS)[number]
@@ -127,11 +129,19 @@ function ErrorLine({ children }: { children: React.ReactNode }) {
 
 /** Complete settings body; the file route owns the surrounding window and navigation. */
 export function SettingsPanel({ tab }: { tab: string }): React.JSX.Element {
+  // The plugins table needs the room its columns take.
+  const table = useUi(state => state.accessTable) && tab === 'plugins'
+
   return (
     <section
       aria-label={`${tab} settings`}
       // Diagnostics holds tables and charts; it takes the column's full measure.
-      className={cn(settingsPageClass, tab === 'diagnostics' && 'max-w-[820px]')}
+      className={cn(
+        settingsPageClass,
+        tab === 'diagnostics' && 'max-w-[820px]',
+        // The table measures itself, so its own queries follow the page and not the window.
+        table && '@container max-w-[860px]'
+      )}
     >
       {tab === 'providers' && <ProvidersSettings />}
       {tab === 'plugins' && <PluginsSettings />}
@@ -148,6 +158,7 @@ export function SettingsPanel({ tab }: { tab: string }): React.JSX.Element {
       {tab === 'privacy' && <PrivacySettings />}
       {tab === 'about' && <AboutSettings />}
       {tab === 'diagnostics' && <DiagnosticsSettings />}
+      {tab === 'experimental' && <ExperimentalSettings />}
     </section>
   )
 }

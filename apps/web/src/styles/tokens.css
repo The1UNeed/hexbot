@@ -1395,6 +1395,59 @@ html {
   animation: hex-thread-out var(--hex-motion-rise) var(--hex-ease-in-out) both;
   pointer-events: none;
 }
+/* A tick or a mark arriving: it springs to size. */
+@keyframes hex-tick {
+  from {
+    opacity: 0;
+    scale: 0.4;
+  }
+  to {
+    opacity: 1;
+    scale: 1;
+  }
+}
+.hex-tick {
+  animation: hex-tick var(--hex-motion-rise) var(--hex-ease-spring) both;
+}
+/* One step of a window taking the last one's place. */
+@keyframes hex-step {
+  from {
+    opacity: 0;
+    transform: translateX(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.hex-step {
+  animation: hex-step var(--hex-motion-panel) var(--hex-ease-out) both;
+}
+/*
+ * The plugins table. The row under the pointer is tinted across its pinned
+ * name too, which is opaque so the plugins can scroll under it. A column that
+ * just arrived is lit once, then settles.
+ */
+.hex-grid-row > * {
+  transition: background-color var(--hex-motion-fast) var(--hex-ease-out);
+}
+@media (hover: hover) {
+  .hex-grid-row:hover > * {
+    background-color: color-mix(in srgb, var(--hex-text) 3.5%, var(--hex-background));
+  }
+}
+@keyframes hex-lit {
+  from,
+  40% {
+    background-color: color-mix(in srgb, var(--hex-success) 18%, transparent);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+.hex-lit {
+  animation: hex-lit 2400ms var(--hex-ease-in-out);
+}
 /* Like hex-bubble, but honours an animation-delay: hidden until its turn. */
 .hex-pop-in {
   animation: hex-pop var(--hex-motion-enter) var(--hex-ease-out) both;
@@ -1549,6 +1602,9 @@ html {
   .hex-ask-live-text,
   .hex-ask-ring-live,
   .hex-thread-in,
+  .hex-tick,
+  .hex-step,
+  .hex-lit,
   .hex-pop-in,
   .hex-menu-in,
   .hex-dialog-in,

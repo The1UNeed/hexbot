@@ -33,6 +33,8 @@ export interface ThreadRef {
 export type PanelTab = 'computer' | 'details' | 'fingerprint' | 'library'
 
 export interface UiState {
+  /** Experimental: Settings, Plugins opens as a table of every bot against every plugin. */
+  accessTable: boolean
   closeThread: () => void
   /** How the bots' computer's screen streams to this device: each network differs. */
   computerQuality: ComputerQuality
@@ -51,6 +53,7 @@ export interface UiState {
   peerRoute: null | string
   rightPanelOpen: boolean
   setPanelTab: (tab: PanelTab) => void
+  setAccessTable: (on: boolean) => void
   setComputerQuality: (quality: ComputerQuality) => void
   setLastSection: (value: LastSection | null) => void
   setOpeningBot: (bot: null | string) => void
@@ -79,6 +82,7 @@ export const SIDEBAR_MAX_WIDTH = 480
 export const useUi = create<UiState>()(
   persist(
     (set, get) => ({
+      accessTable: false,
       computerQuality: 'auto',
       lastSection: null,
       openingBot: null,
@@ -100,6 +104,10 @@ export const useUi = create<UiState>()(
 
       setSounds(sounds) {
         set({ sounds })
+      },
+
+      setAccessTable(accessTable) {
+        set({ accessTable })
       },
 
       setComputerQuality(computerQuality) {
@@ -180,6 +188,7 @@ export const useUi = create<UiState>()(
     {
       name: 'hexbot.ui',
       partialize: ({
+        accessTable,
         computerQuality,
         lastSection,
         panelTab,
@@ -188,6 +197,7 @@ export const useUi = create<UiState>()(
         sounds,
         theme
       }) => ({
+        accessTable,
         computerQuality,
         lastSection,
         panelTab,

@@ -31,6 +31,65 @@ async fn rpc(home: &Path, method: &str, p: Value) -> Value {
     call(home, "alice", method, p).await.unwrap()
 }
 
+/// A list asks about every bot for every connector. It reads the roster
+/// once and holds it; the next list, and anything outside one, reads it again.
+#[test]
+fn a_list_holds_the_roster_and_lets_it_go() {
+    let home = setup();
+    let add = |name: &str| {
+        db::open(home.path())
+            .unwrap()
+            .execute("INSERT INTO bots(name,owner_id) VALUES (?,'alice')", [name])
+            .unwrap();
+    };
+    {
+        let _outer = connectors::Listed::hold(home.path()).unwrap();
+        add("ant");
+        // Held for the length of the list, whatever happens to the table.
+        assert_eq!(connectors::names(home.path()).unwrap(), ["fox", "owl"]);
+        {
+            let _inner = connectors::Listed::hold(home.path()).unwrap();
+            assert_eq!(connectors::names(home.path()).unwrap(), ["fox", "owl"]);
+        }
+        // A list inside a list leaves the outer one's roster in place.
+        assert_eq!(connectors::names(home.path()).unwrap(), ["fox", "owl"]);
+    }
+    assert_eq!(
+        connectors::names(home.path()).unwrap(),
+        ["ant", "fox", "owl"]
+    );
+    // A bot the roster knows is listed with the rest; one it does not is refused.
+    assert!(connectors::ready_for(home.path(), "owl", "web_search").is_ok());
+    assert_eq!(
+        connectors::ready_for(home.path(), "nobody", "web_search")
+            .unwrap_err()
+            .code,
+        4205
+    );
+}
+
+/// Computer Use is on for a bot once Settings, Plugins gave it, whether or
+/// not a screen is in its reach yet: the list says what `enabled` says.
+#[tokio::test]
+async fn a_list_shows_computer_use_for_a_bot_without_a_screen_yet() {
+    let home = setup();
+    let h = home.path();
+    common::update_config(h, |c| {
+        c["computers"] = json!({"computer_use": ["owl"]});
+        Ok(())
+    })
+    .unwrap();
+    assert!(connectors::enabled(h, "owl", "computer_use").unwrap());
+    let list = rpc(h, "hexbot.connectors.list", json!({})).await;
+    let row = list["connectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == "computer_use")
+        .unwrap();
+    assert_eq!(row["enabled_bots"], json!(["owl"]));
+}
+
 #[tokio::test]
 async fn testing_computer_use_says_which_screens_bots_reach_and_never_marks_it_broken() {
     let home = setup();

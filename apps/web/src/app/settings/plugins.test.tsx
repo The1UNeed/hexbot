@@ -763,15 +763,21 @@ describe('Settings, Plugins', () => {
     vi.mocked(pluginsSetBots).mockResolvedValue({} as never)
   })
 
-  it('keeps the latest list when an older refresh answers last', async () => {
-    let answerOld: (value: PluginsList) => void = () => {}
+  it('reads the list once at a time, and one read after it answers every ask made meanwhile', async () => {
+    let answerFirst: (value: PluginsList) => void = () => {}
+    const before = vi.mocked(pluginsList).mock.calls.length
     vi.mocked(pluginsList)
-      .mockImplementationOnce(() => new Promise(resolve => (answerOld = resolve)))
+      .mockImplementationOnce(() => new Promise(resolve => (answerFirst = resolve)))
       .mockResolvedValueOnce(list({ connectors: [], packages: [] }))
     const first = usePlugins.getState().refresh()
-    await usePlugins.getState().refresh()
-    answerOld(list())
-    await first
+    // A change sends several events; each asks for the list while the first read is on its way.
+    const second = usePlugins.getState().refresh()
+    const third = usePlugins.getState().refresh()
+    expect(vi.mocked(pluginsList).mock.calls.length - before).toBe(1)
+    answerFirst(list())
+    await Promise.all([first, second, third])
+    expect(vi.mocked(pluginsList).mock.calls.length - before).toBe(2)
+    // The later read is the one the page shows.
     expect(usePlugins.getState().plugins.map(item => item.id)).toEqual(['pdf'])
     expect(usePlugins.getState().loading).toBe(false)
   })
