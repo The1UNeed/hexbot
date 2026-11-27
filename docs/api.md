@@ -2221,9 +2221,44 @@ A client newer than the daemon asks the daemon to update itself
   update_id, percent, message, at, outcome}`. `outcome` is the last service
   update's result, `{id, from, to, status, reason, at}` with `status`
   `committed`, `rolled-back`, `failed` or `superseded`, or null. `status` is `idle`, `requested`, `checking`,
-  `downloading`, `installing`, `restarting`, `up-to-date`, or `failed`.
+  `downloading`, `installing`, `staged`, `restarting`, `up-to-date`, or `failed`.
+  `staged` is the version a `stage_only` request downloaded, or null.
   A successful update ends with the connection dropping and the daemon
   coming back on a verified runtime that satisfies the requesting client.
+
+Update everything (`docs/channels.md`, "Updating everything at once") adds
+these. `hexbot.info` says `app_updates: true` once the daemon has them.
+
+- `hexbot.update.check {track?}` → `{track, current, latest, newer}`. Reads
+  the signed `install/<track>.json` (signature at
+  `install/<latest>/<track>.json.sig`); `track` defaults to the daemon's own.
+  `newer` is true only when a service or app-run daemon would take that
+  build: its signed native manifest's `builtAt` is above the daemon's floor.
+  Cached for a minute.
+- `hexbot.update.request` also takes `stage_only: true`, which downloads and
+  checks the build and stops at `staged` (refused, 4210, for a daemon an app
+  runs), and no `version`, which means the newest on the daemon's track. A
+  request for the staged version restarts into it without downloading again,
+  half a second after the reply.
+- `hexbot.update.run {action: "begin" | "end", run_id}` → `{run}`. One run per
+  daemon, kept in `runtime/update-run.json` for 30 minutes so it outlives the
+  daemon's restart: a `begin` with another `run_id` while one is live is
+  4409, the same `run_id` may begin again.
+- `hexbot.apps.report {app_id, version, edition, platform, track,
+  hosts_daemon, updater, request}` → `{reported: true}`. A desktop app, on its
+  own connection: its updater (`status`, `available`, `downloaded`,
+  `percent`, `message`) and the run's request it is working on (`{id, state,
+  downloaded_version, error}`, `state` one of `preparing`, `ready`,
+  `installing`, `postponed`, `failed`, `not_applied`). Kept by device and app
+  id until that connection closes.
+- `hexbot.apps.list {}` → `{apps: [report + {device, label, current}], older:
+  [{device, label}], run}`. `current` marks the caller's own connection;
+  `older` lists app connections (Origin `hexbot-app://app`) that never
+  reported, which a run can't update. `hexbot.apps.changed` says to ask again.
+- `hexbot.apps.update {device, app_id, action: "prepare" | "commit" |
+  "cancel", request_id, version?, track?}` → `{sent: true}`. Passes the request
+  to that app as `hexbot.apps.update_requested` on its connection only. The
+  device must be the caller's own (4302); 4404 when the app isn't connected.
 
 ### Users and usage
 

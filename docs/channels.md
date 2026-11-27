@@ -268,6 +268,48 @@ connection dropping and coming back on a version no longer older than the client
 the same proof T3 Code uses. A failure, including "nothing to install",
 stays on the page until dismissed.
 
+### Updating everything at once
+
+With a daemon that has `app_updates`, one Update in the roster pill or in
+Settings, Updates updates the daemon and every Hexbot app connected to it.
+It is T3 Code's Update everything turned around: there one client updates
+many servers, here one daemon has many apps, so the client you click in
+plans and drives the run and the daemon passes requests on to the other
+apps (`backend/hexbot-core/src/app_updates.rs`). The planner and the run are
+pure (`apps/web/src/lib/update-everything.ts`), so the phone runs the same
+ones (`apps/mobile/src/UpdateEverything.tsx`).
+
+- **Apps report.** Every desktop app reports its version, track, updater and
+  whether it runs the daemon it is connected to (`hexbot.apps.report`),
+  again whenever one of them changes. An app too old to report shows as
+  "Update on that computer".
+- **The plan** has a row for the daemon, this app and each other app, or
+  says why it skips one. `hexbot.update.check` says whether the daemon would
+  take the newest build on its track, by the same `builtAt` rule the update
+  itself applies. A daemon an app runs updates with that app. An app on the
+  other track moves onto the daemon's track only in a run where the daemon
+  itself moves; a Mac switching tracks from another computer is skipped,
+  since Squirrel.Mac can't relaunch a renamed bundle.
+- **The run** claims the daemon's one run, then prepares everything at once:
+  the daemon stages (`stage_only`), each app downloads without installing.
+  A service daemon then restarts on trial and the client reads its outcome
+  by update id. If it rolled back, every prepared app is cancelled and keeps
+  its version and track. Otherwise each other app installs after "Restart in
+  10s · Later" on its own screen, the app that runs the daemon last, and this
+  app last of all after "Restart in 5s · Later". The run is saved before this
+  app relaunches; the relaunched app finishes it and shows one result.
+- **On each app** (`apps/desktop/src/main/updater.ts`): a prepared update
+  waits 30 minutes for its commit; background checks pause meanwhile; a
+  track for the run is switched only in memory until the commit; the
+  countdown's deadline runs in the main process, so a hidden window still
+  installs; "Later" keeps this version and the earlier track. The version
+  being installed is remembered by app id, so a relaunch that didn't apply it
+  reports `not_applied`.
+- **Browsers** the daemon served reload onto its new bundle when it comes
+  back on another version, except the tab driving a run, which reloads when
+  its result is dismissed. The phone updates itself from TestFlight or the App
+  Store.
+
 ## Borrowed from T3 Code
 
 [T3 Code](https://github.com/pingdotgg/t3code) ships an Electron app plus a
@@ -293,6 +335,10 @@ reference for Hexbot's. Kept as-is:
 - A server update starts on trial: snapshot the databases, record the pending
   update durably, commit only once the new build is ready, and otherwise
   restore the snapshot on the old build and report the outcome by update id.
+- Update everything: a pure planner with skip reasons, prepare everything in
+  parallel, remote desktop prepare and commit with a 30-minute prepared
+  lifetime, a countdown with Later, the run saved across this app's relaunch,
+  and one result.
 - Apple signing and notarization are optional and detected from secrets. The
   `.p8` key is stored as text and written to a file on the runner.
 - Release notes compare against the previous release in the same channel.

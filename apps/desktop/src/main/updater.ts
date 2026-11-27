@@ -2,11 +2,13 @@ import { EventEmitter } from 'node:events'
 import { app } from 'electron'
 import electronUpdater from 'electron-updater'
 import {
+  changeDesktopState,
   defaultUpdateChannel,
   readUpdateChannel,
   updateDesktopState,
   type UpdateChannel
 } from './desktop-state'
+import { appId, edition } from './edition'
 import { errorMessage, log } from './log'
 import {
   disabledReason,
@@ -22,6 +24,8 @@ import {
   onInstallStart,
   onProgress,
   onUpToDate,
+  afterRelaunch,
+  remoteReady,
   versionChannel,
   type UpdateState
 } from './update-state'
@@ -127,6 +131,9 @@ export async function checkForUpdates(reason: string): Promise<UpdateState> {
   await configure()
   const current = state!
   if (current.status === 'disabled') return current
+  // A prepared update waits for its commit; a background check would clear it.
+  // Only the run's own check runs while it holds a prepared update.
+  if (reason !== 'run' && remoteHolds()) return current
   if (pending) return pending
   if (active) return current
   active = 'check'
@@ -247,4 +254,201 @@ export async function runRemoteUpdate(
   } finally {
     updaterEvents.off('state', relay)
   }
+}
+
+// Update everything (docs/channels.md): another client asks this app,
+// through the daemon, to prepare an update, then to install it. T3 Code's
+// DesktopRemoteUpdates.ts. The renderer relays requests and reports.
+
+export type RemoteState =
+  'preparing' | 'ready' | 'countdown' | 'installing' | 'postponed' | 'failed' | 'not_applied'
+export interface RemoteRequest {
+  requestId: string
+  state: RemoteState
+  /** The version downloaded, or the one that didn't apply. */
+  version: string | null
+  error: string | null
+  /** When the countdown installs, while counting down. */
+  installsAt: number | null
+}
+
+/** A prepared update outlives the daemon's own restart in the same run. */
+export const PREPARED_MS = 30 * 60_000
+export const REMOTE_COUNTDOWN_MS = 10_000
+
+let remote: RemoteRequest | null = null
+let remoteChannel: { previous: UpdateChannel; daemon: string | null } | null = null
+let expiry: NodeJS.Timeout | undefined
+let countdown: NodeJS.Timeout | undefined
+
+const remoteHolds = (): boolean =>
+  !!remote && ['preparing', 'ready', 'countdown', 'installing'].includes(remote.state)
+
+function setRemote(next: RemoteRequest | null): RemoteRequest | null {
+  remote = next
+  updaterEvents.emit('remote', next)
+  return next
+}
+
+export function getRemoteRequest(): RemoteRequest | null {
+  return remote
+}
+
+/** At launch: an update this app was installing for a run that didn't apply. */
+export async function readNotApplied(): Promise<void> {
+  let found: RemoteRequest | null = null
+  await changeDesktopState(saved => {
+    const { notApplied, keep } = afterRelaunch(
+      saved.pendingInstall,
+      appId,
+      edition,
+      app.getVersion(),
+      Date.now()
+    )
+    if (notApplied)
+      found = {
+        requestId: notApplied.requestId,
+        state: 'not_applied',
+        version: notApplied.version,
+        error: `${notApplied.version} didn't apply.`,
+        installsAt: null
+      }
+    return { pendingInstall: keep }
+  })
+  if (found) setRemote(found)
+}
+
+function switchInMemory(channel: UpdateChannel): void {
+  const current = state!
+  if (channel === current.channel) return
+  setState(initialUpdateState(current.currentVersion, channel, null))
+  applyChannel(channel)
+}
+
+function restoreChannel(): void {
+  const previous = remoteChannel?.previous
+  remoteChannel = null
+  if (previous && previous !== state!.channel) {
+    switchInMemory(previous)
+    void checkForUpdates('track')
+  }
+}
+
+/**
+ * Check and download, ending with the update ready to install. A track for
+ * the run switches only in memory until the commit, so a run that rolls back
+ * never leaves this app on the other track.
+ */
+export async function prepareRemote(
+  requestId: string,
+  track: UpdateChannel | null,
+  daemon: string | null
+): Promise<RemoteRequest | null> {
+  await configure()
+  if (remote?.requestId === requestId && remote.state !== 'failed') return remote
+  if (state!.status === 'disabled')
+    return setRemote({
+      requestId,
+      state: 'failed',
+      version: null,
+      error: state!.message,
+      installsAt: null
+    })
+  clearTimeout(expiry)
+  setRemote({ requestId, state: 'preparing', version: null, error: null, installsAt: null })
+  while (pending) await pending
+  remoteChannel = { previous: state!.channel, daemon }
+  if (track) switchInMemory(track)
+  let current = await checkForUpdates('run')
+  if (current.status === 'available') current = await downloadUpdate()
+  if (remote?.requestId !== requestId) return remote
+  const result = remoteReady(current)
+  if (!result.ready) {
+    // Released first, so the restored track's own check isn't held back.
+    setTimeout(restoreChannel)
+    return setRemote({
+      requestId,
+      state: 'failed',
+      version: null,
+      error: result.error,
+      installsAt: null
+    })
+  }
+  expiry = setTimeout(() => void cancelRemote(requestId, false), PREPARED_MS)
+  expiry.unref()
+  return setRemote({
+    requestId,
+    state: 'ready',
+    version: result.version,
+    error: null,
+    installsAt: null
+  })
+}
+
+/**
+ * Install the prepared update. `delayMs` is the countdown: 10 seconds on an
+ * app the run reached through the daemon, none on the app that drives it,
+ * which counted down already. The deadline runs here, so a hidden window
+ * still installs on time.
+ */
+export async function commitRemote(
+  requestId: string,
+  delayMs: number
+): Promise<RemoteRequest | null> {
+  await configure()
+  if (remote?.requestId !== requestId || remote.state !== 'ready') return remote
+  // Only the version prepared, whatever a later check said.
+  if (state!.downloadedVersion !== remote.version)
+    return setRemote({ ...remote, state: 'failed', error: 'The prepared update is gone. Retry.' })
+  clearTimeout(expiry)
+  const waiting: RemoteState = delayMs > 0 ? 'countdown' : 'ready'
+  const install = async (): Promise<void> => {
+    const prepared = remote
+    if (prepared?.requestId !== requestId || prepared.state !== waiting || !prepared.version) return
+    const version = prepared.version
+    const channel = state!.channel
+    const switched = !!remoteChannel && remoteChannel.previous !== channel
+    const daemon = remoteChannel?.daemon ?? null
+    await changeDesktopState(saved => ({
+      updateChannel: switched ? channel : saved.updateChannel,
+      pendingInstall: {
+        ...saved.pendingInstall,
+        [appId]: { version, requestId, daemon, edition, expiresAt: Date.now() + PREPARED_MS }
+      }
+    }))
+    // "Later" may have come while the state was saved.
+    if (remote?.requestId !== requestId || remote.state !== waiting) return
+    remoteChannel = null
+    // Install the prepared version whatever a later check said about the feed.
+    if (state!.downloadedVersion !== version) {
+      setRemote({ ...prepared, state: 'failed', error: 'The prepared update is gone. Retry.' })
+      return
+    }
+    if (state!.status !== 'downloaded') setState(onDownloaded(state!, version))
+    setRemote({ ...prepared, state: 'installing', installsAt: null })
+    const result = await installUpdate()
+    if (result.status !== 'installing')
+      setRemote({
+        ...prepared,
+        state: 'failed',
+        error: result.message ?? 'The app could not install the update.'
+      })
+  }
+  if (delayMs <= 0) {
+    await install()
+    return remote
+  }
+  countdown = setTimeout(() => void install(), delayMs)
+  return setRemote({ ...remote, state: 'countdown', installsAt: Date.now() + delayMs })
+}
+
+/** "Later", or the run gave up: keep this version and the earlier track. */
+export function cancelRemote(requestId: string, later: boolean): RemoteRequest | null {
+  if (remote?.requestId !== requestId || remote.state === 'installing') return remote
+  clearTimeout(expiry)
+  clearTimeout(countdown)
+  const next = setRemote(later ? { ...remote, state: 'postponed', installsAt: null } : null)
+  // After the request stopped holding, so the restored track is checked now.
+  restoreChannel()
+  return next
 }

@@ -7,6 +7,7 @@ const metadata = ipcRenderer.sendSync('hexbot:metadata') as {
   version: string
   isPackaged: boolean
   edition: 'full' | 'client'
+  appId: string
 }
 const listen = <T>(channel: string, callback: (value: T) => void): (() => void) => {
   if (typeof callback !== 'function') throw new TypeError('Listener must be a function')
@@ -51,6 +52,7 @@ const hexbot = Object.freeze({
   }),
   daemon: Object.freeze({
     status: () => ipcRenderer.invoke('hexbot:daemon:status'),
+    onStatus: (callback: (value: unknown) => void) => listen('hexbot:daemon:status', callback),
     start: () => ipcRenderer.invoke('hexbot:daemon:start'),
     stop: () => ipcRenderer.invoke('hexbot:daemon:stop'),
     onProgress: (callback: (value: unknown) => void) => listen('hexbot:daemon:progress', callback),
@@ -110,7 +112,16 @@ const hexbot = Object.freeze({
         if (validUpdateState(value)) callback(value)
       }),
     setChannel: (channel: 'stable' | 'nightly') =>
-      ipcRenderer.invoke('hexbot:updater:set-channel', channel)
+      ipcRenderer.invoke('hexbot:updater:set-channel', channel),
+    // Update everything (src/main/updater.ts, prepareRemote).
+    remote: () => ipcRenderer.invoke('hexbot:updater:remote'),
+    prepare: (requestId: string, track: 'stable' | 'nightly' | null, daemon: string | null) =>
+      ipcRenderer.invoke('hexbot:updater:prepare', requestId, track, daemon),
+    commit: (requestId: string, countdown: boolean) =>
+      ipcRenderer.invoke('hexbot:updater:commit', requestId, countdown),
+    cancel: (requestId: string, later: boolean) =>
+      ipcRenderer.invoke('hexbot:updater:cancel', requestId, later),
+    onRemote: (callback: (value: unknown) => void) => listen('hexbot:updater:remote', callback)
   }),
   setCrashReports: (enabled: boolean) => ipcRenderer.invoke('hexbot:crash-reports:set', enabled),
   setUsageData: (enabled: boolean) => ipcRenderer.invoke('hexbot:usage-data:set', enabled),

@@ -11,7 +11,7 @@
 import { create } from 'zustand'
 
 import { updateRequest, updateStatus } from '../lib/api'
-import { getBridge, type UpdateState } from '../lib/bridge'
+import { getBridge, type RemoteRequest, type UpdateState } from '../lib/bridge'
 import type { DaemonUpdateStatus } from '../lib/types'
 import { outcomeFailure } from '../lib/update-outcome'
 import { daemonBehind } from '../lib/version-skew'
@@ -32,6 +32,8 @@ export interface DaemonUpdate {
 export interface UpdatesState {
   app: null | UpdateState
   daemon: DaemonUpdate | null
+  /** A request from Update everything on this app (apps/desktop/src/main/updater.ts). */
+  remote: null | RemoteRequest
   setApp: (app: null | UpdateState) => void
   setDaemon: (daemon: DaemonUpdate | null) => void
 }
@@ -39,6 +41,7 @@ export interface UpdatesState {
 export const useUpdates = create<UpdatesState>(set => ({
   app: null,
   daemon: null,
+  remote: null,
   setApp: app => set({ app }),
   setDaemon: daemon => set({ daemon })
 }))
@@ -52,13 +55,22 @@ export function bindAppUpdates(): () => void {
   }
 
   const off = bridge.updater.onStatus(state => useUpdates.getState().setApp(state))
+  const offRemote = bridge.updater.onRemote?.(remote => useUpdates.setState({ remote }))
+
+  void bridge.updater
+    .remote?.()
+    .then(remote => useUpdates.setState({ remote }))
+    .catch(() => undefined)
 
   void bridge.updater
     .state()
     .then(state => useUpdates.getState().setApp(state))
     .catch(() => undefined)
 
-  return off
+  return () => {
+    off()
+    offRemote?.()
+  }
 }
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))

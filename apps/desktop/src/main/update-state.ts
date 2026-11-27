@@ -2,7 +2,7 @@
 // `updater` bridge). Transitions are pure so they can be tested without
 // Electron; updater.ts wires them to electron-updater. Modelled on T3 Code's
 // updateMachine.ts (docs/channels.md, "Borrowed from T3 Code").
-import { isNightlyVersion, type UpdateChannel } from './desktop-state'
+import { isNightlyVersion, type PendingInstall, type UpdateChannel } from './desktop-state'
 
 export type UpdateStatus =
   | 'disabled'
@@ -163,4 +163,46 @@ export function nextAction(state: UpdateState): UpdateAction {
   if (state.status === 'idle' || state.status === 'up-to-date' || state.status === 'error')
     return 'check'
   return null
+}
+
+/**
+ * Where a prepare for Update everything ended: a download ready to install,
+ * or why not. T3 Code's remote update flow (DesktopRemoteUpdates.ts).
+ */
+export function remoteReady(
+  state: UpdateState
+): { ready: true; version: string } | { ready: false; error: string } {
+  if (state.status === 'downloaded' && state.downloadedVersion)
+    return { ready: true, version: state.downloadedVersion }
+  if (state.status === 'up-to-date')
+    return {
+      ready: false,
+      error: `Nothing newer on the ${state.channel === 'nightly' ? 'Nightly' : 'Stable'} track.`
+    }
+  return { ready: false, error: state.message ?? 'The app could not download the update.' }
+}
+
+/**
+ * After a relaunch: the update this app was installing for a run, if it didn't
+ * apply, and what stays saved. Entries for this app go, and so do entries of
+ * the same edition the running version satisfies (a track switch changes the
+ * app id).
+ */
+export function afterRelaunch(
+  pending: Record<string, PendingInstall> | undefined,
+  appId: string,
+  edition: 'full' | 'client',
+  version: string,
+  now: number
+): { notApplied: PendingInstall | null; keep: Record<string, PendingInstall> } {
+  const keep: Record<string, PendingInstall> = {}
+  let notApplied: PendingInstall | null = null
+  for (const [id, entry] of Object.entries(pending ?? {})) {
+    if (id === appId) {
+      if (entry.version !== version && entry.expiresAt > now) notApplied = entry
+    } else if (!(entry.edition === edition && entry.version === version) && entry.expiresAt > now) {
+      keep[id] = entry
+    }
+  }
+  return { notApplied, keep }
 }
