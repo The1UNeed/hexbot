@@ -475,6 +475,18 @@ and any start that resolved a failure, so clients show Working instead of
 Stopped. Pi decides where an owner's input starts a turn, including an idle
 steer and a message queued behind a settling run.
 Failing again records a new incident.
+When a turn fails on a provider usage limit, rate limit, or exhausted credit
+balance, the daemon tags the incident with its canonical provider and watches
+for recovery while any such incident remains open. Open quota incidents for
+that provider resolve automatically across every bot sharing those credentials
+when a provider-wide usage/balance check succeeds or shared credentials are
+updated, and across bots sharing those credentials and model when a minimal
+probe or a turn on that provider and model completes without error; switching
+a bot to another provider resolves its open quota incidents from the previous
+provider.
+Automatic resolution emits `hexbot.bots.changed {resolved_incidents,
+resolved_sections}` so clients clear Stopped cards and dots without manual
+dismissal.
 `approval_mode` is `inherit` (the deployment setting), `manual`, `smart`
 (Auto), or `off` (Bypass); `workdir` overrides the deployment workspace for
 that bot's terminal.
@@ -2060,6 +2072,12 @@ and [provider setup guide](https://hexbot.app/docs/providers/).
   Key changes and completed sign-ins refresh existing Pi credential copies.
   Open sections use the updated credentials on their next provider request.
   Disconnect removes the provider from those copies, including bots that are idle.
+- `hexbot.providers.check_recovery {}` → `{checked: [string], resolved: number}`.
+  Checks providers that currently have open quota/billing incidents (using
+  free usage or balance endpoints where available, or a minimal probe
+  otherwise, rate-limited per provider) and resolves those incidents once the
+  provider accepts work again. Clients call this on window focus or app
+  foreground only when at least one bot is `stopped`.
 - `hexbot.models.list {provider?, include_unconfigured?, refresh?}` →
   `{curated: [Model], all: [Model], all_source, error?}` with
   `Model = {provider, id, label, context?, input_cost?, output_cost?, reasoning_levels?, fast?}`,
@@ -2333,7 +2351,9 @@ Connector mutations emit `hexbot.connectors.changed {connector, bot?}` and
 bot, section_id, room_id, session_id, kind, connector, text, created_at,
 resolved_at}}`. Room failures include their room ID in both the payload and
 incident. Bot reads return that ID in `status_detail.room_id` for attributable
-legacy room failures too. Resolving an incident does not emit an incident event.
+legacy room failures too. Resolving an incident does not emit an incident event; automatic provider
+quota recovery emits `hexbot.bots.changed {resolved_incidents,
+resolved_sections}`.
 
 ## Pairing and auth over HTTP
 

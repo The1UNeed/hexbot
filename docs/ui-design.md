@@ -386,6 +386,11 @@ with Viewport Segments place both poses on the exact halves.
   Stopped card closes the same way. A failure with no room or
   conversation of its own, such as a dream's or a scheduled job's, shows in
   the bot's chat, so a red dot always has a message you can read and close.
+  When a bot stops on a provider usage limit, rate limit, or exhausted credit
+  balance, the daemon watches for that provider to recover and clears those
+  Stopped cards and red dots automatically across every bot sharing those
+  credentials (and matching model for per-model limits) once the subscription
+  resets, credits are added, credentials change, or a turn completes cleanly.
 - Recall: your latest message in a bot's chat, while the bot works on it or
   after its turn stopped, shows Recall beside Copy on hover; the phone offers
   it on a long press. The message and everything after it leave the chat, and

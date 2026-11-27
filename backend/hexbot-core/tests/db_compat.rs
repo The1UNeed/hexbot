@@ -109,6 +109,7 @@ fn team_shape(connection: &Connection) -> Vec<(String, Vec<Column>)> {
             "devices" => &["jkt", "push_token", "push_platform"],
             "sections" => &["peer_bot", "purpose"],
             "bot_messages" => &["source_section"],
+            "bot_incidents" => &["provider", "category", "model"],
             _ => &[],
         };
         for name in names {

@@ -9,9 +9,26 @@ const state = vi.hoisted(() => ({
   request: vi.fn(),
   revoked: () => {},
   event: (_event: unknown) => {},
-  ready: async () => {}
+  ready: async () => {},
+  connectionState: 'open' as 'open' | 'closed',
+  session: null as null | { client: { connectionState: string } }
 }))
-const appState = vi.hoisted(() => ({ currentState: 'active', addEventListener: () => ({ remove() {} }) }))
+const appState = vi.hoisted(() => ({
+  currentState: 'active',
+  listeners: new Set<(next: string) => void>(),
+  addEventListener: (_type: string, cb: (next: string) => void) => {
+    appState.listeners.add(cb)
+    return {
+      remove() {
+        appState.listeners.delete(cb)
+      }
+    }
+  },
+  emit(next: string) {
+    appState.currentState = next
+    for (const cb of [...appState.listeners]) cb(next)
+  }
+}))
 vi.mock('react-native', () => ({ AppState: appState }))
 vi.mock('expo-crypto', () => ({ randomUUID: () => 'message' }))
 vi.mock('./storage', () => ({
@@ -28,12 +45,22 @@ vi.mock('./push', () => ({ registerPush: vi.fn(async () => undefined) }))
 vi.mock('./session', () => ({
   MobileSession: class {
     client = { connectionState: 'open', request: state.request }
+    #ready: () => Promise<void>
     constructor(_daemon: unknown, _token: string, changed: (state: string) => void, ready: () => Promise<void>, event: (event: unknown) => void) {
+      this.#ready = ready
       state.ready = ready
       state.event = event
       state.revoked = () => changed('revoked')
+      state.session = this
     }
-    async connect() {}
+    async connect() {
+      const wasClosed = this.client.connectionState !== 'open'
+      this.client.connectionState = 'open'
+      if (wasClosed) await this.#ready()
+    }
+    suspend() {
+      this.client.connectionState = 'closed'
+    }
     stop() {}
   }
 }))
@@ -819,6 +846,73 @@ describe('recall and closing an error in a bot chat', () => {
     await act(async () => { await hook.result.current.dismissError() })
     expect(hook.result.current.chat.error).toBeNull()
     expect(state.request.mock.calls.some(([m]) => m === 'hexbot.bots.clear_status')).toBe(false)
+  })
+
+  it('clears the open chat error when hexbot.bots.changed reports its section resolved', async () => {
+    const stopped = { ...bot, status: 'stopped', status_detail: { section_id: 'owl-chat' } } as Bot
+    const hook = await chat([stopped])
+    act(() =>
+      state.event({
+        type: 'message.complete',
+        session_id: 'live-owl-chat',
+        payload: { error: 'Codex error: The usage limit has been reached' }
+      })
+    )
+    expect(hook.result.current.chat.error).toBe('Codex error: The usage limit has been reached')
+    act(() =>
+      state.event({
+        type: 'hexbot.bots.changed',
+        payload: { resolved_incidents: ['inc-1'], resolved_sections: ['owl-chat'] }
+      })
+    )
+    expect(hook.result.current.chat.error).toBeNull()
+  })
+
+  it('triggers provider recovery after reconnecting from background only when a bot is stopped', async () => {
+    const stopped = { ...bot, status: 'stopped', status_detail: { section_id: 'owl-chat' } } as Bot
+    await chat([stopped])
+    const recoveryCalls = () =>
+      state.request.mock.calls.filter(([m]) => m === 'hexbot.providers.check_recovery').length
+
+    // Initial onReady after cold connect fires once because a bot is stopped.
+    await act(async () => {
+      await state.ready()
+    })
+    expect(recoveryCalls()).toBe(1)
+
+    // Going to background suspends (closes) the socket; returning active reconnects and triggers once open.
+    await act(async () => {
+      appState.emit('background')
+    })
+    expect(state.session?.client.connectionState).toBe('closed')
+    await act(async () => {
+      appState.emit('active')
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(state.session?.client.connectionState).toBe('open')
+    expect(recoveryCalls()).toBe(2)
+
+    // Returning from inactive while socket stayed open also triggers once.
+    await act(async () => {
+      appState.emit('inactive')
+      appState.emit('active')
+    })
+    expect(recoveryCalls()).toBe(3)
+
+    // Once all bots are idle, foregrounding does not trigger recovery.
+    daemonWith([{ ...bot, status: 'idle' } as Bot])
+    await act(async () => {
+      appState.emit('background')
+    })
+    await act(async () => {
+      appState.emit('active')
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(recoveryCalls()).toBe(3)
   })
 })
 

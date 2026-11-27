@@ -540,6 +540,180 @@ pub(crate) fn retire_room_incidents(conn: &Connection, room: &str) -> Result<()>
     Ok(())
 }
 
+/// Whether a provider turn error indicates an exhausted usage limit, rate limit,
+/// or billing/credit balance that can recover when the plan resets or funds are added.
+pub fn is_quota_error(text: &str) -> bool {
+    let lower = text.trim().to_lowercase();
+    if lower.is_empty() {
+        return false;
+    }
+    // Exclude Hexbot's own limits and prompt/context-size errors.
+    for excluded in [
+        "configured turn limit",
+        "bot exceeded the turn deadline",
+        "daily token budget",
+        "room token budget",
+        "transport limit",
+        "byte limit",
+        "dream limit",
+        "the turn was interrupted",
+        "context_length",
+        "context length",
+        "context window",
+        "maximum context",
+        "prompt is too long",
+        "input is too long",
+    ] {
+        if lower.contains(excluded) {
+            return false;
+        }
+    }
+    for marker in [
+        "usage limit",
+        "usage_limit",
+        "rate limit",
+        "rate_limit",
+        "too many requests",
+        "resource_exhausted",
+        "resource exhausted",
+        "insufficient_quota",
+        "insufficient quota",
+        "quota exceeded",
+        "quota has been exceeded",
+        "exceeded your current quota",
+        "exceeded quota",
+        "insufficient credits",
+        "insufficient credit",
+        "out of credits",
+        "no credits left",
+        "no credits remaining",
+        "more credits",
+        "credits required",
+        "credit balance",
+        "credit limit",
+        "insufficient balance",
+        "insufficient funds",
+        "payment required",
+        "billing hard limit",
+        "billing limit",
+        "spend limit",
+        "spending limit",
+        "monthly limit",
+        "weekly limit",
+        "5-hour limit",
+        "5 hour limit",
+        "plan limit",
+        "hard limit has been reached",
+        "add credits",
+        "billing is not active",
+    ] {
+        if lower.contains(marker) {
+            return true;
+        }
+    }
+    has_http_status(&lower, "402") || has_http_status(&lower, "429")
+}
+
+/// True when an error message specifically indicates exhausted credits/balance/billing
+/// (HTTP 402 / insufficient credits) rather than a transient or free-tier rate limit.
+pub(crate) fn is_credit_error(text: &str) -> bool {
+    let lower = text.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return false;
+    }
+    for marker in [
+        "insufficient_quota",
+        "insufficient quota",
+        "insufficient credits",
+        "insufficient credit",
+        "out of credits",
+        "no credits left",
+        "no credits remaining",
+        "more credits",
+        "credits required",
+        "credit balance",
+        "credit limit",
+        "insufficient balance",
+        "insufficient funds",
+        "payment required",
+        "billing hard limit",
+        "billing limit",
+        "spend limit",
+        "spending limit",
+        "hard limit has been reached",
+        "add credits",
+        "billing is not active",
+    ] {
+        if lower.contains(marker) {
+            return true;
+        }
+    }
+    has_http_status(&lower, "402")
+}
+
+fn has_http_status(lower: &str, code: &str) -> bool {
+    if lower
+        .strip_prefix(code)
+        .is_some_and(|rest| rest.is_empty() || matches!(rest.as_bytes()[0], b' ' | b':' | b'{'))
+    {
+        return true;
+    }
+    [
+        format!("http {code}"),
+        format!("status {code}"),
+        format!("status: {code}"),
+        format!("status:{code}"),
+        format!("\"status\":{code}"),
+        format!("\"status\": {code}"),
+        format!("code {code}"),
+        format!("code: {code}"),
+        format!("code:{code}"),
+        format!("\"code\":{code}"),
+        format!("\"code\": {code}"),
+        format!("error {code}"),
+    ]
+    .iter()
+    .any(|needle| contains_bounded_code(lower, needle))
+}
+
+fn contains_bounded_code(haystack: &str, needle: &str) -> bool {
+    let mut start = 0;
+    while let Some(offset) = haystack[start..].find(needle) {
+        let end = start + offset + needle.len();
+        let next = haystack.as_bytes().get(end);
+        if next.is_none_or(|byte| !byte.is_ascii_digit()) {
+            return true;
+        }
+        start += offset + 1;
+    }
+    false
+}
+
+pub(crate) fn is_open_quota_row(row: &Value) -> bool {
+    row["kind"] == "turn_failed"
+        && (row["category"] == "quota"
+            || (row["category"].is_null() && is_quota_error(row["text"].as_str().unwrap_or(""))))
+}
+
+pub(crate) fn incident_provider(home: &Path, row: &Value) -> Option<String> {
+    if let Some(provider) = row["provider"].as_str().filter(|s| !s.is_empty()) {
+        return Some(crate::providers::canonical_provider(provider));
+    }
+    let text = row["text"].as_str().unwrap_or("");
+    if text.starts_with("Codex error:") {
+        return Some("openai-codex".to_owned());
+    }
+    let bot = row["bot"].as_str().filter(|s| !s.is_empty())?;
+    crate::catalog::section_model(home, bot)
+        .ok()
+        .and_then(|model| {
+            model["provider"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(crate::providers::canonical_provider)
+        })
+}
+
 /// Internal incident write; the runtime publishes the returned row to affected clients.
 pub fn record_incident(
     home: &Path,
@@ -556,6 +730,15 @@ pub fn record_incident(
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let connector = context["connector"].as_str();
     let section = context["section_id"].as_str();
+    let provider = context["provider"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(crate::providers::canonical_provider);
+    let model = context["model"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let mut attribution =
         json!({"bot":bot,"kind":kind,"section_id":section,"room_id":context["room_id"]});
     normalize_incident_room(&tx, &mut attribution)?;
@@ -575,7 +758,8 @@ pub fn record_incident(
     let now = common::now();
     let id = if let Some(existing) = existing {
         let id = existing["id"].as_str().unwrap().to_string();
-        let text = if text.is_empty() {
+        let empty_text = text.is_empty();
+        let text = if empty_text {
             existing["text"].as_str().unwrap_or("")
         } else {
             &text
@@ -584,15 +768,42 @@ pub fn record_incident(
             .as_str()
             .filter(|s| !s.is_empty())
             .or_else(|| existing["session_id"].as_str());
+        let provider = provider.as_deref().or_else(|| {
+            empty_text
+                .then(|| existing["provider"].as_str().filter(|s| !s.is_empty()))
+                .flatten()
+        });
+        let model = model.or_else(|| {
+            empty_text
+                .then(|| existing["model"].as_str().filter(|s| !s.is_empty()))
+                .flatten()
+        });
+        let category = context["category"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .or_else(|| (kind == "turn_failed" && is_quota_error(text)).then_some("quota"));
         tx.execute(
-            "UPDATE bot_incidents SET text=?,created_at=?,session_id=?,room_id=? WHERE id=?",
-            params![text, now, session, attribution["room_id"].as_str(), id],
+            "UPDATE bot_incidents SET text=?,created_at=?,session_id=?,room_id=?,provider=?,category=?,model=? WHERE id=?",
+            params![
+                text,
+                now,
+                session,
+                attribution["room_id"].as_str(),
+                provider,
+                category,
+                model,
+                id
+            ],
         )?;
         id
     } else {
         let id = common::id();
+        let category = context["category"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .or_else(|| (kind == "turn_failed" && is_quota_error(&text)).then_some("quota"));
         tx.execute(
-            "INSERT INTO bot_incidents(id,bot,section_id,room_id,session_id,kind,connector,text,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO bot_incidents(id,bot,section_id,room_id,session_id,kind,connector,text,created_at,provider,category,model) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             params![
                 id,
                 bot,
@@ -602,7 +813,10 @@ pub fn record_incident(
                 kind,
                 connector,
                 text,
-                now
+                now,
+                provider.as_deref(),
+                category,
+                model
             ],
         )?;
         id
@@ -610,6 +824,228 @@ pub fn record_incident(
     let row = common::rows(&tx, "SELECT * FROM bot_incidents WHERE id=?", &[&id])?.remove(0);
     tx.commit()?;
     Ok(row)
+}
+
+/// Open visible quota/billing `turn_failed` incidents annotated with their owner
+/// and effective canonical provider. Matches `catalog::OPEN_INCIDENT` visibility
+/// (excludes archived sections, rooms the bot left, and deleted hidden runs).
+pub fn open_quota_incidents(home: &Path) -> Result<Vec<Value>> {
+    let conn = db::open(home)?;
+    let attached = crate::runtime_store::open(home).and_then(|_| {
+        conn.execute(
+            "ATTACH DATABASE ? AS runtime",
+            [home.join("hexbot-runtime.db").to_string_lossy().as_ref()],
+        )?;
+        Ok(())
+    });
+    let sql = if attached.is_ok() {
+        "SELECT i.*, b.owner_id FROM bot_incidents i JOIN bots b ON b.name=i.bot
+         WHERE i.resolved_at IS NULL AND i.kind='turn_failed'
+           AND CASE WHEN i.room_id IS NOT NULL THEN
+             EXISTS(SELECT 1 FROM rooms r JOIN room_members m ON m.room_id=r.id
+                    WHERE r.id=i.room_id AND r.owner_id=b.owner_id
+                      AND m.member_kind='bot' AND m.member_id=i.bot AND m.left_at IS NULL)
+           ELSE i.section_id IS NULL
+             OR EXISTS(SELECT 1 FROM sections s WHERE s.id=i.section_id
+                       AND s.bot=i.bot AND s.owner_id=b.owner_id AND s.archived_at IS NULL)
+             OR EXISTS(SELECT 1 FROM room_sessions s JOIN rooms r ON r.id=s.room_id
+                       JOIN room_members m ON m.room_id=r.id
+                       WHERE s.stored_session_id=i.section_id AND s.bot=i.bot AND r.owner_id=b.owner_id
+                         AND m.member_kind='bot' AND m.member_id=i.bot AND m.left_at IS NULL)
+             OR (NOT EXISTS(SELECT 1 FROM sections s WHERE s.id=i.section_id)
+                 AND NOT EXISTS(SELECT 1 FROM room_sessions s WHERE s.stored_session_id=i.section_id)
+                 AND EXISTS(SELECT 1 FROM runtime.native_sessions s WHERE s.stored_id=i.section_id
+                            AND s.bot=i.bot AND s.owner=b.owner_id)
+                 AND NOT EXISTS(SELECT 1 FROM runtime.native_deleted d WHERE d.session_id=i.section_id))
+           END
+         ORDER BY i.created_at DESC"
+    } else {
+        "SELECT i.*, b.owner_id FROM bot_incidents i JOIN bots b ON b.name=i.bot
+         WHERE i.resolved_at IS NULL AND i.kind='turn_failed'
+           AND CASE WHEN i.room_id IS NOT NULL THEN
+             EXISTS(SELECT 1 FROM rooms r JOIN room_members m ON m.room_id=r.id
+                    WHERE r.id=i.room_id AND r.owner_id=b.owner_id
+                      AND m.member_kind='bot' AND m.member_id=i.bot AND m.left_at IS NULL)
+           ELSE i.section_id IS NULL
+             OR EXISTS(SELECT 1 FROM sections s WHERE s.id=i.section_id
+                       AND s.bot=i.bot AND s.owner_id=b.owner_id AND s.archived_at IS NULL)
+             OR EXISTS(SELECT 1 FROM room_sessions s JOIN rooms r ON r.id=s.room_id
+                       JOIN room_members m ON m.room_id=r.id
+                       WHERE s.stored_session_id=i.section_id AND s.bot=i.bot AND r.owner_id=b.owner_id
+                         AND m.member_kind='bot' AND m.member_id=i.bot AND m.left_at IS NULL)
+             OR (NOT EXISTS(SELECT 1 FROM sections s WHERE s.id=i.section_id)
+                 AND NOT EXISTS(SELECT 1 FROM room_sessions s WHERE s.stored_session_id=i.section_id))
+           END
+         ORDER BY i.created_at DESC"
+    };
+    let mut rows = common::rows(&conn, sql, &[])?;
+    rows.retain(is_open_quota_row);
+    for row in &mut rows {
+        row["effective_provider"] = incident_provider(home, row)
+            .map(Value::String)
+            .unwrap_or(Value::Null);
+    }
+    Ok(rows)
+}
+
+/// Resolves open quota/billing `turn_failed` incidents for `provider` within
+/// the matching credential `scope` (`None` = shared daemon credentials, `Some(bot)`
+/// = that bot's own profile credentials). When `model` is set, only rows whose
+/// shared recovery model (`providers::incident_recovery_model`) matches `model`
+/// (plus `always_bot`, if given) are resolved so per-model limits stay isolated
+/// and fallback-model probes always match their incidents.
+/// When `before` is set, incidents recorded after that timestamp are kept so a
+/// newly arrived failure is never cleared by an in-flight recovery check.
+pub fn resolve_provider_quota_incidents(
+    home: &Path,
+    provider: &str,
+    before: Option<f64>,
+    scope: Option<&str>,
+    model: Option<&str>,
+    always_bot: Option<&str>,
+) -> Result<Vec<Value>> {
+    let target = crate::providers::canonical_provider(provider);
+    if target.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut conn = db::open(home)?;
+    // Cheap read-only check first so normal turns never acquire the SQLite write lock.
+    let has_open: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM bot_incidents WHERE resolved_at IS NULL AND kind='turn_failed' AND (category='quota' OR category IS NULL))",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_open {
+        return Ok(vec![]);
+    }
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let rows = common::rows(
+        &tx,
+        "SELECT i.*, b.owner_id FROM bot_incidents i JOIN bots b ON b.name=i.bot
+         WHERE i.resolved_at IS NULL AND i.kind='turn_failed'",
+        &[],
+    )?;
+    let now = common::now();
+    let mut resolved = vec![];
+    for mut row in rows {
+        if !is_open_quota_row(&row) {
+            continue;
+        }
+        if before.is_some_and(|cutoff| row["created_at"].as_f64().is_some_and(|at| at > cutoff)) {
+            continue;
+        }
+        if incident_provider(home, &row).as_deref() != Some(target.as_str()) {
+            continue;
+        }
+        let row_bot = row["bot"].as_str().unwrap_or("");
+        let row_scope = crate::providers::bot_credential_scope(home, row_bot, &target);
+        if row_scope.as_deref() != scope {
+            continue;
+        }
+        if let Some(expected_model) = model.filter(|m| !m.is_empty())
+            && always_bot != Some(row_bot)
+        {
+            let row_model = crate::providers::incident_recovery_model(home, &row, &target);
+            if row_model.as_deref() != Some(expected_model) {
+                continue;
+            }
+        }
+        tx.execute(
+            "UPDATE bot_incidents SET resolved_at=? WHERE id=?",
+            params![now, row["id"].as_str()],
+        )?;
+        row["resolved_at"] = json!(now);
+        resolved.push(row);
+    }
+    tx.commit()?;
+    Ok(resolved)
+}
+
+/// Resolves a bot's open quota incidents for `old_provider` after the bot switches
+/// to a different `new_provider`. Does nothing when the provider did not change.
+pub fn resolve_bot_other_provider_quota_incidents(
+    home: &Path,
+    bot: &str,
+    old_provider: &str,
+    new_provider: &str,
+) -> Result<Vec<Value>> {
+    let old_slug = crate::providers::canonical_provider(old_provider);
+    let new_slug = crate::providers::canonical_provider(new_provider);
+    if new_slug.is_empty() || old_slug == new_slug {
+        return Ok(vec![]);
+    }
+    let mut conn = db::open(home)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let rows = common::rows(
+        &tx,
+        "SELECT i.*, b.owner_id FROM bot_incidents i JOIN bots b ON b.name=i.bot
+         WHERE i.bot=? AND i.resolved_at IS NULL AND i.kind='turn_failed'",
+        &[&bot],
+    )?;
+    let now = common::now();
+    let mut resolved = vec![];
+    for mut row in rows {
+        if !is_open_quota_row(&row) {
+            continue;
+        }
+        let recorded = row["provider"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(crate::providers::canonical_provider)
+            .or_else(|| {
+                row["text"]
+                    .as_str()
+                    .is_some_and(|t| t.starts_with("Codex error:"))
+                    .then(|| "openai-codex".to_owned())
+            });
+        let matches_old = match recorded.as_deref() {
+            Some(p) if p == new_slug => false,
+            Some(p) => old_slug.is_empty() || p == old_slug,
+            None => !old_slug.is_empty(),
+        };
+        if !matches_old {
+            continue;
+        }
+        tx.execute(
+            "UPDATE bot_incidents SET resolved_at=? WHERE id=?",
+            params![now, row["id"].as_str()],
+        )?;
+        row["resolved_at"] = json!(now);
+        resolved.push(row);
+    }
+    tx.commit()?;
+    Ok(resolved)
+}
+
+/// Broadcasts resolved incidents to each affected owner on `hexbot.bots.changed`.
+pub(crate) fn emit_resolved_incidents(events: &crate::events::EventHub, resolved: &[Value]) {
+    if resolved.is_empty() {
+        return;
+    }
+    let mut by_owner: BTreeMap<&str, (Vec<&str>, BTreeSet<&str>)> = BTreeMap::new();
+    for row in resolved {
+        let Some(owner) = row["owner_id"].as_str().filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        let entry = by_owner.entry(owner).or_default();
+        if let Some(id) = row["id"].as_str().filter(|s| !s.is_empty()) {
+            entry.0.push(id);
+        }
+        if let Some(section) = row["section_id"].as_str().filter(|s| !s.is_empty()) {
+            entry.1.insert(section);
+        }
+    }
+    for (owner, (ids, sections)) in by_owner {
+        events.emit(
+            owner,
+            None,
+            "hexbot.bots.changed",
+            json!({
+                "resolved_incidents": ids,
+                "resolved_sections": sections.into_iter().collect::<Vec<_>>(),
+            }),
+        );
+    }
 }
 
 /// Resolves a private section's own failed turns: that bot's, checked against

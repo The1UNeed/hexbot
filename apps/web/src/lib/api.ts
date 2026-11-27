@@ -957,6 +957,10 @@ export function providersLoginCancel(loginId: string): Promise<ProviderLogin> {
   return rpcCall<ProviderLogin>('hexbot.providers.login_cancel', { login_id: loginId })
 }
 
+export function providersCheckRecovery(): Promise<{ checked: string[]; resolved: number }> {
+  return rpcCall<{ checked: string[]; resolved: number }>('hexbot.providers.check_recovery', {})
+}
+
 export function modelsList(provider?: string): Promise<ModelList> {
   return rpcCall<ModelList>('hexbot.models.list', provider ? { provider } : {})
 }
