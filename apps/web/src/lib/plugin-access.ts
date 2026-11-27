@@ -243,10 +243,25 @@ export function cycle(staged: Staged, access: Access, bots: string[], key: strin
   return held < bots.length && more ? given : stage(staged, access, bots, [key], false)
 }
 
-/** The staged grants that would change something. */
-export function pending(staged: Staged, access: Access): Flip[] {
+/**
+ * The staged grants that would change something. With `here`, only those
+ * whose bot and plugin are still there: one that was deleted meanwhile has no
+ * box and no line in the review, and the daemon would refuse it.
+ */
+export function pending(
+  staged: Staged,
+  access: Access,
+  here?: { bots: { name: string }[]; columns: AccessColumn[] }
+): Flip[] {
+  const bots = here && new Set(here.bots.map(bot => bot.name))
+  const keys = here && new Set(here.columns.map(column => column.key))
+
   return Object.entries(staged).flatMap(([grant, on]) => {
     const [bot, key] = splitGrant(grant)
+
+    if ((bots && !bots.has(bot)) || (keys && !keys.has(key))) {
+      return []
+    }
 
     return access.has(bot, key) === on ? [] : [{ bot, key, on }]
   })
@@ -481,6 +496,10 @@ export function planOf(flips: Flip[], plugins: Plugin[]): AccessStep[] {
 
 /** The same grants the other way round, to put back what an apply did. */
 export const reversed = (flips: Flip[]): Flip[] => flips.map(flip => ({ ...flip, on: !flip.on }))
+
+/** What of `flips` is still to put back, once `done` of their reverse went through. */
+export const notUndone = (flips: Flip[], done: Flip[]): Flip[] =>
+  flips.filter(flip => !done.some(each => each.bot === flip.bot && each.key === flip.key))
 
 /** The plugins more than half of a label's bots hold: what is usual for the label. */
 export function usual(

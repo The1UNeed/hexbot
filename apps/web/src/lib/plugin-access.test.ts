@@ -9,6 +9,7 @@ import {
   foldRows,
   groupName,
   labelsOf,
+  notUndone,
   offersOf,
   pending,
   planOf,
@@ -133,6 +134,15 @@ describe('staging', () => {
 
     expect(pending(staged, accessOf(given, staged))).toEqual([])
   })
+
+  it('a staged grant whose bot or plugin has gone is no change at all', () => {
+    const staged = { 'gone|connector:gmail': true, 'quill|connector:gmail': true, 'quill|connector:removed': true }
+    const columns = groups.flatMap(group => group.columns)
+
+    expect(pending(staged, accessOf(PLUGINS, staged), { bots: BOTS, columns })).toEqual([
+      { bot: 'quill', key: 'connector:gmail', on: true }
+    ])
+  })
 })
 
 describe('rows and changes', () => {
@@ -179,6 +189,8 @@ describe('rows and changes', () => {
     const after = PLUGINS.map(each => (each.id === 'gmail' ? { ...each, bots: step!.bots } : each))
 
     expect(planOf(reversed(flips), after)[0]!.bots.sort()).toEqual(['ada', 'bea', 'hexbot', 'scout'])
+    // What Undo could not put back is still to undo.
+    expect(notUndone(flips, [reversed(flips)[0]!])).toEqual([flips[1]])
     // A sign-in that stopped working: the list holds every grant, so none is added back.
     expect(planOf([{ bot: 'solo', key: 'connector:outlook', on: false }], PLUGINS)[0]).toMatchObject({
       bots: ['hexbot'],
@@ -224,6 +236,23 @@ describe('parseSentence', () => {
       text: '"scuot" is not a bot, a label or a plugin here. Nothing is changed.'
     })
     expect(said('give research gmail')).toMatchObject({ text: 'Say "Research bots" to mean the bots with that label.' })
+  })
+
+  it('refuses "not" in a change, which would reach the bots meant to be left out', () => {
+    for (const text of ['give Research bots Gmail, not Quill', 'give every bot Notion without Sales bots']) {
+      expect(said(text)).toEqual({
+        kind: 'problem',
+        text: 'To leave bots out, say "but not" or "except" and then the bots.'
+      })
+    }
+
+    expect(said('give Research bots Gmail but not Quill')).toMatchObject({ kind: 'change' })
+  })
+
+  it('finds a name with an apostrophe as it is typed', () => {
+    const named = { bots: [...BOTS, { ...bot('obrien', 'Sales'), display_name: "O'Brien" }], groups }
+
+    expect(parseSentence("give O'Brien Notion", named)).toMatchObject({ kind: 'change', who: "O'Brien" })
   })
 
   it('asks which calendar when two are meant, and takes the account named', () => {

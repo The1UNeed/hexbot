@@ -131,7 +131,10 @@ function vocabulary({ bots, groups }: SentenceWorld): Entry[] {
     }
   }
 
-  return entries.filter(entry => entry.phrase.trim()).sort((a, b) => b.phrase.length - a.phrase.length)
+  return entries
+    .map(entry => ({ ...entry, phrase: plain(entry.phrase) }))
+    .filter(entry => entry.phrase)
+    .sort((a, b) => b.phrase.length - a.phrase.length)
 }
 
 /** The names found in a stretch of text, and the words left that are not names. */
@@ -178,14 +181,18 @@ function botsIn(found: Entry[], bots: Bot[]): { bots: Bot[]; text: string } {
   return { bots: bots.filter(bot => inLabel(bot) || named.includes(bot)), text: listed(words) }
 }
 
-/** What a sentence asks for, or null when the text is not a sentence and is a search. */
-export function parseSentence(input: string, world: SentenceWorld): null | Sentence {
-  const text = input
+/** Text as the sentence compares it: a name with an apostrophe or a comma is found the way it is typed. */
+const plain = (text: string) =>
+  text
     .toLowerCase()
     .replace(/[‘’']/g, '')
     .replace(/[?!,;:]+/g, ' ')
-    .replace(/\.+\s*$/, '')
+    .replace(/\s+/g, ' ')
     .trim()
+
+/** What a sentence asks for, or null when the text is not a sentence and is a search. */
+export function parseSentence(input: string, world: SentenceWorld): null | Sentence {
+  const text = plain(input).replace(/\.+$/, '').trim()
 
   const verb = VERBS[text.split(/\s+/)[0] ?? '']
 
@@ -297,6 +304,12 @@ export function parseSentence(input: string, world: SentenceWorld): null | Sente
 
   if (!named.bots.length) {
     return problem('Name the bots: a label such as Research bots, a bot, or every bot.')
+  }
+
+  // "Not" in a question asks who lacks a plugin. In a change it would be
+  // dropped, and the bots meant to be left out would be changed with the rest.
+  if ([...main.rest, ...(but?.rest ?? [])].some(word => NEGATIONS.has(word))) {
+    return problem('To leave bots out, say "but not" or "except" and then the bots.')
   }
 
   const on = verb === 'give'

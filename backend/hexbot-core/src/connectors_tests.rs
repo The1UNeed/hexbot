@@ -68,6 +68,28 @@ fn a_list_holds_the_roster_and_lets_it_go() {
     );
 }
 
+/// Computer Use is on for a bot once Settings, Plugins gave it, whether or
+/// not a screen is in its reach yet: the list says what `enabled` says.
+#[tokio::test]
+async fn a_list_shows_computer_use_for_a_bot_without_a_screen_yet() {
+    let home = setup();
+    let h = home.path();
+    common::update_config(h, |c| {
+        c["computers"] = json!({"computer_use": ["owl"]});
+        Ok(())
+    })
+    .unwrap();
+    assert!(connectors::enabled(h, "owl", "computer_use").unwrap());
+    let list = rpc(h, "hexbot.connectors.list", json!({})).await;
+    let row = list["connectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == "computer_use")
+        .unwrap();
+    assert_eq!(row["enabled_bots"], json!(["owl"]));
+}
+
 #[tokio::test]
 async fn testing_computer_use_says_which_screens_bots_reach_and_never_marks_it_broken() {
     let home = setup();

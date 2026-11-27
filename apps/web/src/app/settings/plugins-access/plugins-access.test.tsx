@@ -225,6 +225,26 @@ describe('Settings, Plugins as a table', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument())
   })
 
+  it('keeps the changes that wait when Settings closes, and Undo when it fails', async () => {
+    const first = render(<PluginsSettings />)
+
+    await screen.findByText('2 Sales bots')
+    fireEvent.click(cell('Gmail for 2 Sales bots'))
+    first.unmount()
+
+    render(<PluginsSettings />)
+    await screen.findByText('2 Sales bots')
+    fireEvent.click(screen.getByRole('button', { name: 'Review 1 change' }))
+    vi.mocked(pluginsList).mockResolvedValue(list(['hexbot', 'ada', 'bea']))
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply 1 change' }))
+
+    vi.mocked(pluginsSetBots).mockRejectedValueOnce(new Error('The daemon did not answer.'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Undo' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Gmail: The daemon did not answer.')
+    expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument()
+  })
+
   it('keeps what a plugin refuses staged and says why', async () => {
     vi.mocked(pluginsSetBots).mockRejectedValueOnce(new Error('Set up Gmail before giving it to a bot.'))
     render(<PluginsSettings />)

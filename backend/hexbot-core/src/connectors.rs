@@ -927,6 +927,10 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
         };
         for (at, n) in names.iter().enumerate() {
             let on = match (s["skill"].as_str(), &skills) {
+                // Computer Use is the bot's place in `computers`, as in `enabled`.
+                _ if id == crate::machines::COMPUTER_USE => {
+                    crate::machines::computer_use_on(home, n)?
+                }
                 (Some(skill), Some(skills)) => skills[at]
                     .iter()
                     // Readiness only hides the skill; the bot's grant is its own.

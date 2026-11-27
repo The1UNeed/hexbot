@@ -141,7 +141,13 @@ export function PluginsAccess() {
     // Events refresh the list only while this page is open.
     return () => usePlugins.setState({ loaded: false })
   }, [connects, epoch, refresh, target])
-  useEffect(() => () => usePluginAccess.getState().reset(), [epoch, target])
+  // Leaving the page closes what it had open. The changes that wait stay for
+  // the next visit; the store forgets them when the daemon is another one.
+  useEffect(
+    () => () =>
+      usePluginAccess.setState({ adding: null, arrived: [], bot: null, reviewing: false, sheet: null }),
+    []
+  )
 
   // A tag in a message named a plugin or a skill: its own window opens, or
   // the page that adds one, searched for it.
@@ -205,7 +211,8 @@ export function PluginsAccess() {
         bot =>
           (label === null || labelOf(bot).toLowerCase() === label.toLowerCase()) &&
           (!needle || `${bot.display_name} ${bot.name} ${labelOf(bot)}`.toLowerCase().includes(needle)) &&
-          (!only || access.value(bot.name, only.key) === only.has)
+          // A box just pressed keeps its row: the change shows where it was made.
+          (!only || access.value(bot.name, only.key) === only.has || access.changed(bot.name, only.key))
       ),
     [access, bots, label, needle, only]
   )

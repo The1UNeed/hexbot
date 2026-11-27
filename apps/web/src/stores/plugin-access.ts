@@ -8,19 +8,11 @@
 import { create } from 'zustand'
 
 import { pluginsSetBots } from '../lib/api'
-import {
-  accessOf,
-  type Flip,
-  grantKey,
-  pending,
-  planOf,
-  reversed,
-  type Staged
-} from '../lib/plugin-access'
+import { type Flip, grantKey, notUndone, planOf, reversed, type Staged } from '../lib/plugin-access'
 import { withWaiting } from '../lib/plugin-rows'
 import type { AccountProvider, Plugin, PluginKind } from '../lib/types'
 
-import { connectionRead } from './connection'
+import { connectionRead, useConnection } from './connection'
 import { usePlugins } from './plugins'
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
@@ -41,8 +33,8 @@ export type AddStep =
 export interface PluginAccessState {
   /** The page that adds a plugin, while it is open. */
   adding: AddStep | null
-  /** Sends everything staged. What a plugin refuses stays staged, with the reason in `error`. */
-  apply: (text: string) => Promise<void>
+  /** Sends `flips`, the staged changes as reviewed. What a plugin refuses stays staged, with the reason in `error`. */
+  apply: (text: string, flips: Flip[]) => Promise<void>
   /** The bot whose page is open. */
   bot: null | string
   busy: boolean
@@ -107,10 +99,9 @@ export const usePluginAccess = create<PluginAccessState>((set, get) => ({
   sheet: null,
   staged: {},
 
-  async apply(text) {
+  async apply(text, flips) {
     const current = connectionRead()
     const plugins = usePlugins.getState().plugins
-    const flips = pending(get().staged, accessOf(plugins, get().staged))
 
     if (!flips.length || get().busy) {
       return
@@ -199,14 +190,29 @@ export const usePluginAccess = create<PluginAccessState>((set, get) => ({
 
     set({ busy: true, error: null })
 
-    const { failed } = await send(reversed(last.flips), usePlugins.getState().plugins)
+    const { done, failed } = await send(reversed(last.flips), usePlugins.getState().plugins)
 
     await usePlugins.getState().refresh()
 
+    // What a plugin refused to put back keeps its Undo, to try again.
+    const left = notUndone(last.flips, done)
+
     set(
       current()
-        ? { busy: false, error: failed.length ? failed.join(' ') : null, last: null }
+        ? {
+            busy: false,
+            error: failed.length ? failed.join(' ') : null,
+            last: left.length ? { ...last, flips: left } : null
+          }
         : { busy: false }
     )
   }
 }))
+
+// Another daemon has other plugins and bots: what waits for one is never
+// applied to another, whether or not the page is open when it changes.
+useConnection.subscribe((next, previous) => {
+  if (next.target !== previous.target || next.epoch !== previous.epoch) {
+    usePluginAccess.getState().reset()
+  }
+})

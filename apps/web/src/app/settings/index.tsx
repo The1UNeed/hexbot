@@ -136,7 +136,12 @@ export function SettingsPanel({ tab }: { tab: string }): React.JSX.Element {
     <section
       aria-label={`${tab} settings`}
       // Diagnostics holds tables and charts; it takes the column's full measure.
-      className={cn(settingsPageClass, (tab === 'diagnostics' || table) && 'max-w-[860px]', '@container')}
+      className={cn(
+        settingsPageClass,
+        tab === 'diagnostics' && 'max-w-[820px]',
+        // The table measures itself, so its own queries follow the page and not the window.
+        table && '@container max-w-[860px]'
+      )}
     >
       {tab === 'providers' && <ProvidersSettings />}
       {tab === 'plugins' && <PluginsSettings />}

@@ -218,7 +218,7 @@ export function ChangeBar({
               <Button
                 busy={busy}
                 onClick={() => {
-                  void apply(summary).then(refocus)
+                  void apply(summary, flips).then(refocus)
                 }}
                 size="sm"
                 variant="primary"

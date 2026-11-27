@@ -58,6 +58,8 @@ let latest = 0
  */
 let reading: null | Promise<void> = null
 let queued: null | Promise<void> = null
+/** Moves on at every reset, so a read queued for one daemon is not started on the next. */
+let era = 0
 
 export const usePlugins = create<PluginsState>((set, get) => {
   const replace = (key: string, plugin: Plugin) =>
@@ -117,7 +119,13 @@ export const usePlugins = create<PluginsState>((set, get) => {
 
       // The read on its way may predate this ask: one more after it answers
       // this one and every other made meanwhile.
+      const mine = era
+
       queued ??= reading.then(() => {
+        if (mine !== era) {
+          return
+        }
+
         queued = null
 
         return start()
@@ -131,6 +139,7 @@ export const usePlugins = create<PluginsState>((set, get) => {
       // Another daemon's list is not waited for.
       reading = null
       queued = null
+      era++
       set({ error: null, loaded: false, loading: false, plugins: [], sought: null })
     },
 

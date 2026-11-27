@@ -59,7 +59,7 @@ export function useAccessData(): AccessData {
   const groups = useMemo(() => accessGroups(plugins), [plugins])
   const columns = useMemo(() => groups.flatMap(group => group.columns), [groups])
   const access = useMemo(() => accessOf(plugins, staged), [plugins, staged])
-  const flips = useMemo(() => pending(staged, access), [access, staged])
+  const flips = useMemo(() => pending(staged, access, { bots, columns }), [access, bots, columns, staged])
 
   const colorOf = useCallback(
     (group: string) => {

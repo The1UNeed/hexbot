@@ -18,6 +18,7 @@ import {
   labelOf,
   labelsOf,
   listed,
+  notUndone,
   offersOf,
   pending,
   planOf,
@@ -133,7 +134,7 @@ export function PluginAccess({
   const groups = useMemo(() => accessGroups(plugins), [plugins])
   const columns = useMemo(() => groups.flatMap(group => group.columns), [groups])
   const access = useMemo(() => accessOf(plugins, staged), [plugins, staged])
-  const flips = useMemo(() => pending(staged, access), [access, staged])
+  const flips = useMemo(() => pending(staged, access, { bots: roster, columns }), [access, columns, roster, staged])
   const labels = useMemo(() => labelsOf(roster), [roster])
   const shared = useMemo(() => sharedLabels(roster), [roster])
   const keys = useMemo(() => columns.map(column => column.key), [columns])
@@ -146,7 +147,8 @@ export function PluginAccess({
         bot =>
           (label === null || labelOf(bot).toLowerCase() === label.toLowerCase()) &&
           (!needle || `${bot.display_name} ${bot.name} ${labelOf(bot)}`.toLowerCase().includes(needle)) &&
-          (!only || access.value(bot.name, only.key) === only.has)
+          // A box just pressed keeps its row: the change shows where it was made.
+          (!only || access.value(bot.name, only.key) === only.has || access.changed(bot.name, only.key))
       ),
     [access, label, needle, only, roster]
   )
@@ -218,8 +220,10 @@ export function PluginAccess({
     if (!last || busy) return
     setBusy(true)
     setError(null)
-    const { failed } = await send(reversed(last.flips))
-    setAccess(() => ({ last: null }))
+    const { done, failed } = await send(reversed(last.flips))
+    // What a plugin refused to put back keeps its Undo, to try again.
+    const left = notUndone(last.flips, done)
+    setAccess(() => ({ last: left.length ? { ...last, flips: left } : null }))
     setError(failed.length ? failed.join(' ') : null)
     setBusy(false)
   }

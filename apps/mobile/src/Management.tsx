@@ -590,7 +590,7 @@ export function Management({
   const [loadedPanel, setLoadedPanel] = useState<Panel | null>(null)
   // The new-bot card's shapes and colours, behind its Change face button.
   const [choosingFace, setChoosingFace] = useState(false)
-  // Experimental, on this phone only: Plugins as a table, with today's list under Set up.
+  // Experimental, on this phone only: Plugins as a table in place of the list.
   const [pluginsTable, setPluginsTable] = useState(false)
   useEffect(() => {
     void loadPluginsTable()
