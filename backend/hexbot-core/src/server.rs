@@ -2526,6 +2526,12 @@ mod auth_tests {
     fn install_identity_preserves_legacy_and_early_native_files() {
         for legacy in [true, false] {
             let home = tempfile::tempdir().unwrap();
+            // The files are there before the daemon starts, which reads them.
+            let name = if legacy { "install_id" } else { "install-id" };
+            std::fs::write(home.path().join(name), "0123456789abcdef0123456789abcdef\n").unwrap();
+            if legacy {
+                std::fs::write(home.path().join("install-id"), "different-native-id").unwrap();
+            }
             let app = App::new(
                 home.path().into(),
                 "127.0.0.1:9119".parse().unwrap(),
@@ -2533,11 +2539,6 @@ mod auth_tests {
                 None,
             )
             .unwrap();
-            let name = if legacy { "install_id" } else { "install-id" };
-            std::fs::write(home.path().join(name), "0123456789abcdef0123456789abcdef\n").unwrap();
-            if legacy {
-                std::fs::write(home.path().join("install-id"), "different-native-id").unwrap();
-            }
             assert_eq!(
                 app.install_id().unwrap(),
                 "0123456789abcdef0123456789abcdef"
