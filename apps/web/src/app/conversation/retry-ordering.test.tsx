@@ -210,7 +210,19 @@ const userRows = () =>
   useTranscripts.getState().bySession.chat?.messages.filter(message => message.role === 'user') ??
   []
 
-const cards = () => screen.queryAllByTestId('stopped-card')
+// The live failure is a card (by your message, or above the composer); one
+// the chat moved past is a line in the history.
+const cards = () => screen.queryAllByTestId(/^stopped-(card|line)$/)
+
+// Failures above the composer stack, the one you can act on in front: list them all.
+const showAll = () => {
+  const more = screen.queryByRole('button', { name: /^\d+ more$/ })
+
+  if (more) {
+    fireEvent.click(more)
+  }
+}
+
 const retryOn = (card: HTMLElement) => within(card).queryByRole('button', { name: 'Retry' })
 const retries = () => screen.queryAllByRole('button', { name: 'Retry' })
 
@@ -393,10 +405,12 @@ it('identity-equipped: R150 does not bind a later remote terminal failure to an 
       }
     } as GatewayEvent)
   })
+  showAll()
   const remoteCard = cards().find(card => card.textContent?.includes('Remote provider failed'))!
   expect(remoteCard).toBeVisible()
   expect(retryOn(remoteCard)).toBeNull()
-  expect(retryOn(ownCard)).toBeVisible()
+  const ownNow = cards().find(card => card.textContent?.includes('Own provider failed'))!
+  expect(retryOn(ownNow)).toBeVisible()
 })
 
 it('R150 keeps an actual warning after acceptance nonterminal and out of Retry', async () => {
@@ -858,6 +872,7 @@ it('binds reverse ordered identified terminals to their proven inputs rather tha
   expect(transcript.messages.find(row => row.error === 'C failed')?.retryRow).toBe(
     inputC.submission?.row
   )
+  showAll()
   expect(cards().filter(card => retryOn(card))).toHaveLength(2)
   act(() =>
     routeEvent({

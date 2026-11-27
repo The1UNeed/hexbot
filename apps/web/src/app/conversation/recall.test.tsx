@@ -321,6 +321,8 @@ it('never ties a failed upload to the message before it', async () => {
   await stop('Provider stopped')
   // A new message's upload fails before its bubble exists.
   await act(async () => useTranscripts.getState().requestFailed('chat', 'Upload refused'))
+  // The stopped turn, which Retry still sends, is in front; the upload is behind it.
+  fireEvent.click(screen.getByRole('button', { name: '1 more' }))
 
   const upload = screen
     .getAllByTestId('stopped-card')

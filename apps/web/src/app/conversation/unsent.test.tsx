@@ -95,30 +95,34 @@ describe('a failure right after your message', () => {
     toolCalls: []
   }
 
-  it('leaves your bubble as sent and shows a Stopped card with the reason and Retry', () => {
-    const retry = vi.fn()
-
+  it('leaves your bubble as sent; a stopped turn the chat moved past is one line', () => {
     const { container } = render(
       <>
         <MessageRow lined message={sent('accepted')} onImage={() => {}} />
-        <MessageRow
-          bot={{ display_name: 'Owl' } as Bot}
-          message={card}
-          mine
-          onImage={() => {}}
-          onRetry={retry}
-          retryMessage={sent('accepted')}
-        />
+        <MessageRow bot={{ display_name: 'Owl' } as Bot} message={card} mine onImage={() => {}} />
       </>
     )
 
     expect(container.querySelector('[data-testid=user-message] .text-danger')).toBeNull()
-    const stopped = screen.getByTestId('stopped-card')
-    expect(stopped).toHaveTextContent('Owl stopped')
-    expect(stopped).toHaveTextContent('The requested model is not supported.')
+    const line = screen.getByTestId('stopped-line')
+    expect(line).toHaveTextContent('Owl stopped')
+    expect(line).toHaveTextContent('The requested model is not supported.')
     expect(screen.queryByText('Not sent')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
-    expect(retry).toHaveBeenCalledTimes(1)
+    expect(screen.queryByTestId('stopped-card')).toBeNull()
+  })
+
+  it('draws nothing for the failure shown above the composer', () => {
+    const { container } = render(
+      <MessageRow
+        bot={{ display_name: 'Owl' } as Bot}
+        docked
+        message={card}
+        mine
+        onImage={() => {}}
+      />
+    )
+
+    expect(container).toBeEmptyDOMElement()
   })
 
   it('marks your bubble Not sent when the request itself failed, the reason on hover', () => {
@@ -174,7 +178,7 @@ describe('a failure right after your message', () => {
       />
     )
 
-    const failed = screen.getByTestId('stopped-card')
+    const failed = screen.getByTestId('stopped-line')
     expect(failed).toHaveTextContent("Didn't go through")
     expect(failed).toHaveTextContent('Upload failed')
     expect(failed).not.toHaveTextContent('Owl stopped')

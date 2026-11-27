@@ -28,11 +28,11 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import type { FileComment } from '../../../web/src/lib/file-comments'
+import { plainError } from '../../../web/src/lib/plain-error'
 import type { WorkLabel } from '../../../web/src/lib/work-label'
 import { messageText } from '../core/message-text'
 
 import {
-  Banner,
   BotFace,
   LoadingFace,
   type BotStatus,
@@ -47,6 +47,7 @@ import {
   Glass,
   IconButton,
   mono,
+  NoticeStack,
   radius,
   RoomFace,
   Screen,
@@ -155,6 +156,10 @@ export interface ChatScreenProps {
   onLoadEarlier?: () => void
 
   error?: string | null
+  /** Heads the error's card, such as "Owl stopped"; without it the error is the heading. */
+  errorTitle?: string
+  /** When the error happened, in milliseconds. */
+  errorAt?: number
   onRetry?: () => void
   onDismissError?: () => void
 
@@ -598,13 +603,21 @@ function ChatBody(props: ChatScreenProps) {
       )}
 
       {error ? (
+        // Notices float above the composer, never in the chat (the web's NoticeDock).
         <View style={styles.error}>
-          <Banner
-            actionLabel={onRetry ? 'Try again' : undefined}
-            message={error}
-            onAction={onRetry}
-            onDismiss={onDismissError}
-            testID="chat-error"
+          <NoticeStack
+            notices={[
+              {
+                actions: onRetry ? [{ label: 'Retry', onPress: onRetry, primary: true }] : [],
+                detail: props.errorTitle ? plainError(error) : undefined,
+                id: 'chat-error',
+                onDismiss: onDismissError,
+                testID: 'chat-error',
+                time: props.errorAt,
+                title: props.errorTitle ?? plainError(error),
+                tone: 'danger'
+              }
+            ]}
           />
         </View>
       ) : null}

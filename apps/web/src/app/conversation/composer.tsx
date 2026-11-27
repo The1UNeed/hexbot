@@ -5,12 +5,12 @@ import { Spinner } from '../../components/ui/spinner'
 import { cn } from '../../lib/cn'
 import type { BotStatus } from '../../lib/types'
 
-/** Border and notice colour per bot state; idle and working draw the plain pill. */
-const TONES: Record<BotStatus, { border: string; text: string }> = {
-  idle: { border: '', text: '' },
-  needs_you: { border: 'border-accent/70 focus-within:border-accent', text: 'text-accent' },
-  stopped: { border: 'border-danger/70 focus-within:border-danger', text: 'text-danger' },
-  working: { border: '', text: '' }
+/** Border colour per bot state; idle and working draw the plain pill. */
+const TONES: Record<BotStatus, { border: string }> = {
+  idle: { border: '' },
+  needs_you: { border: 'border-accent/70 focus-within:border-accent' },
+  stopped: { border: 'border-danger/70 focus-within:border-danger' },
+  working: { border: '' }
 }
 
 export interface ComposerShellProps {
@@ -21,8 +21,8 @@ export interface ComposerShellProps {
   canSend: boolean
   children: ReactNode
   className?: string
-  /** One line above the field, coloured by `status` (an error, "Waiting on you"). */
-  notice?: ReactNode
+  /** The chat's notices (`NoticeDock`), floating just above the field. */
+  dock?: ReactNode
   onAttach?: () => void
   /** Without it the pill has no Send, as in a room that is a Discord channel. */
   onSend?: () => void
@@ -50,7 +50,7 @@ export function ComposerShell({
   canSend,
   children,
   className,
-  notice,
+  dock,
   onAttach,
   onSend,
   onStop,
@@ -63,22 +63,10 @@ export function ComposerShell({
   return (
     <div className={cn('hex-composer-dock relative shrink-0 px-4 pt-2 pb-4', className)}>
       {above}
-      {notice ? (
-        <p
-          className={cn(
-            'hex-glass hex-bubble mx-auto mb-2 flex w-fit max-w-full items-center gap-2 rounded-full px-3.5 py-1.5 text-[length:var(--text-secondary)]',
-            tone.text || 'text-muted'
-          )}
-          data-testid="composer-notice"
-          role={status === 'stopped' ? 'alert' : 'status'}
-        >
-          <span aria-hidden className={cn('size-2 shrink-0 rounded-full bg-current')} />
-          <span className="min-w-0 flex-1 truncate">{notice}</span>
-        </p>
-      ) : null}
+      {dock}
       <div
         className={cn(
-          'hex-glass hex-glass-field flex items-end gap-1.5 rounded-[23px] border border-transparent p-[7px] transition-[border-color,box-shadow] duration-[var(--hex-motion-fast)]',
+          'hex-glass hex-glass-field z-[1] flex items-end gap-1.5 rounded-[23px] border border-transparent p-[7px] transition-[border-color,box-shadow] duration-[var(--hex-motion-fast)]',
           tone.border
         )}
         data-status={status}
